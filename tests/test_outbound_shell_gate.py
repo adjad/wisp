@@ -186,7 +186,72 @@ def test_cards_show_file_writes_moves_and_forwards(tmp_path):
     assert move == f"Move: {existing} (a file)\nTo: {tmp_path} (a folder)"
     forward = confirm_preview("forward_email", {"message_id": "<m1>", "to": "a@example.com",
                                                 "note": "FYI"})
-    assert forward == "Forward message <m1>\nTo: a@example.com\n\nNote:\nFYI"
+    # An ID Wisp has not read: the card says so, and still shows the rest.
+    assert forward == ("Forward message <m1>\n(Wisp couldn't find this email in the mail it has read, "
+                       "so it can't show the subject or sender.)\nTo: a@example.com\n\nNote:\nFYI")
+
+
+def _header(ts, sender, address, message_id, subject, account="Work"):
+    return "\x01".join(["H2", str(ts), "U", account, f"id-{account}", sender, address, message_id, subject])
+
+
+def test_a_forward_card_names_the_email_it_forwards(monkeypatch):
+    from datetime import datetime
+
+    from service.tools import email_tools
+    when = datetime(2026, 11, 3, 9, 14)
+    monkeypatch.setattr(email_tools, "_headers", "\n".join([
+        _header(when.timestamp(), "Corner Pharmacy", "rx@pharmacy.example", "<rx-1@pharmacy.example>",
+                "Your prescription   is ready"),
+        _header(when.timestamp() - 60, "North Bank", "statements@bank.example", "<st-9@bank.example>",
+                "Your October statement"),
+    ]))
+    monkeypatch.setattr(email_tools, "_history", "")
+    monkeypatch.setattr(email_tools, "_raw_emails", "")
+    # Mail reports the ID without angle brackets; the model may pass either form.
+    for message_id in ("<rx-1@pharmacy.example>", "RX-1@pharmacy.example"):
+        card = confirm_preview("forward_email", {"message_id": message_id, "to": "a@example.com"})
+        assert card == ("Email: Your prescription is ready\n"
+                        "From: Corner Pharmacy <rx@pharmacy.example>\n"
+                        f"Date: {when:%a %b %-d, %Y %-I:%M %p}\n"
+                        f"Forward message {message_id}\nTo: a@example.com\n\n(no note)")
+    # The row two lines away is a different email, and the card says which.
+    assert "Email: Your October statement\nFrom: North Bank" in confirm_preview(
+        "forward_email", {"message_id": "<st-9@bank.example>", "to": "a@example.com"})
+
+
+def test_a_forward_card_finds_an_email_read_with_its_body_or_in_older_mail(monkeypatch):
+    from service.tools import email_tools
+    raw = "\x01".join(["1793700000", "R", "Work", "id-Work", "Dana Fixture <dana@example.com>",
+                       "me.fixture@example.com", "Lease renewal", "<lease-2@example.com>", "Body text."])
+    monkeypatch.setattr(email_tools, "_headers", "")
+    monkeypatch.setattr(email_tools, "_raw_emails", raw)
+    monkeypatch.setattr(email_tools, "_history", _header(1793000000, "Sam Fixture", "sam@example.com",
+                                                         "<old-3@example.com>", "Trip photos"))
+    body = confirm_preview("forward_email", {"message_id": "<lease-2@example.com>", "to": "a@example.com"})
+    assert body.startswith("Email: Lease renewal\nFrom: Dana Fixture <dana@example.com>\nDate: ")
+    older = confirm_preview("forward_email", {"message_id": "<old-3@example.com>", "to": "a@example.com"})
+    assert older.startswith("Email: Trip photos\nFrom: Sam Fixture <sam@example.com>\nDate: ")
+
+
+def test_a_forward_card_never_guesses_which_email(monkeypatch):
+    from service.tools import email_tools
+    monkeypatch.setattr(email_tools, "_history", "")
+    monkeypatch.setattr(email_tools, "_raw_emails", "")
+    # One ID on two different emails (two accounts): name neither.
+    monkeypatch.setattr(email_tools, "_headers", "\n".join([
+        _header(1793700000, "Corner Pharmacy", "rx@pharmacy.example", "4411", "Your prescription is ready"),
+        _header(1793700060, "North Bank", "statements@bank.example", "4411", "Your October statement",
+                account="Home"),
+    ]))
+    card = confirm_preview("forward_email", {"message_id": "4411", "to": "a@example.com"})
+    assert card.startswith("Forward message 4411\n(Wisp couldn't find this email")
+    assert "prescription" not in card and "statement" not in card
+    # No ID, or a cache that can't be read: the card still renders.
+    assert confirm_preview("forward_email", {"to": "a@example.com"}).startswith("Forward message ?\n(Wisp couldn't")
+    monkeypatch.setattr(email_tools, "header_rows", lambda **_: 1 / 0)
+    assert confirm_preview("forward_email", {"message_id": "<m1>", "to": "a@example.com"}).startswith(
+        "Forward message <m1>\n(Wisp couldn't find this email")
 
 
 # --- the real agent loop, legacy and model-led routing ------------------------
@@ -461,9 +526,38 @@ def test_open_app_that_can_start_a_send_always_asks(args, full_access):
     assert policy.decide("app_control", args, tool="open_app").tier is policy.Tier.CONFIRM
 
 
+# `open -a` takes a bundle path as readily as a name, so the app is judged by
+# its own name however the call spells it.
+@pytest.mark.parametrize("name", [
+    "/System/Applications/Utilities/Terminal.app", "Terminal.app/", "Utilities/Terminal",
+    "TERMINAL.APP", " terminal ", '"Terminal"', "Terminal.app/.",
+    "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+    "/Applications/iTerm.app", "iTerm2", "/System/Applications/Shortcuts.app", "shortcuts.app/",
+    "com.apple.Terminal", "com.googlecode.iterm2",
+    "Ghostty", "/Applications/kitty.app", "Warp", "Alacritty.app", "WezTerm", "Hyper",
+])
+def test_open_app_asks_for_terminal_or_shortcuts_however_the_app_is_named(name, full_access):
+    for args in ({"name": name, "target": "~/x.sh"}, {"name": name}):
+        decision = policy.decide("app_control", args, tool="open_app")
+        assert decision.tier is policy.Tier.CONFIRM, args
+        assert "runs what it is given" in decision.reason
+
+
+def test_view_only_still_refuses_terminal_named_by_path(monkeypatch):
+    monkeypatch.setattr(policy, "_FULL_ACCESS", False)
+    monkeypatch.setattr(policy, "_READ_ONLY", True)
+    monkeypatch.setattr(grants, "check", lambda *args: None)
+    args = {"name": "/System/Applications/Utilities/Terminal.app", "target": "~/x.sh"}
+    assert policy.decide("app_control", args, tool="open_app").tier is policy.Tier.DENY
+
+
 @pytest.mark.parametrize("args", [
     {"name": "Spotify"}, {"name": "Safari", "target": "https://example.com"},
     {"name": "Preview", "target": "~/Documents/a.pdf"}, {"name": "Finder", "target": "file:///Users/me"},
+    {"name": "Notes"}, {"name": "/Applications/Safari.app", "target": "~/Documents/a.pdf"},
+    {"name": "/System/Applications/Notes.app/"}, {"name": "/Applications/Utilities/Activity Monitor.app"},
+    {"name": "Terminal Notifier"}, {"name": "/Applications/Terminal Notifier.app", "target": "~/Documents/a.pdf"},
+    {"name": "Shortcuts Guide"}, {"name": "Hyperlinks"},
 ])
 def test_ordinary_app_opens_still_run(args, full_access):
     assert policy.decide("app_control", args, tool="open_app").tier is policy.Tier.ALLOW

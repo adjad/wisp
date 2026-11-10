@@ -1808,3 +1808,120 @@ def _clock_at(hour: int, minute: int):
         def now(cls, tz=None):
             return datetime(2026, 9, 8, hour, minute)
     return Clock
+
+
+@pytest.fixture
+def agenda_store(tmp_path, monkeypatch):
+    """A real, empty store behind the brief, with Calendar and Reminders ready."""
+    from service.assistant.store import AssistantStore
+    store = AssistantStore(tmp_path / "agenda.db")
+    monkeypatch.setattr(B, "assistant_store", store)
+    monkeypatch.setattr(
+        "service.assistant.sync_status.source_status",
+        lambda source: {"id": source, "label": source.title(), "state": "ready"})
+    monkeypatch.setattr(B, "_mail_split", lambda now: {"state": "unavailable"})
+    return store
+
+
+def _today_at(hour: int, minute: int = 0) -> float:
+    return datetime.now().replace(hour=hour, minute=minute, second=0,
+                                  microsecond=0).timestamp()
+
+
+class TestRemindersDueEarlierToday:
+    """A reminder that was due this morning and is still not done belongs in the
+    evening summary. These read a real store: `upcoming` alone starts five
+    minutes back, so patching it to return past rows hid the gap."""
+
+    def test_a_morning_reminder_still_open_is_in_the_evening_summary(self, agenda_store):
+        now = _today_at(20)
+        agenda_store.add_manual("Pay the rent", _today_at(9))
+        agenda_store.add_manual("Water the plants", _today_at(21))
+        agenda = B._agenda(now)
+        assert [item["title"] for item in agenda["reminders"]] == [
+            "Pay the rent", "Water the plants"]
+        assert agenda["events"] == []
+
+        section = B._schedule_section(now)
+        rows = {title: next(line for line in section.splitlines() if title in line)
+                for title in ("Pay the rent", "Water the plants")}
+        assert rows["Pay the rent"].endswith("overdue")
+        assert "overdue" not in rows["Water the plants"]
+
+        card = B._today_card(now)
+        assert "2 reminders due" in card
+        assert "1 reminder already past due." in card
+        assert "Next: Water the plants" in card
+
+    def test_a_done_or_earlier_day_reminder_is_not_added(self, agenda_store):
+        now = _today_at(20)
+        done = agenda_store.add_manual("Return the library book", _today_at(9))
+        agenda_store.set_status(done["id"], "done")
+        agenda_store.add_manual("Renew the bus pass", _today_at(9) - 86400)
+        assert B._agenda(now)["reminders"] == []
+        assert "past due" not in B._today_card(now)
+
+    def test_an_earlier_calendar_event_is_listed_once_and_not_as_a_reminder(self, agenda_store):
+        now = _today_at(20)
+        agenda_store.sync_source("calendar", [{
+            "source_id": "standup", "kind": "meeting", "title": "Team standup",
+            "when_ts": _today_at(9), "end_ts": _today_at(9, 30)}])
+        agenda = B._agenda(now)
+        assert [item["title"] for item in agenda["events"]] == ["Team standup"]
+        assert agenda["reminders"] == []
+
+    def test_a_hidden_stale_reminder_stays_out(self, agenda_store):
+        # A reminder whose title names a day that is over is hidden everywhere
+        # until the user answers Keep or Delete; the summary must not bring it back.
+        from datetime import timedelta
+        now = _today_at(20)
+        passed = (datetime.fromtimestamp(now) - timedelta(days=30)).date().isoformat()
+        agenda_store.sync_source("reminders", [
+            {"source_id": "old", "kind": "reminder",
+             "title": f"Dentist appointment {passed}", "when_ts": _today_at(9)},
+            {"source_id": "open", "kind": "reminder",
+             "title": "Call the landlord", "when_ts": _today_at(10)},
+        ])
+        assert [item["title"] for item in B._agenda(now)["reminders"]] == ["Call the landlord"]
+        assert "Dentist appointment" not in B._schedule_section(now)
+
+    def test_nothing_is_read_before_five_past_midnight(self, agenda_store, monkeypatch):
+        calls = []
+        real = agenda_store.active_between
+
+        def counted(*args, **kwargs):
+            calls.append(args)
+            return real(*args, **kwargs)
+        monkeypatch.setattr(agenda_store, "active_between", counted)
+        B._agenda(_today_at(0, 3))
+        assert calls == []
+        B._agenda(_today_at(0, 10))
+        assert len(calls) == 1
+
+
+class TestTodayCardNextLine:
+    def test_a_date_only_reminder_is_not_given_a_clock_time(self, agenda_store):
+        # A date-only reminder is indexed at the end of its day, so once nothing
+        # timed is left it is the next item. The card said "at all day".
+        from service.assistant.verified_reminders import due_timestamp
+        now = _today_at(20)
+        today = datetime.fromtimestamp(now).date().isoformat()
+        agenda_store.add_manual(
+            "Buy oat milk", due_timestamp({"all_day": True, "due_date": today}),
+            all_day=True, due_date=today)
+        card = B._today_card(now)
+        next_line = next(line for line in card.splitlines() if line.startswith("Next: "))
+        assert next_line.startswith("Next: Buy oat milk")
+        assert next_line.endswith("(all day).")
+        assert "at all day" not in card
+        assert "past due" not in card
+
+    def test_a_timed_item_keeps_its_clock_time(self, agenda_store):
+        now = _today_at(20)
+        due = _today_at(21, 30)
+        agenda_store.add_manual("Water the plants", due)
+        card = B._today_card(now)
+        next_line = next(line for line in card.splitlines() if line.startswith("Next: "))
+        assert next_line.startswith("Next: Water the plants")
+        assert next_line.endswith(f" at {B._hm(datetime.fromtimestamp(due))}.")
+        assert "(all day)" not in card

@@ -114,9 +114,12 @@ PROFILE_TESTS = {
         # Email attachments and large files: the isolated reader, condensing, the tool and its
         # safety wiring (synthetic files, fake Mail and Gmail, stub model).
         "tests/test_attachment_child.py",
+        "tests/test_attachment_reading_sharper.py",
+        "tests/test_attachment_store.py",
         "tests/test_email_attachment_tool.py",
         "tests/test_large_document.py",
         "tests/test_mail_attachments.py",
+        "tests/test_recognize_bridge.py",
         "tests/test_corpus_prompts.py",
         "tests/test_corpus_reasoning_export.py",
         "tests/test_gmail_source.py",
@@ -286,6 +289,36 @@ PROFILE_TESTS = {
 ADDITIONAL_FULL_TESTS = {
     # In-app updates, release side: pure appcast, Ed25519 and fail-closed checks; no network or keys.
     "tests/test_sparkle_updates.py",
+    # rc3 fix batch: one file per fixed area (pure Python, stub models, scratch stores, or source
+    # contracts that read the Swift and service text; nothing live).
+    "tests/test_rc3_app_lifecycle.py",
+    "tests/test_rc3_audit_repairs.py",
+    "tests/test_rc3_backend_launch.py",
+    "tests/test_rc3_brief_cards.py",
+    "tests/test_rc3_cache_fixture_scripts.py",
+    "tests/test_rc3_calendar_read.py",
+    "tests/test_rc3_chat_window.py",
+    "tests/test_rc3_config_overlay_damaged.py",
+    "tests/test_rc3_engine_start_messages.py",
+    "tests/test_rc3_event_retention.py",
+    "tests/test_rc3_idle_timeout_saved.py",
+    "tests/test_rc3_legacy_script_tests.py",
+    "tests/test_rc3_mail_actions.py",
+    "tests/test_rc3_notch_contract.py",
+    "tests/test_rc3_page_reader.py",
+    "tests/test_rc3_parent_watch.py",
+    "tests/test_rc3_research_elapsed.py",
+    "tests/test_rc3_settings.py",
+    "tests/test_rc3_setup_window.py",
+    "tests/test_rc3_smart_search.py",
+    "tests/test_rc3_standing_rules.py",
+    "tests/test_rc3_time_phrases.py",
+    "tests/test_rc3_timers.py",
+    "tests/test_rc3_toolbench_scorer.py",
+    "tests/test_rc3_tools_rest2.py",
+    "tests/test_rc3_ui_sweep.py",
+    "tests/test_rc3_untitled_sync.py",
+    "tests/test_rc3_untitled_sync_swift.py",
     # rc1 Brief and Day honesty: no all-clear for an unread source, per-source blocked reasons.
     "tests/test_first_day_honesty.py",
     # rc1 reminders: expiry and supersede, the first-launch auto-action hold, the day-one Daily Summary.
@@ -1138,7 +1171,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             "native/mail-memory-compile",
             [
                 TRUSTED_SWIFTC, "-module-cache-path", module_cache,
-                "app/Sources/WispApp/MailMemoryReader.swift",
+                "app/Sources/WispApp/MailMemoryReader.swift", "app/Sources/WispApp/TextRecognizer.swift",
                 "tests/MailMemoryReaderRegression.swift", "-lsqlite3", "-o", mail_memory,
             ],
         ),

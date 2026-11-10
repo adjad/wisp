@@ -172,7 +172,7 @@ def _habit_conflicts(inp: Inputs, by_id: dict[str, Pattern]) -> list[Nudge]:
                 f"({fmt_range(habit.window.start_minute, end_min)}). Whether the activity happens is unknown.")
         remind = Action("add_reminder", {
             "title": f"Review calendar overlap: {pr.subject} / {prefix}",
-            "when_ts": max(inp.now, pr.ts - 12 * 3600), "notes": pr.because}, auto=True,
+            "when_ts": max(inp.now, pr.ts - 12 * 3600), "event_ts": pr.ts, "notes": pr.because}, auto=True,
             label="Remind me")
         draft = Action("open_prompt", {
             "prompt": f"Draft a note to {_others(ev)} asking to move {pr.subject} to after {fmt_clock(end_min)}"},

@@ -936,6 +936,21 @@ def _resolve_recipient(w: World, name: str, *, want_email: bool = False) -> tupl
     return matches[0]["preferred"], ""
 
 
+def _handle_key(handle: str) -> str:
+    handle = (handle or "").strip()
+    return handle.lower() if "@" in handle else re.sub(r"\D", "", handle)[-10:]
+
+
+def _named(w: World, handle: str, typed: str = "") -> str:
+    """A recipient as a receipt shows it, "Mom (+1 555-555-0101)": the saved contact the
+    handle belongs to, else the typed name (action_tools._named)."""
+    key = _handle_key(handle)
+    who = next((c["name"].title() if c["name"].islower() else c["name"] for c in w.contacts
+                if key and key in (_handle_key(c.get("phone")), _handle_key(c.get("email")))), "")
+    who = who or typed
+    return f"{who} ({handle})" if who else handle
+
+
 def _own_address_guard(to: str, tool: str, confirmed) -> str | None:
     addr = (to or "").strip().lower()
     if not addr or confirmed or addr not in {e.lower() for e in USER_EMAILS}:
@@ -1819,10 +1834,10 @@ def make_fakes(w: World) -> dict:
         resolved, problem = _emails_for(w, to)
         if problem:
             return problem
-        bad = [r for r in _split_recipients(cc) if not _EMAIL_RE.match(r)]
-        if bad:
-            return (f"(not valid email addresses: {', '.join(bad)}. Don't guess an "
-                    "address — look it up in the user's mail or ask them for it.)")
+        if _split_recipients(cc):  # a contact name in cc resolves like one in `to`
+            _copies, problem = _emails_for(w, cc)
+            if problem:
+                return problem
         _record(w, "send_email", {"to": to, "subject": subject, "body": body})
         return f"Email sent to {', '.join(resolved)}."
 
@@ -1842,7 +1857,7 @@ def make_fakes(w: World) -> dict:
         if problem:
             return problem
         _record(w, "forward_email", {"message_id": message_id, "to": to})
-        return f"Forwarded to {', '.join(resolved)}."
+        return f"Forwarded to {', '.join(_named(w, r) for r in resolved)}."
 
     def email_triage(message_id, action, **_):
         receipts = {"archive": "Moved to Archive.", "mark_read": "Marked as read.",
@@ -1973,12 +1988,12 @@ def make_fakes(w: World) -> dict:
         shown = (to or "").strip()
         if not shown:
             return "(no recipient — ask the user who to text)"
-        display = shown
+        display = _named(w, shown)
         if not (_EMAIL_RE.match(shown) or re.fullmatch(r"[+()\-.\s\d]{7,}", shown)):
             handle, problem = _resolve_recipient(w, shown)
             if problem:
                 return problem
-            display = f"{shown} ({handle})"
+            display = _named(w, handle, shown)
         if not (text or "").strip():
             return "(nothing to send — the message body is empty)"
         _record(w, "send_message", {"to": to, "text": text})
@@ -2005,7 +2020,7 @@ def make_fakes(w: World) -> dict:
             return (f"(NOT scheduled — {when!r} resolves to {when_dt:%a %b %-d at %-I:%M %p}, which is in "
                     "the past. Ask the user what time they actually meant, or send it now with "
                     f"{'send_email' if channel == 'email' else 'send_message'}.)")
-        display = to
+        display = _named(w, to.strip()) if len(recipients) == 1 else to
         if channel == "email":
             if not recipients:
                 return "(no recipient — ask the user who this should go to)"
@@ -2014,7 +2029,7 @@ def make_fakes(w: World) -> dict:
                 r, problem = _resolve_recipient(w, r, want_email=True)
                 if problem:
                     return problem
-                display = f"{to} ({r})"
+                display = _named(w, r, to)
             recipient = r
         else:
             if not recipients:
@@ -2024,7 +2039,7 @@ def make_fakes(w: World) -> dict:
                 handle, problem = _resolve_recipient(w, recipient)
                 if problem:
                     return problem
-                display = f"{to} ({handle})"
+                display = _named(w, handle, to)
                 recipient = handle
         _record(w, "schedule_send", {"channel": channel, "to": to, "when": when, "body": body or text,
                                      "subject": subject})
@@ -2131,30 +2146,36 @@ def make_fakes(w: World) -> dict:
         # receipt the model-led loop requires of an effect (router.model_led). Without it
         # the loop refuses the call ("no supported completion contract") whatever the
         # model does; runner.install_fakes makes this fake an authoritative builtin.
+        # Its refusals before any write are typed like production's (registry.not_done),
+        # so a "which one?" does not lock the rest of a multi-turn case.
         from service.router.model_led import BuiltinCompletion
+        from service.tools.registry import not_done
 
         def done(text):
             return BuiltinCompletion(text, tool_name="manage_contacts", completion_code=0)
         a = (action or "").strip().lower()
         who = (name or "").strip()
         if not who:
-            return "(error: manage_contacts needs a `name`.)"
+            return not_done("(error: manage_contacts needs a `name`.)")
         if a == "create":
             _record(w, "manage_contacts", {"action": a, "name": who, "value": value})
             w.contacts.append({"name": who, "full": who, "email": "", "phone": ""})
-            return done(f"Created contact {who}.")
+            # Like production, create makes the card only and says when a value was left out.
+            from service.tools.contacts_tools import created_receipt
+            return done(created_receipt(who, value or ""))
         if a in ("add_phone", "add_email"):
             if not (value or "").strip():
-                return f"(error: {a} needs `value`.)"
+                return not_done(f"(error: {a} needs `value`.)")
             hits = [c for c in w.contacts if who.lower() in c["full"].lower() or who.lower() in c["name"].lower()]
             if not hits:
-                return f"No contact matches {who!r}. Use action='create' to add one."
+                return not_done(f"No contact matches {who!r}. Use action='create' to add one.")
             if len(hits) > 1:
-                return f"Several contacts match {who!r} — which one?\n" + "\n".join(f"  - {c['full']}" for c in hits[:8])
+                return not_done(f"Several contacts match {who!r} — which one?\n"
+                                + "\n".join(f"  - {c['full']}" for c in hits[:8]))
             _record(w, "manage_contacts", {"action": a, "name": who, "value": value})
             hits[0]["phone" if a == "add_phone" else "email"] = value.strip()
             return done(f"Added {'phone' if a == 'add_phone' else 'email'} to {hits[0]['full']}.")
-        return f"(error: unknown action {a!r}. Use create, add_phone, or add_email.)"
+        return not_done(f"(error: unknown action {a!r}. Use create, add_phone, or add_email.)")
 
     # -------------------------------------------------------------------- notes
 

@@ -312,6 +312,65 @@ def test_dismiss_keeps_the_event_and_the_card_stays_gone(store):
     assert len(writers.calls) == 1
 
 
+# --- tap cards (auto-add off) -------------------------------------------------------------
+
+
+def _tap(store, item, **kw):
+    return step(store, survivors(item), Writers(), on=False, **kw)["tap"]
+
+
+def test_a_dismissed_tap_card_stays_gone_when_the_thread_hash_changes(store):
+    item = text("Maya", RECITAL)
+    [card] = _tap(store, item)
+    store.save_state(cards=[card])
+    store.dismiss_card(card, NOW)
+    assert _tap(store, item) == []
+    changed = {**item, "hash": "hash-after-more-lines"}
+    assert changed["hash"] != item["hash"]
+    assert _tap(store, changed) == []
+
+
+def test_a_fired_tap_card_stays_gone_when_the_thread_hash_changes(store):
+    item = text("Maya", RECITAL)
+    [card] = _tap(store, item)
+    store.save_state(cards=[card])
+
+    async def added(c):
+        return {"ok": True, "status": "succeeded"}
+
+    result = asyncio.run(executor.fire(card["id"], store=store, now=NOW, methods={"calendar_event": added}))
+    assert result["ok"] is True
+    assert _tap(store, {**item, "hash": "hash-after-more-lines"}) == []
+
+
+def test_firing_a_tap_card_leaves_the_reply_card_and_its_to_do_alone(store):
+    from service.proactive.prepare import todo_id
+    item = text("Maya", RECITAL)
+    [card] = _tap(store, item)
+    assert card["todo_id"] is None
+    store.save_state(cards=[card])
+
+    async def added(c):
+        return {"ok": True, "status": "succeeded"}
+
+    asyncio.run(executor.fire(card["id"], store=store, now=NOW, methods={"calendar_event": added}))
+    assert todo_id(item["id"]) not in store.decisions()["done"]
+    # The reply card prepare builds for this message carries the item's own fingerprint.
+    assert f"{item['id']}:{item['hash']}" not in store.suppressed_fingerprints()
+
+
+def test_a_tap_card_steps_aside_for_a_reply_card_that_already_offers_the_add():
+    def card(cid, method, ref, event=None):
+        return {"id": cid, "sources": [{"ref": ref}], "action": {"method": method, "event": event}}
+
+    reply_with = card("r1", "text_reply", "t1", event={"start_ts": 1})
+    reply_without = card("r2", "text_reply", "t2")
+    tap_1, tap_2 = card("a1", "calendar_event", "t1"), card("a2", "calendar_event", "t2")
+    out = autoadd.merge_cards([], [tap_1, tap_2], [reply_with, reply_without], set(), 5)
+    ids = [c["id"] for c in out]
+    assert "a1" not in ids and "a2" in ids and {"r1", "r2"} <= set(ids)
+
+
 # --- setting, failures ------------------------------------------------------------------------
 
 

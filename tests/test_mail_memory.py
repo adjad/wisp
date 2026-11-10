@@ -541,6 +541,43 @@ def test_expire(tmp_path):
     assert st.stats()["items"] == {"expired": 1}
 
 
+def test_an_add_cut_off_by_a_restart_is_offered_again(tmp_path, monkeypatch):
+    # Add claims the row (new -> accepting) and waits on Reminders. A backend killed
+    # there left the claim for good: not in the Brief, a 409 on Add, a 404 on Dismiss.
+    path = tmp_path / "r.db"
+    st = Store(path)
+    st.upsert_index([_row(1)], extract.tier, now=1)
+    base = {"date_phrase": "Dec 10", "due": "2026-12-10", "precision": "day", "evidence": "due Dec 10",
+            "important": True, "why": "money"}
+    st.add_items("<m1@x>", [{**base, "what": what} for what in ("Pay tax", "Renew pass", "Call bank")]
+                 + [{**base, "what": "Old", "due": "2026-10-01"}], "v1")
+    assert st.expire("2026-10-26") == 1
+    ids = {s["what"]: s["id"] for s in st.suggestions("2026-10-26", horizon="2026-12-31", limit=10)}
+    assert st.claim(ids["Renew pass"]) and st.decide(ids["Renew pass"], "accepted", "wisp_only",
+                                                     from_state="accepting")
+    assert st.decide(ids["Call bank"], "dismissed")
+    assert st.claim(ids["Pay tax"])                             # ...and the backend dies here
+    before = st.stats()["items"]
+    assert before == {"accepting": 1, "accepted": 1, "dismissed": 1, "expired": 1}
+
+    # Another Store on the same file (a test, a script) never touches a claim in flight.
+    assert Store(path).item(ids["Pay tax"])["state"] == "accepting"
+
+    made = []
+    monkeypatch.setattr(store_mod, "Store", lambda: made.append(Store(path)) or made[-1])
+    monkeypatch.setattr(store_mod, "_store", None)
+    again = store_mod.store()                                   # the backend starts
+    assert again.stats()["items"] == {"new": 1, "accepted": 1, "dismissed": 1, "expired": 1}
+    shown = again.suggestions("2026-10-26", horizon="2026-12-31", limit=10)
+    assert [s["what"] for s in shown] == ["Pay tax"] and shown[0]["state"] == "new"
+    assert again.item(ids["Renew pass"])["reminder"] == "wisp_only"
+    assert again.claim(ids["Pay tax"])                          # it can be added again
+    # Only the start recovers: a later store() is the same Store and leaves a running Add alone.
+    assert store_mod.store() is again and len(made) == 1
+    assert again.item(ids["Pay tax"])["state"] == "accepting"
+    assert again.recover_claims() == 1 and again.recover_claims() == 0
+
+
 # --- bridge -----------------------------------------------------------------------
 
 class _Hub:
@@ -1184,6 +1221,137 @@ def test_schedule_records_why_it_did_not_start(ticking, monkeypatch, quiet):
     monkeypatch.setattr(type(hub), "has_subscribers", property(lambda self: False))
     runner.schedule_tick()
     assert ticking.health()["last_skip"] == "no_subscribers" and runner._task is None
+
+
+# --- the away pace: 5 s apart without waiting for the scheduler's 30 s call -------------
+
+@pytest.fixture
+def walking(ticking, monkeypatch, quiet):
+    """schedule_tick with every gate open, a clock that only the walk's own wait
+    moves, and tick() replaced by a list of the gaps it returns."""
+    import types
+    from service import brief_pace
+    from service.assistant.hub import hub
+    clock = [NOW]
+    real_sleep = asyncio.sleep
+    w = types.SimpleNamespace(clock=clock, gaps=[], ticks=[], waits=[], real_sleep=real_sleep)
+
+    async def tick():
+        w.ticks.append(clock[0])
+        return w.gaps[len(w.ticks) - 1]
+
+    async def sleep(seconds, *args):
+        w.waits.append(seconds)
+        clock[0] += seconds
+        await real_sleep(0)
+
+    async def settle():
+        for _ in range(200):
+            if runner._task is None or runner._task.done():
+                return
+            await real_sleep(0)
+        raise AssertionError("the walk never stopped")
+
+    w.settle = settle
+    monkeypatch.setattr(runner, "tick", tick)
+    monkeypatch.setattr(runner, "time", types.SimpleNamespace(time=lambda: clock[0], monotonic=time.monotonic))
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    monkeypatch.setattr(runner, "mode", lambda path=None: "live")
+    monkeypatch.setattr(runner, "_other_background_work", lambda: False)
+    monkeypatch.setattr(brief_pace, "may_start", lambda kind, mono=None: True)
+    monkeypatch.setattr(type(hub), "has_subscribers", property(lambda self: True))
+    monkeypatch.setattr(runner, "_next_at", 0.0)
+    monkeypatch.setattr(runner, "_task", None)
+    return w
+
+
+async def test_an_away_step_is_followed_five_seconds_later_without_the_scheduler(walking):
+    # The scheduler calls schedule_tick every 30 s and nothing else did, so the away
+    # level's "5 s apart" was one email per 30 s: a 90-day backlog took several nights.
+    w = walking
+    w.gaps[:] = [runner.AWAY_GAP_S, runner.AWAY_GAP_S, runner.BETWEEN_GAP_S]
+    runner.schedule_tick()                                      # the scheduler's one call
+    first = runner._task
+    await w.settle()
+    assert len(w.ticks) == 3                                    # two more steps, no scheduler call
+    assert w.waits == [pytest.approx(runner.AWAY_GAP_S, abs=0.1)] * 2
+    assert [b - a for a, b in zip(w.ticks, w.ticks[1:])] == [pytest.approx(wait) for wait in w.waits]
+    assert runner._task is not first and first.done()
+    # A gap the scheduler can serve (30 s or more) waits for the scheduler, as before.
+    assert runner._next_at == w.clock[0] + runner.BETWEEN_GAP_S
+    runner.schedule_tick()
+    assert len(w.ticks) == 3 and runner._task.done()
+
+
+@pytest.mark.parametrize("gap", [runner.SCHEDULER_TICK_S, runner.AWAY_BATTERY_GAP_S, runner.BUSY_GAP_S,
+                                 runner.BETWEEN_GAP_S, runner.FAILURE_GAP_S, runner.IDLE_DONE_GAP_S])
+async def test_a_gap_of_thirty_seconds_or_more_is_left_to_the_scheduler(walking, monkeypatch, gap):
+    w = walking
+    w.gaps[:] = [gap]
+    asked = []
+    monkeypatch.setattr(runner, "schedule_tick", lambda: asked.append(1))
+    await runner._run()
+    assert w.waits == [] and asked == [] and runner._next_at == w.clock[0] + gap
+
+
+async def test_a_failed_step_never_follows_itself(walking, monkeypatch):
+    w = walking
+
+    async def broken():
+        w.ticks.append(w.clock[0])
+        raise bridge.BridgeError("no_mail_index")
+
+    monkeypatch.setattr(runner, "tick", broken)
+    runner.schedule_tick()
+    await w.settle()
+    assert len(w.ticks) == 1 and w.waits == []
+    assert runner._next_at == w.clock[0] + runner.FAILURE_GAP_S
+
+
+async def test_the_follow_up_goes_through_every_gate(walking, monkeypatch, quiet):
+    w = walking
+    for close, reason in ((lambda: monkeypatch.setattr(quiet, "foreground_busy", lambda: True), "foreground"),
+                          (lambda: monkeypatch.setattr(runner, "_other_background_work", lambda: True),
+                           "other_background")):
+        w.gaps[:] = [runner.AWAY_GAP_S] * 5
+        del w.ticks[:], w.waits[:]
+        monkeypatch.setattr(quiet, "foreground_busy", lambda: False)
+        monkeypatch.setattr(runner, "_other_background_work", lambda: False)
+        monkeypatch.setattr(runner, "_skip", None)
+        monkeypatch.setattr(runner, "_next_at", 0.0)
+        monkeypatch.setattr(runner, "_task", None)
+        runner.schedule_tick()
+        close()                                                 # ...during the first step's wait
+        await w.settle()
+        assert len(w.ticks) == 1 and len(w.waits) == 1          # the chain stops; the scheduler resumes it
+        assert runner._task is None and runner.store().health()["last_skip"] == reason
+    # Switched off while the step ran: no wait at all.
+    w.gaps[:] = [runner.AWAY_GAP_S] * 5
+    del w.ticks[:], w.waits[:]
+    monkeypatch.setattr(runner, "mode", lambda path=None: "off")
+    await runner._run()
+    assert len(w.ticks) == 1 and w.waits == []
+
+
+async def test_the_wait_holds_the_slot_and_a_cancel_ends_the_walk(walking, monkeypatch):
+    # A reset or a shutdown cancels runner._task (wisp_reset._CHILD_TASKS). The wait
+    # is inside that task, so nothing is left to start a step afterwards.
+    w = walking
+    monkeypatch.setattr(asyncio, "sleep", w.real_sleep)         # a real 5 s wait, cancelled at once
+    w.gaps[:] = [runner.AWAY_GAP_S] * 5
+    runner.schedule_tick()
+    waiting = runner._task
+    for _ in range(5):
+        await w.real_sleep(0)
+    assert len(w.ticks) == 1 and isinstance(waiting, asyncio.Task) and not waiting.done()
+    runner.schedule_tick()                                      # the scheduler meanwhile: still one walk
+    assert runner._task is waiting
+    waiting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiting
+    for _ in range(5):
+        await w.real_sleep(0)
+    assert len(w.ticks) == 1 and runner._task is waiting        # no step, no new task
 
 
 # --- endpoints ----------------------------------------------------------------------

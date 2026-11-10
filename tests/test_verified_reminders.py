@@ -1056,6 +1056,104 @@ async def test_collapsed_multiple_native_ids_stop_before_partial_group_write(tmp
         store._db.close()
 
 
+@pytest.mark.asyncio
+async def test_complete_reminder_finds_a_reminder_after_its_time_has_passed(tmp_path: Path):
+    """Finishing something after it was due is the usual case: an overdue
+    reminder is still found by name, natively verified, and marked done."""
+    from service.tools import schedule_extras
+
+    store = AssistantStore(tmp_path / "assistant.sqlite")
+    now = time.time()
+    manual = store.add_manual("Water the ferns", now - 90 * 60)
+    store.sync_source("reminders", [{"source_id": "ek-med", "kind": "reminder",
+                                     "title": "Take medication", "when_ts": now - 90 * 60}])
+    store.sync_source("calendar", [{"source_id": "cal-1", "kind": "event",
+                                    "title": "Dentist checkup", "when_ts": now - 90 * 60}])
+    native = AsyncMock(return_value={"ok": True, "status": "succeeded", "error": ""})
+    try:
+        with patch.object(schedule_extras, "_store", store), \
+             patch.object(outbox, "request", native):
+            assert "Marked “Water the ferns” done." == await schedule_extras.complete_reminder("ferns")
+            assert store.get(manual["id"])["status"] == "done"
+            native.assert_not_awaited()
+
+            assert "Marked “Take medication” done." == await schedule_extras.complete_reminder("medication")
+            native.assert_awaited_once()
+            kind, sent = native.await_args.args[:2]
+            assert kind == "complete_reminder" and sent["source_id"] == "ek-med"
+            row = store._db.execute(
+                "SELECT status FROM commitments WHERE source='reminders' AND source_id='ek-med'").fetchone()
+            assert row["status"] == "done"
+
+            # A calendar event is not a reminder, overdue or not.
+            reply = await schedule_extras.complete_reminder("dentist")
+            assert reply.startswith("Nothing active matches 'dentist'")
+            assert store._db.execute(
+                "SELECT status FROM commitments WHERE source='calendar'").fetchone()["status"] == "active"
+            assert native.await_count == 1
+    finally:
+        store._db.close()
+
+
+@pytest.mark.asyncio
+async def test_complete_reminder_asks_between_overdue_days_and_names_each_day(tmp_path: Path):
+    from service.tools import schedule_extras
+
+    store = AssistantStore(tmp_path / "assistant.sqlite")
+    today_due = datetime.now().replace(hour=0, minute=1, second=0, microsecond=0)
+    if datetime.now() - today_due < timedelta(minutes=10):
+        today_due -= timedelta(days=1)  # stay overdue just after midnight
+    earlier_due = today_due - timedelta(days=2)
+    ids = [store.add_manual("Take medication", due.timestamp())["id"]
+           for due in (earlier_due, today_due)]
+    native = AsyncMock()
+    try:
+        with patch.object(schedule_extras, "_store", store), \
+             patch.object(outbox, "request", native):
+            reply = await schedule_extras.complete_reminder("medication")
+            assert type(reply) is type(schedule_extras.not_done("x"))  # proof nothing changed
+            assert reply.startswith("Several match 'medication'")
+            lines = reply.splitlines()[1:]
+            assert len(lines) == 2 and lines[0] != lines[1]
+            assert earlier_due.strftime("%A %-d %b") in lines[0]
+            assert all("12:01 AM" in line for line in lines)
+            assert [store.get(cid)["status"] for cid in ids] == ["active", "active"]
+            native.assert_not_awaited()
+    finally:
+        store._db.close()
+
+
+@pytest.mark.asyncio
+async def test_complete_reminder_prefers_a_shown_reminder_over_a_hidden_stale_one(tmp_path: Path):
+    """A reminder the stale policy hides does not turn a clear request into a
+    question, but naming it when it is the only match still completes it."""
+    from service.tools import schedule_extras
+
+    store = AssistantStore(tmp_path / "assistant.sqlite")
+    now = time.time()
+    store.sync_source("reminders", [
+        {"source_id": "ek-old", "kind": "reminder", "title": "Call dentist", "when_ts": now - 10 * 86400},
+        {"source_id": "ek-new", "kind": "reminder", "title": "Call dentist", "when_ts": now + 86400}])
+    assert [row["source_id"] for row in store.active_between(None, None)] == ["ek-new"]
+    native = AsyncMock(return_value={"ok": True, "status": "succeeded", "error": ""})
+
+    def status(source_id: str) -> str:
+        return store._db.execute("SELECT status FROM commitments WHERE source='reminders' "
+                                 "AND source_id=?", (source_id,)).fetchone()["status"]
+    try:
+        with patch.object(schedule_extras, "_store", store), \
+             patch.object(outbox, "request", native):
+            assert "Marked “Call dentist” done." == await schedule_extras.complete_reminder("call dentist")
+            assert native.await_args.args[1]["source_id"] == "ek-new"
+            assert (status("ek-old"), status("ek-new")) == ("active", "done")
+
+            assert "Marked “Call dentist” done." == await schedule_extras.complete_reminder("call dentist")
+            assert native.await_args.args[1]["source_id"] == "ek-old"
+            assert status("ek-old") == "done" and native.await_count == 2
+    finally:
+        store._db.close()
+
+
 async def _serve_create(store: AssistantStore, queue, *, status: str = "succeeded",
                         source_id: str = "ek-created") -> dict:
     """Act as the macOS app for one create: claim, write, and report readback.

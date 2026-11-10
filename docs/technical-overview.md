@@ -47,16 +47,15 @@ planning, evidence, and synthesis remain local.
 
 | Area | Examples |
 | --- | --- |
-| Shell & files | `run_shell`, `read_file`, `write_file`, `list_dir`, `delete_path`, `find_files`, `organize_files`, `move_path` |
-| Apps & system | `open_app`, `quit_app`, `set_volume`, `set_wifi`, `lock_screen`, `get_battery_status`, `clipboard_read/write`, `window_control` |
+| Shell & files | `run_shell`, `read_file`, `write_file`, `list_dir`, `find_files`, `organize_files`, `move_path` |
+| Apps & system | `open_app`, `quit_app`, `toggle_setting`, `system_status`, `screen_capture`, `clipboard_read/write`, `window_control` |
 | Calendar & reminders | `get_upcoming`, `get_past_events`, `add_calendar_event`, `find_free_time`, `add_reminder` |
 | Mail, Messages, Notes | `summarize_emails`, `send_email`, `triage_inbox`, `summarize_messages`, `send_message`, `search_notes` |
 | Contacts | `lookup_contact`, `list_contacts`, `manage_contacts` |
-| Web & research | `web_search`, `web_fetch`, `http_request`, `wikipedia_summary` |
+| Web & research | `web_search`, `web_fetch`, `wikipedia_summary` |
 | Memory | `remember`, `recall`, `forget` |
-| Codex | `get_codex_updates` — running, finished, failed, and possibly stalled local tasks |
-| Media | `spotify`, `music`, `play_podcast`, `text_to_speech`, `transcribe_audio` |
-| Everyday utilities | `get_weather`, `convert_currency`, `track_package`, `get_directions`, `calculate`, and dozens more |
+| Timers & speech | `set_timer`, `manage_timers`, `text_to_speech` |
+| Everyday utilities | `get_weather`, `convert_units`, `get_stock_price`, `travel_time`, `find_place`, `calculate`, and more |
 | Authoring | `create_tool` |
 
 Because a long tool list measurably degrades selection, each request sees a
@@ -150,9 +149,8 @@ marked validation pending. The guide ranks memory fit separately from test statu
 
 | Memory | Recommended | Download | Notes |
 | --- | --- | --- | --- |
-| 24 GB or more | `gemma-4-E4B-it-oQ4e-mtp` | 5.5 GB from Hugging Face | The default. `Ling-3.0-tiny-oQ6e` (6.6 GB) is the best-quality alternative. |
-| 16 GB | `gemma-4-E4B-it-oQ4e-mtp` | 5.5 GB | Leaves room for your other apps; close heavy ones. `Ling-3.0-tiny-oQ4e` (4.6 GB) is the smaller alternative. Tool selection measured 10/10 at 4, 5 and 6 bits (on a 24 GB Mac; not yet re-measured on 16 GB hardware). |
-| Under 16 GB | not supported for this release | | Wisp may still offer the default. Expect it to be tight. |
+| 16 GB or more | `gemma-4-E4B-it-oQ4e-mtp` | 5.5 GB from Hugging Face | The default. On 24 GB or more, `Ling-3.0-tiny-oQ6e` (6.6 GB) is the best-quality alternative; on 16 GB, `Ling-3.0-tiny-oQ4e` (4.6 GB) is the smaller one. Tool selection measured 10/10 at 4, 5 and 6 bits (on a 24 GB Mac; not yet re-measured on 16 GB hardware). |
+| Under 16 GB | not supported for this release | | Setup doesn't offer a model. If you already run a smaller model in another app, such as Ollama or LM Studio, you can connect it in the detailed setup. |
 
 Sizes are the published files' sizes on Hugging Face
 (`mlx-works/Ling-3.0-tiny-oQ6e`, `mlx-works/Ling-3.0-tiny-oQ4e`). For Smart Search, also
@@ -277,10 +275,8 @@ downloaded models and `engine.log`),
 `skills/`, `mcp.json`, `grants.json`, `audit.jsonl`, plus small state files for
 the brief, delivery receipts, and the Codex monitor.
 
-Wisp also keeps a read-only eye on local Codex tasks. Ask "catch me up on
-Codex," "which Codex tasks are still running?", or "does any Codex task need
-me?" for an on-demand overview. While Wisp is open, it quietly polls the local
-Codex task index and sends a macOS notification only when a task finishes,
+Wisp also keeps a read-only eye on local Codex tasks. While Wisp is open, it
+quietly polls the local Codex task index and sends a macOS notification only when a task finishes,
 fails, or has had no recorded activity for 15 minutes. The first poll is a
 baseline, so launching Wisp does not produce a burst of old notifications.
 

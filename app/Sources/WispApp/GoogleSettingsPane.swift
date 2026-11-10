@@ -236,6 +236,10 @@ struct GoogleSettingsPane: View {
     @State private var ownClient = false
     /// Account notes the user chose "Not now" for (UserDefaults, per account).
     @State private var dismissedNotes: [String: String] = [:]
+    /// Disconnect & erase asks first. The account stays set after the alert
+    /// closes, so its title never changes while it goes away.
+    @State private var confirmErase = false
+    @State private var accountToErase = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -269,6 +273,16 @@ struct GoogleSettingsPane: View {
 
             DisclosureGroup("Advanced", isExpanded: $advanced) { advancedSection.padding(.top, 8) }
                 .font(.system(size: 13))
+        }
+        .alert(Text(verbatim: "Disconnect \(accountToErase) and erase its data from Wisp?"),
+               isPresented: $confirmErase) {
+            Button("Erase", role: .destructive) {
+                if !accountToErase.isEmpty { model.disconnect(accountToErase) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This revokes Wisp's Google access and deletes this account's mail, calendar events, "
+                 + "summaries and to-dos from Wisp. Mail.app's own copy, if any, is untouched.")
         }
         .onChange(of: model.status.accounts.map(\.id)) { _, ids in
             for id in ids where dismissedNotes[id] == nil {
@@ -317,8 +331,11 @@ struct GoogleSettingsPane: View {
                 Button(title) { model.connect(reconnect: account.id) }
                     .disabled(model.authorizing)
             }
-            Button("Disconnect & erase") { model.disconnect(account.id) }
-                .help("Revokes Wisp's Google access and deletes this account's mail, calendar events and to-dos from Wisp")
+            Button("Disconnect & erase…") {
+                accountToErase = account.id
+                confirmErase = true
+            }
+            .help("Revokes Wisp's Google access and deletes this account's mail, calendar events, summaries and to-dos from Wisp. Asks first.")
         }
     }
 

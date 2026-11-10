@@ -364,7 +364,9 @@ def score(case: Case, traj: dict, *, registry_names: set[str], today: date,
     if not model and stall_reply(final):
         labels.append("stall")
         notes.append(f"stalled: {final.strip()[:80]!r}")
-    if not final.strip() and not labels and not traj.get("message_draft"):
+    # A soft label alone must not hide a blank reply; a blocking one already fails the turn.
+    if (not final.strip() and not traj.get("message_draft")
+            and not [l for l in labels if l not in SOFT]):
         labels.append("empty_answer")
 
     # Answer grounding — only meaningful once the turn produced an answer.

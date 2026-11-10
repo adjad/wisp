@@ -44,12 +44,21 @@ def get(canonical_url: str) -> dict | None:
 
 
 def put(canonical_url: str, *, url: str, title: str, text: str,
-        content_type: str, published_at: str, via_archive: bool = False) -> None:
+        content_type: str, published_at: str, via_archive: bool = False,
+        page_canonical_url: str = "") -> None:
+    """Store a fetched page under the address it was requested at.
+
+    ``canonical_url`` is the key and must be the caller's own identity for the
+    request, never an address the page declared for itself: a page could then
+    file its text under another page's address. What the page declared goes in
+    ``page_canonical_url``, as data.
+    """
     CACHE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     path = _path(canonical_url)
     data = {"url": url, "canonical_url": canonical_url, "title": title, "text": text,
             "content_type": content_type, "published_at": published_at,
-            "via_archive": via_archive, "cached_at": time.time()}
+            "via_archive": via_archive, "page_canonical_url": page_canonical_url,
+            "cached_at": time.time()}
     # What the user researched: owner-only from the first byte, written atomically.
     private_write_bytes(path, json.dumps(data).encode("utf-8"))
 

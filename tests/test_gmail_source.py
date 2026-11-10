@@ -1552,6 +1552,33 @@ print('fresh process retained original native fallback')
         self.assertFalse(history["fresh"])
         self.assertTrue(E.email_source_details()[0]["fresh"])
 
+    def test_history_read_every_half_hour_is_fresh_for_most_of_that_interval(self):
+        E.configure_external_accounts({})
+        E.cache_emails(header("Native", "Recent"))
+        E.cache_history_headers(header("Native", "Older", stamp=time.time() - 86400))
+        E.set_email_availability(True, read_source="mail_app")
+        E._native_history_at = time.time() - 1200
+        self.assertTrue(E.email_source_details(part="history")[0]["fresh"])
+        self.assertEqual(E.email_freshness_warning(part="history"), "")
+        now = time.time()
+        plain = E._empty_range_message("Monday", now - 86400, now)
+        self.assertNotIn("couldn’t verify", plain)
+        # A history read that has been missed for an hour still warns.
+        E._native_history_at = time.time() - 3600
+        self.assertIn("local history read", E.email_freshness_warning(part="history"))
+        self.assertIn("couldn’t verify", E._empty_range_message("Monday", now - 86400, now))
+        # Headers and bodies keep the five-minute limit that makes a sync run.
+        E._native_headers_at = time.time() - 1200
+        self.assertFalse(E.email_source_details()[0]["fresh"])
+
+    def test_gmail_history_read_every_half_hour_is_fresh_between_reads(self):
+        self.publish(headers=header(), history=header(subject="Older", stamp=time.time() - 86400))
+        E._external_accounts[ME]["history_at"] = time.time() - 1200
+        E._external_accounts[ME]["history_verified"] = True
+        self.assertTrue(E.email_source_details(part="history")[0]["fresh"])
+        E._external_accounts[ME]["history_at"] = time.time() - 3600
+        self.assertFalse(E.email_source_details(part="history")[0]["fresh"])
+
     def test_old_epoch_cannot_dispatch_cached_or_refresh_token(self):
         async def run(cached):
             token = G._context.set((ME, dict(self.accounts[ME]), 0))
@@ -1584,6 +1611,108 @@ print('fresh process retained original native fallback')
             finally:
                 G._context.reset(token)
         asyncio.run(run())
+
+    def get_with_403(self, reasons=(), message="Forbidden"):
+        body = {"error": {"code": 403, "message": message, "errors": [{"reason": r} for r in reasons]}}
+        async def run():
+            token = G._context.set((ME, dict(self.accounts[ME]), 0))
+            G._access[ME] = {"token": "synthetic", "expires": time.time() + 3600}
+            http = AsyncMock()
+            http.get.return_value = httpx.Response(403, json=body)
+            sleep = AsyncMock()
+            try:
+                with patch("asyncio.sleep", sleep):
+                    with self.assertRaises(G.GmailError) as caught:
+                        await G._get(http, "messages")
+            finally:
+                G._context.reset(token)
+            return str(caught.exception), http.get.await_count, sleep.await_count
+        return asyncio.run(run())
+
+    def test_a_disabled_gmail_api_fails_at_once_with_a_message_that_says_what_to_do(self):
+        for reasons, message in ((["accessNotConfigured"], "Gmail API has not been used in project 1"),
+                                 (["SERVICE_DISABLED"], "disabled"), ([], "API has not been used in project 1")):
+            with self.subTest(reasons=reasons):
+                text, calls, sleeps = self.get_with_403(reasons, message)
+                self.assertIn("Turn on the Gmail API", text)
+                self.assertEqual((calls, sleeps), (1, 0))
+        self.assertEqual(G._plain_mail_error(text), "Mail isn't available for this account yet.")
+
+    def test_a_403_that_waiting_cannot_fix_is_not_retried_but_a_rate_limit_is(self):
+        text, calls, sleeps = self.get_with_403(["insufficientPermissions"])
+        self.assertEqual((text, calls, sleeps), ("messages: HTTP 403", 1, 0))
+        text, calls, sleeps = self.get_with_403(["rateLimitExceeded"])
+        self.assertEqual((text, calls, sleeps), ("messages: HTTP 403", 4, 3))
+        text, calls, sleeps = self.get_with_403(["userRateLimitExceeded"])
+        self.assertEqual((calls, sleeps), (4, 3))
+
+    def test_an_expired_sign_in_is_not_retried_every_minute(self):
+        self.accounts[ME]["auth_expired"] = int(time.time())
+        E.configure_external_accounts(self.accounts)
+        post = AsyncMock(return_value=httpx.Response(400, json={"error": "invalid_grant"}))
+        with patch.object(httpx.AsyncClient, "post", post), \
+             patch.object(E, "external_email_error") as failed, \
+             patch.object(E, "_persist_composed_sources") as persisted:
+            for _ in range(2):
+                self.assertFalse(asyncio.run(G._sync_account(ME, ("headers", "history", "raw", "sent"))))
+        post.assert_not_awaited()
+        failed.assert_not_called()
+        persisted.assert_not_called()
+        # Reconnecting writes a record without the flag, and syncing resumes.
+        del self.accounts[ME]["auth_expired"]
+        with patch.object(httpx.AsyncClient, "post", post), patch.object(G, "_sync_headers", AsyncMock()) as headers:
+            self.assertTrue(asyncio.run(G._sync_account(ME, ("headers",))))
+        headers.assert_awaited_once()
+
+    def test_the_calendar_skips_an_expired_sign_in(self):
+        from service import google_calendar_source as C
+        both = [G.SCOPE, G.CALENDAR_SCOPE]
+        accounts = {"gone@gmail.com": {"scopes": both, "auth_expired": 5}, "live@gmail.com": {"scopes": both}}
+        with patch.object(C, "refresh_account", AsyncMock()) as refresh, patch.dict(C._status, {}, clear=True):
+            asyncio.run(C.refresh_due(accounts, now=1e9))
+        self.assertEqual([call.args[0] for call in refresh.await_args_list], ["live@gmail.com"])
+
+    def test_a_quiet_minute_does_not_rewrite_the_mail_cache_files(self):
+        writes = []
+        real = cache_store.private_write_bytes
+        def counting(path, data):
+            writes.append(Path(path).name)
+            real(path, data)
+        self.accounts.clear()                       # no Google account at all
+        E.configure_external_accounts(self.accounts)
+        E.cache_emails(header("Native", "First"))
+        E.cache_history_headers(header("Native", "Older") + "\n")
+        E.cache_raw_emails(G.raw_record(msg("body", "Body"), "Native"))
+        with patch.object(cache_store, "private_write_bytes", counting):
+            for _ in range(3):
+                E.configure_external_accounts(self.accounts)       # the 60 s loop
+            self.assertEqual(writes, [], "unchanged data is not written again")
+            history_before = E._history
+            E.configure_external_accounts(self.accounts)
+            self.assertIs(E._history, history_before, "the parsed-history memo keeps its key")
+            cache_store._path("email_history").unlink()             # deleted: written back
+            E.configure_external_accounts(self.accounts)
+            self.assertEqual(writes, ["email_history.txt"])
+            del writes[:]
+            E.cache_emails(header("Native", "A different subject"))   # changed: written
+            self.assertIn("email_headers.txt", writes)
+            self.assertIn("email_mail_headers.txt", writes)
+        self.assertIn("A different subject", cache_store.load("email_headers"))
+
+    def test_a_cache_file_changed_behind_the_backend_is_restored(self):
+        cache_store.save("identity_emails", "me@example.test")
+        path = cache_store._path("identity_emails")
+        path.write_text("someone-else@example.test")
+        cache_store.save("identity_emails", "me@example.test")
+        self.assertEqual(path.read_text(), "me@example.test")
+
+    def test_the_same_failure_twice_does_not_rewrite_the_mail_cache(self):
+        with patch.object(E, "_persist_composed_sources") as persisted:
+            E.external_email_error(ME, "headers", "Google could not be reached; try again when online")
+            E.external_email_error(ME, "headers", "Google could not be reached; try again when online")
+            self.assertEqual(persisted.call_count, 1)
+            E.external_email_error(ME, "headers", "Google token refresh failed")
+            self.assertEqual(persisted.call_count, 2)
 
     def test_failed_current_cli_flow_does_not_report_older_account_success(self):
         import io
@@ -3341,6 +3470,37 @@ class BuiltInGoogleClient(unittest.TestCase):
         self.assertEqual(query["client_id"], ["synthetic"])
         self.assertEqual(r["client_source"], "user")
         self.assertFalse(missing["ok"])
+
+    def test_reconnecting_keeps_the_mail_account_the_user_chose(self):
+        cfg = G.load_config()
+        cfg["accounts"][ME]["mail_account_id"] = "native-1"
+        G._save_config(cfg)
+        token = {"refresh_token": "fresh-refresh", "access_token": "fake", "scope": G.SCOPE}
+        async def run(mail_account_id):
+            with patch.object(httpx.AsyncClient, "post", AsyncMock(return_value=httpx.Response(200, json=token))), \
+                 patch.object(httpx.AsyncClient, "get",
+                              AsyncMock(return_value=httpx.Response(200, json={"emailAddress": ME}))), \
+                 patch.object(G, "_after_connect", AsyncMock()):
+                return await G._finish("synthetic", "s", "code", "v", "http://127.0.0.1", generation=0,
+                                       mail_account_id=mail_account_id)
+        asyncio.run(run(""))
+        self.assertEqual(G.connected_accounts()[ME]["mail_account_id"], "native-1")
+        self.assertEqual(G.connected_accounts()[JUDGE].get("mail_account_id", ""), "")
+        asyncio.run(run("native-2"))      # a new choice still replaces it
+        self.assertEqual(G.connected_accounts()[ME]["mail_account_id"], "native-2")
+
+    def test_a_reconnect_ignores_the_mail_account_picker(self):
+        from service.tools import email_tools
+        app = self.route("gmail_connect")
+        receipt = {"auth_url": "https://accounts.example.test/auth"}
+        with patch.object(G, "begin_authorization", AsyncMock(return_value=receipt)) as begin, \
+             patch.object(email_tools, "native_email_accounts", lambda: [{"id": "native-1", "name": "Google"}]):
+            self.assertTrue(self.post(app, "/assistant/gmail/connect",
+                                      {"reconnect": JUDGE, "mail_account_id": "native-1"})["ok"])
+            self.assertEqual(begin.await_args.kwargs["mail_account_id"], "")
+            self.assertTrue(self.post(app, "/assistant/gmail/connect",
+                                      {"client_id": "synthetic", "mail_account_id": "native-1"})["ok"])
+            self.assertEqual(begin.await_args.kwargs["mail_account_id"], "native-1")
 
     def expire(self, account=ME, responses=1):
         announced = []

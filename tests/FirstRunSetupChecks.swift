@@ -1,6 +1,7 @@
 import AppKit
 import EventKit
 import Foundation
+import UserNotifications
 
 // Pure checks for the first-run window: when it shows, and what step 1 says for
 // every engine, model and download state. No window, service or engine.
@@ -172,6 +173,59 @@ struct FirstRunSetupChecks {
               && FirstRunSetup.setupCue(.ready, canAnswer: false, firstRunWindowUp: true) == .hidden,
               "Can't answer again: the ready dot gives way to the ! cue (none over the window)")
 
+        // A Mac that finished setup: Wisp answers a little before its model does at every
+        // launch, and that wait is not "isn't set up". No cue until it has lasted.
+        check(FirstRunSetup.warmUpGrace == 90, "A minute and a half of warm-up")
+        check(FirstRunSetup.setupCue(.hidden, canAnswer: false, firstRunWindowUp: false,
+                                     setupFinished: true, notReadyFor: 0) == .hidden
+              && FirstRunSetup.setupCue(.hidden, canAnswer: false, firstRunWindowUp: false,
+                                        setupFinished: true, notReadyFor: 89) == .hidden,
+              "Finished setup, model warming up: no ! cue")
+        check(FirstRunSetup.setupCue(.hidden, canAnswer: false, firstRunWindowUp: false,
+                                     setupFinished: true, notReadyFor: 90) == .later,
+              "Finished setup, still can't answer after the grace: the ! cue")
+        check(FirstRunSetup.setupCue(.hidden, canAnswer: false, firstRunWindowUp: false,
+                                     setupFinished: false, notReadyFor: 0) == .later,
+              "Unfinished setup: the cue at once, as before")
+        check(FirstRunSetup.setupCue(.hidden, canAnswer: false, firstRunWindowUp: true,
+                                     setupFinished: true, notReadyFor: 600) == .hidden
+              && FirstRunSetup.setupCue(.hidden, canAnswer: false, firstRunWindowUp: true,
+                                        setupFinished: false, notReadyFor: 0) == .hidden,
+              "Never over the first-run window, finished or not")
+        check(FirstRunSetup.setupCue(.open, canAnswer: false, firstRunWindowUp: false,
+                                     setupFinished: true, notReadyFor: 0) == .open
+              && FirstRunSetup.setupCue(.later, canAnswer: false, firstRunWindowUp: false,
+                                        setupFinished: true, notReadyFor: 0) == .later,
+              "A card or cue the person already has is left alone during warm-up")
+        check(FirstRunSetup.setupCue(.ready, canAnswer: false, firstRunWindowUp: false,
+                                     setupFinished: true, notReadyFor: 0) == .hidden,
+              "The ready dot never outlives readiness, and warm-up puts no cue in its place")
+        check(FirstRunSetup.setupCue(.later, canAnswer: true, firstRunWindowUp: false,
+                                     setupFinished: true, notReadyFor: 30) == .hidden
+              && FirstRunSetup.setupCue(.open, canAnswer: true, firstRunWindowUp: false,
+                                        setupFinished: true, notReadyFor: 30) == .open,
+              "Ready clears the cue exactly as before")
+        // The same grace for the menu bar's Finish Setup…: not known yet, so it doesn't flash.
+        let warmedUp: Bool? = FirstRunSetup.knownCanAnswer(true, setupFinished: true, notReadyFor: 0)
+        let warming: Bool? = FirstRunSetup.knownCanAnswer(false, setupFinished: true, notReadyFor: 30)
+        let neverCame: Bool? = FirstRunSetup.knownCanAnswer(false, setupFinished: true, notReadyFor: 90)
+        let midSetup: Bool? = FirstRunSetup.knownCanAnswer(false, setupFinished: false, notReadyFor: 0)
+        check(warmedUp == .some(true), "Can answer: known at once")
+        check(warming == nil, "Warm-up reads as not known yet")
+        check(neverCame == .some(false), "Past the grace it is the answer")
+        check(midSetup == .some(false), "During an unfinished setup it is the answer from the start")
+        check(!FirstRunSetup.menuOffersSetup(
+                  canAnswer: FirstRunSetup.knownCanAnswer(false, setupFinished: true, notReadyFor: 30),
+                  card: .hidden, firstRunWindowUp: false, unfinished: false)
+              && FirstRunSetup.menuOffersSetup(
+                  canAnswer: FirstRunSetup.knownCanAnswer(false, setupFinished: true, notReadyFor: 120),
+                  card: .hidden, firstRunWindowUp: false, unfinished: false),
+              "Finish Setup… stays out of the menu while the model warms up, and shows if it never arrives")
+        // The gate that holds Wisp back during an unfinished setup is told at once, as before.
+        check(FirstRunSetup.gatesUse(setupUnfinished: true,
+                                     canAnswer: FirstRunSetup.knownCanAnswer(false, setupFinished: false, notReadyFor: 0)),
+              "An unfinished setup still waits for its model from the first answer")
+
         // The menu bar icon's Finish Setup…: only while setup is under way.
         func menuSetup(_ canAnswer: Bool?, _ card: NotchSetupCard, window: Bool = false, unfinished: Bool = false) -> Bool {
             FirstRunSetup.menuOffersSetup(canAnswer: canAnswer, card: card, firstRunWindowUp: window, unfinished: unfinished)
@@ -187,9 +241,49 @@ struct FirstRunSetupChecks {
         // Permission rows: their state in a word, and Contacts only once it helps.
         check(FirstRunPermissions.label(.calendar, .notAsked) == "Not set"
               && FirstRunPermissions.label(.calendar, .allowed) == "Allowed"
-              && FirstRunPermissions.label(.calendar, .notAllowed) == "Denied"
+              && FirstRunPermissions.label(.calendar, .notAllowed, calendarAddOnly: false) == "Denied"
               && FirstRunPermissions.label(.fullDiskAccess, .notAllowed) == "Needs System Settings",
               "Not set, Allowed, Denied, Needs System Settings")
+        // Calendar set to Add Events Only: Wisp is already on in System Settings, so
+        // neither "Denied" nor "switch Wisp on" is true. Still not allowed, still Settings.
+        check(FirstRunPermissions.isAddOnly(.calendar, .notAllowed, calendarAddOnly: true)
+              && !FirstRunPermissions.isAddOnly(.calendar, .notAllowed, calendarAddOnly: false)
+              && !FirstRunPermissions.isAddOnly(.reminders, .notAllowed, calendarAddOnly: true)
+              && !FirstRunPermissions.isAddOnly(.calendar, .notAsked, calendarAddOnly: true)
+              && !FirstRunPermissions.isAddOnly(.calendar, .allowed, calendarAddOnly: true),
+              "Add-only is the Calendar row, not allowed, with macOS saying write-only; nothing else")
+        check(FirstRunPermissions.label(.calendar, .notAllowed, calendarAddOnly: true) == "Add only"
+              && FirstRunPermissions.label(.reminders, .notAllowed, calendarAddOnly: true) == "Denied"
+              && FirstRunPermissions.label(.calendar, .allowed, calendarAddOnly: true) == "Allowed"
+              && FirstRunPermissions.label(.calendar, .notAsked, calendarAddOnly: true) == "Not set",
+              "Add-only Calendar reads Add only, never Denied; Reminders and the other states are unchanged")
+        let addOnlyDetail = FirstRunPermissions.eventKitDetail(.calendar, base: "", state: .notAllowed, unanswered: false,
+                                                               calendarAddOnly: true)
+        check(addOnlyDetail.contains("only add events") && addOnlyDetail.contains("Options")
+              && addOnlyDetail.contains("Full Access") && addOnlyDetail.contains("Privacy & Security > Calendars")
+              && addOnlyDetail.contains("Open System Settings")
+              && !addOnlyDetail.contains("Wisp is off") && !addOnlyDetail.contains("switch Wisp on"),
+              "Setup's Calendar row says to choose Full Access under Options, not to switch Wisp on")
+        check(FirstRunPermissions.eventKitDetail(.reminders, base: "", state: .notAllowed, unanswered: false,
+                                                 calendarAddOnly: true)
+              == FirstRunPermissions.eventKitDetail(.reminders, base: "", state: .notAllowed, unanswered: false,
+                                                    calendarAddOnly: false)
+              && FirstRunPermissions.eventKitDetail(.calendar, base: "Your day.", state: .allowed, unanswered: false,
+                                                    calendarAddOnly: true) == "Your day.",
+              "Reminders has no add-only setting, and an allowed Calendar keeps its purpose")
+        let addOnlyNext = NotchPermissionPage.next(.calendar, .notAllowed, calendarAddOnly: true)
+        check(addOnlyNext == NotchPermissionPage.calendarAddOnlyNote && addOnlyNext.contains("Options")
+              && addOnlyNext.contains("Full Access") && !addOnlyNext.contains("switch on Wisp"),
+              "The notch's page says the same")
+        check(NotchPermissionPage.next(.calendar, .notAllowed, calendarAddOnly: false).contains("switch on Wisp")
+              && NotchPermissionPage.next(.reminders, .notAllowed, calendarAddOnly: true).contains("switch on Wisp")
+              && NotchPermissionPage.next(.calendar, .allowed, calendarAddOnly: true)
+                  == NotchPermissionPage.next(.calendar, .allowed, calendarAddOnly: false),
+              "A Calendar that is really off, Reminders, and an allowed Calendar read as before")
+        check(NotchPermissionPage.action(.calendar, .notAllowed) == .openSettings
+              && FirstRunPermissions.eventKitClick(.writeOnly) == .openSettings
+              && FirstRunPermissions.isDecided(.notAllowed),
+              "Add-only is still not allowed, and its button still opens System Settings")
         check([.allowed, .notAllowed, .notOnThisMac].allSatisfy(FirstRunPermissions.isDecided)
               && ![.notAsked, .checking].contains(where: FirstRunPermissions.isDecided), "Decided means macOS has an answer")
         check(!FirstRunPermissions.contactsUseful(messagesReadable: false) && FirstRunPermissions.contactsUseful(messagesReadable: true),
@@ -220,7 +314,8 @@ struct FirstRunSetupChecks {
         let denied = FirstRunPermissions.eventKitDetail(.reminders, base: remindersBase, state: .notAllowed, unanswered: false)
         let silent = FirstRunPermissions.eventKitDetail(.reminders, base: remindersBase, state: .notAsked, unanswered: true)
         check(denied.contains("Privacy & Security > Reminders") && denied.contains("Open System Settings")
-              && FirstRunPermissions.eventKitDetail(.calendar, base: "", state: .notAllowed, unanswered: false)
+              && FirstRunPermissions.eventKitDetail(.calendar, base: "", state: .notAllowed, unanswered: false,
+                                                    calendarAddOnly: false)
                   .contains("Privacy & Security > Calendars")
               && silent.contains("didn't show its question") && silent.contains("Quit and reopen Wisp")
               && FirstRunPermissions.eventKitDetail(.reminders, base: remindersBase, state: .notAsked, unanswered: false) == remindersBase
@@ -269,7 +364,10 @@ struct FirstRunSetupChecks {
                   && NotchPermissionPage.order(focus: item).count == FirstRunPermissions.Item.allCases.count,
                   "\(item.rawValue) leads a page that still lists each once")
             for state in [FirstRunPermissions.State.notAsked, .notAllowed, .allowed, .notOnThisMac] {
-                check(!NotchPermissionPage.next(item, state).isEmpty, "\(item.rawValue) says what happens next")
+                for addOnly in [false, true] {
+                    check(!NotchPermissionPage.next(item, state, calendarAddOnly: addOnly).isEmpty,
+                          "\(item.rawValue) says what happens next")
+                }
             }
         }
         check(NotchPermissionPage.action(.fullDiskAccess, .notAsked) == .openSettings
@@ -306,7 +404,8 @@ struct FirstRunSetupChecks {
               "Leaving System Settings brings the panel back only for a new yes")
         check(NotchPermissionPage.next(.fullDiskAccess, .notAllowed).contains(NotchPermissionPage.relaunchNote)
               && NotchPermissionPage.next(.screenRecording, .notAsked).contains(NotchPermissionPage.relaunchNote)
-              && !NotchPermissionPage.next(.calendar, .notAllowed).contains(NotchPermissionPage.relaunchNote),
+              && !NotchPermissionPage.next(.calendar, .notAllowed, calendarAddOnly: false).contains(NotchPermissionPage.relaunchNote)
+              && !NotchPermissionPage.next(.calendar, .notAllowed, calendarAddOnly: true).contains(NotchPermissionPage.relaunchNote),
               "Only the permissions that can quit Wisp warn about it")
         check(NotchPermissionPage.next(.mail, .notAsked, waiting: true) == FirstRunPermissions.automationWaitingNote
               && NotchPermissionPage.next(.mail, .notAsked, reset: true) == FirstRunPermissions.automationResetNote
@@ -506,6 +605,57 @@ struct FirstRunSetupChecks {
         check(FirstRunBrain.checking.footer(stalled: false) == .working("Starting Wisp…")
               && FirstRunBrain.checking.footer(stalled: true) == .checkAgain, "The last step's footer offers Check again too")
 
+        // A start that failed says why at once, with Retry: never 3 minutes of Starting Wisp
+        // and a Check again that restarts nothing.
+        let exited = "Wisp's service stopped while starting (exit status 1). Last log line: ModuleNotFoundError"
+        check(!FirstRunBrain.startNeedsClick(failure: nil, waited: 5)
+              && FirstRunBrain.startNeedsClick(failure: exited, waited: 5)
+              && FirstRunBrain.startNeedsClick(failure: nil, waited: 180),
+              "A failed start needs a click at once; a slow one only after 3 minutes")
+        check(FirstRunBrain.checking.cardTakesReturn(stalled: FirstRunBrain.startNeedsClick(failure: exited, waited: 5))
+              && FirstRunBrain.checking.footer(stalled: FirstRunBrain.startNeedsClick(failure: exited, waited: 5)) == .checkAgain,
+              "A failed start: Return is the card's Retry, and the last step's footer offers it too")
+        check(FirstRunBrain.startFailure(reason: exited) == exited
+              && FirstRunBrain.startFailure(reason: nil) == FirstRunBrain.startFailedFallback
+              && FirstRunBrain.startFailure(reason: "") == FirstRunBrain.startFailedFallback,
+              "The card's detail is the recorded reason, or a plain line when there is none")
+        check(FirstRunBrain.startAgainTitle(failed: true, checking: false) == "Retry"
+              && FirstRunBrain.startAgainTitle(failed: false, checking: false) == "Check again"
+              && FirstRunBrain.startAgainTitle(failed: true, checking: true) == "Checking…",
+              "The button says Retry after a failed start, Check again after a slow one")
+        check(FirstRunBrain.slowStartLine(failed: true) == FirstRunBrain.startFailedTitle
+              && FirstRunBrain.slowStartLine(failed: false) == "Wisp is slow to start",
+              "The last step's footer names a failed start")
+        check(FirstRunSetup.heldBackLine(.checkAgain, startFailed: true).contains("Retry")
+              && !FirstRunSetup.heldBackLine(.checkAgain, startFailed: true).contains("Check again")
+              && FirstRunSetup.heldBackLine(.checkAgain, startFailed: false) == FirstRunSetup.heldBackLine(.checkAgain)
+              && FirstRunSetup.heldBackLine(.retry, startFailed: true) == FirstRunSetup.heldBackLine(.retry),
+              "Held back after a failed start: the line names Retry, and only for that state")
+
+        // The model is listed but its one test question failed: nothing in the window
+        // calls it ready. Done stays (gated on canAnswer alone), so the copy must be honest.
+        let didntWork = "That didn't work: The request timed out."
+        check(FirstRunBrain.testFailed(result: didntWork, passed: false, testing: false)
+              && !FirstRunBrain.testFailed(result: nil, passed: false, testing: false)
+              && !FirstRunBrain.testFailed(result: nil, passed: false, testing: true)
+              && !FirstRunBrain.testFailed(result: didntWork, passed: false, testing: true)
+              && !FirstRunBrain.testFailed(result: "Works — replied in 1.2s.", passed: true, testing: false),
+              "A test failed only once it ran, didn't pass and isn't running again")
+        let failedCopy = [FirstRunBrain.readyTitle(label: "Gemma 4 E4B", testFailed: true),
+                          FirstRunBrain.readyTourDetail(testFailed: true),
+                          FirstRunBrain.readyShort(testFailed: true)]
+        for line in failedCopy {
+            check(!line.contains("is ready") && !line.contains("Wisp can answer now")
+                  && !line.lowercased().contains("ready"), "A failed test never reads as ready: \(line)")
+        }
+        check(failedCopy[0] == "Gemma 4 E4B is set up, but the test failed"
+              && failedCopy[1].contains("You can still open Wisp") && failedCopy[1].contains("Model step"),
+              "A failed test names itself, and says Wisp can still be opened")
+        check(FirstRunBrain.readyTitle(label: "Gemma 4 E4B", testFailed: false) == "Gemma 4 E4B is ready"
+              && FirstRunBrain.readyTourDetail(testFailed: false) == "Wisp can answer now. Choose Done to open it."
+              && FirstRunBrain.readyShort(testFailed: false) == "Model ready",
+              "A test that passed, or hasn't run, keeps the ready copy")
+
         // A stop is a stop: its words name the card's own button.
         if case .failed(_, _, let message, true) = FirstRunBrain.from(status: status(), downloads: [task("cancelled")]) {
             check(message == FirstRunBrain.stoppedMessage && message.contains("Resume") && !message.contains("Retry"),
@@ -663,6 +813,14 @@ struct FirstRunSetupChecks {
         check(watch.stalled(at: t0.addingTimeInterval(31)), "30 s without a byte: No progress")
         watch.observe(doneGb: 1.2, at: t0.addingTimeInterval(32))
         check(!watch.stalled(at: t0.addingTimeInterval(40)), "Moving again")
+        // The window opened (or reopened) on a download already frozen: the state never
+        // changes again, so the one reading taken at open has to start the clock.
+        var frozenAtOpen = DownloadProgressWatch()
+        frozenAtOpen.observe(doneGb: 2.2, at: t0)
+        check(!frozenAtOpen.stalled(at: t0.addingTimeInterval(10)), "Just opened: not called stalled yet")
+        check(frozenAtOpen.stalled(at: t0.addingTimeInterval(31)), "Frozen since the window opened: No progress after 30 s")
+        frozenAtOpen.reset()
+        check(!frozenAtOpen.stalled(at: t0.addingTimeInterval(120)), "Outside a download the clock is cleared")
 
         // The window names the model plainly; build details stay in the detailed setup.
         check(FirstRunBrain.plainLabel(realLabel) == "Gemma 4 E4B" && FirstRunBrain.plainLabel("Ling") == "Ling",
@@ -678,6 +836,23 @@ struct FirstRunSetupChecks {
         for (ask, voice) in [(true, true), (true, false), (false, true), (false, false)] {
             let line = FirstRunSetupView.shortcutsLine(ask: ask, voice: voice)
             check(!line.contains("⌘ ⇧ F") && !line.lowercased().contains("search"), "Smart Search is retired: never taught")
+        }
+        // The Voice card follows the key too: no ⌥ ⇧ Space when another app owns it.
+        let voiceCard = FirstRunSetupView.helpsYourDay.first { $0.title == FirstRunSetupView.voiceTitle }
+        check(voiceCard?.line == FirstRunSetupView.voiceLine(registered: true)
+              && FirstRunSetupView.voiceLine(registered: true).contains("⌥ ⇧ Space"),
+              "Wisp holds the voice key: the Voice card teaches it, as before")
+        let voiceWithoutKey = FirstRunSetupView.voiceLine(registered: false)
+        check(!voiceWithoutKey.contains("⌥") && !voiceWithoutKey.contains("Space") && voiceWithoutKey.contains("mic"),
+              "Another app owns ⌥ ⇧ Space: the Voice card points at the mic instead")
+        check(voiceWithoutKey.contains("read its answers aloud"), "Reading aloud doesn't depend on the key")
+        for item in FirstRunSetupView.helpsYourDay {
+            let shown = FirstRunSetupView.helpLine(title: item.title, line: item.line, voiceKeyRegistered: false)
+            check(shown == (item.title == FirstRunSetupView.voiceTitle ? voiceWithoutKey : item.line),
+                  "\(item.title): only the Voice card changes with the key")
+            check(FirstRunSetupView.helpLine(title: item.title, line: item.line, voiceKeyRegistered: true) == item.line,
+                  "\(item.title): unchanged when the key is Wisp's")
+            check(!shown.contains("⌥ ⇧ Space"), "\(item.title): no card teaches a voice key Wisp doesn't hold")
         }
         // The live check on the last step: invite, then confirm once ⌥Space really opened Ask.
         check(FirstRunSetupView.shortcutTry(registered: true, pressed: false) == "Try it now: press ⌥ Space."
@@ -1062,6 +1237,47 @@ struct FirstRunSetupChecks {
         check(failure?.oldWispTrashed == false, "The copy failed before anything was Trashed")
         check(leftovers.isEmpty, "No hidden .Wisp-moving copy is left in Applications: \(leftovers)")
         check(FileManager.default.fileExists(atPath: source.path), "The download is left where it was")
+        // The move runs off the main thread (about a gigabyte in tens of thousands of
+        // files), under a progress window the caller keeps alive meanwhile. From a
+        // background thread it ends the same way, and its failure comes back as it was thrown.
+        var failedOffMain: MoveToApplications.MoveFailure?
+        do {
+            try MoveToApplications.offMainThread({
+                try MoveToApplications.move(from: source, original: source, target: apps.appendingPathComponent("Wisp.app"))
+            }, wait: { usleep(1_000) })
+        } catch let error as MoveToApplications.MoveFailure {
+            failedOffMain = error
+        } catch {}
+        check(failedOffMain?.oldWispTrashed == false, "Off the main thread the failed copy reports the same thing")
+        check(((try? FileManager.default.contentsOfDirectory(atPath: apps.path)) ?? ["?"]).isEmpty
+              && FileManager.default.fileExists(atPath: source.path),
+              "and leaves no staging copy and the download where it was")
+        final class Flag: @unchecked Sendable {
+            private let lock = NSLock()
+            private var value = false
+            func set() { lock.lock(); value = true; lock.unlock() }
+            var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+        }
+        let ranOffMain = Flag()
+        let callerWaited = DispatchSemaphore(value: 0)
+        var waits = 0
+        do {
+            try MoveToApplications.offMainThread({
+                // Not done before the caller has turned at least once.
+                _ = callerWaited.wait(timeout: .now() + 10)
+                if !Thread.isMainThread { ranOffMain.set() }
+            }, wait: {
+                if waits == 0 { callerWaited.signal() }
+                waits += 1
+                usleep(1_000)
+            })
+        } catch {
+            check(false, "Work that throws nothing must not throw: \(error)")
+        }
+        check(ranOffMain.isSet, "The move's work runs off the main thread")
+        check(waits > 0, "and the caller keeps turning (its window, the Dock icon) until the work is done")
+        check(MoveToApplications.progressTitle == "Moving Wisp to Applications…"
+              && MoveToApplications.progressDetail.contains("reopens"), "The progress window says what is happening")
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: locked.path)
         try? FileManager.default.removeItem(at: moveScratch)
 
@@ -1086,5 +1302,30 @@ struct FirstRunSetupChecks {
               "Calendar, Reminders and the Full Disk Access readers re-post on reconnect")
         check(!AppDelegate.resyncedWhenReachable.contains(where: \.isExtra),
               "Nothing that only sends or looks at the screen")
+
+        // A notification that arrives while a Wisp window is in front is still shown.
+        // With no options macOS shows it nowhere, and a due reminder was lost.
+        let shown: UNNotificationPresentationOptions = [.banner, .list, .sound]
+        // "" is a reminder, "Added a reminder", an unknown-outcome notice and "Wisp is ready".
+        for category in ["", Notifications.nudgeCategory, Notifications.nudgeCategoryUndo,
+                         Notifications.nudgeCategoryAct, Notifications.nudgeCategoryUndoAct] {
+            let options = Notifications.presentationOptions(categoryIdentifier: category)
+            check(options == shown && !options.isEmpty,
+                  "With Wisp in front, a notification still shows its banner, sound and list entry: '\(category)'")
+        }
+
+
+        // Settings › Change engine: "My installed oMLX" only when there is one to run.
+        check(!EngineSettingsView.externalChoiceOffered(installed: false, externalRunning: false, onExternal: false),
+              "No oMLX app and none answering: the choice would leave Wisp without an engine after a restart")
+        check(EngineSettingsView.externalChoiceOffered(installed: true, externalRunning: false, onExternal: false),
+              "oMLX is installed: it can be chosen")
+        check(EngineSettingsView.externalChoiceOffered(installed: false, externalRunning: true, onExternal: false),
+              "An oMLX kept somewhere else but answering can be chosen")
+        check(EngineSettingsView.externalChoiceOffered(installed: false, externalRunning: false, onExternal: true),
+              "Already on it: the choice is never taken away")
+        check(EngineSettingsView.externalChoiceTitle(offered: true) == "My installed oMLX"
+              && EngineSettingsView.externalChoiceTitle(offered: false).contains("not found"),
+              "Greyed out, the item says why")
     }
 }

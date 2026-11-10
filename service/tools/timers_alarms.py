@@ -16,21 +16,28 @@ measured as a real failure mode elsewhere in this codebase: the mail/messages
 caches lost everything on every restart and nobody noticed until a profile
 build came back half-empty (see tools/cache_store.py). A ten-minute pasta timer
 that silently dies because the backend reloaded is the same bug with a louder
-consequence, so the schedule is persisted and re-armed on import.
+consequence, so the schedule is persisted and `rearm_all` arms it again when
+the service starts (main.lifespan calls it once the event loop is running).
 
 FIRING
 ------
 Each armed timer is an asyncio task that sleeps to its deadline and then posts a
-macOS notification. Notifications go through `osascript` rather than a bundled
-notifier because it needs no extra TCC grant and no dependency — the same
-reasoning tools/system_control.py documents for volume and clipboard.
+macOS notification. Tasks only exist on the service's event loop, so the two
+tools are coroutines: registry.run_tool runs a plain `def` tool on a worker
+thread, where there is no loop to arm on, and for a long time that meant every
+timer was saved, announced and never fired. Notifications go through
+`osascript` rather than a bundled notifier because it needs no extra TCC grant
+and no dependency — the same reasoning tools/system_control.py documents for
+volume and clipboard.
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import math
 import re
 import subprocess
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -49,6 +56,18 @@ _STORE = MOE_DIR / "cache" / "timers.json"
 _TIMERS: dict[str, dict] = {}
 _TASKS: dict[str, asyncio.Task] = {}
 _STOPWATCH: dict[str, object] = {}
+_KINDS = frozenset({"timer", "alarm", "sleep"})
+
+# A sleeping timer re-reads the wall clock at least this often. asyncio sleeps
+# on the monotonic clock, which stands still while the Mac is asleep, so one
+# long sleep would ring an overnight alarm late by however long the lid was shut.
+_POLL_SECONDS = 30.0
+# At startup, a timer or alarm that came due this recently still rings once
+# (Wisp was restarting); anything older is dropped without a sound.
+_LATE_GRACE = 300.0
+# A sleep timer is stricter: pausing playback minutes late would stop something
+# the user has started since.
+_SLEEP_LATE_GRACE = 60.0
 
 
 # --------------------------------------------------------------------------
@@ -100,15 +119,69 @@ _UNIT = {"h": 3600, "hr": 3600, "hrs": 3600, "hour": 3600, "hours": 3600,
          "s": 1, "sec": 1, "secs": 1, "second": 1, "seconds": 1}
 
 
+# Spelled-out lengths. The model often passes the user's own words through
+# ("five minutes", "half an hour"), and a voice request is nothing but words.
+_ONES = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+         "seven": 7, "eight": 8, "nine": 9}
+_SMALL = {**_ONES, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
+          "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
+          "eighteen": 18, "nineteen": 19}
+_TENS = {"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60,
+         "seventy": 70, "eighty": 80, "ninety": 90}
+_SPELLED_RE = re.compile(
+    r"\b(?:(%s)(?:[-\s]+(%s))?|(%s))\b" % ("|".join(_TENS), "|".join(_ONES), "|".join(_SMALL)))
+_UNIT_WORD = r"(?:hours?|hrs?|minutes?|mins?|seconds?|secs?)"
+_NUM = r"(?<![\w.])(\d+(?:\.\d+)?|an?)"
+_N_AND_A_HALF_RE = re.compile(rf"{_NUM}\s+and\s+a\s+half\s+({_UNIT_WORD})\b")
+_UNIT_AND_A_HALF_RE = re.compile(rf"{_NUM}\s+({_UNIT_WORD})\s+and\s+a\s+half\b")
+_HOUR_AND_A_QUARTER_RE = re.compile(rf"{_NUM}\s+(?:hours?|hrs?)\s+and\s+a\s+quarter\b")
+_QUARTER_HOUR_RE = re.compile(
+    r"(?<![\w.])(?:(\d+|an?)\s+)?quarters?\s+(?:of\s+)?(?:an?\s+)?(?:hours?|hrs?)\b")
+_HALF_UNIT_RE = re.compile(rf"\b(?:an?\s+)?half\s+(?:of\s+)?(?:an?\s+)?({_UNIT_WORD})\b")
+_A_UNIT_RE = re.compile(rf"\ban?\s+(?={_UNIT_WORD}\b)")
+# Words the rewrite above does not turn into a number. Left in, the digit
+# pattern would read only the part it understands ("a hundred and twenty
+# minutes" as 20), so these are refused and Wisp asks instead of guessing.
+_UNREAD_AMOUNT_RE = re.compile(
+    r"\b(?:hundred|thousand)\b|\band\s+(?:an?|\d+)\s+(?:half|quarters?)\b")
+
+
+def _amount(raw: str) -> float:
+    return 1.0 if raw in {"a", "an"} else float(raw)
+
+
+def _spelled_to_digits(text: str) -> str:
+    """ "five minutes" -> "5 minutes", "half an hour" -> "0.5 hour", and so on.
+
+    "a" and "an" count as one only directly before a unit, so a stray "a"
+    never becomes a number.
+    """
+    text = _SPELLED_RE.sub(
+        lambda m: str(_TENS[m.group(1)] + _ONES.get(m.group(2) or "", 0)) if m.group(1)
+        else str(_SMALL[m.group(3)]), text)
+    text = _N_AND_A_HALF_RE.sub(lambda m: f"{_amount(m.group(1)) + 0.5:g} {m.group(2)}", text)
+    text = _UNIT_AND_A_HALF_RE.sub(lambda m: f"{_amount(m.group(1)) + 0.5:g} {m.group(2)}", text)
+    text = _HOUR_AND_A_QUARTER_RE.sub(lambda m: f"{_amount(m.group(1)):g} hours 15 minutes", text)
+    text = _QUARTER_HOUR_RE.sub(lambda m: f"{_amount(m.group(1) or 'a') * 15:g} minutes", text)
+    text = _HALF_UNIT_RE.sub(r"0.5 \1", text)
+    return _A_UNIT_RE.sub("1 ", text)
+
+
 def _parse_duration(text: str) -> float | None:
-    """Seconds from "10 minutes", "1h30m", "90s", or a bare number (minutes).
+    """Seconds from "10 minutes", "1h30m", "90s", "five minutes", "half an
+    hour", or a bare number (minutes).
 
     A bare number means MINUTES, not seconds. "set a timer for 10" is a
     ten-minute timer to every person who has ever said it; reading it as ten
-    seconds would be technically defensible and useless.
+    seconds would be technically defensible and useless. That rule is for
+    digits only: a lone word ("ten") is not read as a length.
     """
     text = (text or "").strip().lower()
     if not text:
+        return None
+    bare = re.fullmatch(r"\d+(?:\.\d+)?", text)
+    text = _spelled_to_digits(text)
+    if _UNREAD_AMOUNT_RE.search(text):
         return None
     total = 0.0
     for amount, unit in _DUR_RE.findall(text):
@@ -121,8 +194,8 @@ def _parse_duration(text: str) -> float | None:
         total += float(amount) * seconds
     if total:
         return total
-    if re.fullmatch(r"\d+(?:\.\d+)?", text):
-        return float(text) * 60.0
+    if bare:
+        return float(bare.group()) * 60.0
     return None
 
 
@@ -145,35 +218,71 @@ def _human(seconds: float) -> str:
 # --------------------------------------------------------------------------
 # arming
 # --------------------------------------------------------------------------
+def _reset_started() -> bool:
+    """True once /resetwisp has begun: nothing rings or writes state back after it."""
+    state = getattr(sys.modules.get("service.wisp_reset"), "state", None)
+    return bool(getattr(state, "sealed", False))
+
+
+def _next_daily(deadline: float, now: float) -> float:
+    """The next moment after `now` when the clock reads what it read at `deadline`.
+
+    Built from local wall-clock time, not deadline + 86400, so a 7:00 alarm is
+    still a 7:00 alarm the morning after the clocks change.
+    """
+    import datetime as _dt
+
+    at = _dt.datetime.fromtimestamp(deadline)
+    nxt = _dt.datetime.fromtimestamp(now).replace(
+        hour=at.hour, minute=at.minute, second=0, microsecond=0)
+    while nxt.timestamp() <= now:
+        nxt += _dt.timedelta(days=1)
+    return nxt.timestamp()
+
+
 async def _fire(tid: str) -> None:
     entry = _TIMERS.get(tid)
     if not entry:
         return
-    delay = entry["deadline"] - time.time()
-    if delay > 0:
-        await asyncio.sleep(delay)
+    deadline = float(entry["deadline"])
+    while (left := deadline - time.time()) > 0:
+        await asyncio.sleep(min(left, _POLL_SECONDS))
+    if _reset_started():
+        return
     entry = _TIMERS.pop(tid, None)
     _TASKS.pop(tid, None)
     if entry is None:          # cancelled while sleeping
         return
-    _save()
-    label = entry.get("label") or ("Alarm" if entry["kind"] == "alarm" else "Timer")
-    if entry["kind"] == "alarm":
-        _notify(label, "Alarm")
-    elif entry["kind"] == "sleep":
-        _pause_media()
-        _notify(label, "Sleep timer — playback paused")
+    now = time.time()
+    kind = entry["kind"]
+    if kind == "alarm" and entry.get("repeat"):
+        # A daily alarm goes straight back in for tomorrow. Cancelling pops the
+        # entry, so a cancelled one cannot come back through here.
+        _TIMERS[tid] = {**entry, "deadline": _next_daily(deadline, now)}
+        _save()
+        _arm(tid)
     else:
-        _notify(label, "Time's up")
+        _save()
+    label = entry.get("label") or ("Alarm" if kind == "alarm" else "Timer")
+    # osascript blocks for up to ten seconds a call; never on the event loop.
+    if kind == "alarm":
+        await asyncio.to_thread(_notify, label, "Alarm")
+    elif kind == "sleep":
+        if now - deadline > _SLEEP_LATE_GRACE:   # the Mac slept through it
+            return
+        await asyncio.to_thread(_pause_media)
+        await asyncio.to_thread(_notify, label, "Sleep timer — playback paused")
+    else:
+        await asyncio.to_thread(_notify, label, "Time's up")
 
 
 def _arm(tid: str) -> None:
-    """Create the sleeping task, if an event loop is running.
+    """Create the sleeping task, if an event loop is running in this thread.
 
-    Import happens at backend startup INSIDE uvicorn's loop, so there normally
-    is one. When there isn't (a CLI script importing the registry, a test), the
-    entry stays persisted and un-armed rather than raising — `_rearm_all` picks
-    it up the next time the service starts properly.
+    The tools are coroutines, so they reach this on the service's loop. When
+    there is no loop (a CLI script importing the registry, a sync test), the
+    entry stays persisted and un-armed rather than raising, and `rearm_all`
+    picks it up the next time the service starts.
     """
     try:
         loop = asyncio.get_running_loop()
@@ -183,6 +292,45 @@ def _arm(tid: str) -> None:
     if old and not old.done():
         old.cancel()
     _TASKS[tid] = loop.create_task(_fire(tid))
+
+
+def rearm_all() -> None:
+    """Arm every saved timer. Called once at startup, on the service's event loop.
+
+    Not everything overdue rings. Before timers were armed at all, a store kept
+    every timer ever set, and Wisp may simply have been closed for a week: ringing
+    all of that at launch would be a burst of noise about nothing. So an entry
+    past its deadline by more than a short grace is dropped silently, a daily
+    alarm rolls forward to its next time, and one that came due within the grace
+    rings once. Entries without a usable deadline and kind are dropped too.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    now = time.time()
+    changed = False
+    for tid, entry in list(_TIMERS.items()):
+        deadline, kind = entry.get("deadline"), entry.get("kind")
+        if (isinstance(deadline, bool) or not isinstance(deadline, (int, float))
+                or not math.isfinite(deadline) or kind not in _KINDS):
+            del _TIMERS[tid]
+            changed = True
+            continue
+        task = _TASKS.get(tid)
+        if task is not None and not task.done():
+            continue
+        late = now - deadline
+        if late > (_SLEEP_LATE_GRACE if kind == "sleep" else _LATE_GRACE):
+            if not (kind == "alarm" and entry.get("repeat")):
+                del _TIMERS[tid]
+                changed = True
+                continue
+            entry["deadline"] = _next_daily(deadline, now)
+            changed = True
+        _arm(tid)
+    if changed:
+        _save()
 
 
 def _pause_media() -> None:
@@ -234,8 +382,8 @@ _load()
              "wake me up at 7", "set an alarm for half six tomorrow", "alarm for 8am",
              "stop the music in half an hour", "sleep timer for 20 minutes"],
 )
-def set_timer(kind: str = "timer", duration: str = "", time: str = "",  # noqa: A002
-              label: str = "", repeat_daily: bool = False) -> str:
+async def set_timer(kind: str = "timer", duration: str = "", time: str = "",  # noqa: A002
+                    label: str = "", repeat_daily: bool = False) -> str:
     kind = (kind or "timer").strip().lower()
     if kind == "alarm":
         if not (time or "").strip():
@@ -344,7 +492,7 @@ def _set_sleep_timer(duration: str) -> str:
              "turn off that alarm", "is the laundry timer still going",
              "start the stopwatch", "how long have I been going", "lap it", "stop timing"],
 )
-def manage_timers(action: str = "list", label: str = "") -> str:
+async def manage_timers(action: str = "list", label: str = "") -> str:
     action = (action or "list").strip().lower()
     if action.startswith("stopwatch_"):
         return _stopwatch(action.removeprefix("stopwatch_"))

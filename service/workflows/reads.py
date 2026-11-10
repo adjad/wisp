@@ -34,7 +34,7 @@ _EXCLUDED_STOCK_IDENTIFIER = (
     # connector, but never reinterpret common source/action words as tickers.
     r"(?i:(?!(?:and|or|email|text|send|from|my|the|notes?|using|without)\b)"
     r"[a-z][a-z0-9.'’&-]*(?:\s+(?!(?:and|or|email|text|send|from|my|the|notes?|"
-    r"using|without)\b)[a-z][a-z0-9.'’&-]*){0,3})(?=\s*(?:,|and|or)\s+)"
+    r"using|without)\b)[a-z][a-z0-9.'’&-]*){0,3})(?=\s*(?:,|\b(?:and|or)\b)\s+)"
     r"|"
     r"(?-i:\$?[A-Z][A-Za-z0-9]*(?:[.'’&-][A-Za-z0-9]+)*"
     r"(?:\s+[A-Z][A-Za-z0-9]*(?:[.'’&-][A-Za-z0-9]+)*){0,3})"
@@ -51,8 +51,15 @@ _BARE_STOCK_NAME = (
     r"(?:\s+(?!(?:and|or|email|text|send|from|for|with|using|notes?)\b)"
     r"[a-z][a-z0-9.'’&-]*){0,3}"
 )
+# A bare lowercase phrase after "not" is only a company name when it does not
+# open like ordinary speech: "I am not in a hurry", "not sure", "not great".
+_BARE_STOCK_SPEECH = (
+    r"(?!(?:in|on|at|to|a|an|it|that|this|so|too|very|quite|really|yet|ready|"
+    r"going|sure|great|good|bad|asking|interested|worried|happy|certain|bothered|"
+    r"fussed|urgent|important|needed|necessary)\b)"
+)
 _BARE_STOCK_EXCLUSION = re.compile(
-    rf"(?:the\s+)?{_BARE_STOCK_NAME}"
+    rf"(?:the\s+)?{_BARE_STOCK_SPEECH}{_BARE_STOCK_NAME}"
     rf"(?:\s*(?:,|and|or)\s*(?:the\s+)?{_BARE_STOCK_NAME})*"
     r"(?=\s*(?:$|[,.;!?]|\band\s+(?:email|text|send)\b))",
     re.I,
@@ -75,9 +82,14 @@ def stock_exclusion_clauses(text: str) -> list[tuple[int, frozenset[str]]]:
     for marker in _STOCK_EXCLUSION.finditer(text):
         tail = text[marker.end():].lstrip(" ,")
         match = re.match(_EXCLUDED_STOCK_LIST, tail, re.I)
-        if re.search(
-                r"\b(?:stocks?|shares?|portfolio|prices?|quotes?|equities)\b",
-                text[:marker.start()], re.I):
+        nouns = list(re.finditer(
+            r"\b(?:stocks?|shares?|portfolio|prices?|quotes?|equities)\b",
+            text[:marker.start()], re.I))
+        # The stock noun must be in the marker's own sentence: in "What is the
+        # Roku stock price? I am not in a hurry." the negation is about
+        # something else.
+        if nouns and not re.search(
+                r"[?!;]|\.(?:\s|$)", text[nouns[-1].end():marker.start()]):
             bare = _BARE_STOCK_EXCLUSION.match(tail)
             if bare and (not match or bare.end() > match.end()):
                 match = bare

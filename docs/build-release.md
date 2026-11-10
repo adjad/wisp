@@ -104,8 +104,9 @@ tree before signing. Structure validation rechecks the modified Python files.
 The normal bundle manifest binds the final signed bytes. The signed source app
 and its upstream lock are never modified by staging.
 Changing the engine input also requires reviewing and updating this overlay;
-an unmatched engine is refused even for a preview. For 0.7.3rc1 the overlay covers
-`engine_pool.py`, `process_memory_enforcer.py` and `server.py`; oMLX removed the separate
+an unmatched engine is refused even for a preview. For 0.7.3 the overlay covers
+`engine_pool.py`, `process_memory_enforcer.py`, `server.py` and `engine/vlm.py`. Every edit
+made for 0.7.3rc1 applies unchanged to 0.7.3; only the checksums moved. In 0.7.3rc1 oMLX removed the separate
 DFlash engine, so its patch and the guard's child-engine binding are gone. Engine types
 the guard has no pinned residency convention for (Splash, Decision, and any new one) are
 refused a start rather than admitted unchecked.
@@ -148,9 +149,9 @@ under `components` in `engine-licenses.json`; their licence files must exist at 
 oMLX's own Apache-2.0 text is `build-support/engine-licenses/oMLX-LICENSE.txt`: the oMLX
 app carries no top-level LICENSE, so it is the LICENSE file from the pinned tag of
 github.com/jundot/omlx (the repository has no NOTICE file); it is unchanged from `v0.7.0`
-through `v0.7.3rc1`. When `engine.lock.json` moves to a new oMLX release, refresh it from
-that release's tag. The pinned release is 0.7.3rc1 build 3517
-(`oMLX-0.7.3rc1-macos26-27.dmg`, sha256 40ba9308…dbc39, Developer ID team PSK5Q5T46L): the
+through `v0.7.3`. When `engine.lock.json` moves to a new oMLX release, refresh it from
+that release's tag. The pinned release is 0.7.3 build 3574
+(`oMLX-0.7.3-macos26-27.dmg`, sha256 2acfde41…86f2, Developer ID team PSK5Q5T46L): the
 same version the user runs, whose selected tree is byte-identical to that release. Its
 admin UI lives in `omlx_web`. Wisp tracks the user's installed oMLX version, release
 candidates included; the build still takes the signed release image, never the installed
@@ -165,8 +166,8 @@ build metadata and provenance, writes the reason to `relocated-engine-smoke.log`
 notes say the smoke was not run on the build host. The engine tree is still verified byte for byte
 against `engine.lock.json` and the pinned release asset. A host that meets the minimum always runs
 the smoke and fails the build if it fails (including a host with no usable GPU). The smoke was run
-on a macOS 26+ Apple Silicon Mac when 0.7.0 was pinned; it has not yet been run for the
-0.7.3rc1 tree.
+on a macOS 26+ Apple Silicon Mac when 0.7.0 was pinned, and again for the 0.7.3 tree
+(preview build 3487).
 
 To exercise an already staged engine with a downloaded model, run the smoke on a
 machine with compatible Apple Silicon and macOS:

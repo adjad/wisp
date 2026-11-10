@@ -83,3 +83,14 @@ def latest(day: str) -> dict | None:
     if entry is None:
         return None
     return {"text": entry["text"], "composed_at": entry["composed_at"], "part_of_day": entry.get("part_of_day", "")}
+
+
+def clear() -> bool:
+    """Delete every saved brief (both days, and a half-written copy). A brief is
+    composed from the combined inbox and cannot be attributed to one account, so
+    "Disconnect & erase" withdraws all of them. True when a file was removed;
+    an OSError propagates so the caller can report the erase as incomplete."""
+    had = _PATH.exists()
+    _PATH.unlink(missing_ok=True)
+    _PATH.with_suffix(".tmp").unlink(missing_ok=True)
+    return had

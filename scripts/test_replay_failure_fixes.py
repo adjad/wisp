@@ -12,6 +12,7 @@ socket checks whose live branches are skipped inside its OS sandbox.
 """
 from pathlib import Path
 import argparse
+import ast
 from concurrent.futures import ThreadPoolExecutor
 import os
 import re
@@ -32,6 +33,8 @@ KNOWN_BASELINE_FAILURES = frozenset(KNOWN_BASELINE_RESULTS)
 # modules intentionally grade legacy check counters or unittest main() output
 # when run as scripts. Every other discovered module goes through pytest, whose
 # exit code 5 prevents an empty module from being counted as a passing test.
+# A script runs only what its own ``__main__`` path calls, so a pytest-style
+# test added to one of these never runs: see _unreferenced_legacy_tests.
 LEGACY_SCRIPT_TESTS = frozenset({
     "tests/test_action_tools_sanitize.py",
     "tests/test_alias_reachability.py",
@@ -39,7 +42,6 @@ LEGACY_SCRIPT_TESTS = frozenset({
     "tests/test_assistant_dedupe.py",
     "tests/test_assistant_migrations.py",
     "tests/test_brief_fallback.py",
-    "tests/test_broad_web_search.py",
     "tests/test_compound_claims.py",
     "tests/test_compound_task_routing.py",
     "tests/test_contextual_outbound_routing.py",
@@ -117,6 +119,26 @@ def _command(path: Path) -> list[str]:
     if relative in LEGACY_SCRIPT_TESTS:
         return [sys.executable, relative]
     return [sys.executable, "-m", "pytest", "-q", "-rs", relative]
+
+
+def _unreferenced_legacy_tests(path: Path) -> list[str]:
+    """Module-level test functions that a legacy script never names.
+
+    ``python file.py`` runs only what the file itself calls. A ``test*``
+    function that nothing in the file refers to is therefore never executed,
+    while the module still exits 0 and reports the counts of its other tests.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    defined = [
+        node.name for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name.startswith("test")
+    ]
+    named = {
+        node.id for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+    }
+    return [name for name in defined if name not in named]
 
 
 def _reports_nonzero_test_count(output: str) -> bool:

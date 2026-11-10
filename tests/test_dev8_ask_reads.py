@@ -127,6 +127,30 @@ def test_sent_mail_says_when_mail_couldn_t_be_read_but_gmail_could(monkeypatch):
     assert "c@example.com" in out and "Apple Mail's Sent mailbox wasn't read" in out and "Full Disk Access" in out
 
 
+def test_a_mail_account_with_no_recognised_sent_folder_is_a_failed_read(monkeypatch):
+    # The app answers no_sent_mailbox when Mail has an Inbox but no folder it knows as Sent
+    # (a name in another language). The bridge passes that on as a failure, never as no rows.
+    async def no_sent(kind, timeout, **fields):
+        return {"ok": False, "error": "no_sent_mailbox"}
+    monkeypatch.setattr(bridge, "_ask", no_sent)
+    with pytest.raises(bridge.BridgeError, match="^no_sent_mailbox$"):
+        asyncio.run(bridge.read_sent(7))
+
+
+def test_sent_mail_does_not_say_nothing_was_sent_when_the_sent_folder_is_not_recognised(monkeypatch):
+    now = time.time()
+    _setup(monkeypatch, problem="no_sent_mailbox", accounts=())
+    alone = asyncio.run(email_tools.view_emails(mailbox="sent"))
+    assert "couldn't read your sent mail" in alone and "No sent mail" not in alone
+    _setup(monkeypatch, problem="no_sent_mailbox",
+           gmail=[{"ts": now - 60, "to": "c@example.com", "subject": "Hi", "account": "me@gmail.com"}])
+    out = asyncio.run(email_tools.sent_emails_view())
+    assert "c@example.com" in out and "Apple Mail's Sent mailbox wasn't read" in out
+    _setup(monkeypatch, problem="no_sent_mailbox")
+    empty = asyncio.run(email_tools.sent_emails_view())          # Gmail linked, nothing sent there either
+    assert "Apple Mail's Sent mailbox wasn't read" in empty and "from Apple Mail" not in empty
+
+
 def test_sent_mail_reaches_further_back_in_mail_than_gmail(monkeypatch):
     now = time.time()
     asked = _setup(monkeypatch, native=[_native(now - 20 * 86400, "Old plan")])
@@ -248,6 +272,7 @@ def test_accounts_name_work_and_personal_addresses(monkeypatch):
     monkeypatch.setattr(email_tools, "get_identity_emails", lambda: ["pat@acme.com", "me@gmail.com", "pat@icloud.com"])
     out = misc_t1._accounts_report()
     assert "me@gmail.com: personal Google account; Gmail, Calendar" in out
+    assert "Settings › Accounts" not in out
     assert "Your addresses in Apple Mail: pat@acme.com (work or school), pat@icloud.com (personal)." in out
     assert "Work or school addresses (not a personal mail provider): pat@acme.com." in out
 
@@ -362,3 +387,26 @@ def test_whats_new_prefers_release_notes_and_falls_back_to_the_changelog(monkeyp
 def test_the_app_bundles_this_version_s_release_notes():
     source = (Path(misc_t1.__file__).resolve().parents[2] / "build-support" / "pipeline.py").read_text()
     assert 'notes = docs / "releases"' in source and '(ROOT / "docs/releases").glob(meta["version"]' in source
+
+
+def test_accounts_report_points_to_the_google_pane(monkeypatch):
+    monkeypatch.setattr(gmail_source, "connected_accounts", lambda cfg=None: {})
+    monkeypatch.setattr(email_tools, "native_email_accounts", lambda: [])
+    monkeypatch.setattr(email_tools, "get_identity_emails", lambda: [])
+    out = misc_t1._accounts_report()
+    assert "Settings ▸ Google" in out and "Accounts" not in out.split("Settings")[1]
+
+
+def test_default_sent_view_does_not_warn_about_gmail_reach(monkeypatch):
+    now = time.time()
+    asked = _setup(monkeypatch, native=[_native(now - 60, "Recent note")])
+    out = asyncio.run(email_tools.sent_emails_view())
+    assert "Recent note" in out
+    assert "goes back only" not in out
+    assert asked == [gmail_source.SENT_DAYS]
+
+
+def test_sent_view_without_gmail_points_to_the_google_pane(monkeypatch):
+    _setup(monkeypatch, accounts=(), problem="no_mail_index")
+    out = asyncio.run(email_tools.sent_emails_view())
+    assert "Settings › Google" in out and "Settings › Accounts" not in out

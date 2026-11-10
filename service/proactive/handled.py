@@ -48,6 +48,13 @@ def seen_entry(item: dict) -> dict | None:
     return None
 
 
+def _bare_address(value) -> str:
+    """The address in a stored sender, whether "a@b.c" or "Name <a@b.c>"."""
+    value = str(value or "").strip()
+    found = re.search(r"<([^<>@\s]+@[^<>\s]+)>", value)
+    return (found.group(1) if found else value if "@" in value and " " not in value else "").casefold()
+
+
 def latest_sent_texts(records) -> dict[str, float]:
     """The newest text the user sent, by conversation."""
     latest: dict[str, float] = {}
@@ -67,7 +74,8 @@ def answered_refs(seen: dict[str, dict], *, texts: dict[str, float], sent: list[
                 out.add(ref)
         elif entry.get("source") == "mail" and sent:
             if sources.answered_by_sent(sent, account=entry.get("account", ""), subject=entry.get("subject", ""),
-                                        message_id=entry.get("message_id", ""), after=entry["received_ts"]):
+                                        message_id=entry.get("message_id", ""), after=entry["received_ts"],
+                                        sender=_bare_address(entry.get("sender"))):
                 out.add(ref)
     return out
 
@@ -183,7 +191,7 @@ def sweep(store=None, *, now: float | None = None, texts=None, sent=None, sched=
     if texts is None:
         texts = latest_sent_texts(sources.text_records())
     if sent is None:
-        sent = sources.sent_rows()
+        sent = sources.sent_rows() + sources.cached_native_sent()
     answered = answered_refs(seen, texts=texts, sent=sent)
     contacted = contacted_records(store.state(), seen, sent, now=now)
     return retire(store, answered=answered, sched=sched, now=now, contacted=contacted)

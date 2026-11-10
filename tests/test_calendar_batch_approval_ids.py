@@ -248,3 +248,108 @@ async def test_approved_batch_stops_after_uncertain_first_result_without_retry(i
         assert not approver.resolve(card["id"], True)
     finally:
         await _finish([task])
+
+
+# A start with seconds is never shown on the card, so it is refused on every machine.
+BAD_WHEN_ISO = datetime(2036, 9, 29, 15, 0, 30).isoformat(timespec="seconds")
+
+
+class AddsClient(BatchClient):
+    """One step of add_calendar_event calls, then a final synthetic response."""
+
+    def __init__(self, starts):
+        super().__init__("adds")
+        self.requests = []
+        self.calls = [
+            {"id": f"add-{index}", "function": {"name": "add_calendar_event", "arguments":
+                json.dumps({"title": f"class {index}", "when_iso": when, "duration_min": 60})}}
+            for index, when in enumerate(starts)]
+
+    async def stream_events(self, model, messages, *, tools=None, **kwargs):
+        self.requests.append(deepcopy(messages))
+        async for event in super().stream_events(model, messages, tools=tools, **kwargs):
+            yield event
+
+
+@pytest.mark.asyncio
+async def test_one_bad_start_is_left_off_the_card_and_answered_by_itself(inert_calendar):
+    calls, _ = inert_calendar
+    queue = asyncio.Queue()
+    approver = InteractiveApprover(queue.put, timeout=2)
+    client, events = AddsClient([WHEN_ISO, BAD_WHEN_ISO, WHEN_ISO]), []
+    task = asyncio.create_task(_run(client, approver, events))
+    try:
+        card = await asyncio.wait_for(queue.get(), 1)
+        assert card["tool"] == "calendar_changes"
+        assert card["reason"] == "changes your calendar in 2 ways — always confirmed"
+        assert [line.split(" — ")[0] for line in card["preview"].splitlines()] == [
+            "Add: class 0", "Add: class 2"]
+        assert calls == []
+        assert approver.resolve(card["id"], True)
+        text = await asyncio.wait_for(task, 1)
+    finally:
+        await _finish([task])
+    # Only the two events on the card were added; the bad one never ran.
+    assert [args["title"] for _, args in calls] == ["class 0", "class 2"]
+    problem = assistant_tools.calendar_time_problem(BAD_WHEN_ISO)
+    assert {"type": "tool_result", "id": "add-1", "result": problem} in events
+    # The model gets the problem as that call's own result and can correct it.
+    results = {m["tool_call_id"]: m["content"] for m in client.requests[1] if m.get("role") == "tool"}
+    assert results["add-1"] == problem and set(results) == {"add-0", "add-1", "add-2"}
+    assert client.steps == 2 and text == "Fixture complete."
+    assert events[-1] == {"type": "done"}
+    assert approver._pending == {} and approver._actions == {}
+
+
+@pytest.mark.asyncio
+async def test_one_valid_add_beside_a_bad_one_gets_its_own_card(inert_calendar):
+    calls, _ = inert_calendar
+    queue = asyncio.Queue()
+    approver = InteractiveApprover(queue.put, timeout=2)
+    client, events = AddsClient([BAD_WHEN_ISO, WHEN_ISO]), []
+    task = asyncio.create_task(_run(client, approver, events))
+    try:
+        card = await asyncio.wait_for(queue.get(), 1)
+        assert card["tool"] == "add_calendar_event" and card["args"]["title"] == "class 1"
+        assert approver.resolve(card["id"], True)
+        await asyncio.wait_for(task, 1)
+    finally:
+        await _finish([task])
+    assert [args["title"] for _, args in calls] == ["class 1"]
+    assert events[-1] == {"type": "done"}
+
+
+@pytest.mark.asyncio
+async def test_every_bad_start_goes_back_to_the_model_with_no_card(inert_calendar):
+    calls, _ = inert_calendar
+    queue = asyncio.Queue()
+    approver = InteractiveApprover(queue.put, timeout=2)
+    client, events = AddsClient([BAD_WHEN_ISO, BAD_WHEN_ISO]), []
+    text = await asyncio.wait_for(_run(client, approver, events), 1)
+    assert calls == [] and queue.empty() and client.steps == 2
+    assert [e["id"] for e in events if e["type"] == "tool_result"] == ["add-0", "add-1"]
+    assert text == "Fixture complete." and events[-1] == {"type": "done"}
+
+
+@pytest.mark.asyncio
+async def test_start_that_goes_stale_while_the_card_is_open_ends_the_turn_cleanly(
+        inert_calendar, monkeypatch):
+    calls, _ = inert_calendar
+    queue = asyncio.Queue()
+    approver = InteractiveApprover(queue.put, timeout=2)
+    client, events = AddsClient([WHEN_ISO, WHEN_ISO]), []
+    task = asyncio.create_task(_run(client, approver, events))
+    try:
+        card = await asyncio.wait_for(queue.get(), 1)
+        assert card["tool"] == "calendar_changes"
+        # The Mac's zone changes before the answer: the bound starts no longer match.
+        def stale(when_iso):
+            raise ValueError("offset does not match local Calendar time")
+        monkeypatch.setattr(assistant_tools, "_calendar_local_start", stale)
+        assert approver.resolve(card["id"], True)
+        text = await asyncio.wait_for(task, 1)
+    finally:
+        await _finish([task])
+    assert calls == [] and client.steps == 1
+    assert text == loop._CALENDAR_BATCH_STALE_MESSAGE
+    assert events[-2:] == [{"type": "text", "text": text}, {"type": "done"}]

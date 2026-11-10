@@ -11,13 +11,14 @@ import SQLite3
 /// IMPORTANT rules:
 /// - Read-only. The Envelope Index is opened SQLITE_OPEN_READONLY; .emlx files
 ///   are only read. Mail.app is never scripted or launched from here.
-/// - Five requests only: `index` (metadata for a window of days, no bodies),
+/// - Six requests only: `index` (metadata for a window of days, no bodies),
 ///   `body` (one message's raw RFC 822 bytes, capped; the backend parses MIME),
 ///   `sent` (the user's own sent mail for a few weeks: when, to whom, subject; no
 ///   bodies), which answers Ask's "what did I send" (view_emails mailbox='sent'),
 ///   `attachments` (one metadata row per attachment, filtered by terms, dates and RFC
 ///   Message-IDs, with whether Mail saved the file; never the bytes) and `attachment`
-///   (one saved file's bytes, at most `maxAttachmentBytes`).
+///   (one saved file's bytes, at most `maxAttachmentBytes`), and `recognize` (text in one
+///   JPEG the backend itself re-encoded, read by Apple Vision on this Mac; nothing else is decoded).
 /// - Attachments are only read from `<Mail version>/.../Attachments/<rowid>/<id>/<name>`,
 ///   next to the `Messages` folder: a regular file (no symlink anywhere on the path)
 ///   inside the Mail version folder. Trash, junk/spam and drafts are never listed or
@@ -34,10 +35,16 @@ final class MailMemoryReader {
     static let maxAttachmentTerms = 5
     static let maxAttachmentRFCIDs = 40
     static let maxAttachmentRows = 400
+    static let maxRecognizeBytes = 4_194_304
+    /// Base64 of `maxRecognizeBytes` bytes: 4 characters per 3 bytes, rounded up.
+    static let maxRecognizeBase64 = (maxRecognizeBytes + 2) / 3 * 4
 
     private let mailRoot: String
     private let rebuildInterval: TimeInterval
     private let work = DispatchQueue(label: "wisp.mail-memory", qos: .utility)
+    /// Text recognition has its own serial queue: a 40-page scan is 40 requests of up to a
+    /// few seconds each and must not hold up Mail index and attachment reads.
+    private let recognition = DispatchQueue(label: "wisp.text-recognition", qos: .userInitiated)
     private let send: ([String: Any]) -> Void
     private var emlx: [Int64: (path: String, partial: Bool)] = [:]
     private var emlxBuiltAt: Date?
@@ -55,6 +62,22 @@ final class MailMemoryReader {
     @discardableResult
     func handle(_ payload: [String: Any]) -> Bool {
         guard let request = MailMemoryReader.request(payload) else { return false }
+        if request.kind == "recognize" {
+            let received = Date()
+            recognition.async { [weak self] in
+                guard let self else { return }
+                var reply: [String: Any]
+                if MailMemoryReader.isLate(received: received, wait: request.wait, now: Date()) {
+                    reply = ["ok": false, "error": "late"]
+                } else {
+                    reply = MailMemoryReader.answerRecognize(request.imageB64)
+                }
+                reply["request_id"] = request.id
+                reply["kind"] = request.kind
+                self.send(reply)
+            }
+            return true
+        }
         work.async { [weak self] in
             guard let self else { return }
             var reply = self.answer(request)
@@ -76,12 +99,23 @@ final class MailMemoryReader {
         var rfcIDs: [String] = []
         var limit: Int = 0
         var attachmentID: String = ""
+        var imageB64: String = ""
+        /// Seconds the backend will wait for a `recognize` reply (0 = not stated).
+        var wait: Double = 0
+    }
+
+    /// True when the backend has already given up: more than `wait` seconds passed between
+    /// receiving the request and its reaching the front of the recognition queue.
+    static func isLate(received: Date, wait: Double, now: Date) -> Bool {
+        wait > 0 && now.timeIntervalSince(received) > wait
     }
 
     /// Strict shape: {type, request_id, kind: "index", days}, {type, request_id, kind: "body", rowid},
     /// {type, request_id, kind: "sent", days} (at most `maxSentDays`),
     /// {type, request_id, kind: "attachments", terms, since, until, rfc_ids, limit} or
-    /// {type, request_id, kind: "attachment", rowid, attachment_id}.
+    /// {type, request_id, kind: "attachment", rowid, attachment_id} or
+    /// {type, request_id, kind: "recognize", image_b64[, wait: 1...60 seconds]} (an oversize or non-JPEG image is
+    /// still a well-formed request: it is answered `too_large` / `bad_image`, never dropped).
     static func request(_ payload: [String: Any]) -> Request? {
         guard payload["type"] as? String == "mail_memory_read",
               let id = payload["request_id"] as? String,
@@ -118,6 +152,21 @@ final class MailMemoryReader {
             else { return nil }
             return Request(id: id, kind: kind, days: 0, rowid: rowid, attachmentID: attachmentID)
         }
+        if kind == "recognize" {
+            // `wait` is optional, but an app from before it existed drops a request that has it
+            // (strict keys); app and backend ship together in one bundle.
+            guard keys == ["type", "request_id", "kind", "image_b64"]
+                    || keys == ["type", "request_id", "kind", "image_b64", "wait"],
+                  let image = payload["image_b64"] as? String else { return nil }
+            var wait = 0.0
+            if keys.contains("wait") {
+                guard let number = payload["wait"] as? NSNumber,
+                      CFGetTypeID(number) != CFBooleanGetTypeID(),
+                      number.doubleValue.isFinite, (1...60).contains(number.doubleValue) else { return nil }
+                wait = number.doubleValue
+            }
+            return Request(id: id, kind: kind, days: 0, rowid: 0, imageB64: image, wait: wait)
+        }
         if kind == "body" {
             guard keys == ["type", "request_id", "kind", "rowid"],
                   let rowid = (payload["rowid"] as? NSNumber)?.int64Value, rowid > 0 else { return nil }
@@ -129,6 +178,7 @@ final class MailMemoryReader {
     private func answer(_ request: Request) -> [String: Any] {
         if request.kind == "attachments" { return answerAttachments(request) }
         if request.kind == "attachment" { return answerAttachment(request) }
+        if request.kind == "recognize" { return MailMemoryReader.answerRecognize(request.imageB64) }
         if request.kind == "sent" {
             guard let path = MailMemoryReader.envelopeIndexPath(mailRoot) else {
                 return ["ok": false, "error": "no_mail_index"]
@@ -182,6 +232,19 @@ final class MailMemoryReader {
         guard let (data, truncated) = read else { return ["ok": false, "error": "unreadable"] }
         return ["ok": true, "rowid": request.rowid, "partial": file.partial, "truncated": truncated,
                 "raw_b64": data.base64EncodedString()]
+    }
+
+    /// Reads the text in one JPEG. Error is `too_large`, `bad_image` (not base64 or not a JPEG),
+    /// `no_text` (recognition ran and found nothing) or `failed` (it could not run).
+    static func answerRecognize(_ b64: String) -> [String: Any] {
+        guard b64.utf8.count <= maxRecognizeBase64 else { return ["ok": false, "error": "too_large"] }
+        guard let data = Data(base64Encoded: b64), data.count >= 3,
+              data[data.startIndex] == 0xFF, data[data.startIndex + 1] == 0xD8, data[data.startIndex + 2] == 0xFF
+        else { return ["ok": false, "error": "bad_image"] }
+        guard data.count <= maxRecognizeBytes else { return ["ok": false, "error": "too_large"] }
+        guard let found = TextRecognizer.recognize(jpeg: data) else { return ["ok": false, "error": "failed"] }
+        if found.lines == 0 || found.text.isEmpty { return ["ok": false, "error": "no_text"] }
+        return ["ok": true, "text": found.text, "lines": found.lines, "confidence": found.confidence]
     }
 
     private func answerAttachments(_ request: Request) -> [String: Any] {
@@ -255,6 +318,9 @@ final class MailMemoryReader {
     enum IndexFailure: String, Error {
         case unreadable
         case unsupportedSchema = "unsupported_schema"
+        /// Mail has an account (an Inbox) but no mailbox recognised as Sent, so "nothing
+        /// was sent" can't be told from "the Sent folder has a name Wisp doesn't know".
+        case noSentMailbox = "no_sent_mailbox"
     }
 
     // MARK: - Envelope Index
@@ -279,9 +345,23 @@ final class MailMemoryReader {
         versionDirectory(mailRoot).map { "\($0)/MailData/Envelope Index" }
     }
 
-    /// True for a real Sent mailbox: the last path component is "Sent Messages", "Sent",
-    /// "Sent Mail" or "Sent Items" (so "[Gmail]/Sent Mail" counts), never a name that merely
-    /// contains "sent" like Consent or Presentations. The URL may be percent-encoded.
+    /// What servers call the Sent mailbox, with case and accents folded away: English, then
+    /// German, French, Spanish and Portuguese, Italian, Dutch, Swedish, Danish and Norwegian
+    /// (a Gmail or Exchange account in another language names the folder in that language).
+    static let sentMailboxNames: Set<String> = [
+        "sent messages", "sent", "sent mail", "sent items",
+        "gesendet", "gesendete elemente", "gesendete objekte",
+        "envoyes", "messages envoyes", "elements envoyes",
+        "enviados", "elementos enviados", "mensajes enviados", "itens enviados",
+        "posta inviata", "inviati",
+        "verzonden", "verzonden items", "verzonden berichten",
+        "skickat", "sendt",
+    ]
+
+    /// True for a real Sent mailbox: the last path component is one of `sentMailboxNames`,
+    /// whatever its case or accents (so "[Gmail]/Sent Mail" and "[Gmail]/Gesendet" count),
+    /// never a name that merely contains "sent" like Consent or Presentations. The URL may
+    /// be percent-encoded.
     static func isSentMailbox(url: String) -> Bool {
         let decoded = url.removingPercentEncoding ?? url
         guard let scheme = decoded.range(of: "://") else { return false }
@@ -289,7 +369,8 @@ final class MailMemoryReader {
         guard let slash = rest.firstIndex(of: "/") else { return false }
         let name = rest[rest.index(after: slash)...].split(separator: "/", omittingEmptySubsequences: true).last
         guard let name else { return false }
-        return ["sent messages", "sent", "sent mail", "sent items"].contains(name.lowercased())
+        let folded = String(name).folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+        return sentMailboxNames.contains(folded)
     }
 
     /// True for a mailbox nothing is read from: Trash, Deleted Messages/Items, Bin, Junk
@@ -635,6 +716,8 @@ final class MailMemoryReader {
     /// Message-ID and up to `maxRecipients` To recipients ("Name <address>" or the bare
     /// address; Cc when there is no To), plus how many recipients there were in all.
     /// Sent membership is the mailbox or a Gmail label, as in `indexRows`. No bodies.
+    /// Throws `.noSentMailbox` when an account has an Inbox but no mailbox is recognised as
+    /// Sent; an index with no Inbox either (no account) is an empty answer.
     static func sentRows(dbPath: String, since: Double) throws -> ([[String: Any]], Bool) {
         var db: OpaquePointer?
         guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
@@ -652,11 +735,20 @@ final class MailMemoryReader {
             sqlite3_finalize(list)
             throw IndexFailure.unreadable
         }
+        var hasInbox = false
         while sqlite3_step(list) == SQLITE_ROW {
-            if isSentMailbox(url: text(list, 1)) { sentIDs.append(sqlite3_column_int64(list, 0)) }
+            let url = text(list, 1)
+            if isSentMailbox(url: url) {
+                sentIDs.append(sqlite3_column_int64(list, 0))
+            } else if url.lowercased().hasSuffix("/inbox") {
+                hasInbox = true
+            }
         }
         sqlite3_finalize(list)
-        guard !sentIDs.isEmpty else { return ([], false) }
+        guard !sentIDs.isEmpty else {
+            if hasInbox { throw IndexFailure.noSentMailbox }
+            return ([], false)
+        }
         let sentList = sentIDs.map(String.init).joined(separator: ",")
         let labels = exists(db, table: "labels", column: "mailbox_id") && exists(db, table: "labels", column: "message_id")
         let membership = labels

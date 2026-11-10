@@ -375,6 +375,8 @@ def _plain_mail_error(reason: str) -> str:
     low = reason.lower()
     if "read access is missing" in low:
         return "Mail access wasn't granted. Reconnect and allow Gmail."
+    if "gmail api" in low or "cloud project" in low:
+        return "Mail isn't available for this account yet."
     if "couldn't" in low or "could not be reached" in low or "timed out" in low or "offline" in low:
         return "Google couldn't be reached. Wisp will try again."
     return "Mail isn't syncing right now. Wisp will try again."
@@ -546,6 +548,23 @@ def _announce_expired(email: str, stamp: int) -> None:
         print(f"[gmail] expired sign-in notice failed: {type(exc).__name__}", flush=True)
 
 
+_RATE_LIMIT_REASONS = {"ratelimitexceeded", "userratelimitexceeded", "dailylimitexceeded"}
+
+
+def _api_reasons(response: httpx.Response) -> tuple[set[str], str]:
+    """(lower-cased error reasons, error message) from a Google API error body."""
+    try:
+        body = response.json()
+    except ValueError:
+        return set(), ""
+    error = body.get("error") if isinstance(body, dict) else None
+    error = error if isinstance(error, dict) else {}
+    reasons = {str(item.get("reason", "")).lower()
+               for key in ("errors", "details") for item in (error.get(key) or [])
+               if isinstance(item, dict)}
+    return reasons, str(error.get("message", ""))
+
+
 async def _get(http: httpx.AsyncClient, path: str, params: dict | list | None = None) -> dict:
     for attempt in range(4):
         if not _still_connected():
@@ -560,7 +579,16 @@ async def _get(http: httpx.AsyncClient, path: str, params: dict | list | None = 
         if response.status_code == 401:
             _access.pop(_current()[0], None)
             continue
-        if response.status_code in (429, 403, 500, 503) and attempt < 3:
+        if response.status_code == 403:
+            reasons, message = _api_reasons(response)
+            if {"accessnotconfigured", "service_disabled"} & reasons or "has not been used" in message:
+                raise GmailError("Turn on the Gmail API in your Google Cloud project "
+                                 "(APIs & Services ▸ Library), then wait a minute")
+            if reasons & _RATE_LIMIT_REASONS and attempt < 3:
+                await asyncio.sleep(1.5 * (attempt + 1))
+                continue
+            # Any other 403 will not clear by waiting.
+        elif response.status_code in (429, 500, 503) and attempt < 3:
             await asyncio.sleep(1.5 * (attempt + 1))
             continue
         if response.status_code != 200:
@@ -968,6 +996,10 @@ async def _sync_account(account: str, parts: tuple[str, ...]) -> bool:
         cfg = connected_accounts().get(account)
         if cfg is None:
             return False
+        if cfg.get("auth_expired"):
+            # The refresh token is dead. Retrying only POSTs it to Google again
+            # and re-persists the mail cache; a reconnect writes a fresh record.
+            return False
         token = _context.set((account, dict(cfg), _epochs.get(account, 0)))
         part = parts[0]
         try:
@@ -1204,6 +1236,10 @@ async def _finish(client_id, client_secret, code, verifier, redirect, *,
         if mail_account_id and any(item.get("mail_account_id") == mail_account_id and other != email
                                    for other, item in accounts.items()):
             raise GmailError("That Mail account is already linked to a different Google account")
+        if not mail_account_id:
+            # A sign-in again (the 7-day reconnect) keeps the Mail account the
+            # user chose for this Google account; inference never replaces it.
+            mail_account_id = str((accounts.get(email) or {}).get("mail_account_id") or "")
         invalidate_behavior_history()
         _epochs[email] = _epochs.get(email, 0) + 1
         _access.pop(email, None)
@@ -1520,11 +1556,25 @@ def erase_account_data(account: str) -> dict:
         except Exception as exc:  # noqa: BLE001
             result["proactive"] = f"failed: {type(exc).__name__}"
     try:
+        # Text Wisp read from this account's attachments (service/attachment_store.py).
+        from service import attachment_store
+        result["attachment_text"] = f"erased {attachment_store.forget_account(account)}"
+    except Exception as exc:  # noqa: BLE001
+        result["attachment_text"] = f"failed: {type(exc).__name__}"
+    try:
         from service.google_calendar_source import _store
         _store().erase_held_for_account(account)
         result["waiting_notices"] = "erased"
     except Exception as exc:  # noqa: BLE001
         result["waiting_notices"] = f"failed: {type(exc).__name__}"
+    try:
+        # The saved Daily Summary was composed from the combined inbox (both
+        # days, no per-account attribution), so it is withdrawn like the rest.
+        from service.assistant import brief_latest
+        brief_latest.clear()
+        result["daily_summary"] = "erased"
+    except Exception as exc:  # noqa: BLE001
+        result["daily_summary"] = f"failed: {type(exc).__name__}"
     print(f"[gmail] erased Google account data: {result}", flush=True)
     return result
 

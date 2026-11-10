@@ -219,6 +219,21 @@ def scope_for(tool: str, args: dict) -> str:
         if tool in ("write_file", "read_file"):
             p = Path(str(args.get("path", "")))
             return str(p.parent) if p.name else str(p)
+        if tool == "move_path":
+            # The folder things are moved into, as for write_file: a grant on
+            # one move used to cover every move anywhere. A path ending in "/"
+            # or naming an existing folder is that folder, the rule move_path
+            # itself uses; otherwise its parent. Stored as typed, not expanded,
+            # so a spelling that differs only asks again.
+            dest = str(args.get("destination", ""))
+            p = Path(dest)
+            into = dest.endswith("/") or not p.name
+            if not into:
+                try:
+                    into = p.expanduser().is_dir()
+                except Exception:  # noqa: BLE001 - unreadable: the parent, never tool-wide
+                    into = False
+            return str(p) if into else str(p.parent)
         if tool == "run_shell":
             # First word only — the program being run. The full command line
             # never repeats verbatim, so anything more specific would make the
@@ -336,7 +351,34 @@ def is_grantable(tool: str, args: dict | None = None) -> bool:
         # Empty args are the tool-wide grant(scoped=False), not a call; decide()
         # still asks for every off call whatever is stored.
         return False
+    if args and _asked_every_time(tool, args):
+        return False
     return not is_destructive_shell(str((args or {}).get("cmd", "")))
+
+
+def _asked_every_time(tool: str, args: dict) -> bool:
+    """Whether decide() confirms this exact call whatever grant is stored.
+
+    The same two checks decide() runs before it reads a grant: an open_app call
+    aimed at Terminal, Shortcuts, a scheme that can call or message, or a file
+    that runs (policy.app_open_hit), and a file tool aimed at a key, a saved
+    sign-in or Wisp's own settings (policy.credential_path_hit). An "always
+    allow" offered there could never be honoured, and for open_app it stored a
+    tool-wide rule that silently covered every other app instead.
+    """
+    from service.safety.policy import app_open_hit, credential_path_hit
+    if tool == "open_app":
+        return app_open_hit(args) is not None
+    try:
+        from service.tools.registry import REGISTRY
+        registered = REGISTRY.get(tool)
+    except Exception:  # noqa: BLE001 — judged on the names below
+        registered = None
+    category = registered.category if registered is not None else {
+        "read_file": "fs_read", "write_file": "fs_write", "move_path": "fs_write"}.get(tool)
+    if category not in ("fs_read", "fs_write", "fs_delete"):
+        return False
+    return credential_path_hit(args, tool, mutating=category != "fs_read") is not None
 
 
 def grant(tool: str, args: dict | None = None, *, decision: str = "allow",

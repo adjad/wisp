@@ -103,7 +103,11 @@ DIGEST_MAX_CHARS = 4800
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")
 # Emphasis and code marks, and line-leading bullets, headings and quotes. Never
 # `_`, `#` or `|` inside a word: "blue_fox#42" is a fact to keep verbatim.
-_MARKUP = re.compile(r"\*\*|`+|^\s*(?:[-•*+>]|#{1,6})\s+", re.M)
+# The indent before a bullet stays on its own line (`[^\S\n]`, not `\s`): an
+# indent that could run across newlines made every blank line rescan the blank
+# lines after it, so a paste with tens of thousands of blank rows took seconds
+# on every later turn. A bullet below blank lines is still found on its line.
+_MARKUP = re.compile(r"\*\*|`+|^[^\S\n]*(?:[-•*+>]|#{1,6})\s+", re.M)
 _SALIENT = re.compile(r"\d|(?<=[a-z,;:] )[A-Z][a-z]")
 
 

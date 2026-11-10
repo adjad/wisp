@@ -19,6 +19,8 @@ assistant.db, which already store conversation and commitment data unencrypted.
 """
 from __future__ import annotations
 
+import hashlib
+import os
 from pathlib import Path
 
 from service.paths import MOE_DIR, private_write_bytes
@@ -28,6 +30,22 @@ CACHE_DIR = MOE_DIR / "cache"
 
 def _path(name: str) -> Path:
     return CACHE_DIR / f"{name}.txt"
+
+
+# What save() last wrote per file: (sha256 of the bytes, inode, mtime_ns, size).
+# The mail caches are re-saved every minute whether or not anything changed, and
+# each write is a fsynced temp file; writing identical bytes again only wears the
+# SSD. A file that was deleted or replaced since (different inode, time or size)
+# no longer matches and is written again.
+_LAST_WRITTEN: dict[str, tuple[str, int, int, int]] = {}
+
+
+def _stamp(path: Path) -> tuple[int, int, int] | None:
+    try:
+        info = os.stat(path)
+    except OSError:
+        return None
+    return (info.st_ino, info.st_mtime_ns, info.st_size)
 
 
 def load(name: str) -> str:
@@ -46,8 +64,20 @@ def save(name: str, text: str) -> None:
         # Contacts, messages and mail text: 0600 from the first byte (the temp
         # file used to be written 0644 and chmod-ed after), and atomic, so a
         # crash mid-write can't truncate the cache.
-        private_write_bytes(_path(name), (text or "").encode("utf-8"))
+        path = _path(name)
+        data = (text or "").encode("utf-8")
+        digest = hashlib.sha256(data).hexdigest()
+        key = str(path)
+        last = _LAST_WRITTEN.get(key)
+        if last is not None and last[0] == digest and _stamp(path) == last[1:]:
+            return  # Same bytes are already on disk: no rewrite, no fsync.
+        private_write_bytes(path, data)
         # The temp name builds before this used, which a crash could leave 0644.
-        _path(name).with_suffix(".tmp").unlink(missing_ok=True)
+        path.with_suffix(".tmp").unlink(missing_ok=True)
+        stamp = _stamp(path)
+        if stamp is not None:
+            _LAST_WRITTEN[key] = (digest, *stamp)
+        else:
+            _LAST_WRITTEN.pop(key, None)
     except Exception:  # noqa: BLE001
         pass

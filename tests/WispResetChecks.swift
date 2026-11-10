@@ -291,6 +291,12 @@ enum WispResetChecks {
         check(card.contains(destructive), "Reset Wisp is a destructive button")
         let after = card.components(separatedBy: destructive)[1].prefix(200)
         check(!after.contains("keyboardShortcut"), "Reset Wisp has no keyboard shortcut")
+        // The card lists only what a person has: no retired Mac mini or Air node.
+        check(WispReset.keeps.count == 2
+              && !WispReset.keeps.contains(where: { $0.contains("Mac mini") || $0.contains("Air node") })
+              && WispReset.keeps[1]
+              == "Everything outside Wisp: your own oMLX app and its cache, and the iPhone app's cache",
+              "Keeps names no device Wisp no longer uses")
         check(!card.contains(".defaultAction") && !card.contains(".return"), "Return never confirms the card")
         check(card.contains("WispReset.clearDefaults(UserDefaults.standard, domain: bundleID)"),
               "the launch step clears Wisp's defaults domain")

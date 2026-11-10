@@ -3,7 +3,7 @@
 **A private assistant that lives in your Mac's notch, keeps track of what needs you, and does the
 busywork. Its AI runs on your Mac, so your mail, texts and calendar never go to a cloud.**
 
-[Download Wisp](https://github.com/adjad/wisp/releases/latest) · [What's new in 0.5.0-rc1](docs/releases/0.5.0-rc1.md) · Apple silicon, macOS 26.2+
+[Download Wisp](https://github.com/adjad/wisp/releases/latest) · [What's new in 0.5.0-rc2](docs/releases/0.5.0-rc2.md) · Apple silicon, macOS 26.2+
 
 ## The problem
 
@@ -70,7 +70,7 @@ by default), and your Brief and answers fit you.
 | --- | --- |
 | Mac | Apple silicon (M1 or later) |
 | macOS | 26.2 or newer for Wisp's built-in engine. On macOS 14–26.1 you need another engine, such as oMLX, Ollama or LM Studio ([details](docs/technical-overview.md#using-another-local-inference-app)). |
-| Memory | 16 GB minimum, 24 GB recommended |
+| Memory | 16 GB |
 | Disk | About 8 GB free for the first download |
 
 ### Install
@@ -91,7 +91,7 @@ replace it in **Applications**.
 ### First run
 
 A single setup window walks you through five steps, and you can skip any of them and come back from
-the menu-bar icon (**Finish Setup...**):
+a right-click on the menu-bar icon (**Finish Setup...**):
 
 1. **The model.** Wisp downloads its model while you carry on. That takes about 10 minutes on a
    fast connection. If you already run oMLX, Wisp uses it instead and spends up to 30 seconds
@@ -114,7 +114,7 @@ the menu-bar icon (**Finish Setup...**):
 
 Open **Wisp** from Applications or Spotlight. It starts its own engine and model, and then lives
 in the notch and the menu bar, so there's nothing else to launch. Closing its windows doesn't quit
-it; to stop it, choose **Quit Wisp** from the menu-bar icon. After you quit, open it the same way
+it; to stop it, right-click the menu-bar icon and choose **Quit Wisp**. After you quit, open it the same way
 to start it again. The first start after a restart takes a little longer while the model loads.
 
 ## Everyday use
@@ -142,7 +142,7 @@ built-in sign-in? See [docs/google-cloud-setup.md](docs/google-cloud-setup.md).
 
 ### Quit, uninstall and reset
 
-- **Quit.** Use the menu-bar icon and choose **Quit Wisp**. Quitting also frees the model's memory.
+- **Quit.** Right-click the menu-bar icon and choose **Quit Wisp**. Quitting also frees the model's memory.
 - **Start over.** Type `/resetwisp` in full in the notch and confirm. Wisp disconnects Google,
   deletes its memories, chats, caches and settings, resets its permissions, and reopens to setup.
   The downloaded model stays, and nothing in your own Mail, Calendar, Notes, Reminders or Messages
@@ -155,7 +155,7 @@ built-in sign-in? See [docs/google-cloud-setup.md](docs/google-cloud-setup.md).
 
 ### Report a problem
 
-Choose **Report a Problem...** from the menu-bar icon (or type `/report`). Wisp builds a report you
+Right-click the menu-bar icon and choose **Report a Problem...** (or type `/report`). Wisp builds a report you
 save yourself; nothing is uploaded. Attach it to an
 [issue](https://github.com/adjad/wisp/issues). Logs are in `$TMPDIR/moe-backend.log` and
 `~/.moe/engine/engine.log`.
@@ -167,13 +167,14 @@ oMLX model engine.
 
 ### Run Wisp from source
 
-You need Apple silicon, macOS 14 or newer, Python 3.9+ and Apple's Command Line Tools
+You need Apple silicon, macOS 14 or newer, Python 3.11 or newer (3.13 matches the shipped app; the
+macOS system `python3` is 3.9 and too old) and Apple's Command Line Tools
 (`xcode-select --install`).
 
 1. **Set up Python** (once):
 
    ```bash
-   python3 -m venv .venv
+   python3.13 -m venv .venv
    .venv/bin/pip install -r requirements-dev.txt
    ```
 

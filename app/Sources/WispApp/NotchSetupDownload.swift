@@ -130,7 +130,7 @@ struct NotchDownloadRow: View {
                     let speed = setup.downloads.first(where: { $0.model == model })?.speedText
                     Text(NotchModelOffer.progressLine(doneGb: done, totalGb: total, speed: speed,
                                                      secondsLeft: left, stalled: stalled))
-                        .font(.system(size: 11)).foregroundStyle(stalled ? Color.orange : Theme.textMuted)
+                        .font(.wisp(size: 11)).foregroundStyle(stalled ? Color.orange : Theme.textMuted)
                         .lineLimit(1)
                 }
                 line("You can close this panel; the download keeps going.")
@@ -142,7 +142,7 @@ struct NotchDownloadRow: View {
                         title((paused ? "Download stopped" : "Download didn't finish") + " · " + label)
                         Text(NotchModelOffer.stoppedDetail(paused: paused,
                                                            engineMessage: setup.downloads.first { $0.model == model }?.message))
-                            .font(.system(size: 11)).foregroundStyle(paused ? Theme.textMuted : Color.orange)
+                            .font(.wisp(size: 11)).foregroundStyle(paused ? Theme.textMuted : Color.orange)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 8)
@@ -174,7 +174,7 @@ struct NotchDownloadRow: View {
         if setup.busy == "Starting download…" {
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
-                Text("Starting download…").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                Text("Starting download…").font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
             }
         } else {
             // Primary, but no Return shortcut: the Ask box under this card owns Return.
@@ -185,18 +185,18 @@ struct NotchDownloadRow: View {
 
     @ViewBuilder private func diskWarning(_ sizeGb: Double?) -> some View {
         if let warning = FirstRunBrain.diskWarning(freeBytes: FirstRunSetupView.freeBytes(), sizeGb: sizeGb) {
-            Text(warning).font(.system(size: 11)).foregroundStyle(Color.orange)
+            Text(warning).font(.wisp(size: 11)).foregroundStyle(Color.orange)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
 
     private func title(_ text: String) -> some View {
-        Text(text).font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.textPrimary)
+        Text(text).font(.wisp(size: 12, weight: .medium)).foregroundStyle(Theme.textPrimary)
             .lineLimit(1).truncationMode(.middle)
     }
 
     private func line(_ text: String) -> some View {
-        Text(text).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+        Text(text).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
             .fixedSize(horizontal: false, vertical: true)
     }
 
@@ -227,7 +227,7 @@ struct NotchChip: View {
 
     var body: some View {
         Button(action: action) {
-            Text(title).font(.system(size: 11.5, weight: primary ? .semibold : .medium))
+            Text(title).font(.wisp(size: 11.5, weight: primary ? .semibold : .medium))
                 .foregroundStyle(primary ? Color.black : Theme.textSecondary)
                 .padding(.horizontal, 9).padding(.vertical, 4)
                 .background(Capsule().fill(primary ? Color.white : Theme.chipFill))

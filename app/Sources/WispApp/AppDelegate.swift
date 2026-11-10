@@ -156,25 +156,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // launch. A live copy still gets the hand-over, as before.
             let defaults = UserDefaults.standard
             let shuttingDown = defaults.integer(forKey: Self.shuttingDownPIDKey)
-            if FirstRunSetup.waitsForPeerToQuit(
+            let waits = FirstRunSetup.waitsForPeerToQuit(
                 resumePending: defaults.bool(forKey: FirstRunSetup.resumeKey),
-                peerShuttingDown: peerApps.contains { Int($0.processIdentifier) == shuttingDown }) {
-                Task { @MainActor [weak self] in
-                    // Polled on the main actor between sleeps, so the run loop keeps
-                    // turning (isTerminated is updated there) and nothing hangs.
-                    let deadline = Date().addingTimeInterval(FirstRunSetup.peerQuitWait)
-                    while !peerApps.allSatisfy(\.isTerminated), Date() < deadline {
-                        try? await Task.sleep(nanoseconds: 250_000_000)
-                    }
-                    guard let self else { return }
-                    if peerApps.allSatisfy(\.isTerminated) { self.launch() } else { self.yield(to: peerApps) }
-                }
+                peerShuttingDown: peerApps.contains { Int($0.processIdentifier) == shuttingDown })
+            switch SingleInstance.handOver(
+                selfPath: Self.realLocation(Bundle.main.bundleURL).path,
+                peerPaths: peerApps.map { $0.bundleURL.map { Self.realLocation($0).path } },
+                waitsForPeerToQuit: waits) {
+            case .silent:
+                yield(to: peerApps)
                 return
+            case .ask:
+                // A different Wisp.app is running (a downloaded update opened while the
+                // old one runs). Handing over silently left the person on the old one.
+                guard asksToReplaceRunningWisp(peerApps) else {
+                    yield(to: peerApps)
+                    return
+                }
+                // An ordinary quit, never a forced one: the running copy stops its
+                // engine and service as on any quit, and this one waits for it below.
+                for peer in peerApps where !peer.isTerminated { peer.terminate() }
+            case .waitForQuit:
+                break
             }
-            yield(to: peerApps)
+            Task { @MainActor [weak self] in
+                // Polled on the main actor between sleeps, so the run loop keeps
+                // turning (isTerminated is updated there) and nothing hangs.
+                let deadline = Date().addingTimeInterval(FirstRunSetup.peerQuitWait)
+                while !peerApps.allSatisfy(\.isTerminated), Date() < deadline {
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                }
+                guard let self else { return }
+                if peerApps.allSatisfy(\.isTerminated) { self.launch() } else { self.yield(to: peerApps) }
+            }
             return
         }
         launch()
+    }
+
+    /// Where a copy of Wisp really is: the download, not macOS's temporary copy of it.
+    private static func realLocation(_ url: URL) -> URL {
+        Translocation.original(of: url).original ?? url
+    }
+
+    /// Another Wisp.app is running. Nothing is quit without the person's click: true
+    /// means quit the running one and open this one, false means keep the running one.
+    private func asksToReplaceRunningWisp(_ peers: [NSRunningApplication]) -> Bool {
+        let running = peers.first { !$0.isTerminated }?.bundleURL
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Another copy of Wisp is running"
+        alert.informativeText = SingleInstance.otherCopyDetail(
+            running: running.flatMap { MoveToApplications.version(at: $0.path) },
+            this: MoveToApplications.version(at: Bundle.main.bundleURL.path),
+            runningFolder: running.map {
+                (Self.realLocation($0).deletingLastPathComponent().path as NSString).abbreviatingWithTildeInPath
+            })
+        alert.addButton(withTitle: "Quit It and Open This One")
+        // Esc keeps things as they are.
+        alert.addButton(withTitle: "Keep the Running One").keyEquivalent = "\u{1b}"
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     /// Set by a Wisp that has started quitting (noteTerminating), so a copy
@@ -258,6 +299,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let message = note.userInfo?["message"] as? String ?? ""
             MainActor.assumeIsolated { self?.presentBackendRefusal(message) }
         }
+        backend.onBackendChangeEnded = { [weak self] in self?.releaseHeldRefusal() }
         // Something the listing missed (or that arrived after it) answering on the port
         // with no live child of ours: the manager stops and reports it here, once.
         backend.onPortConflict = { [weak self] in
@@ -344,10 +386,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             if case .conflict(let foreign) = verdict {
                 self.backend.portConflict = true
+                self.startupPortWasJudged()
                 self.presentPortConflict(PortGuard.conflictMessage(port: 8765, listeners: foreign,
                                                                    folderHints: folderHints))
                 return
             }
+            self.startupPortWasJudged()
             // `.owned` cannot occur without a receipt. On `.free`/`.unknown` a responder the
             // listing missed is still caught by BackendManager before it launches anything.
             await self.backend.startIfNeeded()
@@ -649,6 +693,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 UserDefaults.standard.set(true, forKey: FirstRunSetup.aboutYouDecidedKey)
                 UserDefaults.standard.set(Date(), forKey: KnowYouSecondOffer.decidedAtKey)
             },
+            // The notch can't be opened during setup, so the window carries why Wisp's
+            // start failed and the same Retry the notch has. A service that answers is
+            // left alone: only its next answer ends the notch's "Starting Wisp…" hold.
+            recordedStartFailure: { [weak self] in self?.model.serviceStartFailure },
+            restartWisp: { [weak self] in
+                guard let self, self.backend.lastReachable != true else { return }
+                self.model.retryService()
+            },
             closeForNow: { [weak self] in
                 // Put aside while the model downloads: the first Brief is owed, so it
                 // is composed the moment the model answers, before Wisp is opened.
@@ -753,6 +805,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             var request = URLRequest(url: WispClient.baseURL.appendingPathComponent("setup/status"))
             request.timeoutInterval = 10
             var answered = false
+            // When the service first said Wisp can't answer, in this run of such answers.
+            var notReadySince: Date?
             while !Task.isCancelled {
                 // Quick until the service first answers (a cold first launch takes
                 // minutes); then every 5 s while a notification is promised, else
@@ -767,9 +821,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 answered = true
                 let canAnswer = FirstRunSetup.canAnswer(ready: ready,
                                                         remoteOnly: object["remote_only"] as? Bool == true)
-                self.setupCanAnswer = canAnswer
+                // After setup was finished, "can't answer" at launch is usually the model
+                // warming up: no setup cue and no Finish Setup… until it has lasted
+                // (FirstRunSetup.warmUpGrace). An unfinished setup is told at once.
+                if canAnswer { notReadySince = nil } else if notReadySince == nil { notReadySince = Date() }
+                let notReadyFor = notReadySince.map { Date().timeIntervalSince($0) } ?? 0
+                let setupFinished = !FirstRunSetup.isUnfinished({ UserDefaults.standard.bool(forKey: $0) })
+                self.setupCanAnswer = FirstRunSetup.knownCanAnswer(canAnswer, setupFinished: setupFinished,
+                                                                   notReadyFor: notReadyFor)
                 let cue = FirstRunSetup.setupCue(self.model.setupCard, canAnswer: canAnswer,
-                                                 firstRunWindowUp: self.firstRunWindow != nil)
+                                                 firstRunWindowUp: self.firstRunWindow != nil,
+                                                 setupFinished: setupFinished, notReadyFor: notReadyFor)
                 if cue != self.model.setupCard { self.model.setupCard = cue }
                 guard canAnswer else { continue }
                 self.settleFirstBrief(canAnswer: true)
@@ -792,15 +854,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// says it instead: a dot on the closed bar and a line in the open panel,
     /// until the person has opened it.
     private func tellReady() {
+        // ⌥ Space is taught only when it is Wisp's: another app may own the key.
+        let askKey = hotKey?.registered ?? false
         Task { @MainActor [weak self] in
             let shown = await Notifications.postIfAllowed(id: Notifications.readyId, title: ReadyNotice.title,
-                                                          body: ReadyNotice.body)
+                                                          body: ReadyNotice.body(askKeyRegistered: askKey))
             OnboardingTimeline.record(shown ? "ready notice delivered" : "ready notice fell back to notch")
             guard !shown, let self else { return }
             self.readyLineUnseen = true
             // An open setup card is left to its Done.
             if self.model.setupCard == .hidden { self.model.setupCard = .ready }
-            self.model.showTransientNotice(ReadyNotice.notchLine, duration: ReadyNotice.unseenFor, info: true)
+            self.model.showTransientNotice(ReadyNotice.notchLine(askKeyRegistered: askKey),
+                                           duration: ReadyNotice.unseenFor, info: true)
             if self.presentation.desired == .chat { self.readyLineSeen() }
         }
     }
@@ -816,8 +881,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard readyLineUnseen, model.knowYou == nil, model.resetCard == nil else { return }
         readyLineUnseen = false
         if model.setupCard == .ready { model.setupCard = .hidden }
-        guard model.transientNotice == ReadyNotice.notchLine else { return }
-        model.showTransientNotice(ReadyNotice.notchLine, duration: ReadyNotice.seenFor, info: true)
+        guard let line = model.transientNotice, ReadyNotice.isNotchLine(line) else { return }
+        model.showTransientNotice(line, duration: ReadyNotice.seenFor, info: true)
     }
 
     /// The last step was reached (or setup finished): the first Brief is owed.
@@ -2279,11 +2344,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         exitNow()
     }
 
-    /// Exit without stopping the engine. Used when this launch only hands over to a
-    /// copy that is already running, and when an alert quits Wisp without a service.
+    /// Exit without the quit path's engine stop. Used when this launch only hands over
+    /// to a copy that is already running, and when an alert quits Wisp without a service.
     private func terminateWithoutShutdown() {
         noteTerminating()
         shutdownFinished = true
+        // "Quit Wisp" on the refusal alert can come while this app's own backend is
+        // alive: signal it so it does not outlive Wisp. Only the process this app
+        // spawned; with none (a hand-over, a port conflict at launch) this does nothing.
+        backend.stop()
         exitNow()
     }
 
@@ -2342,11 +2411,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var lastRefusalShown = ""
+    /// The port has been judged at launch (see launch()). Until then whatever holds it
+    /// is the port-conflict alert's to report, once.
+    private var startupPortJudged = false
+    /// A refusal arrived while it could not be shown (BackendTrust.RefusalNotice.hold).
+    private var refusalHeld = false
 
     /// The app has just refused to talk to the program on the backend port. Shown once
-    /// per distinct reason, never repeatedly while it stays refused.
+    /// per distinct reason, never repeatedly while it stays refused, and only when it is
+    /// news (BackendTrust.refusalNotice): not for Wisp stopping or restarting its own
+    /// service, not before the port is judged at launch, not beside the port-conflict alert.
     private func presentBackendRefusal(_ message: String) {
         guard !message.isEmpty, message != lastRefusalShown else { return }
+        switch BackendTrust.refusalNotice(startupJudged: startupPortJudged,
+                                          changingOwnBackend: backend.changingBackend,
+                                          portConflict: backend.portConflict,
+                                          quitting: shutdownStarted || appTerminating) {
+        case .show: break
+        case .hold: refusalHeld = true; return
+        case .drop: return
+        }
         lastRefusalShown = message
         let alert = NSAlert()
         alert.alertStyle = .warning
@@ -2354,7 +2438,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.informativeText = message
         alert.addButton(withTitle: "OK")
         alert.addButton(withTitle: "Quit Wisp")
-        if alert.runModal() == .alertSecondButtonReturn { terminateWithoutShutdown() }
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        // With a service of this app's own running, quit the usual way, so it and the
+        // engine have stopped before Wisp exits. With none there is nothing to stop.
+        if backend.childRunning { quit() } else { terminateWithoutShutdown() }
+    }
+
+    private func startupPortWasJudged() {
+        startupPortJudged = true
+        releaseHeldRefusal()
+    }
+
+    /// A refusal held back may have been true for that moment only (a holder that left
+    /// during the launch check, a request under Wisp's own restart), so it is not shown
+    /// from memory. The gate forgets it announced it, and the next check, a few seconds
+    /// away at most (the reachability watch), announces it again if it still holds.
+    private func releaseHeldRefusal() {
+        guard refusalHeld else { return }
+        refusalHeld = false
+        Task { await BackendTrustGate.shared.announceAgain() }
     }
 
     /// A program that is not Wisp's own holds the backend port. Wisp does not stop
@@ -2716,6 +2818,99 @@ extension AppDelegate {
         addingTask.model.prepareTab(byHover: false)
         precondition(addingTask.model.tab == .ask, "⌥Space opens Ask")
         print("PASS: AppDelegate collapse holds (pin, typing, draft, Day task, file dialog), unpins on collapse and dismiss; tabs reopen as designed")
+    }
+
+    /// A reply written in the Brief holds the panel open until it is sent or
+    /// closed, and the notch tucking away or a tab change keeps the same reply:
+    /// its text, its one draft request and the result of its one send.
+    static func checkBriefReplyHoldsAndSurvives() async {
+        final class Calls {
+            var draft = 0
+            var send = 0
+            var release: CheckedContinuation<Void, Never>?
+        }
+        let calls = Calls()
+        let transport: BriefReplyModel.Transport = { request in
+            let draft = request.url?.lastPathComponent == "draft"
+            if draft {
+                calls.draft += 1
+            } else {
+                calls.send += 1
+                // Held until the check lets go, so the send is seen in flight.
+                await withCheckedContinuation { calls.release = $0 }
+            }
+            let body: [String: Any] = draft
+                ? ["ok": true, "draft": "Thursday works.", "to": ["sam@example.com"], "cc": [],
+                   "subject": "Re: Lunch", "account": "Work", "envelope": "fixture", "can_send": true]
+                : ["ok": true, "status": "sent"]
+            return (try JSONSerialization.data(withJSONObject: body),
+                    HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        }
+        let replies = ProactiveActions.shared
+        let thread = ProactiveThread(id: "t-fixture", source: "mail", replyRef: ["message_id": "m-fixture"])
+        let delegate = AppDelegate()
+        delegate.presentation.request(.chat)
+        let opening = delegate.presentation.next()!
+        delegate.model.collapsed = false
+        delegate.finishPresentation(opening)
+        let model = delegate.model
+        model.tab = .brief
+        precondition(!model.holdsOpen, "Control: the Brief with no reply open doesn't hold the panel")
+        // Reply is tapped: the row is open and its composer asks for the reply.
+        replies.expanded = [thread.id]
+        replies.replying = thread.id
+        let reply = replies.replyModel(for: thread, transport: transport)
+        precondition(model.holdsOpen, "A reply being drafted holds the panel open")
+        await reply.loadDraft()
+        reply.text = "Thursday at noon works."
+        precondition(reply.phase == .ready && model.holdsOpen, "A reply being written holds the panel open")
+        delegate.scheduleCollapse()
+        try? await Task.sleep(for: .seconds(autoCollapseDelay + 0.5))
+        precondition(delegate.presentation.desired == .chat, "The pointer leaving must not close a reply being written")
+        model.tab = .ask
+        precondition(!model.holdsOpen, "A Brief reply holds the panel on the Brief tab only")
+        model.tab = .brief
+        replies.expanded = []
+        precondition(!model.holdsOpen, "A reply whose row is closed doesn't hold the panel")
+        replies.expanded = [thread.id]
+        // The notch tucked away (Esc, the chevron) or the tab changed, and the
+        // row is back: the same reply, with no second draft.
+        let remounted = replies.replyModel(for: thread, transport: transport)
+        await remounted.loadDraft()
+        precondition(remounted === reply && remounted.text == "Thursday at noon works." && calls.draft == 1,
+                     "Reopening the Brief keeps the typed reply and drafts once")
+        // Close reply while the send is out keeps the reply, so opening it
+        // again shows what happened instead of a new draft with a live Send.
+        let sending = Task { await reply.send() }
+        for _ in 0..<200 where calls.release == nil { try? await Task.sleep(for: .milliseconds(10)) }
+        precondition(reply.phase == .sending && model.holdsOpen, "A send in flight holds the panel open")
+        replies.closeReply(thread.id)
+        precondition(replies.replying == nil && !model.holdsOpen, "Close reply closes the composer")
+        precondition(replies.replyModel(for: thread, transport: transport) === reply,
+                     "A reply closed while sending is kept until its send settles")
+        calls.release?.resume()
+        calls.release = nil
+        await sending.value
+        replies.replying = thread.id
+        let reopened = replies.replyModel(for: thread, transport: transport)
+        await reopened.loadDraft()
+        precondition(reopened === reply && reopened.phase == .sent && !reopened.sendEnabled,
+                     "Reopening Reply after the send shows it sent, with no live Send")
+        await reopened.send()
+        precondition(calls.send == 1 && calls.draft == 1, "One draft and one send, however often the row comes back")
+        precondition(!model.holdsOpen, "A sent reply lets the panel tuck away")
+        // Done forgets it; the next Reply is a new one.
+        replies.closeReply(thread.id)
+        precondition(replies.replyModels[thread.id] == nil && replies.replying == nil, "Done forgets the sent reply")
+        // A thread the Brief no longer lists can't keep the panel open.
+        let stale = replies.replyModel(for: thread, transport: transport)
+        replies.replying = thread.id
+        precondition(stale !== reply && model.holdsOpen, "A new reply holds the panel again")
+        replies.pruneReplies(keeping: ["t-other"])
+        precondition(replies.replying == nil && replies.replyModels.isEmpty && !model.holdsOpen,
+                     "A reply to a thread that left the Brief is dropped and holds nothing")
+        replies.expanded = []
+        print("PASS: AppDelegate a Brief reply holds the panel while unfinished and survives collapse (one draft, one send)")
     }
 
     static func checkResearchReleasesQueueOffTab() async {

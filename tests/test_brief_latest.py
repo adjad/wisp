@@ -44,6 +44,19 @@ def test_blank_text_bad_days_and_a_corrupt_file_are_ignored(isolated):
     assert L.latest("2026-10-18") == {"text": "ok", "composed_at": 5.0, "part_of_day": ""}
 
 
+def test_clear_withdraws_every_saved_brief_and_tolerates_none(isolated):
+    assert L.clear() is False, "nothing saved is not an error"
+    L.record("worth a look: HR", "morning", day="2026-10-17", now=1.0)
+    L.record("later", "evening", day="2026-10-18", now=2.0)
+    L._PATH.with_suffix(".tmp").write_text("half")
+    assert L.clear() is True
+    assert L.latest("2026-10-17") is None and L.latest("2026-10-18") is None
+    assert not L._PATH.exists() and not L._PATH.with_suffix(".tmp").exists()
+    from service import main
+    client = TestClient(main.app)
+    assert client.get("/assistant/daily_summary/latest", params={"day": "2026-10-18"}).status_code == 404
+
+
 def test_the_endpoint_serves_the_days_brief_or_404(isolated):
     from service import main
     client = TestClient(main.app)

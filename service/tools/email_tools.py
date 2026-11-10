@@ -44,6 +44,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, replace
 import hashlib
 import math
+import unicodedata
 from service.publication_authority import Authority, Clock, Witness, mutating
 import re
 import threading
@@ -226,6 +227,12 @@ def cache_history_headers(history: str) -> None:
 # must preserve the last bytes and their original age, including after restart.
 _external_accounts: dict[str, dict] = {}
 _EXTERNAL_MAX_AGE = 300.0
+# Header history is read every 30 minutes (MailReader's history timer, gmail_source's
+# HISTORY_EVERY), so judging it by the 5-minute limit above made day and period
+# summaries carry a "newer messages may be missing" caveat for 25 of every 30
+# minutes. One interval plus a scan's duration; a missed read still warns. Headers
+# and bodies keep the 5-minute limit, which is what makes _ensure_email_cache sync.
+_HISTORY_MAX_AGE = 2400.0
 # How long a linked account's last good snapshot outranks a newer Mail.app read:
 # two of its own fetch intervals (gmail_source's HEADERS_EVERY, RAW_EVERY,
 # HISTORY_EVERY). Bodies are fetched every 15 minutes, so holding them to the
@@ -493,9 +500,17 @@ def _row_ts(row: str) -> float:
 
 def _recompose_all() -> None:
     global _headers, _history, _raw_emails
-    _headers = _compose_source(_swift_headers, "headers")
-    _history = _compose_source(_swift_history, "history")
-    _raw_emails = _compose_source(_swift_raw, "raw")
+    # Recomposing runs every minute. An equal result keeps the existing string
+    # object, so memos keyed by identity (_HISTORY_PARSE) survive a quiet minute.
+    headers = _compose_source(_swift_headers, "headers")
+    history = _compose_source(_swift_history, "history")
+    raw = _compose_source(_swift_raw, "raw")
+    if headers != _headers:
+        _headers = headers
+    if history != _history:
+        _history = history
+    if raw != _raw_emails:
+        _raw_emails = raw
 
 
 def cache_external_emails(*, account: str, headers: str | None = None,
@@ -527,6 +542,8 @@ def cache_external_emails(*, account: str, headers: str | None = None,
 
 def external_email_error(account: str, part: str, reason: str) -> None:
     if account in _external_accounts:
+        if _external_accounts[account].get(part + "_error", "") == (reason or ""):
+            return  # Same failure as last time (offline, expired): nothing changed.
         _external_accounts[account][part + "_error"] = reason
         _recompose_all()
         _persist_composed_sources()
@@ -707,7 +724,8 @@ def email_source_details(account: str | None = None, *, part: str = "headers") -
             continue
         stamp = _source_receipt(item.get(part + "_at"))
         error = str(item.get(part + "_error") or "")
-        fresh = bool(item.get(part + "_verified") and stamp and not error and 0 <= now - stamp <= _EXTERNAL_MAX_AGE)
+        limit = _HISTORY_MAX_AGE if part == "history" else _EXTERNAL_MAX_AGE
+        fresh = bool(item.get(part + "_verified") and stamp and not error and 0 <= now - stamp <= limit)
         result.append({"account": address, "source": "gmail", "fresh": fresh,
                        "last_success": stamp or None, "error": error,
                        "age_seconds": max(0, now - stamp) if stamp else None})
@@ -729,7 +747,8 @@ def email_source_details(account: str | None = None, *, part: str = "headers") -
         # Mail.app read completion still cannot prove a server fetch completed.
         result.append({"account": label, "source": _email_read_source or _native_source or "saved_cache",
                        "fresh": bool(_email_read_source == "mail_app" and _email_available and
-                                     0 <= now - native_stamp <= _EXTERNAL_MAX_AGE),
+                                     0 <= now - native_stamp <= (
+                                         _HISTORY_MAX_AGE if part == "history" else _EXTERNAL_MAX_AGE)),
                        "last_success": native_stamp or None,
                        "age_seconds": max(0, now - native_stamp) if native_stamp else None,
                        "error": _email_reason if _email_available is False else ""})
@@ -929,6 +948,11 @@ _MACHINE_SENDER_NAMES = (
     "kayak", "booking.com", "google ai", "google one", "apple",
 )
 
+# Whole-word match, so "Anna Gruber" is not "uber" and "Chris Chapple" is not "apple".
+# "Phil @ ZipRecruiter", "noreply@uber.com" and "mail.apple.com" still match.
+_MACHINE_SENDER_NAME_RE = re.compile(
+    r"(?<![a-z0-9])(?:" + "|".join(re.escape(n) for n in _MACHINE_SENDER_NAMES) + r")(?![a-z0-9])")
+
 
 # Mass mail sent under a person's name ("Katia Ameri <hello@tech-week.com>",
 # "Vercel <ship@info.vercel.com>"): a campaign mailbox, a bulk-mail sending
@@ -958,7 +982,9 @@ def is_broadcast(row: dict) -> bool:
         if _BROADCAST_LOCAL.match(local):
             return True
         sub = _BROADCAST_DOMAIN.match(domain)
-        if sub and not _PUBLIC_SUFFIX.match(sub.group(1)):
+        # A school's own mailbox (name@mail.<university>.edu) is a person; only
+        # its campaign locals (events@, hello@) are broadcast.
+        if sub and not _PUBLIC_SUFFIX.match(sub.group(1)) and not _INSTITUTION_DOMAIN.search(domain):
             return True
     return bool(_ESP_MESSAGE_ID.search(str(row.get("message_id", "") or "")))
 
@@ -971,9 +997,10 @@ def is_machine_sender(sender: str) -> bool:
         return False
     if any(h in s for h in _MACHINE_SENDER_HINTS):
         return True
-    # Substring, not prefix: a real recruiter signs mail "Phil @ ZipRecruiter"
-    # (name first), which a startswith("ziprecruiter") check misses entirely.
-    return any(n in s for n in _MACHINE_SENDER_NAMES)
+    # Whole word, not prefix: a real recruiter signs mail "Phil @ ZipRecruiter"
+    # (name first), which a startswith("ziprecruiter") check misses entirely, but
+    # "Gruber" and "Chapple" are people, not Uber and Apple.
+    return bool(_MACHINE_SENDER_NAME_RE.search(s))
 
 
 # Summary views should not spend space on codes, promotions, or duplicate
@@ -2355,7 +2382,7 @@ def _looks_like_person(name: str, address: str) -> bool:
     """A display name that reads like a human's: 1-4 plain words, no organisation
     words, no digits, not a shouted brand. Headers only; deliberately conservative,
     because mistaking a broadcast for a person floods the attention section."""
-    name = re.sub(r"\s*<[^>]*>", "", name or "").strip()
+    name = unicodedata.normalize("NFC", re.sub(r"\s*<[^>]*>", "", name or "")).strip()
     if not name or name.casefold() == (address or "").casefold() or "@" in name:
         return False
     words = name.split()
@@ -2363,7 +2390,16 @@ def _looks_like_person(name: str, address: str) -> bool:
         return False
     if any(len(w) > 3 and w.isupper() for w in words):
         return False                    # NVIDIA, ZIPRECRUITER
-    return all(re.fullmatch(r"[A-Za-z\u00C0-\u024F.'\-]+", w) for w in words)
+    return all(_is_name_word(w) for w in words)
+
+
+def _is_name_word(word: str) -> bool:
+    """Letters of any script, with their combining marks (a virama, a Vietnamese
+    tone mark) and the dots, apostrophes and hyphens names carry; at least one
+    letter. A plain word-character test drops combining marks, so it would
+    reject Devanagari."""
+    return (any(unicodedata.category(c)[0] == "L" for c in word)
+            and all(unicodedata.category(c)[0] in "LM" or c in ".'’-" for c in word))
 _SECURITY_RE = re.compile(
     r"\b(?:security alert|suspicious|fraud|unauthori[sz]ed|password (?:reset|changed)|"
     r"payment (?:failed|due|declined)|account (?:locked|suspended)|verify your)\b", re.I)
@@ -2891,9 +2927,26 @@ def _digest_entry(line: str) -> dict | None:
     return {"account": account, "sender": sender.strip(), "subject": subject.strip()}
 
 
+_MD_INLINE_LINK = re.compile(r"!?\[([^\[\]]*)\]\(\s*<?([^)>]*)>?\s*\)")
+
+
+def _unlink(text: str) -> str:
+    """Header text as plain words: a Markdown link or image becomes "label (url)".
+
+    A sender name or subject that reads ``[Verify](https://...)`` would otherwise
+    draw as a live link in Wisp's own list. Plain bracket tags such as
+    ``[EXTERNAL]`` are left as they are."""
+    while True:
+        changed = _MD_INLINE_LINK.sub(r"\1 (\2)", text)
+        if changed == text:
+            break
+        text = changed
+    return text.replace("](", "] (").replace("][", "] [")
+
+
 def _digest_text(text: str, *, fallback: str) -> str:
     """Keep display text compact and prevent header text from changing Markdown."""
-    text = re.sub(r"\s*<[^>]+>", "", text or "")
+    text = re.sub(r"\s*<[^>]+>", "", _unlink(text or ""))
     text = re.sub(r"[\x00-\x1f]+", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text.replace("*", r"\*") if text else fallback
@@ -2902,6 +2955,7 @@ def _digest_text(text: str, *, fallback: str) -> str:
 def _subject_text(text: str) -> str:
     """Display the original subject, escaping markup but retaining its words."""
     text = re.sub(r"[\x00-\x1f]+", " ", text or "").strip()
+    text = re.sub(r"<([A-Za-z][A-Za-z0-9+.-]*:[^<>\s]+)>", r"\1", _unlink(text))
     return text.replace("\\", r"\\").replace("*", r"\*") or "(no subject)"
 
 
@@ -3474,6 +3528,10 @@ def _search_rows(query: str, rows: list[dict]) -> tuple[list[dict], bool]:
     return (search(words), True) if words and words != [phrase] else ([], False)
 
 
+def _subject_key(subject: str | None) -> str:
+    return " ".join((subject or "").split()).casefold()
+
+
 def _header_matches(query: str, found: list[dict], account: str | None,
                     start: float | None, end: float | None) -> tuple[list[dict], float | None]:
     """Mail matching by sender or subject in the header caches, which reach far
@@ -3482,6 +3540,22 @@ def _header_matches(query: str, found: list[dict], account: str | None,
     records = _parse_header_records(_headers) + _history_records()
     oldest = min((r["ts"] for r in records), default=None)
     shown = {_norm_mid(r.get("message_id") or "") for r in found} - {""}
+    # Mail's local index gives an opaque numeric id where the saved body has the
+    # RFC one, so ids alone never match; the same subject, account and minute do.
+    shown_stamps: dict[tuple[str, str], list[float]] = {}
+    for r in found:
+        shown_stamps.setdefault((_subject_key(r.get("subject")), (r.get("account") or "").casefold()),
+                                []).append(float(r.get("ts") or 0))
+
+    def already_shown(record: dict) -> bool:
+        mid = _norm_mid(record.get("message_id") or "")
+        if mid and mid in shown:
+            return True
+        if _rfc_mid(record):
+            return False
+        stamps = shown_stamps.get((_subject_key(record.get("subject")),
+                                   (record.get("account") or "").casefold()), ())
+        return any(abs(ts - record["ts"]) <= 60 for ts in stamps)
 
     def search(needles: list[str]) -> list[dict]:
         hits = []
@@ -3489,7 +3563,7 @@ def _header_matches(query: str, found: list[dict], account: str | None,
             text = f"{record['sender']} {record.get('sender_address', '')} {record['subject']}".casefold()
             if (all(n in text for n in needles)
                     and (start is None or start <= record["ts"] < end)
-                    and _norm_mid(record.get("message_id") or "") not in shown):
+                    and not already_shown(record)):
                 hits.append(record)
         return hits
 
@@ -3509,7 +3583,7 @@ def _mail_line(row: dict) -> str:
     address = row.get("sender_address") or ""
     if address and address not in sender:
         sender = f"{sender} <{address}>"
-    message_id = (row.get("message_id") or "").strip()
+    message_id = (row.get("message_id") or "").strip() if _rfc_mid(row) else ""
     line = f"- {when} | {_clip(sender, 70)} | {_clip(row.get('subject') or '(no subject)', 90)}"
     if message_id and len(message_id) <= 60:
         line += f" | Message-ID: {message_id}"
@@ -3836,7 +3910,10 @@ async def sent_emails_view(query: str | None = None, day: str | None = None, cou
     from service.mail_memory import bridge
     accounts = gmail_source.connected_accounts()
     label = f"the last {gmail_source.SENT_DAYS} days"
-    start, end = time.time() - gmail_source.SENT_DAYS * 86400, float("inf")
+    now = time.time()
+    gmail_reach = now - gmail_source.SENT_DAYS * 86400
+    start, end = gmail_reach, float("inf")
+    default_window = not period and not day
     if period:
         try:
             start, end, label = resolve_span(period)
@@ -3847,11 +3924,12 @@ async def sent_emails_view(query: str | None = None, day: str | None = None, cou
             start, end, label = _day_bounds(day)
         except ValueError:
             return f"(couldn't understand the date {day!r} — use 'today', 'yesterday', or YYYY-MM-DD)"
-    days = max(1, math.ceil((time.time() - start) / 86400))
+    days = (gmail_source.SENT_DAYS if default_window
+            else max(1, math.ceil((now - start) / 86400)))
     native, problem, capped = await _native_sent(min(days, bridge.SENT_DAYS_MAX))
     if problem and not native and not accounts:
         return (f"I couldn't read your sent mail: {problem}. No Gmail account is linked in "
-                "Settings › Accounts to read it from instead.")
+                "Settings › Google to read it from instead.")
     rows = [dict(r) for r in gmail_source.sent_rows()] + native
     if account:
         wanted = account.strip().lower()
@@ -3875,7 +3953,7 @@ async def sent_emails_view(query: str | None = None, day: str | None = None, cou
     notes = []
     if problem:
         notes.append(f"Apple Mail's Sent mailbox wasn't read: {problem}.")
-    if accounts and start < time.time() - gmail_source.SENT_DAYS * 86400:
+    if accounts and start < gmail_reach:
         notes.append(f"Gmail's sent mail goes back only {gmail_source.SENT_DAYS} days.")
     if capped:
         notes.append(f"Apple Mail's list stops at its newest {len(native)} sent emails.")

@@ -42,6 +42,8 @@ enum BackendTrustChecks {
         wordingChecks()
         gateChecks()
         await freshGateChecks()
+        await ownServiceChangeChecks()
+        refusalNoticeChecks()
         if !CommandLine.arguments.contains("--pure") { await liveChecks() }
         print("\(checks) backend trust checks passed")
     }
@@ -110,8 +112,18 @@ enum BackendTrustChecks {
         // (vi) The receipt's process must echo the receipt's nonce when it answers.
         check(decide([ours], ident(nonce: "nonce-2")) == .refused(.launchMismatch), "a different nonce trusted")
         check(decide([ours], ident(nonce: nil)) == .refused(.launchMismatch), "a missing nonce trusted")
-        // (vii) A listener that vanished or cannot be read is not trusted.
-        check(decide([ours], .missing, facts: { _ in nil }) == .refused(.cannotInspect), "uninspectable 404 trusted")
+        // (vii) A listener that vanished is not trusted, and is not called a stranger either:
+        // the kernel no longer has it, so nothing is there to refuse (Wisp's own service
+        // stopping, restarting or crashing under a request must not raise the alert).
+        for identity in [ident(), BackendTrust.IdentityResult.missing, .failed] {
+            check(decide([ours], identity, facts: { _ in nil }) == .unreachable, "an exited listener: \(identity)")
+        }
+        // A stranger listed beside an exited process is still refused by name.
+        check(decide([ours, stranger], ident(), facts: { $0 == 20 ? kernel($0) : nil }) == .refused(.unproven([stranger])),
+              "a stranger beside an exited listener was not refused")
+        // A process that exists but has no executable to compare is still "couldn't check".
+        check(decide([ours], ident(), facts: { .init(pid: $0, start: birth, executablePath: nil) })
+              == .refused(.cannotInspect), "an unreadable live listener must fail closed")
         // Ownership failures are refused even when identity failed (no "not yet" for them).
         check(decide([ours], .failed, receipt: .none) == .refused(.unproven([ours])), "unproven + failed identity not refused")
     }
@@ -228,13 +240,14 @@ enum BackendTrustChecks {
         check(!(await gate.verdict()).isTrusted, "fresh mode identity is required for every request")
         host.answer = ident()
         host.changeDuringIdentity = { host.listeners = [stranger] }
-        check(!(await gate.verdict()).isTrusted, "listener replacement during identity cannot receive a private request")
+        check(await gate.verdict() == .refused(.unproven([stranger])),
+              "listener replacement during identity cannot receive a private request, and is named")
         host.listeners = [ours]
         host.changeDuringIdentity = { host.birth = .init(seconds: 2, microseconds: 0) }
-        check(await gate.verdict() == .refused(.cannotInspect), "same pid/path with new kernel start time is refused")
+        check(await gate.verdict() == .refused(.unproven([ours])), "same pid/path with new kernel start time is refused")
         host.birth = .init(seconds: 1, microseconds: 0)
         host.changeDuringIdentity = { host.birth = nil }
-        check(await gate.verdict() == .refused(.cannotInspect), "unreadable incarnation after identity fails closed")
+        check(await gate.verdict() == .unreachable, "a listener that exited during identity is not trusted")
         host.changeDuringIdentity = nil
         host.birth = .init(seconds: 1, microseconds: 0)
         host.answer = .missing
@@ -261,7 +274,7 @@ enum BackendTrustChecks {
         host.answer = ident()
         let swapped = host.receipt
         host.changeDuringIdentity = { host.receipt = .none }
-        check(await gate.verdict() == .refused(.cannotInspect), "a receipt change during identity fails closed")
+        check(await gate.verdict() == .unreachable, "a receipt change during identity is not trusted")
         host.changeDuringIdentity = nil
         host.receipt = swapped
         let before = host.identities
@@ -277,6 +290,107 @@ enum BackendTrustChecks {
               "concurrent requests each verify; no in-flight verdict reuse")
         host.changeDuringIdentity = { BackendTrustConfiguration.set(port: previous.port + 1) }
         check(await gate.verdict() == .refused(.cannotInspect), "configuration changes during verification fail closed")
+    }
+
+    // MARK: Wisp's own service stopping, restarting or crashing under a request
+
+    /// A request that straddles Wisp's own backend going away is not sent, and is not
+    /// reported as a program Wisp refuses either: that raised a modal alert for a
+    /// restart Wisp itself asked for. A stranger found on the second look is still refused.
+    static func ownServiceChangeChecks() async {
+        let start = BackendOwnership.StartTime(seconds: 1, microseconds: 0)
+        func receipt(_ pid: Int32) -> BackendOwnership.ReceiptState {
+            .present(.init(pid: pid, start: start, executablePath: ours.path, backendRoot: "/r", nonce: "nonce-1"))
+        }
+        let relaunched = L(pid: 11, path: ours.path)
+        /// A healthy host whose port changes while the backend is being asked who it is.
+        func host(_ change: ((Host) -> Void)? = nil) -> Host {
+            let made = Host()
+            if let change { made.changeDuringIdentity = { change(made) } }
+            return made
+        }
+
+        // The launched listener is there, then gone on the second listing.
+        let exiting = host { $0.listeners = [] }
+        check(await exiting.verify(8765) == .unreachable, "the launched backend exiting mid-check is unreachable, not refused")
+        check(exiting.identities == 1, "it was asked once")
+
+        // Listed, but gone before its facts are read: nothing is asked.
+        let gone = host()
+        gone.birth = nil
+        check(await gone.verify(8765) == .unreachable && gone.identities == 0,
+              "a listed pid that is gone before its facts are read is unreachable")
+
+        // A restart recorded a new launch mid-check while the old listener is still listed.
+        let relaunching = host { $0.receipt = receipt(11) }
+        check(await relaunching.verify(8765) == .unreachable, "a new launch recorded mid-check is unreachable, not refused")
+
+        // The restart finished mid-check: the new backend listens and the receipt names it.
+        let restarted = host { $0.listeners = [relaunched]; $0.receipt = receipt(11) }
+        check(await restarted.verify(8765) == .unreachable, "this app's own relaunched backend is not called a stranger")
+        restarted.changeDuringIdentity = nil
+        restarted.answer = ident("wisp-backend", "production", 11)
+        check(await restarted.verify(8765) == .trusted(pids: [11]), "and the next request verifies it afresh")
+
+        // None of that hides a stranger: a different live program on the second listing is refused.
+        let replaced = host { $0.listeners = [stranger] }
+        check(await replaced.verify(8765) == .refused(.unproven([stranger])), "a stranger on the second listing is refused")
+        let replacedAcrossRestart = host { $0.listeners = [stranger]; $0.receipt = receipt(11) }
+        check(await replacedAcrossRestart.verify(8765) == .refused(.unproven([stranger])),
+              "a stranger on the second listing is refused across a restart too")
+        let joined = host { $0.listeners = [ours, stranger] }
+        check(await joined.verify(8765) == .refused(.unproven([stranger])), "a stranger joining the port is refused")
+        // And a second look that could not be made still fails closed.
+        let unreadable = host { $0.listeners = nil }
+        check(await unreadable.verify(8765) == .refused(.cannotInspect), "an unreadable second listing fails closed")
+
+        // A refusal the app could not show is announced again once it asks, if it still holds.
+        let previous = BackendTrustConfiguration.current
+        BackendTrustConfiguration.set()
+        defer { BackendTrustConfiguration.set(port: previous.port) }
+        let announced = Counter()
+        let observer = NotificationCenter.default.addObserver(forName: .wispBackendRefused, object: nil, queue: nil) { _ in
+            announced.add()
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        let held = host()
+        held.listeners = [stranger]
+        let gate = BackendTrustGate(verification: { await held.verify($0) })
+        _ = await gate.verdict()
+        _ = await gate.verdict()
+        check(announced.value == 1, "a refusal is announced once while it stays the same")
+        await gate.announceAgain()
+        check(await gate.verdict() == .refused(.unproven([stranger])) && announced.value == 2,
+              "after announceAgain a refusal that still holds is announced again")
+        _ = await gate.verdict()
+        check(announced.value == 2, "and then once only, as before")
+        await gate.announceAgain()
+        held.listeners = []
+        check(await gate.verdict() == .unreachable && announced.value == 2,
+              "a refusal that no longer holds is never announced")
+    }
+
+    final class Counter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var count = 0
+        func add() { lock.lock(); count += 1; lock.unlock() }
+        var value: Int { lock.lock(); defer { lock.unlock() }; return count }
+    }
+
+    /// When the app shows the refusal alert (BackendTrust.refusalNotice).
+    static func refusalNoticeChecks() {
+        func notice(judged: Bool = true, changing: Bool = false, conflict: Bool = false,
+                    quitting: Bool = false) -> BackendTrust.RefusalNotice {
+            BackendTrust.refusalNotice(startupJudged: judged, changingOwnBackend: changing,
+                                       portConflict: conflict, quitting: quitting)
+        }
+        check(notice() == .show, "a real refusal while Wisp is running normally is shown")
+        check(notice(judged: false) == .hold, "before the port is judged at launch no refusal alert is shown")
+        check(notice(changing: true) == .hold, "nor while Wisp stops or restarts its own service")
+        check(notice(conflict: true) == .drop && notice(judged: false, conflict: true) == .drop,
+              "the port-conflict alert is the one alert for a holder on the port")
+        check(notice(quitting: true) == .drop && notice(changing: true, quitting: true) == .drop,
+              "no alert while Wisp is quitting")
     }
 
     actor PairBarrier {

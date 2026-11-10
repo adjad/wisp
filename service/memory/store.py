@@ -114,6 +114,9 @@ class SessionStore:
         private_sqlite_file(path)
         self._db = sqlite3.connect(str(path), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
+        # A deleted chat's text is overwritten in the file, not only unlinked
+        # from its rows. Per connection; this store does the deletes.
+        self._db.execute("PRAGMA secure_delete=ON")
         self._db.executescript(_SCHEMA)
         from service.memory.queue import install as install_memory_queue
         install_memory_queue(self._db)

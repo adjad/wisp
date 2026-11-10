@@ -172,6 +172,28 @@ enum PrivacySyncChecks {
         precondition(received.last?["contacts_enabled"] as? Bool == false && contactReads == 2)
         withExtendedLifetime((contacts, browser)) {}
         session.invalidateAndCancel()
-        print("PrivacySync: 14 synthetic contract scenarios passed")
+
+        // Two different people saved under one name get labels the backend
+        // can tell apart; one person saved twice keeps the plain name.
+        let twoPeople = ContactsReader.handleMap([
+            (name: "Chris", phones: ["+1 (555) 010-0142"], emails: []),
+            (name: "chris", phones: ["555-010-0199"], emails: ["chris@example.com"]),
+            (name: "Dana Reyes", phones: ["+15550100177"], emails: []),
+        ])
+        precondition(twoPeople["+1 (555) 010-0142"] == "Chris (…0142)")
+        precondition(twoPeople["555-010-0199"] == "chris (…0199)" && twoPeople["chris@example.com"] == "chris (…0199)")
+        precondition(twoPeople["+15550100177"] == "Dana Reyes")
+        let onePerson = ContactsReader.handleMap([
+            (name: "Chris", phones: ["+1 (555) 010-0142"], emails: []),
+            (name: "Chris", phones: ["555-010-0142"], emails: ["chris@example.com"]),
+            (name: "Chris", phones: [], emails: []),
+        ])
+        precondition(onePerson.count == 3 && onePerson.values.allSatisfy { $0 == "Chris" })
+        let sameEnding = ContactsReader.handleMap([
+            (name: "Sam", phones: ["555-010-0142"], emails: []),
+            (name: "Sam", phones: ["555-020-0142"], emails: []),
+        ])
+        precondition(Set(sameEnding.values) == ["Sam (…0142)", "Sam (…0142 2)"])
+        print("PrivacySync: 17 synthetic contract scenarios passed")
     }
 }

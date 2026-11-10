@@ -22,15 +22,15 @@ from service import main
 from service.assistant import outbox
 from service.memory.store import SessionStore
 from service.router.model_led import family_for, registry_specs
-from service.tools import (action_tools, assistant_tools, memory_tools, notes_write, registry,
-                           schedule_extras, timers_alarms)
+from service.tools import (action_tools, assistant_tools, contacts_tools, memory_tools, notes_write,
+                           registry, schedule_extras, timers_alarms)
 from tests.test_model_led_entrypoint import endpoint, tool_call  # noqa: F401
 from tests.test_send_recipient_preflight import chat as send_chat  # noqa: F401
 
 REAL_TOOLS = {name: registry.REGISTRY[name] for name in (
     "add_reminder", "update_reminder", "add_calendar_event", "update_event", "cancel_event",
     "complete_reminder", "schedule_send", "cancel_scheduled_send", "set_timer",
-    "create_note", "append_note", "remember")}
+    "create_note", "append_note", "remember", "manage_contacts", "email_triage")}
 NOTICE = main.UNRESOLVED_ACTION_NOTICE
 LATER = (dt.datetime.now() + dt.timedelta(days=2)).replace(microsecond=0, second=0)
 LATER_ISO = LATER.isoformat(timespec="minutes")
@@ -157,6 +157,143 @@ def test_tools_outside_the_effect_table_stop_with_a_person_facing_question(chat,
     assert _settled(chat) == [("completed", "not_done")]
 
 
+def _contacts_say(monkeypatch, *answers):
+    """Contacts answers each script in turn; returns the scripts it was given."""
+    scripts, left = [], list(answers)
+
+    def osa(script):
+        scripts.append(script)
+        code, out, err = left.pop(0)
+        return subprocess.CompletedProcess([], code, stdout=out, stderr=err)
+    monkeypatch.setattr(contacts_tools, "_osa", osa)
+    return scripts
+
+
+def test_several_matching_contacts_ask_which_and_the_answer_goes_through_in_the_same_chat(chat, monkeypatch):
+    scripts = _contacts_say(monkeypatch, (0, "MANY:Dan Smith\nDan Lee\n", ""), (0, "OK:Dan Smith\n", ""))
+    call = {"action": "add_phone", "name": "Dan", "value": "555-0142"}
+    text = _text(_turn(chat, "manage_contacts", call, "add 555-0142 to Dan's contact"))
+    assert text == ("Several contacts match “Dan”, so nothing was added. Which one?\n"
+                    "  - Dan Smith\n  - Dan Lee")
+    assert len(chat.cards.shown) == 1 and len(scripts) == 1
+    assert chat.store.unresolved_action(chat.sid) is None
+    assert _settled(chat) == [("completed", "not_done")]
+
+    chat.script = [[tool_call("manage_contacts", **{**call, "name": "Dan Smith"})], "Added."]
+    assert NOTICE not in _text(chat.request("Dan Smith", chat.sid))
+    assert len(scripts) == 2 and '"Dan Smith"' in scripts[1]
+    assert len(chat.cards.shown) == 2, "the second change still gets its own card"
+    assert chat.store.unresolved_action(chat.sid) is None
+
+
+def test_a_contact_change_that_contacts_did_not_confirm_still_locks_the_chat(chat, monkeypatch):
+    scripts = _contacts_say(monkeypatch, (1, "", "synthetic Contacts failure"))
+    call = {"action": "add_phone", "name": "Dan Smith", "value": "555-0142"}
+    text = _text(_turn(chat, "manage_contacts", call, "add 555-0142 to Dan Smith's contact"))
+    assert "did not return a verified success" in text
+    assert _settled(chat) == [("uncertain", "uncertain")]
+    chat.script = [[tool_call("manage_contacts", **call)], "Okay."]
+    assert _text(chat.request("try that again", chat.sid)).startswith(NOTICE)
+    assert len(scripts) == 1  # not run again
+
+
+def test_triage_without_a_message_id_asks_and_the_retry_with_one_goes_through(chat):
+    text = _text(_turn(chat, "email_triage", {"message_id": " ", "action": "archive"}, "archive the newsletter"))
+    assert text == "Which email do you mean?"
+    assert chat.dispatched == []
+    assert chat.store.unresolved_action(chat.sid) is None
+    assert _settled(chat) == [("completed", "not_done")]
+
+    chat.script = [[tool_call("email_triage", message_id="<m1.fixture@example.com>", action="archive")],
+                   "Archived."]
+    assert NOTICE not in _text(chat.request("the one from the garden club", chat.sid))
+    assert chat.dispatched == [("archive_email", {"message_id": "<m1.fixture@example.com>"})]
+    assert chat.store.unresolved_action(chat.sid) is None
+
+
+def test_triage_the_app_did_not_confirm_still_locks_the_chat(chat):
+    chat.bridge = lambda op, payload: {"ok": False, "error": "the app stopped answering"}
+    call = {"message_id": "<m1.fixture@example.com>", "action": "archive"}
+    _turn(chat, "email_triage", call, "archive the newsletter")
+    assert len(chat.dispatched) == 1 and chat.store.unresolved_action(chat.sid) is not None
+    chat.script = [[tool_call("email_triage", **call)], "Okay."]
+    assert _text(chat.request("try that again", chat.sid)).startswith(NOTICE)
+    assert len(chat.dispatched) == 1
+
+
+@pytest.mark.parametrize("args, answer", [
+    ({"action": "add_phone", "name": "Dan", "value": "555-0142"}, (0, "NONE\n", "")),
+    ({"action": "add_email", "name": "Dan", "value": "dan.fixture@example.com"},
+     (0, "MANY:Dan Smith\nDan Lee\n", "")),
+    ({"action": "add_phone", "name": "Dan", "value": "  "}, None),
+    ({"action": "add_phone", "name": "  ", "value": "555-0142"}, None),
+    ({"action": "create", "name": ""}, None),
+])
+def test_contact_refusals_are_proof_only_before_anything_is_written(monkeypatch, args, answer):
+    scripts = _contacts_say(monkeypatch, *([answer] if answer else []))
+    tool = REAL_TOOLS["manage_contacts"]
+    result = asyncio.run(registry.run_tool(tool, args))
+    assert registry.not_done_receipt(tool, result), result
+    assert registry.classify_tool_outcome("manage_contacts", result).status in {"failed", "needs_input"}
+    # The one script that ran stopped at its early return, before `make new`.
+    assert len(scripts) == (1 if answer else 0)
+    if answer:
+        early, write = scripts[0].index(f'return "{answer[1][:4]}'), scripts[0].index("make new")
+        assert early < write
+
+
+@pytest.mark.parametrize("args, answer", [
+    ({"action": "add_phone", "name": "Dan Smith", "value": "555-0142"}, (0, "OK:Dan Smith\n", "")),
+    ({"action": "add_phone", "name": "Dan Smith", "value": "555-0142"}, (0, "", "")),
+    ({"action": "add_phone", "name": "Dan Smith", "value": "555-0142"}, (1, "", "synthetic Contacts failure")),
+    ({"action": "add_phone", "name": "Dan Smith", "value": "555-0142"}, (1, "NONE\n", "synthetic Contacts failure")),
+    ({"action": "create", "name": "Dan Smith"}, (1, "", "synthetic Contacts failure")),
+    ({"action": "create", "name": "Dan Smith"}, (0, "", "")),
+])
+def test_contact_outcomes_after_the_write_are_not_proof(monkeypatch, args, answer):
+    _contacts_say(monkeypatch, answer)
+    tool = REAL_TOOLS["manage_contacts"]
+    assert not registry.not_done_receipt(tool, asyncio.run(registry.run_tool(tool, args)))
+
+
+@pytest.mark.parametrize("args", [
+    {"message_id": "", "action": "archive"},
+    {"message_id": "   ", "action": "flag"},
+])
+def test_triage_refusals_are_proof_and_never_reach_the_app(monkeypatch, args):
+    async def bridge(*a, **kw):
+        raise AssertionError("a refusal must not reach the app")
+    monkeypatch.setattr(action_tools, "app_request", bridge)
+    tool = REAL_TOOLS["email_triage"]
+    result = asyncio.run(registry.run_tool(tool, args))
+    assert registry.not_done_receipt(tool, result), result
+    assert registry.classify_tool_outcome("email_triage", result).status in {"failed", "needs_input"}
+
+
+def test_an_action_outside_the_schema_is_refused_as_proof_if_it_ever_reaches_the_tool(monkeypatch):
+    """Argument checking stops these first; the tools' own refusals are marked too."""
+    scripts = _contacts_say(monkeypatch)
+
+    async def bridge(*a, **kw):
+        raise AssertionError("a refusal must not reach the app")
+    monkeypatch.setattr(action_tools, "app_request", bridge)
+    contact = contacts_tools.manage_contacts("merge", "Dan Smith")
+    assert registry.not_done_receipt(REAL_TOOLS["manage_contacts"], contact) and scripts == []
+    triage = asyncio.run(action_tools.email_triage("<m1.fixture@example.com>", "delete"))
+    assert registry.not_done_receipt(REAL_TOOLS["email_triage"], triage)
+
+
+@pytest.mark.parametrize("answer", [
+    {"ok": False, "error": "the app stopped answering"}, {"ok": False}, {"ok": True}])
+def test_triage_answers_from_the_app_are_not_proof(monkeypatch, answer):
+    async def bridge(*a, **kw):
+        return answer
+    monkeypatch.setattr(action_tools, "app_request", bridge)
+    tool = REAL_TOOLS["email_triage"]
+    result = asyncio.run(registry.run_tool(tool, {"message_id": "<m1.fixture@example.com>", "action": "archive"}))
+    assert not registry.not_done_receipt(tool, result)
+
+
 def _row(title="Water plants", **extra):
     return {"id": title, "title": title, "when_ts": LATER.timestamp(), "source": "manual",
             "created_at": 1.0, "updated_at": 1.0, **extra}
@@ -167,7 +304,8 @@ def _no_write_store(monkeypatch, *rows):
     def write(*args, **kwargs):
         raise AssertionError("a refusal must not write")
     store = SimpleNamespace(upcoming=lambda **kw: list(rows), history=lambda **kw: [], get=lambda cid: None,
-                            active_future=lambda **kw: list(rows), add_manual=write, update_schedule=write)
+                            active_future=lambda **kw: list(rows),
+                            active_between=lambda *a, **kw: list(rows), add_manual=write, update_schedule=write)
     monkeypatch.setattr(assistant_tools, "assistant_store", store)
     monkeypatch.setattr(assistant_tools, "reminders_matching", lambda *args, **kwargs: list(rows))
     monkeypatch.setattr(schedule_extras, "_store", store)
@@ -415,3 +553,62 @@ def test_every_finish_callback_accepts_the_refusal_keywords():
     import scripts.toolbench.runner as runner
     assert "**refusal" in inspect.getsource(runner)
     assert "**refusal" in inspect.getsource(main)
+
+
+# manage_contacts create: what it writes and what its receipt admits. The create
+# card names only the new contact, so a number or address passed with create is
+# not written; the receipt has to say so instead of reading as saved. Contacts is
+# never touched here: `_osa` is replaced and its script inspected.
+
+@pytest.fixture
+def contact_scripts(monkeypatch):
+    seen = []
+
+    def osa(script):
+        seen.append(script)
+        return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+    monkeypatch.setattr(contacts_tools, "_osa", osa)
+    return seen
+
+
+def test_create_without_a_value_keeps_its_plain_receipt(contact_scripts):
+    from service.router.model_led import BuiltinCompletion, builtin_completion_verified
+    result = contacts_tools.manage_contacts("create", "John Smith")
+    assert result == "Created contact John Smith."
+    assert type(result) is BuiltinCompletion
+    assert builtin_completion_verified(REAL_TOOLS["manage_contacts"], result)
+    assert 'first name:"John", last name:"Smith"' in contact_scripts[0]
+
+
+@pytest.mark.parametrize("value, kind, action", [
+    ("555-0142", "phone number", "add_phone"),
+    ("  john.fixture@example.com ", "email address", "add_email"),
+])
+def test_create_with_a_value_says_the_value_was_not_saved(contact_scripts, value, kind, action):
+    from service.router.model_led import BuiltinCompletion, builtin_completion_verified
+    tool = REAL_TOOLS["manage_contacts"]
+    result = contacts_tools.manage_contacts("create", "John Smith", value)
+    shown = value.strip()
+    assert result.startswith(f"Created contact John Smith. The {kind} {shown} was NOT saved")
+    assert f"action='{action}'" in result
+    # Still the verified receipt for the card that was made.
+    assert type(result) is BuiltinCompletion and builtin_completion_verified(tool, result)
+    assert not registry.not_done_receipt(tool, result)
+
+
+def test_create_writes_only_what_its_card_shows(contact_scripts):
+    """The card for create names the contact and no number, so the script adds none."""
+    from service.safety import policy
+    args = {"action": "create", "name": "John Smith", "value": "555-0142"}
+    assert "555-0142" not in policy._contact_change(args)
+    contacts_tools.manage_contacts(**args)
+    assert len(contact_scripts) == 1 and "555-0142" not in contact_scripts[0]
+    assert "make new phone" not in contact_scripts[0] and "make new email" not in contact_scripts[0]
+
+
+def test_a_failed_create_claims_nothing(monkeypatch):
+    monkeypatch.setattr(contacts_tools, "_osa", lambda script: subprocess.CompletedProcess(
+        [], 1, stdout="", stderr="synthetic Contacts failure"))
+    result = contacts_tools.manage_contacts("create", "John Smith", "555-0142")
+    assert result == "(could not create contact: synthetic Contacts failure)"
+    assert type(result) is str

@@ -69,8 +69,12 @@ def metadata(allow_dirty=False, build_number=None, preview=False) -> dict:
         raise BuildError("Build number must fit Apple's 4.2.2 digit CFBundleVersion format.")
     commit = git("rev-parse", "HEAD")
     ref = os.environ.get("GITHUB_REF", "")
-    if ref.startswith("refs/tags/") and ref != "refs/tags/v" + version:
-        raise BuildError("Release tag must exactly match v + toolchain.json version.")
+    # A tag build is the version itself or one of its pre-releases (v0.5.0-dev8, v0.5.0-rc3,
+    # v0.5.0-rc2-beta2). Publishing stays final-only: release.py still demands the exact tag.
+    if ref.startswith("refs/tags/") and not re.fullmatch(
+            r"refs/tags/v" + re.escape(version) + r"(?:-(?:dev|rc)\d+(?:-beta\d+)?)?", ref):
+        raise BuildError("Release tag must be v + toolchain.json version, "
+                         "optionally followed by -devN, -rcN or -rcN-betaN.")
     return {"version": version, "build_number": number, "commit": commit,
             "source_epoch": int(git("show", "-s", "--format=%ct", "HEAD")),
             "dirty": dirty, "preview": bool(preview), "architecture": CONFIG["architecture"],
@@ -618,6 +622,36 @@ def validate_google_oauth_client(bundle: Path, meta: dict) -> None:
         raise BuildError("Unreadable bundled Google OAuth client") from None
     if canonical != shipped.read_bytes():
         raise BuildError("Bundled Google OAuth client is not in canonical form")
+
+
+def packaging_output(requested: Path | None, meta: dict, preview: bool) -> Path:
+    """Where this build's artifacts go: a directory below dist/ that does not exist yet.
+
+    Path logic only, so main() can settle it before any test or build step runs."""
+    dist = (ROOT / "dist").resolve()
+    name = f"{meta['version']}-{meta['build_number']}-{meta['commit'][:12]}{'-preview' if preview else ''}"
+    output = (requested or ROOT / "dist" / name).resolve()
+    if not output.is_relative_to(dist) or output == dist:
+        raise BuildError("Output must be a new directory below this checkout's dist/")
+    if output.exists():
+        raise BuildError(f"Output directory already exists: {output}. Remove it or pass a new --output.")
+    return output
+
+
+def check_engine_source(engine_app: Path) -> None:
+    """Refuse, before the tests and the Swift build, an oMLX source the engine stage would refuse
+    anyway: not the genuine signed app, or another release than engine.lock.json pins.
+
+    Only the early answer lives here. engine_build.stage still compares the whole staged tree
+    with the lock, so a source that passes this check can still be refused there."""
+    try:
+        facts = engine_build.verify_source_identity(engine_app)
+        lock = engine_build.load_lock()
+    except engine_build.EngineBuildError as exc:
+        raise BuildError(str(exc)) from None
+    if lock is not None and facts["version"] != lock["omlx_version"]:
+        raise BuildError("oMLX source does not match engine.lock.json "
+                         f"(version {facts['version']!r}, the lock pins {lock['omlx_version']!r})")
 
 
 def source_files() -> list[Path]:
@@ -1544,8 +1578,14 @@ def main():
             packaging = args.command in ("all", "preview")
             preview = args.command == "preview"
             meta = metadata(args.allow_dirty, args.build_number, preview) if packaging else None
+            # Settled before any test or build step, so a taken or misplaced directory fails at once.
+            output = packaging_output(args.output, meta, preview) if packaging else None
             # Read (and drop from the environment) before any test or build step runs.
             google_client = google_oauth_client(args.google_oauth_client) if packaging else None
+            if packaging and google_client is None:
+                print("WARNING: no Google OAuth client was given (--google-oauth-client or "
+                      f"${GOOGLE_OAUTH_CLIENT_ENV}), so this build has no built-in Google sign-in. "
+                      "Do not publish it.", file=sys.stderr)
             # Fetched and verified before any test runs, so a bad pin fails fast.
             uv_archive = None
             if packaging and not args.no_uv:
@@ -1556,40 +1596,53 @@ def main():
             source_start = source_fingerprint() if meta else None
             if meta:
                 meta["tracked_source_sha256"] = source_start
-            python = args.test_python.absolute() if args.test_python else bootstrap(runner, args.offline)
-            if args.command == "bootstrap":
-                return 0
-            if not preview:
-                simulation_tests(runner, python, allow_dirty=args.allow_dirty, jobs=args.jobs)
-            if packaging:
-                binary = build_swift(runner)
-                output = (args.output or ROOT / "dist" / f"{meta['version']}-{meta['build_number']}-{meta['commit'][:12]}{'-preview' if preview else ''}").resolve()
-                if not output.is_relative_to((ROOT / "dist").resolve()) or output == (ROOT / "dist").resolve():
-                    raise BuildError("Output must be a new directory below this checkout's dist/")
-                output.mkdir(parents=True, exist_ok=False)
-                with contextlib.ExitStack() as mounted:
-                    engine_app = args.engine_app.resolve() if args.engine_app else None
+            with contextlib.ExitStack() as mounted:
+                # The engine source is opened and checked before any test runs too: a bad pin, a failed
+                # download or the wrong oMLX release stops here. A fetched image stays mounted until
+                # the engine has been staged.
+                engine_app = None
+                if packaging and (args.fetch_engine or args.engine_app):
                     if args.fetch_engine:
                         try:
                             engine_app = mounted.enter_context(
                                 engine_build.fetched_app(STATE / "engine-cache", offline=args.offline))
                         except engine_build.EngineBuildError as exc:
                             raise BuildError(str(exc)) from None
-                    bundle = assemble(runner, binary, output, meta, args.offline, engine_app,
-                                      google_client=google_client, uv_archive=uv_archive)
-                validate_structure(bundle, meta)
-                prepare_native_for_signing(runner, bundle)
-                validate_native(runner, bundle, meta)
-                sign_adhoc(runner, bundle)
-                relocation_smoke(runner, bundle)
-                if git("rev-parse", "HEAD") != meta["commit"] or source_fingerprint() != source_start:
-                    raise BuildError("Source changed during build; discard candidate and rerun from a stable checkout")
-                finalize(runner, bundle, output, meta, toolchain)
-                if preview:
-                    print(f"Built PREVIEW (not release eligible, QA gates skipped): {output}")
-                else:
-                    verify_artifacts(output)
-                    print(f"Verified candidate: {output}")
+                    else:
+                        engine_app = args.engine_app.resolve()
+                    check_engine_source(engine_app)
+                python = args.test_python.absolute() if args.test_python else bootstrap(runner, args.offline)
+                if args.command == "bootstrap":
+                    return 0
+                if not preview:
+                    simulation_tests(runner, python, allow_dirty=args.allow_dirty, jobs=args.jobs)
+                if packaging:
+                    binary = build_swift(runner)
+                    output.mkdir(parents=True, exist_ok=False)
+                    try:
+                        bundle = assemble(runner, binary, output, meta, args.offline, engine_app,
+                                          google_client=google_client, uv_archive=uv_archive)
+                        mounted.close()
+                        validate_structure(bundle, meta)
+                        prepare_native_for_signing(runner, bundle)
+                        validate_native(runner, bundle, meta)
+                        sign_adhoc(runner, bundle)
+                        relocation_smoke(runner, bundle)
+                        if git("rev-parse", "HEAD") != meta["commit"] or source_fingerprint() != source_start:
+                            raise BuildError("Source changed during build; discard candidate and rerun from a stable checkout")
+                        finalize(runner, bundle, output, meta, toolchain)
+                    except (BuildError, OSError, subprocess.CalledProcessError):
+                        # This run created the directory (mkdir above refuses an existing one), so a
+                        # failed build takes it away again and the same commit can be rebuilt.
+                        shutil.rmtree(output, ignore_errors=True)
+                        if not output.exists():
+                            print(f"Removed the incomplete output directory: {output}", file=sys.stderr)
+                        raise
+                    if preview:
+                        print(f"Built PREVIEW (not release eligible, QA gates skipped): {output}")
+                    else:
+                        verify_artifacts(output)
+                        print(f"Verified candidate: {output}")
         print(f"Diagnostics: {runner.logs}")
         return 0
     except (BuildError, OSError, subprocess.CalledProcessError) as exc:

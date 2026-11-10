@@ -209,6 +209,69 @@ def test_view_only_deny_refuses_a_text_send(store, monkeypatch):
     assert store.card("card:t") is not None
 
 
+def _text_send_answers(monkeypatch, answer):
+    """The real text path, with the policy allowing and the send tool answering `answer`."""
+    import service.safety as safety
+    from service.safety import Tier
+    monkeypatch.setattr(safety, "decide", lambda *a, **k: types.SimpleNamespace(tier=Tier.ALLOW, reason=""))
+    import service.tools.action_tools as actions
+
+    async def send(**kw):
+        return answer
+
+    monkeypatch.setattr(actions, "send_message", send)
+
+
+def test_an_unconfirmed_text_tells_the_card_where_to_check(store, monkeypatch):
+    """rc3 a06-brief-send#3: the card shows `error`. Without one, an unknown text read as
+    "That didn't go through. Try again." although it may have been delivered."""
+    from service.tools.registry import _OutboundUnknownResult
+    _text_card(store)
+    _text_send_answers(monkeypatch, _OutboundUnknownResult(
+        "Message outcome unknown — sending was not confirmed. Check Messages before trying again; "
+        "do not retry automatically.", operation="send_message", action_id="a1"))
+    result = asyncio.run(executor.fire("card:t", "On it", store=store))
+    assert result["ok"] is False and result["status"] == "unknown"
+    assert result["error"] == "Messages didn't confirm the text. Check Messages before trying again."
+    assert store.card("card:t")["action"]["locked"] == "unknown"      # still never offered again
+
+
+def test_a_text_that_was_not_sent_gives_the_card_the_bridges_reason(store, monkeypatch):
+    import service.tools.action_tools as actions
+    _text_card(store)
+    reason = ("Wisp isn't allowed to control Messages, so nothing was sent. Turn on Messages for Wisp in "
+              "System Settings > Privacy & Security > Automation, then try again.")
+    _text_send_answers(monkeypatch, actions._not_sent(f"(the message was NOT sent: {reason})"))
+    result = asyncio.run(executor.fire("card:t", "On it", store=store))
+    assert result["ok"] is False and result["status"] == "failed" and result["error"] == reason
+    assert "locked" not in store.card("card:t")["action"]            # nothing went out: it may be tried again
+
+    _text_send_answers(monkeypatch, actions._not_sent("(the message was NOT sent: Wisp app is not connected; nothing was sent)"))
+    result = asyncio.run(executor.fire("card:t", "On it", store=store))
+    assert result["error"] == "Wisp app is not connected; nothing was sent."
+
+
+@pytest.mark.parametrize("answer", [
+    "(the message was NOT sent: unknown error)",                     # a plain string proves nothing about its source
+    "(NOT sent — rewrite the complete text in send_message's arguments for the approval preview.)",
+])
+def test_a_text_failure_written_for_the_model_is_not_shown_on_the_card(store, monkeypatch, answer):
+    import service.tools.action_tools as actions
+    _text_card(store)
+    _text_send_answers(monkeypatch, answer if answer.startswith("(the") else actions._not_sent(answer))
+    result = asyncio.run(executor.fire("card:t", "On it", store=store))
+    assert result["ok"] is False and result["status"] == "failed"
+    assert result["error"] == "The text wasn't sent. Try again."
+    assert result["result"] == answer                                 # the audit trail keeps the tool's own line
+
+
+def test_a_sent_text_names_no_error(store, monkeypatch):
+    _text_card(store)
+    _text_send_answers(monkeypatch, "Message sent to +15551234567.")
+    result = asyncio.run(executor.fire("card:t", "On it", store=store))
+    assert result["ok"] is True and result["status"] == "succeeded" and "error" not in result
+
+
 # --- audit 2: no second send after an unknown outcome ------------------------------------------------------
 
 

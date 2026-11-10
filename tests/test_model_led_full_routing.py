@@ -534,6 +534,31 @@ def test_memory_exclusion_removes_automatic_memory_context(endpoint):
         endpoint.agent_calls[0]["forbidden_tools"])
 
 
+def test_memory_exclusion_with_typographic_apostrophe(endpoint):
+    endpoint.request("what did mom say today, don\u2019t use my memory")
+    assert endpoint.agent_calls[0]["include_memory_context"] is False
+    assert {"recall", "search_conversations", "remember", "forget", "clear_memory"} <= set(
+        endpoint.agent_calls[0]["forbidden_tools"])
+
+
+@pytest.mark.parametrize("apostrophe", ["'", "\u2019", "\u2018", "\u02bc", "\uff07"])
+def test_memory_excluded_folds_typographic_apostrophes(apostrophe):
+    from service.router.model_led import memory_excluded
+    assert memory_excluded(f"Don{apostrophe}t use my memory, what's a good gift for my sister?")
+    assert memory_excluded(f"don{apostrophe}t check your memory")
+    # A quoted instruction is source text, with either kind of double quote.
+    assert not memory_excluded(f'what does "don{apostrophe}t use my memory" mean?')
+    assert not memory_excluded(f"what does \u201cdon{apostrophe}t use my memory\u201d mean?")
+    assert not memory_excluded(f"I don{apostrophe}t remember, what did mom say today")
+
+
+@pytest.mark.parametrize("apostrophe", ["'", "\u2019", "\u2018", "\u02bc", "\uff07"])
+def test_bare_decline_with_typographic_apostrophe_stays_baseline(apostrophe):
+    from service.router.model_led import continuation_requires_baseline
+    assert continuation_requires_baseline(f"Don{apostrophe}t.", "Should I send it?")
+    assert not continuation_requires_baseline(f"don{apostrophe}t forget tomorrow", "Your calendar today")
+
+
 def test_active_reminder_cannot_hijack_new_personal_question(endpoint, monkeypatch):
     from service.tasks import engine
     sid = endpoint.store.create_session()
@@ -626,6 +651,36 @@ def test_new_topic_does_not_inherit_prior_calendar_date_obligation(prompt):
     from service.router.model_led import fresh_personal_obligation
     assert fresh_personal_obligation(prompt, "get_upcoming") == {}
 
+
+
+@pytest.mark.parametrize("prompt", [
+    "How do I share my calendar with Sam?", "how do I export my calendar to a file",
+    "how do I back up my messages", "How to clean up my inbox",
+    "why won't my email sync", "why won\u2019t my email sync", "Why can't I open my messages?",
+    "why is my calendar not syncing with my phone",
+    "my calendar app is broken, any ideas?", "My inbox is overflowing, any tips?",
+    "my email app keeps crashing"])
+def test_how_to_or_troubleshooting_that_names_a_source_sets_no_obligation(prompt):
+    from service.router.model_led import fresh_personal_obligation
+    assert fresh_personal_obligation(prompt) == {}
+
+
+@pytest.mark.parametrize("prompt,scope", [
+    ("what's on my calendar tomorrow", "calendar"), ("summarize my inbox", "mail"),
+    ("how many meetings are on my calendar today", "calendar"),
+    ("How many events are on my calendar", "calendar"),
+    ("How much of my inbox is unread?", "mail"), ("how busy is my calendar", "calendar"),
+    ("How does my calendar look this week", "calendar"), ("show my messages", "messages"),
+    # A named day is a request about that day's records, whatever the shape.
+    ("How can I fit a workout into my calendar tomorrow?", "calendar"),
+    ("what does my calendar app say for tomorrow", "calendar"),
+    # "Why" about what a source holds is still a question about its records.
+    ("why is my inbox empty", "mail"),
+    ("why isn't my meeting with Sam on my calendar", "calendar"),
+    ("what did mom say today", "communications")])
+def test_data_request_that_names_a_source_keeps_its_obligation(prompt, scope):
+    from service.router.model_led import fresh_personal_obligation
+    assert fresh_personal_obligation(prompt)["scope"] == scope
 
 
 @pytest.mark.parametrize("mode", [None, "1"])

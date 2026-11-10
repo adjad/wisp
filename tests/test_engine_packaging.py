@@ -439,7 +439,7 @@ def test_pinned_download() -> None:
     source = engine.load_source()
     check("source pin is for the locked oMLX release", source["omlx_version"] == engine.load_lock()["omlx_version"])
     check("asset URL is the official release path",
-          engine.asset_url(source) == "https://github.com/jundot/omlx/releases/download/v0.7.3rc1/oMLX-0.7.3rc1-macos26-27.dmg")
+          engine.asset_url(source) == "https://github.com/jundot/omlx/releases/download/v0.7.3/oMLX-0.7.3-macos26-27.dmg")
     for version in ("0.7.0", "0.7.3rc1", "0.7.3.dev2"):
         with tempfile.TemporaryDirectory() as t:
             good = Path(t) / "src.json"

@@ -194,6 +194,123 @@ def test_a_running_engine_survives_a_failed_probe() -> None:
     check("a refusal after another caller launched it leaves it running", engine.live)
 
 
+class EpochClient:
+    """A checked client whose health check takes a moment and is refused, as the real one is,
+    when the connections are reset while it runs."""
+    managed = True
+
+    def __init__(self, error_type, log):
+        self.error_type, self.log, self.epoch = error_type, log, 0
+
+    async def health(self):
+        self.log.append("health")
+        seen = self.epoch
+        await asyncio.sleep(0.05)
+        if self.epoch != seen:
+            error = self.error_type("Wisp couldn't verify its built-in AI engine just now")
+            error.reason = "connection_invalidated"
+            raise error
+        return {"status": "ok"}
+
+    def invalidate_connections(self):
+        self.log.append("invalidate")
+        self.epoch += 1
+
+
+class SlowReadyEngine(FakeEngine):
+    """Each caller's readiness poll returns a little later than the one before, as two polls
+    with their own phase do."""
+    polls, step = 0, 0.02
+
+    async def wait_ready(self, timeout):
+        self.polls += 1
+        await asyncio.sleep(self.step * self.polls)
+        return await super().wait_ready(timeout)
+
+
+class DownClient(FakeClient):
+    """Nothing listens: every health check fails to connect."""
+
+    async def health(self):
+        self.log.append("health")
+        raise ConnectionError("connection refused")
+
+
+def test_overlapping_starts_share_one_launch_and_one_verification() -> None:
+    main, runtime, ModelLoadError = boot()
+    log: list[str] = []
+    engine = SlowReadyEngine(log)
+    runtime._manager = engine
+    main.client = EpochClient(ModelLoadError, log)
+
+    async def two_callers():
+        return await asyncio.gather(main.ensure_omlx(), main.ensure_omlx(), return_exceptions=True)
+
+    results = run(two_callers())
+    check("both overlapping starts return", results == [None, None], str(results))
+    check("the engine is launched once", log.count("start") == 1, str(log))
+    check("and is never stopped by a caller", "stop" not in log and engine.live, str(log))
+    check("the second caller reuses the first one's readiness wait", log.count("wait_ready") == 1, str(log))
+    check("and the engine ends up verified", engine.verified is True)
+
+    # A reset from outside the start path (a request that failed while the engine was coming
+    # up) lands inside the verification: the check is repeated, not treated as a refusal.
+    log.clear()
+    engine = FakeEngine(log)
+    runtime._manager = engine
+    client = EpochClient(ModelLoadError, log)
+    main.client = client
+
+    async def reset_during_the_check():
+        task = asyncio.create_task(main._ensure_bundled_engine())
+        while "health" not in log:
+            await asyncio.sleep(0.005)
+        client.invalidate_connections()
+        await task
+
+    try:
+        run(reset_during_the_check())
+        survived = True
+    except ModelLoadError:
+        survived = False
+    check("a reset during the check is checked again", survived and log.count("health") == 2, str(log))
+    check("and the engine it launched keeps running, verified",
+          "stop" not in log and engine.live and engine.verified is True, str(log))
+
+    # Any other refusal still fails at once and stops the engine this call launched.
+    log.clear()
+    engine = FakeEngine(log)
+    runtime._manager = engine
+    other = ModelLoadError("not the engine")
+    other.reason = "process_identity_changed"
+    main.client = FakeClient(other, log)
+    try:
+        run(main._ensure_bundled_engine())
+        check("another refusal is not retried", False)
+    except ModelLoadError:
+        check("another refusal is not retried", log.count("health") == 1 and log[-1] == "stop", str(log))
+
+    # A caller that waited behind a failed start makes its own attempt.
+    log.clear()
+    engine = SlowReadyEngine(log, ready=False)
+    engine.step = 0.4
+    runtime._manager = engine
+    main.client = DownClient(None, log)
+    original = main._await_omlx
+
+    async def short_probe(seconds):
+        return await original(min(seconds, 0.2))
+
+    main._await_omlx = short_probe
+    try:
+        results = run(two_callers())
+    finally:
+        main._await_omlx = original
+    check("a start that fails does not strand the caller behind it",
+          all(isinstance(r, ModelLoadError) for r in results) and log.count("start") == 2
+          and log.count("stop") == 2 and not engine.live, str(log))
+
+
 def test_verified_flag_gates_plain_http_users() -> None:
     main, runtime, ModelLoadError = boot()
     from service import config
@@ -262,11 +379,92 @@ def test_quit_seals_the_engine_in_a_backend_that_never_used_it() -> None:
         runtime._manager = None
 
 
+def test_a_large_engine_log_is_set_aside_at_the_next_start() -> None:
+    # engine.log is appended to on every start and nothing trimmed it: about 1 MB a day.
+    import stat
+    from service.engine import EngineLayout, EngineManager
+    from service.engine import manager as manager_module
+    rotate = manager_module._rotate_log
+    check("the cap is 20 MB", manager_module.LOG_ROTATE_BYTES == 20 * 1024 * 1024)
+    with tempfile.TemporaryDirectory() as t:
+        log = Path(t) / "data" / "engine.log"
+        older = log.with_name("engine.log.1")
+        log.parent.mkdir()
+        rotate(log, 10)
+        check("no log yet: nothing happens", not log.exists() and not older.exists())
+        log.write_text("0123456789")
+        rotate(log, 10)
+        check("a log at the cap stays", log.read_text() == "0123456789" and not older.exists())
+        log.write_text("first run, too long")
+        log.chmod(0o644)
+        rotate(log, 10)
+        check("a log above the cap is set aside", not log.exists() and older.read_text() == "first run, too long")
+        check("and the set-aside log is private", stat.S_IMODE(older.stat().st_mode) == 0o600)
+        log.write_text("second run, too long")
+        rotate(log, 10)
+        check("the next one replaces it: two files at most",
+              older.read_text() == "second run, too long"
+              and sorted(p.name for p in log.parent.iterdir()) == ["engine.log.1"])
+        log.write_text("third run, too long")
+        original = os.replace
+        try:
+            def refuse(*args, **kwargs):
+                raise PermissionError("no")
+            os.replace = refuse
+            rotate(log, 10)
+            raised = False
+        except OSError:
+            raised = True
+        finally:
+            os.replace = original
+        check("a log that cannot be moved is left to grow, and nothing is raised",
+              not raised and log.read_text() == "third run, too long")
+        link = Path(t) / "data" / "link.log"
+        link.symlink_to(log)
+        rotate(link, 10)
+        check("a link is never moved", link.is_symlink() and log.exists())
+        link.unlink()
+
+        # At a start: the old log is set aside before the new engine's output is appended.
+        class FakeChild:
+            pid = os.getpid()
+
+            def __init__(self, *args, stdout=None, **kwargs):
+                stdout.write(b"new run\n")
+                stdout.flush()
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+        layout = EngineLayout(root=Path(t) / "engine", data_dir=Path(t) / "data")
+        engine = EngineManager(layout, port=40000 + os.getpid() % 20000, api_key="a" * 64,
+                               launcher=["fake-engine"])
+        cap, manager_module.LOG_ROTATE_BYTES = manager_module.LOG_ROTATE_BYTES, 10
+        launch, manager_module.subprocess.Popen = manager_module.subprocess.Popen, FakeChild
+        try:
+            engine.start()
+            check("a start sets a large log aside", older.read_text() == "third run, too long")
+            check("and the engine writes to a fresh private one",
+                  log.read_text() == "new run\n" and stat.S_IMODE(log.stat().st_mode) == 0o600, log.read_text())
+        finally:
+            manager_module.LOG_ROTATE_BYTES = cap
+            manager_module.subprocess.Popen = launch
+            engine.stop(grace=0.1)
+
+
 def main() -> int:
     for fn in (test_leftover_engine_is_not_probed_first, test_live_engine_is_verified_not_restarted,
                test_readiness_then_identity, test_a_running_engine_survives_a_failed_probe,
+               test_overlapping_starts_share_one_launch_and_one_verification,
                test_verified_flag_gates_plain_http_users, test_reap_orphan_is_safe_without_a_pid_file,
-               test_quit_seals_the_engine_in_a_backend_that_never_used_it):
+               test_quit_seals_the_engine_in_a_backend_that_never_used_it,
+               test_a_large_engine_log_is_set_aside_at_the_next_start):
         print(fn.__name__)
         fn()
     print(f"\n{PASS} passed, {FAIL} failed")

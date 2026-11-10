@@ -425,3 +425,17 @@ def test_a_digest_keeps_its_place_and_the_others_still_fit():
     out = _view(rows, query="enrollment", client=client)
     assert len(out) <= D.RESULT_BUDGET_CHARS and _order(out)[0] == "Winter enrollment"
     assert "[Wisp's digest" in out and "Other 0" in out
+
+
+def test_local_index_headers_with_numeric_ids_do_not_repeat_shown_mail():
+    rows = [_row(f"Your order {i}", ts=NOW - i * 3600, message_id=f"<id{i}@x>") for i in range(1, 5)]
+    history = "\n".join(
+        [_header(f"Your order {i}", ts=NOW - i * 3600 + 20, message_id=str(-8123456780 - i))
+         for i in range(1, 5)]
+        + [_header("Order refund processed", ts=NOW - 50 * DAY, message_id="-8123456799")])
+    out = _view(rows, query="order", count=3, history=history)
+    assert "1 older or other email matches by sender or subject, headers only" in out
+    trailer = out.split("headers only", 1)[1]
+    assert "Order refund processed" in trailer
+    assert "Your order" not in trailer
+    assert "Message-ID: -" not in out

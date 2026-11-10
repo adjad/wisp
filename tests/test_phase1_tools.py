@@ -59,6 +59,30 @@ def test_duration_parsing() -> None:
     for junk in ["bananas", "monday", "sunday brunch", ""]:
         check(f"{junk!r} is refused", _parse_duration(junk) is None)
 
+    print("\n  spelled-out lengths (the model often passes the user's words through)")
+    for text, want in [("five minutes", 300), ("an hour", 3600), ("a minute", 60),
+                       ("half an hour", 1800), ("a half hour", 1800), ("half hour", 1800),
+                       ("half a minute", 30), ("an hour and a half", 5400),
+                       ("one and a half hours", 5400), ("two and a half hours", 9000),
+                       ("a minute and a half", 90), ("quarter of an hour", 900),
+                       ("a quarter hour", 900), ("three quarters of an hour", 2700),
+                       ("an hour and a quarter", 4500), ("forty-five seconds", 45),
+                       ("forty five seconds", 45), ("twenty minutes", 1200),
+                       ("twenty-one minutes", 1260), ("fifteen mins", 900),
+                       ("ninety seconds", 90), ("Ten Minutes", 600),
+                       ("an hour and twenty minutes", 4800),
+                       ("one hour fifteen minutes", 4500), ("a 20 minute timer", 1200),
+                       ("10 minutes, one egg", 600), ("1.5 hours", 5400)]:
+        got = _parse_duration(text)
+        check(f"{text!r} -> {want}s", got == want, f"got {got}")
+    # A number word with no unit is not a length (only bare DIGITS mean minutes),
+    # a stray "a" is never one, and an amount the parser cannot read in full is
+    # refused whole instead of being read as its last few words.
+    for junk in ["a", "an", "ten", "five", "half", "a while", "one moment",
+                 "half past six", "a couple of minutes", "a hundred and twenty minutes",
+                 "one hundred minutes", "2 hours and three quarters", "someone's hour"]:
+        check(f"{junk!r} is refused", _parse_duration(junk) is None, f"got {_parse_duration(junk)}")
+
 
 def test_calculate() -> None:
     print("\narithmetic is computed, not generated")
@@ -82,6 +106,27 @@ def test_calculate() -> None:
     for bad, why in [("1/0", "division by zero"), ("9**9**9", "too large")]:
         got = calculate(bad)
         check(f"{bad!r} -> {why}", got.startswith("(error"), f"got {got!r}")
+    # pow() is one uninterruptible C call: it must obey the same bounds as **.
+    for big in ["pow(7, 10**9)", "pow(99, 99**4)", "pow(2, 5000)", "pow(10**7, 2)"]:
+        got = calculate(big)
+        check(f"{big!r} is refused as too large",
+              got.startswith("(error") and "too large" in got, f"got {got!r}")
+    check("pow(2, 10) still works", calculate("pow(2, 10)") == "1,024")
+    check("pow(3, 4, 5) still works", calculate("pow(3, 4, 5)") == "1")
+    check("pow with a zero modulus is refused", calculate("pow(3, 4, 0)").startswith("(error"))
+    # Operands this size fit inside the ** bounds, and a modular power over them
+    # would hold the service for seconds.
+    huge = calculate("pow(999999**1000, 999999**1000, 999999**999)")
+    check("a modular power over huge operands is refused",
+          huge.startswith("(error") and "too large" in huge, f"got {huge!r}")
+    check("a modular power over large but bounded operands still works",
+          calculate("pow(999999**200, 999999**200, 1000007)")
+          == f"{pow(999999**200, 999999**200, 1000007):,}")
+    mixed = calculate("max(1, 2) + [1, 2]")
+    check("a type error is a plain error that does not blame the count",
+          mixed.startswith("(error") and "wrong number" not in mixed, f"got {mixed!r}")
+    check("wrong argument count is a plain error, not a crash",
+          calculate("sqrt(1, 2)").startswith("(error"))
 
 
 def test_conversions() -> None:

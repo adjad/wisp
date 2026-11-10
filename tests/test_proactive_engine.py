@@ -230,6 +230,40 @@ def test_unparseable_judge_falls_back_to_rule_items(store):
     assert "coffee chat" in titles and "mom" in titles
 
 
+def test_a_judge_reply_cut_off_at_the_token_limit_falls_back_and_the_budget_fits_eight_items():
+    seen = {}
+
+    async def cut_off(system, material, abort, tokens):
+        seen["tokens"] = tokens
+        raise ValueError("gist reply did not complete (length)")
+
+    sam = next(i for i in items_fixture() if i["who"] == "Sam Lee")
+    survivors = [{"item": sam, "result": FakeModel()._triage(sam["text"])}]
+    state, items, summary = asyncio.run(judge.judge(survivors, SCHEDULE, cut_off, lambda: False, now=NOW, tz=TZ))
+    assert state == "fallback" and summary == "" and items
+    # Eight items of six fields plus a two-sentence summary run past 700 tokens of JSON.
+    worst = json.dumps({"summary": "You have a coffee chat to set up. Mom wants to talk about the trip tomorrow.",
+                        "items": [{"title": "Reply to Samantha about the coffee chat", "action": "meet",
+                                   "why": "Sam wants to meet this week to talk about the project.",
+                                   "due": "this week", "sources": ["S1", "S2"], "urgency": "high"}] * judge.MAX_ITEMS})
+    assert len(worst) / 3 < seen["tokens"][0] and seen["tokens"][0] >= 1200
+
+
+def test_a_fallback_build_keeps_the_summary_an_earlier_build_wrote(store):
+    run(store, FakeModel())
+    before = dict(store.state()["summaries"])
+    assert any(before.values())
+
+    async def cut_off(system, material, abort, tokens):
+        if "You pick what the user should act on next" in system:
+            raise ValueError("gist reply did not complete (length)")
+        return await FakeModel()(system, material, abort, tokens)
+
+    run(store, cut_off)
+    assert store.state()["summaries"] == before
+    assert snap(store)["todos"], "the rule-ranked to-dos still show"
+
+
 def test_pii_never_reaches_the_model_and_output_backstop(store):
     model = FakeModel()
     run(store, model)

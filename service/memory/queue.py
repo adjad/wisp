@@ -5,7 +5,7 @@ import sqlite3
 import time
 import uuid
 
-from service.memory.facts import fts_query, terms
+from service.memory.facts import fts_query, secure_delete_fts, terms
 
 
 def install(db):
@@ -46,6 +46,8 @@ def install(db):
             # backfilled; the surrounding savepoint restores both the legacy
             # triggers and table if any later installation step fails.
             db.execute('DROP TABLE IF EXISTS memory_transcripts')
+            # A deleted chat's words leave the search index too.
+            secure_delete_fts(db, 'memory_turn_fts')
         except sqlite3.OperationalError as exc:
             if 'no such module' not in str(exc):
                 raise

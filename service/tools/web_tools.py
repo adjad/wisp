@@ -25,8 +25,9 @@ from urllib.parse import quote, urlparse
 
 import httpx
 
-from service.research.web import (fetch_page as research_fetch_page,
-                                  render_search_results, search_web)
+from service.research.web import (WebError, _SSRF_MESSAGE_PREFIXES,
+                                  fetch_page as research_fetch_page,
+                                  render_search_results, search_web, short_text_fetch)
 from service.tools.registry import DisplayOnlyToolResult, PublicSearchToolResult, register
 from service.tools.untrusted import WEB_PAGE, fence, neutralize
 
@@ -122,25 +123,18 @@ def _recovery_hint(url: str, *, status: int | None = None) -> str:
     u = url.lower()
     host = (urlparse(url).hostname or "").lower()
 
-    if any(b in u for b in _BAD_FINANCE_HOSTS):
-        return (" That API needs a key this tool doesn't have. Use "
-                "https://query1.finance.yahoo.com/v8/finance/chart/<TICKER>"
-                "?range=1d&interval=1d instead, resolving a company name to a "
-                "ticker first via .../v1/finance/search?q=<name>.")
+    if any(b in u for b in _BAD_FINANCE_HOSTS) or "finance.yahoo.com" in host:
+        return (" If this was for a stock or ETF price, use get_stock_price "
+                "instead of building another URL.")
     if any(s in u for s in _SEARCH_HOSTS):
         return (" General search engines return navigation HTML, not data. Use "
-                "https://html.duckduckgo.com/html/?q=<query> for a web search, "
-                "or the documented endpoint for weather/crypto/stocks/news.")
-    if "finance.yahoo.com" in host and "/v8/finance/chart/" not in u:
-        return (" Only the v8 chart endpoint works without a key: "
-                "https://query1.finance.yahoo.com/v8/finance/chart/<TICKER>"
-                "?range=1d&interval=1d")
+                "web_search for a lookup by topic, or the documented endpoint "
+                "for crypto or news.")
     if "news.google.com" in host and status == 404:
         return (" news.google.com needs a non-empty q — try "
                 "q=top stories for a generic news ask.")
-    if "wikipedia.org" in host:
-        return (" That title doesn't exist. Try "
-                "https://html.duckduckgo.com/html/?q=<query> instead of "
+    if "wikipedia.org" in host and status == 404:
+        return (" That title doesn't exist. Use web_search instead of "
                 "guessing another article title.")
     if status in (401, 403):
         return (" This site blocks non-browser fetches. Don't retry it — use a "
@@ -148,6 +142,23 @@ def _recovery_hint(url: str, *, status: int | None = None) -> str:
     return (" Try ONE documented alternate endpoint; if that also fails, stop "
             "and tell the user you couldn't retrieve it rather than trying "
             "more URLs.")
+
+
+_HTTP_STATUS_RE = re.compile(r"HTTP (\d{3})$")
+
+
+def _fetch_failure_hint(url: str, exc: Exception) -> str:
+    """The hint web_fetch's description promises, for a failure it can help.
+
+    A refusal gets none: a blocked local address must not be retried another
+    way, and a refused redirect already names the host to ask for.
+    """
+    message = str(exc)
+    if isinstance(exc, WebError) and (message.startswith(_SSRF_MESSAGE_PREFIXES)
+                                      or message.startswith("redirect to a different host")):
+        return ""
+    status = _HTTP_STATUS_RE.match(message) if isinstance(exc, WebError) else None
+    return _recovery_hint(url, status=int(status.group(1)) if status else None)
 
 
 # The RECIPES stay in the description; the ANTI-PATTERNS moved to the failure
@@ -195,8 +206,8 @@ async def _yahoo_get(url: str) -> httpx.Response | str:
         return f"(error reaching Yahoo Finance: {type(e).__name__}: {e})"
 
 
-# A bare ticker: 1-5 letters, optionally one dot-suffix (BRK.B), all caps once
-# stripped/upper()'d. Anything else — "nvidia", "the governor's stock", spaces —
+# A bare ticker: 1-5 letters, optionally one dot-suffix (BRK.B), in capitals AS
+# GIVEN. Anything else — "nvidia", "Ford", "the governor's stock", spaces —
 # needs the search endpoint to resolve to a real symbol first.
 _TICKER_RE = re.compile(r"^[A-Z]{1,5}(\.[A-Z]{1,2})?$")
 
@@ -223,13 +234,33 @@ async def _resolve_symbol(query: str, *,
     through this source". Search resolves "VICOR" to VICR on the first hit —
     the information was one call away the whole time. Callers now retry with
     force_search=True on a 404 (see _chart_404_retry).
+
+    The shortcut is taken only for text already in capitals. A short company
+    name written as a word ("Ford", "Coke") used to be upper-cased into a
+    ticker, and when that happened to be a real symbol of ANOTHER company
+    (FORD is Forward Industries, COKE is Coca-Cola Consolidated) the chart
+    call succeeded, so nothing ever corrected it and the wrong company's price
+    was reported under the name the user said. Words go through search, which
+    also resolves a lower-case ticker ("nvda") on its first hit. If search
+    cannot answer, a word that looks like a ticker still falls back to the
+    upper-cased guess rather than failing; the report names the company from
+    the chart itself in that case (see _quote_label).
     """
     q = (query or "").strip()
     if not q:
         return "(empty symbol)"
     candidate = q.upper()
-    if _TICKER_RE.match(candidate) and not force_search:
+    looks_like_ticker = bool(_TICKER_RE.match(candidate))
+    if looks_like_ticker and q == candidate and not force_search:
         return candidate, candidate
+    searched = await _search_symbol(q)
+    if isinstance(searched, str) and looks_like_ticker and not force_search:
+        return candidate, candidate
+    return searched
+
+
+async def _search_symbol(q: str) -> tuple[str, str] | str:
+    """First equity/ETF hit for `q` on Yahoo's search endpoint, or an error string."""
     r = await _yahoo_get(
         f"https://query1.finance.yahoo.com/v1/finance/search?q={quote(q)}")
     if isinstance(r, str):
@@ -245,6 +276,27 @@ async def _resolve_symbol(query: str, *,
     if not hit or not hit.get("symbol"):
         return f"(no ticker found for {q!r} — check the spelling or give the symbol directly)"
     return hit["symbol"], hit.get("shortname") or hit.get("longname") or q
+
+
+def _quote_label(symbol: str, name: str, result: object) -> str:
+    """`SYMBOL (Company)` for a report header; `result` is one chart result.
+
+    A symbol taken at face value (name == symbol) was never checked against a
+    company, so the name comes from the chart's own meta when it has one. The
+    reader then sees which company the price belongs to even when the model
+    passed a symbol the user never said.
+    """
+    if not name or name == symbol:
+        meta = result.get("meta") if isinstance(result, dict) else None
+        if isinstance(meta, dict):
+            for key in ("shortName", "longName"):
+                value = meta.get(key)
+                if isinstance(value, str) and value.strip():
+                    # One line, bounded, and never the ": (" that marks a
+                    # failed block in get_stock_price.
+                    name = " ".join(value.split())[:80].replace(": (", " (")
+                    break
+    return f"{symbol} ({name})" if name and name != symbol else symbol
 
 
 async def _chart_404_retry(query: str, resolved: tuple[str, str]
@@ -961,7 +1013,7 @@ async def _one_quote(query: str) -> str:
         result = r.json()["chart"]["result"][0]
     except Exception:  # noqa: BLE001
         return f"{symbol}: (quote data missing or in an unexpected shape)"
-    label = f"{symbol} ({name})" if name and name != symbol else symbol
+    label = _quote_label(symbol, name, result)
     result = await _with_previous_close(result, symbol)
     try:
         return _quote_report(result, label)
@@ -1201,7 +1253,7 @@ async def _one_history(query: str, period: str, *, exact_days: int | None = None
     pct = (delta / first * 100) if first else 0.0
     hi_i = max(range(len(closes)), key=lambda i: closes[i])
     lo_i = min(range(len(closes)), key=lambda i: closes[i])
-    label = f"{symbol} ({name})" if name and name != symbol else symbol
+    label = _quote_label(symbol, name, {"meta": meta})
     head = (f"{label} over {period} ({_fmt_day(stamps[0], tz)} to "
             f"{_fmt_day(stamps[-1], tz)}, {ccy}):\n"
             f"  start {first:.2f} -> end {last:.2f}  "
@@ -2619,6 +2671,26 @@ async def current_news(query: str, limit: int = 6) -> str:
                              limit=limit, query=query)
 
 
+_FETCH_TITLE_CHARS = 300
+_ARCHIVE_DAY_RE = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
+
+
+def _archive_note(page) -> str:
+    """Wisp's own line saying the text is an Internet Archive copy, or "".
+
+    A blocked, slow or thin live page falls back to the Archive's closest
+    snapshot, which can be months or years old, and until rc3 nothing in the
+    result said so: old opening hours and prices read as current. The day is
+    digits only (it comes from the snapshot address); no page text is used.
+    """
+    if not getattr(page, "via_archive", False):
+        return ""
+    day = str(getattr(page, "archived_at", "") or "")
+    when = f"from {day}" if _ARCHIVE_DAY_RE.match(day) else "of unknown date"
+    return ("\nNote: the live page could not be read; this is an Internet Archive "
+            f"copy {when} and may be out of date.")
+
+
 @register(
     "web_fetch",
     "Fetch a URL over HTTP(S) and return its text (GET only, no auth/cookies) "
@@ -2644,9 +2716,13 @@ async def current_news(query: str, limit: int = 6) -> str:
 )
 async def web_fetch(url: str) -> str:
     try:
-        page = await research_fetch_page(url)
+        # Research drops pages under 120 characters as too thin to cite. Here a
+        # short body is often the whole answer (the crypto recipe above returns
+        # about 26 characters of JSON), so any non-empty response comes back.
+        with short_text_fetch():
+            page = await research_fetch_page(url)
     except Exception as exc:  # noqa: BLE001
-        return f"(fetch failed: {type(exc).__name__}: {exc})"
+        return f"(fetch failed: {type(exc).__name__}: {exc}){_fetch_failure_hint(url, exc)}"
     # The page is fenced as untrusted, as web_search's snippets already are
     # (_public_search_model_evidence): until 2026-11-04 the raw body followed
     # the header with nothing marking where Wisp's text ended. The title is
@@ -2654,10 +2730,20 @@ async def web_fetch(url: str) -> str:
     # truncation note goes after the fence, where it reads as Wisp's.
     # Published comes from the page's own <meta> too (up to 80 chars, newlines
     # allowed), so it is put on one line and neutralized with the rest.
-    header = f"Title: {page.title}\nURL: {page.canonical_url}"
+    # The title gets the same treatment and a length cap: a <title> with line
+    # breaks would otherwise print lines of its own up here, above the fence,
+    # and a very long one would push the fence out of the capped result.
+    title = " ".join(str(page.title).split())[:_FETCH_TITLE_CHARS]
+    # The URL line is the address the text was fetched from (after redirects),
+    # never the page's own rel=canonical claim about where it lives.
+    header = f"Title: {title}\nURL: {' '.join(str(page.url).split())}"
     if page.published_at:
         header += "\nPublished: " + " ".join(str(page.published_at).split())
-    header = neutralize(header)
+    # The archive note is Wisp's line, added after the page's own header text
+    # has been neutralized. It sits above the fence and not after it: an Ask
+    # turn keeps only the first 6,000 characters of a result, so a line after
+    # a long page would be cut off with the tail.
+    header = neutralize(header) + _archive_note(page)
     body, note = page.text, ""
     if len(body) > 10500:
         body, note = body[:10500], f"\n…[truncated {len(page.text) - 10500} characters]"

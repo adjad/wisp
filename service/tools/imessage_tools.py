@@ -124,8 +124,9 @@ _contacts_not_allowed = False
 
 
 def clear_contacts() -> None:
-    global _contacts, _name_handles, _birthdays
+    global _contacts, _name_handles, _birthdays, _records_memo
     _contacts, _name_handles, _birthdays = {}, {}, {}
+    _records_memo = None             # it holds names resolved from the old map
     # Unlike best-effort cache_store.save, a failed removal must surface to
     # the sender, which keeps the privacy change pending and retries it.
     from service.paths import private_temp_files
@@ -251,6 +252,28 @@ def find_contacts(name: str) -> list[dict]:
     return out
 
 
+def contact_name_for_handle(handle: str) -> str:
+    """The saved contact one literal number or address belongs to, or "".
+
+    For naming a send's recipient on its card and receipt. A handle saved
+    exactly as given wins over the last-10-digits match, so two cards that
+    hold the same number in different formats can't trade names.
+    """
+    h = (handle or "").strip()
+    key = _norm_handle(h)
+    if not h or not key:
+        return ""
+    shown = _contacts.get(key, "")
+    for name, handles in _name_handles.items():
+        if h in handles:
+            # The name as it is saved when the two maps agree, else the same
+            # title-cased form find_contacts reports.
+            if shown.strip().lower() == name:
+                return shown.strip()
+            return name.title() if name.islower() else name
+    return shown.strip()
+
+
 # Digits-only projection of the message cache, for "has this number actually
 # been texted?" checks. Memoized on the cache's identity — stripping every
 # non-digit out of the full history is far too expensive to redo per handle
@@ -320,7 +343,9 @@ def cache_messages(lines: str, available: bool, reason: str = "", kind: str = ""
     with _snapshot_lock:
         global _lines, _available, _unavailable_reason, _unavailable_kind, _sync_completed
         global _snapshot_generation, _snapshot_captured_at, _publication_expires_monotonic, _issued_snapshot
+        global _records_memo
         _publication_authority.withdraw()
+        _records_memo = None
         _issued_snapshot = None
         _snapshot_generation += 1
         _snapshot_captured_at = time.time()
@@ -472,7 +497,28 @@ def structured_messages_snapshot() -> dict:
     return {"version": 1, "state": state, "coverage": coverage, "records": records}
 
 
+# The last parse and the exact inputs it came from: the cached text (by
+# identity: str is immutable and the memo holds it, so its id can't be reused)
+# and a copy of the contacts map (by equality, so an in-place edit counts).
+# One Today poll parses the whole cache 3-4 times; any change re-parses.
+_records_memo: tuple[str, dict, tuple] | None = None
+
+
 def _parse_records() -> list[tuple[float, str | None, str, str, bool | None]]:
+    """Each cached line -> (epoch_seconds, conversation_id, context, text, unread),
+    memoized on the cached text and the contacts map (a fresh list each call)."""
+    global _records_memo
+    lines, contacts, memo = _lines, _contacts, _records_memo
+    if memo is not None and memo[0] is lines and memo[1] == contacts:
+        return list(memo[2])
+    contacts_seen = dict(contacts)
+    records = _parse_records_uncached(lines)
+    if _lines is lines and _contacts == contacts_seen:
+        _records_memo = (lines, contacts_seen, tuple(records))
+    return records
+
+
+def _parse_records_uncached(source: str) -> list[tuple[float, str | None, str, str, bool | None]]:
     """Each cached line -> (epoch_seconds, conversation_id, context, text, unread).
 
     ``unread`` is ``None`` for a legacy cache written before the native reader
@@ -486,7 +532,7 @@ def _parse_records() -> list[tuple[float, str | None, str, str, bool | None]]:
     skipped as noise.
     """
     out: list[tuple[float, str | None, str, str, bool | None]] = []
-    for line in _lines.strip().split("\n"):
+    for line in source.strip().split("\n"):
         if line.startswith(_STRUCTURED_PREFIX):
             continue
         unread: bool | None

@@ -30,8 +30,15 @@ public enum GatewayEventDecoder {
         case "tool_result":
             return nil
         case "message_draft":
+            // The backend ends a draft turn with this event and no `text`, so the draft
+            // itself becomes the visible answer. Without it the turn would end blank.
             let to = str("to")
-            return .activity(to.isEmpty ? "Drafted a message" : "Drafted a message to \(to)")
+            let body = str("text")
+            guard !body.isEmpty else {
+                return .activity(to.isEmpty ? "Drafted a message" : "Drafted a message to \(to)")
+            }
+            let heading = to.isEmpty ? "Draft message:" : "Draft message to \(to):"
+            return .replace("\(heading)\n\(body)\n\nThis is only a draft. Nothing has been sent.")
         case "confirm":
             return .approval(ApprovalRequest(
                 id: str("id"), requestId: str("request_id"), sessionId: sessionId,

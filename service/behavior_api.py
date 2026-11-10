@@ -504,7 +504,9 @@ async def behavior_act(nudge_id: str, body: dict[str, Any] | None = None) -> dic
         done = await asyncio.to_thread(runtime.perform_action, store, nudge_id, idx, action, runtime.clock())
         if done is None:
             return {"ok": False, "type": action.type,
-                    "detail": "Nothing was added: it is already on your schedule or its time has passed."}
+                    "detail": ("Nothing was added: the event has already started."
+                               if _event_started(action, runtime.clock()) else
+                               "Nothing was added: it is already on your schedule or its time has passed.")}
         await asyncio.to_thread(_feedback_quietly, runtime, store, nudge_id)
         try:
             await hub.publish({"type": "changed"}, durable=False)
@@ -513,6 +515,15 @@ async def behavior_act(nudge_id: str, body: dict[str, Any] | None = None) -> dic
         return {"ok": True, "type": action.type, "created": {
             "title": done["title"], "when_ts": done["when_ts"]}, "can_undo": True}
     raise HTTPException(status_code=409, detail="Unsupported action type")
+
+
+def _event_started(action, now: float) -> bool:
+    """True when the action is tied to an event whose start time has already passed."""
+    try:
+        event_ts = float((action.params or {}).get("event_ts"))
+    except (TypeError, ValueError):
+        return False
+    return event_ts <= now
 
 
 def _feedback_quietly(runtime, store, nudge_id: str) -> None:

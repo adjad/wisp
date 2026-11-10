@@ -83,9 +83,31 @@ def test_an_unread_broadcast_is_not_mistaken_for_a_person_waiting():
     ("Priya Shah", True), ("Dad", True), ("Maya", True), ("Jean-Luc O'Brien", True), ("Renée Dupont", True),
     ("Amy Zeng via Ed", True), ("NVIDIA", False), ("BYU Independent Study", False), ("Psychology Advising", False),
     ("Acme Inc", False), ("Sender 3", False), ("", False), ("jane@acme.example", False),
+    ("Иван Петров", True), ("李明", True), ("प्रिया शर्मा", True), ("محمد علي", True), ("田中 太郎", True),
+    ("Nguyễn Văn An", True), ("Nguye\u0302\u0303n Va\u0306n An", True), ("José García", True),
+    ("Alex 7", False), ("--", False), ("...", False), ("НВИДИА Групп", False),
 ])
 def test_person_detection(name, expected):
     assert E._looks_like_person(name, "x@example.test") is expected
+
+
+def test_a_friend_with_a_non_latin_name_is_a_person_waiting_not_a_newsletter():
+    for name in ("Иван Петров", "李明", "प्रिया शर्मा", "محمد علي", "Nguyễn Văn An"):
+        message = row(name, "friend@example.test", "Hi, are you free Friday?", True)
+        assert E.digest_category(message) == "attention", name
+    machine = row("李明 Alerts", "noreply@example.test", "Hi, are you free Friday?", True)
+    assert E.digest_category(machine) != "attention"
+
+
+def test_machine_sender_names_match_whole_words_only():
+    for sender in ("Anna Gruber <anna.gruber@gmail.com>", "Chris Chapple", "Jo Appleby", "Mark Huber",
+                   "Hubert Schubert", "Sam Zoomer"):
+        assert not E.is_machine_sender(sender), sender
+    for sender in ("Uber Receipts <noreply@uber.com>", "Phil @ ZipRecruiter", "Apple <no_reply@email.apple.com>",
+                   "Google Play", "Glassdoor Jobs", "Slack <feedback@slack.com>"):
+        assert E.is_machine_sender(sender), sender
+    message = row("Anna Gruber", "anna.gruber@gmail.com", "Dinner tomorrow?", True)
+    assert E.digest_category(message) == "attention"
 
 
 # ------------------------------------------------------------------ layout

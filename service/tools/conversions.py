@@ -45,8 +45,8 @@ _FUNCS = {
     "ceil": math.ceil, "log": math.log, "log10": math.log10, "log2": math.log2,
     "exp": math.exp, "sin": math.sin, "cos": math.cos, "tan": math.tan,
     "asin": math.asin, "acos": math.acos, "atan": math.atan,
-    "min": min, "max": max, "sum": sum, "pow": pow,
-}
+    "min": min, "max": max, "sum": sum,
+}   # "pow" is added below, behind the same size bounds as **
 _CONSTS = {"pi": math.pi, "e": math.e, "tau": math.tau}
 
 # Exponentiation is the one operator here that can burn CPU and memory without
@@ -55,10 +55,36 @@ _CONSTS = {"pi": math.pi, "e": math.e, "tau": math.tau}
 # because by the time there is a result it is already too late.
 _MAX_POW_BASE = 1e6
 _MAX_POW_EXP = 1000
+# pow(base, exp, mod) never grows past the modulus, but its time grows with the
+# size of all three, and it is one C call that holds the GIL.
+_MAX_MOD_POW_BITS = 4096
 
 
 class _BadExpression(ValueError):
     pass
+
+
+def _bounded_pow(*args):
+    """pow() with the same operand bounds as `**`; the raw builtin is one
+    uninterruptible C call, so pow(7, 10**9) would stall the whole service."""
+    if len(args) == 2:
+        base, exp = args
+        if abs(base) > _MAX_POW_BASE or abs(exp) > _MAX_POW_EXP:
+            raise _BadExpression("that power is too large to compute")
+        return pow(base, exp)
+    if len(args) == 3:
+        base, exp, mod = args
+        if not all(isinstance(v, int) for v in args):
+            raise _BadExpression("pow with a modulus needs whole numbers")
+        if mod == 0:
+            raise _BadExpression("division by zero")
+        if max(abs(base), abs(exp), abs(mod)).bit_length() > _MAX_MOD_POW_BITS:
+            raise _BadExpression("that power is too large to compute")
+        return pow(base, exp, mod)
+    raise _BadExpression("pow takes two numbers (or three with a modulus)")
+
+
+_FUNCS["pow"] = _bounded_pow
 
 
 def _eval(node: ast.AST) -> float:
@@ -174,6 +200,9 @@ def calculate(expression: str) -> str:
         return f"(error: {e}.)"
     except (ValueError, OverflowError, ZeroDivisionError) as e:
         return f"(error: {e}.)"
+    except TypeError:
+        return (f"(error: I couldn't work out {raw!r}: a function or operator got "
+                f"values it can't use.)")
     if isinstance(value, list):
         return ", ".join(_tidy(v) for v in value)
     return _tidy(value)

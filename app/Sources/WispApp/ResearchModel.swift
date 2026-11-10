@@ -34,8 +34,42 @@ final class ResearchModel: ObservableObject {
     private var selectionID = UUID()
     private var streamID = UUID()
     private var elapsedTimer: Timer?
-    private var startedAt: Date?
+    private var clock = RunClock()
     private var lastSeq = 0
+
+    /// Time spent researching: the stretches the job was running while this
+    /// view watched it, added up. Reading the plan before Start and a pause
+    /// are not research time, so neither is counted. A job reopened while it
+    /// runs counts from the reopening; the service keeps no start time.
+    struct RunClock {
+        private(set) var accumulated: TimeInterval = 0
+        private(set) var runningSince: Date?
+
+        init() {}
+
+        var isRunning: Bool { runningSince != nil }
+
+        /// Begin a running stretch. Does nothing while one is under way.
+        mutating func start(at now: Date) {
+            if runningSince == nil { runningSince = now }
+        }
+
+        /// End the running stretch, keeping its time.
+        mutating func stop(at now: Date) {
+            guard let since = runningSince else { return }
+            accumulated += max(0, now.timeIntervalSince(since))
+            runningSince = nil
+        }
+
+        func seconds(at now: Date) -> Int {
+            let current = runningSince.map { max(0, now.timeIntervalSince($0)) } ?? 0
+            return Int(accumulated + current)
+        }
+
+        static func text(_ seconds: Int) -> String {
+            seconds < 60 ? "\(seconds)s" : "\(seconds / 60)m \(seconds % 60)s"
+        }
+    }
 
     init(client: ResearchClient) { self.client = client }
 
@@ -46,7 +80,7 @@ final class ResearchModel: ObservableObject {
         selectionID = UUID(); streamID = UUID()
         streamTask?.cancel(); loadTask?.cancel()
         stopElapsedTimer()
-        startedAt = nil; actionInProgress = false
+        clock = RunClock(); actionInProgress = false
         jobId = ""; title = ""; objective = ""; subquestions = []
         activity = []; sources = []; citations = []; contradictions = []
         evidenceCount = 0; report = ""; errorText = ""
@@ -251,20 +285,20 @@ final class ResearchModel: ObservableObject {
     }
 
     private func startElapsedTimer() {
-        stopElapsedTimer()
-        if startedAt == nil { startedAt = Date() }
+        elapsedTimer?.invalidate()
+        clock.start(at: Date())
         elapsedTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self, let started = self.startedAt else { return }
-                let seconds = Int(Date().timeIntervalSince(started))
-                self.elapsedText = seconds < 60 ? "\(seconds)s"
-                    : "\(seconds / 60)m \(seconds % 60)s"
+                // A tick that lands after a pause or a new selection changes nothing.
+                guard let self, self.clock.isRunning else { return }
+                self.elapsedText = RunClock.text(self.clock.seconds(at: Date()))
             }
         }
     }
 
     private func stopElapsedTimer() {
         elapsedTimer?.invalidate(); elapsedTimer = nil
+        clock.stop(at: Date())
     }
 
     func open(_ source: WispClient.ResearchSource) {
@@ -338,7 +372,6 @@ final class ResearchModel: ObservableObject {
         pinned = snapshot.pinned; stopReason = snapshot.stopReason
         allowedDomainsText = snapshot.allowedDomains.joined(separator: ", ")
         blockedDomainsText = snapshot.blockedDomains.joined(separator: ", ")
-        if snapshot.createdAt > 0 { startedAt = Date(timeIntervalSince1970: snapshot.createdAt) }
         errorText = snapshot.error
     }
 

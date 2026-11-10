@@ -17,16 +17,19 @@ import Foundation
 // refuses to let them be pre-approved (service/safety/grants.py).
 enum OutboundSender {
 
-    // AppleScript string literals: escape backslashes first, then quotes, or
-    // the backslashes introduced by quote-escaping get escaped a second time.
-    // Newlines become \n escapes so a multi-paragraph email body stays a single
-    // valid literal instead of breaking the script into unparseable lines.
+    // -1743 is macOS itself refusing the Apple Event, before Mail or Messages
+    // sees it, so nothing can have been sent. That one case is posted with a
+    // fixed code beside the error text. The backend takes the code, never the
+    // text, as proof that nothing went out and tells the user which setting
+    // to change (service/assistant/outbox.py). Every other failure carries no
+    // code and stays "outcome unknown".
+    private static func refusal(_ code: Int) -> [String: Any] {
+        code == -1743 ? ["refusal": "automation_denied"] : [:]
+    }
+
+    // AppleScript string literals; the rules live with the script builders.
     private static func escape(_ s: String) -> String {
-        s.replacingOccurrences(of: "\\", with: "\\\\")
-         .replacingOccurrences(of: "\"", with: "\\\"")
-         .replacingOccurrences(of: "\r\n", with: "\\n")
-         .replacingOccurrences(of: "\r", with: "\\n")
-         .replacingOccurrences(of: "\n", with: "\\n")
+        MailActionScript.escape(s)
     }
 
     /// A recipient in the form Messages' own chat ids can actually be matched
@@ -56,21 +59,9 @@ enum OutboundSender {
     static func sendEmail(actionId: String, to: [String], cc: [String],
                           subject: String, body: String) {
         DispatchQueue.global(qos: .userInitiated).async {
-            var recipientLines = to.map {
-                "make new to recipient at end of to recipients with properties {address:\"\(escape($0))\"}"
-            }
-            recipientLines += cc.map {
-                "make new cc recipient at end of cc recipients with properties {address:\"\(escape($0))\"}"
-            }
-            let script = """
-            tell application "Mail"
-                set newMsg to make new outgoing message with properties {subject:"\(escape(subject))", content:"\(escape(body))", visible:false}
-                tell newMsg
-                    \(recipientLines.joined(separator: "\n            "))
-                    send
-                end tell
-            end tell
-            """
+            // The script raises when Mail's `send` answers false, so an email
+            // Mail refused is never reported as sent.
+            let script = MailActionScript.sendEmail(to: to, cc: cc, subject: subject, body: body)
             var err: NSDictionary?
             guard let s = NSAppleScript(source: script) else {
                 post(actionId: actionId, ok: false, error: "couldn't build the send script")
@@ -85,7 +76,7 @@ enum OutboundSender {
                 let reason = code == -1743
                     ? "Mail Automation access isn't granted — allow it in System Settings › Privacy & Security › Automation"
                     : (err[NSAppleScript.errorMessage] as? String ?? "Mail refused the send")
-                post(actionId: actionId, ok: false, error: reason)
+                post(actionId: actionId, ok: false, error: reason, extra: refusal(code))
                 return
             }
             post(actionId: actionId, ok: true, error: "")
@@ -120,7 +111,7 @@ enum OutboundSender {
                 let reason = code == -1743
                     ? "Messages Automation access isn't granted — allow it in System Settings › Privacy & Security › Automation"
                     : (err[NSAppleScript.errorMessage] as? String ?? "Messages refused the send")
-                post(actionId: actionId, ok: false, error: reason)
+                post(actionId: actionId, ok: false, error: reason, extra: refusal(code))
                 return
             }
             post(actionId: actionId, ok: true, error: "")
@@ -142,7 +133,7 @@ enum OutboundSender {
             let reason = code == -1743
                 ? "\(app) Automation access isn't granted — allow it in System Settings › Privacy & Security › Automation"
                 : (err[NSAppleScript.errorMessage] as? String ?? "\(app) refused the request")
-            post(actionId: actionId, ok: false, error: reason)
+            post(actionId: actionId, ok: false, error: reason, extra: refusal(code))
             return
         }
         // A script may hand back what it actually acted on. That is the
@@ -155,12 +146,18 @@ enum OutboundSender {
     // Mail has no "message whose message id is X" lookup that spans accounts,
     // so this walks them. `message id` is the only stable handle — index
     // position shifts every time mail arrives (see MailReader.rawScript).
-    // `account` pins the search to one account. Without it the loop takes the
-    // FIRST account whose inbox has this Message-ID — and a message the user
-    // was cc'd on exists in two accounts under one id, so an unpinned reply
-    // goes out from whichever account Mail happens to enumerate first rather
-    // than the copy the user picked.  theAcct records what was actually used.
-    private static func findMessage(_ messageId: String, account: String = "") -> String {
+    // Mark read, flag and archive use MailActionScript.findInboxMessage, which
+    // names the inbox the way MailReader does.
+    //
+    // FORWARD ONLY, and held back on purpose. `inbox of acct` is not in Mail's
+    // dictionary for an account, so this lookup finds nothing and a forward
+    // stops before Mail composes anything. The forward script below has never
+    // sent a real email: it reads the new message's content before setting
+    // it, which the reply script found can come back empty, so a note could go
+    // out without the original under it. Move forwardEmail to
+    // MailActionScript.findInboxMessage only after a forward to the owner's
+    // own address, with and without a note, has been checked in Mail.
+    private static func unverifiedForwardLookup(_ messageId: String, account: String = "") -> String {
         let accountList = account.isEmpty
             ? "accounts"
             : "(every account whose name is \"\(escape(account))\")"
@@ -218,8 +215,10 @@ enum OutboundSender {
             var error: NSDictionary?
             let result = script.executeAndReturnError(&error)
             if let error {
+                let code = error[NSAppleScript.errorNumber] as? Int ?? 0
                 post(actionId: actionId, ok: false,
-                     error: error[NSAppleScript.errorMessage] as? String ?? "Mail could not verify the reply.")
+                     error: error[NSAppleScript.errorMessage] as? String ?? "Mail could not verify the reply.",
+                     extra: refusal(code))
                 return
             }
             guard let envelope = MailReplyScript.decode(result) else {
@@ -341,7 +340,7 @@ enum OutboundSender {
         DispatchQueue.global(qos: .userInitiated).async {
             let script = """
             tell application "Mail"
-            \(findMessage(messageId))
+            \(MailActionScript.findInboxMessage(messageID: messageId))
                 set read status of theMsg to \(read ? "true" : "false")
             end tell
             """
@@ -356,7 +355,7 @@ enum OutboundSender {
             // promises the message stays findable.
             let script = """
             tell application "Mail"
-            \(findMessage(messageId))
+            \(MailActionScript.findInboxMessage(messageID: messageId))
                 set acct to account of mailbox of theMsg
                 set archiveBox to missing value
                 try
@@ -381,21 +380,8 @@ enum OutboundSender {
             return
         }
         DispatchQueue.global(qos: .userInitiated).async {
-            let recipients = to.map {
-                "make new to recipient at end of to recipients with properties {address:\"\(escape($0))\"}"
-            }.joined(separator: "\n                    ")
-            let prependNote = body.isEmpty ? ""
-                : "                    set content to \"\(escape(body))\" & return & return & content\n"
-            let script = """
-            tell application "Mail"
-            \(findMessage(messageId))
-                set fwd to forward theMsg with opening window
-                tell fwd
-                    \(recipients)
-            \(prependNote)                send
-                end tell
-            end tell
-            """
+            let script = MailActionScript.forwardEmail(
+                lookup: unverifiedForwardLookup(messageId), to: to, note: body)
             run(actionId: actionId, app: "Mail", script: script)
         }
     }
@@ -404,7 +390,7 @@ enum OutboundSender {
         DispatchQueue.global(qos: .userInitiated).async {
             let script = """
             tell application "Mail"
-            \(findMessage(messageId))
+            \(MailActionScript.findInboxMessage(messageID: messageId))
                 set flagged status of theMsg to \(flagged ? "true" : "false")
             end tell
             """

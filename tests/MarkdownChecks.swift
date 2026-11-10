@@ -245,7 +245,112 @@ struct MarkdownChecks {
         return String(parsed.characters) == "a*b*c_(xy,z)"
     }
 
+    /// An answer's inline Markdown after the link rule: its visible text and
+    /// the destination of every run that is still a link.
+    static func rendered(_ markdown: String) -> (text: String, links: [URL]) {
+        let opts = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        guard let parsed = try? AttributedString(markdown: markdown, options: opts) else {
+            check(false, "inline Markdown must parse: \(markdown)")
+            return ("", [])
+        }
+        let safe = MarkdownLinks.safe(parsed)
+        return (String(safe.characters), safe.runs.compactMap { $0.link })
+    }
+
+    /// A link built by hand, so the rule is checked whatever the parser makes of a scheme.
+    static func built(_ label: String, _ destination: String) -> AttributedString {
+        var text = AttributedString(label)
+        text.link = URL(string: destination)
+        return text
+    }
+
+    // An answer can repeat text Wisp read, and a click shows only the label: a link
+    // may open a web page and nothing else, and never one its own label disowns.
+    static func linkChecks() {
+        // Web links keep working, with their label.
+        let plain = rendered("See [x](https://example.com) for more.")
+        check(plain.text == "See x for more." && plain.links.count == 1 && plain.links[0].host == "example.com",
+              "an https link stays a link: \(plain)")
+        let maps = rendered("[Open in Maps](https://maps.apple.com/?saddr=1,2)")
+        check(maps.text == "Open in Maps" && !maps.links.isEmpty && maps.links.allSatisfy { $0.host == "maps.apple.com" },
+              "the Maps directions link stays a link: \(maps)")
+        let source = rendered("[1] [Quarterly results: what changed](http://news.example.org/a?b=1) — news.example.org")
+        check(!source.links.isEmpty && source.links.allSatisfy { $0.scheme == "http" && $0.host == "news.example.org" }
+                && source.text.contains("Quarterly results: what changed"),
+              "a research source keeps its link: \(source)")
+        let bold = rendered("[**Read** the guide](https://example.com/guide)")
+        check(bold.text == "Read the guide" && !bold.links.isEmpty && bold.links.allSatisfy { $0.host == "example.com" },
+              "a link with bold inside its label stays whole: \(bold)")
+
+        // Anything that is not a web page loses its link and keeps its label.
+        for (markdown, label) in [
+            ("[Open the invoice](shortcuts://run-shortcut?name=a)", "Open the invoice"),
+            ("[a](file:///tmp/x.command)", "a"),
+            ("[a](tel:123)", "a"),
+            ("[a](smb://h/s)", "a"),
+            ("[a](mailto:someone@example.com)", "a"),
+        ] {
+            let out = rendered(markdown)
+            check(out.links.isEmpty && out.text == label, "\(markdown) must be plain text: \(out)")
+        }
+        let autolink = rendered("Call <facetime:x@y.z> now")
+        check(autolink.links.isEmpty && autolink.text.contains("facetime:x@y.z"), "an autolink is held to the same rule: \(autolink)")
+        for destination in ["shortcuts://run-shortcut?name=a", "file:///tmp/x.command", "tel:123", "smb://h/s",
+                            "mailto:someone@example.com", "facetime:x@y.z", "x-apple.systempreferences:com.apple.preference",
+                            "ftp://files.example.com/a", "https:relative"] {
+            let out = MarkdownLinks.safe(built("Open the invoice", destination))
+            check(out.runs.allSatisfy { $0.link == nil } && String(out.characters) == "Open the invoice",
+                  "a hand-built \(destination) link must be plain text")
+        }
+        let kept = MarkdownLinks.safe(built("Open the page", "HTTPS://Example.com/a"))
+        check(kept.runs.contains { $0.link != nil }, "the scheme is matched whatever its case")
+        check(MarkdownLinks.mayOpen(URL(string: "https://example.com/a")!) && MarkdownLinks.mayOpen(URL(string: "http://example.com")!),
+              "http and https open")
+        check(!MarkdownLinks.mayOpen(URL(string: "file:///tmp/x")!) && !MarkdownLinks.mayOpen(URL(string: "tel:123")!)
+                && URL(string: "https:///nohost").map(MarkdownLinks.mayOpen) != true, "nothing else opens, nor a link with no host")
+
+        // One refused link never costs its neighbours theirs, or any text.
+        let mixed = rendered("Read [the guide](https://example.com/guide) or [run it](shortcuts://run-shortcut?name=a) now.")
+        check(mixed.text == "Read the guide or run it now." && mixed.links.count == 1 && mixed.links[0].host == "example.com",
+              "only the refused link is taken off: \(mixed)")
+
+        // A label that reads as one site's address while the link opens another.
+        let spoof = rendered("[https://accounts.google.com](https://evil.example/login)")
+        check(spoof.links.allSatisfy { $0.host != "evil.example" } && spoof.text.contains("https://accounts.google.com"),
+              "a label naming one site never opens another: \(spoof)")
+        for (label, destination) in [
+            ("accounts.example.com", "https://evil.example/login"),
+            ("www.example.com", "https://evil.example/"),
+            ("Sign in at https://accounts.example.com today", "https://evil.example/"),
+            ("example.com", "https://example.com.evil.example/"),
+            ("https://example.com@evil.example/", "https://evil.example/"),
+        ] {
+            let out = MarkdownLinks.safe(built(label, destination))
+            check(out.runs.allSatisfy { $0.link == nil } && String(out.characters) == label,
+                  "\(label) must not link to \(destination)")
+        }
+        let split = rendered("[accounts.**example**.com](https://evil.example/login)")
+        check(split.links.isEmpty && split.text.contains("example"), "bold inside the label does not hide the mismatch: \(split)")
+        // The same site, a subdomain of it, a file name and ordinary words are all fine.
+        for (label, destination) in [
+            ("https://example.com/a", "https://example.com/b"),
+            ("www.example.com", "https://example.com/a"),
+            ("Example.com", "https://www.example.com/"),
+            ("example.com", "https://maps.example.com/x"),
+            ("http://localhost:3000", "http://localhost:3000/status"),
+            ("README.md", "https://code.example.com/acme/tool/README.md"),
+            ("Example.com raises prices", "https://news.example.org/story"),
+            ("Write to someone@example.com", "https://help.example.org/contact"),
+            ("Version 2.1 notes, e.g. the fix", "https://example.org/notes"),
+        ] {
+            let out = MarkdownLinks.safe(built(label, destination))
+            check(out.runs.contains { $0.link != nil } && String(out.characters) == label,
+                  "\(label) may link to \(destination)")
+        }
+    }
+
     static func main() {
+        linkChecks()
         mathChecks()
         solitaryPipeAndOrderingChecks()
         tableValidationChecks()

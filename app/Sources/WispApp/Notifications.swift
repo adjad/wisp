@@ -66,6 +66,16 @@ enum Notifications {
         catch { return false }
     }
 
+    /// What a Wisp notification shows while Wisp is the app in front. Wisp has
+    /// windows of its own (chat, Today, Settings, setup), and with nothing asked
+    /// for here macOS shows a front app's notification nowhere: no banner, no
+    /// sound, no Notification Center entry. A reminder that came due while the
+    /// person was in a Wisp window was lost that way, and still counted as
+    /// delivered. So every Wisp notification is shown in full, whatever its category.
+    static func presentationOptions(categoryIdentifier: String) -> UNNotificationPresentationOptions {
+        [.banner, .list, .sound]
+    }
+
     /// "Wisp is ready" after first-run setup; clicking it opens Ask, not Day.
     static let readyId = "wisp.setup.ready"
     @MainActor static var onOpenAsk: (@MainActor () -> Void)?
@@ -123,19 +133,17 @@ enum Notifications {
 
 /// UNUserNotificationCenter keeps its delegate weakly; `shared` retains it.
 /// Nudge notifications route their buttons; clicking any other notification
-/// opens Today in the notch. Only nudges show a banner while Wisp is frontmost.
-/// Whether the person is told what happened is unchanged.
+/// opens Today in the notch ("Wisp is ready" opens Ask). Every Wisp notification
+/// shows its banner, plays its sound and stays in Notification Center while Wisp
+/// is frontmost too (Notifications.presentationOptions).
 final class NudgeNotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     static let shared = NudgeNotificationDelegate()
 
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        if notification.request.content.categoryIdentifier.hasPrefix(Notifications.nudgeCategory) {
-            completionHandler([.banner, .list, .sound])
-        } else {
-            completionHandler([])
-        }
+        completionHandler(Notifications.presentationOptions(
+            categoryIdentifier: notification.request.content.categoryIdentifier))
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter,

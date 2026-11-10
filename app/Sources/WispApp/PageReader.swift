@@ -38,9 +38,11 @@ struct PageText {
     var source: PageSource
     var appName: String
     var title: String
-    // Absolute char offset → the AX element it came from, so a result can be
-    // scrolled to in the host app. Empty for the OCR path.
-    var anchors: [(range: Range<Int>, element: AXUIElement)]
+    // Offset in `text` → the AX element it came from and that element's own
+    // text, so a result can be scrolled to and selected in the host app. The
+    // offsets count Unicode scalars, as search results do (SearchOffset).
+    // Empty for the OCR path.
+    var anchors: [(range: Range<Int>, text: String, element: AXUIElement)]
     // The app the text was read from, so revealing a citation can bring it
     // forward. 0 when unknown.
     var pid: pid_t = 0
@@ -49,16 +51,20 @@ struct PageText {
                                 title: "", anchors: [], pid: 0)
 }
 
-@MainActor
+// Only what touches the app's own state is on the main actor. Reading another
+// app's window blocks on that app (every Accessibility call is a round trip to
+// it) and on disk, so that part runs on a background thread.
 enum PageReader {
 
     /// True once the user has granted Accessibility. Never prompts.
+    @MainActor
     static var hasAccessibility: Bool {
         AXIsProcessTrusted()
     }
 
     /// Ask for Accessibility, showing the system prompt. Returns immediately;
     /// the grant lands out of band (macOS requires a relaunch for some apps).
+    @MainActor
     static func requestAccessibility() {
         let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
         PrivacyRelaunch.notePaneOpened()
@@ -67,52 +73,88 @@ enum PageReader {
 
     /// Read the frontmost app's focused window. Falls back down the chain until
     /// something yields usable text.
+    @MainActor
     static func read() async -> PageText {
         guard let app = NSWorkspace.shared.frontmostApplication,
               app.processIdentifier != ProcessInfo.processInfo.processIdentifier
         else { return .empty }
 
         let appName = app.localizedName ?? "app"
-        let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        let pid = app.processIdentifier
+        let trusted = AXIsProcessTrusted()
+
+        // C and A, off the main thread: the notch, chat and menu bar stay
+        // live however large the page is or however slowly its app answers.
+        let found = await Task.detached(priority: .userInitiated) {
+            PageReader.readWindow(pid: pid, appName: appName, trusted: trusted)
+        }.value
+        if let page = found.page { return page }
+
+        // B — OCR whatever is on screen.
+        if let text = await ocrFrontWindow(pid: pid), text.count > 20 {
+            return PageText(text: text, source: .screen, appName: appName,
+                            title: found.title, anchors: [], pid: pid)
+        }
+        return PageText(text: "", source: .none, appName: appName,
+                        title: found.title, anchors: [], pid: pid)
+    }
+
+    /// What the background read found: the window's title, and the page when
+    /// the file or the tree gave enough text. AXUIElement is a CF type Swift
+    /// doesn't mark Sendable; the elements here are made on the reading thread
+    /// and only handed back with the result.
+    private struct WindowRead: @unchecked Sendable {
+        var title = ""
+        var page: PageText?
+    }
+
+    /// Paths C and A for the focused window of `pid`, on the calling thread.
+    /// Never call this on the main thread.
+    private static func readWindow(pid: pid_t, appName: String, trusted: Bool) -> WindowRead {
+        let axApp = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(axApp, messagingTimeout)
         // Chromium apps expose an empty tree until this is set. Harmless
         // elsewhere — it's just an unknown attribute.
         AXUIElementSetAttributeValue(axApp, "AXManualAccessibility" as CFString,
                                      kCFBooleanTrue)
 
-        let window = focusedWindow(of: axApp)
-        let title = window.flatMap { stringValue($0, kAXTitleAttribute) } ?? ""
+        var found = WindowRead()
+        guard let window = focusedWindow(of: axApp) else { return found }
+        AXUIElementSetMessagingTimeout(window, messagingTimeout)
+        found.title = stringValue(window, kAXTitleAttribute) ?? ""
+        guard trusted else { return found }
 
-        if AXIsProcessTrusted() {
-            // C — a real file behind the window beats anything we can scrape.
-            if let w = window, let url = documentURL(of: w),
-               let text = readFile(at: url), text.count > 40 {
-                return PageText(text: text, source: .document, appName: appName,
-                                title: title.isEmpty ? url.lastPathComponent : title,
-                                anchors: [], pid: app.processIdentifier)
-            }
-            // A — walk the tree.
-            if let w = window {
-                var collected = Collected()
-                harvest(w, into: &collected, depth: 0)
-                if collected.text.count > 40 {
-                    return PageText(text: collected.text, source: .window,
-                                    appName: appName, title: title,
-                                    anchors: collected.anchors,
-                                    pid: app.processIdentifier)
-                }
-            }
+        // C — a real file behind the window beats anything we can scrape.
+        if let url = documentURL(of: window),
+           let text = readFile(at: url), text.count > 40 {
+            found.page = PageText(text: text, source: .document, appName: appName,
+                                  title: found.title.isEmpty ? url.lastPathComponent : found.title,
+                                  anchors: [], pid: pid)
+            return found
         }
-
-        // B — OCR whatever is on screen.
-        if let text = await ocrFrontWindow(pid: app.processIdentifier), text.count > 20 {
-            return PageText(text: text, source: .screen, appName: appName,
-                            title: title, anchors: [], pid: app.processIdentifier)
+        // A — walk the tree.
+        var collected = Collected(
+            deadline: DispatchTime.now().uptimeNanoseconds + harvestBudgetNanoseconds)
+        harvest(window, into: &collected, depth: 0)
+        if collected.scalars > 40 {
+            found.page = PageText(text: collected.text, source: .window,
+                                  appName: appName, title: found.title,
+                                  anchors: collected.anchors, pid: pid)
         }
-        return PageText(text: "", source: .none, appName: appName,
-                        title: title, anchors: [], pid: app.processIdentifier)
+        return found
     }
 
     // MARK: - Accessibility
+
+    /// How long one Accessibility call may wait for the other app. The system
+    /// default is several seconds, which an app that isn't answering would
+    /// cost on every call. The timeout belongs to the one element it is set
+    /// on (AXUIElement.h), so each element gets it before it is asked.
+    private static let messagingTimeout: Float = 0.25
+
+    /// How long the tree walk may run in all. What was collected by then is
+    /// what the search reads.
+    private static let harvestBudgetNanoseconds: UInt64 = 1_500_000_000
 
     private static func focusedWindow(of axApp: AXUIElement) -> AXUIElement? {
         if let w: AXUIElement = attribute(axApp, kAXFocusedWindowAttribute) { return w }
@@ -145,11 +187,17 @@ enum PageReader {
 
     private struct Collected {
         var text = ""
-        var anchors: [(range: Range<Int>, element: AXUIElement)] = []
+        // The length of `text` in Unicode scalars (SearchOffset.length), kept
+        // as a running total: counting a String walks all of it, and doing
+        // that at every node made a long page quadratic.
+        var scalars = 0
+        var anchors: [(range: Range<Int>, text: String, element: AXUIElement)] = []
         // Guardrails: a runaway tree (huge web page, deeply nested Electron
         // app) must not hang the hotkey. Both limits are generous for real
         // documents and hard stops for pathological ones.
         var visited = 0
+        // DispatchTime uptime after which the walk stops where it is.
+        let deadline: UInt64
     }
 
     private static let maxNodes = 12_000
@@ -158,9 +206,11 @@ enum PageReader {
 
     /// Depth-first walk in document order, appending every text-bearing node.
     private static func harvest(_ el: AXUIElement, into out: inout Collected, depth: Int) {
-        guard depth < maxDepth, out.visited < maxNodes, out.text.count < maxChars
+        guard depth < maxDepth, out.visited < maxNodes, out.scalars < maxChars,
+              DispatchTime.now().uptimeNanoseconds < out.deadline
         else { return }
         out.visited += 1
+        AXUIElementSetMessagingTimeout(el, messagingTimeout)
 
         let role = stringValue(el, kAXRoleAttribute) ?? ""
         // Skip chrome that would pollute the document with UI labels.
@@ -191,24 +241,48 @@ enum PageReader {
     private static func append(_ s: String, _ el: AXUIElement, to out: inout Collected) {
         let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        let start = out.text.count
+        // Anchor ranges count Unicode scalars, as the search results that
+        // reveal() looks up do. Counting Characters put every result after a
+        // flag, a family emoji or a combining accent on the wrong element.
+        let length = SearchOffset.length(trimmed)
+        let start = out.scalars
         out.text += trimmed
-        out.anchors.append((start..<(start + trimmed.count), el))
+        out.anchors.append((start..<(start + length), trimmed, el))
         // Blank line between nodes so the chunker sees real paragraph breaks.
-        out.text += trimmed.count > 60 ? "\n\n" : "\n"
+        let gap = length > 60 ? "\n\n" : "\n"
+        out.text += gap
+        out.scalars += length + SearchOffset.length(gap)
     }
 
     // MARK: - File-native
+
+    /// The most a file may add to one search: plain files larger than this are
+    /// left to the window's own text, and a PDF is read up to this much text.
+    private static let maxFileBytes = 8 * 1024 * 1024
+    private static let maxPDFPages = 2_000
 
     private static func readFile(at url: URL) -> String? {
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         if url.pathExtension.lowercased() == "pdf" {
             guard let doc = PDFDocument(url: url) else { return nil }
-            return doc.string
+            // Page by page, so a very long PDF stops at the limits instead of
+            // being turned into one string whatever its size.
+            var text = ""
+            for index in 0..<min(doc.pageCount, maxPDFPages) {
+                guard text.utf8.count < maxFileBytes else { break }
+                guard let page = doc.page(at: index)?.string, !page.isEmpty else { continue }
+                text += page
+                if !page.hasSuffix("\n") { text += "\n" }
+            }
+            return text
         }
         let plain: Set<String> = ["txt", "md", "markdown", "rtf", "csv", "json",
                                   "log", "swift", "py", "js", "ts", "html", "xml"]
         guard plain.contains(url.pathExtension.lowercased()) else { return nil }
+        // Sized before it is loaded: a log or export of hundreds of megabytes
+        // must never be read into memory whole.
+        guard let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize,
+              size <= maxFileBytes else { return nil }
         return try? String(contentsOf: url, encoding: .utf8)
     }
 
@@ -218,30 +292,35 @@ enum PageReader {
     private static func ocrFrontWindow(pid: pid_t) async -> String? {
         guard let image = captureWindow(pid: pid) else { return nil }
         return await withCheckedContinuation { (cont: CheckedContinuation<String?, Never>) in
-            let request = VNRecognizeTextRequest { req, _ in
-                guard let obs = req.results as? [VNRecognizedTextObservation] else {
-                    cont.resume(returning: nil); return
-                }
-                // Vision returns observations in no particular order; sort into
-                // reading order (top-to-bottom, then left-to-right) or the
-                // chunker will interleave unrelated columns.
-                let lines = obs
-                    .sorted { a, b in
-                        let dy = abs(a.boundingBox.midY - b.boundingBox.midY)
-                        if dy > 0.01 { return a.boundingBox.midY > b.boundingBox.midY }
-                        return a.boundingBox.minX < b.boundingBox.minX
-                    }
-                    .compactMap { $0.topCandidates(1).first?.string }
-                cont.resume(returning: lines.joined(separator: "\n"))
-            }
-            request.recognitionLevel = .accurate
-            request.usesLanguageCorrection = true
-            let handler = VNImageRequestHandler(cgImage: image, options: [:])
             DispatchQueue.global(qos: .userInitiated).async {
-                do { try handler.perform([request]) }
-                catch { cont.resume(returning: nil) }
+                // The only resume. A second one crashes the app, so the
+                // request gets no completion handler: Vision can report one
+                // failure both to a handler and by throwing from perform.
+                cont.resume(returning: recognizeText(in: image))
             }
         }
+    }
+
+    /// The image's text in reading order, or nil when Vision fails. Runs on
+    /// the caller's queue.
+    private static func recognizeText(in image: CGImage) -> String? {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        let handler = VNImageRequestHandler(cgImage: image, options: [:])
+        do { try handler.perform([request]) } catch { return nil }
+        guard let obs = request.results else { return nil }
+        // Vision returns observations in no particular order; sort into
+        // reading order (top-to-bottom, then left-to-right) or the
+        // chunker will interleave unrelated columns.
+        let lines = obs
+            .sorted { a, b in
+                let dy = abs(a.boundingBox.midY - b.boundingBox.midY)
+                if dy > 0.01 { return a.boundingBox.midY > b.boundingBox.midY }
+                return a.boundingBox.minX < b.boundingBox.minX
+            }
+            .compactMap { $0.topCandidates(1).first?.string }
+        return lines.joined(separator: "\n")
     }
 
     private static func captureWindow(pid: pid_t) -> CGImage? {
@@ -284,12 +363,19 @@ enum PageReader {
     /// returned silently in both cases, so clicking a citation did nothing at
     /// all with no indication why; the UI now falls back to showing the source
     /// passage inline instead. See SearchModel.reveal(citation:).
+    @MainActor
     @discardableResult
     static func reveal(_ page: PageText, offset: Int, length: Int) -> Bool {
         guard let anchor = page.anchors.first(where: { $0.range.contains(offset) })
         else { return false }
-        let local = offset - anchor.range.lowerBound
-        var range = CFRange(location: local, length: min(length, anchor.range.count - local))
+        // The read gave this element a short timeout. A scroll or selection
+        // can take the app longer than that and still succeed, so it goes
+        // back to the system's default here (0 means "use the default").
+        AXUIElementSetMessagingTimeout(anchor.element, 0)
+        // The offset counts scalars; the selection counts UTF-16 units.
+        let span = SearchOffset.utf16Range(in: anchor.text, offset: offset - anchor.range.lowerBound,
+                                           length: length)
+        var range = CFRange(location: span.location, length: span.length)
         var selected = false
         if let axRange = AXValueCreate(.cfRange, &range) {
             selected = AXUIElementSetAttributeValue(

@@ -71,19 +71,23 @@ final class SearchModel: ObservableObject {
 
     /// Merged, de-duplicated rows in the order the user navigates them.
     /// Literal hits pin to the top always — that's the ⌘F floor: if a literal
-    /// match exists, it is never buried under a semantic guess.
+    /// match exists, it is never buried under a semantic guess. Every literal
+    /// hit is its own match, so all of them stay, however close two are.
     var rows: [Result] {
-        var seen = Set<Int>()
-        var out: [Result] = []
-        for r in literal + lexical + semantic {
-            // Spans that start within a few chars of one already shown are the
-            // same hit found by two tiers; keep the first (strongest) one.
-            let bucket = r.start / 24
-            if seen.contains(bucket) { continue }
-            seen.insert(bucket)
+        var out = literal
+        for r in lexical + semantic {
+            // A passage that overlaps a row already shown is the same hit
+            // found by another tier; keep the first (strongest) one.
+            if out.contains(where: { Self.sameHit(r, $0) }) { continue }
             out.append(r)
         }
         return out
+    }
+
+    /// Whether two spans are one hit: they overlap, or they start within a few
+    /// characters of each other.
+    static func sameHit(_ a: Result, _ b: Result) -> Bool {
+        abs(a.start - b.start) < 4 || (a.start < b.end && b.start < a.end)
     }
 
     var pageSourceLabel: String { page.source.label }
@@ -324,5 +328,29 @@ final class SearchModel: ObservableObject {
         if !page.title.isEmpty { out += "\n— \(page.title)" }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(out, forType: .string)
+    }
+}
+
+/// The units of a place in the page. A search result or a citation counts
+/// Unicode scalars, as the backend's Python strings do. Swift's `count` counts
+/// whole characters (a flag or a family emoji is one character and several
+/// scalars), and an Accessibility text range counts UTF-16 units. PageReader
+/// measures the page and selects a result through these, so the three agree.
+enum SearchOffset {
+    /// The length of `text` as the backend counts it.
+    static func length(_ text: String) -> Int { text.unicodeScalars.count }
+
+    /// The UTF-16 range of the `length` scalars that start `offset` scalars
+    /// into `text`, cut at the end of the text.
+    static func utf16Range(in text: String, offset: Int, length: Int) -> (location: Int, length: Int) {
+        let first = max(0, offset), wanted = max(0, length)
+        var location = 0, covered = 0, index = 0
+        for scalar in text.unicodeScalars {
+            if index >= first, index - first >= wanted { break }
+            let width = scalar.value > 0xFFFF ? 2 : 1
+            if index < first { location += width } else { covered += width }
+            index += 1
+        }
+        return (location, covered)
     }
 }

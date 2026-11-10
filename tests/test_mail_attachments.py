@@ -11,6 +11,7 @@ import time
 from contextlib import contextmanager
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from service import attachment_child, documents, gmail_source, mail_attachments as ma, vision
@@ -137,7 +138,9 @@ class World:
 
 
 @pytest.fixture
-def world(monkeypatch):
+def world(monkeypatch, tmp_path):
+    # Readings are kept between requests (service/attachment_store.py); each test gets its own empty store.
+    monkeypatch.setenv("WISP_HOME", str(tmp_path / "home"))
     return World(monkeypatch)
 
 
@@ -240,6 +243,63 @@ async def test_gmail_signed_out_keeps_the_other_files(world, monkeypatch):
     out = await ma.run()
     assert "first file" in out
     assert "Not read:" in out and "sign in to gmail" in out.lower()
+    assert ("Not read: Mail hasn't downloaded it to this Mac, and Gmail couldn't be reached. "
+            "Open the email in Mail to download it, or sign in to Gmail again in Settings.") in out
+
+
+def not_read(out: str) -> str:
+    return next(line for line in out.splitlines() if "Not read:" in line).split("Not read:", 1)[1].strip()
+
+
+async def test_not_downloaded_and_no_gmail_keeps_the_names_capitalised(world):
+    world.apple_rows = [row(on_disk=False)]
+    said = not_read(await ma.run())
+    assert said == ("Mail hasn't downloaded it to this Mac, and Gmail isn't connected. "
+                    "Open the email in Mail to download it, or sign in to Gmail.")
+    assert "gmail" not in said and " mail " not in said
+
+
+async def test_a_network_failure_in_the_gmail_lookup_does_not_say_to_sign_in(world, monkeypatch):
+    world.apple_rows = [row(on_disk=False, rfc="b@x.com")]
+    world.gmail = {"me@gmail.com": []}
+
+    async def offline(account, rfc_id):
+        raise httpx.ConnectError("no route to host")
+    monkeypatch.setattr(gmail_source, "find_by_rfc_id", offline)
+    said = not_read(await ma.run())
+    assert said == ("Mail hasn't downloaded it to this Mac, and Gmail couldn't be reached. "
+                    "Open the email in Mail to download it.")
+    assert "sign in" not in said.lower() and "doesn't have it" not in said
+
+
+async def test_gmail_without_the_file_is_not_a_reason_to_sign_in(world):
+    world.apple_rows = [row(on_disk=False, rfc="b@x.com")]
+    world.gmail = {"me@gmail.com": []}                    # connected and answering; it has no such email
+    said = not_read(await ma.run())
+    assert said == ("Mail hasn't downloaded it to this Mac, and Gmail doesn't have it. "
+                    "Open the email in Mail to download it.")
+
+
+def test_only_a_reason_that_starts_with_a_name_keeps_its_capital():
+    assert ma._one_sentence(["Mail's index isn't available", "Gmail isn't connected"]) == \
+        "Mail's index isn't available, and Gmail isn't connected."
+    assert ma._one_sentence(["the Wisp app isn't connected", "Gmail doesn't have it"]) == \
+        "The Wisp app isn't connected, and Gmail doesn't have it."
+    assert ma._one_sentence(["Gmail couldn't be reached", "Mail's saved copy couldn't be read"]) == \
+        "Gmail couldn't be reached, and Mail's saved copy couldn't be read."
+    assert ma._one_sentence(["Gmail didn't answer in time", "It couldn't be fetched"]) == \
+        "Gmail didn't answer in time, and it couldn't be fetched."
+    assert ma._one_sentence(["It couldn't be fetched"]) == "It couldn't be fetched."
+
+
+async def test_a_gmail_file_gmail_refuses_says_to_sign_in_but_a_dropped_connection_does_not(world, monkeypatch):
+    world.gmail = {"me@gmail.com": [gmsg()]}              # no bytes for it: the fake raises GmailError
+    assert not_read(await ma.run()) == "Gmail couldn't give it up. Sign in to Gmail again in Settings."
+
+    async def offline(account, message_id, attachment_id):
+        raise httpx.ConnectError("no route to host")
+    monkeypatch.setattr(gmail_source, "attachment_bytes", offline)
+    assert not_read(await ma.run()) == "Gmail couldn't be reached."
 
 
 async def test_one_bad_file_does_not_lose_the_rest(world):
@@ -343,7 +403,8 @@ async def test_mismatch_warning_shown(world):
     world.apple_rows = [row(name="invoice.pdf", rfc="e@x.com")]
     world.local_files[(1, "1.2")] = MZ
     out = await ma.run()
-    assert "Its name says .pdf, but it is really a Windows program." in out
+    # One risk line in Wisp's own words replaces the separate warnings.
+    assert "Looks risky:" in out and "program" in out and "Warning:" not in out
     assert world.kinds("extract") == []
 
 

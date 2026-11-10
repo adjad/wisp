@@ -70,6 +70,22 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
     check(QuickSettingsText.saveWhenAway(on: false, pending: false) == "Wisp always runs at full speed", "Save power off")
     check(QuickSettingsText.saveWhenAway(on: nil, pending: false) == "Not confirmed", "unconfirmed Save power is never off")
     check(QuickSettingsText.saveWhenAway(on: true, pending: true).hasPrefix("Updating"), "a pending Save power change waits")
+    // On the person's own oMLX app nothing is capped, so the line never says it saves power.
+    for on in [true, false] {
+        check(QuickSettingsText.saveWhenAway(on: on, pending: false, applies: false)
+              == "Not active · only Wisp's built-in engine is capped", "Save power says when it caps nothing (\(on))")
+    }
+    let usualSavePower: String = QuickSettingsText.saveWhenAway(on: true, pending: false)
+    check(QuickSettingsText.saveWhenAway(on: true, pending: false, applies: true) == usualSavePower,
+          "a service that says Save power applies keeps the usual line")
+    check(QuickSettingsText.saveWhenAway(on: true, pending: false, applies: nil) == usualSavePower,
+          "a service that doesn't say keeps the usual Save power line")
+    check(QuickSettingsText.saveWhenAway(on: false, pending: false, applies: nil) == "Wisp always runs at full speed",
+          "a service that doesn't say keeps the usual Save power off line")
+    check(QuickSettingsText.saveWhenAway(on: nil, pending: false, applies: false) == "Not confirmed",
+          "an unconfirmed Save power switch is still not confirmed")
+    check(QuickSettingsText.saveWhenAway(on: true, pending: true, applies: false).hasPrefix("Updating"),
+          "a pending Save power change still waits")
     let saveHelp = QuickSettingsText.saveWhenAwayHelp
     check(saveHelp.contains("10 minutes") && saveHelp.contains("10 W"), "Save power help names when and how much")
     check(saveHelp.contains("On battery") && saveHelp.contains("15 W") && saveHelp.contains("chat reply")
@@ -189,6 +205,61 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
     check(QuickSettingsText.encoders(EncoderResidency.parse(["on_demand": false, "towers": [:]])) == nil,
           "a model without encoders has no line")
 
+    // Settings › Models: a role's menu offers chat models only.
+    let gemma = "gemma-4-E4B-it-oQ4e-mtp"
+    let embedder = "Qwen3-Embedding-0.6B-4bit-DWQ"
+    let reranker = "Qwen3-Reranker-0.6B-mlx-6bit"
+    let shipped: [String: String] = [
+        "fast": gemma, "router": gemma, "coding": gemma, "reasoning": gemma, "agent": gemma,
+        "general": gemma, "embedding": embedder, "reranker": reranker]
+    let wrongPick: [String: String] = ["general": embedder, "embedding": embedder]
+    let chatRoles: [String: String] = ["fast": gemma, "coding": gemma, "reasoning": gemma, "general": gemma]
+    check(RoleModelChoices.choices(installed: [gemma, embedder, "Other-Chat-4bit"], roles: shipped)
+          == ["Other-Chat-4bit", gemma],
+          "an installed embedder and the reranker role are never offered as chat models")
+    check(RoleModelChoices.choices(installed: [gemma], roles: shipped) == [gemma],
+          "the embedding and reranker roles add nothing to the menu")
+    check(RoleModelChoices.choices(installed: ["Plain-Name-A", gemma],
+                                   roles: ["general": gemma, "embedding": "Plain-Name-A"]) == [gemma],
+          "the embedding role's model is left out whatever it is called")
+    check(RoleModelChoices.choices(installed: ["bge-reranker-v2", "nomic-embed-text", gemma], roles: [:]) == [gemma],
+          "an embedder or reranker is known by its name too")
+    check(RoleModelChoices.choices(installed: [], roles: [:]) == [gemma],
+          "with nothing reported, the menu holds the bundled Gemma")
+    check(RoleModelChoices.fallbackModels == [gemma], "the fallback model is the bundled Gemma")
+    check(RoleModelChoices.fallbackRoles == chatRoles, "every fallback role is the bundled Gemma")
+    check(RoleModelChoices.choices(installed: [], roles: shipped) == [gemma],
+          "while the engine starts, the menu holds the saved model")
+    check(RoleModelChoices.choices(installed: [], roles: ["general": "My-Own-Chat", "embedding": embedder])
+          == ["My-Own-Chat"],
+          "a Mac with its own model is not offered the bundled one it never installed")
+    check(RoleModelChoices.choices(installed: [gemma], roles: ["general": "Cloud-Chat", "fast": ""])
+          == ["Cloud-Chat", gemma],
+          "a model a chat role already uses stays in the menu; an empty role adds nothing")
+    check(RoleModelChoices.choices(installed: [gemma, embedder], roles: wrongPick, keeping: embedder)
+          == [embedder, gemma],
+          "a wrong saved pick shows in its own menu, so it can be changed back")
+    check(RoleModelChoices.choices(installed: [gemma, embedder], roles: wrongPick) == [gemma],
+          "a wrong saved pick is in no other menu")
+    check(RoleModelChoices.choices(installed: [gemma], roles: shipped, keeping: "") == [gemma],
+          "no selection keeps nothing")
+    check(RoleModelChoices.isChatModel(gemma, roles: shipped), "the bundled Gemma is a chat model")
+    check(!RoleModelChoices.isChatModel(""), "no name is no chat model")
+    check(!RoleModelChoices.isChatModel(embedder), "the embedder is not a chat model")
+    check(!RoleModelChoices.isChatModel(reranker), "the reranker is not a chat model")
+    check(RoleModelChoices.saveProblem.contains("couldn't save"), "a failed model pick is said")
+
+    // Settings › Advanced: the idle timer says it is about the other models.
+    let idleOn: String = "Unloads Wisp's other models, like the one Smart Search uses, after 5 min unused. "
+        + "The chat model follows Save memory instead."
+    check(QuickSettingsText.idleUnload(minutes: 5) == idleOn, "the idle timer names what it unloads and when")
+    let idleOff: String = QuickSettingsText.idleUnload(minutes: 0)
+    check(idleOff.hasPrefix("Never. Wisp's other models"), "an idle timer that is off says never")
+    check(idleOff.contains("stay loaded until you unload them"), "an idle timer that is off says models stay")
+    check(idleOff.hasSuffix("The chat model follows Save memory instead."),
+          "an idle timer that is off still says the chat model is Save memory's")
+    check(QuickSettingsText.idleUnloadSaveProblem.contains("couldn't save"), "a failed idle timer change is said")
+
     // The service's reply.
     check(ModelMemory.parse(["available": false, "models": []]) == nil, "an unavailable engine is unknown")
     check(ModelMemory.parse(nil) == nil, "an unreadable reply is unknown")
@@ -198,4 +269,36 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
     check(parsed?.models == [.init(id: "a", bytes: 5), .init(id: "b", bytes: nil), .init(id: "c", bytes: nil), .init(id: "d", bytes: nil)],
           "only positive measured sizes count")
     check(parsed?.totalBytes == nil && ModelMemory(models: [.init(id: "a", bytes: 5)]).totalBytes == 5, "a total needs every size")
+
+    // Always allow rules (Settings › Privacy & Access): every rule in GET /permissions
+    // is listed with what it covers, and Remove names exactly one rule.
+    let folder = "/Users/sam/C++ notes"
+    let rulesReply = #"{"grants":{"write_file":{"allow":[{"scope":"/Users/sam/C++ notes","granted_at":1.5},{"scope":""}],"deny":[]},"#
+        + #""open_app":{"allow":[],"deny":[{"scope":""}]}},"never_grantable":[],"read_only":false,"full_access":false}"#
+    let blockApp = StandingRule(tool: "open_app", scope: "", allow: false)
+    let anyWrite = StandingRule(tool: "write_file", scope: "", allow: true)
+    let folderWrite = StandingRule(tool: "write_file", scope: folder, allow: true)
+    let listed: [StandingRule]? = StandingRule.parse(Data(rulesReply.utf8))
+    let expectedRules: [StandingRule] = [blockApp, anyWrite, folderWrite]
+    check(listed == expectedRules, "every standing rule is listed, sorted by tool")
+    let unreadRules: [StandingRule]? = StandingRule.parse(Data(#"{"detail":"x"}"#.utf8))
+    check(unreadRules == nil, "an unreadable rules reply is never an empty list")
+    let emptyRules: [StandingRule]? = StandingRule.parse(Data(#"{"grants":{}}"#.utf8))
+    check(emptyRules?.isEmpty == true, "no rules is an empty list")
+    check(anyWrite.summary == "Always allow · every action", "a tool-wide rule says it covers every action")
+    check(folderWrite.summary == "Always allow · only /Users/sam/C++ notes", "a limited rule names its folder")
+    check(blockApp.summary == "Always block · every action", "a block rule is named as one")
+    check(anyWrite.id != folderWrite.id, "two rules of one tool are told apart")
+    let service = URL(string: "http://127.0.0.1:8765")!
+    let removeAny: String? = anyWrite.removeURL(base: service)?.absoluteString
+    check(removeAny == "http://127.0.0.1:8765/permissions/write_file?scope=",
+          "removing a tool-wide rule sends an empty scope, never none: \(removeAny ?? "nil")")
+    let removeFolder: String? = folderWrite.removeURL(base: service)?.absoluteString
+    check(removeFolder == "http://127.0.0.1:8765/permissions/write_file?scope=%2FUsers%2Fsam%2FC%2B%2B%20notes",
+          "a folder's slashes, plus signs and spaces are percent-encoded: \(removeFolder ?? "nil")")
+    let slashBase = URL(string: "http://127.0.0.1:8765/")!
+    let removeSlash: String? = anyWrite.removeURL(base: slashBase)?.absoluteString
+    check(removeSlash == removeAny, "a base with a trailing slash gives the same request")
+    let noTool = StandingRule(tool: "", scope: "", allow: true)
+    check(noTool.removeURL(base: service) == nil, "a rule with no tool has nothing to remove")
 }

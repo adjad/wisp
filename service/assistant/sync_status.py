@@ -219,6 +219,9 @@ async def _ensure_sources(sources: Iterable[str], timeout_seconds: float = 2.5) 
 # A real Notes read walks up to ~500 notes through AppleScript or the local
 # store; a lookup is worth waiting for that, but not indefinitely.
 NOTES_REFRESH_TIMEOUT_S = 8.0
+# How long a lookup waits for the app to finish its routine event-stream reconnect before
+# calling it not connected (the same wait native actions get: outbox.RECONNECT_GRACE_S).
+NOTES_RECONNECT_GRACE_S = 8.0
 
 
 async def refresh_notes(timeout_seconds: float | None = None) -> dict:
@@ -248,17 +251,23 @@ async def refresh_notes(timeout_seconds: float | None = None) -> dict:
                 "age_seconds": age, "timed_out": status in {"stale", "timeout"},
                 "fresh": status == "fresh"}
 
+    if timeout_seconds is None:
+        timeout_seconds = NOTES_REFRESH_TIMEOUT_S
     try:
         from service.assistant.hub import hub
         if not hub.has_subscribers:
-            return result("unavailable", "The Wisp app is not connected, so Notes could "
-                                         "not be re-read")
+            # The app's event stream is away for a few seconds every half minute while it
+            # reconnects; wait that out. An app that never connected or left long ago is
+            # still reported at once (Hub.wait_for_subscriber decides which it is).
+            wait = getattr(hub, "wait_for_subscriber", None)
+            grace = max(0.0, min(NOTES_RECONNECT_GRACE_S, timeout_seconds))
+            if wait is None or not await wait(grace):
+                return result("unavailable", "The Wisp app is not connected, so Notes could "
+                                             "not be re-read")
         await hub.publish({"type": "sync_assistant_sources_now", "sources": ["notes"]},
                           durable=False)
     except Exception:  # noqa: BLE001 — report the truth instead of guessing
         return result("unavailable", "Wisp could not ask the app to re-read Notes")
-    if timeout_seconds is None:
-        timeout_seconds = NOTES_REFRESH_TIMEOUT_S
     deadline = time.monotonic() + max(0.0, timeout_seconds)
     while True:
         receipt = notes.notes_receipt()

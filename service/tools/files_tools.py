@@ -31,6 +31,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
+from service.tools.builtin import _tcc_message
 from service.tools.registry import register
 
 # Directories that are never what someone means by "my files", and that produce
@@ -211,6 +212,17 @@ def find_files(query: str, folder: str = "", kind: str = "",
     if folder:
         root = Path(folder).expanduser()
         if not root.is_dir():
+            # macOS reports a folder inside a blocked one as missing. If the
+            # nearest folder that does exist cannot be listed, say that.
+            anc = root.parent
+            while anc != anc.parent and not anc.is_dir():
+                anc = anc.parent
+            try:
+                os.listdir(anc)
+            except PermissionError:
+                return _tcc_message(anc, "searching")
+            except OSError:
+                pass
             return f"(error: {folder} is not a folder on this Mac)"
         argv = ["mdfind", "-onlyin", str(root), expr]
 

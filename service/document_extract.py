@@ -21,13 +21,16 @@ Rules:
 - Extraction stops once MAX_TEXT_CHARS is reached (pages, paragraphs, slides
   and rows alike) and walks at most MAX_PDF_PAGES PDF pages. Large mode raises
   those three limits (LARGE_TEXT_CHARS, LARGE_PDF_PAGES, LARGE_DOCUMENT_BYTES)
-  and nothing else: the ZIP and stream bounds above stay exactly as tight.
+  and nothing else (plus a `[Pages: N]` line with the PDF's true page count and a `[Page N]` line
+  before each PDF page's text; file text that looks like a marker is defused): the ZIP and stream
+  bounds above stay exactly as tight.
 - Every failure is a ValueError with a plain sentence for the person.
 """
 from __future__ import annotations
 
 import io
 import json
+import re
 import struct
 import subprocess
 import sys
@@ -74,7 +77,15 @@ _ZIPPED = {"docx", "xlsx", "pptx", "odt"}
 _LEGACY = {"xls": ".xlsx", "ppt": ".pptx"}
 
 TOO_COMPLEX = "That document is too large or complex for Wisp to read."
+SCANNED = "That PDF has no text Wisp can read (it looks scanned)."
+# AES-encrypted PDFs need a cipher library Wisp doesn't ship, even when they open with no password.
+ENCRYPTED = "That PDF is encrypted in a way Wisp can't open."
 DAMAGED = "That document couldn't be read. It may be damaged."
+LOCKED = "That document is password-protected. Wisp can't read it without the password."
+# A docx, xlsx or pptx saved with a password is not a ZIP: Office wraps the encrypted file in its
+# older container format, which starts with these bytes and names these two streams (in UTF-16).
+_OLE = b"\xd0\xcf\x11\xe0"
+_LOCKED_STREAMS = tuple(name.encode("utf-16-le") for name in ("EncryptedPackage", "EncryptionInfo"))
 
 
 class _Enough(Exception):
@@ -104,6 +115,11 @@ class _Text:
 
 def _kind(name: str) -> str:
     return PurePath(name or "").suffix.lower().lstrip(".")
+
+
+def is_locked_office(data: bytes) -> bool:
+    """Whether these bytes are an Office file saved with a password (see _OLE). Nothing is parsed."""
+    return data.startswith(_OLE) and all(stream in data for stream in _LOCKED_STREAMS)
 
 
 # --- ZIP preflight ----------------------------------------------------------------
@@ -200,7 +216,42 @@ def zip_guard(data: bytes) -> None:
 
 # --- the formats ------------------------------------------------------------------
 
-def _pdf(data: bytes, limit: int | None = None, pages: int | None = None) -> tuple[str, bool]:
+# Large mode writes marker lines of its own ([Pages: N], [Page N], [Slide N], [Sheet: name]) for
+# service/large_document.py. A line of the FILE's text that looks like one is defused with a space
+# after the bracket, so a marker in the text is only ever the extractor's.
+#
+# What gets defused is a superset of what large_document recognises (its recognisers are
+# case-sensitive, need `[` at the very start of a line and one ASCII space or ": " after the word):
+# - the line may start with any whitespace except a newline, because text is stripped on its way
+#   through (a chunk's `.strip()`), which would put a hidden marker at a line start;
+# - the word is matched case-insensitively and may be followed by anything.
+# What stays untouched is inert because no recogniser matches it: a `[` that is not the first
+# non-blank character of a line (a marker in the middle of a line, or after a "\r", "\v" or
+# U+2028, which the recognisers do not treat as line breaks), full-width or other look-alike
+# brackets (U+FF3B, U+3010, U+27E6 ...: the recognisers need an ASCII `[`), and anything with
+# a space between the bracket and the word (the form this function writes, so it is idempotent).
+_FORGED_MARKER = re.compile(r"^([^\S\n]*)\[(?=(?:pages?|slides?|sheet)\b)", re.I | re.M)
+# The largest page count the extractor writes in `[Pages: N]` (seven digits, as large_document's
+# header pattern accepts). A hostile PDF can declare any number.
+MAX_DECLARED_PAGES = 9_999_999
+
+
+def defuse_markers(text: str) -> str:
+    """`text` with every line that could pass for an extractor marker made harmless.
+
+    A line that starts (after any blanks) with `[Page`, `[Pages`, `[Slide`, `[Slides` or `[Sheet`, in
+    any letter case, gets a space after the bracket: `[Page 9]` becomes `[ Page 9]`. Use it on any
+    text that did not come from the extractor's own markers but will be joined into marker-bearing
+    text (file text, recognised text). Pure, linear in the length of `text`, idempotent, and safe on
+    any str, including empty.
+    """
+    return _FORGED_MARKER.sub(r"\1[ ", text)
+
+
+_neutralise = defuse_markers
+
+
+def _pdf(data: bytes, limit: int | None = None, pages: int | None = None, markers: bool = False) -> tuple[str, bool]:
     from pypdf import PdfReader, filters
     for name in ("ZLIB_MAX_OUTPUT_LENGTH", "LZW_MAX_OUTPUT_LENGTH", "RUN_LENGTH_MAX_OUTPUT_LENGTH",
                  "JBIG2_MAX_OUTPUT_LENGTH", "MAX_DECLARED_STREAM_LENGTH", "MAX_ARRAY_BASED_STREAM_OUTPUT_LENGTH"):
@@ -209,26 +260,40 @@ def _pdf(data: bytes, limit: int | None = None, pages: int | None = None) -> tup
     try:
         reader = PdfReader(io.BytesIO(data))
         if reader.is_encrypted:
+            # Many PDFs are encrypted only to limit printing or copying and open with no password.
+            # pypdf keeps is_encrypted true after a successful decrypt, so the result decides.
             try:
-                reader.decrypt("")
+                opened = bool(reader.decrypt(""))
             except Exception:  # noqa: BLE001
-                pass
-        if reader.is_encrypted:
-            raise ValueError("That PDF is password-protected. Wisp can't read it without the password.")
+                opened = False
+            if not opened:
+                raise ValueError("That PDF is password-protected. Wisp can't read it without the password.")
         out = _Text(limit)
         max_pages = MAX_PDF_PAGES if pages is None else pages
-        total = len(reader.pages)
+        total = max(0, min(len(reader.pages), MAX_DECLARED_PAGES))
+        cut = total > max_pages
         try:
             for index, page in enumerate(reader.pages):
                 if index >= max_pages:
-                    return out.joined("\n\n"), True
-                out.add((page.extract_text() or "").strip())
+                    cut = True
+                    break
+                body = (page.extract_text() or "").strip()
+                # Large mode labels each page, so an answer can say where a figure is.
+                if markers and body:
+                    body = f"[Page {index + 1}]\n{defuse_markers(body)}"
+                out.add(body)
         except _Enough:
-            return out.joined("\n\n"), True
-        return out.joined("\n\n"), total > max_pages
+            cut = True
+        text = out.joined("\n\n")
+        # Large mode also says how many pages the PDF really has, even when the text is cut short.
+        if markers and text.strip():
+            text = f"[Pages: {total}]\n{text}"
+        return text, cut
     except ValueError:
         raise
-    except Exception:  # noqa: BLE001 — a damaged PDF is unreadable, never a crash
+    except Exception as error:  # noqa: BLE001 — a damaged PDF is unreadable, never a crash
+        if type(error).__name__ == "DependencyError":      # pypdf: the cipher needs a library Wisp doesn't ship
+            raise ValueError(ENCRYPTED) from None
         raise ValueError("That PDF couldn't be read. It may be damaged.") from None
 
 
@@ -250,17 +315,37 @@ def _docx(data: bytes, limit: int | None = None) -> tuple[str, bool]:
     return out.joined(), False
 
 
-def _xlsx(data: bytes, limit: int | None = None) -> tuple[str, bool]:
+def _cell(value, markers: bool = False) -> str:
+    """One spreadsheet cell on one line, unable to pass for a column break.
+
+    A row is written as one line with " | " between cells, and service/large_document.py reads it
+    back by splitting on exactly those. So a line break inside a cell (Alt+Enter in a notes or
+    address column) becomes a space, as does any other run of blanks, and a `|` standing alone
+    between blanks becomes `/`. A `|` inside a word ("A|B") cannot be taken for a column break and
+    stays.
+    """
+    if value is None:
+        return ""
+    text = str(value)
+    if markers:
+        # Before the lines are joined: a marker at the start of a cell's second line is still one.
+        text = defuse_markers(text)
+    return " ".join("/" if word == "|" else word for word in text.split())
+
+
+def _xlsx(data: bytes, limit: int | None = None, markers: bool = False) -> tuple[str, bool]:
     from openpyxl import load_workbook
     book = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     out = _Text(limit)
     try:
         for sheet in book.worksheets:
-            out.add(f"[Sheet: {sheet.title}]")
+            title = " ".join(str(sheet.title).splitlines()) if markers else sheet.title
+            out.add(f"[Sheet: {title}]")
             for row in sheet.iter_rows(values_only=True):
-                cells = ["" if v is None else str(v) for v in row]
+                cells = [_cell(v, markers) for v in row]
                 if any(c.strip() for c in cells):
-                    out.add(" | ".join(cells).rstrip(" |"))
+                    line = " | ".join(cells).rstrip(" |")
+                    out.add(defuse_markers(line) if markers else line)
     except _Enough:
         return out.joined(), True
     finally:
@@ -268,20 +353,50 @@ def _xlsx(data: bytes, limit: int | None = None) -> tuple[str, bool]:
     return out.joined(), False
 
 
-def _pptx(data: bytes, limit: int | None = None) -> tuple[str, bool]:
+def _slide_lines(shapes) -> list[str]:
+    """The text on a slide, in the order its shapes are stored: text boxes and placeholders, the
+    rows of each table (cells joined with " | "), and whatever is inside a group, however deeply
+    groups are nested. Charts, pictures and diagrams carry no text this reads.
+
+    Walked with a list of open groups, not by recursion, so a deck made of groups inside groups
+    can't exhaust the stack.
+    """
+    from pptx.shapes.group import GroupShape
+    lines: list[str] = []
+    open_groups = [iter(shapes)]
+    while open_groups:
+        for shape in open_groups[-1]:
+            if isinstance(shape, GroupShape):
+                open_groups.append(iter(shape.shapes))
+                break
+            if shape.has_text_frame:
+                if shape.text_frame.text.strip():
+                    lines.append(shape.text_frame.text)
+            elif getattr(shape, "has_table", False):
+                for row in shape.table.rows:
+                    cells = [" ".join(cell.text.split()) for cell in row.cells]
+                    cells = [cell for cell in cells if cell]
+                    if cells:
+                        lines.append(" | ".join(cells))
+        else:
+            open_groups.pop()
+    return lines
+
+
+def _pptx(data: bytes, limit: int | None = None, markers: bool = False) -> tuple[str, bool]:
     from pptx import Presentation
     deck = Presentation(io.BytesIO(data))
     out = _Text(limit)
     try:
         for i, slide in enumerate(deck.slides, 1):
-            lines = [shape.text_frame.text for shape in slide.shapes
-                     if shape.has_text_frame and shape.text_frame.text.strip()]
+            lines = _slide_lines(slide.shapes)
             if slide.has_notes_slide:
                 notes = (slide.notes_slide.notes_text_frame.text or "").strip()
                 if notes:
                     lines.append(f"[speaker notes] {notes}")
             if lines:
-                out.add(f"[Slide {i}]\n" + "\n".join(lines))
+                body = "\n".join(lines)
+                out.add(f"[Slide {i}]\n" + (defuse_markers(body) if markers else body))
     except _Enough:
         return out.joined("\n\n"), True
     return out.joined("\n\n"), False
@@ -354,19 +469,21 @@ def extract_text(name: str, data: bytes, large: bool = False) -> tuple[str, bool
     if kind in _LEGACY:
         raise ValueError(f"Wisp can't read old .{kind} files. Save it as {_LEGACY[kind]} and try again.")
     if kind in _ZIPPED:
+        if is_locked_office(data):
+            raise ValueError(LOCKED)
         zip_guard(data)
     cut = False
     try:
         if kind == "pdf":
-            text, cut = _pdf(data, limit, pages)
+            text, cut = _pdf(data, limit, pages, markers=large)
             if not text.strip():
-                raise ValueError("That PDF has no text Wisp can read (it looks scanned).")
+                raise ValueError(SCANNED)
         elif kind == "docx":
             text, cut = _docx(data, limit)
         elif kind == "xlsx":
-            text, cut = _xlsx(data, limit)
+            text, cut = _xlsx(data, limit, markers=large)
         elif kind == "pptx":
-            text, cut = _pptx(data, limit)
+            text, cut = _pptx(data, limit, markers=large)
         elif kind in _HTML:
             text = _html(data)
         elif kind in _TEXTUTIL:
@@ -381,6 +498,8 @@ def extract_text(name: str, data: bytes, large: bool = False) -> tuple[str, bool
         raise ValueError(DAMAGED) from None
     if not text.strip():
         raise ValueError("That document has no text Wisp can read.")
+    if large and kind not in ("pdf", "xlsx", "pptx"):
+        text = defuse_markers(text)
     if len(text) > limit:
         text, cut = text[:limit], True
     return text, cut

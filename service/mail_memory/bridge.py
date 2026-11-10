@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import math
 import re
 import secrets
+import time
 
 _pending: dict[str, tuple[str, asyncio.Future]] = {}
 
@@ -25,8 +27,15 @@ class BridgeError(RuntimeError):
 
 async def _ask(kind: str, timeout: float, **fields) -> dict:
     from service.assistant.hub import hub
-    if not hub.has_subscribers:
+    from service.assistant.outbox import RECONNECT_GRACE_S, app_connected
+    # The app's event stream is re-opened every half minute and is away for a few seconds
+    # each time. A request in that gap waits for it (never past its own timeout); an app
+    # that never connected or left long ago still fails at once. The request is published
+    # only once the app is listening, because a non-durable event with no listener is lost.
+    started = time.monotonic()
+    if not await app_connected(max(0.0, min(RECONNECT_GRACE_S, timeout)), via=hub):
         raise BridgeError("app_not_connected")
+    timeout = max(0.0, timeout - (time.monotonic() - started))
     request_id = secrets.token_urlsafe(24)
     future = asyncio.get_running_loop().create_future()
     _pending[request_id] = (kind, future)
@@ -126,7 +135,11 @@ def _sent_rows(reply: dict) -> list[dict]:
 
 async def read_sent(days: int, timeout: float = 8.0) -> tuple[list[dict], bool]:
     """Apple Mail's sent mail for the last `days` (at most SENT_DAYS_MAX), newest
-    first, headers and recipients only, and whether the app capped the list."""
+    first, headers and recipients only, and whether the app capped the list.
+
+    Raises BridgeError with the app's reason. `no_sent_mailbox` means Mail has an account
+    but no folder the app recognises as Sent (its name is in a language the app doesn't
+    know): that is a read that failed, never "nothing was sent"."""
     reply = await _ask("sent", timeout, days=max(1, min(int(days), SENT_DAYS_MAX)))
     if reply.get("ok") is not True:
         raise BridgeError(str(reply.get("error") or "sent_failed")[:40])
@@ -200,3 +213,42 @@ async def read_attachment(rowid: int, attachment_id: str, timeout: float = 45.0)
     except ValueError:
         return None, "", "bad_base64"
     return data, str(reply.get("name") or "")[:255], ""
+
+
+# --- text recognition (MailMemoryReader kind `recognize`) ---------------------------
+
+RECOGNIZE_MAX_BYTES = 4 * 1024 * 1024
+RECOGNIZE_MAX_CHARS = 200_000
+_RECOGNIZE_ERRORS = {"bad_image", "too_large", "failed"}
+
+
+async def recognize_text(jpeg: bytes, timeout: float = 20.0) -> tuple[str, float]:
+    """Text the app reads in one JPEG with Apple Vision: (text, confidence 0..1).
+
+    `("", 0.0)` when it found no text. Raises BridgeError for everything else, including a
+    non-JPEG or over-size input, which is refused here without asking the app. Only JPEGs
+    Wisp's own child re-encoded from decoded pixels belong here."""
+    if not isinstance(jpeg, (bytes, bytearray)) or bytes(jpeg[:3]) != b"\xff\xd8\xff":
+        raise BridgeError("bad_image")
+    if len(jpeg) > RECOGNIZE_MAX_BYTES:
+        raise BridgeError("too_large")
+    # `wait` tells the app how long we will wait, so it skips a request that sat in its queue
+    # past that. An app from before this field drops a request carrying it (strict keys) and
+    # the call then times out; that is acceptable because app and backend ship in one bundle.
+    wait = max(1, min(60, math.ceil(timeout))) if math.isfinite(timeout) else 60
+    reply = await _ask("recognize", timeout, image_b64=base64.b64encode(bytes(jpeg)).decode("ascii"), wait=wait)
+    if reply.get("ok") is not True:
+        error = str(reply.get("error") or "")
+        if error == "no_text":
+            return "", 0.0
+        if error == "late":
+            raise BridgeError("recognize_timeout")
+        raise BridgeError(error if error in _RECOGNIZE_ERRORS else "recognize_failed")
+    text = reply.get("text")
+    confidence = reply.get("confidence")
+    if not isinstance(text, str) or isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+        raise BridgeError("recognize_failed")
+    confidence = float(confidence)
+    if confidence != confidence or confidence in (float("inf"), float("-inf")):
+        raise BridgeError("recognize_failed")
+    return text[:RECOGNIZE_MAX_CHARS], min(1.0, max(0.0, confidence))

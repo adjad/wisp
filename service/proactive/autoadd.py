@@ -635,7 +635,7 @@ def done_card(record: dict, now: float) -> dict:
 def tap_card(plan: dict, now: float) -> dict:
     """With auto-add off (or the caps reached): the ordinary tap-to-add card,
     fired by the executor's own calendar_event / reminder paths."""
-    from service.proactive.prepare import card_id, todo_id
+    from service.proactive.prepare import card_id
     when = when_words(plan, plan["timezone"])
     first = _first_name(plan.get("who", ""))
     noun = "email" if plan["source"] == "mail" else "text"
@@ -664,8 +664,11 @@ def tap_card(plan: dict, now: float) -> dict:
         "action": {"method": method, "button": button, "draft": "", "recipient": "", "event": event,
                    "envelope": envelope, "to": [], "cc": [], "subject": "", "reply_all": False, "reply_ref": None,
                    "open_url": "", "open_label": ""},
-        "todo_id": todo_id(plan["item_id"]),
-        "fingerprints": [plan["item_fingerprint"]],
+        # Its own identity, not the reply card's: tapping or dismissing this must not
+        # check off the message's reply to-do or hide its reply card. The plan's
+        # fingerprint (thread, kind, minute) also outlives a changed thread hash.
+        "todo_id": None,
+        "fingerprints": [plan["fingerprint"]],
         "due_ts": at,
     }
 
@@ -701,6 +704,8 @@ def merge_cards(done: list[dict], tap: list[dict], cards: list[dict], added_item
         return str(((card.get("sources") or [{}])[0] or {}).get("ref") or "")
     kept = [c for c in cards if not (ref(c) in added_items and c["action"].get("method") in _TAP_METHODS)]
     taken = {ref(c) for c in kept if c["action"].get("method") in _TAP_METHODS}
+    # A reply card that already offers the add ("Reply & add to calendar?") makes ours a second one.
+    taken |= {ref(c) for c in kept if c["action"].get("method") in _REPLY_METHODS and c["action"].get("event")}
     ours = [c for c in tap if ref(c) not in taken and c["id"] not in {k["id"] for k in kept}]
     alerts = [c for c in kept if c.get("critical")]
     replies = [c for c in kept if c["action"].get("method") in _REPLY_METHODS and not c.get("critical")]
@@ -759,7 +764,7 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
             note(item, f"already {record.get('status') or 'tried'}")
             continue
         # The user waved this item away, or already tapped its card.
-        if plan["item_fingerprint"] in suppressed or any(
+        if plan["item_fingerprint"] in suppressed or fp in suppressed or any(
                 card_id(plan["item_fingerprint"], m) in gone
                 for m in ("calendar_event", "reminder", "add_to_day", "text_reply", "email_reply", "read")):
             note(item, "dismissed or handled")
