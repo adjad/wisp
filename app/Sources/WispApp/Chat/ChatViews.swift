@@ -376,7 +376,8 @@ struct ChatWelcome: View {
     var body: some View {
         VStack(spacing: 0) {
             ChatEmptyState { store.newChat(); store.submit($0) }
-            ChatComposer(store: store, busy: false, loading: false, restoredInput: .constant(nil), stop: {})
+            ChatComposer(store: store, busy: false, loading: false, restoredInput: .constant(nil),
+                         notice: .constant(nil), stop: {})
         }
     }
 }
@@ -475,6 +476,7 @@ struct ChatConversationView: View {
             }
             ChatComposer(store: store, busy: conversation.busy || conversation.corpusRunning, loading: conversation.loading,
                          restoredInput: Binding(get: { conversation.restoredInput }, set: { conversation.restoredInput = $0 }),
+                         notice: Binding(get: { conversation.notice }, set: { conversation.notice = $0 }),
                          stop: { store.stop(conversation) })
         }
     }
@@ -1014,8 +1016,12 @@ struct ChatComposer: View {
     let busy: Bool
     let loading: Bool
     @Binding var restoredInput: String?
+    /// Why the last message came back, shown above the field until the next send or edit.
+    @Binding var notice: String?
     let stop: () -> Void
     @State private var text = ""
+    /// The text a dropped request put back: editing away from it clears the notice.
+    @State private var restoredText: String?
     @State private var image: (name: String, dataURL: String)?
     @State private var attachNote = ""
     @FocusState private var focused: Bool
@@ -1024,6 +1030,13 @@ struct ChatComposer: View {
 
     var body: some View {
         VStack(spacing: 8) {
+            if let notice, !notice.isEmpty {
+                Text(notice)
+                    .font(.wisp(.footnote, on: .window)).foregroundStyle(ChatTheme.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 4)
+                    .frame(maxWidth: 740, alignment: .leading)
+            }
             VStack(alignment: .leading, spacing: 8) {
                 if let image {
                     HStack(spacing: 8) {
@@ -1095,12 +1108,19 @@ struct ChatComposer: View {
         .frame(maxWidth: .infinity)
         .onAppear {
             focused = true
-            if let restored = restoredInput { text = restored; restoredInput = nil }
+            if let restored = restoredInput { restoredText = restored; text = restored; restoredInput = nil }
         }
         .onChange(of: restoredInput) { _, restored in
             guard let restored else { return }
+            restoredText = restored
             text = restored
             restoredInput = nil
+        }
+        .onChange(of: text) { _, edited in
+            // Typing over the message that came back dismisses the note about it.
+            // (Sending clears it in the store; the field emptying is not an edit.)
+            guard notice != nil, !edited.isEmpty, edited != restoredText else { return }
+            notice = nil
         }
     }
 

@@ -78,6 +78,9 @@ final class ChatConversation: ObservableObject, Identifiable {
     fileprivate(set) var corpusNormal = false
     /// Text to put back in the composer after a dropped request.
     @Published var restoredInput: String?
+    /// Why the last message didn't go through, shown above the composer until
+    /// the next send or edit.
+    @Published var notice: String?
 
     // Per-run streaming state, outside the published surface.
     fileprivate var task: Task<Void, Never>?
@@ -451,6 +454,7 @@ final class ChatStore: ObservableObject {
         let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else { return }
         guard !conversation.busy, !conversation.loading else { return }
+        conversation.notice = nil
         if conversation.messages.isEmpty && corpusCase == nil { conversation.title = ChatTitle.make(from: prompt) }
         var user = ChatMessage(role: .user, text: prompt)
         user.attachmentName = attachmentName
@@ -662,9 +666,17 @@ final class ChatStore: ObservableObject {
                 message.text = "Wisp did not return a response. This case was not scored."
                 message.phase = .failed
                 conversation.messages[i] = message
-            } else if i > 0, conversation.messages[i - 1].role == .user {
-                conversation.restoredInput = conversation.messages[i - 1].text
-                conversation.messages.removeSubrange((i - 1)...i)
+            } else {
+                if i > 0, conversation.messages[i - 1].role == .user {
+                    conversation.restoredInput = conversation.messages[i - 1].text
+                    conversation.messages.removeSubrange((i - 1)...i)
+                }
+                // Never silent: say why above the composer, as the notch does.
+                conversation.notice = ChatSendNotice.text(message: event.str("message"),
+                                                          unsent: event.bool("unsent"))
+                // Re-read the service, so the sidebar stops saying Ready while it is
+                // down and says so again once it is back.
+                Task { await self.refreshWhenReady() }
             }
             conversation.busy = false
         }

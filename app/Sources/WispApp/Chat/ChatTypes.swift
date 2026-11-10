@@ -411,6 +411,16 @@ enum ChatTurnReducer {
     }
 }
 
+/// What the Chat window says when a prompt didn't go through and went back to
+/// the composer: why (when the service never ran it) and how to send it again.
+/// The notch says the same for the same event (AgentSend.notice).
+enum ChatSendNotice {
+    static func text(message: String, unsent: Bool) -> String {
+        let why = unsent && !message.isEmpty ? message : "Wisp didn't answer."
+        return why + " Your message is back in the box. Press Return to send it again."
+    }
+}
+
 // MARK: - The conversation list
 
 struct ChatSummary: Identifiable, Equatable {

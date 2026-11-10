@@ -9,6 +9,7 @@ final class ScriptedBackend: ChatBackend {
     var chats: [ChatSummary]? = []
     /// The next this-many list requests fail, like a service that is still starting.
     var listFailures = 0
+    var listCalls = 0
     var history: [String: [ChatMessage]] = [:]
     var script: (String) -> [ChatEvent] = { _ in [] }
     var approvals: [(actionId: String, approved: Bool, scope: String, requestId: String, session: String)] = []
@@ -46,6 +47,7 @@ final class ScriptedBackend: ChatBackend {
     }
 
     func listChats() async -> [ChatSummary]? {
+        listCalls += 1
         if listFailures > 0 { listFailures -= 1; return nil }
         return chats
     }
@@ -553,6 +555,33 @@ struct ChatStoreChecks {
             check(chat.messages.isEmpty, "the failed exchange is removed")
             check(chat.restoredInput == "hello there", "the prompt is restored")
             check(!chat.busy, "dropped request frees the chat")
+            check(chat.notice == "Wisp didn't answer. Your message is back in the box. Press Return to send it again.",
+                  "a stream that dropped says so, without claiming the message was never taken: \(chat.notice ?? "nil")")
+            check(backend.listCalls == 1 && store.reachable, "a drop re-reads the service, which is still up")
+        }
+
+        // A message the service never took says why, and the sidebar learns the service is down.
+        do {
+            let backend = ScriptedBackend()
+            backend.script = { _ in [ev("error", ["message": "Wisp isn't running right now.", "dropped": true, "unsent": true])] }
+            backend.chats = nil
+            let store = ChatStore(backend: backend)
+            check(store.reachable && backend.listCalls == 0, "nothing has asked the service yet")
+            store.send("hello there")
+            await settle()
+            let chat = store.selected!
+            check(chat.messages.isEmpty && chat.restoredInput == "hello there" && !chat.busy,
+                  "the unsent exchange is taken back and the prompt restored")
+            check(chat.notice == "Wisp isn't running right now. Your message is back in the box. Press Return to send it again.",
+                  "the reason is shown, not swallowed: \(chat.notice ?? "nil")")
+            check(backend.listCalls >= 1 && !store.reachable, "the sidebar stops saying Ready while the service is down")
+            backend.chats = []
+            backend.script = { _ in [ev("delta", ["text": "Hi."]), ev("done")] }
+            store.send("hello there")
+            check(chat.notice == nil, "the notice clears on the next send")
+            await settle()
+            check(chat.messages.count == 2 && chat.notice == nil && store.reachable,
+                  "once the service answers, the exchange stays and the sidebar is Ready again")
         }
 
         // A real failure keeps the exchange and shows the error.

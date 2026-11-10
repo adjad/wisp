@@ -131,6 +131,14 @@ struct ChatChecks {
         _ = ChatTurnReducer.apply(ev("error", ["message": ""]), to: &e3, now: t1)
         check(e3.text == "Something went wrong.", "empty error text gets a default")
 
+        // What the window says when a prompt comes back to the composer.
+        let back = " Your message is back in the box. Press Return to send it again."
+        check(ChatSendNotice.text(message: "Wisp isn't running right now.", unsent: true) == "Wisp isn't running right now." + back,
+              "an unsent prompt says why")
+        check(ChatSendNotice.text(message: "The network connection was lost.", unsent: false) == "Wisp didn't answer." + back,
+              "a stream that dropped never claims the message was not taken")
+        check(ChatSendNotice.text(message: "", unsent: true) == "Wisp didn't answer." + back, "no reason falls back to plain words")
+
         // Status text is cleared by anything but another status.
         var s = ChatMessage(role: .assistant, phase: .waiting)
         _ = ChatTurnReducer.apply(ev("status", ["text": "Loading model…"]), to: &s, now: t0)
