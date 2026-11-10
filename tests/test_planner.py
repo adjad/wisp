@@ -290,7 +290,7 @@ def test_markup_after_the_replan_is_spent_never_reaches_the_user(_fake_tools):
     assert "tool_call" not in out and out.strip()
 
 
-def test_only_one_forced_replan_per_turn(_fake_tools):
+def test_only_one_forced_replan_per_turn_after_cannot_do(_fake_tools):
     client = PlanClient([plan("cannot_do"), plan("call_tools", ("fake_read", {})), plan("cannot_do")])
     run(client, planner=True)
     plan_steps = [r for r in client.requests if "response_format" in r]

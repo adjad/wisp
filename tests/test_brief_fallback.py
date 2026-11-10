@@ -492,12 +492,25 @@ def main() -> int:
     test_the_button_never_raises()
     test_daily_summary_reports_launch_sync_instead_of_stale_mail()
     test_summary_request_is_bounded_and_rejects_truncation()
+    _run_with_fixtures(test_brief_clock_follows_the_macs_24_hour_setting)
     print(f"\n{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+def _run_with_fixtures(test) -> None:
+    """A script run has no pytest fixtures, so hand over tmp_path and monkeypatch."""
+    import tempfile
+    from pathlib import Path
+    import pytest
+    with tempfile.TemporaryDirectory() as folder, pytest.MonkeyPatch.context() as patcher:
+        try:
+            test(Path(folder), patcher)
+        except AssertionError as exc:
+            check(test.__name__, False, repr(exc))
+        else:
+            check(test.__name__, True)
+
+
 def test_brief_clock_follows_the_macs_24_hour_setting(tmp_path, monkeypatch):
     # The app shows 15:05 on a 24-hour Mac; the brief's own times must agree.
     import plistlib
@@ -515,3 +528,7 @@ def test_brief_clock_follows_the_macs_24_hour_setting(tmp_path, monkeypatch):
         (prefs / ".GlobalPreferences.plist").write_bytes(plistlib.dumps(setting))
         monkeypatch.setattr(brief, "_clock_pref", (0.0, False))
         assert brief._hm(when) == expected, setting
+
+
+if __name__ == "__main__":
+    sys.exit(main())
