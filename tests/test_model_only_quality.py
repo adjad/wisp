@@ -869,3 +869,109 @@ def test_ordinary_step_keeps_the_same_budget(synthetic):
 
 def real_tool_names(request):
     return {s["function"]["name"] for s in request.get("tools") or [] if "description" in s["function"]}
+
+
+# --- "my calendar" in a request to change something ------------------------------
+
+_NOT_CHECKED = "haven't checked a current personal source"
+_OWNERS = {"claim_effect": lambda tool, args: {"admitted": True}, "finish_effect": lambda claim, ok: True}
+
+
+def _action_tool(synthetic, name, module, category, receipt, properties):
+    """A synthetic action that records its call and returns the real tool's receipt."""
+    effects, register = synthetic
+    tool = register(name, module, category, parameters={
+        "type": "object", "properties": {key: {"type": "string"} for key in properties},
+        "required": [properties[0]]})
+
+    async def act(**args):
+        effects.append((name, copy.deepcopy(args)))
+        return receipt
+    act.__module__ = tool.func.__module__
+    tool.func = act
+
+
+def test_calendar_add_that_says_my_calendar_keeps_its_reply(synthetic):
+    effects, _ = synthetic
+    _action_tool(synthetic, "add_calendar_event", "assistant_tools", "calendar_write",
+                 "Added \u201cLunch with Sam\u201d to your calendar.", ("title", "when_iso"))
+    prompt = "Add lunch with Sam to my calendar tomorrow at noon"
+    scope = fresh_personal_obligation(prompt, "")
+    assert scope["scope"] == "calendar"
+    said = "Lunch with Sam is on your calendar for tomorrow at noon."
+    approval = Approval(allowed=True)
+    _, _, answer = ask([[call("add_calendar_event", title="Lunch with Sam", when_iso="2036-09-29T12:00")], said],
+                       prompt=prompt, fresh_personal_scope=scope, approval=approval,
+                       model_led_preload=["add_calendar_event", "get_upcoming"], **_OWNERS)
+    assert [action["tool"] for action in approval.calls] == ["add_calendar_event"]   # still asks first
+    assert [args["title"] for args in executed(effects, "add_calendar_event")] == ["Lunch with Sam"]
+    assert answer == said and _NOT_CHECKED not in answer
+
+
+def test_reminder_that_says_my_email_answers_with_its_receipt(synthetic):
+    effects, _ = synthetic
+    receipt = "Reminder set: Check email, today at 5:00 PM."
+    _action_tool(synthetic, "add_reminder", "assistant_tools", "assistant_write", receipt,
+                 ("title", "when_iso"))
+    prompt = "remind me to check my email at 5pm"
+    scope = fresh_personal_obligation(prompt, "")
+    assert scope
+    _, _, answer = ask([[call("add_reminder", title="Check email", when_iso="2036-09-29T17:00")],
+                        "I'll remind you at 5 PM."],
+                       prompt=prompt, fresh_personal_scope=scope, approval=Approval(allowed=True),
+                       model_led_preload=["add_reminder", "get_upcoming"], **_OWNERS)
+    assert len(executed(effects, "add_reminder")) == 1
+    assert answer == receipt      # a reminder-only turn answers with the tool's own receipt
+
+
+def test_open_my_calendar_keeps_its_reply(synthetic):
+    effects, _ = synthetic
+    _action_tool(synthetic, "open_app", "apps", "app_control", "Opened Calendar.", ("name",))
+    prompt = "open my calendar"
+    scope = fresh_personal_obligation(prompt, "")
+    assert scope["scope"] == "calendar"
+    _, _, answer = ask([[call("open_app", name="Calendar")], "Calendar is open."],
+                       prompt=prompt, fresh_personal_scope=scope, approval=Approval(allowed=True),
+                       model_led_preload=["open_app", "get_upcoming"], **_OWNERS)
+    assert executed(effects, "open_app") == [{"name": "Calendar"}]
+    assert answer == "Calendar is open."
+
+
+def test_refused_action_does_not_lift_the_personal_guard(synthetic, monkeypatch):
+    effects, _ = synthetic
+    _action_tool(synthetic, "open_app", "apps", "app_control", "Opened Calendar.", ("name",))
+    from service.safety.policy import Decision, Tier
+    real = loop.decide
+
+    def decide(category, args, tool=None):
+        if tool == "open_app":
+            return Decision(Tier.DENY, "synthetic block")
+        return real(category, args, tool=tool)
+    monkeypatch.setattr(loop, "decide", decide)
+    prompt = "What's on my calendar today?"
+    _, _, answer = ask([[call("open_app", name="Calendar")], "You have a dentist appointment at 3 PM."],
+                       prompt=prompt, fresh_personal_scope=fresh_personal_obligation(prompt, ""),
+                       model_led_preload=["open_app", "get_upcoming"], **_OWNERS)
+    assert not effects and "dentist" not in answer
+
+
+def test_shell_command_does_not_lift_the_personal_guard(synthetic, monkeypatch):
+    from tests.test_model_led_integration import _private_shell_fixture, discover
+    native_calls, _ = _private_shell_fixture(synthetic, monkeypatch)   # the real builtin, a fake process
+    prompt = "What's on my calendar today?"
+    _, _, answer = ask([[discover("automation", "run_shell")], [call("run_shell", cmd="pwd")],
+                        "You have a dentist appointment at 3 PM."],
+                       prompt=prompt, fresh_personal_scope=fresh_personal_obligation(prompt, ""),
+                       approval=Approval(allowed=True), **_OWNERS)
+    assert len(native_calls) == 1 and _NOT_CHECKED in answer
+
+
+def test_status_read_does_not_lift_the_personal_guard(synthetic):
+    effects, register = synthetic
+    register("wisp_status", "wisp_admin_tools", "wisp_admin")
+    prompt = "What's on my calendar today?"
+    _, _, answer = ask([[call("wisp_status")], "You have a dentist appointment at 3 PM."],
+                       prompt=prompt, fresh_personal_scope=fresh_personal_obligation(prompt, ""),
+                       approval=Approval(allowed=True), model_led_preload=["wisp_status", "get_upcoming"],
+                       **_OWNERS)
+    assert executed(effects, "wisp_status") and _NOT_CHECKED in answer

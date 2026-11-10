@@ -748,6 +748,10 @@ _ASK_NOTHING_MESSAGE = (
     "I looked, but the lookup didn't return anything usable. Want me to try it "
     "a different way?"
 )
+# Status reads whose category is not a read category (model_led.effectful_call
+# excludes the same names): running one is never an action.
+_ASK_STATUS_READS = frozenset({"list_running_apps", "wisp_status", "wisp_capabilities",
+                               "wisp_skills", "wisp_mcp"})
 # A step whose request (or newest tool traffic) cannot fit the model's window
 # even with all older history gone. Not _ASK_GUARD_MESSAGE: that one blames
 # memory and suggests asking again, which fails the same way every time.
@@ -3130,13 +3134,17 @@ async def run_agent(
             # Preserve reference history, but refuse to promote an old answer,
             # memory or unrelated public search into a current personal fact.
             if ask_quality and (_ask_capability_prompt or _ask_personal_source_ran()
-                                or _ask_short_question(text)):
+                                or _ask_action_ran() or _ask_short_question(text)):
                 # Model-only Ask: the guard fired after get_upcoming had run
                 # (its arguments did not name the day the obligation parsed)
                 # and on capability questions ("What can you do with my
                 # calendar?"). It now fires only when NO personal source ran
                 # this turn, the prompt asks for personal data, and the
                 # answer is not a clarifying question.
+                # Nor after an action: "Add lunch to my calendar" sets a
+                # calendar scope on the words "my calendar", the event was
+                # created, and the reply said nothing had been checked. What an
+                # action did is for the receipt checks below to say.
                 pass
             elif not re.fullmatch(r"(?:Which (?:source|channel|person|conversation) (?:should I check|do you mean)|Who do you mean|Do you mean Messages or email)\?", text.strip(), re.I):
                 return "I haven't checked a current personal source for that yet. Which source should I check?"
@@ -3221,6 +3229,24 @@ async def run_agent(
                         or ((registered := get_tool(name)) is not None
                             and registered.category in PERSONAL_SOURCE_CATEGORIES))
                    for name, outcome in tool_outcomes)
+
+    def _ask_action_ran() -> bool:
+        """An action (not a read) was attempted this turn and not refused.
+        Model-led turns already mark every effectful call as a change
+        (_record_outcome, by its arguments: listing timers is not one); other
+        callers fall back to the tool's category. A shell command and the
+        status reads never count: after `date` in a shell, "What's on my
+        calendar?" is as ungrounded as before."""
+        from service.router.model_led import needs_effect_owner
+        for name, outcome in tool_outcomes:
+            registered = get_tool(name)
+            if (outcome.status in {"denied", "planned"} or registered is None
+                    or registered.category == "shell" or name in _ASK_STATUS_READS):
+                continue
+            if outcome.effect != "read" or (
+                    not model_led_discovery and needs_effect_owner(registered.category)):
+                return True
+        return False
 
     def _ask_grounding_tool_ran() -> bool:
         """A tool that could hold a fact ran and was not denied (weather and
