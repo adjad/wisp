@@ -169,6 +169,10 @@ enum MailActionScript {
     /// sandbox/outbound.py mirrors this text; change both together.
     static let messageNotFound = "couldn't find that message in the inbox — it may have been moved or is older than the synced window"
 
+    /// Raised when Mail's `send` answers false. Mail may still hold the
+    /// message, so the wording must not invite a blind second send.
+    static let sendNotAccepted = "Mail did not accept the email for sending; check Mail before retrying."
+
     // AppleScript string literals: escape backslashes first, then quotes, or
     // the backslashes introduced by quote-escaping get escaped a second time.
     // Newlines become \n escapes so a multi-paragraph email body stays a single
@@ -217,6 +221,47 @@ enum MailActionScript {
                 end if
             end repeat
             if theMsg is missing value then error "\(messageNotFound)"
+        """
+    }
+
+    private static func recipientLines(_ kind: String, _ addresses: [String]) -> [String] {
+        addresses.map {
+            "make new \(kind) recipient at end of \(kind) recipients with properties {address:\"\(escape($0))\"}"
+        }
+    }
+
+    /// A new message, sent without a window. Mail's `send` answers a boolean
+    /// and raises nothing when it refuses, so a false answer is made an error
+    /// here; otherwise the caller would report an email that never left.
+    static func sendEmail(to: [String], cc: [String], subject: String, body: String) -> String {
+        let recipients = (recipientLines("to", to) + recipientLines("cc", cc)).joined(separator: "\n")
+        return """
+        tell application "Mail"
+            set newMsg to make new outgoing message with properties {subject:"\(escape(subject))", content:"\(escape(body))", visible:false}
+            tell newMsg
+        \(recipients)
+                if (send) is not true then error "\(sendNotAccepted)"
+            end tell
+        end tell
+        """
+    }
+
+    /// Forwards the message `lookup` leaves in `theMsg`, with an optional note
+    /// above the original. `lookup` is a block such as `findInboxMessage`.
+    static func forwardEmail(lookup: String, to: [String], note: String) -> String {
+        let recipients = recipientLines("to", to).joined(separator: "\n")
+        let prependNote = note.isEmpty ? ""
+            : "set content to \"\(escape(note))\" & return & return & content"
+        return """
+        tell application "Mail"
+        \(lookup)
+            set fwd to forward theMsg with opening window
+            tell fwd
+        \(recipients)
+        \(prependNote)
+                if (send) is not true then error "\(sendNotAccepted)"
+            end tell
+        end tell
         """
     }
 }

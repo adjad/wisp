@@ -49,21 +49,9 @@ enum OutboundSender {
     static func sendEmail(actionId: String, to: [String], cc: [String],
                           subject: String, body: String) {
         DispatchQueue.global(qos: .userInitiated).async {
-            var recipientLines = to.map {
-                "make new to recipient at end of to recipients with properties {address:\"\(escape($0))\"}"
-            }
-            recipientLines += cc.map {
-                "make new cc recipient at end of cc recipients with properties {address:\"\(escape($0))\"}"
-            }
-            let script = """
-            tell application "Mail"
-                set newMsg to make new outgoing message with properties {subject:"\(escape(subject))", content:"\(escape(body))", visible:false}
-                tell newMsg
-                    \(recipientLines.joined(separator: "\n            "))
-                    send
-                end tell
-            end tell
-            """
+            // The script raises when Mail's `send` answers false, so an email
+            // Mail refused is never reported as sent.
+            let script = MailActionScript.sendEmail(to: to, cc: cc, subject: subject, body: body)
             var err: NSDictionary?
             guard let s = NSAppleScript(source: script) else {
                 post(actionId: actionId, ok: false, error: "couldn't build the send script")
@@ -380,21 +368,8 @@ enum OutboundSender {
             return
         }
         DispatchQueue.global(qos: .userInitiated).async {
-            let recipients = to.map {
-                "make new to recipient at end of to recipients with properties {address:\"\(escape($0))\"}"
-            }.joined(separator: "\n                    ")
-            let prependNote = body.isEmpty ? ""
-                : "                    set content to \"\(escape(body))\" & return & return & content\n"
-            let script = """
-            tell application "Mail"
-            \(unverifiedForwardLookup(messageId))
-                set fwd to forward theMsg with opening window
-                tell fwd
-                    \(recipients)
-            \(prependNote)                send
-                end tell
-            end tell
-            """
+            let script = MailActionScript.forwardEmail(
+                lookup: unverifiedForwardLookup(messageId), to: to, note: body)
             run(actionId: actionId, app: "Mail", script: script)
         }
     }

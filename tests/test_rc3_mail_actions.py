@@ -52,3 +52,23 @@ def test_forward_stays_held_back_until_it_is_checked_in_mail():
     assert SENDER.count("unverifiedForwardLookup(") == 2        # its definition and one caller
     assert "unverifiedForwardLookup(messageId)" in _function(SENDER, "forwardEmail")
     assert "MailActionScript.findInboxMessage" not in _function(SENDER, "forwardEmail")
+
+
+def test_send_and_forward_treat_a_false_answer_from_mail_as_a_failure():
+    # Mail's `send` answers a boolean and raises nothing when it refuses.
+    guard = 'if (send) is not true then error "\\(sendNotAccepted)"'
+    for name, target in (("sendEmail", "tell newMsg"), ("forwardEmail", "tell fwd")):
+        script = _function(SCRIPTS, name)
+        assert target in script and script.index(target) < script.index(guard), name
+        assert not any(line.strip() == "send" for line in script.splitlines()), name
+    wording = re.search(r'static let sendNotAccepted = "([^"]+)"', SCRIPTS).group(1)
+    assert "check Mail before retrying" in wording
+
+
+def test_the_app_sends_and_forwards_with_the_guarded_scripts():
+    assert "MailActionScript.sendEmail(to: to, cc: cc, subject: subject, body: body)" in _function(SENDER, "sendEmail")
+    assert "MailActionScript.forwardEmail(" in _function(SENDER, "forwardEmail")
+    # No send in OutboundSender bypasses the guard: the only bare `send` lines
+    # left are Messages' `send "…" to participant …`, which has no result.
+    bare = [line.strip() for line in SENDER.splitlines() if line.strip() == "send"]
+    assert bare == []

@@ -88,6 +88,44 @@ enum MailReplyScriptChecks {
                     "Mail lookup script failed to compile: \(error ?? [:])")
         }
 
+        // Mail's `send` answers false without raising when it refuses. A
+        // plain send and a forward must turn that answer into an error, or
+        // the app reports an email that never left.
+        let sendGuard = "if (send) is not true then error \"\(MailActionScript.sendNotAccepted)\""
+        func hasBareSend(_ script: String) -> Bool {
+            script.components(separatedBy: "\n").contains { $0.trimmingCharacters(in: .whitespaces) == "send" }
+        }
+        let plainSend = MailActionScript.sendEmail(to: ["first@example.com", "second@example.com"],
+            cc: ["third@example.com"], subject: "A \"quoted\" subject", body: "Line one\nLine two \\ end")
+        require(plainSend.contains(sendGuard) && !hasBareSend(plainSend), "A plain send ignores Mail's false result")
+        require(plainSend.range(of: "tell newMsg")!.lowerBound < plainSend.range(of: sendGuard)!.lowerBound,
+                "Send must resolve against the new outgoing message")
+        require(plainSend.contains("visible:false"), "A plain send must not open a window")
+        for address in ["first@example.com", "second@example.com"] {
+            require(plainSend.contains("make new to recipient at end of to recipients with properties {address:\"\(address)\"}"),
+                    "Missing To recipient")
+        }
+        require(plainSend.contains("make new cc recipient at end of cc recipients with properties {address:\"third@example.com\"}"),
+                "Missing CC recipient")
+        require(plainSend.contains("subject:\"A \\\"quoted\\\" subject\", content:\"Line one\\nLine two \\\\ end\""),
+                "Subject and body must be escaped into single literals")
+        let forwardWithNote = MailActionScript.forwardEmail(lookup: lookup, to: ["first@example.com"], note: "For you")
+        let forwardBare = MailActionScript.forwardEmail(lookup: lookup, to: ["first@example.com"], note: "")
+        for forward in [forwardWithNote, forwardBare] {
+            require(forward.contains(sendGuard) && !hasBareSend(forward), "A forward ignores Mail's false result")
+            require(forward.range(of: "tell fwd")!.lowerBound < forward.range(of: sendGuard)!.lowerBound,
+                    "Send must resolve against the forwarded message")
+            require(forward.range(of: MailActionScript.messageNotFound)!.lowerBound <
+                    forward.range(of: "forward theMsg")!.lowerBound, "A forward must find its message first")
+        }
+        require(forwardWithNote.contains("set content to \"For you\" & return & return & content"), "Missing forward note")
+        require(!forwardBare.contains("set content to"), "A forward without a note must leave the content alone")
+        for source in [plainSend, forwardWithNote, forwardBare] {
+            var error: NSDictionary?
+            require(NSAppleScript(source: source)!.compileAndReturnError(&error),
+                    "Mail send script failed to compile: \(error ?? [:])")
+        }
+
         func vector(_ value: [String: Any]) -> String {
             "{" + MailReplyScript.fields.map { MailReplyScript.literal(value[$0]!)! }.joined(separator: ", ") + "}"
         }
