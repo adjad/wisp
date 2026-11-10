@@ -167,6 +167,76 @@ def test_default_falls_back_to_wayback_but_strict_does_not(net):
     assert not any("archive.org" in u for u in seen)
 
 
+# --- an archive copy says so, and says from when --------------------------------
+def archived_handler(snapshot, moved_to=""):
+    """The live site answers 403; the Archive holds ``snapshot`` of it."""
+    def handler(request):
+        if site(request) == "archive.org":
+            return httpx.Response(200, json={"archived_snapshots": {"closest": {
+                "available": True, "url": snapshot}}})
+        if site(request) == "web.archive.org":
+            if moved_to and moved_to.split("/web/")[1].split("/")[0] not in request.url.path:
+                return httpx.Response(302, headers={"location": moved_to})
+            return httpx.Response(200, headers={"content-type": "text/html"}, text=PAGE)
+        return httpx.Response(403)
+    return handler
+
+
+def test_an_archive_copy_carries_the_day_it_was_saved(net):
+    seen, install = net
+    install(archived_handler("http://web.archive.org/web/20230405123456/https://example.com/hours"))
+    page = asyncio.run(web.fetch_page("https://example.com/hours"))
+    assert page.via_archive and page.archived_at == "2023-04-05"
+    assert page.url == "https://example.com/hours"
+
+
+def test_the_day_is_the_snapshot_the_archive_really_served(net):
+    seen, install = net
+    # The Archive redirects to the nearest snapshot it holds: that day counts.
+    install(archived_handler(
+        "http://web.archive.org/web/20230405123456/https://example.com/hours",
+        moved_to="https://web.archive.org/web/20210102030405/https://example.com/hours"))
+    page = asyncio.run(web.fetch_page("https://example.com/hours"))
+    assert page.via_archive and page.archived_at == "2021-01-02"
+
+
+@pytest.mark.parametrize("snapshot", [
+    "https://web.archive.org/web/1/https://example.com/hours",
+    "https://web.archive.org/web/20231345000000/https://example.com/hours",   # no such day
+    "https://web.archive.org/save/20230405123456/https://example.com/hours",
+])
+def test_an_archive_copy_with_no_readable_day_is_still_marked(net, snapshot):
+    seen, install = net
+    install(archived_handler(snapshot))
+    page = asyncio.run(web.fetch_page("https://example.com/hours"))
+    assert page.via_archive and page.archived_at == ""
+
+
+def test_snapshot_day_is_read_only_from_an_archive_address():
+    assert web._snapshot_date("https://web.archive.org/web/20230405123456id_/https://a.example/") \
+        == "2023-04-05"
+    assert web._snapshot_date("", "https://web.archive.org/web/19991231235959/x") == "1999-12-31"
+    assert web._snapshot_date("https://example.com/web/20230405123456/x") == ""
+    assert web._snapshot_date("https://notarchive.org/web/20230405123456/x") == ""
+    assert web._snapshot_date("https://example.com/?u=/web/20230405123456/") == ""
+    assert web._snapshot_date("http://[bad/web/20230405123456/") == ""
+
+
+def test_web_fetch_says_when_the_text_is_an_archive_copy(net):
+    from service.tools.untrusted import WEB_PAGE, begin_marker
+    seen, install = net
+    install(archived_handler("http://web.archive.org/web/20230405123456/https://example.com/hours"))
+    out = run_web_fetch("https://example.com/hours")
+    head, fenced = out.split(f"\n\n{begin_marker(WEB_PAGE)}\n", 1)
+    assert head == ("Title: T\nURL: https://example.com/hours\n"
+                    "Note: the live page could not be read; this is an Internet Archive "
+                    "copy from 2023-04-05 and may be out of date.")
+    assert "Internet Archive" not in fenced
+    install(lambda request: httpx.Response(200, headers={"content-type": "text/html"}, text=PAGE))
+    live = run_web_fetch("https://example.com/hours")
+    assert "Internet Archive" not in live and "Note:" not in live
+
+
 def test_strict_mode_resets_after_context(net):
     with web.strict_host_fetch():
         assert web._STRICT_HOST.get() is True

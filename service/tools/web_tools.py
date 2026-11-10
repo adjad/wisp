@@ -2672,6 +2672,23 @@ async def current_news(query: str, limit: int = 6) -> str:
 
 
 _FETCH_TITLE_CHARS = 300
+_ARCHIVE_DAY_RE = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
+
+
+def _archive_note(page) -> str:
+    """Wisp's own line saying the text is an Internet Archive copy, or "".
+
+    A blocked, slow or thin live page falls back to the Archive's closest
+    snapshot, which can be months or years old, and until rc3 nothing in the
+    result said so: old opening hours and prices read as current. The day is
+    digits only (it comes from the snapshot address); no page text is used.
+    """
+    if not getattr(page, "via_archive", False):
+        return ""
+    day = str(getattr(page, "archived_at", "") or "")
+    when = f"from {day}" if _ARCHIVE_DAY_RE.match(day) else "of unknown date"
+    return ("\nNote: the live page could not be read; this is an Internet Archive "
+            f"copy {when} and may be out of date.")
 
 
 @register(
@@ -2722,7 +2739,11 @@ async def web_fetch(url: str) -> str:
     header = f"Title: {title}\nURL: {' '.join(str(page.url).split())}"
     if page.published_at:
         header += "\nPublished: " + " ".join(str(page.published_at).split())
-    header = neutralize(header)
+    # The archive note is Wisp's line, added after the page's own header text
+    # has been neutralized. It sits above the fence and not after it: an Ask
+    # turn keeps only the first 6,000 characters of a result, so a line after
+    # a long page would be cut off with the tail.
+    header = neutralize(header) + _archive_note(page)
     body, note = page.text, ""
     if len(body) > 10500:
         body, note = body[:10500], f"\n…[truncated {len(page.text) - 10500} characters]"

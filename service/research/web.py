@@ -11,6 +11,7 @@ import asyncio
 import base64
 import contextlib
 import contextvars
+import datetime
 import html
 import io
 import ipaddress
@@ -83,6 +84,9 @@ class Page:
     content_type: str
     published_at: str = ""
     via_archive: bool = False
+    # The day an archive copy was saved (YYYY-MM-DD), or "" when it is not an
+    # archive copy or the day is unknown.
+    archived_at: str = ""
 
 
 def canonicalize_url(raw: str) -> str:
@@ -1040,6 +1044,33 @@ async def _wayback_snapshot_url(url: str) -> str:
     return ""
 
 
+_WAYBACK_STAMP_RE = re.compile(r"/web/(\d{4})(\d{2})(\d{2})")
+
+
+def _snapshot_date(*urls: str) -> str:
+    """The day a Wayback snapshot was saved, as YYYY-MM-DD, or "" if unknown.
+
+    A snapshot address starts its path with a 14-digit timestamp
+    (``/web/20230405123456/https://…``). Only digits that make a real date on
+    an archive.org address come back, so nothing else from the address can
+    reach the text a caller writes around it.
+    """
+    for url in urls:
+        try:
+            parsed = urlparse(url or "")
+        except ValueError:
+            continue
+        host = (parsed.hostname or "").lower()
+        match = _WAYBACK_STAMP_RE.match(parsed.path)
+        if not match or not (host == "archive.org" or host.endswith(".archive.org")):
+            continue
+        try:
+            return datetime.date(*(int(part) for part in match.groups())).isoformat()
+        except ValueError:
+            continue
+    return ""
+
+
 async def fetch_page(raw_url: str) -> Page:
     """Fetch a page directly; on failure (blocked, gone, thin, timed out —
     anything except our own SSRF refusal), try the Wayback Machine's own
@@ -1078,7 +1109,10 @@ async def fetch_page(raw_url: str) -> Page:
             raise exc from None
         return Page(url=raw_url, canonical_url=archived.canonical_url, title=archived.title,
                    text=archived.text, content_type=archived.content_type,
-                   published_at=archived.published_at, via_archive=True)
+                   published_at=archived.published_at, via_archive=True,
+                   # Where the fetch landed first: the Archive redirects to the
+                   # snapshot it really holds, which can be from another day.
+                   archived_at=_snapshot_date(archived.url, snapshot_url))
 
 
 def render_search_results(hits: list[SearchHit]) -> str:
