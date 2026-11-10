@@ -1,6 +1,7 @@
 """Source checks for the 0.5.0 rc3 Settings repairs: the role menus offer chat
-models only and say when a pick wasn't saved. The logic itself is checked in
-tests/QuickSettingsChecks.swift. Reads source only; no app, service or network."""
+models only and say when a pick wasn't saved (the logic itself is checked in
+tests/QuickSettingsChecks.swift), and Google's Disconnect & erase asks first.
+Reads source only; no app, service or network."""
 import re
 from pathlib import Path
 
@@ -63,3 +64,28 @@ def test_a_model_pick_the_service_did_not_save_goes_back_and_says_so():
     # The setup test is still marked stale whatever happened.
     assert "post(name: .wispInferenceConfigurationChanged" in save
     assert "if let problem = loader.roleSaveProblem {" in settings
+
+
+def test_google_disconnect_and_erase_asks_first():
+    google = _read("GoogleSettingsPane.swift")
+    pane = google[google.index("struct GoogleSettingsPane: View"):]
+    # The row's button only opens the alert; one click erases nothing.
+    row = _body(pane, "private func accountRow(_ account: GoogleStatus.Account) -> some View")
+    assert "model.disconnect(" not in row
+    button = _body(row, 'Button("Disconnect & erase…")')
+    assert "accountToErase = account.id" in button and "confirmErase = true" in button
+    # The erase runs from the alert's destructive button and nowhere else.
+    assert pane.count("model.disconnect(") == 1
+    start = pane.index(".alert(")
+    alert = pane[start:pane.index(".onChange(", start)]
+    assert "isPresented: $confirmErase" in alert and "\\(accountToErase)" in alert
+    erase = _body(alert, 'Button("Erase", role: .destructive)')
+    assert "model.disconnect(accountToErase)" in erase
+    assert 'Button("Cancel", role: .cancel) {}' in alert
+    for part in ("mail", "calendar events", "summaries", "to-dos", "revokes Wisp's Google access"):
+        assert part in alert, part
+    # What the erase does, and how its result is reported, did not change.
+    model = google[:google.index("struct GoogleSettingsPane: View")]
+    disconnect = _body(model, "    func disconnect(_ account: String)")
+    assert '"assistant/gmail/disconnect", body: ["account": account]' in disconnect
+    assert "GoogleErase.note(account: account, response: response)" in disconnect
