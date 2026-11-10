@@ -61,6 +61,7 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setattr(bridge, "recognize_text", recognize_text, raising=False)
     monkeypatch.setattr(vision, "read_images", read_images)
     monkeypatch.setattr(type(hub), "has_subscribers", property(lambda self: w.app))
+    monkeypatch.setattr(ma, "_ocr_resting_until", 0.0)
     return w
 
 
@@ -245,6 +246,30 @@ async def test_when_the_app_cannot_recognise_the_model_reads_the_picture(world):
     world.apple_rows = [row(name="receipt.png", rfc="p@x.com", size=300_000)]
     world.local_files[(1, "1.2")] = PNG
     assert "A picture of a cat." in await ma.run()
+
+
+async def test_an_app_that_never_answers_is_not_asked_again_for_a_while(world):
+    world.app = True
+    world.recognise_error = bridge.BridgeError("recognize_timeout")
+    world.apple_rows = [row(1, "one.png", rfc="p@x.com", size=300_000),
+                        row(2, "two.png", rfc="q@x.com", size=300_000, attachment_id="1.3")]
+    world.local_files[(1, "1.2")] = PNG
+    world.local_files[(2, "1.3")] = PNG + b"2"
+    out = await ma.run()
+    assert out.count("A picture of a cat.") == 2
+    assert len(world.kinds("recognise")) == 1                       # the second picture didn't wait for the app
+    assert [c[1] for c in world.kinds("child")].count("ocr_images") == 1
+
+
+async def test_a_refused_picture_does_not_rest_recognition(world):
+    world.app = True
+    world.recognise_error = bridge.BridgeError("bad_image")
+    world.apple_rows = [row(1, "one.png", rfc="p@x.com", size=300_000),
+                        row(2, "two.png", rfc="q@x.com", size=300_000, attachment_id="1.3")]
+    world.local_files[(1, "1.2")] = PNG
+    world.local_files[(2, "1.3")] = PNG + b"2"
+    await ma.run()
+    assert len(world.kinds("recognise")) == 2
 
 
 async def test_without_the_app_nothing_is_prepared_for_recognition(world):

@@ -63,6 +63,8 @@ _MAX_NOTE = 200
 _OCR_MIN_CHARS = 40                 # fewer recognised characters than this: not a picture of text
 _OCR_MIN_CONFIDENCE = 0.3
 _OCR_PAGE_S = 20.0
+_OCR_REST_S = 300.0                 # after the app fails to answer, pictures go straight to the model this long
+_ocr_resting_until = 0.0
 _STRUCTURED_NAMES = frozenset({"ics", "vcf"})
 _SAVED = "Wisp's saved reading"
 _UNPRINTABLE = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c\ufeff]")
@@ -530,7 +532,8 @@ async def _recognised(ctx: _Ctx, name: str, data: bytes, *, paged: bool) -> tupl
     went wrong. Only JPEGs the child re-encoded from decoded pixels go to the app."""
     from service import documents
     from service.assistant.hub import hub
-    if not hub.has_subscribers or ctx.remaining() < 15.0:
+    global _ocr_resting_until
+    if not hub.has_subscribers or ctx.remaining() < 15.0 or time.monotonic() < _ocr_resting_until:
         return None
     try:
         result = await documents.run_attachment_child("ocr_images", name, data,
@@ -556,7 +559,11 @@ async def _recognised(ctx: _Ctx, name: str, data: bytes, *, paged: bool) -> tupl
             jpeg = base64.b64decode(url.split(",", 1)[1], validate=True)
             text, confidence = await bridge.recognize_text(
                 jpeg, timeout=max(1.0, min(_OCR_PAGE_S, ctx.remaining() - 5.0)))
-        except (bridge.BridgeError, ValueError):
+        except (bridge.BridgeError, ValueError) as error:
+            if str(error) in ("recognize_timeout", "app_not_connected"):
+                # An older app drops the request, and a stalled one never answers: don't make
+                # every picture in the next few minutes wait for it.
+                _ocr_resting_until = time.monotonic() + _OCR_REST_S
             if not parts:
                 return None
             break

@@ -114,6 +114,8 @@ PROFILE_TESTS = {
         # Email attachments and large files: the isolated reader, condensing, the tool and its
         # safety wiring (synthetic files, fake Mail and Gmail, stub model).
         "tests/test_attachment_child.py",
+        "tests/test_attachment_reading_sharper.py",
+        "tests/test_attachment_store.py",
         "tests/test_email_attachment_tool.py",
         "tests/test_large_document.py",
         "tests/test_mail_attachments.py",
