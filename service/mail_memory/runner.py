@@ -645,8 +645,13 @@ def _forget_gone_accounts(st, rows: list[dict], now: float) -> dict | None:
         return None
     from service.memory.facts import store as facts
     from service import attachment_store
-    for account in gone:      # an account that left Mail takes the text read from its attachments with it
-        attachment_store.forget_account(account)
+    for account in sorted(gone):      # an account that left Mail takes the text read from its attachments with it
+        if not attachment_store.forget_account_ok(account):
+            gone.discard(account)           # not erased: kept for the next run, with everything else of its
+            still[account] = [(missing.get(account) or [now])[0], GONE_RUNS]
+            st.set_meta("accounts_missing", json.dumps(still))
+    if not gone:
+        return None
     return profile_facts.forget_accounts(st, facts, gone)
 
 

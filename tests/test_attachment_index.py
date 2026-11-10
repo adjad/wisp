@@ -54,8 +54,12 @@ class W:
         self.outcome = "kept"
         self.hold: asyncio.Event | None = None
         self.may_kinds: list[str] = []
+        self.back = 0.0                      # how far the wall clock was moved back; the monotonic clock ignores it
+        self.deadlines: list[float] = []
 
         monkeypatch.setattr(ai, "_clock", lambda: self.now)
+        monkeypatch.setattr(ai, "_mono", lambda: self.now + self.back)
+        monkeypatch.setattr(ai, "_last_prune", None)
         monkeypatch.setattr(ai, "_task", None)
         monkeypatch.setattr(ai, "_next_at", 0.0)
         monkeypatch.setattr(ai, "_last_run", None)
@@ -81,6 +85,7 @@ class W:
 
         async def index_one(email, f, *, deadline):
             self.read.append(f.name)
+            self.deadlines.append(deadline - time.monotonic())
             assert deadline - time.monotonic() <= ai.FILE_DEADLINE_S + 1
             if self.hold is not None:
                 await self.hold.wait()
@@ -96,7 +101,7 @@ class W:
         return False
 
     def after(self) -> float:
-        return ai._next_at - self.now
+        return ai._next_at - (self.now + self.back)
 
 
 @pytest.fixture
@@ -196,7 +201,10 @@ async def test_single_flight(w):
     w.hold = asyncio.Event()
     ai.schedule_tick()
     first = ai._task
-    await asyncio.sleep(0.01)
+    for _ in range(200):                    # the prune and the tried check run in threads first
+        if w.read:
+            break
+        await asyncio.sleep(0.01)
     ai.schedule_tick()
     ai.schedule_tick()
     assert ai._task is first and w.read == ["report.pdf"]
@@ -411,3 +419,223 @@ async def test_end_to_end_real_index_one_store_and_child(monkeypatch, tmp_path):
 
 
 REAL_INDEX_ONE = ma.index_one
+
+
+# --- the background reader stays out of the way of the foreground ----------------------
+
+async def test_a_file_is_read_with_a_twenty_second_deadline(w):
+    assert ai.FILE_DEADLINE_S == 20.0
+    w.rows = [mrow(1)]
+    assert await w.tick() is True
+    assert w.deadlines and 18.0 < w.deadlines[0] <= 20.0
+
+
+async def test_a_turn_that_begins_while_the_list_is_read_stops_the_read(w, monkeypatch):
+    w.rows = [mrow(1)]
+    answers = iter([False, True, True, True])                # the schedule gate, then the check before the read
+    monkeypatch.setattr(idle, "foreground_busy", lambda: next(answers))
+    assert await w.tick() is True
+    assert w.read == [] and ai._last_skip == "foreground"
+    assert attachment_store.tried(key_of(w.rows[0])) is False and ai._today(w.now) == 0
+    assert w.after() == ai.FOREGROUND_GAP_S
+
+
+async def test_the_page_is_checked_against_tried_in_one_call_off_the_loop(w, monkeypatch):
+    import threading
+    w.rows = [mrow(i, f"{i}.pdf") for i in range(1, 30)]
+    calls = []
+    real = attachment_store.tried_many
+
+    def many(keys):
+        calls.append((len(keys), threading.current_thread() is threading.main_thread()))
+        return real(keys)
+
+    def never(key):
+        raise AssertionError("one call per candidate on the loop")
+    monkeypatch.setattr(attachment_store, "tried_many", many)
+    monkeypatch.setattr(attachment_store, "tried", never)
+    assert await w.tick() is True and w.read == ["1.pdf"]
+    assert calls == [(29, False)]
+
+
+async def test_a_wall_clock_moved_back_does_not_stall_the_reader(w):
+    w.rows = [mrow(i, f"{i}.pdf") for i in range(1, 5)]
+    assert await w.tick() is True
+    w.now += ai.BETWEEN_GAP_S + 1
+    w.now -= 3 * 3600                  # the wall clock jumps back three hours...
+    w.back += 3 * 3600                 # ...while real time moved on
+    assert await w.tick() is True and len(w.read) == 2
+
+
+async def test_a_wall_clock_moved_forward_does_not_hurry_the_reader(w):
+    w.rows = [mrow(i, f"{i}.pdf") for i in range(1, 5)]
+    assert await w.tick() is True
+    w.now += 3600                      # the wall clock jumps ahead; no real time passed
+    w.back -= 3600
+    assert await w.tick() is False and len(w.read) == 1
+
+
+async def test_the_daily_count_does_not_reset_when_the_clock_goes_back(w):
+    w.rows = [mrow(i, f"{i}.pdf", ts=NOW - 5 * DAY - i) for i in range(1, 30)]
+    for _ in range(3):
+        assert await w.tick() is True
+        w.now += 100
+    assert ai.status()["today"] == 3
+    w.now -= 2 * DAY                   # an earlier date: still the same day for the count
+    w.back += 2 * DAY
+    assert ai.status()["today"] == 3
+    assert await w.tick() is True and ai.status()["today"] == 4
+    w.now += 4 * DAY                   # forward past the highest day: a new day
+    assert ai.status()["today"] == 0
+
+
+async def test_the_cap_holds_when_the_clock_goes_back(w):
+    w.rows = [mrow(i, f"{i}.pdf") for i in range(1, 60)]
+    for _ in range(ai.MAX_PER_DAY):
+        assert await w.tick() is True
+        w.now += 100
+    w.now -= DAY
+    w.back += DAY
+    assert await w.tick() is False and ai._last_skip == "daily_cap" and len(w.read) == 40
+
+
+async def test_a_picture_skipped_while_text_recognition_rests_is_asked_again(w, monkeypatch):
+    w.outcome = "skipped"
+    w.rows = [mrow(1, "scan.png", size=60_000), mrow(2, "notes.docx")]
+    monkeypatch.setattr(ma, "_ocr_resting_until", time.monotonic() + 300, raising=False)
+    assert await w.tick() is True and w.read == ["scan.png"]
+    assert attachment_store.tried(key_of(w.rows[0])) is False        # not marked: tried again after the rest
+    assert ai._today(w.now) == 0 and w.after() >= 290                # and not before the rest is over
+    monkeypatch.setattr(ma, "_ocr_resting_until", 0.0, raising=False)
+    w.now += 400
+    assert await w.tick() is True and w.read == ["scan.png", "scan.png"]
+    assert attachment_store.tried(key_of(w.rows[0])) is True         # rested no more: skipped for good
+
+
+async def test_a_skipped_file_that_needs_no_recognition_is_tried_even_while_it_rests(w, monkeypatch):
+    w.outcome = "skipped"
+    w.rows = [mrow(2, "notes.docx")]
+    monkeypatch.setattr(ma, "_ocr_resting_until", time.monotonic() + 300, raising=False)
+    assert await w.tick() is True
+    assert attachment_store.tried(key_of(w.rows[0])) is True
+
+
+async def test_the_store_is_compacted_about_hourly_and_never_during_a_turn(w, monkeypatch):
+    w.rows = [mrow(i, f"{i}.pdf") for i in range(1, 30)]
+    pruned = []
+    monkeypatch.setattr(attachment_store, "prune_if_due", lambda: pruned.append(1) or 0)
+    assert await w.tick() is True and len(pruned) == 1
+    w.now += 200
+    assert await w.tick() is True and len(pruned) == 1               # not again within the hour
+    w.now += 3600
+    w.busy = True
+    assert await w.tick() is False and len(pruned) == 1              # a turn is running: nothing at all
+    w.busy = False
+    assert await w.tick() is True and len(pruned) == 2
+
+
+async def test_a_failing_prune_does_not_stop_the_read(w, monkeypatch):
+    w.rows = [mrow(1)]
+
+    def boom():
+        raise RuntimeError("locked")
+    monkeypatch.setattr(attachment_store, "prune_if_due", boom)
+    assert await w.tick() is True and w.read == ["report.pdf"]
+
+
+# --- erasing reaches the reader and says when it failed --------------------------------
+
+def _hold(mode="IMMEDIATE"):
+    import sqlite3
+    c = sqlite3.connect(str(attachment_store._db_path()), isolation_level=None, check_same_thread=False)
+    c.execute(f"BEGIN {mode}")
+    return c
+
+
+def _forget_app(monkeypatch):
+    from service.mail_memory import api
+    from service.mail_memory import profile_facts
+
+    async def changed():
+        return None
+    monkeypatch.setattr(api, "_changed", changed)
+    monkeypatch.setattr(api, "store", lambda: None)
+    monkeypatch.setattr(profile_facts, "forget_all", lambda st, facts: {"forgotten": 0})
+    app = FastAPI()
+    app.include_router(api.router)
+    return TestClient(app)
+
+
+def test_forget_mail_memory_erases_and_stops_the_background_reader(monkeypatch, tmp_path):
+    monkeypatch.setenv("WISP_HOME", str(tmp_path / "home"))
+    client = _forget_app(monkeypatch)
+    dig = attachment_store.digest(b"bytes")
+    assert attachment_store.put(dig, kind="pdf", text="private words", cut=False, account="me@x.com")
+    ai.set_enabled(True)
+    assert attachment_store.mark_tried("mail:1:1.2:5:a.pdf", "kept")
+    out = client.post("/assistant/mail_memory/forget_facts", json={}).json()
+    assert out["attachment_text"] == "erased" and out["attachment_reading"] == "off" and out["enabled"] is False
+    assert ai.enabled() is False                                       # it will not read the same files again
+    assert attachment_store.get(dig) is None and attachment_store.tried("mail:1:1.2:5:a.pdf") is False
+
+
+def test_forget_mail_memory_does_not_claim_an_erase_that_failed(monkeypatch, tmp_path):
+    monkeypatch.setenv("WISP_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(attachment_store, "_ERASE_WAIT_S", 0.2)
+    client = _forget_app(monkeypatch)
+    dig = attachment_store.digest(b"bytes")
+    assert attachment_store.put(dig, kind="pdf", text="private words", cut=False, account="me@x.com")
+    ai.set_enabled(True)
+    c = _hold()
+    try:
+        out = client.post("/assistant/mail_memory/forget_facts", json={}).json()
+    finally:
+        c.execute("ROLLBACK")
+        c.close()
+    assert out["attachment_text"] == "failed" and ai.enabled() is False
+    assert attachment_store.get(dig) is not None                        # still there, and the reply says so
+
+
+def test_disconnecting_gmail_says_when_the_attachment_text_was_not_erased(monkeypatch, tmp_path):
+    from service import gmail_source
+    monkeypatch.setenv("WISP_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(attachment_store, "_ERASE_WAIT_S", 0.2)
+    dig = attachment_store.digest(b"file bytes")
+    assert attachment_store.put(dig, kind="pdf", text="private words", cut=False, account="me@gmail.com")
+    c = _hold()
+    try:
+        result = gmail_source.erase_account_data("me@gmail.com")
+    finally:
+        c.execute("ROLLBACK")
+        c.close()
+    assert result["attachment_text"].startswith("failed") and attachment_store.get(dig) is not None
+    assert gmail_source.erase_account_data("me@gmail.com")["attachment_text"] == "erased 1"
+
+
+def test_an_account_whose_attachment_text_could_not_be_erased_stays_for_the_next_run(monkeypatch, tmp_path):
+    monkeypatch.setenv("WISP_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(attachment_store, "_ERASE_WAIT_S", 0.2)
+    from service.mail_memory import profile_facts
+    meta = {}
+    gone_account = "gone@x.com"
+    now = 5_000_000.0
+    meta["accounts_missing"] = json.dumps(
+        {gone_account: [now - runner.GONE_SPAN_S - 10, runner.GONE_RUNS - 1]})
+    st = SimpleNamespace(meta=lambda k: meta.get(k), set_meta=lambda k, v: meta.__setitem__(k, v),
+                         account_newest=lambda: {gone_account: now - 3600},
+                         candidate_accounts=lambda: {gone_account})
+    erased = []
+    monkeypatch.setattr(profile_facts, "forget_accounts", lambda s, f, accounts: erased.append(set(accounts)) or {"n": 1})
+    dig = attachment_store.digest(b"bytes")
+    assert attachment_store.put(dig, kind="pdf", text="private words", cut=False, account=gone_account)
+    c = _hold()
+    try:
+        assert runner._forget_gone_accounts(st, [], now) is None
+    finally:
+        c.execute("ROLLBACK")
+        c.close()
+    assert erased == [] and attachment_store.get(dig) is not None
+    kept = json.loads(meta["accounts_missing"])
+    assert gone_account in kept and kept[gone_account][1] >= runner.GONE_RUNS     # counted as gone again next time
+    assert runner._forget_gone_accounts(st, [], now + 60) == {"n": 1}
+    assert erased == [{gone_account}] and attachment_store.get(dig) is None

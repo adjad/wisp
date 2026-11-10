@@ -34,6 +34,18 @@ owned by X and Y stays until both go; one owned only by ``""`` is removed by
 Every public function swallows sqlite and OS errors and returns its
 "nothing" value (None / False / 0). Nothing here logs text, names or
 locators.
+
+Telling "nothing" from "failed" (the int-returning functions keep their
+meaning, so a caller that must know asks one of these):
+- Erasing: ``forget_account_ok`` / ``forget_all_ok`` / ``forget_source_ok``
+  return True when the erase completed (even if it removed 0) and False when
+  it could not run (database locked past 30 s, unusable). The plain
+  ``forget_*`` functions also set ``last_erase_failed()``, read right after the
+  call (process-wide, last call wins). An erase waits up to 30 s for a lock.
+- Searching: ``search_checked`` returns ``(hits, failed)`` and ``count_checked``
+  returns the count or None when the database could not be read. The plain
+  ``search`` / ``count`` also set ``last_search_failed()`` (process-wide: read
+  it right after the call, from any thread; one request at a time is enough).
 """
 
 from __future__ import annotations
@@ -44,6 +56,7 @@ import math
 import os
 import re
 import sqlite3
+import threading
 import time
 import unicodedata
 from contextlib import closing
@@ -60,6 +73,8 @@ MAX_AGE_S = 30 * 86400  # since last use
 _MAX_LOCATOR = 300
 _PRUNE_EVERY_S = 3600
 _LEASE_S = 120  # how long a claimed prune blocks another one
+_WAIT_S = 2.0  # reads and writes on the way to an answer: do not hold a turn up
+_ERASE_WAIT_S = 30.0  # erasing waits for a prune or VACUUM elsewhere instead of giving up
 _DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 
 _SCHEMA = """
@@ -130,8 +145,10 @@ def _account(value: object) -> str:
     return value.strip().lower() if isinstance(value, str) else ""
 
 
-def _connect() -> sqlite3.Connection | None:
-    """Open the database (creating it owner-only), or None if unusable."""
+def _connect(wait: float | None = None) -> sqlite3.Connection | None:
+    """Open the database (creating it owner-only), or None if unusable.
+
+    ``wait`` is how long to wait for a lock held by another connection."""
     try:
         path = _db_path()
         folder = path.parent
@@ -145,7 +162,9 @@ def _connect() -> sqlite3.Connection | None:
             os.fchmod(fd, 0o600)
         finally:
             os.close(fd)
-        conn = sqlite3.connect(str(path), timeout=2.0, isolation_level=None)
+        conn = sqlite3.connect(
+            str(path), timeout=_WAIT_S if wait is None else wait, isolation_level=None
+        )
         try:
             conn.execute("PRAGMA secure_delete=ON")
             conn.executescript(_SCHEMA)
@@ -347,93 +366,174 @@ def remember(locator: str, digest: str, *, account: str = "") -> bool:
         return False
 
 
+_erase_state = {"failed": False}
+
+
+def last_erase_failed() -> bool:
+    """True when the most recent ``forget_*`` call could not erase (see the docstring)."""
+    return bool(_erase_state["failed"])
+
+
+def _run_erase(body) -> tuple[int, bool]:
+    """Run ``body(conn) -> (removed, changed)`` in one transaction, then VACUUM.
+
+    Returns (text rows removed, ok). Waits up to ``_ERASE_WAIT_S`` for a lock. A
+    pending ``vacuum_due`` is recorded in the same transaction, so a VACUUM that
+    cannot run now (with ``secure_delete`` the bytes are already zeroed) is done
+    by the next prune.
+    """
+    conn = _connect(_ERASE_WAIT_S)
+    if conn is None:
+        _erase_state["failed"] = True
+        return 0, False
+    try:
+        with closing(conn):
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                removed, changed = body(conn)
+                if changed:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO meta(key, value) VALUES('vacuum_due', 1)"
+                    )
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            if changed:
+                try:
+                    conn.execute("VACUUM")
+                    conn.execute("DELETE FROM meta WHERE key='vacuum_due'")
+                except sqlite3.Error:
+                    pass  # rows are gone and zeroed; the next prune rewrites the file
+        _erase_state["failed"] = False
+        return max(removed, 0), True
+    except (sqlite3.Error, OSError):
+        _erase_state["failed"] = True
+        return 0, False
+
+
+def _account_body(acct: str):
+    def body(conn: sqlite3.Connection) -> tuple[int, int]:
+        theirs = [
+            r[0]
+            for r in conn.execute(
+                "SELECT digest FROM owners WHERE account=?", (acct,)
+            ).fetchall()
+        ]
+        changed = conn.execute("DELETE FROM owners WHERE account=?", (acct,)).rowcount
+        removed = 0
+        for dig in theirs:
+            # Only unknown ("") owners left: they cannot keep it alive.
+            if conn.execute(
+                "SELECT 1 FROM owners WHERE digest=? AND account<>''", (dig,)
+            ).fetchone() is None:
+                removed += conn.execute(
+                    "DELETE FROM texts WHERE digest=?", (dig,)
+                ).rowcount
+                conn.execute("DELETE FROM owners WHERE digest=?", (dig,))
+        changed += conn.execute("DELETE FROM locators WHERE account=?", (acct,)).rowcount
+        changed += conn.execute("DELETE FROM seen WHERE account=?", (acct,)).rowcount
+        removed += conn.execute(
+            "DELETE FROM texts WHERE digest NOT IN (SELECT digest FROM owners)"
+        ).rowcount
+        changed += removed
+        changed += conn.execute(
+            "DELETE FROM locators WHERE digest NOT IN (SELECT digest FROM texts)"
+        ).rowcount
+        changed += _sweep(conn)
+        return removed, changed
+
+    return body
+
+
 def forget_account(account: str) -> int:
     """Erase everything owned by an account; returns text rows removed.
 
-    A text shared with another account stays until its last owner goes.
+    A text shared with another account stays until its last owner goes. A
+    return of 0 does not say whether the erase worked: ``last_erase_failed()``
+    or ``forget_account_ok`` does.
     """
     acct = _account(account)
     if not acct:
+        _erase_state["failed"] = False
         return 0
-    conn = _connect()
-    if conn is None:
-        return 0
-    try:
-        with closing(conn):
-            conn.execute("BEGIN IMMEDIATE")
-            try:
-                theirs = [
-                    r[0]
-                    for r in conn.execute(
-                        "SELECT digest FROM owners WHERE account=?", (acct,)
-                    ).fetchall()
-                ]
-                changed = conn.execute(
-                    "DELETE FROM owners WHERE account=?", (acct,)
-                ).rowcount
-                removed = 0
-                for dig in theirs:
-                    # Only unknown ("") owners left: they cannot keep it alive.
-                    if conn.execute(
-                        "SELECT 1 FROM owners WHERE digest=? AND account<>''",
-                        (dig,),
-                    ).fetchone() is None:
-                        removed += conn.execute(
-                            "DELETE FROM texts WHERE digest=?", (dig,)
-                        ).rowcount
-                        conn.execute("DELETE FROM owners WHERE digest=?", (dig,))
-                changed += conn.execute(
-                    "DELETE FROM locators WHERE account=?", (acct,)
-                ).rowcount
-                changed += conn.execute(
-                    "DELETE FROM seen WHERE account=?", (acct,)
-                ).rowcount
-                removed += conn.execute(
-                    "DELETE FROM texts WHERE digest NOT IN"
-                    " (SELECT digest FROM owners)"
-                ).rowcount
-                changed += removed
-                changed += conn.execute(
-                    "DELETE FROM locators WHERE digest NOT IN"
-                    " (SELECT digest FROM texts)"
-                ).rowcount
-                changed += _sweep(conn)
-                conn.execute("COMMIT")
-            except BaseException:
-                conn.execute("ROLLBACK")
-                raise
-            if changed:
-                conn.execute("VACUUM")
-            return max(removed, 0)
-    except (sqlite3.Error, OSError):
-        return 0
+    return _run_erase(_account_body(acct))[0]
+
+
+def forget_account_ok(account: str) -> bool:
+    """``forget_account`` that says whether it worked (True also for "nothing to erase")."""
+    acct = _account(account)
+    if not acct:
+        return True
+    return _run_erase(_account_body(acct))[1]
+
+
+def _all_body(conn: sqlite3.Connection) -> tuple[int, int]:
+    removed = conn.execute("DELETE FROM texts").rowcount
+    changed = removed
+    changed += conn.execute("DELETE FROM owners").rowcount
+    changed += conn.execute("DELETE FROM locators").rowcount
+    changed += conn.execute("DELETE FROM seen").rowcount
+    changed += conn.execute("DELETE FROM tried").rowcount
+    # A new secret afterwards: no old "tried" key can be confirmed against this file.
+    changed += conn.execute("DELETE FROM meta WHERE key=?", (_SALT_KEY,)).rowcount
+    changed += _sweep(conn)
+    return removed, changed
 
 
 def forget_all() -> int:
-    """Erase every stored reading; returns text rows removed."""
-    conn = _connect()
-    if conn is None:
+    """Erase every stored reading; returns text rows removed (see ``forget_account``)."""
+    return _run_erase(_all_body)[0]
+
+
+def forget_all_ok() -> bool:
+    """``forget_all`` that says whether it worked."""
+    return _run_erase(_all_body)[1]
+
+
+def _source_body(source: str):
+    def body(conn: sqlite3.Connection) -> tuple[int, int]:
+        mine = [
+            r[0]
+            for r in conn.execute(
+                "SELECT DISTINCT digest FROM seen WHERE source=?", (source,)
+            ).fetchall()
+        ]
+        changed = conn.execute("DELETE FROM seen WHERE source=?", (source,)).rowcount
+        removed = 0
+        for dig in mine:
+            if conn.execute(
+                "SELECT 1 FROM seen WHERE digest=?", (dig,)
+            ).fetchone() is None:  # seen nowhere else: the text goes
+                removed += conn.execute(
+                    "DELETE FROM texts WHERE digest=?", (dig,)
+                ).rowcount
+                conn.execute("DELETE FROM owners WHERE digest=?", (dig,))
+                conn.execute("DELETE FROM locators WHERE digest=?", (dig,))
+        changed += removed
+        changed += _sweep(conn)
+        return removed, changed
+
+    return body
+
+
+def forget_source(source: str) -> int:
+    """Erase the texts seen ONLY from one source ("mail", "gmail", "messages").
+
+    A text also seen from another source keeps its text and loses this source's
+    seen rows. Index entries, facts and file bytes go as in ``forget_account``.
+    Returns text rows removed; an unknown source erases nothing.
+    """
+    if source not in _SOURCES:
+        _erase_state["failed"] = False
         return 0
-    try:
-        with closing(conn):
-            conn.execute("BEGIN IMMEDIATE")
-            try:
-                removed = conn.execute("DELETE FROM texts").rowcount
-                changed = removed
-                changed += conn.execute("DELETE FROM owners").rowcount
-                changed += conn.execute("DELETE FROM locators").rowcount
-                changed += conn.execute("DELETE FROM seen").rowcount
-                changed += conn.execute("DELETE FROM tried").rowcount
-                changed += _sweep(conn)
-                conn.execute("COMMIT")
-            except BaseException:
-                conn.execute("ROLLBACK")
-                raise
-            if changed:
-                conn.execute("VACUUM")
-            return max(removed, 0)
-    except (sqlite3.Error, OSError):
-        return 0
+    return _run_erase(_source_body(source))[0]
+
+
+def forget_source_ok(source: str) -> bool:
+    if source not in _SOURCES:
+        return True
+    return _run_erase(_source_body(source))[1]
 
 
 # ---------------------------------------------------------------------------
@@ -533,13 +633,26 @@ def _index(conn: sqlite3.Connection, digest: str, text: str) -> None:
     """(Re)write the index row for one text. Call inside a transaction."""
     if not _has_ft(conn):
         return
-    row = conn.execute("SELECT rid FROM indexed WHERE digest=?", (digest,)).fetchone()
-    if row:
-        rid = row[0]
-        conn.execute("DELETE FROM ft WHERE rowid=?", (rid,))
-    else:
-        rid = conn.execute("INSERT INTO indexed(digest) VALUES(?)", (digest,)).lastrowid
-    conn.execute("INSERT INTO ft(rowid, body) VALUES(?,?)", (rid, text))
+    # A savepoint: if the word insert fails, the "indexed" mark goes with it, so the
+    # text is picked up again by the lazy fill instead of being unsearchable for good.
+    conn.execute("SAVEPOINT idx")
+    try:
+        row = conn.execute(
+            "SELECT rid FROM indexed WHERE digest=?", (digest,)
+        ).fetchone()
+        if row:
+            rid = row[0]
+            conn.execute("DELETE FROM ft WHERE rowid=?", (rid,))
+        else:
+            rid = conn.execute(
+                "INSERT INTO indexed(digest) VALUES(?)", (digest,)
+            ).lastrowid
+        conn.execute("INSERT INTO ft(rowid, body) VALUES(?,?)", (rid, text))
+    except BaseException:
+        conn.execute("ROLLBACK TO idx")
+        conn.execute("RELEASE idx")
+        raise
+    conn.execute("RELEASE idx")
 
 
 def _erase_extras(conn: sqlite3.Connection, digest: str) -> None:
@@ -658,21 +771,45 @@ def note_seen(
         return False
 
 
-def count() -> int:
-    """How many readings are kept (and still servable)."""
+_search_state = {"failed": False}
+
+
+def last_search_failed() -> bool:
+    """True when the latest ``search`` or ``count`` could not read the database.
+
+    Process-wide and last call wins: read it right after the call (from any
+    thread). ``search_checked`` / ``count_checked`` return the same fact with
+    the result and are exact when requests overlap.
+    """
+    return bool(_search_state["failed"])
+
+
+def count_checked() -> int | None:
+    """``count`` that gives None when the database could not be read."""
     conn = _connect()
     if conn is None:
-        return 0
+        _search_state["failed"] = True
+        return None
     try:
         with closing(conn):
-            return int(
+            n = int(
                 conn.execute(
                     "SELECT COUNT(*) FROM texts WHERE version=? AND last_used>=?",
                     (VERSION, time.time() - MAX_AGE_S),
                 ).fetchone()[0]
             )
+        _search_state["failed"] = False
+        return n
     except (sqlite3.Error, OSError):
-        return 0
+        _search_state["failed"] = True
+        return None
+
+
+def count() -> int:
+    """How many readings are kept (and still servable); 0 also when unreadable
+    (``last_search_failed()`` says which)."""
+    n = count_checked()
+    return 0 if n is None else n
 
 
 def get_facts(digest: str, version: int) -> dict | None:
@@ -734,36 +871,70 @@ def put_facts(digest: str, version: int, facts: dict) -> bool:
         return False
 
 
-def _tried_key(key: object) -> str | None:
-    """Keys are stored as a hash: a message locator is never kept readable."""
-    if not isinstance(key, str) or not 0 < len(key) <= _MAX_TRIED_KEY:
-        return None
-    return hashlib.sha256(key.encode("utf-8", "replace")).hexdigest()
+_SALT_KEY = "tried_salt"
+
+
+def _salt(conn: sqlite3.Connection) -> bytes:
+    """The install's random secret for "tried" keys (made on first use, in ``meta``)."""
+    row = conn.execute("SELECT value FROM meta WHERE key=?", (_SALT_KEY,)).fetchone()
+    if row is None or not isinstance(row[0], bytes):
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
+            (_SALT_KEY, sqlite3.Binary(os.urandom(32))),
+        )
+        row = conn.execute("SELECT value FROM meta WHERE key=?", (_SALT_KEY,)).fetchone()
+    return bytes(row[0])
+
+
+def _valid_key(key: object) -> bool:
+    return isinstance(key, str) and 0 < len(key) <= _MAX_TRIED_KEY
+
+
+def _tried_key(key: str, salt: bytes) -> str:
+    """Keys are stored as a salted hash: a message locator is never kept readable,
+    and cannot be confirmed by guessing it without this install's secret."""
+    return hashlib.sha256(salt + b"\0" + key.encode("utf-8", "replace")).hexdigest()
 
 
 def tried(key: str) -> bool:
     """True when ``mark_tried`` recorded this key in the last 30 days."""
-    hashed = _tried_key(key)
-    if hashed is None:
+    if not _valid_key(key):
         return False
+    return key in tried_many([key])
+
+
+def tried_many(keys: list[str]) -> set[str]:
+    """The keys (of those given) that ``mark_tried`` recorded in the last 30 days.
+
+    One connection, queries in chunks. Unusable keys and errors give no match.
+    """
+    wanted = [k for k in dict.fromkeys(keys or []) if _valid_key(k)]
+    if not wanted:
+        return set()
     conn = _connect()
     if conn is None:
-        return False
+        return set()
     try:
         with closing(conn):
-            row = conn.execute(
-                "SELECT 1 FROM tried WHERE key=? AND ts>=?",
-                (hashed, time.time() - _TRIED_AGE_S),
-            ).fetchone()
-        return row is not None
+            salt = _salt(conn)
+            by_hash = {_tried_key(k, salt): k for k in wanted}
+            found: set[str] = set()
+            since = time.time() - _TRIED_AGE_S
+            for chunk in _chunks(list(by_hash)):
+                marks = ",".join("?" * len(chunk))
+                for (h,) in conn.execute(
+                    f"SELECT key FROM tried WHERE ts>=? AND key IN ({marks})",
+                    (since, *chunk),
+                ):
+                    found.add(by_hash[h])
+        return found
     except (sqlite3.Error, OSError):
-        return False
+        return set()
 
 
 def mark_tried(key: str, outcome: str) -> bool:
     """Record that a file was tried; ``outcome`` is a short token."""
-    hashed = _tried_key(key)
-    if hashed is None:
+    if not _valid_key(key):
         return False
     token = outcome if isinstance(outcome, str) and _OUTCOME_RE.fullmatch(outcome) else "other"
     conn = _connect()
@@ -771,6 +942,7 @@ def mark_tried(key: str, outcome: str) -> bool:
         return False
     try:
         with closing(conn):
+            hashed = _tried_key(key, _salt(conn))
             conn.execute(
                 "INSERT OR REPLACE INTO tried(key, outcome, ts) VALUES(?,?,?)",
                 (hashed, token, time.time()),
@@ -873,12 +1045,33 @@ def search(
     ``until`` bound the seen rows' ``ts``; ``name`` is a case-insensitive part
     of the file name. A text never seen with a sender still matches (empty
     name, sender and subject, ``ts`` 0) unless a filter rules it out. Does not
-    touch last-used times. Never raises.
+    touch last-used times. Never raises. ``[]`` also means "could not read the
+    database" (locked, unusable): ``last_search_failed()`` says which.
     """
+    return search_checked(
+        query, limit=limit, since=since, until=until, account=account,
+        source=source, name=name,
+    )[0]
+
+
+def search_checked(
+    query: str,
+    *,
+    limit: int = 8,
+    since: float = 0.0,
+    until: float = 0.0,
+    account: str = "",
+    source: str = "",
+    name: str = "",
+) -> tuple[list[Hit], bool]:
+    """``search`` that also says whether the database could not be read: (hits, failed)."""
     try:
-        return _search(query, limit, since, until, account, source, name)
+        hits = _search(query, limit, since, until, account, source, name)
     except Exception:  # noqa: BLE001 - search must never raise
-        return []
+        _search_state["failed"] = True
+        return [], True
+    _search_state["failed"] = False
+    return hits, False
 
 
 def _num(value: object) -> float:
@@ -903,7 +1096,7 @@ def _search(query, limit, since, until, account, source, name) -> list[Hit]:
     part = _clean(name, 200).lower() if isinstance(name, str) else ""
     conn = _connect()
     if conn is None:
-        return []
+        raise sqlite3.OperationalError("attachment store unavailable")
     with closing(conn):
         now = time.time()
         live = (VERSION, now - MAX_AGE_S)

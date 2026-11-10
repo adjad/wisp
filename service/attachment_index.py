@@ -13,7 +13,8 @@ IMPORTANT rules:
   after an empty listing and 15 min after a failure.
 - It stands down for a user's turn, a Brief or other background model task, mail memory's own
   task, no connected app, Low Power Mode, and battery under 30%. A read is one bounded step
-  (60 s), and nothing new starts while a turn is in flight.
+  (20 s: a chat turn's own file read waits behind it), and nothing new starts while a turn is in flight,
+  checked again just before the file is read.
 - Nothing from a file (its name, sender, subject or text) is logged, printed or put in status:
   skip reasons are short fixed tokens.
 
@@ -38,21 +39,25 @@ _KEY = "read_in_background"
 WINDOW_DAYS = 30
 MAX_PER_DAY = 40
 MAX_BYTES = 10 * 1024 * 1024
-FILE_DEADLINE_S = 60.0
+FILE_DEADLINE_S = 20.0
 BETWEEN_GAP_S = 90.0
 AWAY_GAP_S = 30.0
 EMPTY_GAP_S = 1800.0
 FAILURE_GAP_S = 900.0
+FOREGROUND_GAP_S = 60.0
+PRUNE_EVERY_S = 3600.0
 LIST_LIMIT = 200
 MAX_PAGES = 3
 FUTURE_HOURS = 36
 KEY_MAX = 300
 
 _task: asyncio.Task | None = None
-_next_at = 0.0
+_next_at = 0.0              # on the monotonic clock: a wall clock that moves cannot stall or hurry the reader
 _last_run: float | None = None
 _last_skip = ""
-_clock = time.time          # wall clock; tests replace it
+_last_prune: float | None = None    # monotonic
+_clock = time.time          # wall clock (the day's date, the mail window); tests replace it
+_mono = time.monotonic      # tests replace it
 
 
 # --- the switch and the day's count ------------------------------------------------
@@ -96,17 +101,27 @@ def _day(now: float) -> str:
     return time.strftime("%Y-%m-%d", time.localtime(now))
 
 
+def _effective_day(now: float, state: dict) -> str:
+    """Today's date, but never earlier than the latest day already counted: a clock moved
+    backwards does not give back the day's 40 files."""
+    today = _day(now)
+    seen = state.get("day")
+    return seen if isinstance(seen, str) and seen > today else today
+
+
 def _today(now: float) -> int:
     state = _read_json(_dir() / "state.json")
     count = state.get("count")
-    if state.get("day") == _day(now) and type(count) is int and count > 0:
+    if state.get("day") == _effective_day(now, state) and type(count) is int and count > 0:
         return count
     return 0
 
 
 def _count_one(now: float) -> None:
     try:
-        _write_json(_dir() / "state.json", {"day": _day(now), "count": _today(now) + 1})
+        state = _read_json(_dir() / "state.json")
+        _write_json(_dir() / "state.json",
+                    {"day": _effective_day(now, state), "count": _today(now) + 1})
     except OSError:
         log.error("attachment reader: could not save the day's count")
 
@@ -122,7 +137,7 @@ def _key(f) -> str:
     return f"mail:{f.rowid}:{f.attachment_id}:{f.size}:{f.name}"[:KEY_MAX]
 
 
-def _wanted(f) -> bool:
+def _eligible(f) -> bool:
     from service import mail_attachments as ma
     if not (f.has_local and f.on_disk):
         return False
@@ -130,7 +145,11 @@ def _wanted(f) -> bool:
         return False
     if ma.is_picture(f.name, f.mime) and 0 < f.size < ma.TINY_IMAGE_BYTES:
         return False
-    return not attachment_store.tried(_key(f))
+    return True
+
+
+def _wanted(f) -> bool:
+    return _eligible(f) and not attachment_store.tried(_key(f))
 
 
 async def _candidate(now: float):
@@ -141,10 +160,14 @@ async def _candidate(now: float):
     until = now + FUTURE_HOURS * 3600           # scheduled mail dated ahead must not crowd the list
     for _page in range(MAX_PAGES):
         rows, capped = await bridge.read_attachment_index([], since, until, [], limit=LIST_LIMIT)
-        for email in sorted(ma.from_mail_rows(rows), key=lambda e: e.ts, reverse=True):
-            for f in email.files:
-                if _wanted(f):
-                    return email, f
+        found = [(email, f)
+                 for email in sorted(ma.from_mail_rows(rows), key=lambda e: e.ts, reverse=True)
+                 for f in email.files if _eligible(f)]
+        # One connection for the whole page, off the event loop.
+        done = await asyncio.to_thread(attachment_store.tried_many, [_key(f) for _e, f in found])
+        for email, f in found:
+            if _key(f) not in done:
+                return email, f
         if not capped or not rows:
             return None
         until = min(r["ts"] for r in rows) - 0.001
@@ -174,6 +197,32 @@ async def _gap_after_file() -> float:
     return AWAY_GAP_S if away else BETWEEN_GAP_S
 
 
+def _rest_left(ma) -> float:
+    """Seconds the app's text recognition still rests after not answering (0 when not)."""
+    try:
+        return max(0.0, float(getattr(ma, "_ocr_resting_until", 0.0)) - time.monotonic())
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _could_need_text_recognition(ma, f) -> bool:
+    name = (getattr(f, "name", "") or "").lower()
+    return ma.is_picture(name, getattr(f, "mime", "")) or name.endswith(".pdf")
+
+
+async def _prune_if_due() -> None:
+    """Compact the store about hourly while the app runs (stale index words after a dropped text)."""
+    global _last_prune
+    now = _mono()
+    if _last_prune is not None and now - _last_prune < PRUNE_EVERY_S:
+        return
+    _last_prune = now
+    try:
+        await asyncio.to_thread(attachment_store.prune_if_due)
+    except Exception:  # noqa: BLE001 — a failed prune is retried by the next hour
+        pass
+
+
 async def _run() -> None:
     global _next_at, _last_run
     from service import mail_attachments as ma
@@ -188,15 +237,24 @@ async def _run() -> None:
             _skip("battery_low")
             return
         _skip("")
+        await _prune_if_due()
         picked = await _candidate(_clock())
         if picked is None:
             gap = EMPTY_GAP_S
+        elif idle.foreground_busy():            # a turn began while the list was read: it comes first
+            _skip("foreground")
+            gap = FOREGROUND_GAP_S
         else:
             email, f = picked
             outcome = await ma.index_one(email, f, deadline=time.monotonic() + FILE_DEADLINE_S)
-            attachment_store.mark_tried(_key(f), outcome)
-            _count_one(_clock())
-            gap = await _gap_after_file()
+            # "Skipped" while text recognition rests says nothing about the file: try it again later.
+            rest = _rest_left(ma)
+            if outcome == "skipped" and rest > 0 and _could_need_text_recognition(ma, f):
+                gap = max(await _gap_after_file(), rest)    # not tried, not counted: asked again after the rest
+            else:
+                attachment_store.mark_tried(_key(f), outcome)
+                _count_one(_clock())
+                gap = await _gap_after_file()
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 — the type only: a message could hold mail data
@@ -204,7 +262,7 @@ async def _run() -> None:
         _skip("read_failed")
         gap = FAILURE_GAP_S
     _last_run = _clock()
-    _next_at = _clock() + gap
+    _next_at = _mono() + gap
 
 
 def schedule_tick() -> None:
@@ -215,7 +273,7 @@ def schedule_tick() -> None:
     if not enabled():
         return
     now = _clock()
-    if now < _next_at:
+    if _mono() < _next_at:
         return
     if _today(now) >= MAX_PER_DAY:
         _skip("daily_cap")
