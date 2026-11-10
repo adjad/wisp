@@ -143,6 +143,33 @@ def test_a_name_before_any_contacts_sync_says_so_and_still_asks(monkeypatch):
     assert "saved contact" not in problem
 
 
+@pytest.fixture
+def synced(monkeypatch):
+    """cache_contacts as the app's sync calls it, with nothing written to disk."""
+    for name in ("_contacts", "_name_handles", "_lines"):
+        monkeypatch.setattr(imessage_tools, name, getattr(imessage_tools, name))
+    monkeypatch.setattr(imessage_tools, "_lines", "")
+    monkeypatch.setattr(imessage_tools.cache_store, "save", lambda *args: None)
+    return imessage_tools.cache_contacts
+
+
+def test_two_people_saved_under_one_name_are_asked_about(synced):
+    # ContactsReader labels two different cards saved as "Chris" (see its
+    # handleMap), so a text to Chris asks which one instead of picking a number.
+    synced({"+1 (555) 010-0142": "Chris (…0142)", "555-010-0199": "chris (…0199)",
+            "+15550100177": "Dana Reyes"})
+    handle, problem = action_tools._resolve_recipient("Chris")
+    assert handle == "" and type(problem) is registry._NotSentResult and problem.needs_recipient
+    assert problem.question == ("Chris matches several contacts: Chris (…0142), Chris (…0199). "
+                                "Which one do you mean?")
+    assert action_tools._resolve_recipient("Chris (…0199)") == ("555-010-0199", "")
+
+
+def test_one_person_with_one_number_in_two_formats_still_resolves(synced):
+    synced({"+1 (555) 010-0142": "Chris", "555-010-0142": "Chris"})
+    assert action_tools._resolve_recipient("Chris") == ("+1 (555) 010-0142", "")
+
+
 def test_with_contacts_loaded_an_unknown_name_keeps_its_wording(monkeypatch):
     monkeypatch.setattr(imessage_tools, "_name_handles", {"brian chen": ["+15550101234"]})
     monkeypatch.setattr(imessage_tools, "_contacts_not_allowed", True)  # stale flag: contacts are loaded
