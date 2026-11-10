@@ -3136,13 +3136,18 @@ class AssistantStore:
         return self._hide_stale(self._collapse([dict(r) for r in rows]), None)
 
     def active_between(self, start_ts: float | None = None,
-                       end_ts: float | None = None, *, include_stale: bool = False) -> list[dict]:
+                       end_ts: float | None = None, *, include_stale: bool = False,
+                       now: float | None = None) -> list[dict]:
         """Active commitments in an optional half-open time range.
 
         Bulk reminder operations need local calendar-day boundaries and a
         genuine all-time view. Combining ``upcoming`` and ``history`` leaves a
         five-minute seam around now and makes "all" depend on arbitrary
         horizons, so keep this selection in the store and reuse normal dedupe.
+
+        ``now`` is the moment the stale-reminder hiding is judged at (the
+        clock when omitted), for a reader that builds its whole answer for one
+        fixed time.
         """
         where = ["status='active'"]
         params: list[float] = []
@@ -3160,7 +3165,7 @@ class AssistantStore:
         # (clearing or cancelling reminders), or for read-only aging
         # (checkin.reminder_index): hiding an item must not stop deleting it, or stop a
         # task made from it from aging.
-        return items if include_stale else self._hide_stale(items, None)
+        return items if include_stale else self._hide_stale(items, now)
 
     def history(self, now: float | None = None, days: int = 365, *,
                 include_stale: bool = False) -> list[dict]:
