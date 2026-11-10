@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import hashlib
 import json
+import logging
 import math
 import re
 import sqlite3
@@ -14,7 +15,11 @@ from pathlib import Path
 from service.config import MOE_DIR
 from service.paths import private_sqlite_file
 
+log = logging.getLogger(__name__)
+
 DB_PATH = MOE_DIR / 'facts.db'
+# memory_settings row: this file has been rebuilt once with secure_delete on.
+OLD_TEXT_CLEARED = 'old_text_cleared'
 CATEGORIES = ('fact', 'preference', 'person', 'project', 'routine')
 _CONTEXT_CHARS = 2400
 _STOP = set('a an the i me my we our you your is are am was were be been do does did have has had to of for in on at with and or but it this that what which who how when where can could would should please remember recall know about tell said say'.split())
@@ -86,6 +91,20 @@ def claim_slot(text: str) -> tuple[str, str]:
     return '', ''
 
 
+def secure_delete_fts(db, table):
+    """Make a search index remove a deleted row's words from its segments.
+
+    Without this FTS5 only records that the row is gone, and the words stay in
+    the file until some later merge. The setting is kept in the index's own
+    config. SQLite before 3.42 does not know it: the index then works as it did.
+    """
+    try:
+        db.execute(f"INSERT INTO {table}({table},rank) VALUES('secure-delete',1)")
+    except sqlite3.OperationalError as exc:
+        if 'no such module' in str(exc):
+            raise
+
+
 class FactStore:
     def __init__(self, path: Path = DB_PATH):
         self.path = Path(path)
@@ -93,6 +112,9 @@ class FactStore:
         private_sqlite_file(self.path)
         self._db = sqlite3.connect(str(self.path), check_same_thread=False, timeout=10)
         self._db.row_factory = sqlite3.Row
+        # A forgotten memory's words are overwritten in the file, not only
+        # unlinked from the row. Per connection; this store does the deletes.
+        self._db.execute('PRAGMA secure_delete=ON')
         self._lock = threading.RLock()
         self._fts = True
         # DDL and data migration share one rollback boundary. Legacy provenance
@@ -148,12 +170,38 @@ class FactStore:
                     DELETE FROM memory_fact_fts WHERE rowid=old.id; END''')
                 self._db.execute('''INSERT INTO memory_fact_fts(rowid,text,category)
                     SELECT id,text,category FROM facts WHERE id NOT IN (SELECT rowid FROM memory_fact_fts)''')
+                secure_delete_fts(self._db, 'memory_fact_fts')
             except sqlite3.OperationalError as exc:
                 if 'no such module' not in str(exc):
                     raise
                 self._fts = False
             self._db.execute('DELETE FROM memory_schema')
             self._db.execute('INSERT INTO memory_schema VALUES(2)')
+        self._clear_old_text()
+
+    def _clear_old_text(self):
+        """Once per database, rebuild the search index and the file.
+
+        secure_delete only covers what this store removes from now on. What an
+        earlier build forgot still sits in free pages, in the unused space of
+        live pages and in old index segments, and so does every stale copy it
+        left of text that is forgotten later. Someone else holding the file just
+        puts this off to the next start, without delaying this one much."""
+        if self.setting(OLD_TEXT_CLEARED):
+            return
+        with self._lock:
+            try:
+                self._db.execute('PRAGMA busy_timeout=250')
+                if self._fts:
+                    with self._write():
+                        self._db.execute("INSERT INTO memory_fact_fts(memory_fact_fts) VALUES('rebuild')")
+                self._db.execute('VACUUM')
+            except sqlite3.Error as exc:
+                log.warning('fact store: old text not cleared yet: %s', exc)
+                return
+            finally:
+                self._db.execute('PRAGMA busy_timeout=10000')   # the timeout given to connect
+        self.set_setting(OLD_TEXT_CLEARED, True)
 
     @contextmanager
     def _write(self):
