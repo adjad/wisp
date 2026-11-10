@@ -625,6 +625,55 @@ def test_the_route_on_the_bundled_engine_never_asks_for_a_hold(main_module, monk
     assert c.unloads == [GEMMA]
 
 
+def test_the_route_on_the_bundled_engine_leaves_a_model_that_is_generating(main_module, monkeypatch):
+    # POST /unload aborts running requests: a reply in the Wisp window or on the phone,
+    # a Brief gist, a Smart Search answer.
+    monkeypatch.setattr(M, "X_WAIT_S", 0.1)
+    c = FakeClient(loaded={GEMMA}, bundled=True)
+    idle.begin(GEMMA)
+    result = _route(main_module, monkeypatch, c)
+    assert result == {"unloaded": [], "held": "busy"}
+    assert c.calls == [] and not M._state.parked
+
+
+def test_the_route_on_the_bundled_engine_leaves_a_model_under_a_hold(main_module, monkeypatch):
+    c = FakeClient(loaded={GEMMA}, bundled=True)
+    started = time.monotonic()
+    with M.hold():                                        # a Research job, between its calls
+        result = _route(main_module, monkeypatch, c)
+    assert result == {"unloaded": [], "held": "busy"}
+    assert c.calls == [] and not M._state.parked
+    assert time.monotonic() - started < M.X_WAIT_S        # a hold lasts a whole job: no wait
+
+
+def test_the_route_on_the_bundled_engine_unloads_once_the_stopped_reply_has_ended(main_module, monkeypatch):
+    # The X stops the notch's own reply first. That call is still counted for a moment,
+    # and its turn a moment longer: the X waits for the call, not for the turn.
+    c = FakeClient(loaded={GEMMA}, bundled=True)
+    target = SimpleNamespace(endpoint=SimpleNamespace(managed=True, provider="omlx"), model=GEMMA)
+    monkeypatch.setattr(main_module, "client", c, raising=False)
+    monkeypatch.setattr(main_module, "role_target", lambda role: target)
+    monkeypatch.setattr(main_module, "role_to_model", lambda role: GEMMA)
+    idle.begin_foreground()
+    idle.begin(GEMMA)
+
+    async def run():
+        asyncio.get_running_loop().call_later(0.1, idle.end, GEMMA)
+        return await main_module.unload_agent()
+
+    assert asyncio.run(run()) == {"unloaded": [GEMMA]}
+    assert c.unloads == [GEMMA] and M._state.parked
+    assert idle.foreground_busy()                         # the turn alone never held it
+
+
+def test_the_route_on_the_bundled_engine_unloads_at_once_when_nothing_runs(main_module, monkeypatch):
+    c = FakeClient(loaded={GEMMA}, bundled=True)
+    started = time.monotonic()
+    assert _route(main_module, monkeypatch, c) == {"unloaded": [GEMMA]}
+    assert c.unloads == [GEMMA] and M._state.parked
+    assert time.monotonic() - started < 1.0
+
+
 # --- background work beside another app's model -------------------------------------
 # The user's decision: "Yes, let it run". It stays resident-only, and still gives way
 # to Wisp's own turns and held work. oMLX can evict the idle model at prefill.

@@ -1461,6 +1461,11 @@ async def unload_agent() -> dict[str, Any]:
             held = await saver.omlx_x_hold(client, model)
             if held is not None:
                 return {"unloaded": [], "held": held}
+        else:
+            # Wisp's own engine: an unload aborts whatever is generating on the model.
+            held = await saver.x_hold(model)
+            if held is not None:
+                return {"unloaded": [], "held": held}
         await client.unload(model)
         if model == role_to_model("fast"):
             # Every text role is the chat model now, so with Save memory on this parks
