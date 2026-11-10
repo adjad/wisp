@@ -45,7 +45,9 @@ def test_registry_stays_under_the_one_hundred_cap():
     # once the user installs them, and test modules can leave them behind.
     builtin = [name for name, tool in REGISTRY.items()
                if tool.func.__module__.startswith("service.tools.")]
-    assert len(builtin) == 94
+    # 94 before batch 3 of attachments added read_message_attachments and
+    # save_email_attachment; the documented cap stays 100.
+    assert len(builtin) == 96
 
 
 def test_retired_names_stay_retired_and_merged_tools_exist():
