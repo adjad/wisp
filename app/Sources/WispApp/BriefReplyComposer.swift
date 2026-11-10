@@ -39,7 +39,7 @@ struct BriefReplyComposer: View {
             editor
             if !model.status.isEmpty {
                 Text(model.status)
-                    .font(.system(size: 11))
+                    .font(.wisp(size: 11))
                     .foregroundStyle(model.phase == .sent ? Theme.textSecondary
                                      : model.phase == .sending ? Theme.textMuted : Theme.bad)
                     .fixedSize(horizontal: false, vertical: true)
@@ -55,7 +55,7 @@ struct BriefReplyComposer: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(model.phase == .sent ? "REPLY · SENT" : "REPLY · \(model.account.uppercased())")
-                .font(.system(size: 10, design: .monospaced))
+                .font(.wisp(size: 10, design: .monospaced))
                 .foregroundStyle(Theme.textMuted)
                 .lineLimit(1)
             // Never truncated: these are the people the reply goes to.
@@ -64,7 +64,7 @@ struct BriefReplyComposer: View {
             recipientLine("BCC", model.bcc)
             if !model.subject.isEmpty {
                 Text("Subject: \(model.subject)")
-                    .font(.system(size: 11, design: .monospaced))
+                    .font(.wisp(size: 11, design: .monospaced))
                     .foregroundStyle(Theme.textSecondary)
                     .lineLimit(1)
             }
@@ -74,7 +74,7 @@ struct BriefReplyComposer: View {
     @ViewBuilder private func recipientLine(_ label: String, _ addresses: [String]) -> some View {
         if !addresses.isEmpty {
             Text("\(label): \(addresses.joined(separator: ", "))")
-                .font(.system(size: 11, design: .monospaced))
+                .font(.wisp(size: 11, design: .monospaced))
                 .foregroundStyle(label == "To" ? Theme.textSecondary : Theme.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
@@ -87,7 +87,7 @@ struct BriefReplyComposer: View {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
                     Text("Drafting…")
-                        .font(.system(size: 12))
+                        .font(.wisp(size: 12))
                         .foregroundStyle(Theme.textSecondary)
                     Spacer()
                 }
@@ -95,7 +95,7 @@ struct BriefReplyComposer: View {
                 .padding(.horizontal, 8)
             } else {
                 TextEditor(text: $model.text)
-                    .font(.system(size: 12.5))
+                    .font(.wisp(size: 12.5))
                     .foregroundStyle(Theme.textPrimary)
                     .scrollContentBackground(.hidden)
                     .frame(minHeight: 90, maxHeight: 200)
@@ -135,7 +135,7 @@ struct BriefReplyComposer: View {
     private func chip(_ title: String, primary: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: 12, weight: primary ? .semibold : .regular))
+                .font(.wisp(size: 12, weight: primary ? .semibold : .regular))
                 .foregroundStyle(primary ? Color.black : Theme.textPrimary)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 5)

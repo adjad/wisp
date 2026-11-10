@@ -58,6 +58,9 @@ struct DayNeedInput: Equatable {
     var title: String
     var source: String
     var due: Double?
+    /// A date-only reminder: `due` is that day's last minute, the Reminders
+    /// reader's stand-in, not a time the person chose.
+    var allDay = false
 }
 
 /// One item of the Brief's Needs you line, as the service phrased it.
@@ -198,6 +201,9 @@ struct DayItem: Identifiable, Equatable {
     /// For a reminder or to-do due by a time: that time, which the agenda lists
     /// it at. Nil for what holds a stretch of time or happens at a time.
     var due: Double? = nil
+    /// For a reminder due on a day with no time of its own: `due` is only that
+    /// day's last minute, so the agenda says "All day" and never that minute.
+    var allDay = false
     /// The block's own times before the lane clipped them to its hours, for the
     /// agenda's time column. `ends` is nil when the source gave no end.
     var begins: Double? = nil
@@ -325,13 +331,17 @@ struct DayTimeline: Equatable {
             guard let due = need.due else { continue }
             if isToday && due < now {
                 let start = max(earliest, now)
-                items.append(DayItem(id: "need:" + need.id, title: need.title, detail: "Overdue since " + overdueLabel(due, dayStart: dayStart, clock: clock, dayClock: dayClock),
+                // A date-only reminder names its day, never the stand-in last minute.
+                let since = need.allDay ? overdueDay(due, dayStart: dayStart, dayClock: dayClock)
+                    : overdueLabel(due, dayStart: dayStart, clock: clock, dayClock: dayClock)
+                items.append(DayItem(id: "need:" + need.id, title: need.title, detail: "Overdue since " + since,
                                      start: start, end: start + 30 * 60, style: .overdue, needID: need.id))
             } else if due >= dayStart, due <= dayEnd, due > earliest {
                 let start = max(earliest, due - 30 * 60)
-                items.append(DayItem(id: "need:" + need.id, title: need.title, detail: "Due " + clock(due) + " · Needs you",
+                let when = need.allDay ? (isToday ? "today" : "that day") : clock(due)
+                items.append(DayItem(id: "need:" + need.id, title: need.title, detail: "Due " + when + " · Needs you",
                                      start: start, end: max(due, start + 15 * 60), style: .needsYou, needID: need.id,
-                                     due: due))
+                                     due: due, allDay: need.allDay))
             }
         }
 
@@ -558,10 +568,11 @@ struct DayTimeline: Equatable {
     }
 
     /// The agenda's time column for a row, as two short lines: "6:30 PM" over
-    /// "7:30 PM", "8:00 PM" over "Due", or "Overdue".
+    /// "7:30 PM", "8:00 PM" over "Due", "All day" over "Due" for a reminder
+    /// with a date and no time, or "Overdue".
     static func gutter(_ item: DayItem, clock: (Double) -> String) -> (top: String, bottom: String) {
         if item.style == .overdue { return ("Overdue", "") }
-        if let due = item.due { return (clock(due), "Due") }
+        if let due = item.due { return (item.allDay ? "All day" : clock(due), "Due") }
         return (clock(item.begins ?? item.start), item.ends.map(clock) ?? "")
     }
 
@@ -626,6 +637,14 @@ struct DayTimeline: Equatable {
     private static func overdueLabel(_ due: Double, dayStart: Double, clock: (Double) -> String,
                                      dayClock: (Double) -> String) -> String {
         due >= dayStart ? clock(due) : dayClock(due)
+    }
+
+    /// The day a date-only reminder was due, without a clock time: "today", or
+    /// the day's name alone ("Mon"), which `dayClock` leads with.
+    private static func overdueDay(_ due: Double, dayStart: Double, dayClock: (Double) -> String) -> String {
+        if due >= dayStart { return "today" }
+        let label = dayClock(due)
+        return label.split(separator: " ").first.map { String($0) } ?? label
     }
 
     // MARK: Calm rules

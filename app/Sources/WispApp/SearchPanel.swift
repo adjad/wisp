@@ -182,6 +182,7 @@ struct SearchView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Copy answer with source")
+                .accessibilityLabel("Copy answer with source")
             }
 
             if let n = model.expandedCitation,

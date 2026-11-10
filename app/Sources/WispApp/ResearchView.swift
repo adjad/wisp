@@ -65,17 +65,17 @@ struct ResearchView: View {
             if compact, let onBack {
                 Button(action: onBack) {
                     Image(systemName: "chevron.left")
-                        .font(.system(size: 12, weight: .bold))
+                        .font(.wisp(size: 12, weight: .bold))
                 }.buttonStyle(.borderless).help("Back").accessibilityLabel("Back")
             }
             Image(systemName: "binoculars.fill")
-                .font(.system(size: 17)).foregroundStyle(Theme.textPrimary)
+                .font(.wisp(size: 17)).foregroundStyle(Theme.textPrimary)
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.title.isEmpty ? "Wisp Research" : model.title)
-                    .font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+                    .font(.wisp(size: 15, weight: .semibold)).foregroundStyle(Theme.textPrimary)
                     .lineLimit(1)
                 Text(model.status.isEmpty ? "Local, evidence-backed research" : model.status)
-                    .font(.system(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
+                    .font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
             }
             Spacer()
             if !model.elapsedText.isEmpty && model.isRunning {
@@ -131,7 +131,7 @@ struct ResearchView: View {
     @ViewBuilder private var deleteControl: some View {
         if deleteConfirmation.isArmed(for: model.jobId) {
             HStack(spacing: 6) {
-                Text("Delete?").font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.bad)
+                Text("Delete?").font(.wisp(size: 11, weight: .medium)).foregroundStyle(Theme.bad)
                 if compact {
                     NotchChrome.small("Confirm", action: performDelete)
                         .disabled(model.actionInProgress)
@@ -194,7 +194,7 @@ struct ResearchView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 HStack {
-                    Text("Review the plan").font(.system(size: compact ? 16 : 21, weight: .semibold))
+                    Text("Review the plan").font(.wisp(size: compact ? 16 : 21, weight: .semibold))
                     Spacer()
                     Picker("Depth", selection: $model.depth) {
                         Text("Quick").tag("quick")
@@ -207,7 +207,7 @@ struct ResearchView: View {
                 }
                 labeled("Objective") {
                     TextEditor(text: $model.objective)
-                        .font(.system(size: 14)).frame(minHeight: 78)
+                        .font(.wisp(size: 14)).frame(minHeight: 78)
                         .padding(6).background(RoundedRectangle(cornerRadius: 8).fill(Theme.chipFill))
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.chipStroke))
                 }
@@ -215,7 +215,7 @@ struct ResearchView: View {
                     VStack(spacing: 8) {
                         ForEach(model.subquestions.indices, id: \.self) { i in
                             HStack(alignment: .top, spacing: 8) {
-                                Text("\(i + 1)").font(.system(size: 11, weight: .bold))
+                                Text("\(i + 1)").font(.wisp(size: 11, weight: .bold))
                                     .foregroundStyle(Theme.textMuted).frame(width: 18, height: 26)
                                 TextField("Subquestion", text: $model.subquestions[i], axis: .vertical)
                                     .modifier(AdaptiveField(compact: compact))
@@ -244,11 +244,11 @@ struct ResearchView: View {
                     }
                 }
                 if !model.errorText.isEmpty {
-                    Text(model.errorText).font(.system(size: 12)).foregroundStyle(Theme.bad)
+                    Text(model.errorText).font(.wisp(size: 12)).foregroundStyle(Theme.bad)
                 }
                 HStack {
                     Text("Search queries and page requests leave your Mac; model inference and the research database stay local.")
-                        .font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                        .font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
                     Spacer()
                     if compact {
                         NotchChrome.chip("Start research", icon: "arrow.right.circle.fill",
@@ -331,18 +331,18 @@ struct ResearchView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 ProgressView().controlSize(.small)
-                Text(model.status).font(.system(size: 13, weight: .medium)).lineLimit(2)
+                Text(model.status).font(.wisp(size: 13, weight: .medium)).lineLimit(2)
                 Spacer()
                 NotchChrome.chip(model.paused ? "Resume" : "Pause", icon: model.paused ? "play.fill" : "pause.fill",
                                  help: model.paused ? "Resume research" : "Pause research", action: model.togglePause)
                 NotchChrome.chip("Cancel", icon: "xmark", help: "Stop this research", action: model.cancel)
             }
             Divider().overlay(Theme.hairline)
-            Text("Activity").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.textSecondary)
+            Text("Activity").font(.wisp(size: 12, weight: .semibold)).foregroundStyle(Theme.textSecondary)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 6) {
                     ForEach(Array(model.activity.enumerated()), id: \.offset) { _, item in
-                        Text(item).font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                        Text(item).font(.wisp(size: 12)).foregroundStyle(Theme.textSecondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
@@ -358,7 +358,7 @@ struct ResearchView: View {
                         .modifier(NotchField()).onSubmit(model.updateDomains)
                     HStack { Spacer(); NotchChrome.chip("Apply", icon: nil, help: "Apply from the next round", action: model.updateDomains) }
                 }.padding(.top, 6)
-            }.font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.textSecondary)
+            }.font(.wisp(size: 12, weight: .semibold)).foregroundStyle(Theme.textSecondary)
             HStack {
                 TextField("Steer the research…", text: $model.steering)
                     .modifier(NotchField()).onSubmit(model.sendSteering)
@@ -382,17 +382,17 @@ struct ResearchView: View {
     private var citationList: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Citation evidence")
-                .font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.textSecondary)
+                .font(.wisp(size: 12, weight: .semibold)).foregroundStyle(Theme.textSecondary)
             Text("Exact passages retained from the pages Wisp read. Click a card to open the source.")
-                .font(.system(size: 10)).foregroundStyle(Theme.textMuted)
+                .font(.wisp(size: 10)).foregroundStyle(Theme.textMuted)
             if !model.contradictions.isEmpty {
                 DisclosureGroup("Disagreements (\(model.contradictions.count))") {
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(model.contradictions) { row in
-                            Text(row.description).font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
+                            Text(row.description).font(.wisp(size: 11)).foregroundStyle(Theme.textSecondary)
                         }
                     }.padding(.top, 4)
-                }.font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.bad)
+                }.font(.wisp(size: 12, weight: .semibold)).foregroundStyle(Theme.bad)
             }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 10) {
@@ -401,21 +401,21 @@ struct ResearchView: View {
                             VStack(alignment: .leading, spacing: 6) {
                                 HStack {
                                     Text("[\(citation.number)] \(citation.title)")
-                                        .font(.system(size: 12, weight: .semibold)).lineLimit(2)
+                                        .font(.wisp(size: 12, weight: .semibold)).lineLimit(2)
                                     if !citation.qualityClass.isEmpty {
                                         Spacer(minLength: 4)
                                         qualityBadge(citation.qualityClass, reason: citation.qualityReason)
                                     }
                                 }
                                 if !citation.claim.isEmpty && citation.claim != citation.quote {
-                                    Text(citation.claim).font(.system(size: 11))
+                                    Text(citation.claim).font(.wisp(size: 11))
                                         .foregroundStyle(Theme.textSecondary)
                                 }
                                 Text("“\(citation.quote)”")
-                                    .font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                                    .font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
                                     .lineLimit(8)
                                 if !citation.publishedAt.isEmpty {
-                                    Text(citation.publishedAt).font(.system(size: 10)).foregroundStyle(Theme.textMuted)
+                                    Text(citation.publishedAt).font(.wisp(size: 10)).foregroundStyle(Theme.textMuted)
                                 }
                             }.frame(maxWidth: .infinity, alignment: .leading).padding(10)
                                 .background(RoundedRectangle(cornerRadius: 8).fill(Theme.chipFill))
@@ -429,7 +429,7 @@ struct ResearchView: View {
 
     private func qualityBadge(_ qualityClass: String, reason: String = "") -> some View {
         Text(qualityClass.replacingOccurrences(of: "_", with: " "))
-            .font(.system(size: 9, weight: .medium)).foregroundStyle(Theme.textMuted)
+            .font(.wisp(size: 9, weight: .medium)).foregroundStyle(Theme.textMuted)
             .padding(.horizontal, 6).padding(.vertical, 2)
             .background(Capsule().fill(Theme.chipFill)).overlay(Capsule().stroke(Theme.chipStroke))
             .help(reason.isEmpty ? qualityClass.replacingOccurrences(of: "_", with: " ") : reason)
@@ -437,7 +437,7 @@ struct ResearchView: View {
 
     private var sourceList: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Sources").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.textSecondary)
+            Text("Sources").font(.wisp(size: 12, weight: .semibold)).foregroundStyle(Theme.textSecondary)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
                     ForEach(model.sources) { source in
@@ -447,16 +447,16 @@ struct ResearchView: View {
                                     Image(systemName: source.status == "failed" ? "exclamationmark.triangle" :
                                             (source.status == "read" || source.status == "extracted"
                                              ? "checkmark.circle.fill" : "circle"))
-                                        .font(.system(size: 10))
-                                    Text(source.title).font(.system(size: 12, weight: .medium)).lineLimit(2)
+                                        .font(.wisp(size: 10))
+                                    Text(source.title).font(.wisp(size: 12, weight: .medium)).lineLimit(2)
                                     if !source.qualityClass.isEmpty {
                                         Spacer(minLength: 4)
                                         qualityBadge(source.qualityClass, reason: source.qualityReason)
                                     }
                                 }
-                                Text(source.domain).font(.system(size: 10)).foregroundStyle(Theme.textMuted)
+                                Text(source.domain).font(.wisp(size: 10)).foregroundStyle(Theme.textMuted)
                                 if !source.error.isEmpty {
-                                    Text(source.error).font(.system(size: 10)).foregroundStyle(Theme.bad).lineLimit(2)
+                                    Text(source.error).font(.wisp(size: 10)).foregroundStyle(Theme.bad).lineLimit(2)
                                 }
                             }.frame(maxWidth: .infinity, alignment: .leading).padding(9)
                                 .background(RoundedRectangle(cornerRadius: 8).fill(Theme.chipFill))
@@ -471,36 +471,36 @@ struct ResearchView: View {
     private func centeredProgress(_ text: String) -> some View {
         VStack(spacing: 12) {
             ProgressView().controlSize(.large)
-            Text(text).font(.system(size: 13)).foregroundStyle(Theme.textSecondary)
+            Text(text).font(.wisp(size: 13)).foregroundStyle(Theme.textSecondary)
             Text("Research runs on this Mac. Only search queries and page requests leave it.")
-                .font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                .font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func notice(_ title: String, detail: String) -> some View {
         VStack(spacing: 10) {
-            Text(title).font(.system(size: 20, weight: .semibold))
-            Text(detail).font(.system(size: 13)).foregroundStyle(Theme.textSecondary)
+            Text(title).font(.wisp(size: 20, weight: .semibold))
+            Text(detail).font(.wisp(size: 13)).foregroundStyle(Theme.textSecondary)
                 .multilineTextAlignment(.center).frame(maxWidth: 520)
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func chip(_ text: String, icon: String) -> some View {
-        Label(text, systemImage: icon).font(.system(size: 10, weight: .medium))
+        Label(text, systemImage: icon).font(.wisp(size: 10, weight: .medium))
             .foregroundStyle(Theme.textSecondary).padding(.horizontal, 8).padding(.vertical, 4)
             .background(Capsule().fill(Theme.chipFill)).overlay(Capsule().stroke(Theme.chipStroke))
     }
 
     private func labeled<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.textSecondary)
+            Text(title).font(.wisp(size: 12, weight: .semibold)).foregroundStyle(Theme.textSecondary)
             content()
         }
     }
 
     private func labeledSmall<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.system(size: 10)).foregroundStyle(Theme.textMuted)
+            Text(title).font(.wisp(size: 10)).foregroundStyle(Theme.textMuted)
             content()
         }
     }
@@ -511,7 +511,7 @@ private struct NotchField: ViewModifier {
     func body(content: Content) -> some View {
         content
             .textFieldStyle(.plain)
-            .font(.system(size: 12.5)).foregroundStyle(Theme.textPrimary)
+            .font(.wisp(size: 12.5)).foregroundStyle(Theme.textPrimary)
             .padding(.horizontal, 10).padding(.vertical, 5)
             .background(RoundedRectangle(cornerRadius: 9).fill(Theme.chipFill))
             .overlay(RoundedRectangle(cornerRadius: 9).stroke(Theme.chipStroke, lineWidth: 1))

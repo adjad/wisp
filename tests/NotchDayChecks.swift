@@ -154,6 +154,58 @@ func dayChecks(_ check: (Bool, String) -> Void) {
           "the column already says when it's due")
     check(DayTimeline.agendaDetail(item("block:pa2")!, now: now, isToday: true, clock: clock) == item("block:pa2")!.detail,
           "a suggestion keeps its own words")
+
+    // A reminder with a date and no time arrives with its day's last minute as
+    // `due`. The agenda never shows that minute as if the person had picked it.
+    let lastMinute = dayEnd - 60
+    let dateOnlyToday = window([], now: now, needs: [DayNeedInput(id: "rent", title: "Pay rent", source: "reminders",
+                                                                  due: lastMinute, allDay: true)])
+    let dateOnlyRow = dateOnlyToday.items.first { $0.id == "need:rent" }
+    check(dateOnlyRow?.style == .needsYou && dateOnlyRow?.allDay == true && dateOnlyRow?.detail == "Due today · Needs you",
+          "a date-only reminder is due today, not at a time: \(dateOnlyRow?.detail ?? "missing")")
+    check(dateOnlyRow?.due == lastMinute && dateOnlyRow?.start == lastMinute - 30 * 60,
+          "it keeps its place at the end of the day")
+    let dateOnlyLate = window([], now: now, needs: [DayNeedInput(id: "rent", title: "Pay rent", source: "reminders",
+                                                                 due: dayStart - 60, allDay: true)])
+    let dateOnlyLateRow = dateOnlyLate.items.first { $0.id == "need:rent" }
+    check(dateOnlyLateRow?.style == .overdue && dateOnlyLateRow?.start == now
+          && dateOnlyLateRow?.detail == "Overdue since earlier",
+          "yesterday's date-only reminder is overdue since that day, with no time: \(dateOnlyLateRow?.detail ?? "missing")")
+    var dateOnlyWords: [String] = []
+    for row in [dateOnlyRow, dateOnlyLateRow] {
+        guard let row else { check(false, "a date-only reminder is on the agenda"); continue }
+        let column = DayTimeline.gutter(row, clock: clock)
+        dateOnlyWords += [row.detail, column.top, column.bottom,
+                          DayTimeline.agendaDetail(row, now: now, isToday: true, clock: clock)]
+    }
+    check(dateOnlyWords == ["Due today · Needs you", "All day", "Due", "Needs you",
+                            "Overdue since earlier", "Overdue", "", "Since earlier"],
+          "a date-only reminder reads All day over Due, then overdue since its day: \(dateOnlyWords)")
+    check(!dateOnlyWords.contains { $0.contains("23:59") }, "the stand-in last minute is never shown: \(dateOnlyWords)")
+    let dateOnlyLastMinute = window([], now: dayEnd - 30, needs: [DayNeedInput(id: "rent", title: "Pay rent", source: "reminders",
+                                                                               due: lastMinute, allDay: true)])
+    let dateOnlyLastMinuteRow = dateOnlyLastMinute.items.first { $0.id == "need:rent" }
+    check(dateOnlyLastMinuteRow?.detail == "Overdue since today",
+          "in the day's last minute it still names the day, not the minute")
+    let dateOnlyOtherDay = DayTimeline.build(blocks: [], allDay: [],
+                                             needs: [DayNeedInput(id: "rent", title: "Pay rent", source: "reminders",
+                                                                  due: lastMinute, allDay: true)],
+                                             caught: [], now: dayStart - 5 * hour, dayStart: dayStart, dayEnd: dayEnd,
+                                             workStart: at(9), workEnd: at(18), isToday: false, clock: clock, dayClock: dayClock)
+    let dateOnlyOtherDayRow = dateOnlyOtherDay.items.first { $0.id == "need:rent" }
+    check(dateOnlyOtherDayRow?.detail == "Due that day · Needs you", "on another day it is due that day")
+    // A reminder with a time of its own is unchanged, even at the same minute.
+    check(item("need:n3")?.detail == "Due 20:00 · Needs you" && item("need:n3")?.allDay == false,
+          "a timed reminder keeps its time")
+    let timedLastMinute = window([], now: now, needs: [DayNeedInput(id: "late", title: "Submit form", source: "reminders",
+                                                                    due: lastMinute)])
+    let timedRow = timedLastMinute.items.first { $0.id == "need:late" }
+    let timedColumn = timedRow.map { DayTimeline.gutter($0, clock: clock) }
+    check(timedRow?.detail == "Due 23:59 · Needs you" && timedRow?.allDay == false, "a reminder set for 11:59 PM on purpose keeps its time")
+    check(timedColumn?.top == "23:59" && timedColumn?.bottom == "Due", "and its column still shows 11:59 PM over Due")
+    // The badge and Still to fit count a date-only reminder exactly as before.
+    check(DayTimeline.badgeCount([DayNeedInput(id: "rent", title: "Pay rent", source: "reminders", due: lastMinute, allDay: true)],
+                                 endOfDay: dayEnd) == 1, "a date-only reminder due today still counts on the badge")
     check(DayTimeline.freeLine(start: now, end: at(13.75), startsNow: true, clock: clock) == "Free until 13:45 · 38 min",
           "free time from now says until when")
     check(DayTimeline.freeLine(start: at(17.5), end: at(18), startsNow: false, clock: clock) == "Free 17:30 – 18:00 · 30 min",
