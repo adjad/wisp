@@ -1418,6 +1418,11 @@ class BehaviorRuntime:
         params = action.params or {}
         title = " ".join(str(params.get("title") or "").split())[:200]
         when = params.get("when_ts")
+        event_ts = params.get("event_ts")
+        if _finite(when) and _finite(event_ts) and float(when) < now - 60 and now < float(event_ts):
+            # A reminder tied to a still-upcoming event: the time frozen when the nudge was
+            # made has passed while it waited for a tap, so it is due now, not stale.
+            when = now
         if not title or not _finite(when) or float(when) < now - 60:
             return None
         when = float(when)

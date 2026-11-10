@@ -1179,6 +1179,22 @@ def test_auto_action_skips_existing_item_and_past_times(tmp_path, store):
     assert rt.perform_action(store, "n1", 2, nudge.actions[2], NOW) is None      # open_prompt never
 
 
+def test_offered_reminder_for_a_near_event_still_works_after_a_wait(tmp_path, store):
+    """A habit-conflict reminder frozen at nudge time (event under 12 h out) is due now
+    when tapped later, as long as the event has not started."""
+    rt, _ = make_runtime(tmp_path)
+    event_ts = NOW + 3 * 3600
+    remind = Action("add_reminder", {"title": "Review calendar overlap: Team sync / Gym",
+                                     "when_ts": NOW, "event_ts": event_ts}, auto=True)
+    tap = NOW + 20 * 60
+    done = rt.perform_action(store, "n9", 0, remind, tap)
+    assert done is not None and done["when_ts"] >= tap - 60
+    after = Action("add_reminder", {"title": "Late tap", "when_ts": NOW, "event_ts": event_ts}, auto=True)
+    assert rt.perform_action(store, "n9", 1, after, event_ts + 1) is None        # the event started
+    plain = Action("add_reminder", {"title": "No event", "when_ts": NOW}, auto=True)
+    assert rt.perform_action(store, "n9", 2, plain, tap) is None                 # stale guard unchanged
+
+
 def test_real_hub_persists_nudge_and_expiry_retires_it(tmp_path, store):
     from service.assistant.hub import Hub
     hub = Hub(store)
