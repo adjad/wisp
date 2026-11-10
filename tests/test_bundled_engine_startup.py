@@ -379,12 +379,92 @@ def test_quit_seals_the_engine_in_a_backend_that_never_used_it() -> None:
         runtime._manager = None
 
 
+def test_a_large_engine_log_is_set_aside_at_the_next_start() -> None:
+    # engine.log is appended to on every start and nothing trimmed it: about 1 MB a day.
+    import stat
+    from service.engine import EngineLayout, EngineManager
+    from service.engine import manager as manager_module
+    rotate = manager_module._rotate_log
+    check("the cap is 20 MB", manager_module.LOG_ROTATE_BYTES == 20 * 1024 * 1024)
+    with tempfile.TemporaryDirectory() as t:
+        log = Path(t) / "data" / "engine.log"
+        older = log.with_name("engine.log.1")
+        log.parent.mkdir()
+        rotate(log, 10)
+        check("no log yet: nothing happens", not log.exists() and not older.exists())
+        log.write_text("0123456789")
+        rotate(log, 10)
+        check("a log at the cap stays", log.read_text() == "0123456789" and not older.exists())
+        log.write_text("first run, too long")
+        log.chmod(0o644)
+        rotate(log, 10)
+        check("a log above the cap is set aside", not log.exists() and older.read_text() == "first run, too long")
+        check("and the set-aside log is private", stat.S_IMODE(older.stat().st_mode) == 0o600)
+        log.write_text("second run, too long")
+        rotate(log, 10)
+        check("the next one replaces it: two files at most",
+              older.read_text() == "second run, too long"
+              and sorted(p.name for p in log.parent.iterdir()) == ["engine.log.1"])
+        log.write_text("third run, too long")
+        original = os.replace
+        try:
+            def refuse(*args, **kwargs):
+                raise PermissionError("no")
+            os.replace = refuse
+            rotate(log, 10)
+            raised = False
+        except OSError:
+            raised = True
+        finally:
+            os.replace = original
+        check("a log that cannot be moved is left to grow, and nothing is raised",
+              not raised and log.read_text() == "third run, too long")
+        link = Path(t) / "data" / "link.log"
+        link.symlink_to(log)
+        rotate(link, 10)
+        check("a link is never moved", link.is_symlink() and log.exists())
+        link.unlink()
+
+        # At a start: the old log is set aside before the new engine's output is appended.
+        class FakeChild:
+            pid = os.getpid()
+
+            def __init__(self, *args, stdout=None, **kwargs):
+                stdout.write(b"new run\n")
+                stdout.flush()
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+        layout = EngineLayout(root=Path(t) / "engine", data_dir=Path(t) / "data")
+        engine = EngineManager(layout, port=40000 + os.getpid() % 20000, api_key="a" * 64,
+                               launcher=["fake-engine"])
+        cap, manager_module.LOG_ROTATE_BYTES = manager_module.LOG_ROTATE_BYTES, 10
+        launch, manager_module.subprocess.Popen = manager_module.subprocess.Popen, FakeChild
+        try:
+            engine.start()
+            check("a start sets a large log aside", older.read_text() == "third run, too long")
+            check("and the engine writes to a fresh private one",
+                  log.read_text() == "new run\n" and stat.S_IMODE(log.stat().st_mode) == 0o600, log.read_text())
+        finally:
+            manager_module.LOG_ROTATE_BYTES = cap
+            manager_module.subprocess.Popen = launch
+            engine.stop(grace=0.1)
+
+
 def main() -> int:
     for fn in (test_leftover_engine_is_not_probed_first, test_live_engine_is_verified_not_restarted,
                test_readiness_then_identity, test_a_running_engine_survives_a_failed_probe,
                test_overlapping_starts_share_one_launch_and_one_verification,
                test_verified_flag_gates_plain_http_users, test_reap_orphan_is_safe_without_a_pid_file,
-               test_quit_seals_the_engine_in_a_backend_that_never_used_it):
+               test_quit_seals_the_engine_in_a_backend_that_never_used_it,
+               test_a_large_engine_log_is_set_aside_at_the_next_start):
         print(fn.__name__)
         fn()
     print(f"\n{PASS} passed, {FAIL} failed")

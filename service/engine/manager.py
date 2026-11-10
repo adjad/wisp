@@ -15,6 +15,7 @@ import threading
 import os
 import secrets
 import signal
+import stat
 import subprocess
 import tempfile
 import time
@@ -31,6 +32,9 @@ _KEY_BYTES = 32
 # What `ps` shows for a running engine: oMLX's `serve` renames the process and blanks its
 # arguments (omlx/cli.py, through setproctitle).
 ENGINE_PROCESS_TITLE = "omlx-server"
+# engine.log is appended to on every start and the engine never trims it. A start that finds
+# it above this size sets it aside as engine.log.1, replacing the one before: two files at most.
+LOG_ROTATE_BYTES = 20 * 1024 * 1024
 
 
 class EngineError(RuntimeError):
@@ -192,6 +196,19 @@ def _write_private(path: Path, text: str) -> None:
         except OSError:
             pass
         raise
+
+
+def _rotate_log(path: Path, cap: int) -> None:
+    """Move a log larger than `cap` to `<name>.1`, replacing the older one. Never raises: a
+    log that cannot be moved is appended to as before."""
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size <= cap:
+            return
+        os.chmod(path, 0o600)          # a log from an earlier run may have been created looser
+        os.replace(path, path.with_name(path.name + ".1"))
+    except OSError:
+        pass
 
 
 def _pid_record(path: Path) -> tuple[int, tuple[int, int] | None] | None:
@@ -432,6 +449,7 @@ class EngineManager:
         self.prepare()
         if self._port_in_use():
             raise EngineError(f"Port {self.port} is already in use by another process")
+        _rotate_log(self.layout.log_path, LOG_ROTATE_BYTES)   # no engine of ours is writing to it here
         fd = os.open(self.layout.log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         os.fchmod(fd, 0o600)          # a log from an earlier run may have been created looser
         log = open(fd, "ab")

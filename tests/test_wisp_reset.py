@@ -119,6 +119,7 @@ def world(tmp_path):
     _write(home / "engine" / "home" / "state.json", "{}")
     _write(home / "engine" / "memory_guard.json", "{}")
     _write(home / "engine" / "engine.log", "request text")
+    _write(home / "engine" / "engine.log.1", "older request text")
     _write(home / "engine" / "base" / "cache" / "kv-0001.safetensors", "prompt cache")
     _write(home / "engine" / "base" / "logs" / "server.log", "request text")
     _write(home / "provisioning" / "endpoints.json", "{}")
@@ -134,7 +135,7 @@ def test_reset_removes_exactly_the_delete_list_and_keeps_the_model(world):
     assert {p.name for p in home.iterdir()} == DELETED | KEPT
     result = R.erase_home(home, user)
     assert result["failed"] == []
-    assert set(result["removed"]) == DELETED | {"engine/engine.log"}
+    assert set(result["removed"]) == DELETED | {"engine/engine.log", "engine/engine.log.1"}
     assert set(result["kept"]) == KEPT
     assert {p.name for p in home.iterdir()} == KEPT
     assert R.leftover_entries(home) == []
@@ -146,6 +147,7 @@ def test_reset_removes_exactly_the_delete_list_and_keeps_the_model(world):
                  "engine/base/cache/kv-0001.safetensors", "engine/base/logs/server.log"):
         assert (home / kept).exists(), kept
     assert not (home / "engine" / "engine.log").exists()
+    assert not (home / "engine" / "engine.log.1").exists(), "the set-aside log holds request text too"
     # Links were removed as links; what they pointed at outside is untouched.
     assert (world["outside"] / "precious.txt").read_text() == "not Wisp's"
     assert (world["outside"] / "dir" / "inner.txt").read_text() == "not Wisp's either"
@@ -165,7 +167,7 @@ def test_config_keeps_only_the_engine_and_model_choice(world):
 def test_the_keep_list_is_explicit():
     assert R.KEEP_ENTRIES == frozenset(KEPT | {R.MARKER, R.APP_DONE})
     assert R.MARKER == ".reset-pending" and R.APP_DONE == ".reset-pending.app" and R.MAX_ATTEMPTS == 3
-    assert R.ENGINE_DELETE == frozenset({"engine.log"})
+    assert R.ENGINE_DELETE == frozenset({"engine.log", "engine.log.1"})
     assert R.ENGINE_CACHES == ("base/cache", "base/logs")
     assert R.trimmed_config(None) == {} and R.trimmed_config(["x"]) == {}
 

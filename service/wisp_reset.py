@@ -97,7 +97,8 @@ KEEP_ENTRIES = frozenset({
     ".provisioning.lock", ".config.lock", ".engine-mode.lock",   # empty lock files other processes may hold
 })
 # Inside engine/: deleted even though the engine is kept (its log can hold request text).
-ENGINE_DELETE = frozenset({"engine.log"})
+# engine.log.1 is the log a start set aside when it had grown large (engine.manager._rotate_log).
+ENGINE_DELETE = frozenset({"engine.log", "engine.log.1"})
 # Inside engine/, deleted only while the engine is stopped (resume_pending): its
 # prompt cache holds model state computed from past prompts, and its logs.
 ENGINE_CACHES = ("base/cache", "base/logs")
