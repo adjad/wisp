@@ -743,3 +743,129 @@ def test_write_dodges_are_detected(dodge):
 def test_written_text_is_not_a_dodge():
     assert not loop._ASK_WRITE_DODGE.search("I'll draft it now.\n\nExcited to join [Company] as [Role].")
     assert not loop._ASK_WRITE_DODGE.search("Dear Professor [Name],\nThank you for the extension.")
+
+
+# --- a step that must carry more than the fixed message room ---------------------
+
+class SmallWindowClient(ScriptedClient):
+    """The shipped local model's window (the scripted default is 32,000)."""
+    context_window = 16384
+
+
+_BIG_READS = ("big_read_a", "big_read_b", "big_read_c", "big_read_d", "big_read_e")
+
+
+def _register_big_reads(register, *, result_chars=0):
+    """Real-sized schemas (about 3.3k estimated tokens with get_upcoming), so
+    the prefix and schemas alone pass the Ask prompt budget as they do live."""
+    for name in _BIG_READS:
+        tool = register(name, "email_tools", "email_read", parameters={
+            "type": "object", "additionalProperties": False,
+            "properties": {f"option_{i}": {"type": "string", "description": "synthetic filter " * 8}
+                           for i in range(16)}})
+        if result_chars:
+            async def big(_name=name, **args):
+                return f"{_name}: " + "Workshop notes line.\n" * (result_chars // 20)
+            big.__module__ = tool.func.__module__
+            tool.func = big
+    return ["get_upcoming", *_BIG_READS]
+
+
+def _prefix_and_real(request):
+    prefix = loop._est_tokens(request["messages"][:2])
+    real = loop._est_tokens([s for s in request["tools"] if "description" in s["function"]])
+    return prefix, real
+
+
+def test_long_pasted_request_reaches_the_model_with_its_tools_intact(synthetic):
+    _, register = synthetic
+    preload = _register_big_reads(register)
+    prompt = "Summarize this for me: " + "The committee met on Tuesday and agreed the plan. " * 240
+    assert len(prompt) > 12000
+    client = SmallWindowClient(["The committee agreed the plan on Tuesday."])
+    events, answer = drive(client, prompt=prompt, model_led_preload=preload)
+    assert answer == "The committee agreed the plan on Tuesday."
+    [request] = client.requests
+    # The request is whole and every offered real schema is still there.
+    assert request["messages"][-1] == {"role": "user", "content": prompt}
+    assert real_tool_names(request) == {*preload, DISCOVERY_TOOL}
+    prefix, real = _prefix_and_real(request)
+    assert prefix + real + 2500 > mo.ASK_PROMPT_BUDGET   # the old fixed room was the binding limit
+    assert not any(e["type"] == "error" for e in events)
+
+
+def test_two_capped_results_from_one_step_are_followed_by_a_normal_step(synthetic):
+    effects, register = synthetic
+    preload = _register_big_reads(register, result_chars=7000)
+    client = SmallWindowClient([[call("big_read_a"), {**call("big_read_b"), "id": "synthetic-second"}],
+                                "Both sources mention the workshop."])
+    events, answer = drive(client, prompt="what did Sam email and text me about the trip?",
+                           model_led_preload=preload)
+    assert answer == "Both sources mention the workshop."
+    results = tool_messages(client.requests[1])
+    assert len(results) == 2 and all(len(m["content"]) > 5000 for m in results)
+    assert real_tool_names(client.requests[1]) == {*preload, DISCOVERY_TOOL}
+    assert client.requests[1]["messages"][2]["content"] == "what did Sam email and text me about the trip?"
+
+
+def test_request_larger_than_the_model_window_gets_a_plain_too_long_message(synthetic):
+    _, register = synthetic
+    preload = _register_big_reads(register)
+    prompt = "Summarize this for me: " + "The committee met on Tuesday and agreed the plan. " * 1400
+    client = SmallWindowClient(["never reached"])
+    events, answer = drive(client, prompt=prompt, model_led_preload=preload)
+    assert answer == loop._ASK_TOO_LONG_MESSAGE
+    assert client.requests == []           # nothing was sent cut or with a trimmed toolset
+    assert [e["type"] for e in events][-2:] == ["text", "done"]
+    assert events[-2]["text"] == loop._ASK_TOO_LONG_MESSAGE
+
+
+def test_results_too_large_for_the_window_end_with_a_summary_not_an_error(synthetic):
+    _, register = synthetic
+    preload = _register_big_reads(register, result_chars=7000)
+
+    class TightClient(ScriptedClient):
+        context_window = 14500    # the first step fits; two capped results beside the tools do not
+
+    client = TightClient([[call("big_read_a"), {**call("big_read_b"), "id": "synthetic-second"}],
+                          "Both sources mention the workshop."])
+    events, answer = drive(client, prompt="what did Sam email and text me about the trip?",
+                           model_led_preload=preload)
+    assert answer == "Both sources mention the workshop."
+    assert len(client.requests) == 2
+    summary = client.requests[-1]
+    assert summary["tools"] == [] and "Do not call any tool" in summary["messages"][-1]["content"]
+    assert [e["type"] for e in events][-1] == "done"
+
+
+def test_model_led_turn_outside_ask_still_refuses_a_trimmed_toolset(synthetic):
+    _, register = synthetic
+    preload = _register_big_reads(register)
+    prompt = "Summarize this for me: " + "The committee met on Tuesday and agreed the plan. " * 3000
+    with pytest.raises(ValueError, match="cannot fit intact"):
+        run(["never reached"], prompt=prompt, model_led_preload=preload)
+
+
+def test_ordinary_step_keeps_the_same_budget(synthetic):
+    _, register = synthetic
+    preload = _register_big_reads(register)
+    history = []
+    for i in range(30):
+        history += [{"role": "user", "content": f"old question {i} " + "lorem ipsum " * 150},
+                    {"role": "assistant", "content": f"old answer {i} " + "dolor sit " * 150}]
+    client = SmallWindowClient(["Fine."])
+    drive(client, history=history, model_led_preload=preload)
+    request = client.requests[0]
+    prefix, real = _prefix_and_real(request)
+    assert prefix + real + 2500 > mo.ASK_PROMPT_BUDGET
+    estimate = loop._est_tokens(request["tools"]) + sum(loop._est_tokens(m.get("content") or "")
+                                                        for m in request["messages"])
+    # A short request gets the room it always did: the fixed 2,500 plus the
+    # history reserve, and the long history is condensed to fit it.
+    assert estimate <= prefix + real + 2500 + mo.ASK_HISTORY_RESERVE
+    assert estimate > prefix + real + 2500 + mo.ASK_HISTORY_RESERVE - 600
+    assert len(request["messages"]) < len(history)
+
+
+def real_tool_names(request):
+    return {s["function"]["name"] for s in request.get("tools") or [] if "description" in s["function"]}

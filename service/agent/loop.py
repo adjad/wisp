@@ -742,6 +742,17 @@ _ASK_NOTHING_MESSAGE = (
     "I looked, but the lookup didn't return anything usable. Want me to try it "
     "a different way?"
 )
+# A step whose request (or newest tool traffic) cannot fit the model's window
+# even with all older history gone. Not _ASK_GUARD_MESSAGE: that one blames
+# memory and suggests asking again, which fails the same way every time.
+_ASK_TOO_LONG_MESSAGE = (
+    "That is too long for me to read in one go. Send it to me in smaller parts."
+)
+# Room a model-only Ask step always leaves for messages outside the system
+# prefix, and the slack kept on top of what the step must carry when that is
+# more (see _ask_window).
+_ASK_STEP_MESSAGE_FLOOR = 2500
+_ASK_MUST_CARRY_MARGIN = 300
 
 # Appended to the system prompt only when run_agent(test_mode=True). Tells
 # the model directly, rather than relying on it inferring anything from the
@@ -3816,14 +3827,36 @@ async def run_agent(
     _ask_has_history = any(isinstance(m, dict) and (m.get("role") == "assistant" or _is_digest(m))
                            for m in messages)
 
+    def _ask_must_carry() -> int:
+        """Estimated tokens of the messages outside the system prefix that
+        _fit_window can never drop from this step: the request, the newest two
+        messages, and a tool call kept because one of its results is among
+        them. Asked of _fit_window itself (an empty window, so it sheds all it
+        is allowed to) rather than restating its rules here."""
+        kept = _fit_window(
+            msgs, [], 0, model, None, protected_prefix_count=len(system_prefix),
+            history_end=turn_history_end, context_window=0, min_output_tokens=0)[0]
+        return sum(_est_tokens(m.get("content") or "")
+                   + (_est_tokens(m["tool_calls"]) if m.get("tool_calls") else 0)
+                   for m in kept[len(system_prefix):])
+
     def _ask_window(offered, stubs, scale: float) -> int:
         """This step's fit window: the Ask prompt budget (scaled down after a
-        guard refusal), never below what the protected prefix and the real
-        schemas need, never above the model's own window."""
+        guard refusal), never below what the protected prefix, the real schemas
+        and the messages the step must carry need, never above the model's own
+        window.
+
+        The room for messages used to be a fixed 2,500 estimated tokens. A
+        12,000-character pasted request, or two capped tool results from one
+        step, is more than that and can never be dropped, so _fit_window
+        dropped tool schemas instead and the turn ended in an error. An
+        ordinary step carries far less than the fixed room and gets exactly the
+        window it always did."""
         from service.config import model_context_window
         from service.model_only import ASK_HISTORY_RESERVE, ASK_PROMPT_BUDGET
         real = [sch for sch in offered if sch["function"]["name"] not in stubs]
-        floor = _est_tokens(msgs[:len(system_prefix)]) + _est_tokens(real) + 2500
+        floor = (_est_tokens(msgs[:len(system_prefix)]) + _est_tokens(real)
+                 + max(_ASK_STEP_MESSAGE_FLOOR, _ask_must_carry() + _ASK_MUST_CARRY_MARGIN))
         window = (getattr(getattr(client, "target", None), "context_window", None)
                   or model_context_window(model))
         # Earlier conversation gets its own room: without it a tool result
@@ -4169,7 +4202,23 @@ async def run_agent(
                     context_window=step_context_window)
             allowed_names = {s["function"]["name"] for s in step_schemas} - step_stubs
             if model_led_discovery and step_schemas != offered_schemas:
-                raise ValueError("Model-led schemas cannot fit intact; narrow the requested tools")
+                if not ask_quality:
+                    raise ValueError("Model-led schemas cannot fit intact; narrow the requested tools")
+                # What this step must carry (the request, the newest results)
+                # is more than the model's window holds beside the offered
+                # tools. Never send a trimmed toolset or a cut request: end the
+                # turn in words. With results in hand, the tool-free summary
+                # step fits (its nudge makes the older result trimmable).
+                audit("ask_step_too_large", step=_step, results=len(clean_results))
+                if clean_results:
+                    return await _ask_finish((await _ask_summarize()) or _ask_results_text()
+                                             or _ASK_TOO_LONG_MESSAGE)
+                if tool_outcomes:
+                    # Something was attempted: its receipt checks still apply.
+                    return await _ask_finish(_ASK_TOO_LONG_MESSAGE)
+                await emit({"type": "text", "text": _ASK_TOO_LONG_MESSAGE})
+                await emit({"type": "done"})
+                return _ASK_TOO_LONG_MESSAGE
             # Verify before publication. Otherwise even a read-only route can
             # stream a false "delivered" before the receipt checker retracts it.
             stream = False
