@@ -1103,7 +1103,13 @@ struct ChatComposer: View {
         .frame(maxWidth: .infinity)
         .onAppear {
             focused = true
-            if let restored = restoredInput { restoredText = restored; text = restored; restoredInput = nil }
+            if let restored = restoredInput {
+                restoredText = restored; text = restored; restoredInput = nil
+            } else if notice != nil {
+                // A fresh composer (the reader went to another chat and came back)
+                // no longer holds the message the note speaks of.
+                notice = nil
+            }
         }
         .onChange(of: restoredInput) { _, restored in
             guard let restored else { return }
