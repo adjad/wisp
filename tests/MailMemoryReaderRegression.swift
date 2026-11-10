@@ -1,9 +1,13 @@
 // Compile with the production reader, then run. Only a temporary fixture Mail
 // folder is read; this test never opens Mail or the user's Mail database.
-// swiftc app/Sources/WispApp/MailMemoryReader.swift tests/MailMemoryReaderRegression.swift \
+// swiftc app/Sources/WispApp/MailMemoryReader.swift app/Sources/WispApp/TextRecognizer.swift \
+//   tests/MailMemoryReaderRegression.swift \
 //   -lsqlite3 -o /tmp/<test-dir>/mail-memory-regression
 import Foundation
 import SQLite3
+import CoreGraphics
+import CoreText
+import ImageIO
 
 @main
 enum MailMemoryReaderRegression {
@@ -33,6 +37,31 @@ enum MailMemoryReaderRegression {
             _ = sem.wait(timeout: .now() + 5)
             return last
         }
+    }
+
+    /// A white bitmap with black text lines (CoreText), encoded as JPEG.
+    static func textJPEG(_ lines: [String], size: Int = 900) -> Data? {
+        let width = size, height = 60 + lines.count * 90
+        guard let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
+        ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let font = CTFontCreateWithName("Helvetica" as CFString, 48, nil)
+        for (i, line) in lines.enumerated() {
+            let attributes: [NSAttributedString.Key: Any] = [
+                NSAttributedString.Key(kCTFontAttributeName as String): font,
+                NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(red: 0, green: 0, blue: 0, alpha: 1)]
+            let ctLine = CTLineCreateWithAttributedString(NSAttributedString(string: line, attributes: attributes))
+            ctx.textPosition = CGPoint(x: 30, y: CGFloat(height - 90 - i * 90))
+            CTLineDraw(ctLine, ctx)
+        }
+        guard let image = ctx.makeImage() else { return nil }
+        let out = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(out, "public.jpeg" as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(dest, image, [kCGImageDestinationLossyCompressionQuality: 0.9] as CFDictionary)
+        guard CGImageDestinationFinalize(dest) else { return nil }
+        return out as Data
     }
 
     static func makeReader(_ root: String, rebuildInterval: TimeInterval = 30) -> (MailMemoryReader, Replies) {
@@ -588,6 +617,135 @@ enum MailMemoryReaderRegression {
                                               attachmentID: "1", name: "missing.pdf") == nil, "a missing file is refused")
         check(MailMemoryReader.attachmentFile(emlxPath: emlxPath, versionDirectory: version, rowid: 10,
                                               attachmentID: "1", name: "..") == nil, "a directory is never a file")
+
+
+        // MARK: Text recognition (kind "recognize")
+        func recognizeRequest(_ over: [String: Any] = [:]) -> [String: Any] {
+            var base: [String: Any] = ["type": "mail_memory_read", "request_id": "abcdefghijklmnop", "kind": "recognize",
+                                       "image_b64": "/9j/"]
+            for (k, v) in over { base[k] = v }
+            return base
+        }
+        check(MailMemoryReader.request(recognizeRequest())?.kind == "recognize"
+              && MailMemoryReader.request(recognizeRequest())?.imageB64 == "/9j/", "recognize request parses")
+        check(MailMemoryReader.request(recognizeRequest(["event_id": "e1"])) != nil, "recognize: hub event_id tolerated")
+        check(MailMemoryReader.request(recognizeRequest(["rowid": 1])) == nil, "recognize: extra key refused")
+        var noImage = recognizeRequest(); noImage.removeValue(forKey: "image_b64")
+        check(MailMemoryReader.request(noImage) == nil, "recognize: missing image_b64 refused")
+        check(MailMemoryReader.request(recognizeRequest(["image_b64": 5])) == nil, "recognize: non-string image refused")
+        check(MailMemoryReader.request(recognizeRequest(["kind": "recognize", "attachment_id": "1"])) == nil,
+              "recognize: attachment key refused")
+
+        let recognizeReader = makeReader(root)
+        let jpegHeader = Data([0xFF, 0xD8, 0xFF, 0xE0])
+        let hugeImage = Data([0xFF, 0xD8, 0xFF]) + Data(count: MailMemoryReader.maxRecognizeBytes)
+        let atLimit = Data([0xFF, 0xD8, 0xFF]) + Data(count: MailMemoryReader.maxRecognizeBytes - 3)
+        let tooBigReply = recognizeReader.1.ask(recognizeReader.0, recognizeRequest(["image_b64": hugeImage.base64EncodedString()]))
+        check(tooBigReply["ok"] as? Bool == false && tooBigReply["error"] as? String == "too_large"
+              && tooBigReply["kind"] as? String == "recognize" && tooBigReply["request_id"] as? String == "abcdefghijklmnop",
+              "recognize: over 4 MiB is too_large and still answered")
+        check(MailMemoryReader.answerRecognize(String(repeating: "A", count: MailMemoryReader.maxRecognizeBase64 + 4))["error"]
+              as? String == "too_large", "recognize: base64 longer than 4 MiB needs is too_large")
+        check(MailMemoryReader.answerRecognize(atLimit.base64EncodedString())["error"] as? String == "failed",
+              "recognize: exactly 4 MiB of JPEG-looking junk passes the size check and fails decoding")
+        for (label, bytes) in [("png", Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A])), ("gif", Data("GIF89a".utf8)),
+                               ("two bytes", Data([0xFF, 0xD8])), ("empty", Data()), ("pdf", Data("%PDF-1.4".utf8))] {
+            check(MailMemoryReader.answerRecognize(bytes.base64EncodedString())["error"] as? String == "bad_image",
+                  "recognize: \(label) is bad_image")
+        }
+        check(MailMemoryReader.answerRecognize("!!! not base64 !!!")["error"] as? String == "bad_image",
+              "recognize: broken base64 is bad_image")
+        check(MailMemoryReader.answerRecognize((jpegHeader + Data(count: 16)).base64EncodedString())["error"] as? String == "failed",
+              "recognize: JPEG header over junk is failed")
+
+        // Vision can't run inside some sandboxes (the gate's own, a CI runner's): there the
+        // request itself fails. That is the environment, not the reader, so the two checks that
+        // need real recognition are skipped with a note unless WISP_REQUIRE_TEXT_RECOGNITION=1.
+        let mustRecognize = ProcessInfo.processInfo.environment["WISP_REQUIRE_TEXT_RECOGNITION"] == "1"
+        let drawn = textJPEG(["INVOICE 4471", "TOTAL 1280.50"])
+        check(drawn != nil, "the test image could be drawn")
+        let canRecognize = drawn.flatMap { TextRecognizer.recognize(jpeg: $0) } != nil
+        if !canRecognize && !mustRecognize {
+            print("MailMemoryReader: text recognition can't run here; 2 recognition checks skipped")
+        } else if let invoice = drawn,
+           let found = TextRecognizer.recognize(jpeg: invoice) {
+            check(found.text.contains("4471") && found.text.contains("1280"), "recognizes the drawn text: \(found.text)")
+            check(found.lines >= 2 && (0...1).contains(found.confidence) && found.confidence > 0.3,
+                  "lines and confidence are sensible: \(found.lines) \(found.confidence)")
+            let viaReader = recognizeReader.1.ask(recognizeReader.0, recognizeRequest(["image_b64": invoice.base64EncodedString()]))
+            check(viaReader["ok"] as? Bool == true && (viaReader["text"] as? String)?.contains("4471") == true
+                  && viaReader["lines"] as? Int == found.lines, "recognize reply carries text, lines, confidence")
+        } else { check(false, "could not draw or recognize the invoice image") }
+        if !canRecognize && !mustRecognize {
+        } else if let blank = textJPEG([]), let found = TextRecognizer.recognize(jpeg: blank) {
+            check(found.text.isEmpty && found.lines == 0 && found.confidence == 0, "a blank image has no text")
+            check(MailMemoryReader.answerRecognize(blank.base64EncodedString())["error"] as? String == "no_text",
+                  "a blank image is answered no_text")
+        } else { check(false, "blank image recognition did not run") }
+        check(TextRecognizer.recognize(jpeg: Data([0x89, 0x50, 0x4E, 0x47])) == nil, "recognizer refuses a non-JPEG")
+        let grouped = TextRecognizer.group([
+            (CGRect(x: 0.5, y: 0.80, width: 0.2, height: 0.05), "Price"), (CGRect(x: 0.1, y: 0.801, width: 0.2, height: 0.05), "Item"),
+            (CGRect(x: 0.1, y: 0.40, width: 0.2, height: 0.05), "Lamp"), (CGRect(x: 0.5, y: 0.401, width: 0.2, height: 0.05), "9.50")])
+        check(grouped == ["Item\tPrice", "Lamp\t9.50"], "cells go left to right with a tab, rows top to bottom: \(grouped)")
+
+        // Declared-size gate (read from the header, before any pixel is decoded).
+        check(TextRecognizer.acceptableSize(width: 6000, height: 4000), "size: 6000x4000 passes")
+        check(TextRecognizer.acceptableSize(width: 8192, height: 4880), "size: 8192x4880 (39.98 MP) passes")
+        check(!TextRecognizer.acceptableSize(width: 8193, height: 10), "size: side over 8192 refused")
+        check(!TextRecognizer.acceptableSize(width: 10, height: 8193), "size: tall side over 8192 refused")
+        check(!TextRecognizer.acceptableSize(width: 8192, height: 4883), "size: over 40 MP refused")
+        check(!TextRecognizer.acceptableSize(width: 0, height: 100) && !TextRecognizer.acceptableSize(width: 100, height: 0),
+              "size: zero refused")
+        check(!TextRecognizer.acceptableSize(width: nil, height: 100) && !TextRecognizer.acceptableSize(width: 100, height: nil),
+              "size: missing refused")
+        check(!TextRecognizer.acceptableSize(width: -5, height: 100), "size: negative refused")
+        if let small = textJPEG(["SIZE"]), let source = CGImageSourceCreateWithData(small as CFData, nil),
+           let declared = TextRecognizer.declaredSize(source) {
+            check(declared.width == 900 && declared.height == 150
+                  && TextRecognizer.acceptableSize(width: declared.width, height: declared.height),
+                  "a real small JPEG declares its size and passes: \(declared)")
+            var patched = small
+            var sof = -1
+            var i = 2
+            while i + 9 < patched.count {
+                if patched[i] == 0xFF, patched[i + 1] == 0xC0 || patched[i + 1] == 0xC2 { sof = i; break }
+                i += 1
+            }
+            check(sof > 0, "found the JPEG start-of-frame marker")
+            if sof > 0 {
+                // SOF layout: FF Cn, length(2), precision(1), height(2), width(2).
+                patched[sof + 5] = 0x75; patched[sof + 6] = 0x30   // 30000
+                patched[sof + 7] = 0x75; patched[sof + 8] = 0x30
+                if let huge = CGImageSourceCreateWithData(patched as CFData, nil) {
+                    let size = TextRecognizer.declaredSize(huge)
+                    // ImageIO may report 30000x30000 or no size at all for it; both are refused.
+                    check(!TextRecognizer.acceptableSize(width: size?.width, height: size?.height),
+                          "a header declaring 30000x30000 is refused by the size gate: \(String(describing: size))")
+                } else { check(false, "patched JPEG header could not be opened") }
+                check(TextRecognizer.recognize(jpeg: patched) == nil, "recognize refuses the 30000x30000 header")
+                check(MailMemoryReader.answerRecognize(patched.base64EncodedString())["error"] as? String == "failed",
+                      "recognize reply for the 30000x30000 header is an error, not a decode")
+            }
+        } else { check(false, "could not draw the small JPEG for the size checks") }
+
+        // `wait`: optional, 1...60, a real number; the staleness decision is pure.
+        check(MailMemoryReader.request(recognizeRequest(["wait": 20]))?.wait == 20, "recognize: wait 20 parses")
+        check(MailMemoryReader.request(recognizeRequest(["wait": 1]))?.wait == 1
+              && MailMemoryReader.request(recognizeRequest(["wait": 60]))?.wait == 60, "recognize: wait 1 and 60 parse")
+        check(MailMemoryReader.request(recognizeRequest(["wait": 2.5]))?.wait == 2.5, "recognize: fractional wait parses")
+        check(MailMemoryReader.request(recognizeRequest())?.wait == 0, "recognize: no wait means unstated")
+        for bad: Any in [0, 61, -3, 0.5, "20", true, false, NSNull(), Double.nan, Double.infinity] {
+            check(MailMemoryReader.request(recognizeRequest(["wait": bad])) == nil, "recognize: wait \(bad) refused")
+        }
+        check(MailMemoryReader.request(recognizeRequest(["wait": 20, "rowid": 1])) == nil, "recognize: wait plus another key refused")
+        check(MailMemoryReader.request(["type": "mail_memory_read", "request_id": "abcdefghijklmnop", "kind": "body",
+                                        "rowid": 1, "wait": 20]) == nil, "wait is refused on other kinds")
+        let t0 = Date(timeIntervalSince1970: 1_000_000)
+        check(!MailMemoryReader.isLate(received: t0, wait: 20, now: t0.addingTimeInterval(19.9)), "not late inside the wait")
+        check(!MailMemoryReader.isLate(received: t0, wait: 20, now: t0.addingTimeInterval(20)), "exactly the wait is not late")
+        check(MailMemoryReader.isLate(received: t0, wait: 20, now: t0.addingTimeInterval(20.1)), "past the wait is late")
+        check(!MailMemoryReader.isLate(received: t0, wait: 0, now: t0.addingTimeInterval(500)), "no stated wait is never late")
+        check(!MailMemoryReader.isLate(received: t0, wait: 20, now: t0.addingTimeInterval(-5)), "a clock step back is not late")
 
         if failures > 0 { print("\(failures) failure(s)"); exit(1) }
         print("MailMemoryReader: \(total) checks passed")

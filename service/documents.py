@@ -230,15 +230,15 @@ async def run_child(code: str, argv: list[str], data: bytes, *, timeout: float, 
 
 
 async def run_attachment_child(job: str, name: str, data: bytes, *, timeout: float) -> dict:
-    """service/attachment_child.py's `job` (inspect, tiles, pdf_pages) on `data`, in a child.
+    """service/attachment_child.py's `job` (inspect, tiles, pdf_pages, ocr_images, structured) on `data`, in a child.
 
-    `tiles` may need macOS's sips, which reads a file, so it gets a private 0700 directory as
+    `tiles` and `ocr_images` may need macOS's sips, which reads a file, so they get a private 0700 directory as
     argv[3]; the directory is removed afterwards whether or not the child survived.
     """
     argv = [job, PurePath(name or "").name[:200]]
     workdir = None
     try:
-        if job == "tiles":
+        if job in ("tiles", "ocr_images"):
             workdir = tempfile.mkdtemp(prefix="wisp-picture-")
             os.chmod(workdir, 0o700)
             argv.append(workdir)
