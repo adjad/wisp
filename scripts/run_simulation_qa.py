@@ -123,6 +123,7 @@ PROFILE_TESTS = {
         "tests/test_attachment_index.py",
         "tests/test_attachment_save.py",
         "tests/test_attachment_seams.py",
+        "tests/test_attachment_seams_tools.py",
         "tests/test_attachment_sources.py",
         "tests/test_attachment_tools.py",
         "tests/test_message_attachment_bridge.py",

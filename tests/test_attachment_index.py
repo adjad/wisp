@@ -500,13 +500,15 @@ async def test_the_cap_holds_when_the_clock_goes_back(w):
 
 
 async def test_a_picture_skipped_while_text_recognition_rests_is_asked_again(w, monkeypatch):
-    w.outcome = "skipped"
+    w.outcome = "resting"
     w.rows = [mrow(1, "scan.png", size=60_000), mrow(2, "notes.docx")]
     monkeypatch.setattr(ma, "_ocr_resting_until", time.monotonic() + 300, raising=False)
     assert await w.tick() is True and w.read == ["scan.png"]
     assert attachment_store.tried(key_of(w.rows[0])) is False        # not marked: tried again after the rest
     assert ai._today(w.now) == 0 and w.after() >= 290                # and not before the rest is over
+    assert ai._last_skip == "ocr_resting"
     monkeypatch.setattr(ma, "_ocr_resting_until", 0.0, raising=False)
+    w.outcome = "skipped"
     w.now += 400
     assert await w.tick() is True and w.read == ["scan.png", "scan.png"]
     assert attachment_store.tried(key_of(w.rows[0])) is True         # rested no more: skipped for good

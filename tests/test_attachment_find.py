@@ -198,19 +198,19 @@ async def test_a_file_with_no_seen_details(world, monkeypatch):
 async def test_a_text_that_aged_out_is_skipped(world, monkeypatch):
     keep("the lease for the flat", "old.pdf", ts=NOW - 5 * DAY)
     keep("the lease for the house", "new.pdf", ts=NOW - 1 * DAY)
-    real = attachment_store.search
+    real = attachment_store.search_checked
 
     def search_then_age_out(*a, **k):
-        hits = real(*a, **k)
+        hits, failed = real(*a, **k)
         victims = [h for h in hits if h.name == "new.pdf"]
         if not victims:
-            return hits
+            return hits, failed
         victim = victims[0]
         with closing(attachment_store._connect()) as conn:
             attachment_store._drop_digest(conn, victim.digest, vacuum_later=False)
             conn.commit()
-        return hits
-    monkeypatch.setattr(attachment_store, "search", search_then_age_out)
+        return hits, failed
+    monkeypatch.setattr(attachment_store, "search_checked", search_then_age_out)
     out = await ma.run(inside="lease", question="what is it?")
     assert "old.pdf" in out and "new.pdf" not in out and out.startswith("Found 1 file ")
 
@@ -351,8 +351,11 @@ async def test_across_pulls_facts_once_and_adds_totals_by_code(world):
     inside = fenced(out)
     assert len(inside) == 1 and inside[0].count("Acme Supply") == 3 and "inv00.txt" in inside[0]
     assert "total USD 10.10" in inside[0]
-    assert "Totals added up by Wisp: USD 60.60 across 3 files." in out          # Decimal, not 60.599999
+    assert ("Totals added up by Wisp: USD 60.60 across 3 files. These amounts were read by the model on this Mac "
+            "and checked only against the digits in each file; check them before relying on them.") in out
+    assert ".." not in out                                                       # Decimal, not 60.599999
     assert "Totals added up" not in inside[0] and out.index("Totals added up") > out.index(inside[0])
+    assert "check them before relying on them" not in inside[0]
     assert world.chats == 3
     again = await ma.run(across=True)
     assert world.chats == 3 and again == out                                    # the facts were kept
@@ -539,7 +542,7 @@ async def test_run_never_raises_in_the_new_modes(world, monkeypatch):
         raise RuntimeError("secret")
     monkeypatch.setattr(ma, "_find", boom)
     assert await ma.run(across=True) == "I couldn't look through attachments just now."
-    monkeypatch.setattr(attachment_store, "search", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+    monkeypatch.setattr(attachment_store, "search_checked", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
     assert await ma.run(inside="lease") == "I couldn't look through attachments just now."
 
 
@@ -658,16 +661,15 @@ async def test_the_store_failing_to_search_is_not_reported_as_zero_files(world, 
     no_bytes(world, monkeypatch)
     keep(LEASE)
     local = threading.local()
-    real = attachment_store.search
+    real = attachment_store.search_checked
 
     def search(*a, **k):
         local.failed = True
-        return []
-    monkeypatch.setattr(attachment_store, "search", search)
-    monkeypatch.setattr(attachment_store, "last_search_failed", lambda: getattr(local, "failed", False), raising=False)
+        return [], True
+    monkeypatch.setattr(attachment_store, "search_checked", search)
     out = await ma.run(inside="lease")
     assert out == "Wisp's saved readings couldn't be searched just now. Try again in a moment."
-    monkeypatch.setattr(attachment_store, "search", real)
+    monkeypatch.setattr(attachment_store, "search_checked", real)
     local.failed = False
     assert "lease.pdf" in await ma.run(inside="lease")                       # a healthy store answers as before
 

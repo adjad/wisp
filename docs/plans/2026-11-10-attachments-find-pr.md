@@ -1,13 +1,13 @@
 ## Summary
 
 - Find a file by what is inside it: `read_email_attachments` can search the readings Wisp has kept and read a few more of the best matches.
-- A background switch, off by default: reads Mail's saved copies from the last 30 days while you are away, with no model.
+- A background switch, off by default, in Settings (Privacy pane, under mail memory) as "Read new attachments in the background": reads Mail's saved copies from the last 30 days while you are away, with no model.
 - Questions across many files, with totals and counts added by Wisp's own code, not by the model.
 - Save a file to Downloads or another folder (`save_email_attachment`): the card names the exact file, it never overwrites, risky files are refused, and the file is marked as downloaded.
 - Files sent in Messages are read like email files (`read_message_attachments`).
 - Recordings are transcribed on this Mac (first 10 minutes), and emails attached to emails are read with up to 3 of their files.
 
-Not in this change: attaching a file to a new email (forwarding already carries files), reading Gmail or Messages files in the background, videos, Outlook `.msg` files, and a Settings button for the background switch.
+Not in this change: attaching a file to a new email (forwarding already carries files), reading Gmail or Messages files in the background, videos, Outlook `.msg` files.
 
 ## Rules kept and the one new rule
 
@@ -35,7 +35,7 @@ Results: Python passed TBD, failed TBD, skipped TBD. Swift regression: TBD. Simu
 
 ## What was not tested
 
-- The Swift side was not compiled locally when this was written, because another job held the shared build lock. CI compiles it.
+- The Swift side (including the new Settings switch) has not been compiled locally; CI is the first compile.
 - Nothing was tried in the running app.
 - No live Gmail fetch.
 - No real Messages database.
@@ -48,6 +48,6 @@ Results: Python passed TBD, failed TBD, skipped TBD. Swift regression: TBD. Simu
 - Persisted data: new tables in the attachment store.
 - A background job that reads files without being asked.
 
-An independent Release Auditor verdict on the exact SHA is needed before merge.
+Four independent read-only reviews ran on commit 654c8adc: three said BLOCK and one PASS_WITH_NOTES. Their findings were repaired in six parallel workers and reconciled. A fresh independent review of the final commit (TBD) is still required before merge.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

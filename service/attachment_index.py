@@ -205,11 +205,6 @@ def _rest_left(ma) -> float:
         return 0.0
 
 
-def _could_need_text_recognition(ma, f) -> bool:
-    name = (getattr(f, "name", "") or "").lower()
-    return ma.is_picture(name, getattr(f, "mime", "")) or name.endswith(".pdf")
-
-
 async def _prune_if_due() -> None:
     """Compact the store about hourly while the app runs (stale index words after a dropped text)."""
     global _last_prune
@@ -247,10 +242,11 @@ async def _run() -> None:
         else:
             email, f = picked
             outcome = await ma.index_one(email, f, deadline=time.monotonic() + FILE_DEADLINE_S)
-            # "Skipped" while text recognition rests says nothing about the file: try it again later.
-            rest = _rest_left(ma)
-            if outcome == "skipped" and rest > 0 and _could_need_text_recognition(ma, f):
-                gap = max(await _gap_after_file(), rest)    # not tried, not counted: asked again after the rest
+            if outcome == "resting":
+                # Text recognition is resting: the file was not tried, so it is not marked or counted.
+                _skip("ocr_resting")
+                rest = _rest_left(ma)
+                gap = rest if rest > 0 else FAILURE_GAP_S
             else:
                 attachment_store.mark_tried(_key(f), outcome)
                 _count_one(_clock())
