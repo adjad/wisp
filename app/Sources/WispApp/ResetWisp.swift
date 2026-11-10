@@ -49,7 +49,7 @@ enum WispReset {
     ]
     static let keeps = [
         "The model and Wisp's engine, so nothing downloads again",
-        "Everything outside Wisp: your own oMLX app and its cache, copies on a Mac mini or Air node, and the iPhone app's cache",
+        "Everything outside Wisp: your own oMLX app and its cache, and the iPhone app's cache",
     ]
     static let internetAccountsNote =
         "Your accounts in System Settings ▸ Internet Accounts, Mail, Calendar, Notes and Messages are not touched. Wisp only loses its access to them."

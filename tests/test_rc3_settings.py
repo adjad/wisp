@@ -1,7 +1,8 @@
 """Source checks for the 0.5.0 rc3 Settings repairs: the role menus offer chat
 models only and say when a pick wasn't saved (the logic itself is checked in
 tests/QuickSettingsChecks.swift), Google's Disconnect & erase asks first, and
-the Auto-unload row says which models it is about and when a change wasn't saved.
+the Auto-unload row says which models it is about and when a change wasn't saved,
+and the reset card's Keeps list names no retired device.
 Reads source only; no app, service or network."""
 import re
 from pathlib import Path
@@ -127,3 +128,14 @@ def test_learning_copy_stays_free_of_transport_for_its_standalone_check():
     properties = settings[settings.index("    @Published var behaviorEnabled"):
                           settings.index("    @Published var behaviorForgetStatus")]
     assert "idle" not in properties and "roleSaveProblem" not in properties
+
+
+def test_reset_card_keeps_list_names_no_retired_device():
+    reset = _read("ResetWisp.swift")
+    keeps = reset[reset.index("    static let keeps = ["):reset.index("    static let internetAccountsNote")]
+    assert "Mac mini" not in keeps and "Air node" not in keeps
+    assert ('"Everything outside Wisp: your own oMLX app and its cache, and the iPhone app\'s cache",'
+            in keeps)
+    # What the reset deletes and the accounts note are as they were.
+    assert '"The model and Wisp\'s engine, so nothing downloads again",' in keeps
+    assert reset.count("static let deletes = [") == 1 and 'list("Keeps", WispReset.keeps)' in reset
