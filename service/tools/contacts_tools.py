@@ -36,6 +36,20 @@ def _esc(s: str) -> str:
     return s.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def created_receipt(who: str, value: str = "") -> str:
+    """What `create` reports. It makes the card and nothing else: its
+    confirmation card (policy._contact_change) names only the new contact, so
+    a number or address passed along is not written unseen. The receipt says
+    so instead of implying it was saved, and names the action that saves it
+    behind a card of its own."""
+    extra = " ".join((value or "").split())
+    if not extra:
+        return f"Created contact {who}."
+    kind, action = (("email address", "add_email") if "@" in extra else ("phone number", "add_phone"))
+    return (f"Created contact {who}. The {kind} {extra} was NOT saved: create only makes the card. "
+            f"Call manage_contacts again with action='{action}' to add it.")
+
+
 @register(
     "contact_dates",
     "List upcoming birthdays from Contacts, soonest first. Needs birth dates "
@@ -127,7 +141,8 @@ def manage_contacts(action: str, name: str, value: str = "") -> str:
         p = _osa(script)
         if p.returncode != 0:
             return f"(could not create contact: {(p.stderr or '').strip()})"
-        return BuiltinCompletion(f"Created contact {who}.", tool_name="manage_contacts", completion_code=p.returncode)
+        return BuiltinCompletion(created_receipt(who, value), tool_name="manage_contacts",
+                                 completion_code=p.returncode)
 
     if a in ("add_phone", "add_email"):
         prop = "phones" if a == "add_phone" else "emails"

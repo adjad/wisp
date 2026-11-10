@@ -2160,7 +2160,9 @@ def make_fakes(w: World) -> dict:
         if a == "create":
             _record(w, "manage_contacts", {"action": a, "name": who, "value": value})
             w.contacts.append({"name": who, "full": who, "email": "", "phone": ""})
-            return done(f"Created contact {who}.")
+            # Like production, create makes the card only and says when a value was left out.
+            from service.tools.contacts_tools import created_receipt
+            return done(created_receipt(who, value or ""))
         if a in ("add_phone", "add_email"):
             if not (value or "").strip():
                 return not_done(f"(error: {a} needs `value`.)")

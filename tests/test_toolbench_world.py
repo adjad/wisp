@@ -554,6 +554,11 @@ def test_contacts_apps_and_world_time(world, fk):
     assert fk["manage_contacts"](action="create", name="Bob Stone") == "Created contact Bob Stone."
     assert fk["manage_contacts"](action="add_phone", name="Bob", value="555-0199") == "Added phone to Bob Stone."
     assert fk["manage_contacts"](action="add_email", name="Nobody At All", value="x@y.com").startswith("No contact matches")
+    made = fk["manage_contacts"](action="create", name="Cleo Marsh", value="555-0142")
+    assert made.startswith("Created contact Cleo Marsh. The phone number 555-0142 was NOT saved")
+    assert [c["phone"] for c in world.contacts if c["full"] == "Cleo Marsh"] == [""]
+    assert fk["manage_contacts"](action="add_phone", name="Cleo Marsh", value="555-0142") == "Added phone to Cleo Marsh."
+    assert [c["phone"] for c in world.contacts if c["full"] == "Cleo Marsh"] == ["555-0142"]
     assert "Bob" in fk["list_contacts"](query="bob")
     apps = fk["list_running_apps"]()
     assert apps.startswith("7 apps open: Calendar, Finder, Mail, Messages, Notes, Safari, Wisp.") and "Frontmost: Safari." in apps
