@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import math
 import re
 import secrets
 
@@ -219,11 +220,17 @@ async def recognize_text(jpeg: bytes, timeout: float = 20.0) -> tuple[str, float
         raise BridgeError("bad_image")
     if len(jpeg) > RECOGNIZE_MAX_BYTES:
         raise BridgeError("too_large")
-    reply = await _ask("recognize", timeout, image_b64=base64.b64encode(bytes(jpeg)).decode("ascii"))
+    # `wait` tells the app how long we will wait, so it skips a request that sat in its queue
+    # past that. An app from before this field drops a request carrying it (strict keys) and
+    # the call then times out; that is acceptable because app and backend ship in one bundle.
+    wait = max(1, min(60, math.ceil(timeout))) if math.isfinite(timeout) else 60
+    reply = await _ask("recognize", timeout, image_b64=base64.b64encode(bytes(jpeg)).decode("ascii"), wait=wait)
     if reply.get("ok") is not True:
         error = str(reply.get("error") or "")
         if error == "no_text":
             return "", 0.0
+        if error == "late":
+            raise BridgeError("recognize_timeout")
         raise BridgeError(error if error in _RECOGNIZE_ERRORS else "recognize_failed")
     text = reply.get("text")
     confidence = reply.get("confidence")
