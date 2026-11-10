@@ -54,6 +54,43 @@ async def test_index_request_is_cleaned_and_clamped(monkeypatch):
     assert seen[2][2]["terms"] == [] and seen[2][2]["handles"] == [] and seen[2][2]["limit"] == 200
 
 
+async def test_index_bad_arguments_never_raise_and_are_clamped(monkeypatch):
+    seen = fake_ask(monkeypatch, [{"ok": True, "rows": []}] * 12)
+    cases = [
+        (float("nan"), 0.0), (float("inf"), 0.0), (float("-inf"), 0.0), (-5, 0.0), (-0.5, 0.0), (True, 0.0),
+        ("12", 0.0), (None, 0.0), ([1], 0.0), (10**400, 0.0), (12.5, 12.5), (7, 7.0),
+    ]
+    for since, _ in cases:
+        await bridge.read_message_attachment_index([], [], since, since)
+    assert len(seen) == len(cases)
+    for (_, want), (kind, _timeout, fields) in zip(cases, seen):
+        assert kind == "message_attachments"
+        assert fields["since"] == want and fields["until"] == want and type(fields["since"]) is float
+
+
+@pytest.mark.parametrize("limit, want", [
+    (5, 5), (400, 400), (401, 400), (10**30, 400), (0, 1), (-3, 1), (7.0, 7), (7.5, 200), (float("nan"), 200),
+    (float("inf"), 200), (True, 200), (False, 200), ("9", 200), (None, 200), ([3], 200), (b"3", 200),
+])
+async def test_index_limit_is_int_like_or_the_default(monkeypatch, limit, want):
+    seen = fake_ask(monkeypatch, [{"ok": True, "rows": []}])
+    await bridge.read_message_attachment_index([], [], 0, 0, limit=limit)
+    assert seen[0][2]["limit"] == want and type(seen[0][2]["limit"]) is int
+
+
+async def test_index_terms_and_handles_are_cleaned_for_the_apps_strict_parser(monkeypatch):
+    seen = fake_ask(monkeypatch, [{"ok": True, "rows": []}] * 5)
+    await bridge.read_message_attachment_index(["a\nb", "\x00", "\x07x", "t" * 150, 5, None, "lease  "], [5, None, "ok"], 0, 0)
+    fields = seen[0][2]
+    assert fields["terms"] == ["a b", "x", "t" * 80, "lease"]
+    assert all(1 <= len(t) <= 100 and not bridge._has_control(t) for t in fields["terms"])
+    assert fields["handles"] == ["ok"]
+    for not_a_list in ("lease", 5, {"a": 1}, b"abc"):
+        await bridge.read_message_attachment_index(not_a_list, not_a_list, 0, 0)
+    assert len(seen) == 5
+    assert all(s[2]["terms"] == [] and s[2]["handles"] == [] for s in seen[1:])
+
+
 async def test_index_rows_are_revalidated(monkeypatch):
     good = row()
     bad = [
@@ -138,10 +175,8 @@ async def test_read_unknown_reasons_are_unreadable(monkeypatch):
 async def test_read_base64_errors(monkeypatch):
     fake_ask(monkeypatch, [{"ok": True, "data_b64": "!!!"}, {"ok": True, "data_b64": "abc"},
                            {"ok": True, "data_b64": "YQ==\n"}, {"ok": True, "data_b64": 7}])
-    assert await bridge.read_message_attachment("7") == (None, "", "bad_base64")
-    assert await bridge.read_message_attachment("7") == (None, "", "bad_base64")
-    assert await bridge.read_message_attachment("7") == (None, "", "bad_base64")
-    assert await bridge.read_message_attachment("7") == (None, "", "bad_base64")
+    for _ in range(4):
+        assert await bridge.read_message_attachment("7") == (None, "", "unreadable")
 
 
 async def test_read_missing_data_is_empty_bytes_and_name_is_cut(monkeypatch):
