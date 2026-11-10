@@ -1762,6 +1762,33 @@ def test_observation_retention_keeps_only_valid_overlapping_calendar_intervals(t
         store.close()
 
 
+def test_age_out_and_google_purge_drop_cached_titles_of_deleted_rows(tmp_path):
+    from service.behavior.store import Store, OBSERVATION_RETENTION_S
+    from service.behavior.types import Observation
+    from service.assistant import behavior_runtime
+    now = 1792051200.0
+    home = tmp_path / "h"
+    store = Store(home / behavior_runtime.ENGINE_DB)
+    prefix = behavior_runtime.GOOGLE_CALENDAR_PREFIX + "judge@example.com:"
+    try:
+        store.upsert_observations([
+            Observation("old", "event", now - 190 * 86400, end_ts=now - 190 * 86400 + 60, subject="Old consult"),
+            Observation("keep", "event", now - 86400, subject="Pottery"),
+            Observation("g1", "event", now - 86400, subject="Account only", source_id=prefix + "e1")])
+        store.meta_set("category_cache", {"Old consult": "other", "Pottery": "other",
+                                          "Account only": "class", "Gone entirely": "meal"})
+    finally:
+        store.close()
+    behavior_runtime.age_out(home=home, now=now)
+    store = Store(home / behavior_runtime.ENGINE_DB)
+    try:
+        assert store.meta_get("category_cache") == {"Pottery": "other", "Account only": "class"}
+        assert behavior_runtime.purge_google_calendar_rows(store, prefix) == 1
+        assert store.meta_get("category_cache") == {"Pottery": "other"}
+    finally:
+        store.close()
+
+
 # --------------------------------------------------------------------------
 # Delivery cursor vs. a replaced behavior.db
 # --------------------------------------------------------------------------

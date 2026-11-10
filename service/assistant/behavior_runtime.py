@@ -113,6 +113,8 @@ def purge_google_calendar_rows(behavior_store, prefix: str) -> int:
                      "OR substr(id,1,?)=? OR substr(id,1,?)=?",
                      (len(prefix), prefix, *(x for i in ids for x in (len(i), i))))
         removed = conn.total_changes - before
+        from service.behavior.store import prune_category_cache
+        prune_category_cache(conn)
     snap = behavior_store.get_snapshot("calendar")
     if snap is not None:
         items = [it for it in snap["items"] if not str(it.get("source_id") or "").startswith(prefix)
@@ -2012,6 +2014,8 @@ def age_out(home: Path | None = None, now: float | None = None) -> dict[str, int
                 from service.behavior.source_index import prune_connection
                 with conn:
                     removed = prune_connection(conn, now-OBSERVATION_RETENTION_S)
+                    from service.behavior.store import prune_category_cache
+                    prune_category_cache(conn)
                 if removed:
                     out["seed_metadata"] = removed
             except sqlite3.DatabaseError:

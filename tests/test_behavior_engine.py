@@ -299,6 +299,25 @@ def test_titles_beyond_one_batch_are_not_cached_unasked(tmp_path):
     e.close()
 
 
+def test_cached_titles_leave_with_their_observations(tmp_path):
+    class Other(Phraser):
+        def categorize(self, titles, categories):
+            self.calls.append(list(titles))
+            return {t: "other" for t in titles}
+
+    ph = Other()
+    e = BehaviorEngine(tmp_path / "b.db", tz="America/Los_Angeles", phraser=ph)
+    old, fresh = T0 - 100 * D, T0 - 2 * D
+    e.observe([ev("old", old, "Fertility consult zz"), ev("new", fresh, "Pottery zz")])
+    e.mine(T0)
+    assert set(e._store.meta_get("category_cache")) == {"Fertility consult zz", "Pottery zz"}
+    later = T0 + 85 * D
+    e.mine(later)                                                    # 180-day retention drops "old"
+    assert e._store.meta_get("category_cache") == {"Pottery zz": "other"}
+    assert ph.calls == [["Fertility consult zz", "Pottery zz"]]      # the kept title is not re-asked
+    e.close()
+
+
 def test_failing_phraser_keeps_code_text(tmp_path):
     e = BehaviorEngine(tmp_path / "b.db", tz="America/Los_Angeles", phraser=Phraser(fail=True))
     e.observe([_ironwood(i) for i in range(5)])
