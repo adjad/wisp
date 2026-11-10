@@ -90,6 +90,17 @@ def test_calculate() -> None:
     check("pow(2, 10) still works", calculate("pow(2, 10)") == "1,024")
     check("pow(3, 4, 5) still works", calculate("pow(3, 4, 5)") == "1")
     check("pow with a zero modulus is refused", calculate("pow(3, 4, 0)").startswith("(error"))
+    # Operands this size fit inside the ** bounds, and a modular power over them
+    # would hold the service for seconds.
+    huge = calculate("pow(999999**1000, 999999**1000, 999999**999)")
+    check("a modular power over huge operands is refused",
+          huge.startswith("(error") and "too large" in huge, f"got {huge!r}")
+    check("a modular power over large but bounded operands still works",
+          calculate("pow(999999**200, 999999**200, 1000007)")
+          == f"{pow(999999**200, 999999**200, 1000007):,}")
+    mixed = calculate("max(1, 2) + [1, 2]")
+    check("a type error is a plain error that does not blame the count",
+          mixed.startswith("(error") and "wrong number" not in mixed, f"got {mixed!r}")
     check("wrong argument count is a plain error, not a crash",
           calculate("sqrt(1, 2)").startswith("(error"))
 

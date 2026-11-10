@@ -148,6 +148,9 @@ def _bluetooth(on: bool) -> str:
         state = _bluetooth_state()
     if state is on:
         return f"Bluetooth turned {'on' if on else 'off'}."
+    if state is None:
+        return ("(I couldn't confirm that Bluetooth changed. Check Control Center "
+                "in the menu bar.)")
     return ("(I couldn't change Bluetooth from here, and it still looks "
             f"{'off' if on else 'on'}. Use Control Center in the menu bar.)")
 

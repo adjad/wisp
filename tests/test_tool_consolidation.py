@@ -282,6 +282,9 @@ def test_bluetooth_unreadable_state_is_not_reported_as_done(monkeypatch):
     _fake_bluetooth(monkeypatch, [""])
     out = REGISTRY["toggle_setting"].func(setting="bluetooth", on=False)
     assert "Bluetooth turned" not in out
+    # Nothing was read, so it must not claim to know the state either.
+    assert "still looks" not in out and "couldn't confirm" in out
+    assert "Control Center" in out
 
 
 @pytest.mark.parametrize("on, state", [(False, "attrib_off"), (True, "attrib_on")])

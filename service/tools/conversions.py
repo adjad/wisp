@@ -55,6 +55,9 @@ _CONSTS = {"pi": math.pi, "e": math.e, "tau": math.tau}
 # because by the time there is a result it is already too late.
 _MAX_POW_BASE = 1e6
 _MAX_POW_EXP = 1000
+# pow(base, exp, mod) never grows past the modulus, but its time grows with the
+# size of all three, and it is one C call that holds the GIL.
+_MAX_MOD_POW_BITS = 4096
 
 
 class _BadExpression(ValueError):
@@ -75,7 +78,7 @@ def _bounded_pow(*args):
             raise _BadExpression("pow with a modulus needs whole numbers")
         if mod == 0:
             raise _BadExpression("division by zero")
-        if max(abs(base), abs(exp), abs(mod)).bit_length() > 20000:
+        if max(abs(base), abs(exp), abs(mod)).bit_length() > _MAX_MOD_POW_BITS:
             raise _BadExpression("that power is too large to compute")
         return pow(base, exp, mod)
     raise _BadExpression("pow takes two numbers (or three with a modulus)")
@@ -198,8 +201,8 @@ def calculate(expression: str) -> str:
     except (ValueError, OverflowError, ZeroDivisionError) as e:
         return f"(error: {e}.)"
     except TypeError:
-        return (f"(error: I couldn't work out {raw!r}: a function got the wrong "
-                f"number of values.)")
+        return (f"(error: I couldn't work out {raw!r}: a function or operator got "
+                f"values it can't use.)")
     if isinstance(value, list):
         return ", ".join(_tidy(v) for v in value)
     return _tidy(value)

@@ -339,6 +339,9 @@ async def find_place(what: str, near: str, radius_km: float = 3.0) -> str:
         "cinema": 'amenity=cinema', "movie theater": 'amenity=cinema',
         "movie theatre": 'amenity=cinema',
         "barber": 'shop=hairdresser', "hairdresser": 'shop=hairdresser',
+        "barbershop": 'shop=hairdresser',
+        "veterinarian": 'amenity=veterinary', "veterinary": 'amenity=veterinary',
+        "coffeeshop": 'amenity=cafe',
     }
     key = what.lower().strip()
     selector = tags.get(key)

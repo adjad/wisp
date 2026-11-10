@@ -120,7 +120,9 @@ _NATIVE_CAPABILITY: list[tuple[str, str]] = [
      "list_contacts (list/browse everyone) or lookup_contact (one person's number/email)"),
     # No bare "text": it is an ordinary word in "count words in some text".
     (r"\bimessages?\b|\btext messages?\b|\btexts? from\b|"
-     r"\bmy texts\b|\bsms\b|\bchat\.db\b",
+     r"\bmy (?:recent |unread |latest |new )?texts\b|"
+     r"\b(?:recent|unread|latest|new) texts\b|\btexts \w+ sent\b|"
+     r"\bsms\b|\bchat\.db\b",
      "view_messages / summarize_messages"),
     (r"\bemails?\b|\binbox\b|\bmail\.app\b|\bmailbox\b",
      "view_emails / summarize_emails"),

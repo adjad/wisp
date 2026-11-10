@@ -12,6 +12,8 @@ from service.tools import tool_authoring as ta
     "count words in the given text",
     "convert text to title case",
     "slugify some text",
+    "compare two texts and list the differences",
+    "strip new lines from pasted texts",
 ])
 def test_plain_text_utilities_are_not_redirected(task):
     redirect, _ = ta._capability_check("text_tool", "", task)
@@ -22,6 +24,10 @@ def test_plain_text_utilities_are_not_redirected(task):
     ("read my text messages", "view_messages"),
     ("show recent iMessages", "view_messages"),
     ("find texts from Sam", "view_messages"),
+    ("show my recent texts", "view_messages"),
+    ("count unread texts", "view_messages"),
+    ("list texts Sam sent", "view_messages"),
+    ("check for new texts", "view_messages"),
     ("list my contacts", "list_contacts"),
     ("summarize my inbox", "view_emails"),
 ])
@@ -187,6 +193,11 @@ def _overpass_query(monkeypatch, what):
     ("movie theater", "amenity=cinema", "restaurant"),
     ("barber", "shop=hairdresser", "amenity=bar"),
     ("barbecue", "name~", "amenity=bar"),
+    ("barbershop", "shop=hairdresser", "amenity=bar"),
+    ("barber shop", "shop=hairdresser", "amenity=bar"),
+    ("veterinarian", "amenity=veterinary", "name~"),
+    ("veterinary clinic", "amenity=veterinary", "name~"),
+    ("coffeeshop", "amenity=cafe", "name~"),
     ("gas station", "amenity=fuel", "name~"),
     ("coffee shop", "amenity=cafe", "name~"),
     ("restaurants", "amenity=restaurant", "name~"),
