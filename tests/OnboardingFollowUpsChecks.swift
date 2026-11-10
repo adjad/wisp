@@ -21,10 +21,26 @@ struct OnboardingFollowUpsChecks {
               "A reset clears both (its prefix sweep)")
 
         // "Wisp is ready" without notifications.
-        check(ReadyNotice.notchLine.contains("⌥ Space") && ReadyNotice.body.contains("⌥ Space"),
+        check(ReadyNotice.notchLine(askKeyRegistered: true).contains("⌥ Space")
+              && ReadyNotice.body(askKeyRegistered: true).contains("⌥ Space"),
               "Both ways of saying it teach the shortcut")
+        // Another app owns ⌥ Space: pressing it does nothing in Wisp, so it is not taught.
+        let readyWithoutKey = [ReadyNotice.notchLine(askKeyRegistered: false), ReadyNotice.body(askKeyRegistered: false)]
+        for text in readyWithoutKey {
+            check(!text.contains("⌥") && !text.contains("Press") && text.contains("top of"),
+                  "No shortcut that isn't Wisp's; the top of the screen instead: \(text.debugDescription)")
+            check(text.contains("day"), "It still says what to ask about")
+        }
+        check(readyWithoutKey[0].hasPrefix("Wisp is ready."), "The notch's line still says Wisp is ready")
+        check(ReadyNotice.isNotchLine(ReadyNotice.notchLine(askKeyRegistered: true))
+              && ReadyNotice.isNotchLine(ReadyNotice.notchLine(askKeyRegistered: false)),
+              "Either wording is known as the ready line, so opening the panel still shortens its stay")
+        check(!ReadyNotice.isNotchLine(nil) && !ReadyNotice.isNotchLine("Copied")
+              && !ReadyNotice.isNotchLine(ReadyNotice.body(askKeyRegistered: true)),
+              "No notice, or any other notice, is not the ready line")
         check(ReadyNotice.seenFor < ReadyNotice.unseenFor, "Seen, the line goes soon; unseen, it waits")
-        for text in [ReadyNotice.notchLine, ReadyNotice.body, SleepPause.pausedLine, SleepPause.stoppedLine] {
+        for text in [ReadyNotice.notchLine(askKeyRegistered: true), ReadyNotice.body(askKeyRegistered: true),
+                     SleepPause.pausedLine, SleepPause.stoppedLine] + readyWithoutKey {
             for word in ["engine", "oMLX", "backend", "Smart Search", "Research"] {
                 check(!text.contains(word), "No \(word) in \(text.debugDescription)")
             }

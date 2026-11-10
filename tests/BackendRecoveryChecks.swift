@@ -464,5 +464,40 @@ enum BackendRecoveryChecks {
              && reset.count < 160, "an unfinished reset names its way out in full")
         dead(BackendManager.resetUnfinishedStatus == 75, "the status matches wisp_reset.REFUSED_EXIT")
         print("BackendRecovery: \(deadChecks) dead-child checks passed")
+        await blockedStartChecks()
+    }
+
+    private final class StartFailures: @unchecked Sendable { var reasons: [String] = [] }
+
+    /// A start that launches nothing says why, the way a launch that exited does, so
+    /// Retry never ends in silence. A port conflict is the case that needs no process,
+    /// port or Keychain: nothing here starts, probes or signals anything.
+    @MainActor
+    private static func blockedStartChecks() async {
+        let seen = StartFailures()
+        let observer = NotificationCenter.default.addObserver(
+            forName: .wispBackendStartFailed, object: nil, queue: nil) { note in
+            seen.reasons.append(note.userInfo?["reason"] as? String ?? "")
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        let manager = BackendManager()
+        precondition(seen.reasons.isEmpty, "a new manager reports nothing")
+        manager.portConflict = true
+        precondition(seen.reasons == [BackendManager.portInUseReason], "a port conflict is said once, as it is found")
+        manager.portConflict = true
+        precondition(seen.reasons.count == 1, "not again for a conflict already known")
+        await manager.startIfNeeded()
+        precondition(seen.reasons == [BackendManager.portInUseReason, BackendManager.portInUseReason],
+                     "Retry during a conflict says why instead of doing nothing")
+        precondition(!manager.childRunning, "and starts nothing")
+        // Each reason is a fixed, plain sentence: no path from this Mac, no credential.
+        let fixed = [BackendManager.portInUseReason, BackendManager.credentialsBlockedReason,
+                     BackendManager.missingFilesReason]
+        precondition(Set(fixed).count == fixed.count, "each blocked start has its own reason")
+        for reason in fixed {
+            precondition(!reason.isEmpty && !reason.contains("/") && !reason.contains(NSHomeDirectory()),
+                         "a blocked start's reason carries no path: \(reason)")
+        }
+        print("BackendRecovery: \(6 + fixed.count) blocked-start checks passed")
     }
 }

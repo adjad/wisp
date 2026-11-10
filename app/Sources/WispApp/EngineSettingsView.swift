@@ -147,7 +147,10 @@ private final class EngineSettingsLoader: ObservableObject {
         guard let engine,
               !isSaving,
               mode != (engine.configuredMode ?? engine.mode),
-              mode != .bundled || engine.bundledAvailable else { return }
+              mode != .bundled || engine.bundledAvailable,
+              mode != .externalOmlx || EngineSettingsView.externalChoiceOffered(
+                  installed: engine.externalOmlxInstalled, externalRunning: engine.externalEngineRunning,
+                  onExternal: engine.mode == .externalOmlx) else { return }
 
         isSaving = true
         defer {
@@ -211,6 +214,25 @@ struct EngineSettingsView: View {
             set: { mode in Task { await loader.setMode(mode) } })
     }
 
+    /// Whether "My installed oMLX" can be chosen. Saved without an oMLX to run,
+    /// it leaves Wisp with no engine after the next restart. An oMLX kept
+    /// somewhere Wisp doesn't look still counts once it is answering, and the
+    /// choice is never taken away from someone already on it. Pure.
+    nonisolated static func externalChoiceOffered(installed: Bool, externalRunning: Bool, onExternal: Bool) -> Bool {
+        installed || externalRunning || onExternal
+    }
+
+    private func externalOffered(_ engine: EngineSettingsResponse) -> Bool {
+        Self.externalChoiceOffered(installed: engine.externalOmlxInstalled,
+                                   externalRunning: engine.externalEngineRunning,
+                                   onExternal: engine.mode == .externalOmlx)
+    }
+
+    /// The menu item's words: greyed out, it says why.
+    nonisolated static func externalChoiceTitle(offered: Bool) -> String {
+        offered ? "My installed oMLX" : "My installed oMLX (not found)"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let engine = loader.engine {
@@ -223,7 +245,10 @@ struct EngineSettingsView: View {
                     Menu("Change engine") {
                         Button("Built-in engine") { selectedMode.wrappedValue = .bundled }
                             .disabled(!engine.bundledAvailable)
-                        Button("My installed oMLX") { selectedMode.wrappedValue = .externalOmlx }
+                        Button(Self.externalChoiceTitle(offered: externalOffered(engine))) {
+                            selectedMode.wrappedValue = .externalOmlx
+                        }
+                        .disabled(!externalOffered(engine))
                         Divider()
                         if engine.mode == .bundled {
                             Button("Set up engine and models…") {

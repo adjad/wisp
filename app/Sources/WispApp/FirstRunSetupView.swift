@@ -147,10 +147,34 @@ enum FirstRunSetup {
     /// Wisp can't answer and no first-run window is up, the quiet cue (the `!` and
     /// a one-line row on Ask), never the full card; it goes once Wisp can answer.
     /// An open card is left to the person (it waits for Done or Later).
-    static func setupCue(_ current: NotchSetupCard, canAnswer: Bool, firstRunWindowUp: Bool) -> NotchSetupCard {
+    /// A Mac that finished setup gets no new cue while its model is only warming
+    /// up after launch (`warmingUp`); an unfinished setup is told at once. Pure.
+    static func setupCue(_ current: NotchSetupCard, canAnswer: Bool, firstRunWindowUp: Bool,
+                         setupFinished: Bool = false, notReadyFor: TimeInterval = 0) -> NotchSetupCard {
         if canAnswer { return current.afterReadiness(true) }
         let current = current.afterReadiness(false)
-        return !firstRunWindowUp && current == .hidden ? .later : current
+        guard !firstRunWindowUp, current == .hidden else { return current }
+        return warmingUp(setupFinished: setupFinished, notReadyFor: notReadyFor) ? .hidden : .later
+    }
+
+    /// How long a Mac that finished setup may be unable to answer before Wisp says
+    /// it isn't set up. At every launch Wisp answers a little before its model
+    /// does, and that wait is warming up, not a missing model.
+    static let warmUpGrace: TimeInterval = 90
+
+    /// A can't-answer reading that is still only warm-up: setup isn't unfinished,
+    /// and the reading hasn't lasted `warmUpGrace` (`notReadyFor`: since the first
+    /// such answer in a row). Pure.
+    static func warmingUp(setupFinished: Bool, notReadyFor: TimeInterval) -> Bool {
+        setupFinished && notReadyFor < warmUpGrace
+    }
+
+    /// What the menu bar's Finish Setup… is told after one /setup/status answer.
+    /// Through warm-up it is not known yet (nil), so the item doesn't flash at
+    /// every launch; past it, or during an unfinished setup, it is the answer. Pure.
+    static func knownCanAnswer(_ canAnswer: Bool, setupFinished: Bool, notReadyFor: TimeInterval) -> Bool? {
+        if canAnswer { return true }
+        return warmingUp(setupFinished: setupFinished, notReadyFor: notReadyFor) ? nil : false
     }
 
     /// Whether the menu bar icon's menu shows Finish Setup…: while setup is under
@@ -246,7 +270,7 @@ enum FirstRunSetup {
     /// The same line when the model isn't on its way, naming the way out, so a
     /// download that keeps failing (or a service that won't answer) never leaves
     /// a closed Wisp with no next step. Pure.
-    static func heldBackLine(_ footer: FirstRunBrain.Footer) -> String {
+    static func heldBackLine(_ footer: FirstRunBrain.Footer, startFailed: Bool = false) -> String {
         switch footer {
         case .retry, .download:
             return "Wisp opens once its model is ready, and the download isn't running. Choose Model above to start "
@@ -255,8 +279,11 @@ enum FirstRunSetup {
             return "Wisp opens once its model is ready. On the Model step, try again or open the detailed setup "
                 + "to use another app's model."
         case .checkAgain:
-            return "Wisp is slow to start, so it can't open yet. On the Model step, choose Check again, "
-                + "or quit and reopen Wisp."
+            // `startFailed`: Wisp's own start stopped, and the Model step says why.
+            return startFailed
+                ? "Wisp couldn't start, so it can't open yet. The Model step says why; choose Retry there."
+                : "Wisp is slow to start, so it can't open yet. On the Model step, choose Check again, "
+                    + "or quit and reopen Wisp."
         case .ready, .working:
             return heldBackLine
         }
@@ -590,6 +617,61 @@ enum FirstRunBrain: Equatable {
     /// The service has had longer than a slow first launch takes.
     static func serviceSlow(waited: TimeInterval) -> Bool { waited >= serviceStartLimit }
 
+    /// Step 1 needs a click while Wisp hasn't answered yet: its start failed (the
+    /// app recorded why, so the card says it at once, with Retry), or it has had
+    /// longer than a slow first launch takes. Pure.
+    static func startNeedsClick(failure: String?, waited: TimeInterval) -> Bool {
+        failure != nil || serviceSlow(waited: waited)
+    }
+
+    /// The card's title once Wisp's start has failed. Its detail is the recorded reason.
+    static let startFailedTitle = "Wisp couldn't start"
+
+    /// The reason when a failed start came with none.
+    static let startFailedFallback = "Wisp stopped while it was starting."
+
+    /// The reason shown for a failed start: the recorded one, or the fallback. Pure.
+    static func startFailure(reason: String?) -> String {
+        guard let reason, !reason.isEmpty else { return startFailedFallback }
+        return reason
+    }
+
+    /// The button that starts Wisp again and then asks it once more: Retry after a
+    /// failed start, Check again after a slow one. Pure.
+    static func startAgainTitle(failed: Bool, checking: Bool) -> String {
+        checking ? "Checking…" : (failed ? "Retry" : "Check again")
+    }
+
+    /// The last step's footer, beside that button. Pure.
+    static func slowStartLine(failed: Bool) -> String {
+        failed ? "Wisp couldn't start" : "Wisp is slow to start"
+    }
+
+    /// Setup's one test question ran and didn't work (and isn't being asked again
+    /// right now). The model is still listed, so step 1 stays on its ready card,
+    /// but nothing in the window calls it ready. Pure.
+    static func testFailed(result: String?, passed: Bool, testing: Bool) -> Bool {
+        result != nil && !passed && !testing
+    }
+
+    /// The ready card's title, on step 1 and on How to use. Pure.
+    static func readyTitle(label: String, testFailed: Bool) -> String {
+        testFailed ? "\(label) is set up, but the test failed" : "\(label) is ready"
+    }
+
+    /// The ready card's line on How to use. Done stays: the person can still open
+    /// Wisp and ask again there. Pure.
+    static func readyTourDetail(testFailed: Bool) -> String {
+        testFailed
+            ? "The test question didn't work. You can still open Wisp, or go back to the Model step and try again."
+            : "Wisp can answer now. Choose Done to open it."
+    }
+
+    /// The same, in two words, for the step bar and the last step's footer. Pure.
+    static func readyShort(testFailed: Bool) -> String {
+        testFailed ? "Model test failed" : "Model ready"
+    }
+
     /// How long a cold start has taken, once it is long enough to be worth saying.
     static func waited(_ seconds: Int) -> String? {
         guard seconds >= 20 else { return nil }
@@ -717,15 +799,34 @@ final class FirstRunPermissions: ObservableObject {
         state == .allowed || state == .notAllowed || state == .notOnThisMac
     }
 
-    /// What a row says about itself, next to its button.
-    static func label(_ item: Item, _ state: State) -> String {
+    /// What a row says about itself, next to its button. `calendarAddOnly` as in isAddOnly.
+    static func label(_ item: Item, _ state: State, calendarAddOnly: Bool? = nil) -> String {
         switch state {
         case .checking: return ""
         case .notAsked: return "Not set"
         case .allowed: return "Allowed"
-        case .notAllowed: return settingsThroughRequest(item) ? "Needs System Settings" : "Denied"
+        case .notAllowed:
+            if isAddOnly(item, state, calendarAddOnly: calendarAddOnly) { return "Add only" }
+            return settingsThroughRequest(item) ? "Needs System Settings" : "Denied"
         case .notOnThisMac: return "Not needed"
         }
+    }
+
+    /// Calendar set to "Add Events Only" for Wisp in System Settings. Reads
+    /// macOS's answer; never asks. Reminders has no such setting.
+    nonisolated static func calendarAddOnly() -> Bool {
+        EKEventStore.authorizationStatus(for: .event) == .writeOnly
+    }
+
+    /// The Calendar row, not allowed because Wisp may only add events. It stays
+    /// not allowed (Day and Brief can't read events with it) and its button still
+    /// opens System Settings, but Wisp is already listed and switched on there,
+    /// so "Denied" and "switch Wisp on" would send the person looking for a
+    /// switch that isn't off: the row says to choose Full Access instead. The
+    /// copy rules take macOS's answer as `calendarAddOnly` so they stay pure;
+    /// nil reads it from this Mac, and only for this one row.
+    nonisolated static func isAddOnly(_ item: Item, _ state: State, calendarAddOnly: Bool?) -> Bool {
+        item == .calendar && state == .notAllowed && (calendarAddOnly ?? Self.calendarAddOnly())
     }
 
     /// The Full Disk Access row's promise, before System Settings opens.
@@ -939,10 +1040,15 @@ final class FirstRunPermissions: ObservableObject {
     }
 
     /// The Calendar or Reminders row's sentence: what it is for, or, once macOS
-    /// has turned it down or never answered, what to do next.
-    static func eventKitDetail(_ item: Item, base: String, state: State, unanswered: Bool) -> String {
+    /// has turned it down or never answered, what to do next. `calendarAddOnly`
+    /// as in isAddOnly.
+    static func eventKitDetail(_ item: Item, base: String, state: State, unanswered: Bool,
+                               calendarAddOnly: Bool? = nil) -> String {
         let page = item == .reminders ? "Reminders" : "Calendars"
         switch state {
+        case .notAllowed where isAddOnly(item, state, calendarAddOnly: calendarAddOnly):
+            return "Wisp can only add events, not read your calendar. Click Open System Settings, then click "
+                + "Options next to Wisp under Privacy & Security > Calendars and choose Full Access."
         case .notAllowed:
             return "Wisp is off in System Settings. Click Open System Settings, then switch Wisp on under "
                 + "Privacy & Security > \(page)."
@@ -1295,9 +1401,16 @@ struct FirstRunSetupView: View {
     /// Closes the window without finishing setup: the model is still on its way,
     /// and Wisp opens once it can answer (FirstRunSetup.gatesUse).
     var closeForNow: () -> Void
+    /// Why Wisp's own start last failed, if it did and nothing has answered since
+    /// (the app's record of it), read when the window opens.
+    var recordedStartFailure: () -> String?
+    /// Starts Wisp again after a failed or slow start.
+    var restartWisp: () -> Void
     /// When a click on the notch, the menu bar icon or a shortcut was held back
     /// while the model downloads, so the window says why it came forward.
     @State private var heldBackAt: Date?
+    /// Wisp's start failed while nothing had answered yet: step 1 says why, with Retry.
+    @State private var startFailure: String?
 
     init(setup: SetupGuideModel, knowYou: KnowYouModel, google: GoogleAccountModel,
          initialStep: Step = .brain,
@@ -1307,9 +1420,12 @@ struct FirstRunSetupView: View {
          stepChanged: @escaping (Step) -> Void = { _ in },
          askKeyRegistered: Bool = true, searchKeyRegistered: Bool = true, voiceKeyRegistered: Bool = true,
          setupDone: Bool = false, aboutYouDecided: @escaping () -> Void = {}, qaFixture: Bool = false,
+         recordedStartFailure: @escaping () -> String? = { nil }, restartWisp: @escaping () -> Void = {},
          closeForNow: @escaping () -> Void = {}) {
         self.setup = setup
         self.closeForNow = closeForNow
+        self.recordedStartFailure = recordedStartFailure
+        self.restartWisp = restartWisp
         self.setupDone = setupDone
         self.aboutYouDecided = aboutYouDecided
         self.qaFixture = qaFixture
@@ -1365,11 +1481,7 @@ struct FirstRunSetupView: View {
         .preferredColorScheme(.dark)
         .onChange(of: brain) { _, next in
             drive(next)
-            if case .downloading(_, _, _, let done, _, _) = next {
-                progressWatch.observe(doneGb: done, at: Date())
-            } else {
-                progressWatch.reset()
-            }
+            watchProgress(next)
         }
         // An error belongs to the stage it happened in: a red line from a failed
         // start or download must not sit under the next one.
@@ -1379,6 +1491,8 @@ struct FirstRunSetupView: View {
             // The search window belongs to the whole look for their oMLX, not to one
             // stage of it: ending it when the card changes would restart it forever.
             if setup.status?.usesOwnOmlx != true { connectingSince = nil }
+            // Wisp answered, so an earlier failed start is behind it.
+            if brain != .checking { startFailure = nil }
             if setup.busy == nil, setup.messageIsError {
                 setup.message = nil
                 setup.messageIsError = false
@@ -1386,6 +1500,11 @@ struct FirstRunSetupView: View {
         }
         .onAppear {
             drive(brain)
+            // A download that was already frozen when the window opened never changes
+            // `brain`, so the No progress clock starts here, as the notch's row does.
+            watchProgress(brain)
+            // A start that failed before this window opened (or reopened) is said here too.
+            if brain == .checking { startFailure = recordedStartFailure() }
             OnboardingTimeline.record("window opened at \(step)")
             // A window that opens on a model already ready (or stuck) never sees the
             // stage change that records it.
@@ -1418,6 +1537,13 @@ struct FirstRunSetupView: View {
             if !askKeyPressed { OnboardingTimeline.record("ask shortcut worked") }
             askKeyPressed = true
         }
+        // Wisp's own start stopped before it ever answered: say why at once, with
+        // Retry, instead of minutes of Starting Wisp.
+        .onReceive(NotificationCenter.default.publisher(for: .wispBackendStartFailed)) { note in
+            guard brain == .checking else { return }
+            startFailure = FirstRunBrain.startFailure(reason: note.userInfo?["reason"] as? String)
+            OnboardingTimeline.record("start failed")
+        }
         .onDisappear { permissions.stop() }
         // The automatic start of the person's oMLX may have been skipped (a request in
         // flight, a stale status) while the brain stayed the same: try again as either clears.
@@ -1427,6 +1553,23 @@ struct FirstRunSetupView: View {
 
     private func retryStart() {
         if case .startingEngine = brain { drive(brain) }
+    }
+
+    /// Times the download's bytes (DownloadProgressWatch): on every change of the
+    /// state, and once when the window opens. The clock only restarts when the
+    /// byte count moves, and is cleared outside a download.
+    private func watchProgress(_ state: FirstRunBrain) {
+        if case .downloading(_, _, _, let done, _, _) = state {
+            progressWatch.observe(doneGb: done, at: Date())
+        } else {
+            progressWatch.reset()
+        }
+    }
+
+    /// The one test question failed: the model is listed, but the window no longer
+    /// says it is ready (FirstRunBrain.testFailed).
+    private var setupTestFailed: Bool {
+        FirstRunBrain.testFailed(result: setup.testResult, passed: setup.testPassed, testing: setup.testing)
     }
 
     /// The parts of step 1 that need no click: switch the model on as soon as it
@@ -1474,7 +1617,7 @@ struct FirstRunSetupView: View {
     /// Google once an account is connected, About you once it was finished.
     private func isDone(_ s: Step) -> Bool {
         switch s {
-        case .brain: return brain.isReady
+        case .brain: return brain.isReady && !setupTestFailed
         case .permissions: return permissions.allAnswered
         case .google: return !google.status.accounts.isEmpty
         case .knowYou: return knowYouFinished
@@ -1513,7 +1656,7 @@ struct FirstRunSetupView: View {
         switch brain {
         case .downloading(_, _, let fraction, _, _, _): return "Model · \(Int(fraction * 100))%"
         case .waitingForEngine, .switching: return "Finishing…"
-        case .ready: return "Model ready"
+        case .ready: return FirstRunBrain.readyShort(testFailed: setupTestFailed)
         case .failed(_, _, _, let paused): return paused ? "Download stopped" : "Download failed"
         default: return nil
         }
@@ -1636,7 +1779,7 @@ struct FirstRunSetupView: View {
         switch brain {
         case .checking:
             _ = serviceSlowTick
-            return FirstRunBrain.serviceSlow(waited: Date().timeIntervalSince(openedAt))
+            return FirstRunBrain.startNeedsClick(failure: startFailure, waited: Date().timeIntervalSince(openedAt))
         case .startingEngine:
             _ = connectGraceTick
             return FirstRunBrain.startStalled(
@@ -1654,8 +1797,11 @@ struct FirstRunSetupView: View {
     @ViewBuilder private var tourModelStatus: some View {
         switch brain.footer(stalled: stalled) {
         case .ready:
-            Circle().fill(Theme.orb).frame(width: 9, height: 9).accessibilityHidden(true)
-            Text("Model ready").font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+            if !setupTestFailed {
+                Circle().fill(Theme.orb).frame(width: 9, height: 9).accessibilityHidden(true)
+            }
+            Text(FirstRunBrain.readyShort(testFailed: setupTestFailed))
+                .font(.system(size: 12)).foregroundStyle(Theme.textMuted)
         case .working(let text):
             ProgressView().controlSize(.small)
             Text(text).font(.system(size: 12)).foregroundStyle(Theme.textMuted).lineLimit(1)
@@ -1676,19 +1822,31 @@ struct FirstRunSetupView: View {
         case .detailedSetup:
             Button("Open detailed setup") { openDetailedSetup() }.buttonStyle(FirstRunButtonStyle())
         case .checkAgain:
-            Text("Wisp is slow to start").font(.system(size: 12)).foregroundStyle(Theme.textMuted).lineLimit(1)
+            Text(FirstRunBrain.slowStartLine(failed: startFailure != nil))
+                .font(.system(size: 12)).foregroundStyle(Theme.textMuted).lineLimit(1)
             checkAgainButton()
         }
     }
 
-    /// Asks the service once more when it has been slow to come up. Wisp keeps
-    /// starting it in the background either way. `takesReturn` on step 1's card
-    /// only: on the last step Return stays with Done.
+    /// When Wisp has been slow to come up, or its start failed: one click starts
+    /// it again and then asks it once more. Nothing else restarts a Wisp that
+    /// stopped while starting. `takesReturn` on step 1's card only: on the last
+    /// step Return stays with Done.
     @ViewBuilder private func checkAgainButton(takesReturn: Bool = false) -> some View {
-        let button = Button(setup.loading ? "Checking…" : "Check again") { Task { await setup.refresh() } }
+        let title = FirstRunBrain.startAgainTitle(failed: startFailure != nil, checking: setup.loading)
+        let button = Button(title) { startAgainAndCheck() }
             .buttonStyle(FirstRunButtonStyle(primary: takesReturn))
             .disabled(setup.loading)
         if takesReturn { button.keyboardShortcut(.defaultAction) } else { button }
+    }
+
+    /// Starts Wisp again (a start already under way, or a Wisp that is only slow,
+    /// is left alone), then asks it. A start that fails again says so again.
+    private func startAgainAndCheck() {
+        OnboardingTimeline.record("start retried")
+        startFailure = nil
+        restartWisp()
+        Task { await setup.refresh() }
     }
 
     /// Every Download, Retry, Resume and Download again goes through here, so the
@@ -1785,27 +1943,35 @@ struct FirstRunSetupView: View {
     @ViewBuilder private var modelCard: some View {
         switch brain {
         case .checking:
-            // Wisp's service is still starting: a cold first launch (bundle checks,
-            // first imports) can take minutes, so say so and show the time. Past the
-            // 3 minutes the notch allows too, it stops promising and offers a click.
-            TimelineView(.periodic(from: openedAt, by: 5)) { context in
-                let elapsed = context.date.timeIntervalSince(openedAt)
-                // `stalled` too, so the card and the footer change over together
-                // (Return moves from the footer to Check again at that moment).
-                if stalled || FirstRunBrain.serviceSlow(waited: elapsed) {
-                    OnboardingCard(icon: "hourglass", title: "Wisp is taking longer than usual to start",
-                                   detail: "It keeps trying in the background. Check again in a moment, "
-                                       + "or open the detailed setup to see what's going on.") {
-                        HStack(spacing: 8) {
-                            checkAgainButton(takesReturn: true)
-                            Button("Open detailed setup") { openDetailedSetup() }.buttonStyle(FirstRunButtonStyle())
+            if let failure = startFailure {
+                // Wisp's own start stopped before it answered: the cause, and the one
+                // click that starts it again.
+                OnboardingCard(icon: "exclamationmark.triangle", title: FirstRunBrain.startFailedTitle, detail: failure) {
+                    checkAgainButton(takesReturn: true)
+                }
+            } else {
+                // Wisp's service is still starting: a cold first launch (bundle checks,
+                // first imports) can take minutes, so say so and show the time. Past the
+                // 3 minutes the notch allows too, it stops promising and offers a click.
+                TimelineView(.periodic(from: openedAt, by: 5)) { context in
+                    let elapsed = context.date.timeIntervalSince(openedAt)
+                    // `stalled` too, so the card and the footer change over together
+                    // (Return moves from the footer to Check again at that moment).
+                    if stalled || FirstRunBrain.serviceSlow(waited: elapsed) {
+                        OnboardingCard(icon: "hourglass", title: "Wisp is taking longer than usual to start",
+                                       detail: "Choose Check again to give it another go, "
+                                           + "or open the detailed setup to see what's going on.") {
+                            HStack(spacing: 8) {
+                                checkAgainButton(takesReturn: true)
+                                Button("Open detailed setup") { openDetailedSetup() }.buttonStyle(FirstRunButtonStyle())
+                            }
                         }
-                    }
-                } else {
-                    let waited = FirstRunBrain.waited(Int(elapsed))
-                    OnboardingCard(icon: "hourglass", title: "Starting Wisp…",
-                                   detail: "The first launch can take a few minutes." + (waited.map { " (\($0))" } ?? "")) {
-                        ProgressView().controlSize(.small)
+                    } else {
+                        let waited = FirstRunBrain.waited(Int(elapsed))
+                        OnboardingCard(icon: "hourglass", title: "Starting Wisp…",
+                                       detail: "The first launch can take a few minutes." + (waited.map { " (\($0))" } ?? "")) {
+                            ProgressView().controlSize(.small)
+                        }
                     }
                 }
             }
@@ -1921,7 +2087,10 @@ struct FirstRunSetupView: View {
                 }
             }
         case .ready(let label):
-            OnboardingCard(icon: "checkmark.circle.fill", title: "\(label) is ready",
+            // Ready only means the model is listed. Once its test question has failed,
+            // the card says that instead, with the reason and Try again.
+            OnboardingCard(icon: setupTestFailed ? "exclamationmark.triangle" : "checkmark.circle.fill",
+                           title: FirstRunBrain.readyTitle(label: label, testFailed: setupTestFailed),
                            detail: setup.testing ? "Checking it answers…" : (setup.testResult ?? "Wisp can answer now.")) {
                 if setup.testing {
                     ProgressView().controlSize(.small)
@@ -2061,7 +2230,7 @@ struct FirstRunSetupView: View {
     private func announce(_ state: FirstRunBrain) {
         let text: String
         switch state {
-        case .ready(let label): text = "\(label) is ready"
+        case .ready(let label): text = FirstRunBrain.readyTitle(label: label, testFailed: setupTestFailed)
         case .failed(_, _, _, let paused): text = paused ? "Download stopped" : "Download failed"
         case .unavailable: text = "Wisp can't set this up on its own"
         default: return
@@ -2140,7 +2309,9 @@ struct FirstRunSetupView: View {
             Text(Self.purposeLine).font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true).padding(.bottom, 10)
             ForEach(Self.helpsYourDay, id: \.title) { item in
-                OnboardingCard(icon: item.icon, title: item.title, detail: item.line) { EmptyView() }
+                OnboardingCard(icon: item.icon, title: item.title,
+                               detail: Self.helpLine(title: item.title, line: item.line,
+                                                     voiceKeyRegistered: voiceKeyRegistered)) { EmptyView() }
             }
             OnboardingHeading(title: "Wisp lives at the top of your screen",
                               subtitle: "No window to find. It's always one gesture away.")
@@ -2204,7 +2375,8 @@ struct FirstRunSetupView: View {
         if let at = heldBackAt {
             TimelineView(.periodic(from: at, by: 1)) { context in
                 if context.date.timeIntervalSince(at) < FirstRunSetup.heldBackShownFor {
-                    Label(FirstRunSetup.heldBackLine(brain.footer(stalled: stalled)), systemImage: "hourglass")
+                    Label(FirstRunSetup.heldBackLine(brain.footer(stalled: stalled), startFailed: startFailure != nil),
+                          systemImage: "hourglass")
                         .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
                         .padding(.horizontal, 12).padding(.vertical, 8)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -2254,8 +2426,11 @@ struct FirstRunSetupView: View {
                     Text(slept).font(.system(size: 11)).foregroundStyle(Theme.textMuted).padding(.top, 2)
                 }
             case .ready(let label):
-                OnboardingCard(icon: "checkmark.circle.fill", title: "\(label) is ready",
-                               detail: "Wisp can answer now. Choose Done to open it.") { OnboardingPill(text: "Ready") }
+                OnboardingCard(icon: setupTestFailed ? "exclamationmark.triangle" : "checkmark.circle.fill",
+                               title: FirstRunBrain.readyTitle(label: label, testFailed: setupTestFailed),
+                               detail: FirstRunBrain.readyTourDetail(testFailed: setupTestFailed)) {
+                    if !setupTestFailed { OnboardingPill(text: "Ready") }
+                }
             default:
                 // Not downloading: whatever the footer offers (Download, Retry, a
                 // spinner while the engine starts) belongs up here as well.
@@ -2285,10 +2460,25 @@ struct FirstRunSetupView: View {
         ("text.bubble", "Ask", "Ask anything, like \u{201C}what did Sam say about Friday?\u{201D} or \u{201C}remind me to call Mum at 6\u{201D}."),
         ("brain", "Remembers for you", "It slowly learns the people and plans in your mail, and the facts you tell it. "
             + "You can see and remove anything in Memory."),
-        ("waveform", "Voice", "Press \u{2325} \u{21E7} Space and just talk. Wisp can read its answers aloud too."),
+        ("waveform", voiceTitle, voiceLine(registered: true)),
         ("lock.shield", "Private by design", "Wisp's model runs on this Mac, so what it reads stays here "
             + "unless you choose a cloud model in Settings."),
     ]
+
+    nonisolated static let voiceTitle = "Voice"
+
+    /// The Voice card's line. Like the Keyboard card below it, it teaches ⌥⇧Space
+    /// only when the key is Wisp's: when another app owns it, pressing it does
+    /// nothing here, and the mic in Ask is the way to talk.
+    nonisolated static func voiceLine(registered: Bool) -> String {
+        registered ? "Press \u{2325} \u{21E7} Space and just talk. Wisp can read its answers aloud too."
+                   : "Use the mic button in Ask to talk. Wisp can read its answers aloud too."
+    }
+
+    /// A card's line on this Mac: its own, except Voice, which follows the key.
+    nonisolated static func helpLine(title: String, line: String, voiceKeyRegistered: Bool) -> String {
+        title == voiceTitle ? voiceLine(registered: voiceKeyRegistered) : line
+    }
 
     /// Opt-in, off by default: macOS's answer is read, never assumed, and only
     /// the switch changes it.

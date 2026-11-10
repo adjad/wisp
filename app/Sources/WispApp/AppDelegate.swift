@@ -690,6 +690,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 UserDefaults.standard.set(true, forKey: FirstRunSetup.aboutYouDecidedKey)
                 UserDefaults.standard.set(Date(), forKey: KnowYouSecondOffer.decidedAtKey)
             },
+            // The notch can't be opened during setup, so the window carries why Wisp's
+            // start failed and the same Retry the notch has. A service that answers is
+            // left alone: only its next answer ends the notch's "Starting Wisp…" hold.
+            recordedStartFailure: { [weak self] in self?.model.serviceStartFailure },
+            restartWisp: { [weak self] in
+                guard let self, self.backend.lastReachable != true else { return }
+                self.model.retryService()
+            },
             closeForNow: { [weak self] in
                 // Put aside while the model downloads: the first Brief is owed, so it
                 // is composed the moment the model answers, before Wisp is opened.
@@ -794,6 +802,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             var request = URLRequest(url: WispClient.baseURL.appendingPathComponent("setup/status"))
             request.timeoutInterval = 10
             var answered = false
+            // When the service first said Wisp can't answer, in this run of such answers.
+            var notReadySince: Date?
             while !Task.isCancelled {
                 // Quick until the service first answers (a cold first launch takes
                 // minutes); then every 5 s while a notification is promised, else
@@ -808,9 +818,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 answered = true
                 let canAnswer = FirstRunSetup.canAnswer(ready: ready,
                                                         remoteOnly: object["remote_only"] as? Bool == true)
-                self.setupCanAnswer = canAnswer
+                // After setup was finished, "can't answer" at launch is usually the model
+                // warming up: no setup cue and no Finish Setup… until it has lasted
+                // (FirstRunSetup.warmUpGrace). An unfinished setup is told at once.
+                if canAnswer { notReadySince = nil } else if notReadySince == nil { notReadySince = Date() }
+                let notReadyFor = notReadySince.map { Date().timeIntervalSince($0) } ?? 0
+                let setupFinished = !FirstRunSetup.isUnfinished({ UserDefaults.standard.bool(forKey: $0) })
+                self.setupCanAnswer = FirstRunSetup.knownCanAnswer(canAnswer, setupFinished: setupFinished,
+                                                                   notReadyFor: notReadyFor)
                 let cue = FirstRunSetup.setupCue(self.model.setupCard, canAnswer: canAnswer,
-                                                 firstRunWindowUp: self.firstRunWindow != nil)
+                                                 firstRunWindowUp: self.firstRunWindow != nil,
+                                                 setupFinished: setupFinished, notReadyFor: notReadyFor)
                 if cue != self.model.setupCard { self.model.setupCard = cue }
                 guard canAnswer else { continue }
                 self.settleFirstBrief(canAnswer: true)
@@ -833,15 +851,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// says it instead: a dot on the closed bar and a line in the open panel,
     /// until the person has opened it.
     private func tellReady() {
+        // ⌥ Space is taught only when it is Wisp's: another app may own the key.
+        let askKey = hotKey?.registered ?? false
         Task { @MainActor [weak self] in
             let shown = await Notifications.postIfAllowed(id: Notifications.readyId, title: ReadyNotice.title,
-                                                          body: ReadyNotice.body)
+                                                          body: ReadyNotice.body(askKeyRegistered: askKey))
             OnboardingTimeline.record(shown ? "ready notice delivered" : "ready notice fell back to notch")
             guard !shown, let self else { return }
             self.readyLineUnseen = true
             // An open setup card is left to its Done.
             if self.model.setupCard == .hidden { self.model.setupCard = .ready }
-            self.model.showTransientNotice(ReadyNotice.notchLine, duration: ReadyNotice.unseenFor, info: true)
+            self.model.showTransientNotice(ReadyNotice.notchLine(askKeyRegistered: askKey),
+                                           duration: ReadyNotice.unseenFor, info: true)
             if self.presentation.desired == .chat { self.readyLineSeen() }
         }
     }
@@ -857,8 +878,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard readyLineUnseen, model.knowYou == nil, model.resetCard == nil else { return }
         readyLineUnseen = false
         if model.setupCard == .ready { model.setupCard = .hidden }
-        guard model.transientNotice == ReadyNotice.notchLine else { return }
-        model.showTransientNotice(ReadyNotice.notchLine, duration: ReadyNotice.seenFor, info: true)
+        guard let line = model.transientNotice, ReadyNotice.isNotchLine(line) else { return }
+        model.showTransientNotice(line, duration: ReadyNotice.seenFor, info: true)
     }
 
     /// The last step was reached (or setup finished): the first Brief is owed.

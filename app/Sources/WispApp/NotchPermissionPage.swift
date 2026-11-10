@@ -114,8 +114,10 @@ enum NotchPermissionPage {
     static func comesBack(before: State, now: State) -> Bool { now == .allowed && before != .allowed }
 
     /// The sentence under a row's purpose: what happens next, in the state it is in.
+    /// `calendarAddOnly` is macOS's answer for Calendar (FirstRunPermissions.isAddOnly):
+    /// nil reads it from this Mac.
     static func next(_ item: Item, _ state: State, waiting: Bool = false, reset: Bool = false,
-                     unanswered: Bool = false, contactsWait: Bool = false) -> String {
+                     unanswered: Bool = false, contactsWait: Bool = false, calendarAddOnly: Bool? = nil) -> String {
         if item == .contacts && contactsWait {
             return "It's useful once Full Disk Access lets Wisp read Messages, so it waits for that."
         }
@@ -140,10 +142,16 @@ enum NotchPermissionPage {
                 return "Wisp tucks away so you can answer macOS. It asks once."
             }
         case .notAllowed:
+            if FirstRunPermissions.isAddOnly(item, state, calendarAddOnly: calendarAddOnly) { return calendarAddOnlyNote }
             let page = "Wisp is off in System Settings. In the page that opens, switch on Wisp."
             return item == .fullDiskAccess || item == .screenRecording ? page + " " + relaunchNote : page
         }
     }
+
+    /// Calendar set to Add Events Only: Wisp is already on in that page, so there is
+    /// no switch to flip. The button is still Open System Settings.
+    static let calendarAddOnlyNote = "Wisp can only add events, not read your calendar. In the page that opens, "
+        + "click Options next to Wisp and choose Full Access."
 
     /// Full Disk Access and Screen Recording, on the page: said before the Settings
     /// page opens, because Quit & Reopen would otherwise look like a crash.

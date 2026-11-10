@@ -21,10 +21,26 @@ enum FirstBrief {
 
 /// "Wisp is ready", for someone who never allowed notifications: the notch
 /// says it instead, in the open panel, until they have opened it and seen it.
+/// Both teach ⌥ Space only when the key is Wisp's (GlobalHotKey.registered):
+/// one another app owns does nothing here, so the top of the screen is named.
 enum ReadyNotice {
     static let title = "Wisp is ready"
-    static let body = "Press ⌥ Space and ask about your day."
-    static let notchLine = "Wisp is ready. Ask about your day here, or press ⌥ Space any time."
+
+    static func body(askKeyRegistered: Bool) -> String {
+        askKeyRegistered ? "Press ⌥ Space and ask about your day."
+                         : "Ask about your day from the top of your screen."
+    }
+
+    static func notchLine(askKeyRegistered: Bool) -> String {
+        askKeyRegistered ? "Wisp is ready. Ask about your day here, or press ⌥ Space any time."
+                         : "Wisp is ready. Ask about your day here, or open Wisp from the top of the screen any time."
+    }
+
+    /// Whether a notice on screen is the ready line, whichever way it was said.
+    static func isNotchLine(_ text: String?) -> Bool {
+        text == notchLine(askKeyRegistered: true) || text == notchLine(askKeyRegistered: false)
+    }
+
     /// How long the line stays once the panel is open in front of the person.
     static let seenFor: TimeInterval = 10
     /// Unseen, it waits this long at most (a day): long enough for the next
