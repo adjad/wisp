@@ -129,6 +129,40 @@ struct ProactiveChecks {
               "an Open in Gmail handoff")
         check(!ProactiveOutcome.parse(Data("not json".utf8)).ok == false, "unparseable 2xx is ok (no error named)")
 
+        // A reply that wasn't sent: the card shows the service's sentence, never
+        // its code, and what it offers next follows the status.
+        let confirm = ProactiveOutcome.parse(Data(#"{"ok":false,"status":"confirm","error":"recipients_changed","result":"Mail will send this to a@b.c. Tap Send to confirm.","recipient":"a@b.c"}"#.utf8))
+        check(!confirm.ok && confirm.status == "confirm" && confirm.message == "Mail will send this to a@b.c. Tap Send to confirm.",
+              "a recipient change reads as its sentence: \(confirm.message)")
+        check(confirm.refusal(method: "email_reply") == .confirm("Mail will send this to a@b.c. Tap Send to confirm."),
+              "a recipient change keeps Send, for a fresh tap")
+        let unconfirmed = ProactiveOutcome.parse(Data(#"{"ok":false,"status":"unknown","error":"unconfirmed","result":"Mail didn't confirm the reply. Check Mail before trying again."}"#.utf8))
+        check(unconfirmed.message == "Mail didn't confirm the reply. Check Mail before trying again."
+              && unconfirmed.refusal(method: "email_reply") == .unconfirmed(unconfirmed.message),
+              "an unconfirmed send reads as its sentence and offers no second Send: \(unconfirmed.message)")
+        let locked = ProactiveOutcome.parse(Data(#"{"ok":false,"status":"locked","error":"Check Messages before sending again: the last send wasn't confirmed."}"#.utf8))
+        check(locked.refusal(method: "text_reply") == .unconfirmed("Check Messages before sending again: the last send wasn't confirmed."),
+              "a locked card offers no second Send")
+        let crashed = ProactiveOutcome.parse(Data(#"{"ok":false,"status":"unknown","error":"KeyError"}"#.utf8))
+        check(crashed.message.isEmpty
+              && crashed.refusal(method: "email_reply") == .unconfirmed("Wisp couldn't confirm the reply. Check Mail before trying again.")
+              && crashed.refusal(method: "text_reply") == .unconfirmed("Wisp couldn't confirm the text. Check Messages before trying again."),
+              "a bare code is never shown; an unknown reply says where to check")
+        let refused = ProactiveOutcome.parse(Data(#"{"ok":false,"status":"refused","error":"prepare_failed","result":"Mail couldn't prepare this reply. Nothing was sent."}"#.utf8))
+        check(refused.refusal(method: "email_reply") == .retry("Mail couldn't prepare this reply. Nothing was sent."),
+              "a refused reply can be tried again, with the reason")
+        let unsentText = ProactiveOutcome.parse(Data(#"{"ok":false,"status":"failed","error":"The text wasn't sent. Try again.","result":"(the message was NOT sent: unknown error)"}"#.utf8))
+        check(unsentText.message == "The text wasn't sent. Try again.", "a sentence in error wins over the send tool's own line")
+        check(ProactiveOutcome.parse(Data(#"{"ok":false,"error":"send_unavailable","result":"open_in_mail"}"#.utf8))
+                .refusal(method: "email_reply") == .retry("That didn't go through. Try again."),
+              "neither a code nor a handoff token is shown")
+        check(ProactiveOutcome.parse(Data(#"{"ok":false,"status":"unknown","error":"Native result was not confirmed"}"#.utf8))
+                .refusal(method: "reminder") == .retry("Native result was not confirmed"),
+              "only a reply is ever held back from a second try")
+        check(handed.message == "Finish in Calendar"
+              && ProactiveOutcome.parse(Data(#"{"ok":true,"status":"sent","result":"Reply sent to a@b.c."}"#.utf8)).message.isEmpty,
+              "a success never takes its words from result")
+
         // One sentence on top, the work behind it, and the three rows' lines.
         let top = decode(#"{"lede":"Hack Day fills your midday. More later.","summary":"Ignored.","stats":{"read":49,"found":3,"drafted":1,"as_of":5}}"#)
         check(top?.headline == "Hack Day fills your midday." && top?.stats == .init(read: 49, found: 3, drafted: 1, asOf: 5),

@@ -550,16 +550,60 @@ struct ProactiveOutcome: Equatable {
     /// "open_in_calendar", "open_in_gmail", … when the engine handed the step back.
     var handoff: String = ""
     var url: String = ""
+    /// The service's word for how a fire ended ("sent", "confirm", "refused",
+    /// "unknown", "locked", "blocked", …); empty when it sent none.
+    var status: String = ""
 
     /// A 2xx reply is a success unless it says `ok: false` (or names an error).
     static func parse(_ data: Data) -> ProactiveOutcome {
         let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         let error = (obj["error"] as? String) ?? ""
         let ok = (obj["ok"] as? Bool) ?? error.isEmpty
-        let message = [obj["detail"], obj["message"], obj["error"]].compactMap { $0 as? String }.first { !$0.isEmpty } ?? ""
+        var message = [obj["detail"], obj["message"], obj["error"]].compactMap { $0 as? String }.first { !$0.isEmpty } ?? ""
         let handoff = [obj["result"], obj["handoff"]].compactMap { $0 as? String }.first { $0.hasPrefix("open_") } ?? ""
         let url = [obj["open_url"], obj["url"]].compactMap { $0 as? String }.first { !$0.isEmpty } ?? ""
-        return ProactiveOutcome(ok: ok, message: message, handoff: handoff, url: url)
+        if !ok, !isSentence(message) {
+            // A reply that wasn't sent names a code in `error` ("recipients_changed",
+            // "unconfirmed") and says it in `result`. A card never shows the code.
+            let said = (obj["result"] as? String) ?? ""
+            message = isSentence(said) && !said.hasPrefix("open_") ? said : ""
+        }
+        return ProactiveOutcome(ok: ok, message: message, handoff: handoff, url: url,
+                                status: (obj["status"] as? String) ?? "")
+    }
+
+    /// Words for a person, not a code like "recipients_changed" or "KeyError".
+    private static func isSentence(_ text: String) -> Bool { text.contains { $0 == " " } }
+
+    /// What a card does with a fire the service did not report as done.
+    enum Refusal: Equatable {
+        /// Nothing happened. The reason, and the button to try again.
+        case retry(String)
+        /// Nothing was sent: Mail reported other recipients than the card
+        /// showed. The card shows them, and Send waits for a fresh tap.
+        case confirm(String)
+        /// A reply that may have gone out. The same send is never offered again.
+        case unconfirmed(String)
+    }
+
+    /// How a card takes this outcome when it isn't `ok`. `method` is the
+    /// card's own ("email_reply", "text_reply", "reminder", …): only a reply
+    /// can be waiting for a confirm, or be out with no answer.
+    func refusal(method: String) -> Refusal {
+        let reply = method == "email_reply" || method == "text_reply"
+        if reply, status == "confirm" {
+            return .confirm(message.isEmpty ? "The recipients changed. Check them, then tap Send to confirm." : message)
+        }
+        if reply, status == "unknown" || status == "locked" {
+            return .unconfirmed(message.isEmpty ? Self.unconfirmedLine(method: method) : message)
+        }
+        return .retry(message.isEmpty ? "That didn't go through. Try again." : message)
+    }
+
+    /// What a reply card says when nothing answered whether it was sent.
+    static func unconfirmedLine(method: String) -> String {
+        method == "text_reply" ? "Wisp couldn't confirm the text. Check Messages before trying again."
+            : "Wisp couldn't confirm the reply. Check Mail before trying again."
     }
 }
 

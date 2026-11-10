@@ -53,6 +53,12 @@ final class ProactiveActions: ObservableObject {
         case sending
         case done(String)
         case failed(String)
+        /// Nothing was sent: Mail reported other recipients than the card
+        /// showed. The card shows them now, and Send waits for a fresh tap.
+        case confirm(String)
+        /// A reply that may have gone out: the card says where to check and
+        /// offers no second Send.
+        case unconfirmed(String)
     }
 
     @Published var fires: [String: Fire] = [:]
@@ -166,7 +172,24 @@ final class ProactiveActions: ObservableObject {
         do {
             let outcome = try await post(today, "/assistant/proactive/cards/\(Self.segment(card.id))/fire", body: body)
             guard outcome.ok else {
-                fires[card.id] = .failed(outcome.message.isEmpty ? "That didn't go through. Try again." : outcome.message)
+                // A reply the service didn't send may have changed its card: other
+                // recipients after a confirm, or a lock after an unconfirmed send.
+                // Read the plan again so the card shows, and the next tap repeats,
+                // the recipient the service now holds. The draft stays open and
+                // keeps the person's edits: both live here, not in the plan.
+                switch outcome.refusal(method: action.method) {
+                case .confirm(let line):
+                    // Still "Sending…" until the card shows the new recipients,
+                    // so no tap can repeat the old ones.
+                    await today.refresh(afterMutation: true)
+                    fires[card.id] = .confirm(line)
+                case .unconfirmed(let line):
+                    fires[card.id] = .unconfirmed(line)
+                    await today.refresh(afterMutation: true)
+                case .retry(let line):
+                    fires[card.id] = .failed(line)
+                    if action.sendsDraft { await today.refresh(afterMutation: true) }
+                }
                 return
             }
             if let url = URL(string: outcome.url), !outcome.url.isEmpty {
@@ -607,7 +630,7 @@ struct ProactiveBriefSection: View {
                 draftEditor(card, action, fire: fire, withSend: sendInDraft).revealInPanel("draft-\(card.id)")
             }
             HStack(alignment: .center, spacing: 12) {
-                if let action, !sendInDraft { fireButton(card, action, fire) }
+                if let action, !sendInDraft, !isUnconfirmed(fire) { fireButton(card, action, fire) }
                 if action?.method == "block_time" {
                     secondary("Pick another time") { model.tab = .day }
                         .help("Open Day to choose a different time")
@@ -640,6 +663,15 @@ struct ProactiveBriefSection: View {
             .padding(.top, 3)
             if case .failed(let reason) = fire {
                 Text(reason).font(.wisp(size: 11)).foregroundStyle(Theme.bad)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if case .confirm(let line) = fire {
+                // Not a failure: nothing was sent, and Send waits for a fresh tap.
+                Text(line).font(.wisp(size: 11)).foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if case .unconfirmed(let line) = fire {
+                Text(line).font(.wisp(size: 11)).foregroundStyle(Theme.warn)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let error = actions.cardErrors[card.id] {
@@ -722,6 +754,12 @@ struct ProactiveBriefSection: View {
         return false
     }
 
+    /// The reply may have gone out: the card shows no Send and no Try again.
+    private func isUnconfirmed(_ fire: ProactiveActions.Fire?) -> Bool {
+        if case .unconfirmed = fire { return true }
+        return false
+    }
+
     private func draftEditor(_ card: ProactiveCard, _ action: ProactiveCard.Action, fire: ProactiveActions.Fire? = nil,
                              withSend: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -747,7 +785,7 @@ struct ProactiveBriefSection: View {
             if actions.drafts[card.id].map({ $0 != action.draft }) == true {
                 Text("Edited — Wisp sends your version.").font(.wisp(size: 10.5)).foregroundStyle(Theme.textMuted)
             }
-            if withSend {
+            if withSend, !isUnconfirmed(fire) {
                 // Send, under the words it sends and the person it sends them to.
                 fireButton(card, action, fire).padding(.top, 2)
             }
