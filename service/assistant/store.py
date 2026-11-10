@@ -3143,7 +3143,12 @@ class AssistantStore:
 
         Each twin retains its own timestamp (native sync can truncate seconds).
         The private snapshot is checked again atomically when enqueueing.
+
+        Reaches back as far as a late "due" alert is still shown, so a tick
+        that comes after a sleep or a restart still sees the reminder.
+        due_reminders decides which stages are still owed.
         """
+        from service.assistant.reminders import DUE_EXPIRY_S
         now = now if now is not None else time.time()
         with self._lock:
             rows = self._db.execute(
@@ -3151,7 +3156,7 @@ class AssistantStore:
                 "LEFT JOIN assistant_schedule_versions v ON v.commitment_id=commitments.id "
                 "WHERE status='active' AND when_ts >= ? AND when_ts <= ?"
                 + _seed_clause() + " ORDER BY when_ts ASC",
-                (now - 300, now + horizon_days * 86400)).fetchall()
+                (now - DUE_EXPIRY_S, now + horizon_days * 86400)).fetchall()
         members = {r["id"]: {k: r[k] for k in ("title", "kind", "context", "when_ts", "status", "generation", "all_day")}
                    for r in rows}
         candidates = self._collapse([dict(r) for r in rows])

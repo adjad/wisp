@@ -69,6 +69,71 @@ def test_wisp_only_reminder_stays_current_for_half_an_hour(store, monkeypatch):
     assert store.pending_events() == []
 
 
+@pytest.mark.parametrize("late", [120, 600, DUE_EXPIRY_S - 1])
+def test_wisp_only_reminder_still_alerts_after_a_late_tick(store, late):
+    """The Mac slept, or the backend restarted, across the reminder's time."""
+    _upgrade(store)
+    now = time.time()
+    store.add_manual("Call the dentist", now + 20)
+    when = now + 20
+    [note] = due_reminders(store, when + late)
+    assert note["stage"] == "due" and note["title"] == "Call the dentist"
+    assert note["when_label"] == "now"
+    assert note["expires_at"] == pytest.approx(when + DUE_EXPIRY_S)
+    assert store.event(note["event_id"])["expires_at"] == pytest.approx(when + DUE_EXPIRY_S)
+    # Queued once: the next tick, and a tick after the app acknowledged, add nothing.
+    assert due_reminders(store, when + late + 30) == []
+    assert store.acknowledge_event(note["event_id"], "reminder") is True
+    assert due_reminders(store, when + late + 60) == []
+
+
+def test_wisp_only_reminder_is_not_alerted_past_half_an_hour(store):
+    _upgrade(store)
+    now = time.time()
+    store.add_manual("Call the dentist", now + 20)
+    assert due_reminders(store, now + 20 + DUE_EXPIRY_S + 1) == []
+    assert due_reminders(store, now + 20 + 2 * 3600) == []
+
+
+def test_lead_time_alert_is_still_dropped_a_minute_after_the_start(store):
+    """ "In 10 min" is wrong once the meeting has begun, however late the tick."""
+    _upgrade(store)
+    now = time.time()
+    store.add_manual("Fixture standup", now + 20, kind="meeting")
+    assert due_reminders(store, now + 20 + 61) == []
+    assert due_reminders(store, now + 20 + 120) == []
+    assert due_reminders(store, now + 20 + 600) == []
+
+
+def test_reminder_added_with_a_time_already_past_does_not_alert_at_once(store):
+    """The half-hour reach is for a reminder that was waiting, not one added late."""
+    _upgrade(store)
+    now = time.time()
+    store.add_manual("Call the dentist", now - 600)
+    assert due_reminders(store, now) == []
+    assert due_reminders(store, now + 30) == []
+
+
+def test_overdue_reminder_first_read_from_reminders_does_not_alert(store):
+    _upgrade(store)
+    now = time.time()
+    store.sync_source("reminders", [
+        {"source_id": "fixture-1", "title": "Water the plants", "kind": "reminder",
+         "when_ts": now - 600}],
+        diagnostics={"authorized": True, "snapshot_started_at": time.time()})
+    assert [c["title"] for c in store.reminder_snapshot(now)] == ["Water the plants"]
+    assert due_reminders(store, now) == []
+
+
+def test_late_alert_is_skipped_when_a_native_alarm_covered_it(store, monkeypatch):
+    """macOS showed its own alarm for this one, so a late tick adds nothing."""
+    _upgrade(store)
+    now = time.time()
+    store.add_manual("Call the dentist", now + 20)
+    monkeypatch.setattr(reminders, "_native_alarm_covers", lambda s, c: True)
+    assert due_reminders(store, now + 20 + 300) == []
+
+
 def test_legacy_row_without_target_time_expires_from_its_payload(store, monkeypatch):
     _upgrade(store)
     now = time.time()
