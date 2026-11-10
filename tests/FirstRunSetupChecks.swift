@@ -1063,6 +1063,47 @@ struct FirstRunSetupChecks {
         check(failure?.oldWispTrashed == false, "The copy failed before anything was Trashed")
         check(leftovers.isEmpty, "No hidden .Wisp-moving copy is left in Applications: \(leftovers)")
         check(FileManager.default.fileExists(atPath: source.path), "The download is left where it was")
+        // The move runs off the main thread (about a gigabyte in tens of thousands of
+        // files), under a progress window the caller keeps alive meanwhile. From a
+        // background thread it ends the same way, and its failure comes back as it was thrown.
+        var failedOffMain: MoveToApplications.MoveFailure?
+        do {
+            try MoveToApplications.offMainThread({
+                try MoveToApplications.move(from: source, original: source, target: apps.appendingPathComponent("Wisp.app"))
+            }, wait: { usleep(1_000) })
+        } catch let error as MoveToApplications.MoveFailure {
+            failedOffMain = error
+        } catch {}
+        check(failedOffMain?.oldWispTrashed == false, "Off the main thread the failed copy reports the same thing")
+        check(((try? FileManager.default.contentsOfDirectory(atPath: apps.path)) ?? ["?"]).isEmpty
+              && FileManager.default.fileExists(atPath: source.path),
+              "and leaves no staging copy and the download where it was")
+        final class Flag: @unchecked Sendable {
+            private let lock = NSLock()
+            private var value = false
+            func set() { lock.lock(); value = true; lock.unlock() }
+            var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+        }
+        let ranOffMain = Flag()
+        let callerWaited = DispatchSemaphore(value: 0)
+        var waits = 0
+        do {
+            try MoveToApplications.offMainThread({
+                // Not done before the caller has turned at least once.
+                _ = callerWaited.wait(timeout: .now() + 10)
+                if !Thread.isMainThread { ranOffMain.set() }
+            }, wait: {
+                if waits == 0 { callerWaited.signal() }
+                waits += 1
+                usleep(1_000)
+            })
+        } catch {
+            check(false, "Work that throws nothing must not throw: \(error)")
+        }
+        check(ranOffMain.isSet, "The move's work runs off the main thread")
+        check(waits > 0, "and the caller keeps turning (its window, the Dock icon) until the work is done")
+        check(MoveToApplications.progressTitle == "Moving Wisp to Applications…"
+              && MoveToApplications.progressDetail.contains("reopens"), "The progress window says what is happening")
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: locked.path)
         try? FileManager.default.removeItem(at: moveScratch)
 

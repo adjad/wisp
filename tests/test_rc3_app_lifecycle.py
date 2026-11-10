@@ -82,3 +82,69 @@ def test_the_question_names_both_copies_and_defaults_to_no_change_on_escape():
     assert 'addButton(withTitle: "Keep the Running One").keyEquivalent = "\\u{1b}"' in ask
     assert "return alert.runModal() == .alertFirstButtonReturn" in ask
     assert "terminate" not in ask
+
+
+# -- Move to Applications no longer freezes Wisp (a01-app-lifecycle#5) ---------------
+
+MOVE_SIGNATURE = "static func move(from bundle: URL, original: URL?, target: URL = URL(fileURLWithPath: destination)) throws"
+
+
+def test_the_move_runs_off_the_main_thread_under_a_progress_window():
+    """Copying the bundle (about a gigabyte) and clearing its quarantine marks on the
+    main thread left nothing on screen and a Dock icon that didn't answer."""
+    move = _code("MoveToApplications.swift")
+    offer = _body(move, "static func offerIfNeeded(")
+    # Still only after the person's clicks, and the same synchronous move.
+    assert offer.index("ask.runModal()") < offer.index("replace.runModal()") < offer.index("try runShowingProgress {")
+    assert "try runShowingProgress { try move(from: bundle, original: original) }" in offer
+    assert offer.count("move(from:") == 1
+    progress = _body(move, "private static func runShowingProgress(")
+    shown = progress.index("window.makeKeyAndOrderFront(nil)")
+    begun = progress.index("NSApp.beginModalSession(for: window)")
+    assert shown < begun < progress.index("try offMainThread(work)")
+    # The window goes away however the move ends.
+    closing = _body(progress, "defer")
+    assert "NSApp.endModalSession(session)" in closing and "window.orderOut(nil)" in closing
+    assert "NSApp.runModalSession(session)" in progress
+    # A session this loop ends by itself: runModal would need a click to return.
+    assert "runModal(" not in progress
+    worker = _body(move, "static func offMainThread(")
+    assert worker.index("DispatchQueue.global(") < worker.index("try work()")
+    assert "while !result.isFinished { wait() }" in worker
+    assert "if let failure = result.failure { throw failure }" in worker
+    assert "DispatchQueue.main" not in worker
+
+
+def test_the_progress_window_has_no_buttons_and_stays_in_view():
+    move = _code("MoveToApplications.swift")
+    window = _body(move, "private static func progressWindow() -> NSWindow")
+    # No close button; minimizable like every Wisp window.
+    assert "styleMask: [.titled, .miniaturizable]" in window
+    assert "window.hidesOnDeactivate = false" in window
+    assert "window.title = progressTitle" in window and "isIndeterminate = true" in window
+    assert "NSButton" not in window and "addButton" not in window
+    text = (SOURCES / "MoveToApplications.swift").read_text(encoding="utf-8")
+    assert 'static let progressTitle = "Moving Wisp to Applications…"' in text
+
+
+def test_the_move_itself_is_unchanged():
+    """Copy, Trash the old one, swap in, clear quarantine, then Trash the download:
+    the order, the staging cleanup and what gets copied are as they were."""
+    move = _code("MoveToApplications.swift")
+    body = _body(move, MOVE_SIGNATURE)
+    steps = ["try fm.copyItem(at: bundle, to: staging)", "try fm.trashItem(at: target, resultingItemURL: nil)",
+             "try fm.moveItem(at: staging, to: target)", 'xattr.arguments = ["-dr", "com.apple.quarantine", target.path]',
+             "xattr.waitUntilExit()", "try? fm.trashItem(at: original, resultingItemURL: nil)"]
+    positions = [body.index(step) for step in steps]
+    assert positions == sorted(positions)
+    assert "removeItem(at: staging)" in body and "MoveFailure(underlying: error, oldWispTrashed: oldTrashed)" in body
+    # It is run from a background queue, so it must not touch the main actor or AppKit.
+    for forbidden in ("NSApp", "NSAlert", "MainActor", "DispatchQueue.main", "NSWorkspace"):
+        assert forbidden not in body, forbidden
+    assert "@MainActor" not in move[move.index(MOVE_SIGNATURE) - 120:move.index(MOVE_SIGNATURE)]
+    # The running bundle is what is copied, as before.
+    offer = _body(move, "static func offerIfNeeded(")
+    assert "let bundle = Bundle.main.bundleURL" in offer
+    app = _code("AppDelegate.swift")
+    launch = _body(app, "private func launch()")
+    assert launch.index("MoveToApplications.offerIfNeeded() == .relaunching") < launch.index("WispReset.readMarker()")
