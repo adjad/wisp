@@ -3954,12 +3954,18 @@ async def run_agent(
         step, is more than that and can never be dropped, so _fit_window
         dropped tool schemas instead and the turn ended in an error. An
         ordinary step carries far less than the fixed room and gets exactly the
-        window it always did."""
+        window it always did.
+
+        `scale` shrinks the room for messages as well as the budget. The prefix
+        and real schemas alone are past the budget, so scaling only the budget
+        left the retry after a guard refusal the same size as the request that
+        was refused. What the step must carry is never scaled away."""
         from service.config import model_context_window
         from service.model_only import ASK_HISTORY_RESERVE, ASK_PROMPT_BUDGET
         real = [sch for sch in offered if sch["function"]["name"] not in stubs]
         floor = (_est_tokens(msgs[:len(system_prefix)]) + _est_tokens(real)
-                 + max(_ASK_STEP_MESSAGE_FLOOR, _ask_must_carry() + _ASK_MUST_CARRY_MARGIN))
+                 + max(int(_ASK_STEP_MESSAGE_FLOOR * scale),
+                       _ask_must_carry() + _ASK_MUST_CARRY_MARGIN))
         window = (getattr(getattr(client, "target", None), "context_window", None)
                   or model_context_window(model))
         # Earlier conversation gets its own room: without it a tool result

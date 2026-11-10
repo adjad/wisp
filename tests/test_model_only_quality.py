@@ -867,6 +867,51 @@ def test_ordinary_step_keeps_the_same_budget(synthetic):
     assert len(request["messages"]) < len(history)
 
 
+def _request_estimate(request):
+    return loop._est_tokens(request["tools"]) + sum(
+        loop._est_tokens(m.get("content") or "")
+        + (loop._est_tokens(m["tool_calls"]) if m.get("tool_calls") else 0) for m in request["messages"])
+
+
+def test_guard_retry_is_smaller_when_the_tools_alone_pass_the_budget(synthetic):
+    _, register = synthetic
+    preload = _register_big_reads(register)
+    history = []
+    for i in range(30):
+        history += [{"role": "user", "content": f"old question {i} " + "lorem ipsum " * 150},
+                    {"role": "assistant", "content": f"old answer {i} " + "dolor sit " * 150}]
+    client = GuardClient(["Fine."], refuse_steps={0})
+    _, answer = drive(client, history=history, model_led_preload=preload)
+    assert answer == "Fine."
+    [refused], [retried] = client.refused, client.requests
+    prefix, real = _prefix_and_real(retried)
+    assert prefix + real + 2500 > mo.ASK_PROMPT_BUDGET       # the floor, not the budget, sets the window
+    assert real_tool_names(retried) == {*preload, DISCOVERY_TOOL}   # every real schema is still offered
+    assert retried["messages"][:2] == refused["messages"][:2]       # and the prefix is untouched
+    assert retried["messages"][-1] == refused["messages"][-1]       # the request too
+    # Half the room for messages and half the history reserve, not the same prompt again.
+    assert _request_estimate(retried) <= prefix + real + 1250 + mo.ASK_HISTORY_RESERVE // 2
+    assert _request_estimate(refused) - _request_estimate(retried) > 1500
+
+
+def test_guard_retry_sheds_older_results_and_keeps_the_newest(synthetic):
+    _, register = synthetic
+    preload = _register_big_reads(register, result_chars=7000)
+    client = GuardClient([[call("big_read_a")], [call("big_read_b")], [call("big_read_c")],
+                          "All three mention the workshop."], refuse_steps={3})
+    _, answer = drive(client, prompt="what did Sam email and text me about the trip?",
+                      model_led_preload=preload)
+    assert answer == "All three mention the workshop."
+    [refused], retried = client.refused, client.requests[-1]
+    before, after = tool_messages(refused), tool_messages(retried)
+    assert len(before) == len(after) == 3
+    # The retry gives up what the model has already read, never the result it is answering from.
+    assert sum(len(m["content"]) for m in after[:2]) < sum(len(m["content"]) for m in before[:2])
+    assert after[2] == before[2] and len(after[2]["content"]) > 5000
+    assert _request_estimate(retried) < _request_estimate(refused) - 300
+    assert real_tool_names(retried) == {*preload, DISCOVERY_TOOL}
+
+
 def real_tool_names(request):
     return {s["function"]["name"] for s in request.get("tools") or [] if "description" in s["function"]}
 
