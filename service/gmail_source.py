@@ -1236,6 +1236,10 @@ async def _finish(client_id, client_secret, code, verifier, redirect, *,
         if mail_account_id and any(item.get("mail_account_id") == mail_account_id and other != email
                                    for other, item in accounts.items()):
             raise GmailError("That Mail account is already linked to a different Google account")
+        if not mail_account_id:
+            # A sign-in again (the 7-day reconnect) keeps the Mail account the
+            # user chose for this Google account; inference never replaces it.
+            mail_account_id = str((accounts.get(email) or {}).get("mail_account_id") or "")
         invalidate_behavior_history()
         _epochs[email] = _epochs.get(email, 0) + 1
         _access.pop(email, None)

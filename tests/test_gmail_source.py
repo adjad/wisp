@@ -3471,6 +3471,37 @@ class BuiltInGoogleClient(unittest.TestCase):
         self.assertEqual(r["client_source"], "user")
         self.assertFalse(missing["ok"])
 
+    def test_reconnecting_keeps_the_mail_account_the_user_chose(self):
+        cfg = G.load_config()
+        cfg["accounts"][ME]["mail_account_id"] = "native-1"
+        G._save_config(cfg)
+        token = {"refresh_token": "fresh-refresh", "access_token": "fake", "scope": G.SCOPE}
+        async def run(mail_account_id):
+            with patch.object(httpx.AsyncClient, "post", AsyncMock(return_value=httpx.Response(200, json=token))), \
+                 patch.object(httpx.AsyncClient, "get",
+                              AsyncMock(return_value=httpx.Response(200, json={"emailAddress": ME}))), \
+                 patch.object(G, "_after_connect", AsyncMock()):
+                return await G._finish("synthetic", "s", "code", "v", "http://127.0.0.1", generation=0,
+                                       mail_account_id=mail_account_id)
+        asyncio.run(run(""))
+        self.assertEqual(G.connected_accounts()[ME]["mail_account_id"], "native-1")
+        self.assertEqual(G.connected_accounts()[JUDGE].get("mail_account_id", ""), "")
+        asyncio.run(run("native-2"))      # a new choice still replaces it
+        self.assertEqual(G.connected_accounts()[ME]["mail_account_id"], "native-2")
+
+    def test_a_reconnect_ignores_the_mail_account_picker(self):
+        from service.tools import email_tools
+        app = self.route("gmail_connect")
+        receipt = {"auth_url": "https://accounts.example.test/auth"}
+        with patch.object(G, "begin_authorization", AsyncMock(return_value=receipt)) as begin, \
+             patch.object(email_tools, "native_email_accounts", lambda: [{"id": "native-1", "name": "Google"}]):
+            self.assertTrue(self.post(app, "/assistant/gmail/connect",
+                                      {"reconnect": JUDGE, "mail_account_id": "native-1"})["ok"])
+            self.assertEqual(begin.await_args.kwargs["mail_account_id"], "")
+            self.assertTrue(self.post(app, "/assistant/gmail/connect",
+                                      {"client_id": "synthetic", "mail_account_id": "native-1"})["ok"])
+            self.assertEqual(begin.await_args.kwargs["mail_account_id"], "native-1")
+
     def expire(self, account=ME, responses=1):
         announced = []
         cfg = G.connected_accounts()[account]

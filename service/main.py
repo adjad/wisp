@@ -3820,7 +3820,9 @@ async def gmail_connect(body: dict[str, Any]) -> dict[str, Any]:
             client_id=str(body.get("client_id") or ""), client_secret=str(body.get("client_secret") or ""))
     if not client_id:
         return {"ok": False, "error": "client_id is required"}
-    native_id = str(body.get("mail_account_id") or "")
+    # A reconnect keeps the account's saved Mail binding (gmail_source._finish);
+    # the Settings picker belongs to the next new Connect, so it is ignored here.
+    native_id = "" if reconnect else str(body.get("mail_account_id") or "")
     if native_id:
         from service.tools.email_tools import native_email_accounts
         if native_id not in {row["id"] for row in native_email_accounts()}:
