@@ -156,25 +156,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // launch. A live copy still gets the hand-over, as before.
             let defaults = UserDefaults.standard
             let shuttingDown = defaults.integer(forKey: Self.shuttingDownPIDKey)
-            if FirstRunSetup.waitsForPeerToQuit(
+            let waits = FirstRunSetup.waitsForPeerToQuit(
                 resumePending: defaults.bool(forKey: FirstRunSetup.resumeKey),
-                peerShuttingDown: peerApps.contains { Int($0.processIdentifier) == shuttingDown }) {
-                Task { @MainActor [weak self] in
-                    // Polled on the main actor between sleeps, so the run loop keeps
-                    // turning (isTerminated is updated there) and nothing hangs.
-                    let deadline = Date().addingTimeInterval(FirstRunSetup.peerQuitWait)
-                    while !peerApps.allSatisfy(\.isTerminated), Date() < deadline {
-                        try? await Task.sleep(nanoseconds: 250_000_000)
-                    }
-                    guard let self else { return }
-                    if peerApps.allSatisfy(\.isTerminated) { self.launch() } else { self.yield(to: peerApps) }
-                }
+                peerShuttingDown: peerApps.contains { Int($0.processIdentifier) == shuttingDown })
+            switch SingleInstance.handOver(
+                selfPath: Self.realLocation(Bundle.main.bundleURL).path,
+                peerPaths: peerApps.map { $0.bundleURL.map { Self.realLocation($0).path } },
+                waitsForPeerToQuit: waits) {
+            case .silent:
+                yield(to: peerApps)
                 return
+            case .ask:
+                // A different Wisp.app is running (a downloaded update opened while the
+                // old one runs). Handing over silently left the person on the old one.
+                guard asksToReplaceRunningWisp(peerApps) else {
+                    yield(to: peerApps)
+                    return
+                }
+                // An ordinary quit, never a forced one: the running copy stops its
+                // engine and service as on any quit, and this one waits for it below.
+                for peer in peerApps where !peer.isTerminated { peer.terminate() }
+            case .waitForQuit:
+                break
             }
-            yield(to: peerApps)
+            Task { @MainActor [weak self] in
+                // Polled on the main actor between sleeps, so the run loop keeps
+                // turning (isTerminated is updated there) and nothing hangs.
+                let deadline = Date().addingTimeInterval(FirstRunSetup.peerQuitWait)
+                while !peerApps.allSatisfy(\.isTerminated), Date() < deadline {
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                }
+                guard let self else { return }
+                if peerApps.allSatisfy(\.isTerminated) { self.launch() } else { self.yield(to: peerApps) }
+            }
             return
         }
         launch()
+    }
+
+    /// Where a copy of Wisp really is: the download, not macOS's temporary copy of it.
+    private static func realLocation(_ url: URL) -> URL {
+        Translocation.original(of: url).original ?? url
+    }
+
+    /// Another Wisp.app is running. Nothing is quit without the person's click: true
+    /// means quit the running one and open this one, false means keep the running one.
+    private func asksToReplaceRunningWisp(_ peers: [NSRunningApplication]) -> Bool {
+        let running = peers.first { !$0.isTerminated }?.bundleURL
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Another copy of Wisp is running"
+        alert.informativeText = SingleInstance.otherCopyDetail(
+            running: running.flatMap { MoveToApplications.version(at: $0.path) },
+            this: MoveToApplications.version(at: Bundle.main.bundleURL.path),
+            runningFolder: running.map {
+                (Self.realLocation($0).deletingLastPathComponent().path as NSString).abbreviatingWithTildeInPath
+            })
+        alert.addButton(withTitle: "Quit It and Open This One")
+        // Esc keeps things as they are.
+        alert.addButton(withTitle: "Keep the Running One").keyEquivalent = "\u{1b}"
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     /// Set by a Wisp that has started quitting (noteTerminating), so a copy
