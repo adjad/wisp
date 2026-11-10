@@ -115,6 +115,16 @@ _SCRUBBED_REMINDER_TARGET = '{"type": "reminder"}'
 # A Brief composed from the combined inbox, and what else learned from or about one account.
 _ACCOUNT_DERIVED_KINDS = ("daily_brief", "email_summary", "nudge")
 _SIGNIN_EXPIRED_PREFIX = "google-signin-expired:"
+# Refresh signals only tell the app to look again. They carry no result, receipt or dedupe
+# key that anything reads later, and every source sync stores one, so finished ones are
+# removed after a grace period (a repeated receipt for a just-finished row still finds it).
+# Every other kind stays: its row is a receipt, a claim or the proof that stops a repeat.
+REFRESH_EVENT_KINDS = ("changed", "sync_assistant_sources_now", "sync_emails_now")
+_REFRESH_KINDS_SQL = ",".join(f"'{kind}'" for kind in REFRESH_EVENT_KINDS)
+REFRESH_EVENT_KEEP_S = 3600.0
+_REFRESH_PRUNE_EVERY_S = 60.0
+# One pass removes at most this many rows, so an old backlog never holds the write lock long.
+_REFRESH_PRUNE_BATCH = 5000
 
 
 def _scrubbed_payload_sql(row: str = "") -> str:
@@ -367,6 +377,7 @@ class AssistantStore:
         # Removed words are overwritten in the file, not only unlinked from the row.
         self._db.execute("PRAGMA secure_delete=ON")
         self._lock = threading.RLock()
+        self._refresh_pruned_at: float | None = None
         self._delivery_writer = Authority("assistant-nudge-writer",owner=self)
         self._delivery_writer.publish()
         self._nudge_plans = weakref.WeakSet()
@@ -409,6 +420,11 @@ class AssistantStore:
                 self._db.execute(
                     "CREATE INDEX IF NOT EXISTS idx_assistant_events_claim_order "
                     "ON assistant_events(claim_order)")
+                # Replay reads only what is still waiting; without this each read
+                # walked every finished row as well.
+                self._db.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_assistant_events_pending "
+                    "ON assistant_events(state) WHERE state='pending'")
                 next_order = self._db.execute(
                     "SELECT COALESCE(MAX(claim_order),0) FROM assistant_events").fetchone()[0]
                 for old in self._db.execute(
@@ -420,6 +436,7 @@ class AssistantStore:
                     self._db.execute("UPDATE assistant_events SET claim_order=? WHERE id=?",
                                      (next_order, old["id"]))
                 self._scrub_finished_events()
+                self._prune_refresh_events()
                 self._db.execute("""CREATE TABLE IF NOT EXISTS assistant_schedule_versions (
                     commitment_id TEXT PRIMARY KEY, version TEXT NOT NULL
                 )""")
@@ -839,6 +856,20 @@ class AssistantStore:
             _, account, stamp = (row["dedupe_key"].split(":") + ["", ""])[:3]
             self._db.execute("UPDATE assistant_events SET dedupe_key=? WHERE id=?",
                              (f"{_SIGNIN_EXPIRED_PREFIX}{_account_key(account)}:{stamp}", row["id"]))
+
+    def _prune_refresh_events(self, now: float | None = None, *,
+                              limit: int = _REFRESH_PRUNE_BATCH) -> int:
+        """Remove finished refresh signals past their grace period (see REFRESH_EVENT_KINDS).
+        The caller holds the write transaction. A waiting row is never removed, nor one
+        that was claimed or carries a result."""
+        cutoff = (time.time() if now is None else now) - REFRESH_EVENT_KEEP_S
+        return int(self._db.execute(
+            "DELETE FROM assistant_events WHERE rowid IN ("
+            "SELECT rowid FROM assistant_events "
+            f"WHERE kind IN ({_REFRESH_KINDS_SQL}) AND state IN ('ack','superseded') "
+            "AND claim_token IS NULL AND result IS NULL "
+            "AND COALESCE(acknowledged_at,created_at) < ? LIMIT ?)",
+            (cutoff, max(1, int(limit)))).rowcount or 0)
 
     def erase_held_for_account(self, account: str) -> int:
         """Disconnect & erase: what is still waiting and came from this Google account. Its
@@ -1742,6 +1773,13 @@ class AssistantStore:
     def pending_events(self) -> list[dict]:
         with self._write_transaction():
             self._invalidate_reminders()
+            # The app asks on every stream reconnect, about twice a minute while it is
+            # open, which is also when finished refresh signals pile up.
+            tick = time.monotonic()
+            if (self._refresh_pruned_at is None
+                    or tick - self._refresh_pruned_at >= _REFRESH_PRUNE_EVERY_S):
+                self._refresh_pruned_at = tick
+                self._prune_refresh_events()
             return [self._event(r) for r in self._db.execute(
                 "SELECT * FROM assistant_events WHERE state='pending' ORDER BY created_at,id")]
 
