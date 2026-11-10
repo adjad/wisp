@@ -3257,6 +3257,11 @@ async def run_agent(
                    and registered.category not in UNGROUNDING_CATEGORIES
                    for name, outcome in tool_outcomes)
 
+    def _ask_tool_answered() -> bool:
+        """Some tool ran this turn and returned a result (not refused, not an
+        error)."""
+        return any(outcome.status == "succeeded" for _, outcome in tool_outcomes)
+
     def _prior_requirements_met(tool_name: str) -> bool:
         """Effect tools may not run before earlier source obligations."""
         covered = tools_answered | waived_tools
@@ -3837,6 +3842,10 @@ async def run_agent(
     ask_expect_tool = False
     ask_reprompt_step = False
     ask_reprompted = False
+    # The re-prompt fired for a fact of the user's own (not for a stall, and
+    # not for a question about this Mac or about Wisp): the one case where a
+    # calculator or a status read cannot be the answer.
+    ask_reprompt_personal = False
     ask_reprompt_no_web = False
     ask_write_nudged = False
     ask_text_call_nudged = False
@@ -4526,6 +4535,11 @@ async def run_agent(
                     # mail, not on the web): re-prompt once with a tool
                     # required instead of trusting it.
                     ask_reprompted = True
+                    from service.model_only import _DEVICE_STATE, wisp_self_question
+                    ask_reprompt_personal = bool(
+                        (asks_personal_data(memory_query) or fresh_personal_scope)
+                        and not _DEVICE_STATE.search(memory_query)
+                        and not wisp_self_question(memory_query))
                     ask_expect_tool = True
                     ask_reprompt_no_web = web_only
                     audit("ask_personal_reprompt", step=_step, web_only=web_only, stalled=stalled)
@@ -4665,10 +4679,15 @@ async def run_agent(
                     'has no requests. Keep useful facts and exact source dates from the results already returned. '
                     'Qualify coverage and any missing sources. Do not call tools again.')})
                 continue
-            if ask_quality and ask_reprompted and not _ask_grounding_tool_ran():
+            if (ask_quality and ask_reprompted and not _ask_grounding_tool_ran()
+                    and (ask_reprompt_personal or not _ask_tool_answered())):
                 # The forced re-prompt ran nothing that could hold the fact (a
                 # calculation, a Mac status read) or nothing at all: say so
                 # plainly instead of publishing an invented number.
+                # Not when the question was about this Mac or Wisp, or the
+                # re-prompt only followed a stall, and a tool then answered:
+                # "How much battery do I have left?" read 64% from the status
+                # tool and the reply was replaced with "I don't have that".
                 audit("ask_unknown_personal_fact", step=_step)
                 from service.model_only import ASK_UNKNOWN_MESSAGE
                 text = ASK_UNKNOWN_MESSAGE

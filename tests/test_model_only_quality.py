@@ -975,3 +975,74 @@ def test_status_read_does_not_lift_the_personal_guard(synthetic):
                        approval=Approval(allowed=True), model_led_preload=["wisp_status", "get_upcoming"],
                        **_OWNERS)
     assert executed(effects, "wisp_status") and _NOT_CHECKED in answer
+
+
+# --- the re-prompt's "I don't have that" is for the user's own facts only ----------
+
+@pytest.mark.parametrize("first", ["Let me check that for you.", "<|tool_call>call:device.system_status{}"])
+def test_mac_status_answer_after_the_reprompt_is_kept(synthetic, first):
+    effects, register = synthetic
+    register("system_status", "system_extras", "system_read")
+    prompt = "How much battery do I have left?"
+    assert mo.asks_personal_data(prompt)
+    client, _, answer = ask([first, [call("system_status")], "You have 64% battery left."],
+                            prompt=prompt, model_led_preload=["system_status", "get_upcoming"])
+    assert client.requests[1]["tool_choice"] == "required"
+    assert executed(effects, "system_status") == [{}]
+    assert answer == "You have 64% battery left."
+
+
+def test_stalled_question_about_running_apps_keeps_its_answer(synthetic):
+    effects, register = synthetic
+    register("list_running_apps", "window_tools", "system_read")
+    prompt = "what apps are running?"
+    assert not mo.asks_personal_data(prompt)
+    client, _, answer = ask(["Let me check that for you.", [call("list_running_apps")],
+                             "Mail and Safari are open."],
+                            prompt=prompt, model_led_preload=["list_running_apps", "get_upcoming"])
+    assert client.requests[1]["tool_choice"] == "required"
+    assert executed(effects, "list_running_apps") == [{}]
+    assert answer == "Mail and Safari are open."
+
+
+def test_stalled_question_about_wisp_keeps_its_status_answer(synthetic):
+    effects, register = synthetic
+    register("wisp_status", "misc_t1", "wisp_admin")
+    client, _, answer = ask(["One moment!", [call("wisp_status")], "I'm running Gemma on this Mac."],
+                            prompt="which model are you using?",
+                            model_led_preload=["wisp_status", "get_upcoming"])
+    assert executed(effects, "wisp_status") == [{}]
+    assert answer == "I'm running Gemma on this Mac."
+
+
+def test_mac_status_question_with_no_tool_run_still_says_it_does_not_know(synthetic):
+    _, register = synthetic
+    register("system_status", "system_extras", "system_read")
+    client, _, answer = ask(["You have 64% battery left.", "You have about 64% battery left."],
+                            prompt="How much battery do I have left?",
+                            model_led_preload=["system_status", "get_upcoming"])
+    assert client.requests[1]["tool_choice"] == "required" and len(client.requests) == 2
+    assert answer == mo.ASK_UNKNOWN_MESSAGE
+
+
+def test_mac_status_question_whose_read_failed_still_says_it_does_not_know(synthetic):
+    _, register = synthetic
+    tool = register("system_status", "system_extras", "system_read")
+
+    async def broken(**args):
+        return "(error: could not read the battery state)"
+    broken.__module__ = tool.func.__module__
+    tool.func = broken
+    _, _, answer = ask(["Let me check that for you.", [call("system_status")], "You have 64% battery left."],
+                       prompt="How much battery do I have left?",
+                       model_led_preload=["system_status", "get_upcoming"])
+    assert answer == mo.ASK_UNKNOWN_MESSAGE
+
+
+def test_personal_fact_answered_from_a_status_read_still_says_it_does_not_know(synthetic):
+    effects, register = synthetic
+    register("system_status", "system_extras", "system_read")
+    _, _, answer = ask(["Your backpack weighs 1.2 kg.", [call("system_status")], "Your backpack weighs 1.2 kg."],
+                       prompt="How heavy is my backpack?", model_led_preload=["system_status", "get_upcoming"])
+    assert executed(effects, "system_status") == [{}]
+    assert answer == mo.ASK_UNKNOWN_MESSAGE
