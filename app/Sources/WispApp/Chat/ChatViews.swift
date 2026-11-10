@@ -1229,7 +1229,9 @@ struct ChatInspector: View {
                         row("Routed by", Self.routedBy(meta.routeSource))
                         if meta.tokensPerSecond > 0 { row("Speed", "\(meta.tokensPerSecond) tok/s") }
                         if let d = meta.duration { row("Time", String(format: "%.1f s", d)) }
-                        row("Ran on", "This Mac", color: ChatTheme.ok)
+                        // Green only on a confirmed local launch, like the top bar's Local pill.
+                        row("Ran on", ChatCloudUse.ranOn(store.cloudInUse),
+                            color: store.cloudInUse == false ? ChatTheme.ok : ChatTheme.text2)
                     }
                     if !meta.routeReason.isEmpty {
                         section("Why this route") {

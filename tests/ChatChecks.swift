@@ -244,6 +244,14 @@ struct ChatChecks {
               "everything saved but not yet running is unknown: the reply hides roles still bound to the cloud")
         var pendingOff = local; pendingOff["restart_required"] = true
         check(ChatCloudUse.active(from: pendingOff) == true, "a remote launch waiting to restart is still cloud")
+        // Details › Ran on: "This Mac" alone only on a confirmed local launch.
+        check(ChatCloudUse.ranOn(false) == "This Mac", "a local launch ran on this Mac")
+        check(ChatCloudUse.ranOn(true) == "This Mac or your cloud provider",
+              "with a cloud provider on, the line names both and claims neither")
+        check(ChatCloudUse.ranOn(nil) == "—", "an unknown launch does not claim this Mac")
+        check(ChatCloudUse.ranOn(ChatCloudUse.active(from: roleOnCloud)) != "This Mac"
+                && ChatCloudUse.ranOn(ChatCloudUse.active(from: pendingOn)) != "This Mac",
+              "a cloud role, or a launch that can't be read, never reads as local")
 
         // What VoiceOver is told: the end of a reply and a waiting card, never a corpus case.
         let bare: (String) -> String = { $0.replacingOccurrences(of: "**", with: "") }

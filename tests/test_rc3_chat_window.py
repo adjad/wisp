@@ -49,3 +49,13 @@ def test_the_card_is_one_named_group_and_the_sidebar_marks_a_waiting_chat():
     assert '.accessibilityValue(conversation.hasPendingApproval ? "Waiting for your OK" : "")' in row
     # Waiting means a reply that can still be answered, not a card left by an ended one.
     assert "var hasPendingApproval: Bool { busy && " in _read("Chat/ChatStore.swift")
+
+
+def test_details_says_this_mac_only_on_a_confirmed_local_launch():
+    views = _read("Chat/ChatViews.swift")
+    inspector = _body(views, "struct ChatInspector: View")
+    assert 'row("Ran on", ChatCloudUse.ranOn(store.cloudInUse),' in inspector
+    assert "color: store.cloudInUse == false ? ChatTheme.ok : ChatTheme.text2)" in inspector
+    assert '"This Mac", color: ChatTheme.ok' not in views
+    ran_on = _body(_read("Chat/ChatTypes.swift"), "static func ranOn(_ cloudInUse: Bool?) -> String")
+    assert ran_on.count('"This Mac"') == 1 and "case .some(false): return \"This Mac\"" in ran_on

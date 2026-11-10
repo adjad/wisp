@@ -220,6 +220,17 @@ enum ChatCloudUse {
         let superModel = object["super_model_enabled"] as? Bool ?? false
         return enabled && (!roles.isEmpty || superModel)
     }
+
+    /// The Details panel's "Ran on" line. The flag is about this launch, not
+    /// one answer, so with a cloud provider on it names both and never claims
+    /// either; it says "This Mac" alone only on a confirmed local launch.
+    static func ranOn(_ cloudInUse: Bool?) -> String {
+        switch cloudInUse {
+        case .some(false): return "This Mac"
+        case .some(true): return "This Mac or your cloud provider"
+        case .none: return "—"
+        }
+    }
 }
 
 // MARK: - Metadata
