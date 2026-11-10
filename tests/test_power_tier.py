@@ -11,6 +11,8 @@ import pytest
 from service.inference import power_tier as P
 from service.inference.omlx_client import OMLXClient, _lift_gpu_power, _power_fields
 
+REAL_BUNDLED = P._bundled_engine      # before the autouse fixture swaps it out
+
 
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch, tmp_path):
@@ -314,8 +316,9 @@ def test_the_endpoint_reads_and_writes_the_switch_from_the_app_only():
     app = FastAPI()
     app.include_router(router)
     client = TestClient(app)
-    assert client.get("/power").json() == {"save_when_away": True}
-    assert client.post("/power", json={"save_when_away": False}).json() == {"save_when_away": False}
+    assert client.get("/power").json() == {"save_when_away": True, "applies": True}
+    assert client.post("/power", json={"save_when_away": False}).json() == {"save_when_away": False,
+                                                                           "applies": True}
     assert P.save_when_away() is False
     # A web page (Origin header), a non-JSON body or a non-bool value can't change it.
     assert client.post("/power", json={"save_when_away": True},
@@ -328,6 +331,37 @@ def test_the_endpoint_reads_and_writes_the_switch_from_the_app_only():
     # The old Low Power Mode endpoints are gone.
     assert client.post("/power/other_app", json={"event": "launched"}).status_code in (404, 405)
     assert client.post("/power/activity", json={}).status_code in (404, 405)
+
+
+@pytest.mark.parametrize("bundled, remote_only, applies", [
+    (True, False, True), (False, False, False), (True, True, False)])
+def test_the_endpoint_says_whether_the_switch_caps_anything(monkeypatch, bundled, remote_only, applies):
+    # On the user's own oMLX.app (or a remote-only profile) nothing is capped, so the
+    # notch must not read "Uses less power" there. The switch itself is unchanged.
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from service.power_api import router
+
+    monkeypatch.setattr(P, "_bundled_engine", lambda: bundled)
+    monkeypatch.setattr(P, "_remote_only", lambda: remote_only)
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+    assert client.get("/power").json() == {"save_when_away": True, "applies": applies}
+    assert client.post("/power", json={"save_when_away": False}).json() == {"save_when_away": False,
+                                                                           "applies": applies}
+    assert P.save_when_away() is False
+    assert P._capping_possible() is False
+
+
+def test_external_omlx_reports_that_nothing_is_capped(monkeypatch):
+    from service.engine import mode
+    monkeypatch.setattr(P, "_bundled_engine", REAL_BUNDLED)     # the real engine-mode read
+    monkeypatch.setattr(mode, "is_bundled", lambda: False)
+    assert P.capping_engine() is False
+    monkeypatch.setattr(mode, "is_bundled", lambda: True)
+    assert P.capping_engine() is True
 
 
 # --- away -------------------------------------------------------------------------

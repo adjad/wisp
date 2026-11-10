@@ -174,6 +174,12 @@ def _bundled_engine() -> bool:
         return False
 
 
+def capping_engine() -> bool:
+    """Whether Save power can cap anything here: only Wisp's built-in engine, and
+    not a remote-only profile. On the user's own oMLX.app nothing is capped."""
+    return _bundled_engine() and not _remote_only()
+
+
 def _capping_possible() -> bool:
     """The switch is on and the engine can drop a cap at once (see the module rules)."""
     return save_when_away() and _lift_askable() and not _remote_only() and _bundled_engine()

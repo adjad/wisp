@@ -33,7 +33,9 @@ class SaveWhenAway(BaseModel):
 
 
 def _state() -> dict:
-    return {"save_when_away": power_tier.save_when_away()}
+    # `applies` is False where the switch caps nothing (the user's own oMLX.app or
+    # a remote-only profile), so the notch need not say it is saving power.
+    return {"save_when_away": power_tier.save_when_away(), "applies": power_tier.capping_engine()}
 
 
 @router.get("/power")
