@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import math
 import re
 import secrets
 
@@ -200,3 +201,42 @@ async def read_attachment(rowid: int, attachment_id: str, timeout: float = 45.0)
     except ValueError:
         return None, "", "bad_base64"
     return data, str(reply.get("name") or "")[:255], ""
+
+
+# --- text recognition (MailMemoryReader kind `recognize`) ---------------------------
+
+RECOGNIZE_MAX_BYTES = 4 * 1024 * 1024
+RECOGNIZE_MAX_CHARS = 200_000
+_RECOGNIZE_ERRORS = {"bad_image", "too_large", "failed"}
+
+
+async def recognize_text(jpeg: bytes, timeout: float = 20.0) -> tuple[str, float]:
+    """Text the app reads in one JPEG with Apple Vision: (text, confidence 0..1).
+
+    `("", 0.0)` when it found no text. Raises BridgeError for everything else, including a
+    non-JPEG or over-size input, which is refused here without asking the app. Only JPEGs
+    Wisp's own child re-encoded from decoded pixels belong here."""
+    if not isinstance(jpeg, (bytes, bytearray)) or bytes(jpeg[:3]) != b"\xff\xd8\xff":
+        raise BridgeError("bad_image")
+    if len(jpeg) > RECOGNIZE_MAX_BYTES:
+        raise BridgeError("too_large")
+    # `wait` tells the app how long we will wait, so it skips a request that sat in its queue
+    # past that. An app from before this field drops a request carrying it (strict keys) and
+    # the call then times out; that is acceptable because app and backend ship in one bundle.
+    wait = max(1, min(60, math.ceil(timeout))) if math.isfinite(timeout) else 60
+    reply = await _ask("recognize", timeout, image_b64=base64.b64encode(bytes(jpeg)).decode("ascii"), wait=wait)
+    if reply.get("ok") is not True:
+        error = str(reply.get("error") or "")
+        if error == "no_text":
+            return "", 0.0
+        if error == "late":
+            raise BridgeError("recognize_timeout")
+        raise BridgeError(error if error in _RECOGNIZE_ERRORS else "recognize_failed")
+    text = reply.get("text")
+    confidence = reply.get("confidence")
+    if not isinstance(text, str) or isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+        raise BridgeError("recognize_failed")
+    confidence = float(confidence)
+    if confidence != confidence or confidence in (float("inf"), float("-inf")):
+        raise BridgeError("recognize_failed")
+    return text[:RECOGNIZE_MAX_CHARS], min(1.0, max(0.0, confidence))

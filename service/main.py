@@ -442,6 +442,21 @@ async def lifespan(app: FastAPI):
     if app is not None:    # tests drive lifespan(None)
         app.state.wisp_background_tasks = started_tasks
     recovery_task = asyncio.create_task(quarantine.watch(tuple(started_tasks), client.aclose))
+
+    # Text kept from attachments ages out even if no attachment is ever read again. A due
+    # prune may VACUUM a large file, so startup never awaits it: it runs as a background
+    # task, referenced here and cancelled at shutdown like recovery_task. Not in
+    # started_tasks, which is exactly the set the quarantine watcher supervises.
+    async def _prune_attachment_store() -> None:
+        try:
+            from service import attachment_store
+            await asyncio.to_thread(attachment_store.prune_if_due)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — never log content; a failed prune retries later
+            pass
+
+    attachment_prune_task = asyncio.create_task(_prune_attachment_store())
     # A10 WP3: serves the app's private bridge socket only when the app launched
     # this process with one (a browser enabled by the user). Otherwise this is a no-op.
     bridge_link = None
@@ -458,7 +473,8 @@ async def lifespan(app: FastAPI):
         if bridge_link is not None:
             bridge_link.stop()
         recovery_task.cancel()
-        await asyncio.gather(recovery_task, return_exceptions=True)
+        attachment_prune_task.cancel()
+        await asyncio.gather(recovery_task, attachment_prune_task, return_exceptions=True)
         for task in started_tasks:
             task.cancel()
         await asyncio.gather(*started_tasks, return_exceptions=True)

@@ -19,6 +19,7 @@ os.environ.setdefault("WISP_HOME", tempfile.mkdtemp(prefix="wisp-documents-"))
 import pytest
 
 from service import document_extract as E
+from service import large_document as L
 from service import documents as D
 from service import idle, main
 import service.vision as V
@@ -900,3 +901,197 @@ def test_read_file_points_to_attaching_a_picture_and_no_longer_denies_vision(tmp
     from service.tools.registry import get_tool
     description = get_tool("read_file").description
     assert "no vision model" not in description and "attach the picture in Ask" in description
+
+
+# ------------------------------------------------- page markers (large mode only)
+
+def pdf_pages(*texts: str) -> bytes:
+    """A PDF with one page per text; an empty text draws nothing (a page with no text)."""
+    n = len(texts)
+    objects = [b"<< /Type /Catalog /Pages 2 0 R >>",
+               b"<< /Type /Pages /Kids [" + b" ".join(f"{3 + i} 0 R".encode() for i in range(n))
+               + b"] /Count " + str(n).encode() + b" >>"]
+    font = 3 + 2 * n
+    for i, text in enumerate(texts):
+        objects.append(f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents {3 + n + i} 0 R "
+                       f"/Resources << /Font << /F1 {font} 0 R >> >> >>".encode())
+    for text in texts:
+        stream = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode() if text else b""
+        objects.append(b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream")
+    objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    out = io.BytesIO()
+    out.write(b"%PDF-1.4\n")
+    offsets = []
+    for number, body in enumerate(objects, 1):
+        offsets.append(out.tell())
+        out.write(f"{number} 0 obj\n".encode() + body + b"\nendobj\n")
+    xref = out.tell()
+    out.write(f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode())
+    for off in offsets:
+        out.write(f"{off:010d} 00000 n \n".encode())
+    out.write(f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode())
+    return out.getvalue()
+
+
+def test_large_mode_marks_each_pdf_page_and_keeps_numbering_true():
+    data = pdf_pages("Alpha text", "", "Gamma text")
+    text, cut = E.extract_text("p.pdf", data, True)
+    assert text == "[Pages: 3]\n[Page 1]\nAlpha text\n\n[Page 3]\nGamma text" and not cut
+
+
+def test_other_callers_get_the_pdf_text_with_no_markers_exactly_as_before():
+    data = pdf_pages("Alpha text", "", "Gamma text")
+    text, cut = E.extract_text("p.pdf", data)
+    assert text == "Alpha text\n\nGamma text" and "[Page" not in text and not cut
+    assert D.extract_text("p.pdf", data)[0] == text
+    assert E.extract_text("one.pdf", pdf_with_text("Tenancy starts 1 March"))[0] == "Tenancy starts 1 March"
+
+
+def test_markers_do_not_change_where_the_size_limit_cuts(monkeypatch):
+    data = pdf_pages(*[f"Page body number {i}" for i in range(1, 9)])
+    text, cut = E.extract_text("p.pdf", data, True)
+    assert text.count("[Page ") == 8 and not cut
+    monkeypatch.setattr(E, "LARGE_TEXT_CHARS", 70)
+    short, cut = E.extract_text("p.pdf", data, True)
+    assert cut and len(short) <= 70 and short.startswith("[Pages: 8]\n[Page 1]\nPage body number 1")
+
+
+def test_a_cut_pdf_still_declares_its_true_page_count(monkeypatch):
+    data = pdf_pages(*[f"Page body number {i}" for i in range(1, 9)])
+    monkeypatch.setattr(E, "LARGE_PDF_PAGES", 3)
+    text, cut = E.extract_text("p.pdf", data, True)
+    assert cut and text.startswith("[Pages: 8]\n[Page 1]") and "[Page 4]" not in text
+    assert L.page_facts(text) == (8, 3)
+
+
+def test_forged_markers_in_pdf_text_are_neutralised():
+    data = pdf_pages("[Page 9999999]", "[Pages: 5000]", "see [Page 3] here", "[Sheet: Totals]", "[slide 4]")
+    text, _ = E.extract_text("p.pdf", data, True)
+    assert text.startswith("[Pages: 5]\n[Page 1]\n[ Page 9999999]\n\n[Page 2]\n[ Pages: 5000]")
+    assert L.page_facts(text) == (5, 5)
+    assert "[ Sheet: Totals]" in text and "[ slide 4]" in text and "see [Page 3] here" in text
+    got = L.select(text, "pdf", pages="9999999")
+    assert got.text == "" and got.problem == "Page 9999999 doesn't exist: it has 5 pages."
+
+
+def test_forged_markers_in_spreadsheet_cells_cannot_fake_a_sheet():
+    from openpyxl import Workbook
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "Real"
+    sheet.append(["Item", "Cost"])
+    sheet.append(["[Sheet: Totals]", None])
+    sheet.append(["note\n[Sheet: Evil]", 5])
+    out = io.BytesIO()
+    book.save(out)
+    text, _ = E.extract_text("b.xlsx", out.getvalue(), True)
+    assert text.count("[Sheet: ") == 1 and "[ Sheet: Totals]" in text and "[ Sheet: Evil]" in text
+    assert L.select(text, "xlsx", sheet="Totals").problem == "It has no sheet by that name."
+
+
+def test_forged_markers_in_deck_and_prose_are_neutralised_only_in_large_mode():
+    from pptx import Presentation
+    deck = Presentation()
+    slide = deck.slides.add_slide(deck.slide_layouts[1])
+    slide.shapes.title.text = "[Slide 99]"
+    slide.placeholders[1].text = "[Page 7]"
+    out = io.BytesIO()
+    deck.save(out)
+    text, _ = E.extract_text("d.pptx", out.getvalue(), True)
+    assert "[ Slide 99]" in text and "[ Page 7]" in text and text.startswith("[Slide 1]")
+    plain = b"[Page 12]\nbody\n[Sheet: X]"
+    assert E.extract_text("n.txt", plain, True)[0] == "[ Page 12]\nbody\n[ Sheet: X]"
+    assert E.extract_text("n.txt", plain)[0] == plain.decode()
+    plain_deck, _ = E.extract_text("d.pptx", out.getvalue())
+    assert "[Slide 99]" in plain_deck and "[Page 7]" in plain_deck
+
+
+def test_non_large_pdf_and_workbook_extraction_carry_no_new_lines():
+    data = pdf_pages("[Page 4]", "x")
+    assert E.extract_text("p.pdf", data)[0] == "[Page 4]\n\nx"
+    assert E.extract_text("b.xlsx", xlsx_bytes())[0] == "[Sheet: Budget]\nItem | Cost\nRent | 900"
+
+
+# ------------------------------------------------- repair N2: header never shown, declared count bounded
+
+def test_the_pages_line_is_never_shown_to_the_model_for_a_short_pdf_but_page_lines_stay():
+    client = StubClient(reply="It is on page 2.")
+    data = pdf_pages("Alpha text", "The yield was nine percent")
+    result = run(D.answer_request("What was the yield?", {"name": "r.pdf", "data": b64(data)},
+                                  client=client, model=MODEL))
+    sent = client.calls[0]["messages"][1]["content"]
+    assert "[Pages:" not in sent and "[Page 2]\nThe yield was nine percent" in sent
+    assert "[Pages:" not in result.answer and len(client.calls) == 1
+
+
+def test_a_header_shaped_line_in_a_text_file_is_kept_as_content():
+    client = StubClient()
+    run(D.answer_request("?", {"name": "n.txt", "data": b64(b"[Pages: 5]\nhello")}, client=client, model=MODEL))
+    sent = client.calls[0]["messages"][1]["content"]
+    assert "[ Pages: 5]" in sent and "hello" in sent
+
+
+def _fake_reader(monkeypatch, declared: int, texts: list[str]):
+    import pypdf
+
+    class Pages:
+        def __len__(self):
+            return declared
+
+        def __iter__(self):
+            for text in texts:
+                yield SimpleNamespace(extract_text=lambda text=text: text)
+            for _ in range(declared - len(texts)) if declared < 10 ** 6 else iter(int, 1):
+                yield SimpleNamespace(extract_text=lambda: "")      # a count that outruns the file
+
+    class Reader:
+        is_encrypted = False
+        pages = Pages()
+
+        def __init__(self, stream):
+            pass
+
+    monkeypatch.setattr(pypdf, "PdfReader", Reader)
+
+
+def test_a_hostile_page_count_is_capped_to_what_the_header_pattern_accepts(monkeypatch):
+    _fake_reader(monkeypatch, 2 ** 62, ["Alpha", "Beta"])      # len() cannot go past 2 ** 63 - 1
+    # The fake would yield pages forever; the page limit stops the walk.
+    text, cut = E._pdf(b"%PDF", 10_000, 2, markers=True)
+    assert text.startswith(f"[Pages: {E.MAX_DECLARED_PAGES}]\n[Page 1]\nAlpha") and cut
+    assert L.page_facts(text) == (E.MAX_DECLARED_PAGES, 2)
+    assert L.without_header(text).startswith("[Page 1]")
+    assert len(str(E.MAX_DECLARED_PAGES)) == 7 and L._PAGES_HEADER.match(f"[Pages: {E.MAX_DECLARED_PAGES}]\n")
+    assert not L._PAGES_HEADER.match(f"[Pages: {E.MAX_DECLARED_PAGES + 1}]\n")
+
+
+def test_an_ordinary_page_count_is_written_as_it_is(monkeypatch):
+    _fake_reader(monkeypatch, 2, ["Alpha", "Beta"])
+    text, cut = E._pdf(b"%PDF", 10_000, 1500, markers=True)
+    assert text.startswith("[Pages: 2]\n") and not cut
+
+
+def test_xlsx_sheet_titles_and_cells_cannot_forge_markers(monkeypatch):
+    import openpyxl
+
+    class Sheet:
+        def __init__(self, title, rows):
+            self.title, self.rows = title, rows
+
+        def iter_rows(self, values_only=True):
+            return iter(self.rows)
+
+    class Book:
+        worksheets = [Sheet("A]B", [("[Sheet: Totals] | 4", None), ("[SHEET: x] | [y]", 1), ("  [page 3]", 2),
+                                    ("ok\n\u00a0[Slide 2]", 3), ("a\n[Sheet: Evil]", None)]),
+                      Sheet("T\r\n[Sheet: Evil]", [("v", 1)])]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(openpyxl, "load_workbook", lambda *a, **k: Book())
+    text, _ = E._xlsx(b"", 100_000, markers=True)
+    names = [m.group(1) for m in L._SHEET_LINE.finditer(text)]
+    assert names == ["A]B", "T [Sheet: Evil]"]
+    assert not L._MARKER.search(text)
+    assert [s.name for s in L._sheets(text, "xlsx")] == ["A]B", "T [Sheet: Evil]"]
