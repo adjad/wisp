@@ -7,6 +7,7 @@ Synthetic stores, records and sent rows only; no live backend, no Google.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
 
@@ -134,6 +135,83 @@ def test_native_sent_clears_a_non_google_mail_item_and_its_seen_entry(store, mon
     store.save_state(seen={done[0]["id"]: entry})
     store.save_state(cards=[card("card:q", done[0]["id"], method="email_reply", title="Reply to Dr Shah")])
     assert handled.sweep(store, now=NOW, texts={})["cards"] == ["card:q"]
+
+
+def _sweep_with(store, monkeypatch, native_rows):
+    """Run the scheduler's sweep against this store; returns how often Apple Mail's Sent list was asked for."""
+    import service.proactive.store as store_module
+    reads = []
+
+    async def rows(now=None):
+        reads.append(now)
+        return list(native_rows)
+    monkeypatch.setattr(store_module, "store", lambda: store)
+    monkeypatch.setattr(sources, "text_records", lambda: [])
+    monkeypatch.setattr(sources, "sent_rows", lambda: [])
+    monkeypatch.setattr(sources, "all_sent_rows", rows)
+    monkeypatch.setattr(sources, "own_account", lambda: ME)
+    monkeypatch.setattr(sources, "gmail_accounts", lambda: set())
+    monkeypatch.setattr(cycle, "_default_schedule", lambda *a, **k: None)
+    monkeypatch.setattr(cycle.traceback, "print_exc", lambda: pytest.fail("the sweep failed"))
+    asyncio.run(cycle._sweep_handled())
+    return len(reads)
+
+
+def test_the_sweep_reads_apple_mails_sent_list_while_a_mail_item_stands(store, monkeypatch):
+    question = "mail:question"
+    store.save_state(seen={question: {"source": "mail", "account": "iCloud", "subject": "Question",
+                                      "message_id": "<q1@school.edu>", "received_ts": NOW - 3600,
+                                      "sender": "prof@school.edu"}},
+                     cards=[card("card:q", question, method="email_reply", title="Reply to Dr Shah")])
+    assert _sweep_with(store, monkeypatch, [native("Re: Question", NOW - 60, ("other@y.com",))]) == 1
+    assert [c["id"] for c in store.state()["cards"]] == ["card:q"], "sent to someone else: the card stands"
+    assert _sweep_with(store, monkeypatch, [native("Re: Question", NOW - 60)]) == 1
+    assert store.state()["cards"] == []
+
+
+def test_the_sweep_leaves_apple_mail_alone_with_no_mail_item_or_contact_suggestion(store, monkeypatch):
+    store.save_state(seen={MOM: {"source": "messages", "conversation": "Mom", "received_ts": NOW - 900}},
+                     cards=[card("card:m", MOM)])
+    assert _sweep_with(store, monkeypatch, [native("Re: Question", NOW - 60)]) == 0
+    assert [c["id"] for c in store.state()["cards"]] == ["card:m"]
+
+
+def _build_with_real_collect(tmp_path, monkeypatch, rows):
+    order = []
+
+    def collect(now=None, tz="UTC", counts=None, sent=None):
+        order.append("collect")
+        return []
+
+    async def silent(system, material, abort, tokens):
+        return ""
+    monkeypatch.setattr(sources, "all_sent_rows", rows(order))
+    monkeypatch.setattr(sources, "collect", collect)
+    cycle._status.update(state="idle", progress={"done": 0, "total": 0}, error="")
+    result = asyncio.run(cycle.run_cycle(
+        now=NOW, tz=TZ, force=True, reply_fn=silent, abort=lambda: False,
+        schedule_fn=lambda n, z: {"calendar": [], "reminders": []}, store=ProactiveStore(tmp_path / "build"),
+        resolve=lambda item: None, linked=set(), own=ME, allowed=set(), freeze=lambda ref: None))
+    assert result["ok"], result
+    return order
+
+
+def test_a_build_reads_apple_mails_sent_list_before_it_collects(tmp_path, monkeypatch):
+    def rows(order):
+        async def read(now=None):
+            order.append("sent")
+            return []
+        return read
+    assert _build_with_real_collect(tmp_path, monkeypatch, rows)[:2] == ["sent", "collect"]
+
+
+def test_a_build_goes_on_when_apple_mails_sent_list_cannot_be_read(tmp_path, monkeypatch):
+    def rows(order):
+        async def read(now=None):
+            order.append("sent")
+            raise RuntimeError("mail is away")
+        return read
+    assert _build_with_real_collect(tmp_path, monkeypatch, rows)[:2] == ["sent", "collect"]
 
 
 def test_seen_sender_with_a_display_name_still_matches():
