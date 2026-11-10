@@ -225,8 +225,11 @@ enum ProtobufTextExtractor {
                 i += 4
             case 2:   // length-delimited — could be a string OR a nested message
                 guard let (len, n) = readVarint(data, i) else { return }
+                // Compared as UInt64 before converting: body text re-read as
+                // a message (below) can claim a length past Int.max, and
+                // Int(len) would trap on it.
+                guard len <= UInt64(data.endIndex - n) else { return }
                 let end = n + Int(len)
-                guard len >= 0, end <= data.endIndex, end >= n else { return }
                 let chunk = data.subdata(in: n..<end)
                 if let s = decodePlausibleText(chunk), s.count > (best?.count ?? 0) {
                     best = s

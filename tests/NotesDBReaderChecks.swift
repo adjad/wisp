@@ -1,5 +1,6 @@
-// Why closed Notes can't be read, from synthetic fixtures only: never the
-// person's NoteStore. Compile with NotesDBReader.swift (and -lsqlite3).
+// Why closed Notes can't be read, and what is read from a store that can be,
+// from synthetic fixtures only: never the person's NoteStore. Compile with
+// NotesDBReader.swift (and -lsqlite3).
 import Foundation
 import SQLite3
 
@@ -63,6 +64,22 @@ import SQLite3
         check(empty.readNotes() == "" && empty.lastFailure == nil, "an empty readable store is empty")
         // A later failure on the same reader replaces nothing stale.
         check(missing.readNotes() == nil && missing.lastFailure != nil, "each read sets its own failure")
+
+        // A note's text is also re-read as a message. Nine bytes of CJK or
+        // Hangul and then an odd ASCII byte look like a length past Int.max
+        // there: that is skipped, never followed and never a crash.
+        typealias P = ProtobufTextExtractor
+        func field(_ body: String) -> Data { Data([0x12, UInt8(body.utf8.count)]) + Data(body.utf8) }
+        check(P.longestString(in: Data("b日本語a".utf8)) == nil, "bare text holds no field")
+        for body in ["Hi\n你好吗?", "Hi\n고마워!", "b日本語a is how this note starts, and it goes on."] {
+            check(P.longestString(in: field(body)) == body, "a body with CJK text is read whole")
+        }
+        var hugeLength: [UInt8] = [0x0A]
+        hugeLength += [UInt8](repeating: 0xFF, count: 9)
+        hugeLength.append(0x01)
+        check(P.longestString(in: Data(hugeLength)) == nil, "a length past Int.max is not followed")
+        check(P.longestString(in: field("Call the plumber on Monday")) == "Call the plumber on Monday",
+              "plain text is read as before")
         print("synthetic Notes store checks passed")
     }
 }
