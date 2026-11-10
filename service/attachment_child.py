@@ -112,6 +112,11 @@ _SIGNATURES: tuple[tuple[bytes, str, str], ...] = (
     (b"%PDF", "a PDF", "document"),
     (b"PK\x03\x04", "a ZIP-based file", "zip"),
     (b"PK\x05\x06", "an empty ZIP file", "zip"),
+    (b"PK\x07\x08", "a split ZIP file", "zip"),
+    (b"PK\x01\x02", "a ZIP file", "zip"),
+    (b"PK00", "a split ZIP file", "zip"),
+    (b"\xfd7zXZ\x00", "an xz archive", "archive"),
+    (b"MSCF", "a Windows cabinet archive", "archive"),
     (b"Rar!", "a RAR archive", "archive"),
     (b"7z\xbc\xaf\x27\x1c", "a 7-Zip archive", "archive"),
     (b"\x1f\x8b", "a gzip archive", "archive"),
@@ -130,16 +135,23 @@ _RISKY_SUFFIXES = frozenset({
     "workflow", "wsf", "zsh",
     "fileloc", "mobileconfig", "shortcut", "wflow", "saver", "prefpane", "qlgenerator", "mdimporter", "osax",
     "scptd",
+    "xip", "csh", "ksh", "tcsh", "fish", "chm", "xll", "xlam", "ppam", "one", "appx", "msix", "vhdx",
+    "scf", "library-ms", "settingcontent-ms",
 })
+# Archives Wisp never lists or unpacks. Saved, they carry a caution, since an app could be inside.
+_ARCHIVE_SUFFIXES = frozenset({"rar", "7z", "tar", "tgz", "gz", "bz2", "tbz", "tbz2", "xz", "txz", "cab", "zst",
+                               "lz", "lzma", "z", "arj"})
+_NO_LOOK = "It is an archive Wisp can't look inside."
 # Scripts that run when handed to an interpreter. Graded "caution": read as text, never run, but a saved one
 # sits where a double-click could start it, so the success text says "Take care".
 _SCRIPT_SUFFIXES = frozenset({"py", "pl", "rb", "bash"})
 # A folder that is really a program, as an archive's entry paths show it.
 _BUNDLE_PARTS = (".app", ".pkg", ".bundle", ".framework", ".kext", ".plugin", ".prefpane", ".saver",
-                 ".workflow", ".action")
+                 ".workflow", ".action", ".mpkg", ".saver", ".xpc", ".appex")
 # Shortcut files open a program or an address the moment they are opened.
-_SHORTCUT_SUFFIXES = frozenset({"desktop", "fileloc", "inetloc", "lnk", "url", "webloc"})
-_MACRO_SUFFIXES = frozenset({"docm", "dotm", "potm", "pptm", "ppsm", "xlam", "xlsm", "xltm"})
+_SHORTCUT_SUFFIXES = frozenset({"desktop", "fileloc", "inetloc", "lnk", "url", "webloc", "scf", "library-ms",
+                                "settingcontent-ms"})
+_MACRO_SUFFIXES = frozenset({"docm", "dotm", "potm", "pptm", "ppsm", "xlam", "ppam", "xlsm", "xltm"})
 # Types that have no signature to check, so unknown bytes under them mean nothing.
 _PLAIN_TEXT_SUFFIXES = frozenset({"txt", "csv", "md", "json", "html", "htm", "ics", "vcf", "rtf", "log", "xml"})
 _HTML_SUFFIXES = frozenset({"html", "htm", "xhtml", "shtml"})
@@ -187,6 +199,17 @@ def _plain_name(name) -> str:
 def _suffix(name: str) -> str:
     # Windows ignores spaces and dots at the end of a name, so "run.exe " is still run.exe.
     return PurePath(_plain_name(name).rstrip(" .")).suffix.lower().lstrip(".")
+
+
+def _risk_name(name) -> str:
+    """The name as the risk check reads it: invisible characters out, compatibility letters folded (fullwidth
+    `ｅｘｅ`, the long s of `ſh`) and case folded, so none of them can hide an extension. Only for the
+    decision; the shown and saved name is never changed by it."""
+    return unicodedata.normalize("NFKC", _plain_name(name)).casefold()
+
+
+def _risk_suffix(name) -> str:
+    return PurePath(_risk_name(name).rstrip(" .")).suffix.lstrip(".")
 
 
 def _pretty(text: str, limit: int = 120) -> str:
@@ -265,6 +288,10 @@ def _signature(data: bytes) -> tuple[str, str]:
     for magic, label, family in _SIGNATURES:
         if data.startswith(magic):
             return label, family
+    if data[:3] == b"BZh" and data[4:10] == b"1AY&SY":
+        return "a bzip2 archive", "archive"
+    if len(data) >= 262 and data[257:262] == b"ustar":
+        return "a tar archive", "archive"
     if len(data) >= 512 and data[-512:-508] == b"koly":
         return "a Mac disk image", "program"
     if len(data) >= 12 and data[4:8] == b"ftyp":
@@ -292,12 +319,12 @@ def _zip_listing(data: bytes) -> dict:
     # A bundle shows once, as the bundle, rather than as hundreds of inner files.
     # An Office file's own .bin parts (printer settings, OLE objects) are not a hidden program.
     office = "[Content_Types].xml" in names
-    risky = sorted({_pretty(n) for n in names if not n.endswith("/") and _suffix(n) in _RISKY_SUFFIXES
-                    and not (office and _suffix(n) == "bin")})
+    risky = sorted({_pretty(n) for n in names if not n.endswith("/") and _risk_suffix(n) in _RISKY_SUFFIXES
+                    and not (office and _risk_suffix(n) == "bin")})
     macros = any(PurePath(n).name.lower() == "vbaproject.bin" for n in names)
-    bundles = any(c.lower().endswith(_BUNDLE_PARTS) for n in names
-                  for c in _plain_name(n).replace("\\", "/").split("/") if c)
-    scripts = any(_suffix(n) in _SCRIPT_SUFFIXES for n in names if not n.endswith("/"))
+    bundles = any(c.endswith(_BUNDLE_PARTS) for n in names
+                  for c in _risk_name(n).replace("\\", "/").split("/") if c)
+    scripts = any(_risk_suffix(n) in _SCRIPT_SUFFIXES for n in names if not n.endswith("/"))
     return {"entries": [_pretty(n) for n in names[:MAX_ZIP_NAMES]], "entry_count": len(names),
             "risky_entries": risky[:12], "macros": macros, "holds_bundle": bundles, "holds_script": scripts,
             "encrypted": any(info.flag_bits & 0x1 for info in infos)}
@@ -312,7 +339,7 @@ def _risk(name: str, data: bytes, suffix: str, label: str, family: str, found: d
     except a name suffix that was matched against a known set first."""
     high: list[str] = []
     caution: list[str] = []
-    parts = [part.strip() for part in PurePath(_plain_name(name).rstrip(" .")).name.lower().split(".")]
+    parts = [part.strip() for part in PurePath(_risk_name(name).rstrip(" .")).name.split(".")]
     if family == "program":
         high.append(f"The file itself is {label}, which could run on your Mac or PC.")
     elif family == "script" and suffix not in _PLAIN_TEXT_SUFFIXES:
@@ -336,9 +363,12 @@ def _risk(name: str, data: bytes, suffix: str, label: str, family: str, found: d
     if family == "zip" and found.get("risky_entries"):
         high.append("The archive lists programs or scripts inside it.")
     elif family == "zip" and found.get("holds_bundle"):
-        caution.append("It holds an app.")
+        high.append("It holds an app.")        # refused at save: the card is shown before the risk is judged
     elif family == "zip" and found.get("holds_script"):
         caution.append("It holds a program or script.")
+    if (family == "archive" or (family == "zip" and found.get("zip_error"))
+            or (suffix in _ARCHIVE_SUFFIXES and family != "zip")):
+        caution.append(_NO_LOOK)
     if found.get("macros") or suffix in _MACRO_SUFFIXES or (
             label == "an old Office file" and _OLE_VBA in data):
         caution.append("It is an Office file that contains macros, which can run commands if you enable them.")
@@ -364,11 +394,11 @@ def _risk(name: str, data: bytes, suffix: str, label: str, family: str, found: d
 def inspect(name: str, data: bytes) -> dict:
     """What this file really is and what looks wrong, from its bytes alone."""
     label, family = _signature(data)
-    suffix = _suffix(name)
+    suffix = _risk_suffix(name)
     out: dict = {"real_type": label, "family": family, "warnings": []}
     if _hidden(name):
         out["warnings"].append("Its name contains hidden characters that change how it reads.")
-    parts = [part.strip() for part in PurePath(_plain_name(name).rstrip(" .")).name.lower().split(".")]
+    parts = [part.strip() for part in PurePath(_risk_name(name).rstrip(" .")).name.split(".")]
     if len(parts) >= 3 and parts[-1] in _RISKY_SUFFIXES and parts[-2] in _INNOCENT_SUFFIXES:
         out["warnings"].append(f"Its name is made to look like a .{parts[-2]}, but it ends in .{parts[-1]}.")
     if family == "program" and suffix in _INNOCENT_SUFFIXES:
@@ -1196,6 +1226,8 @@ MAX_EML_HEADER = 300
 MAX_EML_PART_BYTES = 24 * 1024 * 1024
 # A header longer than this is not parsed: its value is treated as empty.
 MAX_EML_HEADER_BYTES = 64 * 1024
+# A Content-* header (type, disposition, encoding, id) is never legitimately more than a few KB.
+MAX_EML_CONTENT_HEADER_BYTES = 8 * 1024
 # An HTML body is read for its text only from this much of it.
 _EML_HTML_BYTES = 2 * 1024 * 1024
 _MIME_TYPE = re.compile(r"[a-z0-9][a-z0-9!#$&^_.+-]{0,60}/[a-z0-9][a-z0-9!#$&^_.+-]{0,60}")
@@ -1236,10 +1268,11 @@ def _defuse_headers(part) -> bool:
         except (TypeError, ValueError):
             continue
         text = value if isinstance(value, str) else str(value)
-        if len(text) > MAX_EML_HEADER_BYTES:
+        content = str(key).lower().startswith("content-")
+        if len(text) > (MAX_EML_CONTENT_HEADER_BYTES if content else MAX_EML_HEADER_BYTES):
             # A Content-* header is the one the stdlib parses for parameters: it becomes empty. Any other
             # (a 5 MB Subject) is only displayed, cut to 300 characters later, so keeping its start costs nothing.
-            blanked_value = "" if str(key).lower().startswith("content-") else text[:MAX_EML_HEADER_BYTES]
+            blanked_value = "" if content else text[:MAX_EML_HEADER_BYTES]
             headers[index] = (key, blanked_value)
             blanked = True
     return blanked
@@ -1250,6 +1283,8 @@ class _Walk:
     def __init__(self) -> None:
         self.cut = False           # stopped early for depth, part count or an oversized header
         self.unseen = False        # parts that were never looked at may have been files
+        self.dropped_text = False  # an inline text part that was neither the body, an alternative of it, nor a file
+        self.parent: dict = {}     # id(part) -> its multipart parent, for telling an alternative from a leftover
 
 
 def _eml_parts(root, walk: "_Walk | None" = None) -> list:
@@ -1269,6 +1304,8 @@ def _eml_parts(root, walk: "_Walk | None" = None) -> list:
             children = part.get_payload()
             if depth < MAX_EML_DEPTH:
                 if isinstance(children, list):
+                    for child in children:
+                        walk.parent[id(child)] = part
                     stack.extend((child, depth + 1) for child in reversed(children))
             elif isinstance(children, list) and children:
                 walk.cut = walk.unseen = True
@@ -1364,11 +1401,41 @@ def _part_bytes(part) -> bytes:
     return bytes(decoded) if isinstance(decoded, (bytes, bytearray)) else b""
 
 
+# A header line (with its folded continuation lines) that starts with "Content-", read straight from the bytes.
+_CONTENT_HEADER = re.compile(
+    rb"(?<![^\r\n])(content-[^\r\n:]{0,40}):([^\r\n]*(?:(?:\r\n|\r|\n)[ \t][^\r\n]*)*)", re.I)
+
+
+def _prescan(data: bytes) -> tuple[bytes, bool]:
+    """(the message with every oversized Content-* header cut down to nothing, whether any was cut).
+
+    The stdlib parser reads a part's Content-Type parameters (the boundary) while it is still parsing, through
+    a parameter splitter that is quadratic in the header's length, so a part whose Content-Type is megabytes of
+    semicolons would burn the child's time before any check on the parsed headers could run. This looks at the
+    raw bytes first, in one linear pass, and replaces such a header's value with a harmless one (a Content-Type
+    becomes text/plain, so the part is shown as plain text instead of being taken for a file). Lines are looked at wherever they are in the message: a real attachment
+    never has a line this long that starts with "Content-"."""
+    cut = False
+
+    def shrink(match):
+        nonlocal cut
+        if len(match.group(2)) <= MAX_EML_CONTENT_HEADER_BYTES:
+            return match.group(0)
+        cut = True
+        name = match.group(1)
+        return name + b": " + (b"text/plain" if name.lower() == b"content-type" else b"")
+
+    out = _CONTENT_HEADER.sub(shrink, data)
+    return (out, True) if cut else (data, False)
+
+
 def _parse_eml(data: bytes):
     from email.parser import BytesParser
     from email.policy import compat32
     try:
+        data, cut = _prescan(data)
         root = BytesParser(policy=compat32).parsebytes(data)
+        root._wisp_prescan_cut = cut
     except (RecursionError, MemoryError):
         raise
     except Exception:  # noqa: BLE001
@@ -1399,6 +1466,14 @@ def _eml_layout(root, walk: "_Walk | None" = None) -> tuple[object | None, list]
         named = bool(_raw_file_name(part)) or part.get_content_maintype() == "message"
         if named or _is_attachment_like(part) or not mime.startswith("text/") or mime in _NAMED_TEXT:
             files.append(part)
+        elif walk is not None and mime in ("text/plain", "text/html"):
+            # Inline text that is neither the body nor a file. The text version that was not chosen out of a
+            # multipart/alternative is the same message said twice, so it is not a loss; anything else is.
+            parent = walk.parent.get(id(part))
+            same_set = (parent is not None and body is not None and walk.parent.get(id(body)) is parent
+                        and (parent.get_content_type() or "").lower() == "multipart/alternative")
+            if not same_set:
+                walk.dropped_text = True
     return body, files
 
 
@@ -1421,31 +1496,30 @@ def eml(name: str, data: bytes) -> dict:
     try:
         root = _parse_eml(data)
         walk = _Walk()
+        walk.cut = bool(getattr(root, "_wisp_prescan_cut", False))
         body, files = _eml_layout(root, walk)
         text, cut = "", False
         if body is not None:
             if _mime_of(body) == "text/html":
                 raw, cut = _text_and_cut(body, _EML_HTML_BYTES)
-                text, fell_back = _html_text(raw)
-                cut = cut or fell_back
+                # The crude fallback keeps the words, so using it is not a cut; only a size cap is.
+                text, _fell_back = _html_text(raw)
             else:
                 text, cut = _text_and_cut(body, MAX_EML_BODY * 4 + 4096)
                 text = text.replace("\r\n", "\n").replace("\r", "\n")
             text = _BODY_JUNK.sub("", text).strip()
             if len(text) > MAX_EML_BODY:
                 text, cut = text[:MAX_EML_BODY], True
+            cut = cut or walk.dropped_text
         listed = []
         for index, part in enumerate(files[:MAX_EML_FILES]):
             listed.append({"index": index, "name": _file_name(part, index), "mime": _mime_of(part),
                            "size": len(_part_bytes(part))})
-        more = max(0, len(files) - MAX_EML_FILES)
-        if walk.unseen:
-            # Parts past the cap were never examined, so this is a lower bound: at least one of them
-            # may be a file, and that is all that can be said without reading them.
-            more = max(more, 1)
+        more = max(0, len(files) - MAX_EML_FILES)       # exactly the listed-but-over-the-cap files
         return {"from": _headers_of(root, "from"), "to": _headers_of(root, "to"), "cc": _headers_of(root, "cc"),
                 "subject": _headers_of(root, "subject"), "date": _decoded_header(root.get("date", ""), 100),
-                "body": text, "body_cut": cut, "walk_cut": walk.cut, "files": listed, "more_files": more}
+                "body": text, "body_cut": cut, "walk_cut": walk.cut, "files": listed, "more_files": more,
+                "more_unknown": walk.unseen}       # parts were never looked at, so there may be more files
     except MemoryError:
         raise ValueError("That email is too large for Wisp to read.") from None
     except ValueError:

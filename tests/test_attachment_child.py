@@ -1528,13 +1528,11 @@ def test_a_script_is_at_least_a_caution(name):
 @pytest.mark.parametrize("entry", ["Tool.app/Contents/Info.plist", "x/Setup.pkg/Contents/a", "Thing.bundle/a",
                                    "F.framework/Versions/A/F", "k.kext/Contents/x", "p.plugin/x",
                                    "P.prefPane/Contents/x", "s.saver/x", "w.workflow/Contents/document.wflow2",
-                                   "a.action/x", "Tool.app/"])
-def test_an_archive_holding_a_bundle_is_a_caution(entry):
+                                   "a.action/x", "Tool.app/", "Setup.mpkg/Contents/x", "\uff34ool.\uff41pp/Contents/x"])
+def test_an_archive_holding_an_app_is_high_with_a_plain_reason(entry):
     result = A.inspect("stuff.zip", zipped({"readme.txt": b"hi", entry: b"x"}))
-    assert result["risk"]["level"] in ("caution", "high")
     assert result["holds_bundle"] is True
-    if result["risk"]["level"] == "caution":
-        assert result["risk"]["reasons"] == ["It holds an app."]
+    assert result["risk"] == {"level": "high", "reasons": ["It holds an app."]}
 
 
 def test_an_archive_holding_a_script_is_a_caution_and_plain_documents_stay_clean():
@@ -1584,7 +1582,8 @@ def test_a_body_that_fits_is_not_cut():
 @CHILD
 def test_multiparts_nested_deeper_than_the_limit_say_the_walk_stopped():
     result = read_eml(nested_mail(12))
-    assert result["walk_cut"] is True and result["files"] == [] and result["more_files"] >= 1
+    assert result["walk_cut"] is True and result["files"] == [] and result["more_files"] == 0
+    assert result["more_unknown"] is True
     shallow = read_eml(nested_mail(A.MAX_EML_DEPTH))
     assert shallow["walk_cut"] is False and [f["name"] for f in shallow["files"]] == ["deep.pdf"]
 
@@ -1600,7 +1599,8 @@ def test_parts_past_the_part_cap_are_reported_not_silently_dropped():
         message.add_attachment(b"%PDF-1", maintype="application", subtype="pdf", filename=f"late{number}.pdf")
     result = read_eml(message.as_bytes(), timeout=90)
     assert result["walk_cut"] is True
-    assert result["files"] == [] and result["more_files"] >= 1        # a lower bound: the late files were never read
+    assert result["files"] == [] and result["more_files"] == 0
+    assert result["more_unknown"] is True        # the late files were never read, so no count is invented
 
 
 @CHILD
@@ -1909,3 +1909,139 @@ def test_other_sample_sizes_and_channel_counts_are_converted(width, channels, ra
     assert result["seconds"] == pytest.approx(3.0, abs=0.1) and len(result["windows"]) == 1
     assert result["stopped_early"] is False
     assert_window(result["windows"][0])
+
+
+# ------------------------------------------------------- more kinds, folded names, archives never listed
+
+@pytest.mark.parametrize("name", ["a.xip", "a.csh", "a.ksh", "a.tcsh", "a.fish", "a.chm", "a.xll", "a.xlam",
+                                  "a.ppam", "a.one", "a.appx", "a.msix", "a.vhd", "a.vhdx", "a.img", "a.iso",
+                                  "a.lnk", "a.scf", "a.library-ms", "a.settingcontent-ms"])
+def test_more_programs_disk_images_and_shortcuts_are_high(name):
+    assert risk_of(name)["level"] == "high"
+
+
+@pytest.mark.parametrize("name", ["run.\uff45\uff58\uff45", "run.\u017fh", "run.\uff53\uff48", "RUN.EXE", "disk.\uff49\uff53\uff4f",
+                                  "x.\uff4c\uff4e\uff4b"])
+def test_compatibility_letters_cannot_hide_a_program_extension(name):
+    assert risk_of(name)["level"] == "high"
+
+
+def test_folded_names_are_not_changed_in_the_answer_but_judged_folded():
+    assert risk_of("invoice.\uff45\uff58\uff45.pdf")["level"] == "high"
+    assert risk_of("\uff52eport.pdf", pdf_bytes())["level"] == ""
+
+
+def test_a_zip_with_a_folded_entry_name_is_still_read_as_holding_a_program():
+    result = A.inspect("s.zip", zipped({"setup.\uff45\uff58\uff45": b"MZ"}))
+    assert result["risk"]["level"] == "high"
+
+
+@pytest.mark.parametrize("name,data", [
+    ("a.rar", b"hello"), ("a.7z", b"hello"), ("a.tar", b"hello"), ("a.tgz", b"hello"), ("a.tar.gz", b"hello"),
+    ("a.bz2", b"hello"), ("a.xz", b"hello"), ("a.cab", b"hello"),
+    ("a.dat", b"Rar!\x1a\x07\x00rest"), ("a.dat", b"7z\xbc\xaf\x27\x1c\x00\x04rest"),
+    ("a.dat", b"\x1f\x8b\x08\x00rest"), ("a.dat", b"BZh91AY&SYrest"), ("a.dat", b"\xfd7zXZ\x00rest"),
+    ("a.dat", b"MSCF\x00\x00\x00\x00rest"), ("a.dat", b"x" * 257 + b"ustar" + b"x" * 300),
+])
+def test_an_archive_wisp_cannot_list_carries_a_caution(name, data):
+    assert risk_of(name, data) == {"level": "caution", "reasons": ["It is an archive Wisp can't look inside."]}
+
+
+@pytest.mark.parametrize("head", [b"PK\x05\x06", b"PK\x07\x08", b"PK00", b"PK\x01\x02"])
+def test_every_zip_start_is_a_zip(head):
+    assert A.inspect("a.zip", head + b"\x00" * 40)["family"] == "zip"
+
+
+def test_a_zip_that_cannot_be_listed_carries_the_same_caution():
+    risk = A.inspect("a.zip", b"PK\x07\x08" + b"\x00" * 40)["risk"]
+    assert risk == {"level": "caution", "reasons": ["It is an archive Wisp can't look inside."]}
+
+
+def test_a_zip_with_only_a_script_stays_a_caution_and_a_plain_zip_stays_clean():
+    assert A.inspect("s.zip", zipped({"run.py": b"print(1)"}))["risk"]["level"] == "caution"
+    assert A.inspect("s.zip", zipped({"a.txt": b"hi"}))["risk"] == {"level": "", "reasons": []}
+
+
+# ------------------------------------------------------- the raw-byte pre-scan and the honest flags of `eml`
+
+_P_TOP = b"From: a@example.com\r\nTo: b@example.com\r\nSubject: s\r\nMIME-Version: 1.0\r\n"
+_P_PDF = b"Content-Type: application/pdf\r\nContent-Disposition: attachment; filename=a.pdf\r\n\r\n%PDF-1\r\n"
+
+
+def _timed_eml(data: bytes):
+    started = time.monotonic()
+    result = A.eml("x.eml", data)
+    return result, time.monotonic() - started
+
+
+def test_a_top_level_content_type_of_megabytes_of_semicolons_is_cut_before_parsing():
+    data = (_P_TOP + b"Content-Type: multipart/mixed; boundary=x" + b";" * (5 * 1024 * 1024)
+            + b"\r\n\r\n--x\r\n" + _P_PDF + b"--x--\r\n")
+    result, seconds = _timed_eml(data)
+    assert seconds < 3.0 and result["walk_cut"] is True and result["subject"] == "s"
+
+
+def test_a_nested_multipart_content_type_of_megabytes_of_semicolons_is_cut_before_parsing():
+    data = (_P_TOP + b"Content-Type: multipart/mixed; boundary=x\r\n\r\n--x\r\n"
+            b"Content-Type: multipart/mixed; boundary=y" + b";" * (5 * 1024 * 1024)
+            + b"\r\n\r\n--y\r\n" + _P_PDF + b"--y--\r\n--x--\r\n")
+    result, seconds = _timed_eml(data)
+    assert seconds < 3.0 and result["walk_cut"] is True
+
+
+def test_a_folded_content_header_of_megabytes_is_cut_too():
+    folded = b"Content-Disposition: attachment;\r\n " + b";\r\n ".join(b"filename*%d*=a" % n for n in range(300_000))
+    data = (_P_TOP + b"Content-Type: multipart/mixed; boundary=x\r\n\r\n--x\r\n" + folded
+            + b"\r\n\r\n%PDF-1\r\n--x--\r\n")
+    result, seconds = _timed_eml(data)
+    assert seconds < 3.0 and result["walk_cut"] is True
+
+
+def test_headers_just_under_the_content_cap_on_fifty_parts_are_read_in_time_and_not_marked():
+    part = (b"--x\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=a.pdf"
+            + b";" * (A.MAX_EML_CONTENT_HEADER_BYTES - 200) + b"\r\n\r\n%PDF-1\r\n")
+    data = _P_TOP + b"Content-Type: multipart/mixed; boundary=x\r\n\r\n" + part * 50 + b"--x--\r\n"
+    result, seconds = _timed_eml(data)
+    assert seconds < 3.0 and result["walk_cut"] is False and len(result["files"]) == 50
+
+
+def test_an_ordinary_message_is_untouched_by_the_pre_scan():
+    data = _P_TOP + b"Content-Type: multipart/mixed; boundary=x\r\n\r\n--x\r\n" + _P_PDF + b"--x--\r\n"
+    assert A._prescan(data) == (data, False)
+    assert A.eml("x.eml", data)["walk_cut"] is False
+
+
+def _alt_mail(extra: bytes = b"") -> bytes:
+    return (_P_TOP + b"Content-Type: multipart/mixed; boundary=m\r\n\r\n--m\r\n"
+            b"Content-Type: multipart/alternative; boundary=a\r\n\r\n"
+            b"--a\r\nContent-Type: text/plain\r\n\r\nplain words\r\n"
+            b"--a\r\nContent-Type: text/html\r\n\r\n<p>html words</p>\r\n--a--\r\n" + extra + b"--m--\r\n")
+
+
+def test_the_unchosen_text_alternative_is_not_a_cut():
+    assert A.eml("x.eml", _alt_mail())["body_cut"] is False
+
+
+def test_a_second_inline_text_part_that_is_neither_body_nor_file_marks_the_body_cut():
+    footer = b"--m\r\nContent-Type: text/plain\r\n\r\nYou are on the list\r\n"
+    result = A.eml("x.eml", _alt_mail(footer))
+    assert result["body"] == "plain words" and result["body_cut"] is True
+
+
+def test_the_html_fallback_alone_is_not_a_cut(monkeypatch):
+    from service import document_extract
+
+    def refuse(_data):
+        raise RuntimeError("no")
+    monkeypatch.setattr(document_extract, "_html", refuse)
+    data = _P_TOP + b"Content-Type: text/html\r\n\r\n<p>kept <b>words</b></p>\r\n"
+    result = A.eml("x.eml", data)
+    assert "kept" in result["body"] and result["body_cut"] is False
+
+
+def test_more_unknown_is_separate_from_the_exact_count_of_listed_files_over_the_cap():
+    many = b"".join(b"--x\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=f%d.pdf\r\n\r\n%%PDF\r\n" % n
+                    for n in range(A.MAX_EML_FILES + 3))
+    result = A.eml("x.eml", _P_TOP + b"Content-Type: multipart/mixed; boundary=x\r\n\r\n" + many + b"--x--\r\n")
+    assert len(result["files"]) == A.MAX_EML_FILES and result["more_files"] == 3
+    assert result["more_unknown"] is False
