@@ -779,8 +779,11 @@ struct ProactiveBriefSection: View {
                     .lineLimit(2).fixedSize(horizontal: false, vertical: true)
             }
             if !action.recipient.isEmpty {
+                // Never truncated: these are the people Send sends the draft to.
                 Text("TO  " + action.recipient).font(.wisp(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
-                    .lineLimit(1)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .accessibilityLabel("To: " + action.recipient)
             }
             TextEditor(text: Binding(get: { actions.draft(card) }, set: { actions.drafts[card.id] = $0 }))
                 .font(.wisp(size: 12.5)).foregroundStyle(Theme.textPrimary)

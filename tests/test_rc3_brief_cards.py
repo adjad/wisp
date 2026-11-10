@@ -89,3 +89,17 @@ def test_no_answer_to_a_reply_is_never_try_again():
     assert ".failed(" not in held
     never = _body(MODELS, "static func neverReached(_ error: Error) -> Bool")
     assert ".timedOut" not in never and ".networkConnectionLost" not in never
+
+
+def test_a_reply_cards_recipients_are_never_cut_to_one_line():
+    """a06-brief-send#7: the line above Send read "TO  first@example.com, second@exa…",
+    so a reply to several people could be sent without every address in view. The
+    composer already wraps the same data ("Never truncated")."""
+    start = DRAFT_EDITOR.index('Text("TO  " + action.recipient)')
+    line = DRAFT_EDITOR[start:DRAFT_EDITOR.index("TextEditor(", start)]
+    assert ".lineLimit(" not in line and ".truncationMode(" not in line
+    assert ".fixedSize(horizontal: false, vertical: true)" in line
+    assert ".textSelection(.enabled)" in line
+    # Still only shown when the card has one, and it sits above the draft's Send.
+    assert "if !action.recipient.isEmpty {" in DRAFT_EDITOR[:start]
+    assert start < DRAFT_EDITOR.index("fireButton(card, action, fire)")
