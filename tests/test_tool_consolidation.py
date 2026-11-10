@@ -203,3 +203,45 @@ def test_tool_wide_allow_keeps_retired_denies_like_explicit_ones(isolated_grants
     assert grants.check("toggle_setting", {"setting": "wifi", "on": False}) == "deny"
     assert grants.check("toggle_setting", {"setting": "firewall", "on": False}) == "deny"
     assert grants.check("toggle_setting", {"setting": "bluetooth", "on": False}) == "allow"
+
+
+# ---- appearance (toggle_setting dark_mode / auto_appearance) -------------
+def _fake_proc(returncode=0, stdout="", stderr=""):
+    import subprocess
+    return subprocess.CompletedProcess([], returncode, stdout, stderr)
+
+
+@pytest.mark.parametrize("mode, flag", [("dark", "true"), ("light", "false")])
+def test_dark_and_light_mode_script_is_one_clean_system_events_line(monkeypatch, mode, flag):
+    from service.tools import system_extras2 as X
+    scripts, runs = [], []
+    monkeypatch.setattr(X, "_osa", lambda s: scripts.append(s) or _fake_proc())
+    # `defaults delete` of an unset key exits 1; that must not matter.
+    monkeypatch.setattr(X, "_run", lambda argv, *a, **k: runs.append(argv) or _fake_proc(1))
+    assert X.appearance_mode(mode) == f"Appearance set to {mode}."
+    assert scripts == [f'tell application "System Events" to tell appearance '
+                       f'preferences to set dark mode to {flag}']
+    assert "2>" not in scripts[0] and "do shell script" not in scripts[0]
+    assert runs == [["defaults", "delete", "NSGlobalDomain",
+                     "AppleInterfaceStyleSwitchesAutomatically"]]
+
+
+def test_toggle_dark_mode_reaches_appearance_and_reports_osascript_failure(monkeypatch):
+    from service.tools import system_extras2 as X
+    monkeypatch.setattr(X, "_run", lambda argv, *a, **k: _fake_proc(1))
+    monkeypatch.setattr(X, "_osa", lambda s: _fake_proc(1, stderr="not allowed"))
+    out = REGISTRY["toggle_setting"].func(setting="dark_mode", on=True)
+    assert out == "(could not change appearance: not allowed)"
+    monkeypatch.setattr(X, "_osa", lambda s: _fake_proc(0))
+    assert REGISTRY["toggle_setting"].func(setting="dark_mode", on=True) == "Appearance set to dark."
+
+
+def test_delete_timeout_does_not_stop_the_appearance_change(monkeypatch):
+    import subprocess
+    from service.tools import system_extras2 as X
+
+    def boom(argv, *a, **k):
+        raise subprocess.TimeoutExpired(argv, 1)
+    monkeypatch.setattr(X, "_run", boom)
+    monkeypatch.setattr(X, "_osa", lambda s: _fake_proc(0))
+    assert X.appearance_mode("light") == "Appearance set to light."
