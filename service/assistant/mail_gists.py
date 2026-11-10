@@ -736,7 +736,13 @@ async def refresh(now: float | None = None, *, synth=None, abort=None, force: bo
     from service import idle
     now = time.time() if now is None else now
     abort = abort or idle.foreground_busy
-    jobs = [j for j in (_jobs(now, force=True) if force else _jobs(now)) if kind is None or j["kind"] == kind]
+    # Captured before the inputs are read: an erase while _jobs runs in its
+    # thread must still drop what was written from the erased mail.
+    generation = _generation
+    # Reading the inbox and the Messages cache is CPU work over up to ~20k
+    # lines: off the event loop, so the app's requests keep being answered.
+    jobs = await asyncio.to_thread(_jobs, now, force=bool(force))
+    jobs = [j for j in jobs if kind is None or j["kind"] == kind]
     if not jobs:
         _stood_down("no new mail or texts to describe")
         _next_call_at = now + _IDLE_GAP_S
@@ -746,7 +752,6 @@ async def refresh(now: float | None = None, *, synth=None, abort=None, force: bo
         _next_call_at = now + _IDLE_GAP_S
         return False
     job = jobs[0]
-    generation = _generation
     from service.memory.identity import identity_prompt_block
     system = (identity_prompt_block(messages=False).strip() + "\n\n" + job["rules"]).strip()
     material = "\n".join(job["lines"])
