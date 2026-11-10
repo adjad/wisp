@@ -1,6 +1,7 @@
 import AppKit
 import EventKit
 import Foundation
+import UserNotifications
 
 // Pure checks for the first-run window: when it shows, and what step 1 says for
 // every engine, model and download state. No window, service or engine.
@@ -1086,5 +1087,16 @@ struct FirstRunSetupChecks {
               "Calendar, Reminders and the Full Disk Access readers re-post on reconnect")
         check(!AppDelegate.resyncedWhenReachable.contains(where: \.isExtra),
               "Nothing that only sends or looks at the screen")
+
+        // A notification that arrives while a Wisp window is in front is still shown.
+        // With no options macOS shows it nowhere, and a due reminder was lost.
+        let shown: UNNotificationPresentationOptions = [.banner, .list, .sound]
+        // "" is a reminder, "Added a reminder", an unknown-outcome notice and "Wisp is ready".
+        for category in ["", Notifications.nudgeCategory, Notifications.nudgeCategoryUndo,
+                         Notifications.nudgeCategoryAct, Notifications.nudgeCategoryUndoAct] {
+            let options = Notifications.presentationOptions(categoryIdentifier: category)
+            check(options == shown && !options.isEmpty,
+                  "With Wisp in front, a notification still shows its banner, sound and list entry: '\(category)'")
+        }
     }
 }
