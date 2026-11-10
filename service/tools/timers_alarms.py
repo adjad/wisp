@@ -119,15 +119,69 @@ _UNIT = {"h": 3600, "hr": 3600, "hrs": 3600, "hour": 3600, "hours": 3600,
          "s": 1, "sec": 1, "secs": 1, "second": 1, "seconds": 1}
 
 
+# Spelled-out lengths. The model often passes the user's own words through
+# ("five minutes", "half an hour"), and a voice request is nothing but words.
+_ONES = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+         "seven": 7, "eight": 8, "nine": 9}
+_SMALL = {**_ONES, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
+          "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
+          "eighteen": 18, "nineteen": 19}
+_TENS = {"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60,
+         "seventy": 70, "eighty": 80, "ninety": 90}
+_SPELLED_RE = re.compile(
+    r"\b(?:(%s)(?:[-\s]+(%s))?|(%s))\b" % ("|".join(_TENS), "|".join(_ONES), "|".join(_SMALL)))
+_UNIT_WORD = r"(?:hours?|hrs?|minutes?|mins?|seconds?|secs?)"
+_NUM = r"(?<![\w.])(\d+(?:\.\d+)?|an?)"
+_N_AND_A_HALF_RE = re.compile(rf"{_NUM}\s+and\s+a\s+half\s+({_UNIT_WORD})\b")
+_UNIT_AND_A_HALF_RE = re.compile(rf"{_NUM}\s+({_UNIT_WORD})\s+and\s+a\s+half\b")
+_HOUR_AND_A_QUARTER_RE = re.compile(rf"{_NUM}\s+(?:hours?|hrs?)\s+and\s+a\s+quarter\b")
+_QUARTER_HOUR_RE = re.compile(
+    r"(?<![\w.])(?:(\d+|an?)\s+)?quarters?\s+(?:of\s+)?(?:an?\s+)?(?:hours?|hrs?)\b")
+_HALF_UNIT_RE = re.compile(rf"\b(?:an?\s+)?half\s+(?:of\s+)?(?:an?\s+)?({_UNIT_WORD})\b")
+_A_UNIT_RE = re.compile(rf"\ban?\s+(?={_UNIT_WORD}\b)")
+# Words the rewrite above does not turn into a number. Left in, the digit
+# pattern would read only the part it understands ("a hundred and twenty
+# minutes" as 20), so these are refused and Wisp asks instead of guessing.
+_UNREAD_AMOUNT_RE = re.compile(
+    r"\b(?:hundred|thousand)\b|\band\s+(?:an?|\d+)\s+(?:half|quarters?)\b")
+
+
+def _amount(raw: str) -> float:
+    return 1.0 if raw in {"a", "an"} else float(raw)
+
+
+def _spelled_to_digits(text: str) -> str:
+    """ "five minutes" -> "5 minutes", "half an hour" -> "0.5 hour", and so on.
+
+    "a" and "an" count as one only directly before a unit, so a stray "a"
+    never becomes a number.
+    """
+    text = _SPELLED_RE.sub(
+        lambda m: str(_TENS[m.group(1)] + _ONES.get(m.group(2) or "", 0)) if m.group(1)
+        else str(_SMALL[m.group(3)]), text)
+    text = _N_AND_A_HALF_RE.sub(lambda m: f"{_amount(m.group(1)) + 0.5:g} {m.group(2)}", text)
+    text = _UNIT_AND_A_HALF_RE.sub(lambda m: f"{_amount(m.group(1)) + 0.5:g} {m.group(2)}", text)
+    text = _HOUR_AND_A_QUARTER_RE.sub(lambda m: f"{_amount(m.group(1)):g} hours 15 minutes", text)
+    text = _QUARTER_HOUR_RE.sub(lambda m: f"{_amount(m.group(1) or 'a') * 15:g} minutes", text)
+    text = _HALF_UNIT_RE.sub(r"0.5 \1", text)
+    return _A_UNIT_RE.sub("1 ", text)
+
+
 def _parse_duration(text: str) -> float | None:
-    """Seconds from "10 minutes", "1h30m", "90s", or a bare number (minutes).
+    """Seconds from "10 minutes", "1h30m", "90s", "five minutes", "half an
+    hour", or a bare number (minutes).
 
     A bare number means MINUTES, not seconds. "set a timer for 10" is a
     ten-minute timer to every person who has ever said it; reading it as ten
-    seconds would be technically defensible and useless.
+    seconds would be technically defensible and useless. That rule is for
+    digits only: a lone word ("ten") is not read as a length.
     """
     text = (text or "").strip().lower()
     if not text:
+        return None
+    bare = re.fullmatch(r"\d+(?:\.\d+)?", text)
+    text = _spelled_to_digits(text)
+    if _UNREAD_AMOUNT_RE.search(text):
         return None
     total = 0.0
     for amount, unit in _DUR_RE.findall(text):
@@ -140,8 +194,8 @@ def _parse_duration(text: str) -> float | None:
         total += float(amount) * seconds
     if total:
         return total
-    if re.fullmatch(r"\d+(?:\.\d+)?", text):
-        return float(text) * 60.0
+    if bare:
+        return float(bare.group()) * 60.0
     return None
 
 
