@@ -147,9 +147,15 @@ def _suffix(name: str) -> str:
     return PurePath(name or "").suffix.lower().lstrip(".")
 
 
+def _plain(text) -> str:
+    """`text` with any fence-marker-shaped run defused, for a line printed OUTSIDE a fence that carries a
+    sender, subject, chat, file or account name. Ordinary text, `Dana <dana@x.com>` included, is unchanged."""
+    return untrusted.neutralize(text)
+
+
 def _safe_name(name: str) -> str:
     """A file name safe to display and to pass to a child process."""
-    return _pretty(PurePath(str(name or "")).name.replace("\x00", ""), 100) or "file"
+    return _plain(_pretty(PurePath(str(name or "")).name.replace("\x00", ""), 100)) or "file"
 
 
 def _strs(value, count: int, limit: int = 160) -> list[str]:
@@ -1029,6 +1035,10 @@ def _source_label(email: _Email) -> str:
 
 
 def _email_header(index: int, email: _Email) -> str:
+    return _plain(_header_text(index, email))
+
+
+def _header_text(index: int, email: _Email) -> str:
     if email.source == "messages":
         chat = _pretty(email.chat, 80) or "a conversation"
         who = f"from {_pretty(email.sender, 80) or 'an unknown sender'}"
@@ -1057,7 +1067,7 @@ def _file_head(f: _File, reading: _Reading | None = None) -> str:
     head = f"  File: {name} ({kind}{size})"
     if reading and reading.where:
         head += f", read from {reading.where}"
-    return head
+    return _plain(head)
 
 
 def _block(f: _File, reading: _Reading, room: int) -> str:
@@ -1078,7 +1088,7 @@ def _block_one(f: _File, reading: _Reading, room: int) -> str:
         lines.append(("  Looks risky: " if reading.risk_level == "high" else "  Take care: ") + " ".join(reading.risk))
     else:
         lines.extend(f"  Warning: {w}" for w in reading.warnings)
-    base = "\n".join(lines)
+    base = _plain("\n".join(lines))
     if reading.problem or not reading.text.strip():
         return base if len(base) <= room else ""
     free = room - len(base) - 1 - untrusted.overhead(_KIND)
@@ -1090,7 +1100,7 @@ def _block_one(f: _File, reading: _Reading, room: int) -> str:
         cut = text[:free].rstrip()
         text = cut
         lines[1] = lines[1].rstrip() + " Shortened to fit."
-        base = "\n".join(lines)
+        base = _plain("\n".join(lines))
         free = room - len(base) - 1 - untrusted.overhead(_KIND)
         text = text[:max(0, free)]
     return base + "\n" + untrusted.fence(text, _KIND)
@@ -1100,6 +1110,7 @@ def _trailer(notes: list[str], room: int) -> str:
     """What was left out, whole notes only: files not read come first, since they matter most."""
     if not notes or room <= 0:
         return ""
+    notes = [_plain(note) for note in notes]
     ordered = sorted(notes, key=lambda note: 0 if "not read" in note or "without room" in note else 1)
     kept: list[str] = []
     for note in ordered:
@@ -1117,7 +1128,8 @@ def _listing(index: int, email: _Email) -> list[str]:
     lines = [_email_header(index, email)]
     for f in email.files:
         size = f", {_size_text(f.size)}" if f.size else ""
-        lines.append(f"  - {_safe_name(f.name)} ({_suffix(f.name).upper() or 'file'}{size}, {_availability(f)})")
+        lines.append(_plain(f"  - {_safe_name(f.name)} ({_suffix(f.name).upper() or 'file'}{size}, "
+                            f"{_availability(f)})"))
     return lines
 
 
@@ -1426,6 +1438,7 @@ async def _read_email(ctx: _Ctx, email: _Email, f: _File, reading: _Reading, dig
             return reading
     if listing:
         reading.text = (reading.text + "\n\n" if reading.text.strip() else "") + listing
+    reading.note = reading.note.rstrip() + " " if reading.note.strip() else ""
     if candidates and not n:
         reading.note += "Its files are listed, not read, for lack of room. "
     blocks: list[str] = []
@@ -1700,6 +1713,16 @@ def _bare_ctx(deadline: float, gmail_accounts: list[str]) -> _Ctx:
     return _Ctx(deadline=deadline, gmail_source=gmail_source, gmail_accounts=gmail_accounts, passes=None)
 
 
+def from_mail_rows(rows: list[dict]) -> list[_Email]:
+    """One merged _Email per message from Apple Mail attachment rows (what the index reads). Public seam."""
+    return _merge(rows, [])
+
+
+def is_picture(name: str, mime: str = "") -> bool:
+    """True when the file name or MIME type says it is a picture. Public seam."""
+    return _is_picture(name, mime)
+
+
 async def fetch(email: _Email, f: _File, *, deadline: float) -> tuple[bytes, str]:
     """(bytes, where they came from) for one file of `email`, exactly as a read would get them: Apple
     Mail's saved copy first, then Gmail, or Messages for a texted file. Raises Unreadable(plain reason)."""
@@ -1905,12 +1928,13 @@ async def _run(query, name, start, end, label, count, account, question, list_on
         what = f" matching {', '.join(terms)}" if terms else ""
         named_text = f" named {_pretty(name, 60)!r}" if named else ""
         if messages:
-            return (f"I didn't find any files in Messages{named_text}{what}{where}. " + " ".join(notes)).strip()
-        return (f"I didn't find any email attachments{named_text}{what}{where}. "
-                + " ".join(notes)).strip()
+            return _plain(f"I didn't find any files in Messages{named_text}{what}{where}. "
+                          + " ".join(notes)).strip()
+        return _plain(f"I didn't find any email attachments{named_text}{what}{where}. "
+                      + " ".join(notes)).strip()
 
-    top = (f"Files in {len(chosen)} message{'' if len(chosen) == 1 else 's'}{where}, newest first." if messages
-           else f"Attachments in {len(chosen)} email{'' if len(chosen) == 1 else 's'}{where}, newest first.")
+    top = _plain(f"Files in {len(chosen)} message{'' if len(chosen) == 1 else 's'}{where}, newest first." if messages
+                 else f"Attachments in {len(chosen)} email{'' if len(chosen) == 1 else 's'}{where}, newest first.")
     limit = RESULT_BUDGET_CHARS
 
     if list_only:
@@ -2202,7 +2226,7 @@ def _nothing_found(found: _Found, name, label, messages: bool) -> str:
     named_text = f" named {_pretty(name, 60)!r}" if found.named else ""
     where = f" in {label}" if label else ""
     kind = "files in Messages" if messages else "email attachments"
-    return (f"I didn't find any {kind}{named_text}{what}{where}. " + " ".join(found.notes)).strip()
+    return _plain(f"I didn't find any {kind}{named_text}{what}{where}. " + " ".join(found.notes)).strip()
 
 
 async def _run_across(query, name, start, end, label, account, question, source) -> str:
@@ -2262,9 +2286,12 @@ async def _run_across(query, name, start, end, label, account, question, source)
 
     notes: list[str] = []
     not_reached = len(considered) - reached
-    if not_reached:
-        notes.append(f"{not_reached} file{'' if not_reached == 1 else 's'} not reached; ask again and Wisp "
-                     "continues, because what it read is kept.")
+    # The first line counts files with facts out of the files considered; these notes account for the rest,
+    # in this order: text but no facts, skipped by kind, not reached.
+    without_facts = sum(1 for _e, _f, facts in rows if facts is None)
+    if without_facts:
+        notes.append(f"{without_facts} file{'' if without_facts == 1 else 's'} had text but no facts Wisp "
+                     "could pull out.")
     if len(flat) > len(considered):
         left = len(flat) - len(considered)
         notes.append(f"{left} more file{'' if left == 1 else 's'} not looked at (at most {_ACROSS_FILES} per request).")
@@ -2276,6 +2303,9 @@ async def _run_across(query, name, start, end, label, account, question, source)
         skipped_count = sum(skipped.values())
         notes.append(f"Skipped {skipped_count} file{'' if skipped_count == 1 else 's'} without text: "
                      + ", ".join(parts) + ".")
+    if not_reached:
+        notes.append(f"{not_reached} file{'' if not_reached == 1 else 's'} not reached; ask again and Wisp "
+                     "continues, because what it read is kept.")
     if risky:
         notes.append(f"{risky} of these files look risky; read one on its own to see why.")
     found_notes = " ".join(found.notes)[:_ACROSS_NOTES_MAX]
@@ -2286,8 +2316,8 @@ async def _run_across(query, name, start, end, label, account, question, source)
     with_facts = sum(1 for facts in all_facts if facts is not None)
     asked = _pretty(question, 80) if isinstance(question, str) else ""
     where = f" in {label}" if label else ""
-    top = (f"Facts from {with_facts} of {len(considered)} files{where}" + (f" (for: {asked})" if asked else "")
-           + ", newest first.")
+    top = _plain(f"Facts from {with_facts} of {len(considered)} files{where}"
+                 + (f" (for: {asked})" if asked else "") + ", newest first.")
     sentences = attachment_fields.totals(all_facts) if rows else []
     total_line = ("Totals added up by Wisp: " + "; ".join(sentences) + ".") if sentences else ""
     lines = [attachment_fields.line(facts, name=_safe_name(f.name), when=_when(email.ts)) for email, f, facts in rows]
@@ -2314,7 +2344,7 @@ async def _run_across(query, name, start, end, label, account, question, source)
         out.append(untrusted.fence("\n".join(kept), _KIND))
     if total_line:
         out.append(total_line)
-    out.extend(notes)
+    out.extend(_plain(note) for note in notes)
     return "\n".join(out)
 
 

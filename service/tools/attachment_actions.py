@@ -26,6 +26,7 @@ import time
 from collections import OrderedDict
 
 from service.tools.email_attachments import _span
+from service.tools import untrusted
 from service.tools.registry import not_done, register
 
 SAVE_TOOL = "save_email_attachment"
@@ -90,9 +91,9 @@ def _take(token, clean: dict) -> dict | None:
 
 
 def _stopped(reason: str, question: str = "") -> str:
-    reason = " ".join(str(reason or "").split())[:400] or "that file could not be settled on"
+    reason = untrusted.neutralize(" ".join(str(reason or "").split())[:400]) or "that file could not be settled on"
     return not_done(f"(NOT saved — {reason} Nothing was saved.)",
-                    question=" ".join(str(question or "").split())[:600] or reason)
+                    question=untrusted.neutralize(" ".join(str(question or "").split())[:600]) or reason)
 
 
 async def prepare_save_args(args: dict) -> tuple[dict, str | None]:
@@ -170,8 +171,8 @@ async def save_email_attachment(query: str | None = None, name: str | None = Non
         return _stopped("saving attachments is not available in this build.")
     result = await attachment_save.save(frozen)
     if isinstance(result, dict) and result.get("ok") is True and isinstance(result.get("text"), str):
-        return result["text"]
-    reason = str(result.get("reason") or "") if isinstance(result, dict) else ""
+        return untrusted.neutralize(result["text"])
+    reason = untrusted.neutralize(str(result.get("reason") or "")) if isinstance(result, dict) else ""
     if isinstance(result, dict) and result.get("wrote") is False:
         # The engine says it stopped before leaving anything behind.
         return _stopped(reason or "the file could not be saved.")
