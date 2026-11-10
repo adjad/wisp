@@ -598,6 +598,12 @@ def _parse_args(raw: str) -> dict:
         return {}
 
 
+_CALENDAR_BATCH_STALE_MESSAGE = (
+    "Your Mac's clock or time zone changed while I was waiting, so I didn't change "
+    "your calendar. Ask me again and I'll set it up with the new times."
+)
+
+
 def _calendar_create_preview(args: dict) -> str:
     from service.tools.assistant_tools import calendar_interval_label
     interval = calendar_interval_label(args.get("when_iso", "?"),
@@ -4744,12 +4750,18 @@ async def run_agent(
             _batch_calls.append((tc.get("id", ""), _batch_name, _batch_args))
         from service.tools.assistant_tools import (bind_calendar_local_start,
                                                    calendar_time_problem)
+        # An add whose start time cannot be used never joins the card. It used
+        # to end the whole turn here with the raw error and no `done` event
+        # (the app then showed "The assistant didn't respond."), and nothing
+        # was added. Left out of the batch, it reaches the per-call loop below,
+        # which answers it with that problem as its own tool result, so the
+        # model can correct it; the card lists only what can actually be added,
+        # and the call never runs under the batch's approval.
+        _batch_calls = [
+            (_bcid, _batch_name, _batch_args) for _bcid, _batch_name, _batch_args in _batch_calls
+            if not (_batch_name == "add_calendar_event"
+                    and calendar_time_problem(_batch_args.get("when_iso")))]
         if len(_batch_calls) > 1:
-            for _, _batch_name, _batch_args in _batch_calls:
-                if _batch_name == "add_calendar_event" and (
-                        problem := calendar_time_problem(_batch_args.get("when_iso"))):
-                    await emit({"type": "text", "text": problem})
-                    return problem
             for _bcid, _batch_name, _batch_args in _batch_calls:
                 if _batch_name == "add_calendar_event":
                     _batch_args["when_iso"] = bind_calendar_local_start(
@@ -4770,10 +4782,15 @@ async def run_agent(
             _batch_approved = _note_decision("calendar_changes", await approver.confirm(_batch_action))
             if _batch_approved:
                 for _, _batch_name, _batch_args in _batch_calls:
-                    if _batch_name == "add_calendar_event" and (
-                            problem := calendar_time_problem(_batch_args["when_iso"])):
-                        await emit({"type": "text", "text": problem})
-                        return problem
+                    if _batch_name == "add_calendar_event" and calendar_time_problem(
+                            _batch_args["when_iso"]):
+                        # The approved start no longer matches this Mac's local
+                        # time (its zone or clock changed while the card was
+                        # open). Nothing in the batch has run yet; stop in words
+                        # and close the turn.
+                        await emit({"type": "text", "text": _CALENDAR_BATCH_STALE_MESSAGE})
+                        await emit({"type": "done"})
+                        return _CALENDAR_BATCH_STALE_MESSAGE
             for _bcid, _, _ in _batch_calls:
                 batch_verdict[_bcid] = _batch_approved
 
