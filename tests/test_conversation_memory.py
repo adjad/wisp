@@ -886,6 +886,54 @@ def test_incomplete_or_malformed_model_response_never_saves(world, response):
     assert facts.count() == 0
 
 
+def test_long_paste_is_skipped_without_a_model_call_or_a_failed_job(world, monkeypatch):
+    from types import SimpleNamespace
+    from service import idle
+    import service.memory.capture as capture
+    import service.config.endpoints as endpoints
+    facts, sessions, q = world
+    sid = sessions.create_session()
+    sessions.add_turn(sid, 'user', 'I live in Lisbon. ' * 400)  # 7,200 characters
+    worker = MemoryWorker(sessions, facts)
+    # Directly: no model call, nothing saved, no error.
+    model = FakeModel()
+    job = q.next()
+    assert asyncio.run(worker.process(job, model, 'fixture-model')) == 0
+    assert model.calls == [] and facts.count() == 0
+    q.finish(job, 'queued')
+    sessions._db.execute('UPDATE memory_jobs SET attempts=0,available_at=0')
+    sessions._db.commit()
+    # Through the worker loop: the job ends done, never queued again or failed.
+    monkeypatch.setattr(endpoints, 'role_target', lambda role:
+        SimpleNamespace(model='fixture-model', endpoint=SimpleNamespace(managed=True)))
+    monkeypatch.setattr(idle, '_foreground_turns', 0)
+    monkeypatch.setattr(idle, '_in_flight', {})
+    actual_sleep = asyncio.sleep
+    ticks = 0
+    async def four_ticks(delay):
+        nonlocal ticks
+        ticks += 1
+        if ticks > 4:
+            raise asyncio.CancelledError
+        await actual_sleep(0)
+    monkeypatch.setattr(capture.asyncio, 'sleep', four_ticks)
+    class Client:
+        chats = 0
+        async def loaded_models(self):
+            return ['fixture-model']
+        async def chat(self, *args, **kwargs):
+            self.chats += 1
+            raise AssertionError('a long paste must not reach the model')
+    client = Client()
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(worker.run(client))
+    stats = q.stats()
+    assert stats['jobs'] == {'done': 1} and stats['failed_jobs'] == []
+    assert client.chats == 0 and facts.count() == 0
+    row = dict(sessions._db.execute('SELECT * FROM memory_jobs').fetchone())
+    assert row['attempts'] == 1 and row['error'] == ''
+
+
 def test_future_schema_is_rejected_without_rewriting_version(tmp_path):
     path = tmp_path / 'future.db'
     db = sqlite3.connect(path)

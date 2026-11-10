@@ -76,7 +76,10 @@ class MemoryWorker:
         if self.facts.suppressed_source('conversation', source_id) or self.facts.suppressed_text(source):
             return 0
         if len(source) > 6000:
-            raise ValueError('Source exceeds extraction budget')
+            # A long paste is outside the extraction budget: skip it, so the
+            # job finishes instead of failing three times and showing a
+            # "Failed" count that Retry can never clear.
+            return 0
         if _CONTEXT_RISK.search(source) or _CONTACT.search(source):
             return 0
         if not any(_SELF.match(part.strip()) for part in re.split(r'(?<=[.!?])\s+|\n+', source)):
