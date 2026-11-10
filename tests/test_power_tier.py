@@ -29,6 +29,7 @@ def clean_env(monkeypatch, tmp_path):
     monkeypatch.setattr(P, "_lift_retry_at", 0.0)
     monkeypatch.setattr(P, "_watch_retry_at", 0.0)
     monkeypatch.setattr(P, "_lifted", False)
+    monkeypatch.setattr(P, "_quiesced", False)
     monkeypatch.setattr(P, "_watch_task", None)
     monkeypatch.setattr(P, "_service_loop", None)
     monkeypatch.setattr(P, "_on_battery_probe", lambda: False)
@@ -1499,3 +1500,103 @@ def test_the_mail_memory_walk_runs_at_10_w_on_battery_and_plugged_in(monkeypatch
     monkeypatch.setattr(idle, "in_flight", lambda key: 1)
     assert asyncio.run(runner._reply([{"role": "user", "content": "mail"}])) == "ok"
     assert client.seen == [(P.BACKGROUND, {"gpu_power_limit_w": 10})]
+
+
+# --- quitting ---------------------------------------------------------------------
+
+def _quit(monkeypatch, order):
+    """The quit endpoint on the bundled engine, with the engine stop recorded."""
+    import importlib
+    import service.main as main
+    runtime = importlib.import_module("service.engine.runtime")
+    monkeypatch.setattr(main, "client", SimpleNamespace(managed=True), raising=False)
+    monkeypatch.setattr(main, "is_bundled", lambda: True)
+    monkeypatch.setattr(main, "_quitting", False)
+    monkeypatch.setattr(runtime, "stop_if_running", lambda **kw: order.append("stop") or True)
+    return main
+
+
+def test_quitting_lifts_a_cap_in_flight_before_the_engine_is_stopped(monkeypatch):
+    # The cap is Mac-wide and stays until it is removed. An engine killed while a
+    # capped request still generates would leave it set after Wisp has quit.
+    P.refresh_away(5, on_battery=False)
+    order = []
+    main = _quit(monkeypatch, order)
+
+    async def lift():
+        order.append("lift")
+        return True
+
+    async def run():
+        with P.power_tier(P.BACKGROUND):
+            assert P.payload_fields() == {"gpu_power_limit_w": 10}
+            capped = P.call_started(10, lift)
+            try:
+                assert await main.shutdown_omlx() == {"stopped": True}
+                # And no call takes a new cap while the engine is leaving.
+                assert P._wanted(P.BACKGROUND) is None and P.payload_fields() == {}
+            finally:
+                P.call_ended(capped)
+
+    asyncio.run(run())
+    assert order == ["lift", "stop"]
+
+
+def test_quitting_takes_no_new_cap_on_any_tier():
+    P.refresh_away(P.AWAY_AFTER_S + 1, on_battery=True)
+    assert _caps() == {None: None, P.CHAT: 15, P.BRIEF: 10, P.BACKGROUND: 10}
+    P.quiesce()
+    assert _caps() == {None: None, P.CHAT: None, P.BRIEF: None, P.BACKGROUND: None}
+
+
+def test_a_lift_that_hangs_at_quit_is_bounded_and_the_engine_is_still_stopped(monkeypatch):
+    P.refresh_away(5, on_battery=False)
+    order = []
+    main = _quit(monkeypatch, order)
+    monkeypatch.setattr(main, "_QUIT_LIFT_SECONDS", 0.05)
+
+    async def hung():
+        order.append("lift")
+        await asyncio.sleep(60)
+
+    async def run():
+        with P.power_tier(P.BACKGROUND):
+            capped = P.call_started(10, hung)
+        try:
+            return await asyncio.wait_for(main.shutdown_omlx(), 5)
+        finally:
+            P.call_ended(capped)
+
+    assert asyncio.run(run()) == {"stopped": True}
+    assert order == ["lift", "stop"]
+
+
+def test_quitting_with_no_capped_call_asks_the_engine_nothing(monkeypatch):
+    order = []
+    main = _quit(monkeypatch, order)
+    assert asyncio.run(main.shutdown_omlx()) == {"stopped": True}
+    assert order == ["stop"] and P._lift_ok is None and P._quiesced is True
+
+
+def test_quitting_on_the_users_own_omlx_asks_for_no_lift(monkeypatch):
+    # The user's oMLX.app is never capped (see the module rules), so there is nothing to lift.
+    import service.main as main
+    asked = []
+
+    async def lift(seconds):
+        asked.append(seconds)
+
+    async def nothing(*args, **kwargs):
+        return []
+
+    async def stopped(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(main, "client", SimpleNamespace(managed=True), raising=False)
+    monkeypatch.setattr(main, "is_bundled", lambda: False)
+    monkeypatch.setattr(main, "_quitting", False)
+    monkeypatch.setattr(main, "_unload_resident", nothing)
+    monkeypatch.setattr(main, "_omlx_cli_wait", stopped)
+    monkeypatch.setattr(P, "lift_for_quit", lift)
+    assert asyncio.run(main.shutdown_omlx()) == {"stopped": True, "unloaded": []}
+    assert asked == []

@@ -692,6 +692,9 @@ async def health() -> dict[str, Any]:
 # loaded after Wisp has gone.
 _QUIT_UNLOAD_SECONDS = 3.0
 _QUIT_STOP_SECONDS = 5.0
+# The bundled engine holds a Mac-wide GPU power cap while a capped request generates. Killed
+# mid-request it would leave the cap set after Wisp has gone, so quitting drops the cap first.
+_QUIT_LIFT_SECONDS = 2.5
 # Set once quitting starts: a user's oMLX.app is not started again after it was stopped.
 _quitting = False
 
@@ -728,6 +731,8 @@ async def shutdown_omlx() -> dict[str, Any]:
         return {"stopped": False}
     _quitting = True
     if is_bundled():
+        from service.inference import power_tier
+        await power_tier.lift_for_quit(_QUIT_LIFT_SECONDS)
         from service.engine.runtime import stop_if_running
         return {"stopped": await asyncio.to_thread(
             stop_if_running, final=True, grace=_QUIT_STOP_SECONDS)}

@@ -34,6 +34,9 @@ IMPORTANT rules:
   call is capped while a call someone waits on runs uncapped (research, voice
   transcription).
 - Only calls on the service's own event loop are capped (see "calls in flight").
+- No cap outlives Wisp. A capped request still generating when Wisp quits
+  would be killed with the engine, and the cap would stay on the Mac. So
+  quitting first stops new caps and lifts the ones in flight (``lift_for_quit``).
 
 With the "Save power" switch on (the notch; on by default; stored as
 ``save_when_away``):
@@ -454,6 +457,7 @@ _lift_ok: bool | None = None              # None: not asked yet (or ask again af
 _lift_retry_at = 0.0
 _watch_retry_at = 0.0                     # the watch asks again from here after an unanswered lift
 _lifted = False                           # the watch lifted the caps in flight already
+_quiesced = False                         # Wisp is quitting: no new caps (see lift_for_quit)
 _service_loop: asyncio.AbstractEventLoop | None = None
 _watch_task: asyncio.Task | None = None
 _lift_tasks: set[asyncio.Task] = set()
@@ -532,6 +536,24 @@ async def _lift_now(*, watch: bool = False) -> None:
     elif watch and answer is None:
         _watch_retry_at = time.monotonic() + _WATCH_RETRY_S
     _note_lift(answer)
+
+
+def quiesce() -> None:
+    """Wisp is quitting: no call takes a cap from here on (see _wanted)."""
+    global _quiesced
+    _quiesced = True
+
+
+async def lift_for_quit(seconds: float) -> None:
+    """Wisp is quitting and is about to stop its engine: take no new cap, and ask
+    the engine to drop the caps in flight, within ``seconds``. The requests still
+    running finish uncapped. Asks nothing when no capped call is running. Never
+    raises: quitting goes on to stop the engine either way."""
+    quiesce()
+    try:
+        await asyncio.wait_for(_lift_now(), seconds)
+    except Exception:  # noqa: BLE001 — a timeout too; the engine's own start removes a leftover cap
+        pass
 
 
 def _schedule_lift() -> None:
@@ -646,7 +668,7 @@ def watts(cap: str | None) -> int | None:
 
 def _wanted(tier: str | None) -> str | None:
     """The cap a call at ``tier`` gets right now if other apps are quiet on the GPU."""
-    if tier not in _TIERS or not _on_service_loop() or not _capping_possible():
+    if _quiesced or tier not in _TIERS or not _on_service_loop() or not _capping_possible():
         return None
     if tier in _UNWATCHED and watched_running():
         return None
