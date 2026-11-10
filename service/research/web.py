@@ -35,6 +35,7 @@ _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
 _WIKI_UA = "WispResearch/1.1 (https://github.com/adjad/wisp; low-volume personal research)"
 _MAX_FETCH_BYTES = 2_500_000
 _MAX_TEXT_CHARS = 180_000
+_MAX_TITLE_CHARS = 300
 _MAX_REDIRECTS = 5
 _WS = re.compile(r"[ \t\r\f\v]+")
 _BLANKS = re.compile(r"\n{3,}")
@@ -811,6 +812,9 @@ async def _fetch_direct(raw_url: str) -> Page:
     if not published:
         match = _DATE_RE.search(text[:5000])
         published = match.group(0) if match else ""
+    # The title is the page's own text (<title>, a PDF's /Title, a feed's
+    # <title>) and callers print it on a line of their own: one line, capped.
+    title = " ".join(title.split())[:_MAX_TITLE_CHARS]
     return Page(url=current, canonical_url=canonicalize_url(canonical) or current,
                 title=title or (urlparse(current).hostname or current), text=text,
                 content_type=ctype, published_at=published)

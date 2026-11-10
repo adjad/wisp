@@ -2671,6 +2671,9 @@ async def current_news(query: str, limit: int = 6) -> str:
                              limit=limit, query=query)
 
 
+_FETCH_TITLE_CHARS = 300
+
+
 @register(
     "web_fetch",
     "Fetch a URL over HTTP(S) and return its text (GET only, no auth/cookies) "
@@ -2710,7 +2713,11 @@ async def web_fetch(url: str) -> str:
     # truncation note goes after the fence, where it reads as Wisp's.
     # Published comes from the page's own <meta> too (up to 80 chars, newlines
     # allowed), so it is put on one line and neutralized with the rest.
-    header = f"Title: {page.title}\nURL: {page.canonical_url}"
+    # The title gets the same treatment and a length cap: a <title> with line
+    # breaks would otherwise print lines of its own up here, above the fence,
+    # and a very long one would push the fence out of the capped result.
+    title = " ".join(str(page.title).split())[:_FETCH_TITLE_CHARS]
+    header = f"Title: {title}\nURL: {page.canonical_url}"
     if page.published_at:
         header += "\nPublished: " + " ".join(str(page.published_at).split())
     header = neutralize(header)
