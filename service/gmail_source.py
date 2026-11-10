@@ -1443,7 +1443,9 @@ async def disconnect(account: str = "") -> dict:
                 CONFIG_PATH.unlink(missing_ok=True)
                 _observe_history_config({})
         E.configure_external_accounts(accounts)
-    erased = {email: erase_account_data(email) for email in removed}
+    erased = {email: erase_account_data(email, attachment_text=False) for email in removed}
+    for email, parts in erased.items():     # the store may wait up to 30 s for a lock: off the event loop
+        parts["attachment_text"] = await asyncio.to_thread(_erase_attachment_text, email)
     # Revocation is best effort: the local disconnect already succeeded. Each
     # account says whether Google confirmed it ("revoked"), refused the token
     # ("rejected", e.g. already revoked) or could not be reached ("offline").
@@ -1461,7 +1463,18 @@ async def disconnect(account: str = "") -> dict:
     return {"removed": sorted(removed), "erased": erased, "complete": complete, "revoked": revoked}
 
 
-def erase_account_data(account: str) -> dict:
+def _erase_attachment_text(account: str) -> str:
+    """Erase the text read from one account's attachments (service/attachment_store.py).
+    Blocking (a lock wait of up to 30 s). The answer comes from one call, not the shared flag."""
+    try:
+        from service import attachment_store
+        ok, erased = attachment_store.forget_account_result(account)
+        return f"erased {erased}" if ok else "failed: not erased"
+    except Exception as exc:  # noqa: BLE001
+        return f"failed: {type(exc).__name__}"
+
+
+def erase_account_data(account: str, *, attachment_text: bool = True) -> dict:
     """Delete everything Wisp derived from one Google account. Synchronous and
     local; each part is attempted even if another fails, and the result says
     which succeeded, so "Disconnect & erase" can be verified.
@@ -1474,6 +1487,7 @@ def erase_account_data(account: str) -> dict:
       written from the combined inbox and may describe this account's mail.
     - proactive: `service.proactive.store.erase_account(account)` (W1's
       engine), lazily imported; "unavailable" when the engine is absent.
+    - attachment_text: text read from its attachments (skipped when `attachment_text=False`).
     - waiting_notices: what is held for quiet hours to end and may come from it
       (AssistantStore.erase_held_for_account).
     """
@@ -1519,13 +1533,8 @@ def erase_account_data(account: str) -> dict:
             result["proactive"] = "erased"
         except Exception as exc:  # noqa: BLE001
             result["proactive"] = f"failed: {type(exc).__name__}"
-    try:
-        # Text Wisp read from this account's attachments (service/attachment_store.py).
-        from service import attachment_store
-        erased = attachment_store.forget_account(account)
-        result["attachment_text"] = "failed: not erased" if attachment_store.last_erase_failed() else f"erased {erased}"
-    except Exception as exc:  # noqa: BLE001
-        result["attachment_text"] = f"failed: {type(exc).__name__}"
+    if attachment_text:     # `disconnect` passes False and erases it off the event loop
+        result["attachment_text"] = _erase_attachment_text(account)
     try:
         from service.google_calendar_source import _store
         _store().erase_held_for_account(account)

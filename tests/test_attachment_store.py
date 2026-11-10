@@ -1183,3 +1183,119 @@ def test_forget_source_works_without_fts5(monkeypatch, home):
     t = _plant(D1)
     assert store.forget_source("mail") == 1
     assert not any(_present(home, t).values())
+
+
+# --- review round 2: salt race, fail-closed tried keys, first source, erase results ------
+
+def test_two_threads_making_the_salt_end_with_one_secret(home):
+    mine = store._connect()
+    other = sqlite3.connect(str(_db(home)), isolation_level=None)
+    rival = os.urandom(32)
+
+    class Racing:
+        """After this connection's first look at the salt, a rival writes its own."""
+
+        def __init__(self, conn):
+            self._c = conn
+            self._raced = False
+
+        def execute(self, sql, *args):
+            cur = self._c.execute(sql, *args)
+            if not self._raced and sql.startswith("SELECT") and "meta" in sql and args and "tried_salt" in str(args):
+                self._raced = True
+                rows = cur.fetchall()
+                other.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('tried_salt', ?)",
+                              (sqlite3.Binary(rival),))
+                return self._c.execute("SELECT 1 WHERE 0") if not rows else cur
+            return cur
+
+    try:
+        got = store._salt(Racing(mine))
+        stored = other.execute("SELECT value FROM meta WHERE key='tried_salt'").fetchone()[0]
+    finally:
+        mine.close()
+        other.close()
+    assert got == rival == bytes(stored)          # the first writer's secret wins; nobody overwrites it
+
+
+def test_tried_many_fails_closed_while_the_database_is_locked(monkeypatch, home):
+    assert store.mark_tried("k1", "kept")
+    monkeypatch.setattr(store, "_WAIT_S", 0.2)
+    c = _hold(home, "EXCLUSIVE")
+    try:
+        with pytest.raises(store.StoreBusy):
+            store.tried_many(["k1", "k2"])
+        assert store.tried("k1") is False         # the one-key form just says no
+        assert store.mark_tried("k3", "kept") is False
+    finally:
+        c.execute("ROLLBACK")
+        c.close()
+    assert store.tried_many(["k1", "k2"]) == {"k1"}
+
+
+def test_tried_many_fails_closed_when_the_salt_cannot_be_read(monkeypatch):
+    def boom(conn):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(store, "_salt", boom)
+    with pytest.raises(store.StoreBusy):
+        store.tried_many(["k1"])
+    assert store.mark_tried("k1", "kept") is False
+    assert store.tried_many([]) == set()
+
+
+def test_erase_results_come_from_the_call_not_the_shared_flag(monkeypatch, home):
+    t = _plant(D1)
+    real = store._run_erase
+
+    def racing(body):
+        out = real(body)
+        store._erase_state["failed"] = True       # a concurrent erase failed after ours finished
+        return out
+
+    monkeypatch.setattr(store, "_run_erase", racing)
+    ok, removed = store.forget_account_result("a@x.com")
+    assert (ok, removed) == (True, 1)
+    assert not any(_present(home, t).values())
+    assert store.forget_all_result() == (True, 0)
+    assert store.forget_account_result("") == (True, 0)
+    monkeypatch.setattr(store, "_ERASE_WAIT_S", 0.2)
+    monkeypatch.setattr(store, "_run_erase", real)
+    _plant(D2)
+    c = _hold(home)
+    try:
+        assert store.forget_account_result("a@x.com") == (False, 0)
+        assert store.forget_all_result() == (False, 0)
+    finally:
+        c.execute("ROLLBACK")
+        c.close()
+
+
+def test_forget_source_finds_a_text_whose_seen_rows_are_gone(home):
+    t = _plant(D1, tag="zebra")                    # first seen from mail, owned by a@x.com
+    with sqlite3.connect(str(_db(home)), isolation_level=None) as c:
+        c.execute("INSERT INTO owners(digest, account) VALUES(?, 'b@x.com')", (D1,))
+    assert store.forget_account("a@x.com") == 0    # b still owns it: the text stays, its seen rows go
+    assert store.get(D1) is not None and _rows(home, "seen") == []
+    assert store.forget_source("mail") == 1        # only the durable first source can say it was mail's
+    assert store.get(D1) is None
+    assert not any(_present(home, t).values())
+    assert _rows(home, "first_source") == []
+
+
+def test_forget_source_keeps_a_text_another_source_still_holds(home):
+    t = _plant(D1, tag="zebra")
+    assert store.note_seen(D1, source="messages", account="a@x.com", name="m.pdf", ts=5.0)
+    assert store.forget_source("mail") == 0
+    assert store.get(D1) is not None and _present(home, t)["text"]
+    assert store.forget_source("messages") == 1    # now nothing holds it
+    assert store.get(D1) is None
+
+
+def test_first_source_is_backfilled_for_a_text_that_predates_it(home):
+    put(D1, text="old reading words")
+    with sqlite3.connect(str(_db(home)), isolation_level=None) as c:
+        c.execute("INSERT INTO seen(digest, source, account, name, sender, subject, ts)"
+                  " VALUES(?, 'gmail', 'a@x.com', 'o.pdf', '', '', 1.0)", (D1,))
+    assert store.note_seen(D1, source="mail", account="a@x.com", name="n.pdf", ts=2.0)
+    assert [r[1] for r in _rows(home, "first_source")] == ["gmail"]

@@ -41,7 +41,16 @@ meaning, so a caller that must know asks one of these):
   return True when the erase completed (even if it removed 0) and False when
   it could not run (database locked past 30 s, unusable). The plain
   ``forget_*`` functions also set ``last_erase_failed()``, read right after the
-  call (process-wide, last call wins). An erase waits up to 30 s for a lock.
+  call (process-wide, last call wins: a concurrent erase can reset it before you
+  read it, so a caller that needs the answer uses ``forget_account_result`` /
+  ``forget_all_result``, which return ``(ok, removed)`` from one call and never
+  touch the shared flag). An erase waits up to 30 s for a lock, so call it off
+  the event loop.
+- "Tried" keys FAIL CLOSED: when the database or the install's salt cannot be
+  read (locked, error) ``tried_many`` raises ``StoreBusy`` instead of answering
+  "nothing was tried", which would make the background reader pick and re-read
+  the same file again. ``tried`` (one key, a plain bool) answers False. The
+  reader turns ``StoreBusy`` into the skip code ``store_busy``.
 - Searching: ``search_checked`` returns ``(hits, failed)`` and ``count_checked``
   returns the count or None when the database could not be read. The plain
   ``search`` / ``count`` also set ``last_search_failed()`` (process-wide: read
@@ -102,6 +111,8 @@ CREATE TABLE IF NOT EXISTS tried(
     key TEXT PRIMARY KEY, outcome TEXT NOT NULL, ts REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS indexed(
     rid INTEGER PRIMARY KEY AUTOINCREMENT, digest TEXT NOT NULL UNIQUE);
+CREATE TABLE IF NOT EXISTS first_source(
+    digest TEXT PRIMARY KEY, source TEXT NOT NULL);
 """
 
 # Full-text index: contentless (the words only; the text is stored once, in
@@ -412,6 +423,22 @@ def _run_erase(body) -> tuple[int, bool]:
         return 0, False
 
 
+def forget_account_result(account: str) -> tuple[bool, int]:
+    """``forget_account`` as ``(ok, removed)`` from one call. It neither reads nor
+    sets the process-wide flag, so a concurrent erase cannot change its answer."""
+    acct = _account(account)
+    if not acct:
+        return True, 0
+    removed, ok = _run_erase(_account_body(acct))
+    return ok, removed
+
+
+def forget_all_result() -> tuple[bool, int]:
+    """``forget_all`` as ``(ok, removed)`` from one call (see ``forget_account_result``)."""
+    removed, ok = _run_erase(_all_body)
+    return ok, removed
+
+
 def _account_body(acct: str):
     def body(conn: sqlite3.Connection) -> tuple[int, int]:
         theirs = [
@@ -475,6 +502,7 @@ def _all_body(conn: sqlite3.Connection) -> tuple[int, int]:
     changed += conn.execute("DELETE FROM locators").rowcount
     changed += conn.execute("DELETE FROM seen").rowcount
     changed += conn.execute("DELETE FROM tried").rowcount
+    changed += conn.execute("DELETE FROM first_source").rowcount
     # A new secret afterwards: no old "tried" key can be confirmed against this file.
     changed += conn.execute("DELETE FROM meta WHERE key=?", (_SALT_KEY,)).rowcount
     changed += _sweep(conn)
@@ -493,18 +521,25 @@ def forget_all_ok() -> bool:
 
 def _source_body(source: str):
     def body(conn: sqlite3.Connection) -> tuple[int, int]:
+        # A text is this source's when a seen row says so OR it was first seen from
+        # it (seen rows are capped at 8 per text, so the oldest may be gone).
         mine = [
             r[0]
             for r in conn.execute(
-                "SELECT DISTINCT digest FROM seen WHERE source=?", (source,)
+                "SELECT digest FROM seen WHERE source=?"
+                " UNION SELECT digest FROM first_source WHERE source=?",
+                (source, source),
             ).fetchall()
         ]
         changed = conn.execute("DELETE FROM seen WHERE source=?", (source,)).rowcount
+        changed += conn.execute(
+            "DELETE FROM first_source WHERE source=?", (source,)
+        ).rowcount
         removed = 0
         for dig in mine:
             if conn.execute(
                 "SELECT 1 FROM seen WHERE digest=?", (dig,)
-            ).fetchone() is None:  # seen nowhere else: the text goes
+            ).fetchone() is None:  # no row from another source: the text goes
                 removed += conn.execute(
                     "DELETE FROM texts WHERE digest=?", (dig,)
                 ).rowcount
@@ -520,8 +555,9 @@ def _source_body(source: str):
 def forget_source(source: str) -> int:
     """Erase the texts seen ONLY from one source ("mail", "gmail", "messages").
 
-    A text also seen from another source keeps its text and loses this source's
-    seen rows. Index entries, facts and file bytes go as in ``forget_account``.
+    A text is the source's when a seen row names it or it was FIRST seen from it
+    (recorded durably, so evicted seen rows do not hide it). A text also seen
+    from another source keeps its text and loses this source's seen rows. Index entries, facts and file bytes go as in ``forget_account``.
     Returns text rows removed; an unknown source erases nothing.
     """
     if source not in _SOURCES:
@@ -669,6 +705,7 @@ def _erase_extras(conn: sqlite3.Connection, digest: str) -> None:
     conn.execute("DELETE FROM indexed WHERE digest=?", (digest,))
     conn.execute("DELETE FROM seen WHERE digest=?", (digest,))
     conn.execute("DELETE FROM facts WHERE digest=?", (digest,))
+    conn.execute("DELETE FROM first_source WHERE digest=?", (digest,))
 
 
 def _sweep(conn: sqlite3.Connection) -> int:
@@ -693,6 +730,7 @@ def _sweep(conn: sqlite3.Connection) -> int:
     removed += conn.execute(f"DELETE FROM indexed WHERE {gone}").rowcount
     removed += conn.execute(f"DELETE FROM seen WHERE {gone}").rowcount
     removed += conn.execute(f"DELETE FROM facts WHERE {gone}").rowcount
+    removed += conn.execute(f"DELETE FROM first_source WHERE {gone}").rowcount
     return removed
 
 
@@ -749,6 +787,17 @@ def note_seen(
                 ).fetchone() is None:
                     conn.execute("ROLLBACK")
                     return False
+                # The text's first source, kept past the 8-row cap. A text that predates
+                # this table gets the source of its oldest surviving seen row.
+                conn.execute(
+                    "INSERT OR IGNORE INTO first_source(digest, source)"
+                    " SELECT digest, source FROM seen WHERE digest=? ORDER BY id LIMIT 1",
+                    (digest,),
+                )
+                conn.execute(
+                    "INSERT OR IGNORE INTO first_source(digest, source) VALUES(?,?)",
+                    (digest, source),
+                )
                 conn.execute(
                     "INSERT INTO seen(digest, source, account, name, sender,"
                     " subject, ts) VALUES(?,?,?,?,?,?,?)"
@@ -874,15 +923,33 @@ def put_facts(digest: str, version: int, facts: dict) -> bool:
 _SALT_KEY = "tried_salt"
 
 
+class StoreBusy(Exception):
+    """The tried-keys table could not be read (database locked or unusable)."""
+
+
 def _salt(conn: sqlite3.Connection) -> bytes:
-    """The install's random secret for "tried" keys (made on first use, in ``meta``)."""
+    """The install's random secret for "tried" keys (made on first use, in ``meta``).
+
+    Made with ``INSERT OR IGNORE`` and read back inside one transaction, so two
+    threads that race to make it end up with the SAME secret and no ``tried`` row
+    is orphaned. Raises sqlite3.Error when it cannot be read or made."""
     row = conn.execute("SELECT value FROM meta WHERE key=?", (_SALT_KEY,)).fetchone()
-    if row is None or not isinstance(row[0], bytes):
+    if row is not None and isinstance(row[0], bytes):
+        return bytes(row[0])
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key=?", (_SALT_KEY,)).fetchone()
+        if row is not None and not isinstance(row[0], bytes):
+            conn.execute("DELETE FROM meta WHERE key=?", (_SALT_KEY,))  # an odd value: replace it
         conn.execute(
-            "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
+            "INSERT OR IGNORE INTO meta(key, value) VALUES(?, ?)",
             (_SALT_KEY, sqlite3.Binary(os.urandom(32))),
         )
         row = conn.execute("SELECT value FROM meta WHERE key=?", (_SALT_KEY,)).fetchone()
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
     return bytes(row[0])
 
 
@@ -900,20 +967,25 @@ def tried(key: str) -> bool:
     """True when ``mark_tried`` recorded this key in the last 30 days."""
     if not _valid_key(key):
         return False
-    return key in tried_many([key])
+    try:
+        return key in tried_many([key])
+    except StoreBusy:
+        return False
 
 
 def tried_many(keys: list[str]) -> set[str]:
     """The keys (of those given) that ``mark_tried`` recorded in the last 30 days.
 
-    One connection, queries in chunks. Unusable keys and errors give no match.
+    One connection, queries in chunks. Unusable keys give no match. Fails CLOSED:
+    raises ``StoreBusy`` when the database or the salt cannot be read, never an
+    empty set that would say "nothing was tried" (see the module docstring).
     """
     wanted = [k for k in dict.fromkeys(keys or []) if _valid_key(k)]
     if not wanted:
         return set()
     conn = _connect()
     if conn is None:
-        return set()
+        raise StoreBusy("attachment store unavailable")
     try:
         with closing(conn):
             salt = _salt(conn)
@@ -928,8 +1000,8 @@ def tried_many(keys: list[str]) -> set[str]:
                 ):
                     found.add(by_hash[h])
         return found
-    except (sqlite3.Error, OSError):
-        return set()
+    except (sqlite3.Error, OSError) as exc:
+        raise StoreBusy("attachment store unreadable") from exc
 
 
 def mark_tried(key: str, outcome: str) -> bool:
