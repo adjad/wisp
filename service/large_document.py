@@ -64,20 +64,27 @@ their them these this those through to up us want was we what whats what's which
 """.split())
 
 # Lines the extractor writes to say where text came from: PDF pages and deck slides.
-_MARKER = re.compile(r"^\[(Page|Slide) (\d+)\][ \t]*$", re.M)
-_MARKER_AT_START = re.compile(r"(?:\[(?:Page|Slide) \d+\][ \t]*(?:\n|\Z))")
+# ASCII digits only: `\d` would also take other scripts' digits, which the extractor never writes.
+# service/document_extract.defuse_markers defuses every line these (and the sheet patterns) could match.
+_MARKER = re.compile(r"^\[(Page|Slide) ([0-9]+)\][ \t]*$", re.M)
 # First line of a large-mode PDF's text: its true page count. Never content, never counted.
-_PAGES_HEADER = re.compile(r"\A\[Pages: (\d{1,7})\][ \t]*(?:\n|\Z)")
+# Seven digits is the most the extractor writes (document_extract.MAX_DECLARED_PAGES).
+_PAGES_HEADER = re.compile(r"\A\[Pages: ([0-9]{1,7})\][ \t]*(?:\n|\Z)")
+# A sheet's title line: `[Sheet: name]`, name any text without a newline (it may hold "]").
+_SHEET_LINE = re.compile(r"^\[Sheet: (.*)\][ \t]*$", re.M)
 MAX_SELECTED_PAGES = 50
 MAX_SHEET_NAMES = 20
 CANT_PICK = "Wisp can't pick pages in this kind of file, so this is from the whole file."
 
 
 
-def _without_header(text: str) -> str:
+def without_header(text: str) -> str:
     """`text` without the extractor's `[Pages: N]` line, which is a fact about the file, not content."""
     found = _PAGES_HEADER.match(text)
     return text[found.end():] if found else text
+
+
+_without_header = without_header
 
 
 def page_facts(text: str) -> tuple[int | None, int]:
@@ -136,7 +143,7 @@ def _sheets(text: str, kind: str) -> list[_Sheet]:
         return [_Sheet("", rows[:MAX_TABLE_ROWS], len(rows) > MAX_TABLE_ROWS)] if rows else []
     sheets: list[_Sheet] = []
     for line in text.split("\n"):
-        title = re.match(r"^\[Sheet: (.*)\]$", line)
+        title = _SHEET_LINE.match(line)
         if title:
             sheets.append(_Sheet(title.group(1), []))
         elif line.strip() and sheets:
@@ -359,8 +366,10 @@ def retrieve(text: str, question: str, budget: int) -> Condensed | None:
         return None
     pieces = []
     for start, end in spans:
-        piece = text[start:end].strip()
-        if _MARKER_AT_START.match(piece):
+        raw = text[start:end]
+        piece = raw.strip()
+        # A marker counts only where it really starts a line of `text`, not after the strip.
+        if _MARKER.match(text, start + len(raw) - len(raw.lstrip())):
             pieces.append(piece)
             continue
         label = _label_for(text, start)
@@ -514,7 +523,7 @@ def _select_pages(text: str, kind: str, pages: str, cut: bool = False) -> Select
 def _select_sheet(text: str, kind: str, sheet: str, cut: bool = False) -> Selection:
     if kind in ("csv", "tsv"):
         return Selection(text)
-    found = list(re.finditer(r"^\[Sheet: (.*)\][ \t]*$", text, re.M))
+    found = list(_SHEET_LINE.finditer(text))
     if not found:
         return Selection(text, problem=_CANT_PICK_SHEET)
     names = [m.group(1) for m in found]

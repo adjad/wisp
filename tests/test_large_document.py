@@ -840,3 +840,88 @@ def test_a_sheet_label_already_comes_with_each_group_of_matching_rows():
     book = "[Sheet: East]\nName | Sales\nAnna | 5\nBo | 9\n\n[Sheet: West]\nName | Sales\nCy | 7\nAnna | 3"
     got = L.condense_table(book, "xlsx", "Anna", 3000)
     assert 'Rows from "East":' in got.text and 'Rows from "West":' in got.text
+
+
+# ------------------------------------------------- defusing agrees with the recognisers
+
+def _recognised(text: str) -> bool:
+    """Whether anything in `text` would be read as an extractor marker."""
+    return bool(L._MARKER.search(text) or L._SHEET_LINE.search(text) or L._PAGES_HEADER.match(text))
+
+
+_HOSTILE_LINES = [
+    "[Page 9]", "[page 9]", "[PAGE 9]", "[Pages: 12]", "[PAGES: 12]", "[Slide 3]", "[sLiDe 3]",
+    "[Sheet: Totals]", "[SHEET: Totals]", "[Sheet: Totals] | 4", "[Sheet: a] | [b]", "[Sheet: ]",
+    "  [Page 9]", "\t[Pages: 9]", " \t [Sheet: x]", " [Page 9]", "　[Slide 2]", "\x0b[Page 1]",
+    "\x1c[Page 1]", " [Sheet: x]", "[Page 9]   ", "[Page 9]\t", "[Page ٣]", "[Pages: ９]",
+]
+
+
+def test_defuse_markers_defuses_every_hostile_line_the_recognisers_know():
+    from service.document_extract import defuse_markers
+    for line in _HOSTILE_LINES:
+        for text in (line, f"intro\n{line}\nrest", f"{line}\n{line}", f"x\n{line}"):
+            assert not _recognised(defuse_markers(text)), text
+    # A marker the extractor wrote itself is still recognised in text that was not defused.
+    assert _recognised("[Pages: 3]\n[Page 1]\nx")
+
+
+def test_defuse_markers_is_a_space_after_the_bracket_and_idempotent():
+    from service.document_extract import defuse_markers
+    assert defuse_markers("[Page 9]") == "[ Page 9]"
+    assert defuse_markers("  [sheet: x]") == "  [ sheet: x]"
+    assert defuse_markers("a\n[Slide 2]\n[Pages: 4]") == "a\n[ Slide 2]\n[ Pages: 4]"
+    once = defuse_markers("[Page 9]\n \t[Sheet: x]")
+    assert defuse_markers(once) == once
+    assert defuse_markers("") == ""
+
+
+def test_defuse_markers_leaves_what_no_recogniser_matches_alone():
+    from service.document_extract import defuse_markers
+    inert = ["see [Page 3] here", "x [Sheet: a]", "[Pagexyz 3]", "[Sheets: a]", "[ Page 9]", "Page 9]",
+             "［Page 9］", "【Sheet: x】", "⟦Pages: 9⟧", "[Page9]", "plain text"]
+    for line in inert:
+        assert defuse_markers(line) == line
+        assert not _recognised(line)
+    # A "\r", a vertical tab or U+2028 is not a line break to the recognisers (they split on "\n" only).
+    for odd in ("x\r[Page 9]", "x [Page 9]", "x\x0b[Sheet: y]"):
+        assert not _recognised(odd)
+
+
+def test_defuse_markers_is_linear_on_hostile_input():
+    from service.document_extract import defuse_markers
+    for text in (" " * 200_000 + "x", "\n" * 200_000, ("\t" * 50 + "[Pag\n") * 4000, "[Page 1]\n" * 50_000,
+                 " \n" * 100_000, "　" * 200_000):
+        started = time.monotonic()
+        defuse_markers(text)
+        assert time.monotonic() - started < 2.0
+
+
+def test_defused_random_lines_are_never_recognised():
+    import random
+    from service.document_extract import defuse_markers
+    rng = random.Random(7)
+    pieces = ["[", "]", "Page", "Pages", "Slide", "Sheet", "page", "SHEET", ": ", " ", "\t", " ", "\n", "\r",
+              "9", "12", "x", " | ", " ", "\x0b"]
+    for _ in range(3000):
+        text = "".join(rng.choice(pieces) for _ in range(rng.randint(1, 14)))
+        assert not _recognised(defuse_markers(text)), repr(text)
+
+
+def test_the_header_and_marker_patterns_take_ascii_digits_only():
+    assert L.page_facts("[Pages: ٣]\n[Page ٣]\nx") == (None, 0)
+    assert L.page_facts("[Pages: 9999999]\n[Page 1]\nx") == (9_999_999, 1)
+    assert L.page_facts("[Pages: 10000000]\n[Page 1]\nx") == (None, 1)
+
+
+def test_without_header_is_public_and_the_old_name_still_works():
+    assert L.without_header("[Pages: 3]\n[Page 1]\nx") == "[Page 1]\nx"
+    assert L.without_header("[Page 1]\nx") == "[Page 1]\nx"
+    assert L._without_header is L.without_header
+
+
+def test_a_marker_hidden_behind_blanks_is_not_taken_for_a_real_one_in_search():
+    body = ("Intro.\n[Page 2]\n" + "filler words here. " * 30
+            + "\n [Page 3]\nthe quarterly yield was nine percent\n")
+    found = L.retrieve("[Pages: 3]\n" + body, "quarterly yield", 5000)
+    assert found is not None and "quarterly yield" in found.text

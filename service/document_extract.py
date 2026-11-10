@@ -209,11 +209,37 @@ def zip_guard(data: bytes) -> None:
 # Large mode writes marker lines of its own ([Pages: N], [Page N], [Slide N], [Sheet: name]) for
 # service/large_document.py. A line of the FILE's text that looks like one is defused with a space
 # after the bracket, so a marker in the text is only ever the extractor's.
-_FORGED_MARKER = re.compile(r"^([ \t]*)\[(?=[ \t]*(?:pages?|slides?|sheet)\b)", re.I | re.M)
+#
+# What gets defused is a superset of what large_document recognises (its recognisers are
+# case-sensitive, need `[` at the very start of a line and one ASCII space or ": " after the word):
+# - the line may start with any whitespace except a newline, because text is stripped on its way
+#   through (a chunk's `.strip()`), which would put a hidden marker at a line start;
+# - the word is matched case-insensitively and may be followed by anything.
+# What stays untouched is inert because no recogniser matches it: a `[` that is not the first
+# non-blank character of a line (a marker in the middle of a line, or after a "\r", "\v" or
+# U+2028, which the recognisers do not treat as line breaks), full-width or other look-alike
+# brackets (U+FF3B, U+3010, U+27E6 ...: the recognisers need an ASCII `[`), and anything with
+# a space between the bracket and the word (the form this function writes, so it is idempotent).
+_FORGED_MARKER = re.compile(r"^([^\S\n]*)\[(?=(?:pages?|slides?|sheet)\b)", re.I | re.M)
+# The largest page count the extractor writes in `[Pages: N]` (seven digits, as large_document's
+# header pattern accepts). A hostile PDF can declare any number.
+MAX_DECLARED_PAGES = 9_999_999
 
 
-def _neutralise(text: str) -> str:
+def defuse_markers(text: str) -> str:
+    """`text` with every line that could pass for an extractor marker made harmless.
+
+    A line that starts (after any blanks) with `[Page`, `[Pages`, `[Slide`, `[Slides` or `[Sheet`, in
+    any letter case, gets a space after the bracket: `[Page 9]` becomes `[ Page 9]`. Use it on any
+    text that did not come from the extractor's own markers but will be joined into marker-bearing
+    text (file text, recognised text). Pure, linear in the length of `text`, idempotent, and safe on
+    any str, including empty.
+    """
     return _FORGED_MARKER.sub(r"\1[ ", text)
+
+
+_neutralise = defuse_markers
+
 
 def _pdf(data: bytes, limit: int | None = None, pages: int | None = None, markers: bool = False) -> tuple[str, bool]:
     from pypdf import PdfReader, filters
@@ -234,7 +260,7 @@ def _pdf(data: bytes, limit: int | None = None, pages: int | None = None, marker
                 raise ValueError("That PDF is password-protected. Wisp can't read it without the password.")
         out = _Text(limit)
         max_pages = MAX_PDF_PAGES if pages is None else pages
-        total = len(reader.pages)
+        total = max(0, min(len(reader.pages), MAX_DECLARED_PAGES))
         cut = total > max_pages
         try:
             for index, page in enumerate(reader.pages):
@@ -244,7 +270,7 @@ def _pdf(data: bytes, limit: int | None = None, pages: int | None = None, marker
                 body = (page.extract_text() or "").strip()
                 # Large mode labels each page, so an answer can say where a figure is.
                 if markers and body:
-                    body = f"[Page {index + 1}]\n{_neutralise(body)}"
+                    body = f"[Page {index + 1}]\n{defuse_markers(body)}"
                 out.add(body)
         except _Enough:
             cut = True
@@ -291,7 +317,7 @@ def _xlsx(data: bytes, limit: int | None = None, markers: bool = False) -> tuple
                 cells = ["" if v is None else str(v) for v in row]
                 if any(c.strip() for c in cells):
                     line = " | ".join(cells).rstrip(" |")
-                    out.add(_neutralise(line) if markers else line)
+                    out.add(defuse_markers(line) if markers else line)
     except _Enough:
         return out.joined(), True
     finally:
@@ -313,7 +339,7 @@ def _pptx(data: bytes, limit: int | None = None, markers: bool = False) -> tuple
                     lines.append(f"[speaker notes] {notes}")
             if lines:
                 body = "\n".join(lines)
-                out.add(f"[Slide {i}]\n" + (_neutralise(body) if markers else body))
+                out.add(f"[Slide {i}]\n" + (defuse_markers(body) if markers else body))
     except _Enough:
         return out.joined("\n\n"), True
     return out.joined("\n\n"), False
@@ -414,7 +440,7 @@ def extract_text(name: str, data: bytes, large: bool = False) -> tuple[str, bool
     if not text.strip():
         raise ValueError("That document has no text Wisp can read.")
     if large and kind not in ("pdf", "xlsx", "pptx"):
-        text = _neutralise(text)
+        text = defuse_markers(text)
     if len(text) > limit:
         text, cut = text[:limit], True
     return text, cut

@@ -1010,3 +1010,88 @@ def test_non_large_pdf_and_workbook_extraction_carry_no_new_lines():
     data = pdf_pages("[Page 4]", "x")
     assert E.extract_text("p.pdf", data)[0] == "[Page 4]\n\nx"
     assert E.extract_text("b.xlsx", xlsx_bytes())[0] == "[Sheet: Budget]\nItem | Cost\nRent | 900"
+
+
+# ------------------------------------------------- repair N2: header never shown, declared count bounded
+
+def test_the_pages_line_is_never_shown_to_the_model_for_a_short_pdf_but_page_lines_stay():
+    client = StubClient(reply="It is on page 2.")
+    data = pdf_pages("Alpha text", "The yield was nine percent")
+    result = run(D.answer_request("What was the yield?", {"name": "r.pdf", "data": b64(data)},
+                                  client=client, model=MODEL))
+    sent = client.calls[0]["messages"][1]["content"]
+    assert "[Pages:" not in sent and "[Page 2]\nThe yield was nine percent" in sent
+    assert "[Pages:" not in result.answer and len(client.calls) == 1
+
+
+def test_a_header_shaped_line_in_a_text_file_is_kept_as_content():
+    client = StubClient()
+    run(D.answer_request("?", {"name": "n.txt", "data": b64(b"[Pages: 5]\nhello")}, client=client, model=MODEL))
+    sent = client.calls[0]["messages"][1]["content"]
+    assert "[ Pages: 5]" in sent and "hello" in sent
+
+
+def _fake_reader(monkeypatch, declared: int, texts: list[str]):
+    import pypdf
+
+    class Pages:
+        def __len__(self):
+            return declared
+
+        def __iter__(self):
+            for text in texts:
+                yield SimpleNamespace(extract_text=lambda text=text: text)
+            for _ in range(declared - len(texts)) if declared < 10 ** 6 else iter(int, 1):
+                yield SimpleNamespace(extract_text=lambda: "")      # a count that outruns the file
+
+    class Reader:
+        is_encrypted = False
+        pages = Pages()
+
+        def __init__(self, stream):
+            pass
+
+    monkeypatch.setattr(pypdf, "PdfReader", Reader)
+
+
+def test_a_hostile_page_count_is_capped_to_what_the_header_pattern_accepts(monkeypatch):
+    _fake_reader(monkeypatch, 2 ** 62, ["Alpha", "Beta"])      # len() cannot go past 2 ** 63 - 1
+    # The fake would yield pages forever; the page limit stops the walk.
+    text, cut = E._pdf(b"%PDF", 10_000, 2, markers=True)
+    assert text.startswith(f"[Pages: {E.MAX_DECLARED_PAGES}]\n[Page 1]\nAlpha") and cut
+    assert L.page_facts(text) == (E.MAX_DECLARED_PAGES, 2)
+    assert L.without_header(text).startswith("[Page 1]")
+    assert len(str(E.MAX_DECLARED_PAGES)) == 7 and L._PAGES_HEADER.match(f"[Pages: {E.MAX_DECLARED_PAGES}]\n")
+    assert not L._PAGES_HEADER.match(f"[Pages: {E.MAX_DECLARED_PAGES + 1}]\n")
+
+
+def test_an_ordinary_page_count_is_written_as_it_is(monkeypatch):
+    _fake_reader(monkeypatch, 2, ["Alpha", "Beta"])
+    text, cut = E._pdf(b"%PDF", 10_000, 1500, markers=True)
+    assert text.startswith("[Pages: 2]\n") and not cut
+
+
+def test_xlsx_sheet_titles_and_cells_cannot_forge_markers(monkeypatch):
+    import openpyxl
+
+    class Sheet:
+        def __init__(self, title, rows):
+            self.title, self.rows = title, rows
+
+        def iter_rows(self, values_only=True):
+            return iter(self.rows)
+
+    class Book:
+        worksheets = [Sheet("A]B", [("[Sheet: Totals] | 4", None), ("[SHEET: x] | [y]", 1), ("  [page 3]", 2),
+                                    ("ok\n\u00a0[Slide 2]", 3), ("a\n[Sheet: Evil]", None)]),
+                      Sheet("T\r\n[Sheet: Evil]", [("v", 1)])]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(openpyxl, "load_workbook", lambda *a, **k: Book())
+    text, _ = E._xlsx(b"", 100_000, markers=True)
+    names = [m.group(1) for m in L._SHEET_LINE.finditer(text)]
+    assert names == ["A]B", "T [Sheet: Evil]"]
+    assert not L._MARKER.search(text)
+    assert [s.name for s in L._sheets(text, "xlsx")] == ["A]B", "T [Sheet: Evil]"]
