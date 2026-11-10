@@ -27,6 +27,8 @@ _ACTIVE = {"pending", "downloading"}
 _STATES = _ACTIVE | {"completed", "failed", "cancelled"}
 _REQUEST_DEADLINE = 165.0  # includes queueing; native caller allows 180 seconds
 _operation_lock = asyncio.Lock()
+_START_FAILED = ("Wisp's built-in engine didn't start. Try again in a moment. "
+                 "Details are in ~/.moe/engine/engine.log.")
 
 
 class DownloadError(RuntimeError):
@@ -80,12 +82,23 @@ async def _body(request: Request, *, model: bool) -> str | None:
 async def _ensure_engine() -> None:
     # Reuse the existing launch/readiness/identity path. Never start an
     # installed oMLX: the mode check precedes this call at every entry point.
+    from service.inference.inference_errors import ModelLoadError
     from service.main import ensure_omlx
     try:
         async with asyncio.timeout(150):
             await ensure_omlx()
+    except ModelLoadError as exc:
+        # Two causes a retry cannot clear get a fixed sentence of their own. The raw text is
+        # only matched, never shown: upstream errors can carry paths and tokens.
+        text = str(exc)
+        if "already in use" in text:
+            raise DownloadError(f"Another program is using the built-in engine's port ({BUNDLED_PORT}). "
+                                "Quit it, then try again.") from None
+        if "not installed" in text:
+            raise DownloadError("Wisp's built-in engine is missing from this copy.") from None
+        raise DownloadError(_START_FAILED) from None
     except Exception:
-        raise DownloadError("Wisp's built-in engine didn't start. Try again in a moment.") from None
+        raise DownloadError(_START_FAILED) from None
 
 
 @asynccontextmanager
@@ -169,7 +182,8 @@ def _tasks(payload: dict) -> list[tuple[float, str, dict]]:
             "downloaded_bytes": int(_number(row.get("downloaded_size"), 10**13)),
             "total_bytes": int(_number(row.get("total_size"), 10**13)),
             "bytes_per_second": _number(row.get("speed_bps"), 10**12),
-            "message": ("Download failed. Check your connection and free disk space, then choose Retry."
+            # No button name: each surface adds its own (Retry, Retry download, Try again).
+            "message": ("Download failed. Check your connection and free disk space."
                         if state == "failed" else None),
         }
         created = _number(row.get("created_at"), 10**12)

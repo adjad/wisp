@@ -43,6 +43,10 @@ IMPORTANT rules:
 - The "Save memory" switch (on by default) turns parking and batch windows off;
   the chat model then stays resident as before (the notch's X still unloads it,
   as it did before Save memory, but that no longer counts as parked).
+- The notch's X follows the unload rule too (x_hold): never while a generation runs
+  on the model or a hold() is open. It doesn't wait out a turn as such, since the
+  notch's own turn still counts for a moment after the X stopped it. A model the X
+  left alone stays until a park, or the next X.
 - A resident-only background caller checks residency, then awaits before its
   call registers in idle.in_flight; a tick in that gap unloads the model and the
   call reloads it. That costs one load and heals on the next tick; it is not
@@ -111,6 +115,10 @@ OTHER_APP_HOLD_S = 30 * 60
 # oMLX stamps last_access when a request's lease ends, a moment after Wisp's call
 # returns. A stamp later than Wisp's own by more than this was someone else's.
 OWN_ACCESS_SLOP_S = 5.0
+# The notch's X stops the notch's own reply before it asks for the unload, and that
+# call takes a moment to end. The X waits this long for a generation on the model.
+X_WAIT_S = 3.0
+_X_POLL_S = 0.05
 
 SETTINGS_PATH = MOE_DIR / "memory_saver" / "settings.json"
 _KEY = "save_memory"
@@ -401,6 +409,22 @@ async def omlx_x_hold(client, model: str, wall: float | None = None) -> str | No
     if _other_app_recent(model, view.row, time.time() if wall is None else wall):
         return "other_app"
     return None if await _quiet_on_omlx(client, model, view.row) else "busy"
+
+
+async def x_hold(model: str) -> str | None:
+    """Why the notch's X must leave `model` alone on Wisp's own engine, or None if it
+    may unload it. POST /unload aborts running requests, so never while a generation
+    runs on the model or a hold() is open: the rule tick() parks by, without the turn
+    (see the module rules). A generation gets X_WAIT_S to end; a hold() lasts a whole
+    job and isn't waited for."""
+    deadline = time.monotonic() + X_WAIT_S
+    while not held():
+        if idle.in_flight(model) <= 0:
+            return None
+        if time.monotonic() >= deadline:
+            break
+        await asyncio.sleep(_X_POLL_S)
+    return "busy"
 
 
 def _acts_on_omlx() -> bool:

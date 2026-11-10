@@ -312,6 +312,8 @@ def test_quit_bounds_the_bundled_stop(monkeypatch):
     monkeypatch.setattr(main, "is_bundled", lambda: True)
     monkeypatch.setattr(runtime, "stop_if_running", lambda **kw: seen.append(kw) or True)
     monkeypatch.setattr(main, "_quitting", False)
+    from service.inference import power_tier
+    monkeypatch.setattr(power_tier, "_quiesced", False)
     assert asyncio.run(main.shutdown_omlx()) == {"stopped": True}
     assert seen == [{"final": True, "grace": main._QUIT_STOP_SECONDS}]
 
@@ -326,7 +328,7 @@ def test_the_app_waits_longer_than_the_quit_stop_takes():
     body = swift[swift.index("func shutdownOMLX"):]
     body = body[:body.index("\n    }\n")]
     wait = float(re.search(r"timeoutInterval = (\d+(?:\.\d+)?)", body).group(1))
-    bundled = main._QUIT_STOP_SECONDS + 1            # SIGTERM grace, then SIGKILL
+    bundled = main._QUIT_LIFT_SECONDS + main._QUIT_STOP_SECONDS + 1    # cap lift, SIGTERM grace, then SIGKILL
     external = main._QUIT_UNLOAD_SECONDS + main._QUIT_STOP_SECONDS + 1
     assert wait > max(bundled, external)
 

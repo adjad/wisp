@@ -77,6 +77,10 @@ async def run(client: OMLXClient, poll_seconds: float = 30.0) -> None:
                 # unloading here is exactly the mid-stream eviction we must not
                 # do. Leave it resident; it'll be reconsidered once idle.
                 continue
+            if idle.own_access_active(model):
+                # An embedding, rerank or load of Wisp's own is running on it:
+                # /unload would abort that request too.
+                continue
             if last < cutoff:
                 # /unload aborts running requests, whoever's they are.
                 if on_omlx_app and not await memory_saver.engine_idle(client):
