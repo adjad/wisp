@@ -28,11 +28,13 @@ private extension Theme {
 ///     }
 ///
 /// `onReply` is told whenever Reply is tapped, for whatever else wants to know.
+///
+/// The default composer shows the reply `ProactiveActions.shared` keeps for the
+/// thread, so the notch tucking away or a tab change never drafts it again.
 @MainActor
 enum BriefReplyHook {
     static var composer: ((ProactiveThread, _ close: @escaping () -> Void) -> AnyView)? = { thread, close in
-        AnyView(BriefReplyComposer(replyRef: thread.replyRef, account: thread.replyAccount,
-                                   onSent: {}, onDismiss: close))
+        AnyView(BriefReplyComposer(model: ProactiveActions.shared.replyModel(for: thread), onDismiss: close))
     }
     static var onReply: ((ProactiveThread) -> Void)? = nil
 }
@@ -79,6 +81,45 @@ final class ProactiveActions: ObservableObject {
     @Published var heroID: String? = nil
     /// The one of the Brief's rows that is open: "todos" or "threads".
     @Published var openRow: String? = nil
+    /// Replies being written, by thread id. Kept here, not in the composer's
+    /// view, so the notch tucking away or a tab change keeps the typed text and
+    /// the result of a send. Not published: each composer observes its own.
+    private(set) var replyModels: [String: BriefReplyModel] = [:]
+
+    /// The reply for a thread: made on the first ask, the same one afterwards.
+    func replyModel(for thread: ProactiveThread, transport: BriefReplyModel.Transport? = nil) -> BriefReplyModel {
+        if let kept = replyModels[thread.id] { return kept }
+        let made = BriefReplyModel(replyRef: thread.replyRef, account: thread.replyAccount,
+                                   baseURL: BriefReplyModel.defaultBaseURL,
+                                   transport: transport ?? BriefReplyModel.defaultTransport)
+        replyModels[thread.id] = made
+        return made
+    }
+
+    /// Cancel, Done or Close reply. The reply is forgotten unless its send is
+    /// still out: that one is kept, so opening Reply again shows what happened
+    /// to it instead of a new draft with a live Send.
+    func closeReply(_ id: String) {
+        if replying == id { replying = nil }
+        if let kept = replyModels[id], kept.phase != .sending { replyModels[id] = nil }
+    }
+
+    /// Whether the open reply is unfinished: being drafted, holding text that
+    /// hasn't been sent, or sending. The panel stays open for it. False when no
+    /// reply is open, its row is closed, or it is sent.
+    var replyInProgress: Bool {
+        guard let id = replying, expanded.contains(id) else { return false }
+        return replyModels[id]?.holdsPanelOpen == true
+    }
+
+    /// Forget replies to threads the Brief no longer lists, so one that can't
+    /// be reached never keeps the panel open. A send still out is kept.
+    func pruneReplies(keeping listed: Set<String>) {
+        if let id = replying, !listed.contains(id) { replying = nil }
+        for (id, kept) in replyModels where !listed.contains(id) && kept.phase != .sending {
+            replyModels[id] = nil
+        }
+    }
 
     func draft(_ card: ProactiveCard) -> String { drafts[card.id] ?? card.action?.draft ?? "" }
 
@@ -237,6 +278,7 @@ final class ProactiveActions: ObservableObject {
         openDrafts = openDraft.map { [$0] } ?? []
         self.expanded = expanded
         self.replying = replying
+        replyModels = [:]
     }
     #endif
 }
@@ -285,6 +327,10 @@ struct ProactiveBriefSection: View {
         let shown = proactive.only(chosen)
         Group {
             if wide { columns(shown) } else { column(shown) }
+        }
+        // Every account's threads, not only the chosen chip's.
+        .onChange(of: proactive.threads.map(\.id), initial: true) { _, listed in
+            actions.pruneReplies(keeping: Set(listed))
         }
         .task(id: actions.shouldPoll(proactive)) {
             // While the engine reads, follow its progress; stop once it's done.
@@ -1047,7 +1093,7 @@ struct ProactiveBriefSection: View {
             HStack(spacing: 6) {
                 if thread.canReply {
                     NotchChrome.small(actions.replying == thread.id ? "Close reply" : "Reply") {
-                        if actions.replying == thread.id { actions.replying = nil } else {
+                        if actions.replying == thread.id { actions.closeReply(thread.id) } else {
                             actions.replying = thread.id
                             onReply?(thread)   // HOOK(W3)
                         }
@@ -1069,7 +1115,7 @@ struct ProactiveBriefSection: View {
     /// HOOK(W3): the reply composer, or a placeholder until it is wired.
     @ViewBuilder private func replyArea(_ thread: ProactiveThread) -> some View {
         if let composer = BriefReplyHook.composer {
-            composer(thread) { actions.replying = nil; model.onResize() }
+            composer(thread) { actions.closeReply(thread.id); model.onResize() }
         } else {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("Replying from the Brief isn't set up in this build. Open the thread in Mail to answer it.")

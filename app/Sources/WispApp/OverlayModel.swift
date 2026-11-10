@@ -467,13 +467,15 @@ final class OverlayModel: ObservableObject {
 
     // True while auto-collapse must hold off: the panel is pinned, a file
     // dialog it opened is up, there is an edit the person hasn't finished
-    // (typed input, a message draft being edited), the setup card is open, or an
-    // answer is being written (the person is waiting for it, and said so).
+    // (typed input, a message draft being edited, a reply being written in the
+    // Brief), the setup card is open, or an answer is being written (the person
+    // is waiting for it, and said so).
     var holdsOpen: Bool {
         answerInFlight
             || pinned || pickingFile || !input.trimmingCharacters(in: .whitespaces).isEmpty || messageDraft?.isEditing == true
             || voice.isActive || speaker.speaking
             || (tab == .day && !todayTaskTitle.trimmingCharacters(in: .whitespaces).isEmpty)
+            || (tab == .brief && ProactiveActions.shared.replyInProgress)
             || knowYou != nil
             || setupCard == .open || report.isOpen || (tab == .day && todayReport?.isOpen == true)
     }

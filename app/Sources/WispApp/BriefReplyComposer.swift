@@ -33,6 +33,14 @@ struct BriefReplyComposer: View {
         self.onDismiss = onDismiss
     }
 
+    /// Shows a reply whose state is kept outside the view (the Brief keeps one
+    /// per thread), so the notch tucking away or a tab change loses nothing:
+    /// the row comes back with the same text, phase and send result.
+    init(model: BriefReplyModel, onDismiss: @escaping () -> Void) {
+        _model = StateObject(wrappedValue: model)
+        self.onDismiss = onDismiss
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             header
@@ -218,14 +226,29 @@ final class BriefReplyModel: ObservableObject {
         phase == .ready && canSend && envelope != nil && !holding
             && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
+    /// Whether tucking the panel away now would hide work in progress: a draft
+    /// being written, text that hasn't been sent, or a send with no answer yet.
+    /// False once the reply is sent or its outcome is unknown.
+    var holdsPanelOpen: Bool {
+        switch phase {
+        case .drafting, .sending: return true
+        case .ready: return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .sent, .unknown: return false
+        }
+    }
 
     func loadDraft() async {
         guard !loaded else { return }
         loaded = true
         phase = .drafting
         status = ""
-        let obj = await post("assistant/email_reply/draft", ["reply_ref": replyRef], timeout: 90)
-        apply(draft: obj)
+        // In its own task: the view's `.task` is cancelled when the notch tucks
+        // away or the tab changes, and a reply kept across that must still get
+        // its draft instead of a cancelled request's failure.
+        await Task { @MainActor in
+            let obj = await self.post("assistant/email_reply/draft", ["reply_ref": self.replyRef], timeout: 90)
+            self.apply(draft: obj)
+        }.value
     }
 
     /// Exposed for checks: applies a /draft response.

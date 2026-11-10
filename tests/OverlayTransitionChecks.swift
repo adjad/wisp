@@ -357,6 +357,7 @@ struct OverlayTransitionChecks {
         await AppDelegate.checkPointerReentryDuringOpening()
         await AppDelegate.checkSummaryDuringDismissal()
         await AppDelegate.checkPinnedPanelHoldsOpen()
+        await AppDelegate.checkBriefReplyHoldsAndSurvives()
         await AppDelegate.checkMenuHoldsCollapse()
         await AppDelegate.checkResearchReleasesQueueOffTab()
         await AppDelegate.checkPermissionPageStepsAside()

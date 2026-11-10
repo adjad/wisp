@@ -2710,6 +2710,99 @@ extension AppDelegate {
         print("PASS: AppDelegate collapse holds (pin, typing, draft, Day task, file dialog), unpins on collapse and dismiss; tabs reopen as designed")
     }
 
+    /// A reply written in the Brief holds the panel open until it is sent or
+    /// closed, and the notch tucking away or a tab change keeps the same reply:
+    /// its text, its one draft request and the result of its one send.
+    static func checkBriefReplyHoldsAndSurvives() async {
+        final class Calls {
+            var draft = 0
+            var send = 0
+            var release: CheckedContinuation<Void, Never>?
+        }
+        let calls = Calls()
+        let transport: BriefReplyModel.Transport = { request in
+            let draft = request.url?.lastPathComponent == "draft"
+            if draft {
+                calls.draft += 1
+            } else {
+                calls.send += 1
+                // Held until the check lets go, so the send is seen in flight.
+                await withCheckedContinuation { calls.release = $0 }
+            }
+            let body: [String: Any] = draft
+                ? ["ok": true, "draft": "Thursday works.", "to": ["sam@example.com"], "cc": [],
+                   "subject": "Re: Lunch", "account": "Work", "envelope": "fixture", "can_send": true]
+                : ["ok": true, "status": "sent"]
+            return (try JSONSerialization.data(withJSONObject: body),
+                    HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        }
+        let replies = ProactiveActions.shared
+        let thread = ProactiveThread(id: "t-fixture", source: "mail", replyRef: ["message_id": "m-fixture"])
+        let delegate = AppDelegate()
+        delegate.presentation.request(.chat)
+        let opening = delegate.presentation.next()!
+        delegate.model.collapsed = false
+        delegate.finishPresentation(opening)
+        let model = delegate.model
+        model.tab = .brief
+        precondition(!model.holdsOpen, "Control: the Brief with no reply open doesn't hold the panel")
+        // Reply is tapped: the row is open and its composer asks for the reply.
+        replies.expanded = [thread.id]
+        replies.replying = thread.id
+        let reply = replies.replyModel(for: thread, transport: transport)
+        precondition(model.holdsOpen, "A reply being drafted holds the panel open")
+        await reply.loadDraft()
+        reply.text = "Thursday at noon works."
+        precondition(reply.phase == .ready && model.holdsOpen, "A reply being written holds the panel open")
+        delegate.scheduleCollapse()
+        try? await Task.sleep(for: .seconds(autoCollapseDelay + 0.5))
+        precondition(delegate.presentation.desired == .chat, "The pointer leaving must not close a reply being written")
+        model.tab = .ask
+        precondition(!model.holdsOpen, "A Brief reply holds the panel on the Brief tab only")
+        model.tab = .brief
+        replies.expanded = []
+        precondition(!model.holdsOpen, "A reply whose row is closed doesn't hold the panel")
+        replies.expanded = [thread.id]
+        // The notch tucked away (Esc, the chevron) or the tab changed, and the
+        // row is back: the same reply, with no second draft.
+        let remounted = replies.replyModel(for: thread, transport: transport)
+        await remounted.loadDraft()
+        precondition(remounted === reply && remounted.text == "Thursday at noon works." && calls.draft == 1,
+                     "Reopening the Brief keeps the typed reply and drafts once")
+        // Close reply while the send is out keeps the reply, so opening it
+        // again shows what happened instead of a new draft with a live Send.
+        let sending = Task { await reply.send() }
+        for _ in 0..<200 where calls.release == nil { try? await Task.sleep(for: .milliseconds(10)) }
+        precondition(reply.phase == .sending && model.holdsOpen, "A send in flight holds the panel open")
+        replies.closeReply(thread.id)
+        precondition(replies.replying == nil && !model.holdsOpen, "Close reply closes the composer")
+        precondition(replies.replyModel(for: thread, transport: transport) === reply,
+                     "A reply closed while sending is kept until its send settles")
+        calls.release?.resume()
+        calls.release = nil
+        await sending.value
+        replies.replying = thread.id
+        let reopened = replies.replyModel(for: thread, transport: transport)
+        await reopened.loadDraft()
+        precondition(reopened === reply && reopened.phase == .sent && !reopened.sendEnabled,
+                     "Reopening Reply after the send shows it sent, with no live Send")
+        await reopened.send()
+        precondition(calls.send == 1 && calls.draft == 1, "One draft and one send, however often the row comes back")
+        precondition(!model.holdsOpen, "A sent reply lets the panel tuck away")
+        // Done forgets it; the next Reply is a new one.
+        replies.closeReply(thread.id)
+        precondition(replies.replyModels[thread.id] == nil && replies.replying == nil, "Done forgets the sent reply")
+        // A thread the Brief no longer lists can't keep the panel open.
+        let stale = replies.replyModel(for: thread, transport: transport)
+        replies.replying = thread.id
+        precondition(stale !== reply && model.holdsOpen, "A new reply holds the panel again")
+        replies.pruneReplies(keeping: ["t-other"])
+        precondition(replies.replying == nil && replies.replyModels.isEmpty && !model.holdsOpen,
+                     "A reply to a thread that left the Brief is dropped and holds nothing")
+        replies.expanded = []
+        print("PASS: AppDelegate a Brief reply holds the panel while unfinished and survives collapse (one draft, one send)")
+    }
+
     static func checkResearchReleasesQueueOffTab() async {
         let delegate = AppDelegate()
         let model = delegate.model
