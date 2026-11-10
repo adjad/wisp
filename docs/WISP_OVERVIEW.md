@@ -24,7 +24,7 @@ device through **oMLX**, a local MLX-based model server.
 | **Processes** | `Wisp.app` (Swift, menu bar) → Python FastAPI backend on `:8765` → oMLX on `:8000` |
 | **Installed app** | `/Applications/Wisp.app` — bundles its own copy of `service/` and a slim `.venv`, and launches the backend itself |
 | **State** | Everything under `~/.moe/` (plus `~/.wispair/` on the Air) |
-| **Scale** | ~139k lines of Python across `service/`, 135 Swift files under `app/`, 93 registered tools (94 with `use_skill`), 396 `tests/test_*.py` files |
+| **Scale** | ~139k lines of Python across `service/`, 135 Swift files under `app/`, 95 registered tools (96 with `use_skill`), 396 `tests/test_*.py` files |
 
 The core idea and the namesake: a **Mixture-of-Experts router** classifies each
 request and dispatches it to the right local model. That premise has since
@@ -61,11 +61,11 @@ It no longer takes part in tool routing (`models.yaml`; the packaged retrieval
 provider is lexical, §2.3). Synthesis runs on whatever
 chat model is already resident.
 
-### 1.3 Operating the Mac — 93 tools
+### 1.3 Operating the Mac — 95 tools
 
-The agent loop drives a registry of 93 built-in tools (`len(REGISTRY)` after
+The agent loop drives a registry of 95 built-in tools (`len(REGISTRY)` after
 `import service.tools`); `service/skills/tools.py` adds `use_skill` at runtime
-for 94, plus whatever installed skills and MCP servers contribute. Each declares
+for 96, plus whatever installed skills and MCP servers contribute. Each declares
 a safety `category` that the policy engine keys on.
 
 The registry peaked at 182. `04342402` (2026-10-13) consolidated it to 100 by
@@ -289,7 +289,7 @@ A rules-path request passes through:
 **No route may hand the model the full registry.** `route()` fills
 `tool_subset` by retrieval for *any* decision with `needs_tools=True` and no
 subset. Worst scoped route was ~1,580 tokens against ~14,994 unscoped
-*(historical: measured with 162 tools; the registry is now 93)*.
+*(historical: measured with 162 tools; the registry is now 95)*.
 
 Key `RouteDecision` fields, each of which encodes a hard-won lesson:
 
@@ -641,7 +641,7 @@ quantization sweep found the hard cliff at 4 bits. Ling became the resident
 model, pinned in memory.
 
 In parallel, the tool count went from ~15 toward **162** (later 182, then
-consolidated to 93 in October; see §1.3), driven by a Capability
+consolidated to 93 in October, 95 with the attachment tools; see §1.3), driven by a Capability
 Atlas of 561 real user requests. That scale is only tractable because of
 **semantic tool routing**, shipped the same week — and the rollout taught the
 reachability lesson three separate times before it stuck.
