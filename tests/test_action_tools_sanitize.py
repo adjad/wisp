@@ -181,6 +181,54 @@ def test_approved_text_is_not_second_guessed() -> None:
         action_tools.app_request = orig
 
 
+WINDOWS_PATH = r"The log is at C:\temp\new\run.txt"
+
+
+def test_approved_email_and_forward_note_are_sent_as_shown() -> None:
+    print("\nsend_email / forward_email: an approved card is sent exactly as shown")
+    calls: list[tuple[str, dict]] = []
+
+    async def fake_request(event_type, payload, **kw):
+        calls.append((event_type, payload))
+        return {"ok": True, "status": "succeeded"}
+
+    orig = action_tools.app_request
+    action_tools.app_request = fake_request
+    try:
+        shown = action_tools.confirm_preview("send_email", {
+            "to": "sam.fixture@example.com", "subject": r"Logs in C:\new", "body": WINDOWS_PATH})
+        check("the card shows the backslashes as typed",
+              WINDOWS_PATH in shown and r"Logs in C:\new" in shown, shown)
+        with action_tools.human_reviewed_content():
+            sent = asyncio.run(action_tools.send_email(
+                "sam.fixture@example.com", r"Logs in C:\new", WINDOWS_PATH))
+        check("the approved email sends", sent.startswith("Email sent to"), sent)
+        check("its body is the text the card showed, backslashes intact",
+              calls and calls[-1][1]["body"] == WINDOWS_PATH, calls)
+        check("its subject is the text the card showed",
+              calls and calls[-1][1]["subject"] == r"Logs in C:\new", calls)
+
+        with action_tools.human_reviewed_content():
+            asyncio.run(action_tools.forward_email(
+                "<m1@example.com>", "sam.fixture@example.com", WINDOWS_PATH))
+        check("an approved forward note is sent as shown",
+              calls[-1][0] == "forward_email" and calls[-1][1]["body"] == WINDOWS_PATH, calls)
+
+        # No card showed the text: the model's over-escaping is still repaired.
+        asyncio.run(action_tools.send_email(
+            "sam.fixture@example.com", "Plan", "Hi Sam,\\n\\nThursday works."))
+        check("an unreviewed email still gets real newlines",
+              calls[-1][1]["body"] == "Hi Sam,\n\nThursday works.", calls)
+        asyncio.run(action_tools.forward_email(
+            "<m1@example.com>", "sam.fixture@example.com", "FYI\\nSee below."))
+        check("an unreviewed forward note still gets real newlines",
+              calls[-1][1]["body"] == "FYI\nSee below.", calls)
+        asyncio.run(action_tools.forward_email("<m1@example.com>", "sam.fixture@example.com"))
+        check("a forward with no note sends an empty note", calls[-1][1]["body"] == "", calls)
+    finally:
+        action_tools.app_request = orig
+
+
 def main() -> int:
     test_degarble_literal_escapes()
     test_outbound_normalization_is_idempotent()
@@ -188,6 +236,7 @@ def main() -> int:
     test_placeholders_vs_real_bracketed_content()
     test_preflight_runs_before_the_card()
     test_approved_text_is_not_second_guessed()
+    test_approved_email_and_forward_note_are_sent_as_shown()
     test_send_message_blocks_truncated_draft()
     test_send_message_degarbles_before_sending()
     print(f"\n{PASS} passed, {FAIL} failed")

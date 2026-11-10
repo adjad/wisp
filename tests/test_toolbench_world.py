@@ -65,12 +65,16 @@ def test_outbound_receipts_are_classified_as_success(fk):
     assert fk["draft_email"](to="dad@example.com", subject="s", body="b").startswith("Draft opened in Mail")
     assert status("draft_email", fk["draft_email"](to="Dad", subject="s", body="b")) == "succeeded"
     assert status("forward_email", fk["forward_email"](message_id="m-1002", to="acct@example.com")) == "succeeded"
-    assert fk["forward_email"](message_id="m-1002", to="Dad").startswith("Forwarded to dad@example.com")
+    assert fk["forward_email"](message_id="m-1002", to="Dad") == "Forwarded to Dad (dad@example.com)."
+    # A literal handle is named by the contact it belongs to, as the real tools do.
+    assert fk["send_message"](to="+1 555-555-0101", text="hi") == "Message sent to Mom (+1 555-555-0101)."
     sched = fk["schedule_send"](channel="message", to="Mom", when="tomorrow at 9am", body="hi")
     assert sched.startswith("Scheduled: text to Mom (+1 555-555-0101)") and status("schedule_send", sched) == "succeeded"
     mail = fk["schedule_send"](channel="email", to="Dad", when="in 2 hours", body="hi", subject="s")
     assert mail.startswith("Scheduled: email to Dad (dad@example.com)")
     assert status("send_email", fk["send_email"](to="acct@example.com", subject="s", body="b")) == "succeeded"
+    assert status("send_email", fk["send_email"](to="acct@example.com", subject="s", body="b", cc="Dad")) == "succeeded"
+    assert "has no email address saved" in fk["send_email"](to="acct@example.com", subject="s", body="b", cc="Mom")
     assert status("send_message", fk["send_message"](to="Mom", text="on my way")) == "succeeded"
     assert status("reply_to_email", fk["reply_to_email"](message_id="m-1004", body="thanks")) == "succeeded"
     assert status("add_reminder", fk["add_reminder"](title="x", when_iso="2026-10-20T09:00")) == "succeeded"
@@ -550,6 +554,11 @@ def test_contacts_apps_and_world_time(world, fk):
     assert fk["manage_contacts"](action="create", name="Bob Stone") == "Created contact Bob Stone."
     assert fk["manage_contacts"](action="add_phone", name="Bob", value="555-0199") == "Added phone to Bob Stone."
     assert fk["manage_contacts"](action="add_email", name="Nobody At All", value="x@y.com").startswith("No contact matches")
+    made = fk["manage_contacts"](action="create", name="Cleo Marsh", value="555-0142")
+    assert made.startswith("Created contact Cleo Marsh. The phone number 555-0142 was NOT saved")
+    assert [c["phone"] for c in world.contacts if c["full"] == "Cleo Marsh"] == [""]
+    assert fk["manage_contacts"](action="add_phone", name="Cleo Marsh", value="555-0142") == "Added phone to Cleo Marsh."
+    assert [c["phone"] for c in world.contacts if c["full"] == "Cleo Marsh"] == ["555-0142"]
     assert "Bob" in fk["list_contacts"](query="bob")
     apps = fk["list_running_apps"]()
     assert apps.startswith("7 apps open: Calendar, Finder, Mail, Messages, Notes, Safari, Wisp.") and "Frontmost: Safari." in apps

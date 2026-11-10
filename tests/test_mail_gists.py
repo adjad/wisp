@@ -607,3 +607,58 @@ def test_the_summary_request_goes_only_to_the_local_fast_model(monkeypatch, mode
     assert not [m for m in imported if any(w in m for w in ("requests", "urllib", "cloud", "omlx_client", "delegat"))], imported
     names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} | {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
     assert not names & {"OMLXClient", "cloud_super_model_target", "cloud_provider_settings", "chat_cloud"}
+
+
+def test_refresh_reads_its_inputs_off_the_event_loop(isolated, monkeypatch):
+    """l01-perf-backend#2: reading mail and the Messages cache is CPU work that
+    must not hold the event loop (the app's own requests stall behind it)."""
+    import threading
+    import time as _time
+    real_jobs = G._jobs
+    threads = []
+
+    def slow_jobs(now, *, force=False):
+        threads.append(threading.current_thread())
+        _time.sleep(0.3)
+        return real_jobs(now, force=force)
+
+    monkeypatch.setattr(G, "_jobs", slow_jobs)
+
+    async def synth(system, material):
+        return "Mostly event updates"
+
+    async def main():
+        ticks = []
+
+        async def ticker():
+            for _ in range(5):
+                ticks.append(_time.monotonic())
+                await asyncio.sleep(0.02)
+
+        other = asyncio.create_task(ticker())
+        wrote = await G.refresh(NOW, synth=synth, abort=lambda: False)
+        await other
+        return wrote, ticks
+
+    wrote, ticks = asyncio.run(main())
+    assert wrote is True
+    assert threads and threads[0] is not threading.main_thread()
+    assert len(ticks) == 5 and ticks[-1] - ticks[0] < 0.25, "the loop kept running while the inputs were read"
+
+
+def test_an_erase_while_inputs_are_read_drops_the_gist(isolated, monkeypatch):
+    real_jobs = G._jobs
+
+    def erasing_jobs(now, *, force=False):
+        jobs = real_jobs(now, force=force)
+        G.invalidate()               # Disconnect & erase lands mid-read
+        return jobs
+
+    monkeypatch.setattr(G, "_jobs", erasing_jobs)
+    monkeypatch.setattr(G, "_generation", G._generation)
+
+    async def synth(system, material):
+        return "Mostly event updates"
+
+    assert asyncio.run(G.refresh(NOW, synth=synth, abort=lambda: False)) is False
+    assert "inbox" not in G._load()

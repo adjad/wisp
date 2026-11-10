@@ -125,6 +125,8 @@ _NOT_DONE_TOOLS = {
     "cancel_event": "service.tools.assistant_tools",
     "complete_reminder": "service.tools.schedule_extras",
     "cancel_scheduled_send": "service.tools.action_tools",
+    "email_triage": "service.tools.action_tools",
+    "manage_contacts": "service.tools.contacts_tools",
     "set_timer": "service.tools.timers_alarms",
     "create_note": "service.tools.notes_write",
     "append_note": "service.tools.notes_write",
