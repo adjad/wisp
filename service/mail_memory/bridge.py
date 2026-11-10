@@ -292,7 +292,8 @@ def _text_field(value, limit: int) -> str | None:
 
 def _message_attachment_rows(reply: dict) -> list[dict]:
     out = []
-    for r in reply.get("rows") or []:
+    rows = reply.get("rows")
+    for r in rows if isinstance(rows, list) else []:
         if not isinstance(r, dict):
             continue
         attachment_id = r.get("id")
