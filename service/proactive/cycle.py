@@ -359,11 +359,14 @@ def with_waiting_people(ranked: list[dict], pool: list[dict], sched: dict, *, no
             made["waiting"] = True
             waiting.append(made)
     taken = {w["primary"] for w in waiting}
-    judged = [i for i in ranked if not i.get("unranked")]
-    critical = [i for i in judged if (i.get("item") or {}).get("critical")]
-    people = [i for i in judged if (i.get("item") or {}).get("person") and i not in critical]
-    others = [i for i in judged if not (i.get("item") or {}).get("person") and i not in critical]
-    rest = [i for i in ranked if i.get("unranked") and i["primary"] not in taken]
+    # A critical alert leads even when the judge left it out (it then arrives
+    # unranked): prepare stops at the card cap, so a last place means no card.
+    critical = [i for i in ranked if (i.get("item") or {}).get("critical")]
+    alert_ids = {i["primary"] for i in critical}
+    judged = [i for i in ranked if not i.get("unranked") and i["primary"] not in alert_ids]
+    people = [i for i in judged if (i.get("item") or {}).get("person")]
+    others = [i for i in judged if not (i.get("item") or {}).get("person")]
+    rest = [i for i in ranked if i.get("unranked") and i["primary"] not in taken and i["primary"] not in alert_ids]
     # A security or account alert comes before everything, so people never push it past the cap.
     return critical + people + waiting + others + rest
 
