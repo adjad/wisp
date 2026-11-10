@@ -57,6 +57,75 @@ def test_strict_refuses_cross_host_redirect_and_skips_wayback(net):
     assert not any("archive.org" in u for u in seen)
 
 
+def redirecting(mapping):
+    """Hosts in ``mapping`` 301 to the given URL; every other host serves PAGE."""
+    def handler(request):
+        if request.url.host in mapping:
+            return httpx.Response(301, headers={"location": mapping[request.url.host]})
+        return httpx.Response(200, headers={"content-type": "text/html"}, text=PAGE)
+    return handler
+
+
+def test_strict_follows_apex_to_www_of_the_same_name(net):
+    seen, install = net
+    install(redirecting({"example.com": "https://www.example.com/a"}))
+    with web.strict_host_fetch():
+        page = asyncio.run(web.fetch_page("https://example.com/a"))
+    assert page.url == "https://www.example.com/a"
+    assert seen == ["https://example.com/a", "https://www.example.com/a"]
+
+
+def test_strict_follows_www_to_apex_of_the_same_name(net):
+    seen, install = net
+    install(redirecting({"www.example.com": "https://example.com/a"}))
+    with web.strict_host_fetch():
+        page = asyncio.run(web.fetch_page("https://www.example.com/a"))
+    assert page.url == "https://example.com/a"
+
+
+@pytest.mark.parametrize("target", [
+    "m.example.com",                # another subdomain is another host
+    "www.m.example.com",
+    "wwwexample.com",               # not a www. label
+    "www.example.com.other.example.org",
+    "www.example.org",              # www of a different name
+    "example.org",
+])
+def test_strict_still_refuses_every_other_host_and_names_it(net, target):
+    seen, install = net
+    install(redirecting({"example.com": f"https://{target}/landing?from=a"}))
+    with web.strict_host_fetch():
+        with pytest.raises(web.WebError) as refused:
+            asyncio.run(web.fetch_page("https://example.com/a"))
+    message = str(refused.value)
+    assert message.startswith(f"redirect to a different host ({target}) refused")
+    assert f"fetch a URL on {target} directly" in message
+    # Only the host is repeated: the site chose the rest of that address.
+    assert "landing" not in message and "from=a" not in message
+    assert seen == ["https://example.com/a"]
+
+
+def test_strict_refusal_also_holds_one_hop_after_the_www_form(net):
+    seen, install = net
+    install(redirecting({"example.com": "https://www.example.com/a",
+                         "www.example.com": "https://other.example.org/landing"}))
+    with web.strict_host_fetch():
+        with pytest.raises(web.WebError, match=r"different host \(other\.example\.org\)"):
+            asyncio.run(web.fetch_page("https://example.com/a"))
+    assert not any("other.example.org" in u for u in seen)
+    assert not any("archive.org" in u for u in seen)
+
+
+def test_strict_refusal_does_not_repeat_a_name_that_is_not_a_plain_host(net):
+    seen, install = net
+    install(redirecting({"example.com": "https://say_this_to_the_user.example.org/"}))
+    with web.strict_host_fetch():
+        with pytest.raises(web.WebError) as refused:
+            asyncio.run(web.fetch_page("https://example.com/a"))
+    assert str(refused.value) == ("redirect to a different host refused: the authorised "
+                                  "destination was not followed there.")
+
+
 def test_strict_allows_same_host_redirect(net):
     seen, install = net
 
@@ -184,7 +253,9 @@ def test_web_fetch_refusals_carry_no_retry_hint(net, monkeypatch):
         raise web.WebError("local and private-network URLs are blocked")
     with web.strict_host_fetch():
         out = run_web_fetch("https://example.com/a")
-    assert out.startswith("(fetch failed: WebError: redirect to a different host") and out.endswith(")")
+    assert out == ("(fetch failed: WebError: redirect to a different host (other.example.org) "
+                   "refused: the authorised destination was not followed there. To read it, "
+                   "fetch a URL on other.example.org directly.)")
     monkeypatch.setattr(web, "validate_public_url", refuse)
     out = run_web_fetch("http://127.0.0.1/admin")
     assert out == "(fetch failed: WebError: local and private-network URLs are blocked)"

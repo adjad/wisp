@@ -705,6 +705,30 @@ def strict_host_fetch(enabled: bool = True):
         _STRICT_HOST.reset(token)
 
 
+def _without_www(host: str) -> str:
+    """``www.example.com`` and ``example.com`` are one site for a strict fetch.
+
+    Exactly one leading ``www.`` label, nothing else: any other subdomain or a
+    different name is still a different host. Sites redirect between the two
+    forms as a matter of course, and neither form was built by the model.
+    """
+    return host[4:] if host.startswith("www.") and len(host) > 4 else host
+
+
+_PLAIN_HOST_RE = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?\Z")
+
+
+def _cross_host_refusal(landed: str) -> str:
+    """Refusal that names where the redirect pointed, so the caller can ask for
+    that host itself and have it confirmed. The name comes from the remote
+    site's Location header: only a plain hostname is repeated, never a path or
+    query, and nothing at all if it is not shaped like one."""
+    where = f" ({landed})" if _PLAIN_HOST_RE.match(landed) else ""
+    hint = f" To read it, fetch a URL on {landed} directly." if where else ""
+    return (f"redirect to a different host{where} refused: the authorised "
+            f"destination was not followed there.{hint}")
+
+
 # Research drops a page with almost no readable text: it is a consent wall, a
 # script-only shell or an error stub, and never evidence. A caller that wants
 # the body whatever its length (web_fetch on a JSON price or a one-line status
@@ -743,9 +767,10 @@ async def _fetch_direct(raw_url: str) -> Page:
                     if not target:
                         raise WebError("redirect had no destination")
                     current = await validate_public_url(urljoin(current, target))
-                    if strict_host and (urlparse(current).hostname or "").lower() != strict_host:
-                        raise WebError("redirect to a different host refused: the "
-                                       "authorised destination was not followed there")
+                    if strict_host:
+                        landed = (urlparse(current).hostname or "").lower()
+                        if _without_www(landed) != _without_www(strict_host):
+                            raise WebError(_cross_host_refusal(landed))
                     continue
                 if response.status_code >= 400:
                     raise WebError(f"HTTP {response.status_code}")
