@@ -171,6 +171,17 @@ class ConfigurationPreconditionFailed(ValueError):
     """An automatic setup request no longer owns the configuration it saw."""
 
 
+class ConfigurationOverlayDamaged(ValueError):
+    """~/.moe/config.yaml exists but cannot be parsed or is not a mapping.
+
+    Writers refuse to replace it (that would erase the user's other settings),
+    so a save fails with this plain reason instead of a bare server error."""
+
+    def __init__(self) -> None:
+        super().__init__("Wisp can't read its settings file ~/.moe/config.yaml, "
+                         "so this wasn't saved. Fix or remove that file.")
+
+
 def setup_configuration_token(config: dict | None = None) -> str:
     import hashlib
     value = models_config() if config is None else config
@@ -187,9 +198,12 @@ def _write_overlay(update: dict, *, precondition=None) -> dict:
     USER_CONFIG.parent.mkdir(parents=True, exist_ok=True)
     with (USER_CONFIG.parent / ".config.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        current = yaml.safe_load(USER_CONFIG.read_text()) if USER_CONFIG.exists() else {}
+        try:
+            current = yaml.safe_load(USER_CONFIG.read_text()) if USER_CONFIG.exists() else {}
+        except (yaml.YAMLError, UnicodeDecodeError) as error:
+            raise ConfigurationOverlayDamaged() from error
         if current is not None and not isinstance(current, dict):
-            raise ValueError("Invalid configuration overlay; refusing to overwrite it")
+            raise ConfigurationOverlayDamaged()
         # Inspect the file we will replace, under the same lock as every overlay
         # writer. Cached config and an earlier endpoint check cannot fence a
         # settings change made while setup awaited the engine's model list.

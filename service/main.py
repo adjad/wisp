@@ -48,6 +48,7 @@ from fastapi.responses import Response, StreamingResponse
 
 from service import idle, idle_unloader
 from service.config import (
+    ConfigurationOverlayDamaged,
     cloud_super_model_enabled,
     cloud_provider_settings,
     local_provider_settings,
@@ -540,6 +541,14 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Wisp", lifespan=lifespan)
+
+
+@app.exception_handler(ConfigurationOverlayDamaged)
+async def _settings_file_damaged(_request: Request, error: ConfigurationOverlayDamaged) -> Response:
+    # A hand-edited config.yaml that no longer parses is never overwritten; say so.
+    return Response(json.dumps({"detail": str(error)}), status_code=409, media_type="application/json")
+
+
 from service.config.quarantine import RecoveryMiddleware
 app.add_middleware(RecoveryMiddleware)
 from service.wisp_reset import ResetGate, router as wisp_reset_router
@@ -822,7 +831,10 @@ def _direct_generation_budget(target: Target) -> tuple[int, bool]:
 async def models() -> dict[str, Any]:
     installed = await client.models()
     if installed:  # don't clobber the saved roster with a transient empty read
-        save_installed_models(installed)
+        try:
+            save_installed_models(installed)
+        except ConfigurationOverlayDamaged:
+            pass  # a damaged config.yaml is left alone; still answer with the list
     roles = {}
     for role in models_config()["roles"]:
         try:
