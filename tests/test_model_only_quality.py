@@ -754,3 +754,412 @@ def test_write_dodges_are_detected(dodge):
 def test_written_text_is_not_a_dodge():
     assert not loop._ASK_WRITE_DODGE.search("I'll draft it now.\n\nExcited to join [Company] as [Role].")
     assert not loop._ASK_WRITE_DODGE.search("Dear Professor [Name],\nThank you for the extension.")
+
+
+# --- a step that must carry more than the fixed message room ---------------------
+
+class SmallWindowClient(ScriptedClient):
+    """The shipped local model's window (the scripted default is 32,000)."""
+    context_window = 16384
+
+
+_BIG_READS = ("big_read_a", "big_read_b", "big_read_c", "big_read_d", "big_read_e")
+
+
+def _register_big_reads(register, *, result_chars=0):
+    """Real-sized schemas (about 3.3k estimated tokens with get_upcoming), so
+    the prefix and schemas alone pass the Ask prompt budget as they do live."""
+    for name in _BIG_READS:
+        tool = register(name, "email_tools", "email_read", parameters={
+            "type": "object", "additionalProperties": False,
+            "properties": {f"option_{i}": {"type": "string", "description": "synthetic filter " * 8}
+                           for i in range(16)}})
+        if result_chars:
+            async def big(_name=name, **args):
+                return f"{_name}: " + "Workshop notes line.\n" * (result_chars // 20)
+            big.__module__ = tool.func.__module__
+            tool.func = big
+    return ["get_upcoming", *_BIG_READS]
+
+
+def _prefix_and_real(request):
+    prefix = loop._est_tokens(request["messages"][:2])
+    real = loop._est_tokens([s for s in request["tools"] if "description" in s["function"]])
+    return prefix, real
+
+
+def test_long_pasted_request_reaches_the_model_with_its_tools_intact(synthetic):
+    _, register = synthetic
+    preload = _register_big_reads(register)
+    prompt = "Summarize this for me: " + "The committee met on Tuesday and agreed the plan. " * 240
+    assert len(prompt) > 12000
+    client = SmallWindowClient(["The committee agreed the plan on Tuesday."])
+    events, answer = drive(client, prompt=prompt, model_led_preload=preload)
+    assert answer == "The committee agreed the plan on Tuesday."
+    [request] = client.requests
+    # The request is whole and every offered real schema is still there.
+    assert request["messages"][-1] == {"role": "user", "content": prompt}
+    assert real_tool_names(request) == {*preload, DISCOVERY_TOOL}
+    prefix, real = _prefix_and_real(request)
+    assert prefix + real + 2500 > mo.ASK_PROMPT_BUDGET   # the old fixed room was the binding limit
+    assert not any(e["type"] == "error" for e in events)
+
+
+def test_two_capped_results_from_one_step_are_followed_by_a_normal_step(synthetic):
+    effects, register = synthetic
+    preload = _register_big_reads(register, result_chars=7000)
+    client = SmallWindowClient([[call("big_read_a"), {**call("big_read_b"), "id": "synthetic-second"}],
+                                "Both sources mention the workshop."])
+    events, answer = drive(client, prompt="what did Sam email and text me about the trip?",
+                           model_led_preload=preload)
+    assert answer == "Both sources mention the workshop."
+    results = tool_messages(client.requests[1])
+    assert len(results) == 2 and all(len(m["content"]) > 5000 for m in results)
+    assert real_tool_names(client.requests[1]) == {*preload, DISCOVERY_TOOL}
+    assert client.requests[1]["messages"][2]["content"] == "what did Sam email and text me about the trip?"
+
+
+def test_request_larger_than_the_model_window_gets_a_plain_too_long_message(synthetic):
+    _, register = synthetic
+    preload = _register_big_reads(register)
+    prompt = "Summarize this for me: " + "The committee met on Tuesday and agreed the plan. " * 1400
+    client = SmallWindowClient(["never reached"])
+    events, answer = drive(client, prompt=prompt, model_led_preload=preload)
+    assert answer == loop._ASK_TOO_LONG_MESSAGE
+    assert client.requests == []           # nothing was sent cut or with a trimmed toolset
+    assert [e["type"] for e in events][-2:] == ["text", "done"]
+    assert events[-2]["text"] == loop._ASK_TOO_LONG_MESSAGE
+
+
+def test_results_too_large_for_the_window_end_with_a_summary_not_an_error(synthetic):
+    _, register = synthetic
+    preload = _register_big_reads(register, result_chars=7000)
+
+    class TightClient(ScriptedClient):
+        context_window = 14500    # the first step fits; two capped results beside the tools do not
+
+    client = TightClient([[call("big_read_a"), {**call("big_read_b"), "id": "synthetic-second"}],
+                          "Both sources mention the workshop."])
+    events, answer = drive(client, prompt="what did Sam email and text me about the trip?",
+                           model_led_preload=preload)
+    assert answer == "Both sources mention the workshop."
+    assert len(client.requests) == 2
+    summary = client.requests[-1]
+    assert summary["tools"] == [] and "Do not call any tool" in summary["messages"][-1]["content"]
+    assert [e["type"] for e in events][-1] == "done"
+
+
+def test_model_led_turn_outside_ask_still_refuses_a_trimmed_toolset(synthetic):
+    _, register = synthetic
+    preload = _register_big_reads(register)
+    prompt = "Summarize this for me: " + "The committee met on Tuesday and agreed the plan. " * 3000
+    with pytest.raises(ValueError, match="cannot fit intact"):
+        run(["never reached"], prompt=prompt, model_led_preload=preload)
+
+
+def test_ordinary_step_keeps_the_same_budget(synthetic):
+    _, register = synthetic
+    preload = _register_big_reads(register)
+    history = []
+    for i in range(30):
+        history += [{"role": "user", "content": f"old question {i} " + "lorem ipsum " * 150},
+                    {"role": "assistant", "content": f"old answer {i} " + "dolor sit " * 150}]
+    client = SmallWindowClient(["Fine."])
+    drive(client, history=history, model_led_preload=preload)
+    request = client.requests[0]
+    prefix, real = _prefix_and_real(request)
+    assert prefix + real + 2500 > mo.ASK_PROMPT_BUDGET
+    estimate = loop._est_tokens(request["tools"]) + sum(loop._est_tokens(m.get("content") or "")
+                                                        for m in request["messages"])
+    # A short request gets the room it always did: the fixed 2,500 plus the
+    # history reserve, and the long history is condensed to fit it.
+    assert estimate <= prefix + real + 2500 + mo.ASK_HISTORY_RESERVE
+    assert estimate > prefix + real + 2500 + mo.ASK_HISTORY_RESERVE - 600
+    assert len(request["messages"]) < len(history)
+
+
+def _request_estimate(request):
+    return loop._est_tokens(request["tools"]) + sum(
+        loop._est_tokens(m.get("content") or "")
+        + (loop._est_tokens(m["tool_calls"]) if m.get("tool_calls") else 0) for m in request["messages"])
+
+
+def test_guard_retry_is_smaller_when_the_tools_alone_pass_the_budget(synthetic):
+    _, register = synthetic
+    preload = _register_big_reads(register)
+    history = []
+    for i in range(30):
+        history += [{"role": "user", "content": f"old question {i} " + "lorem ipsum " * 150},
+                    {"role": "assistant", "content": f"old answer {i} " + "dolor sit " * 150}]
+    client = GuardClient(["Fine."], refuse_steps={0})
+    _, answer = drive(client, history=history, model_led_preload=preload)
+    assert answer == "Fine."
+    [refused], [retried] = client.refused, client.requests
+    prefix, real = _prefix_and_real(retried)
+    assert prefix + real + 2500 > mo.ASK_PROMPT_BUDGET       # the floor, not the budget, sets the window
+    assert real_tool_names(retried) == {*preload, DISCOVERY_TOOL}   # every real schema is still offered
+    assert retried["messages"][:2] == refused["messages"][:2]       # and the prefix is untouched
+    assert retried["messages"][-1] == refused["messages"][-1]       # the request too
+    # Half the room for messages and half the history reserve, not the same prompt again.
+    assert _request_estimate(retried) <= prefix + real + 1250 + mo.ASK_HISTORY_RESERVE // 2
+    assert _request_estimate(refused) - _request_estimate(retried) > 1500
+
+
+def test_guard_retry_sheds_older_results_and_keeps_the_newest(synthetic):
+    _, register = synthetic
+    preload = _register_big_reads(register, result_chars=7000)
+    client = GuardClient([[call("big_read_a")], [call("big_read_b")], [call("big_read_c")],
+                          "All three mention the workshop."], refuse_steps={3})
+    _, answer = drive(client, prompt="what did Sam email and text me about the trip?",
+                      model_led_preload=preload)
+    assert answer == "All three mention the workshop."
+    [refused], retried = client.refused, client.requests[-1]
+    before, after = tool_messages(refused), tool_messages(retried)
+    assert len(before) == len(after) == 3
+    # The retry gives up what the model has already read, never the result it is answering from.
+    assert sum(len(m["content"]) for m in after[:2]) < sum(len(m["content"]) for m in before[:2])
+    assert after[2] == before[2] and len(after[2]["content"]) > 5000
+    assert _request_estimate(retried) < _request_estimate(refused) - 300
+    assert real_tool_names(retried) == {*preload, DISCOVERY_TOOL}
+
+
+def real_tool_names(request):
+    return {s["function"]["name"] for s in request.get("tools") or [] if "description" in s["function"]}
+
+
+# --- "my calendar" in a request to change something ------------------------------
+
+_NOT_CHECKED = "haven't checked a current personal source"
+_OWNERS = {"claim_effect": lambda tool, args: {"admitted": True}, "finish_effect": lambda claim, ok: True}
+
+
+def _action_tool(synthetic, name, module, category, receipt, properties):
+    """A synthetic action that records its call and returns the real tool's receipt."""
+    effects, register = synthetic
+    tool = register(name, module, category, parameters={
+        "type": "object", "properties": {key: {"type": "string"} for key in properties},
+        "required": [properties[0]]})
+
+    async def act(**args):
+        effects.append((name, copy.deepcopy(args)))
+        return receipt
+    act.__module__ = tool.func.__module__
+    tool.func = act
+
+
+def test_calendar_add_that_says_my_calendar_keeps_its_reply(synthetic):
+    effects, _ = synthetic
+    _action_tool(synthetic, "add_calendar_event", "assistant_tools", "calendar_write",
+                 "Added \u201cLunch with Sam\u201d to your calendar.", ("title", "when_iso"))
+    prompt = "Add lunch with Sam to my calendar tomorrow at noon"
+    scope = fresh_personal_obligation(prompt, "")
+    assert scope["scope"] == "calendar"
+    said = "Lunch with Sam is on your calendar for tomorrow at noon."
+    approval = Approval(allowed=True)
+    _, _, answer = ask([[call("add_calendar_event", title="Lunch with Sam", when_iso="2036-09-29T12:00")], said],
+                       prompt=prompt, fresh_personal_scope=scope, approval=approval,
+                       model_led_preload=["add_calendar_event", "get_upcoming"], **_OWNERS)
+    assert [action["tool"] for action in approval.calls] == ["add_calendar_event"]   # still asks first
+    assert [args["title"] for args in executed(effects, "add_calendar_event")] == ["Lunch with Sam"]
+    assert answer == said and _NOT_CHECKED not in answer
+
+
+def test_reminder_that_says_my_email_answers_with_its_receipt(synthetic):
+    effects, _ = synthetic
+    receipt = "Reminder set: Check email, today at 5:00 PM."
+    _action_tool(synthetic, "add_reminder", "assistant_tools", "assistant_write", receipt,
+                 ("title", "when_iso"))
+    prompt = "remind me to check my email at 5pm"
+    scope = fresh_personal_obligation(prompt, "")
+    assert scope
+    _, _, answer = ask([[call("add_reminder", title="Check email", when_iso="2036-09-29T17:00")],
+                        "I'll remind you at 5 PM."],
+                       prompt=prompt, fresh_personal_scope=scope, approval=Approval(allowed=True),
+                       model_led_preload=["add_reminder", "get_upcoming"], **_OWNERS)
+    assert len(executed(effects, "add_reminder")) == 1
+    assert answer == receipt      # a reminder-only turn answers with the tool's own receipt
+
+
+# --- a question and a reminder in one request -------------------------------------
+
+_PACK = "Reminder set: \u201cPack my laptop\u201d \u2014 today 8:00 PM in Apple Reminders and Wisp."
+_SCHEDULE = "Tomorrow you have the Workshop at 14:00."
+
+
+def _read_and_remind(synthetic, final, *, receipt=_PACK, prompt=(
+        "What's on my calendar tomorrow? Also remind me to pack my laptop at 8pm.")):
+    effects, _ = synthetic
+    _action_tool(synthetic, "add_reminder", "assistant_tools", "assistant_write", receipt,
+                 ("title", "when_iso"))
+    script = [[call("get_upcoming", days=2)],
+              [call("add_reminder", title="Pack my laptop", when_iso="2036-09-29T20:00")],
+              *(final if isinstance(final, list) else [final])]
+    _, _, answer = ask(script, prompt=prompt, approval=Approval(allowed=True),
+                       model_led_preload=["add_reminder", "get_upcoming"], **_OWNERS)
+    assert len(executed(effects, "get_upcoming")) == 1 and len(executed(effects, "add_reminder")) == 1
+    return answer
+
+
+def test_question_asked_with_a_reminder_keeps_its_answer_after_the_receipt(synthetic):
+    answer = _read_and_remind(
+        synthetic, _SCHEDULE + "\n\nI\u2019ve also set a reminder to pack your laptop at 8 PM.")
+    assert answer == _PACK + "\n\n" + _SCHEDULE      # the receipt first, then the answer
+
+
+def test_reply_cannot_say_more_about_the_reminder_than_its_receipt(synthetic):
+    local_only = "Reminder set: \u201cPack my laptop\u201d \u2014 today 8:00 PM in Wisp only; Apple Reminders did not answer."
+    answer = _read_and_remind(synthetic, (
+        "Your reminder is set and it is in Apple Reminders now.\n\n- Workshop at 14:00\n"
+        "- Reminder: get the report done\n\nYou'll be reminded at 8 PM."), receipt=local_only)
+    assert answer == local_only + "\n\n- Workshop at 14:00\n- Reminder: get the report done"
+
+
+def test_reply_that_only_talks_about_the_reminder_is_still_just_the_receipt(synthetic):
+    answer = _read_and_remind(synthetic, "I\u2019ve set a reminder for 8 PM tonight, before the Workshop.",
+                              prompt="Remind me to pack my laptop the evening before the workshop")
+    assert answer == _PACK
+
+
+def test_empty_reply_after_a_read_and_a_reminder_still_answers_the_question(synthetic):
+    # No words from the model after the tools: the one summary step is its answer.
+    answer = _read_and_remind(synthetic, ["", _SCHEDULE])
+    assert answer == _PACK + "\n\n" + _SCHEDULE
+
+
+@pytest.mark.parametrize("sentence", [
+    "I've set a reminder for 8 PM.", "I\u2019ll remind you at 8 PM.", "Reminder set for 8 PM.",
+    "The reminder to pack your laptop is now set.", "Done, and set your laptop reminder.",
+    "You'll get a reminder at 8 PM.", "I also added it to your reminders.", "It is in Apple Reminders."])
+def test_sentences_about_the_new_reminder_are_dropped(sentence):
+    assert loop._answer_beside_reminder(f"Workshop at 14:00. {sentence}") == "Workshop at 14:00."
+
+
+@pytest.mark.parametrize("line", [
+    "You have a reminder to pay rent at 9 AM and the Workshop at 14:00.",
+    "- Reminder: get the report done", "Nothing is on your calendar tomorrow."])
+def test_lines_a_read_returned_are_kept(line):
+    assert loop._answer_beside_reminder(line) == line
+
+
+def test_open_my_calendar_keeps_its_reply(synthetic):
+    effects, _ = synthetic
+    _action_tool(synthetic, "open_app", "apps", "app_control", "Opened Calendar.", ("name",))
+    prompt = "open my calendar"
+    scope = fresh_personal_obligation(prompt, "")
+    assert scope["scope"] == "calendar"
+    _, _, answer = ask([[call("open_app", name="Calendar")], "Calendar is open."],
+                       prompt=prompt, fresh_personal_scope=scope, approval=Approval(allowed=True),
+                       model_led_preload=["open_app", "get_upcoming"], **_OWNERS)
+    assert executed(effects, "open_app") == [{"name": "Calendar"}]
+    assert answer == "Calendar is open."
+
+
+def test_refused_action_does_not_lift_the_personal_guard(synthetic, monkeypatch):
+    effects, _ = synthetic
+    _action_tool(synthetic, "open_app", "apps", "app_control", "Opened Calendar.", ("name",))
+    from service.safety.policy import Decision, Tier
+    real = loop.decide
+
+    def decide(category, args, tool=None):
+        if tool == "open_app":
+            return Decision(Tier.DENY, "synthetic block")
+        return real(category, args, tool=tool)
+    monkeypatch.setattr(loop, "decide", decide)
+    prompt = "What's on my calendar today?"
+    _, _, answer = ask([[call("open_app", name="Calendar")], "You have a dentist appointment at 3 PM."],
+                       prompt=prompt, fresh_personal_scope=fresh_personal_obligation(prompt, ""),
+                       model_led_preload=["open_app", "get_upcoming"], **_OWNERS)
+    assert not effects and "dentist" not in answer
+
+
+def test_shell_command_does_not_lift_the_personal_guard(synthetic, monkeypatch):
+    from tests.test_model_led_integration import _private_shell_fixture, discover
+    native_calls, _ = _private_shell_fixture(synthetic, monkeypatch)   # the real builtin, a fake process
+    prompt = "What's on my calendar today?"
+    _, _, answer = ask([[discover("automation", "run_shell")], [call("run_shell", cmd="pwd")],
+                        "You have a dentist appointment at 3 PM."],
+                       prompt=prompt, fresh_personal_scope=fresh_personal_obligation(prompt, ""),
+                       approval=Approval(allowed=True), **_OWNERS)
+    assert len(native_calls) == 1 and _NOT_CHECKED in answer
+
+
+def test_status_read_does_not_lift_the_personal_guard(synthetic):
+    effects, register = synthetic
+    register("wisp_status", "wisp_admin_tools", "wisp_admin")
+    prompt = "What's on my calendar today?"
+    _, _, answer = ask([[call("wisp_status")], "You have a dentist appointment at 3 PM."],
+                       prompt=prompt, fresh_personal_scope=fresh_personal_obligation(prompt, ""),
+                       approval=Approval(allowed=True), model_led_preload=["wisp_status", "get_upcoming"],
+                       **_OWNERS)
+    assert executed(effects, "wisp_status") and _NOT_CHECKED in answer
+
+
+# --- the re-prompt's "I don't have that" is for the user's own facts only ----------
+
+@pytest.mark.parametrize("first", ["Let me check that for you.", "<|tool_call>call:device.system_status{}"])
+def test_mac_status_answer_after_the_reprompt_is_kept(synthetic, first):
+    effects, register = synthetic
+    register("system_status", "system_extras", "system_read")
+    prompt = "How much battery do I have left?"
+    assert mo.asks_personal_data(prompt)
+    client, _, answer = ask([first, [call("system_status")], "You have 64% battery left."],
+                            prompt=prompt, model_led_preload=["system_status", "get_upcoming"])
+    assert client.requests[1]["tool_choice"] == "required"
+    assert executed(effects, "system_status") == [{}]
+    assert answer == "You have 64% battery left."
+
+
+def test_stalled_question_about_running_apps_keeps_its_answer(synthetic):
+    effects, register = synthetic
+    register("list_running_apps", "window_tools", "system_read")
+    prompt = "what apps are running?"
+    assert not mo.asks_personal_data(prompt)
+    client, _, answer = ask(["Let me check that for you.", [call("list_running_apps")],
+                             "Mail and Safari are open."],
+                            prompt=prompt, model_led_preload=["list_running_apps", "get_upcoming"])
+    assert client.requests[1]["tool_choice"] == "required"
+    assert executed(effects, "list_running_apps") == [{}]
+    assert answer == "Mail and Safari are open."
+
+
+def test_stalled_question_about_wisp_keeps_its_status_answer(synthetic):
+    effects, register = synthetic
+    register("wisp_status", "misc_t1", "wisp_admin")
+    client, _, answer = ask(["One moment!", [call("wisp_status")], "I'm running Gemma on this Mac."],
+                            prompt="which model are you using?",
+                            model_led_preload=["wisp_status", "get_upcoming"])
+    assert executed(effects, "wisp_status") == [{}]
+    assert answer == "I'm running Gemma on this Mac."
+
+
+def test_mac_status_question_with_no_tool_run_still_says_it_does_not_know(synthetic):
+    _, register = synthetic
+    register("system_status", "system_extras", "system_read")
+    client, _, answer = ask(["You have 64% battery left.", "You have about 64% battery left."],
+                            prompt="How much battery do I have left?",
+                            model_led_preload=["system_status", "get_upcoming"])
+    assert client.requests[1]["tool_choice"] == "required" and len(client.requests) == 2
+    assert answer == mo.ASK_UNKNOWN_MESSAGE
+
+
+def test_mac_status_question_whose_read_failed_still_says_it_does_not_know(synthetic):
+    _, register = synthetic
+    tool = register("system_status", "system_extras", "system_read")
+
+    async def broken(**args):
+        return "(error: could not read the battery state)"
+    broken.__module__ = tool.func.__module__
+    tool.func = broken
+    _, _, answer = ask(["Let me check that for you.", [call("system_status")], "You have 64% battery left."],
+                       prompt="How much battery do I have left?",
+                       model_led_preload=["system_status", "get_upcoming"])
+    assert answer == mo.ASK_UNKNOWN_MESSAGE
+
+
+def test_personal_fact_answered_from_a_status_read_still_says_it_does_not_know(synthetic):
+    effects, register = synthetic
+    register("system_status", "system_extras", "system_read")
+    _, _, answer = ask(["Your backpack weighs 1.2 kg.", [call("system_status")], "Your backpack weighs 1.2 kg."],
+                       prompt="How heavy is my backpack?", model_led_preload=["system_status", "get_upcoming"])
+    assert executed(effects, "system_status") == [{}]
+    assert answer == mo.ASK_UNKNOWN_MESSAGE

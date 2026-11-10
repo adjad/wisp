@@ -1262,3 +1262,24 @@ def test_a_cap_cut_inside_a_fence_closes_it_before_wisps_note():
     # an already-closed result is left as it was
     short = fence("ok", WEB_PAGE) + "\n" + "x" * 7000
     assert _fit_tool_result(short, "web_fetch", limit=6000).count(end_marker(WEB_PAGE)) == 1
+
+
+def test_a_cap_cut_keeps_a_long_single_line_body():
+    from service.agent.loop import _fit_tool_result
+    from service.tools.untrusted import WEB_PAGE, end_marker, fence
+
+    # Minified JSON: a short header, the fence line, then one 20,000-character line.
+    result = "Title: T\nURL: u\n\n" + fence("a" * 20000, WEB_PAGE)
+    fitted = _fit_tool_result(result, "web_fetch", limit=6000)
+    body, note = fitted.split("\n\n[... ", 1)
+    assert body.count("a") > 5800, "the page itself reaches the model, not just its header"
+    assert body.endswith("a\n" + end_marker(WEB_PAGE)) and body.count(end_marker(WEB_PAGE)) == 1
+    kept = len(body) - len(end_marker(WEB_PAGE)) - 1
+    assert kept == 6000 and note.startswith(f"{len(result) - kept:,} more characters")
+    assert "call web_fetch again" in note
+    # Many lines still end on a whole line, and a short last line costs little.
+    lines = "\n".join("line %d" % i for i in range(2000))
+    whole = _fit_tool_result(lines, "search_notes", limit=6000).split("\n\n[... ", 1)[0]
+    assert lines.startswith(whole + "\n") and len(whole) > 5900
+    # No newline at all is cut at the limit, as before.
+    assert _fit_tool_result("b" * 9000, "read_file", limit=6000).startswith("b" * 6000 + "\n\n[... 3,000 more")
