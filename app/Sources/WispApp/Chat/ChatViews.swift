@@ -387,8 +387,8 @@ struct ChatWelcome: View {
     var body: some View {
         VStack(spacing: 0) {
             ChatEmptyState { store.newChat(); store.submit($0) }
-            ChatComposer(store: store, busy: false, loading: false, restoredInput: .constant(nil),
-                         notice: .constant(nil), stop: {})
+            ChatComposer(store: store, draft: store.welcomeDraft, busy: false, loading: false,
+                         restoredInput: .constant(nil), notice: .constant(nil), stop: {})
         }
     }
 }
@@ -485,7 +485,8 @@ struct ChatConversationView: View {
             } else {
                 ChatThread(store: store, conversation: conversation)
             }
-            ChatComposer(store: store, busy: conversation.busy || conversation.corpusRunning, loading: conversation.loading,
+            ChatComposer(store: store, draft: conversation.composerDraft,
+                         busy: conversation.busy || conversation.corpusRunning, loading: conversation.loading,
                          restoredInput: Binding(get: { conversation.restoredInput }, set: { conversation.restoredInput = $0 }),
                          notice: Binding(get: { conversation.notice }, set: { conversation.notice = $0 }),
                          stop: { store.stop(conversation) })
@@ -1022,6 +1023,9 @@ struct ChatDraftCard: View {
 
 struct ChatComposer: View {
     @ObservedObject var store: ChatStore
+    /// Where what is typed is kept, so it is still here after this view is
+    /// rebuilt: another chat or section was opened, or the Text size changed.
+    let draft: ChatComposerDraft
     let busy: Bool
     let loading: Bool
     @Binding var restoredInput: String?
@@ -1029,8 +1033,6 @@ struct ChatComposer: View {
     @Binding var notice: String?
     let stop: () -> Void
     @State private var text = ""
-    /// The text a dropped request put back: editing away from it clears the notice.
-    @State private var restoredText: String?
     @State private var image: (name: String, dataURL: String)?
     @State private var attachNote = ""
     @FocusState private var focused: Bool
@@ -1117,24 +1119,30 @@ struct ChatComposer: View {
         .frame(maxWidth: .infinity)
         .onAppear {
             focused = true
+            // A fresh composer picks up what was typed here before it was rebuilt.
+            text = draft.text
+            image = draft.image
             if let restored = restoredInput {
-                restoredText = restored; text = restored; restoredInput = nil
-            } else if notice != nil {
-                // A fresh composer (the reader went to another chat and came back)
-                // no longer holds the message the note speaks of.
+                // A message that came back wins over an older draft.
+                draft.text = restored; draft.restoredText = restored
+                text = restored; restoredInput = nil
+            } else if notice != nil, draft.text.isEmpty || draft.text != draft.restoredText {
+                // The box no longer holds the message the note speaks of.
                 notice = nil
             }
         }
         .onChange(of: restoredInput) { _, restored in
             guard let restored else { return }
-            restoredText = restored
+            draft.text = restored; draft.restoredText = restored
             text = restored
             restoredInput = nil
         }
+        .onChange(of: image?.dataURL) { _, _ in draft.image = image }
         .onChange(of: text) { _, edited in
+            draft.text = edited
             // Typing over the message that came back dismisses the note about it.
             // (Sending clears it in the store; the field emptying is not an edit.)
-            guard notice != nil, !edited.isEmpty, edited != restoredText else { return }
+            guard notice != nil, !edited.isEmpty, edited != draft.restoredText else { return }
             notice = nil
         }
     }
@@ -1156,6 +1164,7 @@ struct ChatComposer: View {
         text = ""
         image = nil
         attachNote = ""
+        draft.clear()   // sent, so nothing is left to bring back
         store.submit(prompt, attachmentName: attached?.name, image: attached?.dataURL)
     }
 

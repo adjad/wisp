@@ -838,6 +838,46 @@ struct ChatStoreChecks {
             check(!store.reachable, "an unreachable service is flagged")
         }
 
+        // What is typed but not sent stays with its chat while the reader looks at
+        // another one, and an unsent new chat that holds words can be reached again.
+        do {
+            let backend = ScriptedBackend()
+            let now = Date()
+            backend.chats = [
+                ChatSummary(id: "a", title: "Alpha trip", preview: "pack light", lastUsed: now, turnCount: 2),
+                ChatSummary(id: "b", title: "Beta lease", preview: "sixty days", lastUsed: now.addingTimeInterval(-600), turnCount: 2),
+            ]
+            let store = ChatStore(backend: backend)
+            await store.refresh()
+            let alpha = store.conversations.first { $0.sessionId == "a" }!
+            let beta = store.conversations.first { $0.sessionId == "b" }!
+            check(alpha.composerDraft.isEmpty && store.welcomeDraft.isEmpty, "a composer starts empty")
+            store.select(alpha)
+            alpha.composerDraft.text = "half a question about the trip"
+            store.select(beta)
+            check(beta.composerDraft.isEmpty, "another chat has its own box")
+            beta.composerDraft.text = "   "
+            check(beta.composerDraft.isEmpty, "spaces alone are not a draft")
+            store.select(alpha)
+            check(alpha.composerDraft.text == "half a question about the trip", "the words are still there on the way back")
+            check(store.welcomeDraft.isEmpty, "a chat's draft is not the no-chat composer's")
+            let fresh = store.newChat()
+            check(fresh !== alpha && fresh.composerDraft.isEmpty, "a new chat starts with an empty box")
+            fresh.composerDraft.text = "a long new question"
+            store.select(alpha)
+            check(!store.sections.flatMap(\.items).contains { $0 === fresh }, "an unsent chat leaves the sidebar when the reader steps away")
+            check(store.newChat() === fresh && store.selected === fresh, "New chat goes back to the unsent chat that still holds words")
+            fresh.composerDraft.image = (name: "photo.png", dataURL: "data:image/png;base64,AAAA")
+            fresh.composerDraft.restoredText = "a long new question"
+            fresh.composerDraft.clear()
+            check(fresh.composerDraft.isEmpty && fresh.composerDraft.image == nil && fresh.composerDraft.restoredText == nil,
+                  "sending empties the box")
+            store.select(alpha)
+            let another = store.newChat()
+            check(another !== fresh && store.selected === another, "an unsent chat with nothing typed is not brought back")
+            await settle()
+        }
+
         // Deltas that arrive faster than the UI folds them are not lost.
         do {
             let backend = ScriptedBackend()

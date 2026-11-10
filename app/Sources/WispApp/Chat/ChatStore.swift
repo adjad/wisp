@@ -60,6 +60,28 @@ struct CorpusExportFiles: Equatable {
     let saved: Bool
 }
 
+/// What is typed in a composer but not sent yet. The composer view is rebuilt
+/// when another chat or section opens and when the Text size changes; this
+/// outlives it, so the words are still there afterwards. Plain, not published:
+/// the composer reads it as it appears and writes it as the person types, so
+/// typing never redraws the window. Kept in memory only, never saved. Only
+/// its conversation, the store and the composer touch it, all on the main actor.
+final class ChatComposerDraft {
+    var text = ""
+    var image: (name: String, dataURL: String)?
+    /// The message a dropped request put back: typing over it clears the note
+    /// that says it is back in the box.
+    var restoredText: String?
+
+    var isEmpty: Bool { text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && image == nil }
+
+    func clear() {
+        text = ""
+        image = nil
+        restoredText = nil
+    }
+}
+
 /// One conversation in the sidebar and the window.
 @MainActor
 final class ChatConversation: ObservableObject, Identifiable {
@@ -82,6 +104,8 @@ final class ChatConversation: ObservableObject, Identifiable {
     /// Why the last message didn't go through, shown above the composer until
     /// the next send or edit.
     @Published var notice: String?
+    /// What is typed in this chat's composer and not sent yet.
+    let composerDraft = ChatComposerDraft()
 
     // Per-run streaming state, outside the published surface.
     fileprivate var task: Task<Void, Never>?
@@ -137,6 +161,8 @@ final class ChatStore: ObservableObject {
     private let debug: () -> Bool
     /// Chats deleted this session, so a list fetched before the delete finished cannot bring one back.
     private var deletedSessionIds = Set<String>()
+    /// What is typed in the composer shown while no chat is open.
+    let welcomeDraft = ChatComposerDraft()
 
     init(backend: ChatBackend, debug: @escaping () -> Bool = { false }) {
         self.backend = backend
@@ -267,6 +293,13 @@ final class ChatStore: ObservableObject {
     @discardableResult
     func newChat() -> ChatConversation {
         if let current = selected, current.isEmpty, current.sessionId.isEmpty { return current }
+        // An unsent chat the reader stepped away from leaves the sidebar, but it
+        // still holds what they typed: New chat goes back to it.
+        if let parked = conversations.first(where: { $0.isEmpty && $0.sessionId.isEmpty && !$0.composerDraft.isEmpty }) {
+            selected = parked
+            inspectedMessage = nil
+            return parked
+        }
         let fresh = ChatConversation()
         conversations.insert(fresh, at: 0)
         selected = fresh

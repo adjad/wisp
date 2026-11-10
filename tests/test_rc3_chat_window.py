@@ -59,3 +59,30 @@ def test_details_says_this_mac_only_on_a_confirmed_local_launch():
     assert '"This Mac", color: ChatTheme.ok' not in views
     ran_on = _body(_read("Chat/ChatTypes.swift"), "static func ranOn(_ cloudInUse: Bool?) -> String")
     assert ran_on.count('"This Mac"') == 1 and "case .some(false): return \"This Mac\"" in ran_on
+
+
+def test_what_is_typed_survives_a_rebuilt_composer():
+    views = _read("Chat/ChatViews.swift")
+    # The draft lives outside the view: with the chat, or with the store when no chat is open.
+    assert "ChatComposer(store: store, draft: conversation.composerDraft," in views
+    assert "ChatComposer(store: store, draft: store.welcomeDraft," in views
+    composer = _body(views, "struct ChatComposer: View")
+    assert "let draft: ChatComposerDraft" in composer
+    appear = _body(composer, ".onAppear")
+    # Read back first; a message that came back after a drop still wins.
+    assert appear.index("text = draft.text") < appear.index("if let restored = restoredInput")
+    assert "image = draft.image" in appear
+    # The came-back note stays only while that message is still in the box.
+    assert "notice != nil, draft.text.isEmpty || draft.text != draft.restoredText" in appear
+    typed = _body(composer, ".onChange(of: text)")
+    assert typed.index("draft.text = edited") < typed.index("guard notice != nil")
+    assert ".onChange(of: image?.dataURL) { _, _ in draft.image = image }" in composer
+    send = _body(composer, "private func send()")
+    assert send.index("draft.clear()") < send.index("store.submit(")
+    # Typing must not redraw the window, and nothing is written to disk.
+    store = _read("Chat/ChatStore.swift")
+    draft = _body(store, "final class ChatComposerDraft")
+    assert "@Published" not in draft and "UserDefaults" not in draft and "write(" not in draft
+    assert "let composerDraft = ChatComposerDraft()" in _body(store, "final class ChatConversation: ObservableObject")
+    # The rebuilds this has to survive are still there, unchanged.
+    assert ".id(textSize)" in views and ".id(conversation.id)" in views
