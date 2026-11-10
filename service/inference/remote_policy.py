@@ -59,7 +59,8 @@ _log = logging.getLogger(__name__)
 # content must not leave the Mac). Everything else is left to the normal
 # safety policy, never to this list. Email attachments stay too: their contents
 # must not leave the Mac.
-_REMOTE_EXCLUDED = frozenset({"create_tool", "use_skill", "wisp_skills", "wisp_mcp", "read_email_attachments"})
+_REMOTE_EXCLUDED = frozenset({"create_tool", "use_skill", "wisp_skills", "wisp_mcp",
+                              "read_email_attachments", "read_message_attachments"})
 
 # Every limit the user's profile must state, with the range Wisp accepts.
 LIMITS = {

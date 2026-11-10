@@ -230,11 +230,15 @@ async def transcribe(audio_b64: str, *, client=None, model: str | None = None) -
 
 
 async def _transcribe(data: bytes, client, model: str | None) -> str:
-    from service import debug_capture
     if client is None or model is None:
         client, model = _resolve()
     await _require_audio(client, model)
-    deadline = time.monotonic() + _TIMEOUT_S
+    return await _ask_model(data, client, model, time.monotonic() + _TIMEOUT_S)
+
+
+async def _ask_model(data: bytes, client, model: str, deadline: float) -> str:
+    """Wait for a free engine, then one transcription call; both end by `deadline` (time.monotonic())."""
+    from service import debug_capture
     while idle.in_flight(client.activity_key(model)) > 0:
         if time.monotonic() >= deadline:
             raise TimeoutError("model busy")
@@ -260,3 +264,36 @@ async def _transcribe(data: bytes, client, model: str | None) -> str:
     if not isinstance(text, str):
         return ""
     return clean_transcript(text)
+
+
+async def transcribe_wav(data: bytes, *, client, model: str, deadline: float) -> str:
+    """The words in one WAV window (at most MAX_SECONDS), "" when none were heard.
+
+    For files Wisp is asked to read, not for voice Ask: bytes in, and the caller
+    supplies the already-proven-local `client` and `model`. The wait for a busy
+    engine and the call both end by `deadline` (a time.monotonic() value); past
+    it, TimeoutError("model busy"). Holds the foreground gate and the chat power
+    tier for the whole window, and never records the audio for debugging.
+    A window under 0.2 s is too short to hold a word and reads as "".
+    Raises ValueError for bytes that are not a 16-bit PCM WAV or are too long,
+    VoiceUnavailable when the model has no audio encoder. Nothing is logged.
+    """
+    if not isinstance(data, (bytes, bytearray)) or len(data) > _MAX_BYTES:
+        raise ValueError("clip is too long")
+    data = bytes(data)
+    seconds = wav_seconds(data)
+    if seconds > MAX_SECONDS:
+        raise ValueError("clip is too long")
+    if time.monotonic() >= deadline:
+        raise TimeoutError("model busy")
+    if seconds < 0.2:
+        return ""
+    from service.inference.power_tier import CHAT, power_tier
+    idle.begin_foreground()
+    try:
+        with power_tier(CHAT):
+            await asyncio.wait_for(_require_audio(client, model),
+                                   timeout=max(0.5, deadline - time.monotonic()))
+            return await _ask_model(data, client, model, deadline)
+    finally:
+        idle.end_foreground()
