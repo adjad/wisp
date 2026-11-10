@@ -70,6 +70,22 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
     check(QuickSettingsText.saveWhenAway(on: false, pending: false) == "Wisp always runs at full speed", "Save power off")
     check(QuickSettingsText.saveWhenAway(on: nil, pending: false) == "Not confirmed", "unconfirmed Save power is never off")
     check(QuickSettingsText.saveWhenAway(on: true, pending: true).hasPrefix("Updating"), "a pending Save power change waits")
+    // On the person's own oMLX app nothing is capped, so the line never says it saves power.
+    for on in [true, false] {
+        check(QuickSettingsText.saveWhenAway(on: on, pending: false, applies: false)
+              == "Not active · only Wisp's built-in engine is capped", "Save power says when it caps nothing (\(on))")
+    }
+    let usualSavePower: String = QuickSettingsText.saveWhenAway(on: true, pending: false)
+    check(QuickSettingsText.saveWhenAway(on: true, pending: false, applies: true) == usualSavePower,
+          "a service that says Save power applies keeps the usual line")
+    check(QuickSettingsText.saveWhenAway(on: true, pending: false, applies: nil) == usualSavePower,
+          "a service that doesn't say keeps the usual Save power line")
+    check(QuickSettingsText.saveWhenAway(on: false, pending: false, applies: nil) == "Wisp always runs at full speed",
+          "a service that doesn't say keeps the usual Save power off line")
+    check(QuickSettingsText.saveWhenAway(on: nil, pending: false, applies: false) == "Not confirmed",
+          "an unconfirmed Save power switch is still not confirmed")
+    check(QuickSettingsText.saveWhenAway(on: true, pending: true, applies: false).hasPrefix("Updating"),
+          "a pending Save power change still waits")
     let saveHelp = QuickSettingsText.saveWhenAwayHelp
     check(saveHelp.contains("10 minutes") && saveHelp.contains("10 W"), "Save power help names when and how much")
     check(saveHelp.contains("On battery") && saveHelp.contains("15 W") && saveHelp.contains("chat reply")

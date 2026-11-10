@@ -227,6 +227,9 @@ final class SettingsLoader: ObservableObject {
     @Published private(set) var fullAccessSaveProblem: String?
     @Published private(set) var saveWhenAway: Bool?
     @Published private(set) var saveWhenAwayPending = false
+    /// False when the service says Save power caps nothing on this engine (the
+    /// person's own oMLX app, or a remote-only setup). Nil when it didn't say.
+    @Published private(set) var saveWhenAwayApplies: Bool?
     @Published private(set) var saveMemory: Bool?
     @Published private(set) var saveMemoryPending = false
     @Published private(set) var saveMemoryDetail: SaveMemoryDetail?
@@ -1104,8 +1107,10 @@ final class SettingsLoader: ObservableObject {
     func refreshSaveWhenAway() async {
         guard !saveWhenAwayPending else { return }
         let confirmed = await client.saveWhenAwayState()
+        let applies = await client.saveWhenAwayApplies()
         guard !saveWhenAwayPending else { return }
         saveWhenAway = confirmed
+        saveWhenAwayApplies = applies
     }
 
     /// One change at a time; the row shows what the service confirmed.
@@ -1116,6 +1121,7 @@ final class SettingsLoader: ObservableObject {
             var confirmed = await self.client.setSaveWhenAway(on)
             // A lost reply may mean the write happened; only a fresh read can tell.
             if confirmed == nil { confirmed = await self.client.saveWhenAwayState() }
+            self.saveWhenAwayApplies = await self.client.saveWhenAwayApplies()
             self.saveWhenAway = confirmed
             self.saveWhenAwayPending = false
         }

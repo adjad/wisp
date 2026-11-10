@@ -5,6 +5,8 @@ the Auto-unload row says which models it is about and when a change wasn't saved
 and the reset card's Keeps list names no retired device. Settings › Privacy &
 Access has the switch for learning facts from mail and the button that forgets
 them with the kept attachment text (requests checked in tests/MailMemoryChecks.swift).
+Save power's line is honest when the service says nothing can be capped (the
+wording itself is checked in tests/QuickSettingsChecks.swift).
 Reads source only; no app, service or network."""
 import re
 from pathlib import Path
@@ -187,3 +189,38 @@ def test_settings_can_switch_mail_facts_and_forget_what_wisp_learned_from_mail()
     settings = _read("SettingsView.swift")
     assert "MailMemorySettingsRow()" in settings
     assert 'Button("Forget what Wisp learned…", role: .destructive)' in settings
+
+
+def test_save_power_line_is_honest_when_nothing_can_be_capped():
+    text = _read("QuickSettingsText.swift")
+    line = _body(text, "static func saveWhenAway(on: Bool?, pending: Bool, applies: Bool? = nil) -> String")
+    # A pending change still waits; an unconfirmed switch is still "Not confirmed".
+    assert line.index("if pending {") < line.index("if on != nil, applies == false { return saveWhenAwayNotActive }")
+    assert line.index("applies == false") < line.index("switch on {")
+    assert 'static let saveWhenAwayNotActive = "Not active · only Wisp\'s built-in engine is capped"' in text
+    view = _read("QuickSettingsView.swift")
+    row = _body(view, "private var saveWhenAwayRow: some View")
+    assert "applies: settings.saveWhenAwayApplies" in row
+    # The switch itself is untouched: it still shows and changes the stored choice.
+    assert "settings.setSaveWhenAway($0)" in row and "settings.saveWhenAway == true" in row
+
+    settings = _read("SettingsView.swift")
+    assert "@Published private(set) var saveWhenAwayApplies: Bool?" in settings
+    refresh = _body(settings, "    func refreshSaveWhenAway() async")
+    assert "let applies = await client.saveWhenAwayApplies()" in refresh and "saveWhenAwayApplies = applies" in refresh
+    change = _body(settings, "    func setSaveWhenAway(_ on: Bool)")
+    assert "self.saveWhenAwayApplies = await self.client.saveWhenAwayApplies()" in change
+
+    client = _read("WispClient.swift")
+    applies = _body(client, "    func saveWhenAwayApplies() async -> Bool?")
+    # Optional and strict: a service that doesn't send the field, or sends something
+    # that isn't a boolean, gives nil, and nil reads as it always has.
+    assert 'appendingPathComponent("power")' in applies and 'Self.flag("applies", in: data)' in applies
+    assert "else { return nil }" in applies and "httpMethod" not in applies
+    flag = _body(client, "    private static func flag(_ key: String, in data: Data) -> Bool?")
+    assert "CFGetTypeID(flag) == CFBooleanGetTypeID()" in flag
+    # What the switch reads and writes did not change.
+    state = _body(client, "    private static func saveWhenAwayFlag(_ data: Data) -> Bool?")
+    assert 'obj["save_when_away"] as? NSNumber' in state
+    post = _body(client, "    func setSaveWhenAway(_ on: Bool) async -> Bool?")
+    assert 'withJSONObject: ["save_when_away": on]' in post

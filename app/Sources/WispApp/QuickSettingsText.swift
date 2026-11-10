@@ -138,15 +138,21 @@ enum QuickSettingsText {
     }
 
     /// "Save power"'s line. Neutral wording in every state: it is a
-    /// preference, not a warning (red/amber stays for status).
-    static func saveWhenAway(on: Bool?, pending: Bool) -> String {
+    /// preference, not a warning (red/amber stays for status). `applies` is the
+    /// service's word on whether anything can be capped on this engine: false
+    /// with the person's own oMLX app or a remote-only setup, nil when it didn't
+    /// say (an older service), which reads as it always has.
+    static func saveWhenAway(on: Bool?, pending: Bool, applies: Bool? = nil) -> String {
         if pending { return "Updating · waiting for confirmation…" }
+        if on != nil, applies == false { return saveWhenAwayNotActive }
         switch on {
         case true?: return "Uses less power, most of all on battery and while you're away"
         case false?: return "Wisp always runs at full speed"
         case nil: return "Not confirmed"
         }
     }
+
+    static let saveWhenAwayNotActive = "Not active · only Wisp's built-in engine is capped"
 
     static let saveWhenAwayHelp = "Wisp's background work always runs its GPU at 10 W, plugged in too. "
         + "On battery, it caps the GPU at 15 W while it writes a chat reply or updates your Brief. After "
