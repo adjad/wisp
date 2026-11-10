@@ -934,6 +934,194 @@ def test_long_paste_is_skipped_without_a_model_call_or_a_failed_job(world, monke
     assert row['attempts'] == 1 and row['error'] == ''
 
 
+def _file_bytes(path):
+    """The database file and any sidecar next to it, lower-cased (the search
+    index stores lower-case words)."""
+    return b''.join(p.read_bytes() for p in sorted(path.parent.glob(path.name + '*'))).lower()
+
+
+_MARKERS = (b'zorvaquill', b'plimbrusk')
+
+
+def _old_build_stores(tmp_path, monkeypatch):
+    """Stores that write the way builds before this fix did."""
+    import service.memory.facts as facts_module
+    import service.memory.queue as queue_module
+    with monkeypatch.context() as earlier:
+        earlier.setattr(facts_module, 'secure_delete_fts', lambda db, table: None)
+        earlier.setattr(queue_module, 'secure_delete_fts', lambda db, table: None)
+        earlier.setattr(FactStore, '_clear_old_text', lambda self: None)
+        facts = FactStore(tmp_path / 'facts.db')
+        sessions = SessionStore(tmp_path / 'sessions.db')
+    facts._db.execute('PRAGMA secure_delete=OFF')
+    sessions._db.execute('PRAGMA secure_delete=OFF')
+    return facts, sessions
+
+
+def _fill_facts(facts, first='Zorvaquillen', second='plimbruskar'):
+    ids = [facts.add(f'My locker phrase is {first} {second}, number {i}.')['id'] for i in range(30)]
+    ids.append(facts.add(f'My project is {first}.', origin='automatic', evidence=[
+        evidence('s1', 0, f'My project is {first}, and the door phrase is {second}.')])['id'])
+    return ids
+
+
+def _fill_chat(sessions, first='Zorvaquillen', second='plimbruskar'):
+    sid = sessions.create_session()
+    for i in range(20):
+        sessions.add_turn(sid, 'user', f'The gate phrase is {first} {second}, try {i}. ' * 4)
+        sessions.add_turn(sid, 'assistant', f'Noted: {first.lower()} {second} {i}.')
+    sessions.set_summary(sid, f'The user gave the gate phrase {first.lower()} {second}.', 2)
+    return sid
+
+
+def test_forgotten_memory_text_leaves_the_fact_database_file(tmp_path):
+    path = tmp_path / 'facts.db'
+    facts = FactStore(path)
+    assert facts._db.execute('PRAGMA secure_delete').fetchone()[0] == 1
+    ids = _fill_facts(facts)
+    kept = facts.add('I prefer oolong tea.')['id']
+    assert all(marker in _file_bytes(path) for marker in _MARKERS)
+    assert facts.delete_matching('zorvaquillen project') == 1
+    assert all(facts.delete(fid) for fid in ids[:-1])
+    facts._db.close()
+    left = _file_bytes(path)
+    assert not any(marker in left for marker in _MARKERS)
+    assert b'oolong' in left
+    # The search index still works, and forgetting still blocks a re-learn.
+    reopened = FactStore(path)
+    try:
+        assert [r['id'] for r in reopened.search('oolong tea')] == [kept]
+        assert reopened.search('zorvaquillen') == []
+        assert reopened.add('My project is Zorvaquillen.', origin='automatic', evidence=[
+            evidence('s1', 0, 'My project is Zorvaquillen.')])['suppressed']
+    finally:
+        reopened._db.close()
+
+
+def test_deleted_chat_text_leaves_the_session_database_file_and_its_search_index(tmp_path):
+    path = tmp_path / 'sessions.db'
+    facts, sessions = FactStore(tmp_path / 'facts.db'), SessionStore(path)
+    assert sessions._db.execute('PRAGMA secure_delete').fetchone()[0] == 1
+    q = MemoryQueue(sessions)
+    gone, kept = _fill_chat(sessions), sessions.create_session()
+    sessions.add_turn(kept, 'user', 'I prefer oolong tea.')
+    assert all(marker in _file_bytes(path) for marker in _MARKERS)
+    assert q.search('zorvaquillen', facts)
+    sessions.delete_session(gone)
+    assert q.search('zorvaquillen', facts) == []
+    assert [r['session_id'] for r in q.search('oolong', facts)] == [kept]
+    sessions._db.close()
+    facts._db.close()
+    left = _file_bytes(path)
+    assert not any(marker in left for marker in _MARKERS)
+    assert b'oolong' in left
+
+
+def test_first_start_clears_what_an_earlier_build_forgot_from_the_fact_file(tmp_path, monkeypatch):
+    path = tmp_path / 'facts.db'
+    facts, sessions = _old_build_stores(tmp_path, monkeypatch)
+    sessions._db.close()
+    forgotten = _fill_facts(facts)
+    live = _fill_facts(facts, 'Quentaborix', 'velmuthar')
+    kept = facts.add('I prefer oolong tea.')['id']
+    assert all(facts.delete(fid) for fid in forgotten)
+    facts._db.close()
+    # The earlier build left the forgotten words readable in the file.
+    assert any(marker in _file_bytes(path) for marker in _MARKERS)
+    facts = FactStore(path)
+    assert facts.setting('old_text_cleared') is True
+    assert not any(marker in _file_bytes(path) for marker in _MARKERS)
+    assert len(facts.search('quentaborix', 100)) == 31 and [r['id'] for r in facts.search('oolong')] == [kept]
+    assert facts.get(forgotten[0])['status'] == 'forgotten'
+    assert facts.add('My project is Zorvaquillen.', origin='automatic', evidence=[
+        evidence('s1', 0, 'My project is Zorvaquillen.')])['suppressed']
+    # What that build saved and the user forgets now leaves the file too.
+    assert all(facts.delete(fid) for fid in live)
+    facts._db.close()
+    left = _file_bytes(path)
+    assert not any(word in left for word in (b'quentaborix', b'velmuthar', *_MARKERS))
+    assert b'oolong' in left
+
+
+def test_a_chat_deleted_after_updating_leaves_a_session_file_an_earlier_build_made(tmp_path, monkeypatch):
+    path = tmp_path / 'sessions.db'
+    facts, sessions = _old_build_stores(tmp_path, monkeypatch)
+    old_chat = _fill_chat(sessions, 'Quentaborix', 'velmuthar')
+    sessions._db.close()
+    sessions = SessionStore(path)
+    q = MemoryQueue(sessions)
+    gone = _fill_chat(sessions)
+    assert q.search('zorvaquillen', facts)
+    sessions.delete_session(gone)
+    assert q.search('zorvaquillen', facts) == []
+    assert {r['session_id'] for r in q.search('quentaborix', facts)} == {old_chat}
+    sessions._db.close()
+    facts._db.close()
+    left = _file_bytes(path)
+    assert not any(marker in left for marker in _MARKERS)
+    assert b'quentaborix' in left
+
+
+def test_text_deleted_the_old_way_is_what_the_file_checks_above_detect(tmp_path, monkeypatch):
+    # The control for the tests above: written and deleted without the
+    # overwrite, the same text is still readable in both files.
+    facts, sessions = _old_build_stores(tmp_path, monkeypatch)
+    ids, gone = _fill_facts(facts), _fill_chat(sessions)
+    assert all(facts.delete(fid) for fid in ids)
+    sessions.delete_session(gone)
+    facts._db.close()
+    sessions._db.close()
+    assert any(marker in _file_bytes(tmp_path / 'facts.db') for marker in _MARKERS)
+    assert any(marker in _file_bytes(tmp_path / 'sessions.db') for marker in _MARKERS)
+
+
+def _spy_on_fact_connections(monkeypatch, fail_vacuum=False):
+    import service.memory.facts as facts_module
+    seen = []
+    class Spy(sqlite3.Connection):
+        def execute(self, sql, *args):
+            seen.append(sql)
+            if fail_vacuum and sql == 'VACUUM':
+                raise sqlite3.OperationalError('database is locked')
+            return super().execute(sql, *args)
+    connect = sqlite3.connect
+    monkeypatch.setattr(facts_module.sqlite3, 'connect',
+                        lambda *args, **kwargs: connect(*args, factory=Spy, **kwargs))
+    return seen
+
+
+def test_the_fact_file_is_rebuilt_once_not_on_every_start(tmp_path, monkeypatch):
+    seen = _spy_on_fact_connections(monkeypatch)
+    FactStore(tmp_path / 'facts.db')._db.close()
+    assert seen.count('VACUUM') == 1 and sum("'rebuild'" in sql for sql in seen) == 1
+    del seen[:]
+    FactStore(tmp_path / 'facts.db')._db.close()
+    assert seen and 'VACUUM' not in seen and not any("'rebuild'" in sql for sql in seen)
+
+
+def test_a_busy_fact_file_starts_anyway_and_is_rebuilt_on_a_later_start(tmp_path, monkeypatch, caplog):
+    with monkeypatch.context() as busy:
+        _spy_on_fact_connections(busy, fail_vacuum=True)
+        facts = FactStore(tmp_path / 'facts.db')
+    assert 'old text not cleared yet' in caplog.text
+    assert facts.setting('old_text_cleared') is None
+    assert facts._db.execute('PRAGMA busy_timeout').fetchone()[0] == 10000
+    assert facts.add('I prefer oolong tea.')['status'] == 'active'
+    facts._db.close()
+    facts = FactStore(tmp_path / 'facts.db')
+    assert facts.setting('old_text_cleared') is True and facts.count() == 1
+    facts._db.close()
+
+
+def test_a_sqlite_without_index_secure_delete_keeps_the_stores_working():
+    from service.memory.facts import secure_delete_fts
+    class OldSQLite:
+        def execute(self, sql):
+            assert "'secure-delete',1" in sql and 'memory_fact_fts(memory_fact_fts,rank)' in sql
+            raise sqlite3.OperationalError('SQL logic error')
+    secure_delete_fts(OldSQLite(), 'memory_fact_fts')
+
+
 def test_future_schema_is_rejected_without_rewriting_version(tmp_path):
     path = tmp_path / 'future.db'
     db = sqlite3.connect(path)
