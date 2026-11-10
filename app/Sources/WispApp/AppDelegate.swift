@@ -2271,11 +2271,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         exitNow()
     }
 
-    /// Exit without stopping the engine. Used when this launch only hands over to a
-    /// copy that is already running, and when an alert quits Wisp without a service.
+    /// Exit without the quit path's engine stop. Used when this launch only hands over
+    /// to a copy that is already running, and when an alert quits Wisp without a service.
     private func terminateWithoutShutdown() {
         noteTerminating()
         shutdownFinished = true
+        // "Quit Wisp" on the refusal alert can come while this app's own backend is
+        // alive: signal it so it does not outlive Wisp. Only the process this app
+        // spawned; with none (a hand-over, a port conflict at launch) this does nothing.
+        backend.stop()
         exitNow()
     }
 

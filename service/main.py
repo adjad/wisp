@@ -306,6 +306,10 @@ async def lifespan(app: FastAPI):
     refuse_sandbox_on_production_port()
     from service.config import quarantine
     quarantine.check()
+    if app is not None and os.environ.get("WISP_LAUNCH_NONCE"):
+        # The backend the app launched ends itself if Wisp goes away (a crash, a Force Quit).
+        from service import parent_watch
+        parent_watch.start()
     global client
     if remote_only_profile() is None:
         # Make the first-launch engine choice sticky now, not when Settings is first opened.
