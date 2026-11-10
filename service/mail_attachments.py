@@ -346,6 +346,7 @@ class _Reading:
     partial: bool = False       # some of the file was not read, so "Read the whole file." must not be said
     extra: str = ""             # readings of files inside this one (each with its own fence), shown after it
     cut: bool = False           # the text kept is only the start of the file (set by `_whole`)
+    inspected: bool = False     # only its bytes were inspected (a program or archive): its contents were not read
 
 
 @dataclass
@@ -838,6 +839,7 @@ async def _read_file(ctx: _Ctx, email: _Email, f: _File, budget: int, depth: int
         if inspect_only:
             reading.text, _ = _inspect_text(info)
             reading.note = "Inspected only. Wisp never opens, unpacks or runs programs, scripts or archives."
+            reading.inspected = True
             return reading
         if family == "email" or suffix == "eml":
             if depth >= 1:
@@ -1364,6 +1366,7 @@ async def _read_audio(ctx: _Ctx, f: _File, reading: _Reading, digest: str, name:
 # --- an email attached to an email ----------------------------------------------------------
 
 _EML_NOTE = "An email attached to an email. Its files were read in memory; none was run or saved as a file. "
+_EML_KEPT_NOTE = "An email attached to an email. Wisp kept its text; the files inside it were not read. "
 
 
 @dataclass
@@ -1373,6 +1376,7 @@ class _Eml:
     files: list[dict]
     more: int
     walk_cut: bool = False      # the child skipped deep parts or left some uncounted
+    more_unknown: bool = False  # there may be more files the child could not see
 
 
 def _email_file(entry: dict) -> bool:
@@ -1404,7 +1408,8 @@ def _parse_eml(info) -> _Eml | None:
     if not lines and not body and not files:
         return None
     text = "\n".join(lines) + (("\n\n" if lines else "") + body if body else "")
-    return _Eml(text, info.get("body_cut") is True, files, more, info.get("walk_cut") is True)
+    return _Eml(text, info.get("body_cut") is True, files, more, info.get("walk_cut") is True,
+                info.get("more_unknown") is True)
 
 
 def _eml_listing(parsed: _Eml) -> str:
@@ -1412,7 +1417,7 @@ def _eml_listing(parsed: _Eml) -> str:
     if not parsed.files:
         return ""
     total = len(parsed.files) + parsed.more
-    lines = [f"Files in this email ({total}):"]
+    lines = [f"Files in this email ({'at least ' if parsed.more_unknown else ''}{total}):"]
     for entry in parsed.files[:_NESTED_LISTED]:
         facts = ", ".join(x for x in (_size_text(entry["size"]) if entry["size"] else "",
                                       "an email inside it, not opened" if _email_file(entry) else "") if x)
@@ -1424,9 +1429,10 @@ def _eml_listing(parsed: _Eml) -> str:
 
 
 async def _read_inner(ctx: _Ctx, email: _Email, outer: _File, outer_name: str, outer_data: bytes, entry: dict,
-                      room: int, done: list | None = None) -> str:
+                      room: int, done: list | None = None, only: list | None = None) -> str:
     """The block for one file inside an attached email, read in memory. '' when it doesn't fit.
-    `done`, when given, gets True appended when the file was really read (not a problem, not inspect-only)."""
+    `done`, when given, gets True appended when the file's content was really read; `only`, when given, gets
+    True appended when it was only inspected (a program or archive). A problem counts as neither."""
     from service import documents
     inner = _File(entry["name"], entry["size"], mime=entry["mime"], nested=True, read_account=outer.read_account,
                   read_source=outer.read_source)
@@ -1446,8 +1452,10 @@ async def _read_inner(ctx: _Ctx, email: _Email, outer: _File, outer_name: str, o
         if isinstance(part.get("mime"), str):
             inner.mime = _pretty(part["mime"], 80)
         reading = await _read_file(ctx, email, inner, max(120, room - 380), depth=1)
-        if done is not None and not reading.problem and reading.text.strip():
-            done.append(True)
+        if not reading.problem and reading.text.strip():
+            target = only if reading.inspected else done
+            if target is not None:
+                target.append(True)
     except _Unreadable as error:
         reading.problem = str(error)
     except (TimeoutError, asyncio.TimeoutError):
@@ -1489,6 +1497,7 @@ async def _read_email(ctx: _Ctx, email: _Email, f: _File, reading: _Reading, dig
     gaps = [sentence for flag, sentence in (
         (parsed.cut, "Its text was cut short."),
         (parsed.walk_cut, "Some of its parts were too deep or too many to read."),
+        (parsed.more_unknown, "There may be more files inside that Wisp couldn't see."),
         (parsed.more > 0, "")) if flag]       # the files not listed are already said in the note
     reading.partial = bool(gaps)
     gaps = [g for g in gaps if g]
@@ -1507,6 +1516,7 @@ async def _read_email(ctx: _Ctx, email: _Email, f: _File, reading: _Reading, dig
         reading.note += "Its files are listed, not read, for lack of room. "
     blocks: list[str] = []
     read_ok: list[bool] = []
+    only_ok: list[bool] = []
     allowed = budget + 380
     skipped = 0
     for i, entry in enumerate(candidates[:n]):
@@ -1515,7 +1525,7 @@ async def _read_email(ctx: _Ctx, email: _Email, f: _File, reading: _Reading, dig
         if per < 400:
             skipped += n - i
             break
-        block = await _read_inner(ctx, email, f, name, data, entry, per, read_ok)
+        block = await _read_inner(ctx, email, f, name, data, entry, per, read_ok, only_ok)
         if block:
             blocks.append(block)
         else:
@@ -1523,10 +1533,12 @@ async def _read_email(ctx: _Ctx, email: _Email, f: _File, reading: _Reading, dig
     if skipped:
         reading.note += "Some of its files were not shown for lack of room. "
     if blocks:
-        reading.extra = "  Files read inside it, in memory only:\n" + "\n".join(blocks)
+        reading.extra = "  Files inside it that Wisp read (none was saved as a file or run):\n" + "\n".join(blocks)
     listed = len(parsed.files) + parsed.more
     if listed:
-        reading.note += f"Read {len(read_ok)} of its {listed} file{'' if listed == 1 else 's'}. "
+        inspected = f"; {len(only_ok)} only inspected" if only_ok else ""
+        reading.note += (f"Read {len(read_ok)} of {'at least ' if parsed.more_unknown else 'its '}{listed} "
+                         f"file{'' if listed == 1 else 's'}{inspected}. ")
         if len(read_ok) < listed:
             reading.partial = True
     if reading.partial:
@@ -1604,6 +1616,12 @@ async def _whole_models(ctx: _Ctx, out: _Whole, f: _File, name: str, suffix: str
     return False
 
 
+def _resting(ctx: _Ctx) -> bool:
+    """A picture was not tried because text recognition is resting (the background reader flags it itself; in
+    the foreground the rest is read from the clock, so a skipped picture is not called 'without text')."""
+    return ctx.resting or (not ctx.background and time.monotonic() < _ocr_resting_until)
+
+
 async def _whole(ctx: _Ctx, email: _Email, f: _File, *, models: bool) -> _Whole:
     """Fetch, inspect and extract one file's whole text. Never raises (but cancellation)."""
     from service import attachment_store, documents
@@ -1677,7 +1695,8 @@ async def _whole(ctx: _Ctx, email: _Email, f: _File, *, models: bool) -> _Whole:
             except ValueError:
                 eml = None
             if eml is not None and eml.text.strip():
-                reading.note = _EML_NOTE
+                reading.note = _EML_KEPT_NOTE
+                reading.partial = bool(eml.cut or eml.walk_cut or eml.more > 0 or eml.more_unknown)
                 await keep(eml.text, "eml", eml.cut, "text")
                 return out
         if suffix in _STRUCTURED_NAMES and family not in ("program", "archive", "zip", "image", "video"):
@@ -1715,7 +1734,7 @@ async def _whole(ctx: _Ctx, email: _Email, f: _File, *, models: bool) -> _Whole:
             if recognised:
                 reading.note = f"Its text was recognised {_exactness(recognised.confidence)}. "
                 await keep(recognised.text, "ocr", False, "recognized", recognised.complete)
-            elif ctx.resting:
+            elif _resting(ctx):
                 reading.note = _RESTING_NOTE
                 out.outcome = "resting"
             else:
@@ -1755,7 +1774,7 @@ async def _whole(ctx: _Ctx, email: _Email, f: _File, *, models: bool) -> _Whole:
                 if models and await _whole_models(ctx, out, f, name, suffix, family, data, True):
                     out.outcome = "skipped"
                     return out
-                if ctx.resting:
+                if _resting(ctx):
                     reading.note, out.outcome = _RESTING_NOTE, "resting"
                     return out
                 reading.note = "A scanned PDF that Wisp could not recognise on this Mac, so it was not read."
@@ -1904,15 +1923,31 @@ async def find(query: str | None = None, name: str | None = None, start: float |
     return found.chosen, found.notes
 
 
+_MESSAGES_SEARCH_S = 12.0           # the Messages search and its one retry, together
+
 _SENDER_NOTES = ("Looked for files sent by", "Nothing from ")
 
 
 async def _find(query, name, start, end, account, count, source: str, most: int) -> _Found:
     """`_find_core`; in Messages, when words that name contacts were turned into senders and that found
     nothing, once more with the words as plain terms and no senders."""
-    found = await _find_core(query, name, start, end, account, count, source, most, True)
-    if source == "messages" and found.senders and not found.chosen and not found.errored:
-        again = await _find_core(query, name, start, end, account, count, source, most, False)
+    if source != "messages":
+        return await _find_core(query, name, start, end, account, count, source, most, True)
+    began = time.monotonic()
+    slow = _Found([], ["Messages couldn't be searched: it took too long."], terms_of(query), [], "", [], True)
+    try:
+        found = await asyncio.wait_for(_find_core(query, name, start, end, account, count, source, most, True),
+                                       _MESSAGES_SEARCH_S)
+    except (TimeoutError, asyncio.TimeoutError):
+        return slow
+    if found.senders and not found.chosen and not found.errored:
+        # Both searches together get _MESSAGES_SEARCH_S, so the reads that follow still have time.
+        try:
+            again = await asyncio.wait_for(
+                _find_core(query, name, start, end, account, count, source, most, False),
+                max(1.0, _MESSAGES_SEARCH_S - (time.monotonic() - began)))
+        except (TimeoutError, asyncio.TimeoutError):
+            return slow
         again.notes = [f"Nothing from {_names_text(found.senders)}, so looked for the word instead.", *again.notes]
         return again
     return found
@@ -2293,10 +2328,13 @@ async def _run_inside(words: str, query, name, start, end, label, account, quest
         counted = await asyncio.to_thread(counter if counter is not None else attachment_store.count)
         total = None if counted is None else int(counted)
     except Exception:  # noqa: BLE001
-        total = 0
+        total = -1                  # the count failed: the answer says nothing about how many
     if total is None:
         return "Wisp's saved readings couldn't be searched just now. Try again in a moment."
-    notes = [f"Searched the text of {total} file{'' if total == 1 else 's'} Wisp has read."]
+    notes = ["Searched the files Wisp has read." if total < 0
+             else f"Searched the text of {total} file{'' if total == 1 else 's'} Wisp has read."]
+    if failure:
+        notes.append("Some of Wisp's saved readings couldn't be searched just now.")
     if not messages and not _background_on():
         notes.append(_BACKGROUND_OFF)
     limit = RESULT_BUDGET_CHARS
@@ -2352,7 +2390,9 @@ async def _run_inside(words: str, query, name, start, end, label, account, quest
                     shaped = None
                 if shaped is not None and not shaped.problem and shaped.text.strip():
                     body = (snippet_text + "\n\n" if snippet_text else "") + "For your question:\n" + shaped.text
-                    lines = [*lines[:2], "  Coverage: " + (shaped.note.strip() or "Read by Wisp earlier."),
+                    # The shaping note replaces the stored one, but a recalled picture still has text only.
+                    text_only = (" " + _TEXT_ONLY.strip() if hit.kind == "ocr" and hit.how == "recognized" else "")
+                    lines = [*lines[:2], "  Coverage: " + (shaped.note.strip() or "Read by Wisp earlier.") + text_only,
                              *lines[3:]]
         block = _fenced_block(lines, body, min(room_total, share))
         if not block:
@@ -2368,9 +2408,29 @@ def _totals_once(attachment_fields, rows: list, unique: list) -> list[str]:
     over the de-duplicated rows."""
     all_facts = [facts for _e, _f, facts, _d, _p in rows]
     try:
-        return attachment_fields.totals(all_facts, keys=[digest for _e, _f, _x, digest, _p in rows])
-    except TypeError:
-        return attachment_fields.totals([facts for _e, _f, facts, _d, _p in unique])
+        params = inspect.signature(attachment_fields.totals).parameters
+        takes_keys = "keys" in params or any(p.kind is p.VAR_KEYWORD for p in params.values())
+    except (TypeError, ValueError):
+        takes_keys = True
+    if takes_keys:
+        made = attachment_fields.totals(all_facts, keys=[digest for _e, _f, _x, digest, _p in rows])
+    else:
+        made = attachment_fields.totals([facts for _e, _f, facts, _d, _p in unique])
+    return _sentences(made)
+
+
+def _sentences(made) -> list[str]:
+    """Whatever `totals` gave (a list of sentences, or one string), as sentences that each end in exactly one
+    period, none dropped and none empty."""
+    if isinstance(made, str):
+        made = [made]
+    out = []
+    for item in made if isinstance(made, (list, tuple)) else []:
+        text = str(item or "").strip()
+        body = text.rstrip(". \t\r\n")
+        if body:
+            out.append(body + ".")
+    return out
 
 
 def _skip_kind(reading: _Reading) -> str:
@@ -2379,6 +2439,8 @@ def _skip_kind(reading: _Reading) -> str:
     note = reading.note or ""
     if note.startswith("Inspected only"):
         return "program"
+    if note.startswith(_RESTING_NOTE[:30]):
+        return "unchecked"              # never tried: text recognition was resting
     if "scanned PDF" in note:
         return "scan"                   # pages that are pictures and gave no text, however they were tried
     if "not read or described" in note or "could not recognise" in note:
@@ -2412,7 +2474,7 @@ async def _run_across(query, name, start, end, label, account, question, source)
     ctx = _Ctx(deadline=work, gmail_source=gmail_source, gmail_accounts=found.accounts,
                passes=large_document.PassBudget(deadline=work), client=client, model=model)
     rows: list[tuple[_Email, _File, dict | None, str, bool]] = []     # (email, file, facts, digest, part only)
-    skipped = {"program": 0, "picture": 0, "scan": 0, "unreadable": 0}
+    skipped = {"program": 0, "picture": 0, "unchecked": 0, "scan": 0, "unreadable": 0}
     reached = risky = 0
     for email, f in considered:
         if ctx.remaining() < _ACROSS_MIN_S:
@@ -2473,6 +2535,7 @@ async def _run_across(query, name, start, end, label, account, question, source)
         notes.append(f"{left} more file{'' if left == 1 else 's'} not looked at (at most {_ACROSS_FILES} per request).")
     labels = {"program": ("a program or archive", "programs or archives"),
               "picture": ("a picture without text", "pictures without text"),
+              "unchecked": ("a picture Wisp couldn't check just now", "pictures Wisp couldn't check just now"),
               "scan": ("a scan Wisp couldn't read", "scans Wisp couldn't read"),
               "unreadable": ("one that could not be read", "that could not be read")}
     parts = [(labels[k][0] if n == 1 else f"{n} {labels[k][1]}") for k, n in skipped.items() if n]
@@ -2496,8 +2559,8 @@ async def _run_across(query, name, start, end, label, account, question, source)
     top = _plain(f"Facts from {with_facts} of {len(considered)} files{where}"
                  + (f" (for: {asked})" if asked else "") + ", newest first.")
     sentences = _totals_once(attachment_fields, rows, unique) if rows else []
-    sentences = [t.strip().rstrip(".") + "." for t in sentences if t and t.strip().rstrip(".")]
-    total_line = ("Totals added up by Wisp: " + " ".join(sentences)) if sentences else ""
+    sentences = _sentences(sentences)
+    total_line = _plain("Totals added up by Wisp: " + " ".join(sentences)) if sentences else ""
     if repeated and "same file" not in total_line:
         notes.append(f"{repeated} file{' was' if repeated == 1 else 's were'} the same file again and "
                      f"{'was' if repeated == 1 else 'were'} counted once.")
