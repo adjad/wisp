@@ -128,7 +128,8 @@ def sent_rows() -> list[dict]:
         return []
 
 
-# How often Apple Mail's Sent list is read for "already contacted" (sent_check): a
+# How often Apple Mail's Sent list is read, for "already contacted" (sent_check) and
+# for "already answered" in accounts that aren't Google-linked (answered_by_sent): a
 # request to the app, which reads Mail's own index on disk. Never a network call.
 NATIVE_SENT_EVERY_S = 300.0
 NATIVE_SENT_DAYS = 8                     # Gmail's window (gmail_source.SENT_DAYS); outlasts MAIL_WINDOW_S
@@ -137,11 +138,14 @@ _native_sent_at: float | None = None
 
 
 async def all_sent_rows(now: float | None = None) -> list[dict]:
-    """sent_rows() plus Apple Mail's Sent mailboxes, headers only, for sent_check.
+    """sent_rows() plus Apple Mail's Sent mailboxes, headers only, for sent_check
+    and for answered_by_sent.
 
     sent_rows alone misses every account that isn't Google-linked. Read at most every
-    NATIVE_SENT_EVERY_S, and only when a suggestion needs it. A read that fails keeps
-    the last list: what's in it was sent either way, and no list means no match."""
+    NATIVE_SENT_EVERY_S: before each Brief build that reads mail, when a suggestion
+    to contact someone is checked, and in the handled sweep while a mail item or such
+    a suggestion stands. A read that fails keeps the last list: what's in it was sent
+    either way, and no list means no match."""
     global _native_sent, _native_sent_at
     now = time.time() if now is None else now
     if _native_sent_at is None or not 0 <= now - _native_sent_at < NATIVE_SENT_EVERY_S:
