@@ -303,3 +303,60 @@ def test_release_only_returns_a_claimed_row():
             queue._db.commit()
     finally:
         temp.cleanup()
+
+
+def test_view_only_at_send_time_stops_a_scheduled_send(monkeypatch):
+    """Approved on a card earlier, but the user has since switched to View-only."""
+    temp, queue = _queue()
+    try:
+        sid = _queued(queue, when_ts=time.time() - 5)
+        app, events = _App(connected=True), []
+        monkeypatch.setattr("service.safety.read_only", lambda: True)
+
+        _tick(monkeypatch, queue, app, events)
+        row = queue.get(sid)
+        assert app.sent == []
+        assert row["status"] == "failed"
+        assert row["error"] == "View-only mode was on; nothing was sent"
+        assert events == [{"type": "scheduled_send_result", "ok": False,
+                           "channel": "message", "display": "+15551234567",
+                           "error": "View-only mode was on; nothing was sent"}]
+
+        # Switching back does not revive it: nothing goes out later, unasked.
+        monkeypatch.setattr("service.safety.read_only", lambda: False)
+        events.clear()
+        _tick(monkeypatch, queue, app, events)
+        assert app.sent == [] and events == []
+        assert queue.get(sid)["status"] == "failed"
+    finally:
+        temp.cleanup()
+
+
+def test_a_scheduled_send_goes_out_when_view_only_is_off(monkeypatch):
+    temp, queue = _queue()
+    try:
+        sid = _queued(queue, when_ts=time.time() - 5)
+        app, events = _App(connected=True), []
+        monkeypatch.setattr("service.safety.read_only", lambda: False)
+
+        _tick(monkeypatch, queue, app, events)
+        assert [e["type"] for e in app.sent] == ["send_message"]
+        assert queue.get(sid)["status"] == "sent"
+        assert [(e["type"], e["ok"]) for e in events] == [("scheduled_send_result", True)]
+    finally:
+        temp.cleanup()
+
+
+def test_view_only_does_not_undo_a_cancel(monkeypatch):
+    temp, queue = _queue()
+    try:
+        sid = _queued(queue, when_ts=time.time() - 5)
+        assert queue.cancel(sid) is not None
+        app, events = _App(connected=True), []
+        monkeypatch.setattr("service.safety.read_only", lambda: True)
+
+        _tick(monkeypatch, queue, app, events)
+        assert queue.get(sid)["status"] == "cancelled"
+        assert app.sent == [] and events == []
+    finally:
+        temp.cleanup()

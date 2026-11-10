@@ -325,10 +325,13 @@ async def _fire_scheduled_sends() -> None:
     outbound_queue's docstring for why the confirmation happens there and not
     here. This function therefore sends WITHOUT prompting, which is the whole
     point, and is also why the staleness sweep matters: an unattended send is
-    only acceptable when it goes out roughly when promised.
+    only acceptable when it goes out roughly when promised. The approval does
+    not outlive a switch to View-only: a send due in that mode fails, and the
+    user is told.
     """
     from service.assistant.outbound_queue import outbound_queue
     from service.assistant.outbox import app_connected, request as app_request
+    from service.safety import read_only
 
     for row in outbound_queue.sweep_stale():
         # Tell the user rather than silently dropping it. A queued message that
@@ -367,6 +370,19 @@ async def _fire_scheduled_sends() -> None:
         return
     for row in rows:
         if not outbound_queue.claim(row["id"]):
+            continue
+        if read_only():
+            # The card approved this send, but View-only says Wisp may not act
+            # now, and every other unattended writer checks the mode when it
+            # runs. Claimed first so this cannot overwrite a cancel; failed,
+            # not left pending, so it cannot go out if the mode changes back.
+            error = "View-only mode was on; nothing was sent"
+            outbound_queue.mark(row["id"], "failed", error)
+            await hub.publish({
+                "type": "scheduled_send_result",
+                "ok": False, "channel": row["channel"], "display": row["display"],
+                "error": error,
+            })
             continue
         if row["channel"] == "email":
             res = await app_request("send_email", {
