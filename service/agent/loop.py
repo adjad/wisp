@@ -100,6 +100,10 @@ def _action_fingerprint(tool: str, args: dict) -> str:
 # a picture or a list is several distinct writes; past this many, a turn is a
 # runaway, not a request.
 _MAX_EFFECT_CALLS_PER_TURN = 8
+# Times one send tool's draft is handed back to the model in a turn for an
+# unfilled placeholder or a cut-off body, before the turn stops with a plain
+# sentence. Each bounce is a full model step.
+_MAX_DRAFT_REWRITES = 2
 # The arguments that name WHAT an effect acts on, for tools where a second call
 # on the same target in one turn is a repeat even when the rest differs: a
 # reworded second email to the same person, a flip-flopped setting, a delete
@@ -2922,6 +2926,8 @@ async def run_agent(
     failed_tools: set[str] = set()
     hard_failed: set[str] = set()
     skills_misnamed: set[str] = set()
+    # Drafts handed back before their card, per send tool (_MAX_DRAFT_REWRITES).
+    draft_rewrites: Counter = Counter()
     waived_tools: set[str] = set()
     attempted_tools: set[str] = set()
     tool_outcomes: list[tuple[str, object]] = []
@@ -5380,6 +5386,24 @@ async def run_agent(
                     result = _preflight
                     audit("content_preflight", tool=name, args=args,
                           reason=_preflight)
+                    # No card was shown and nothing ran, so this is not an
+                    # outcome: recorded as one it is a failed send, which ends
+                    # the turn and shows the person the rewrite instructions
+                    # written for the model. A model that keeps producing the
+                    # same bad draft is stopped with a sentence for the person.
+                    draft_rewrites[name] += 1
+                    await emit({"type": "tool_result", "id": cid, "result": result})
+                    if draft_rewrites[name] > _MAX_DRAFT_REWRITES:
+                        _kept = "scheduled" if name == "schedule_send" else "sent"
+                        response = _earlier_effect_receipts(
+                            "I couldn't finish a clean draft of that message, so nothing "
+                            f"was {_kept}. Tell me what you'd like it to say.")
+                        await emit({"type": "text", "text": response})
+                        await emit({"type": "done"})
+                        return response
+                    msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                    failed_tools.add(name)
+                    continue
                 elif dec.tier is Tier.CONFIRM:
                     if name == "reply_to_email":
                         from service.tools.action_tools import prepare_reply_args

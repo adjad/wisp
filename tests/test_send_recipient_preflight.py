@@ -194,6 +194,53 @@ def test_the_bridge_saying_it_never_started_is_not_sent(chat, response):
     assert chat.store.unresolved_action(chat.sid) is None
 
 
+# -- A draft that is not sendable goes back to the model, not to the person. --
+
+_UNSIGNED = "Hi Sam,\n\nThe report is ready.\n\nBest,\n[Your Name]"
+_SIGNED = "Hi Sam,\n\nThe report is ready.\n\nBest,\nAdi"
+
+
+def _draft_attempts(chat, *bodies):
+    family = family_for(registry_specs({"send_email": REAL_TOOLS["send_email"]})[0])
+    chat.script = [[tool_call("get_tool_schemas", families=[family], tools=["send_email"])],
+                   *[[_email_call(ADDRESS, "Report", body)] for body in bodies], "Sent it."]
+    return chat.request(f"email {ADDRESS} that the report is ready", chat.sid)
+
+
+def test_a_draft_with_a_placeholder_goes_back_to_the_model_for_a_rewrite(chat):
+    events = _draft_attempts(chat, _UNSIGNED, _SIGNED)
+    # The first draft never became a card; the model was told why and tried again.
+    retry = chat.owned[-1].requests[2]["messages"]
+    bounced = [str(m["content"]) for m in retry if m["role"] == "tool"]
+    assert any("NOT sent" in text and "[Your Name]" in text for text in bounced)
+    assert len(chat.cards.shown) == 1, "the rewritten draft still gets its card"
+    assert _SIGNED in chat.cards.shown[0]["preview"] and "[Your Name]" not in chat.cards.shown[0]["preview"]
+    assert chat.dispatched == [("send_email", {"to": [ADDRESS], "cc": [], "subject": "Report", "body": _SIGNED})]
+    text = _text(events)
+    assert "verified success" not in text and "placeholders" not in text and "call send_email" not in text
+    assert chat.store.unresolved_action(chat.sid) is None
+
+
+def test_a_draft_that_stays_unsendable_ends_with_a_plain_sentence(chat):
+    events = _draft_attempts(chat, *[_UNSIGNED] * (loop._MAX_DRAFT_REWRITES + 2))
+    assert chat.cards.shown == [] and chat.dispatched == []  # no card, nothing sent
+    assert len(chat.owned[-1].requests) == loop._MAX_DRAFT_REWRITES + 2  # schemas, then each draft
+    text = _text(events)
+    assert text == ("I couldn't finish a clean draft of that message, so nothing was sent. "
+                    "Tell me what you'd like it to say.")
+    # Nothing was claimed, so nothing can lock the chat.
+    assert chat.store.unresolved_action(chat.sid) is None
+    assert chat.store.pending_model_effects(chat.sid) == []
+
+
+def test_a_draft_refused_at_the_card_is_not_reworded_and_asked_again(chat):
+    chat.cards.allow = False
+    events = _draft_attempts(chat, _SIGNED, _SIGNED)
+    # A bounce is for a draft the person never saw. A "no" on the card is final.
+    assert len(chat.cards.shown) == 1 and chat.dispatched == []
+    assert "didn’t send it" in _text(events)
+
+
 # -- The other side: an outcome that may have gone out still locks the chat. --
 
 @pytest.mark.parametrize("response", [
