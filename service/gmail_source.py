@@ -375,6 +375,8 @@ def _plain_mail_error(reason: str) -> str:
     low = reason.lower()
     if "read access is missing" in low:
         return "Mail access wasn't granted. Reconnect and allow Gmail."
+    if "gmail api" in low or "cloud project" in low:
+        return "Mail isn't available for this account yet."
     if "couldn't" in low or "could not be reached" in low or "timed out" in low or "offline" in low:
         return "Google couldn't be reached. Wisp will try again."
     return "Mail isn't syncing right now. Wisp will try again."
@@ -546,6 +548,23 @@ def _announce_expired(email: str, stamp: int) -> None:
         print(f"[gmail] expired sign-in notice failed: {type(exc).__name__}", flush=True)
 
 
+_RATE_LIMIT_REASONS = {"ratelimitexceeded", "userratelimitexceeded", "dailylimitexceeded"}
+
+
+def _api_reasons(response: httpx.Response) -> tuple[set[str], str]:
+    """(lower-cased error reasons, error message) from a Google API error body."""
+    try:
+        body = response.json()
+    except ValueError:
+        return set(), ""
+    error = body.get("error") if isinstance(body, dict) else None
+    error = error if isinstance(error, dict) else {}
+    reasons = {str(item.get("reason", "")).lower()
+               for key in ("errors", "details") for item in (error.get(key) or [])
+               if isinstance(item, dict)}
+    return reasons, str(error.get("message", ""))
+
+
 async def _get(http: httpx.AsyncClient, path: str, params: dict | list | None = None) -> dict:
     for attempt in range(4):
         if not _still_connected():
@@ -560,7 +579,16 @@ async def _get(http: httpx.AsyncClient, path: str, params: dict | list | None = 
         if response.status_code == 401:
             _access.pop(_current()[0], None)
             continue
-        if response.status_code in (429, 403, 500, 503) and attempt < 3:
+        if response.status_code == 403:
+            reasons, message = _api_reasons(response)
+            if {"accessnotconfigured", "service_disabled"} & reasons or "has not been used" in message:
+                raise GmailError("Turn on the Gmail API in your Google Cloud project "
+                                 "(APIs & Services ▸ Library), then wait a minute")
+            if reasons & _RATE_LIMIT_REASONS and attempt < 3:
+                await asyncio.sleep(1.5 * (attempt + 1))
+                continue
+            # Any other 403 will not clear by waiting.
+        elif response.status_code in (429, 500, 503) and attempt < 3:
             await asyncio.sleep(1.5 * (attempt + 1))
             continue
         if response.status_code != 200:

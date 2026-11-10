@@ -1612,6 +1612,40 @@ print('fresh process retained original native fallback')
                 G._context.reset(token)
         asyncio.run(run())
 
+    def get_with_403(self, reasons=(), message="Forbidden"):
+        body = {"error": {"code": 403, "message": message, "errors": [{"reason": r} for r in reasons]}}
+        async def run():
+            token = G._context.set((ME, dict(self.accounts[ME]), 0))
+            G._access[ME] = {"token": "synthetic", "expires": time.time() + 3600}
+            http = AsyncMock()
+            http.get.return_value = httpx.Response(403, json=body)
+            sleep = AsyncMock()
+            try:
+                with patch("asyncio.sleep", sleep):
+                    with self.assertRaises(G.GmailError) as caught:
+                        await G._get(http, "messages")
+            finally:
+                G._context.reset(token)
+            return str(caught.exception), http.get.await_count, sleep.await_count
+        return asyncio.run(run())
+
+    def test_a_disabled_gmail_api_fails_at_once_with_a_message_that_says_what_to_do(self):
+        for reasons, message in ((["accessNotConfigured"], "Gmail API has not been used in project 1"),
+                                 (["SERVICE_DISABLED"], "disabled"), ([], "API has not been used in project 1")):
+            with self.subTest(reasons=reasons):
+                text, calls, sleeps = self.get_with_403(reasons, message)
+                self.assertIn("Turn on the Gmail API", text)
+                self.assertEqual((calls, sleeps), (1, 0))
+        self.assertEqual(G._plain_mail_error(text), "Mail isn't available for this account yet.")
+
+    def test_a_403_that_waiting_cannot_fix_is_not_retried_but_a_rate_limit_is(self):
+        text, calls, sleeps = self.get_with_403(["insufficientPermissions"])
+        self.assertEqual((text, calls, sleeps), ("messages: HTTP 403", 1, 0))
+        text, calls, sleeps = self.get_with_403(["rateLimitExceeded"])
+        self.assertEqual((text, calls, sleeps), ("messages: HTTP 403", 4, 3))
+        text, calls, sleeps = self.get_with_403(["userRateLimitExceeded"])
+        self.assertEqual((calls, sleeps), (4, 3))
+
     def test_an_expired_sign_in_is_not_retried_every_minute(self):
         self.accounts[ME]["auth_expired"] = int(time.time())
         E.configure_external_accounts(self.accounts)
