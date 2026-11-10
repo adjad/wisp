@@ -38,7 +38,7 @@ _EFFECT_TOOLS = frozenset({
     "add_calendar_event", "update_event", "commit_private_meeting",
     "complete_reminder", "cancel_event", "clear_past_reminders", "clear_reminders",
     "cancel_scheduled_send", "toggle_setting",
-    "write_file", "move_path",
+    "write_file", "move_path", "save_email_attachment",
     "save_knowledge", "edit_knowledge", "delete_knowledge",
 })
 _TERMINAL_OUTBOUND_DENIALS = frozenset({
@@ -111,7 +111,7 @@ _EFFECT_TARGET_ARGS = {
 }
 # Optimistic-concurrency tokens: they change after every write, so they never
 # make a second call a different action.
-_EFFECT_VOLATILE_ARGS = frozenset({"expected_revision", "expected_id", "expected_reply"})
+_EFFECT_VOLATILE_ARGS = frozenset({"expected_revision", "expected_id", "expected_reply", "prepared"})
 
 
 def _effect_duplicate_key(tool: str, args: dict) -> str:
@@ -1544,7 +1544,7 @@ def mark_attachment_turn(tool_name: str, args: dict) -> None:
     (every change, send or lookup asks first, with no Always allow). Called in
     the turn's own task right before the tool runs: a ContextVar set inside the
     tool would not outlive its call. Listing names only reads no content."""
-    if tool_name != "read_email_attachments":
+    if tool_name not in ("read_email_attachments", "read_message_attachments"):
         return
     if isinstance(args, dict) and args.get("list_only") is True:
         return
@@ -1564,6 +1564,7 @@ _SOURCE_LABELS = {
     "summarize_emails": "From your email",
     "view_emails": "From your email",
     "read_email_attachments": "From your email attachments",
+    "read_message_attachments": "From your Messages files",
     "summarize_messages": "From your messages",
     "view_messages": "From your messages",
     "lookup_contact": "From your contacts",
@@ -5247,6 +5248,12 @@ async def run_agent(
                 if dec.tier is Tier.CONFIRM:
                     from service.tools.action_tools import prepare_send_recipient
                     args, _no_recipient = prepare_send_recipient(tool, args)
+                # Settle ONE attachment before its card: a file that cannot be
+                # settled is the tool result, with no card to approve.
+                _save_stopped = None
+                if dec.tier is Tier.CONFIRM and name == "save_email_attachment":
+                    from service.tools.attachment_actions import prepare_save_args
+                    args, _save_stopped = await prepare_save_args(args)
 
                 if dec.tier is Tier.DENY:
                     result = f"BLOCKED by safety policy: {dec.reason}"
@@ -5255,6 +5262,9 @@ async def run_agent(
                 elif _no_recipient:
                     result = _no_recipient
                     audit("recipient_preflight", tool=name, args=args, reason=str(_no_recipient))
+                elif _save_stopped:
+                    result = _save_stopped
+                    audit("save_preflight", tool=name, args=args, reason=str(_save_stopped))
                 # A draft with an unfilled "[Your Name]" slot, or a body cut off
                 # mid-sentence, must never REACH the confirmation card: the card
                 # is where the user's judgement is asked for, and these checks

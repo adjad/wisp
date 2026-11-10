@@ -65,8 +65,10 @@ def test_sharpened_descriptions_did_not_grow_the_schema_budget():
     # tool, read_email_attachments, adds its description (long on purpose: a
     # terse one loses to view_emails) and a note on view_emails: 41,063 in all.
     # Batch 2 of attachments names what it flags and its `pages` and `sheet`: 41,075.
+    # Batch 3 adds `inside`/`across` to it and two tools, read_message_attachments
+    # and save_email_attachment (96 built-ins): 42,140.
     builtin = [t for t in REGISTRY.values() if t.category not in {"skill_tool", "mcp_read", "mcp_action"}]
-    assert sum(len(t.description or "") for t in builtin) <= 41_075
+    assert sum(len(t.description or "") for t in builtin) <= 42_140
 
 
 def test_retrieval_text_stays_pinned_so_rankings_do_not_move():
