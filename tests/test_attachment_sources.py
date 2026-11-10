@@ -310,10 +310,18 @@ async def test_a_voice_memo_is_transcribed_and_kept(world):
     assert world.kinds("listen") == []
 
 
-async def test_audio_is_found_by_its_suffix_when_the_child_says_video(world):
+async def test_audio_is_found_by_its_suffix_when_the_child_says_nothing(world):
     memo(world)
-    world.families["memo.m4a"] = "video"             # today's child calls an M4A a video
+    world.families["memo.m4a"] = ""                 # the bytes say nothing: the name decides
     assert "Call me back" in await ma.run()
+
+
+async def test_a_file_the_child_calls_a_video_is_a_video_even_when_named_m4a(world):
+    memo(world)
+    world.families["memo.m4a"] = "video"
+    out = await ma.run()
+    assert "Wisp doesn't read videos in email." in out and "Call me back" not in out
+    assert world.kinds("listen") == []
 
 
 async def test_an_incomplete_listen_says_how_much_and_is_not_kept(world):
@@ -362,7 +370,8 @@ async def test_a_texted_memo_is_transcribed_too(world):
 
 def test_expected_kinds_for_the_new_branches():
     f = ma._File("x")
-    assert ma._expected_kind(f, "memo.m4a", "m4a", "video") == "audio"
+    assert ma._expected_kind(f, "memo.m4a", "m4a", "") == "audio"
+    assert ma._expected_kind(f, "memo.m4a", "m4a", "video") == ""
     assert ma._expected_kind(f, "memo.bin", "bin", "audio") == "audio"
     assert ma._expected_kind(f, "fwd.eml", "eml", "") == "eml"
     assert ma._expected_kind(f, "fwd.dat", "dat", "email") == "eml"
@@ -391,7 +400,8 @@ async def test_an_attached_email_is_read_with_its_files(world):
     world.texts["lease.pdf"] = "The lease rent is 2100 a month."
     out = await ma.run()
     assert "From: Dana <dana@x.com>" in out and "Subject: Lease" in out and "Please see the lease." in out
-    assert "An email attached to an email. Nothing inside it was saved or opened." in out
+    assert "An email attached to an email. Its files were read in memory; none was run or saved as a file." in out
+    assert "Nothing inside it was saved" not in out
     assert "Files in this email (4):" in out and "setup.exe" in out and "original.eml (" in out
     assert "an email inside it, not opened" in out
     assert "The lease rent is 2100 a month." in out                       # the inner PDF, read
@@ -740,3 +750,224 @@ async def test_a_note_seen_that_raises_changes_nothing(world, monkeypatch):
     world.local_files[(1, "1.2")] = b"remember the milk"
     assert "remember the milk" in await ma.run()
     assert attachment_store.get(attachment_store.digest(b"remember the milk"))
+
+
+# ---------------------------------------------------------------- repairs RD1: attached emails
+
+async def test_an_attached_email_that_was_read_in_full_says_how_many_files_it_read(world):
+    eml_world(world, [inner_file(0, "a.txt", "text/plain", b"alpha inner words")])
+    out = await ma.run()
+    assert "Read 1 of its 1 file." in out and "Only part of it was read" not in out
+    assert "Read the whole file." in out
+
+
+def outer_coverage(out: str) -> str:
+    """The attached email's own Coverage line (the first one; the files read inside it come after)."""
+    return out.split("Coverage:")[1].splitlines()[0]
+
+
+@pytest.mark.parametrize("flag,sentence", [
+    ({"body_cut": True}, "Its text was cut short."),
+    ({"walk_cut": True}, "Some of its parts were too deep or too many to read."),
+    ({"more_files": 3}, "3 more files not listed."),
+])
+async def test_an_attached_email_with_anything_dropped_never_says_read_the_whole_file(world, flag, sentence):
+    eml_world(world, [inner_file(0, "a.txt", "text/plain", b"alpha inner words")])
+    world.eml["Fwd.eml"].update(flag)
+    out = await ma.run()
+    assert sentence in out and "Only part of it was read." in out
+    assert "Read the whole file." not in outer_coverage(out)
+    assert "Read 1 of its " in out
+
+
+async def test_an_attached_email_with_a_file_it_did_not_read_is_partial(world):
+    files = [inner_file(0, "a.txt", "text/plain", b"alpha inner words"),
+             inner_file(1, "original.eml", "message/rfc822", EML)]
+    eml_world(world, files)
+    out = await ma.run()
+    assert "Read 1 of its 2 files." in out and "Only part of it was read." in out
+    assert "Read the whole file." not in outer_coverage(out)
+
+
+async def test_an_attached_email_whose_inner_file_fails_counts_it_as_not_read(world):
+    files = [inner_file(0, "a.txt", "text/plain", b"alpha inner words"), inner_file(1, "b.txt", "text/plain", b"")]
+    eml_world(world, files)
+    out = await ma.run()
+    assert "Read 1 of its 2 files." in out and "Read the whole file." not in outer_coverage(out)
+
+
+def test_a_walk_cut_that_is_absent_means_false():
+    info = eml_info([])
+    assert ma._parse_eml(info).walk_cut is False
+    assert ma._parse_eml({**info, "walk_cut": True}).walk_cut is True
+
+
+def test_the_docstring_rule_matches_the_note():
+    assert "nothing inside it is written to disk" not in ma.__doc__
+    assert "kept like any other reading" in ma.__doc__
+    assert ma._EML_NOTE.startswith("An email attached to an email. Its files were read in memory; none was run")
+
+
+# ---------------------------------------------------------------- repairs RD1: index_one
+
+async def test_index_one_never_reaches_gmail_for_a_merged_email_whose_local_read_fails(world, monkeypatch):
+    from service import gmail_source
+    world.apple_rows = [row(rfc="a@x.com")]
+    world.gmail = {"me@gmail.com": [gmsg(rfc="<a@x.com>")]}
+    world.gmail_bytes["g-report.pdf"] = PDF + b" gmail words"
+    world.local_files[(1, "1.2")] = "unreadable"
+    world.by_rfc["a@x.com"] = gmsg(rfc="<a@x.com>")
+
+    async def explode(*a, **k):
+        world.calls.append(("gbytes", "called"))
+        raise AssertionError("Gmail was reached from index_one")
+    monkeypatch.setattr(gmail_source, "attachment_bytes", explode)
+    emails, _ = await ma.find()
+    f = emails[0].files[0]
+    assert f.has_gmail and f.has_local                     # a merged email, both references
+    assert await ma.index_one(emails[0], f, deadline=ma.time.monotonic() + 60) == "unreadable"
+    assert world.kinds("gbytes") == [] and world.kinds("gfind") == []
+    assert f.has_gmail                                      # the caller's file is untouched
+
+
+async def test_index_one_skips_a_messages_file_without_any_bridge_call(world):
+    world.message_rows = [message_row("11", "lease.pdf")]
+    world.message_files["11"] = PDF + b" the rent is 2100"
+    emails, _ = await ma.find(source="messages")
+    f = emails[0].files[0]
+    assert f.has_messages
+    assert await ma.index_one(emails[0], f, deadline=ma.time.monotonic() + 60) == "skipped"
+    assert world.kinds("mread") == [] and world.kinds("local") == []
+    # also a file only marked as texted, with no id
+    g = ma._File("x.pdf", source="messages", on_disk=True)
+    assert await ma.index_one(emails[0], g, deadline=ma.time.monotonic() + 60) == "skipped"
+
+
+async def test_index_one_skips_a_file_with_no_local_copy_on_disk(world):
+    world.apple_rows = [row(on_disk=False)]
+    emails, _ = await ma.find()
+    f = emails[0].files[0]
+    assert await ma.index_one(emails[0], f, deadline=ma.time.monotonic() + 60) == "skipped"
+    assert world.kinds("local") == [] and world.kinds("gbytes") == []
+    bare = ma._File("y.pdf")
+    assert await ma.index_one(emails[0], bare, deadline=ma.time.monotonic() + 60) == "skipped"
+
+
+# ---------------------------------------------------------------- repairs RD1: text recognition rest
+
+async def test_a_background_failure_of_recognition_sets_no_rest(world, monkeypatch):
+    world.app = True
+
+    async def silent(jpeg, timeout=20.0):
+        raise bridge.BridgeError("app_not_connected")
+    monkeypatch.setattr(bridge, "recognize_text", silent)
+    big = PNG + b"0" * 30_000
+    email, f = await one(world, "receipt.png", big)
+    assert await ma.index_one(email, f, deadline=ma.time.monotonic() + 60) == "skipped"
+    assert ma._ocr_resting_until == 0.0
+    # the same failure in the foreground does set it
+    ctx = ma._Ctx(deadline=ma.time.monotonic() + 120, gmail_source=None, gmail_accounts=[], passes=None)
+    assert await ma._recognised(ctx, "receipt.png", big, paged=False) is None
+    assert ma._ocr_resting_until > ma.time.monotonic()
+
+
+async def test_a_picture_met_while_recognition_rests_is_resting_not_skipped_and_nothing_is_stored(world, monkeypatch):
+    world.app = True
+    monkeypatch.setattr(ma, "_ocr_resting_until", ma.time.monotonic() + 200)
+    big = PNG + b"0" * 30_000
+    email, f = await one(world, "receipt.png", big)
+    assert await ma.index_one(email, f, deadline=ma.time.monotonic() + 60) == "resting"
+    assert attachment_store.get(attachment_store.digest(big)) is None
+    assert world.kinds("recognise") == []
+    # the rest is over: the same file is now read
+    monkeypatch.setattr(ma, "_ocr_resting_until", 0.0)
+    assert await ma.index_one(email, f, deadline=ma.time.monotonic() + 60) == "kept"
+
+
+async def test_the_foreground_still_obeys_the_rest(world, monkeypatch):
+    world.app = True
+    monkeypatch.setattr(ma, "_ocr_resting_until", ma.time.monotonic() + 200)
+    ctx = ma._Ctx(deadline=ma.time.monotonic() + 120, gmail_source=None, gmail_accounts=[], passes=None)
+    assert await ma._recognised(ctx, "receipt.png", PNG + b"0" * 30_000, paged=False) is None
+    assert ctx.resting is False and world.kinds("recognise") == []
+
+
+# ---------------------------------------------------------------- repairs RD1: Messages contact words
+
+def contacts(monkeypatch, **people):
+    monkeypatch.setattr(imessage_tools, "_name_handles", {k.replace("_", " "): list(v) for k, v in people.items()})
+    monkeypatch.setattr(imessage_tools, "_contacts", {})
+
+
+async def test_contact_words_turned_into_senders_are_said(world, monkeypatch):
+    contacts(monkeypatch, dana_lee=["+15551230000"])
+    world.message_rows = [message_row("11", "lease.pdf")]
+    out = await ma.run(query="dana lease", source="messages", list_only=True)
+    assert "Looked for files sent by Dana Lee." in out
+    assert world.message_index_args[0][:2] == (["lease"], ["+15551230000"])
+    _found, notes = await ma.find(query="dana lease", source="messages")
+    assert "Looked for files sent by Dana Lee." in notes
+
+
+async def test_several_contact_names_are_summarised(world, monkeypatch):
+    contacts(monkeypatch, dana_lee=["+1"], sam_roe=["+2"], pat_kim=["+3"], lou_may=["+4"])
+    world.message_rows = [message_row("11", "lease.pdf")]
+    out = await ma.run(query="dana sam pat lou", source="messages", list_only=True)
+    assert "Looked for files sent by Dana Lee, Sam Roe and 2 others." in out
+    out = await ma.run(query="dana sam", source="messages", list_only=True)
+    assert "Looked for files sent by Dana Lee and Sam Roe." in out
+
+
+async def test_nothing_from_the_contact_retries_once_with_the_word_as_a_term(world, monkeypatch):
+    contacts(monkeypatch, dana_lee=["+15551230000"])
+    calls = []
+
+    async def index(terms, handles, since, until, limit=200, timeout=10.0):
+        calls.append((list(terms), list(handles)))
+        if handles:
+            return [], False
+        return [message_row("11", "dana-lease.pdf", chat="Dana")], False
+    monkeypatch.setattr(bridge, "read_message_attachment_index", index)
+    out = await ma.run(query="dana", source="messages", list_only=True)
+    assert calls == [([], ["+15551230000"]), (["dana"], [])]
+    assert "Nothing from Dana Lee, so looked for the word instead." in out
+    assert "dana-lease.pdf" in out and "Looked for files sent by" not in out
+
+
+async def test_no_retry_when_the_first_search_found_something_or_failed(world, monkeypatch):
+    contacts(monkeypatch, dana_lee=["+15551230000"])
+    calls = []
+
+    async def index(terms, handles, since, until, limit=200, timeout=10.0):
+        calls.append(list(handles))
+        return [message_row("11")], False
+    monkeypatch.setattr(bridge, "read_message_attachment_index", index)
+    await ma.run(query="dana", source="messages", list_only=True)
+    assert calls == [["+15551230000"]]
+    calls.clear()
+
+    async def broken(terms, handles, since, until, limit=200, timeout=10.0):
+        calls.append(list(handles))
+        raise bridge.BridgeError("app_not_connected")
+    monkeypatch.setattr(bridge, "read_message_attachment_index", broken)
+    out = await ma.run(query="dana", source="messages", list_only=True)
+    assert len(calls) == 1 and "Nothing from" not in out
+
+
+def test_only_a_full_name_or_a_first_name_of_three_letters_that_is_not_an_everyday_word_is_a_sender(monkeypatch):
+    contacts(monkeypatch, al_jones=["+1"], dana_lee=["+2"], sent_smith=["+3"], mom=["+4"])
+    assert ma._contact_split(["al", "plan"]) == (["al", "plan"], [])               # first name under 3 letters
+    assert ma._contact_split(["lee", "plan"]) == (["lee", "plan"], [])             # a family name alone
+    assert ma._contact_split(["dana", "lee"]) == ([], ["+2"])                       # first name then family name
+    assert ma._contact_split(["sent", "plan"]) == (["sent", "plan"], [])           # an everyday word
+    assert ma._contact_split(["mom", "plan"]) == (["plan"], ["+4"])                 # a whole name
+    assert ma._contact_split(["dan", "plan"]) == (["dan", "plan"], [])
+
+
+# ---------------------------------------------------------------- repairs RD1: smaller
+
+async def test_the_childs_error_sentence_goes_through_the_same_filter_as_a_file_problem(world):
+    memo(world)
+    world.listen_error = ValueError("secret quoted from the file: Dear Bob, the password is hunter2")
+    out = await ma.run()
+    assert "hunter2" not in out and "Not read: It couldn't be listened to." in out
