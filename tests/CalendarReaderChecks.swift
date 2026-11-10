@@ -8,9 +8,11 @@ import Foundation
 @main struct CalendarReaderChecks {
     static func main() {
         classifyChecks()
+        titleChecks()
         includeChecks()
         accessChecks()
         paceChecks()
+        readGateChecks()
         print("synthetic calendar reader checks passed")
     }
 
@@ -42,6 +44,22 @@ import Foundation
         check(P.classify("Final project") == "exam", "an exam word beats an assignment word, as before")
     }
 
+    // An event or dated reminder with no title is synced as "(untitled)", never with
+    // an empty title, which the service does not keep. A real title is sent unchanged.
+    static func titleChecks() {
+        let blanks: [String?] = [nil, "", " ", " \n\t ", "\u{A0}\u{3000}", "\u{1C}\u{85}"]
+        for blank in blanks {
+            check(RemindersWriter.syncedTitle(blank) == "(untitled)",
+                  "a blank title syncs as (untitled): \(String(describing: blank))")
+        }
+        for real in ["Standup", "  Padded title ", "1:1", "\u{2615}\u{FE0F}", "(untitled)", "CS 101 Exam"] {
+            check(RemindersWriter.syncedTitle(real) == real, "a real title is unchanged: \(real)")
+        }
+        typealias P = CalendarEventPolicy
+        check(P.classify(RemindersWriter.syncedTitle("")) == "event", "an untitled event is an ordinary event")
+        check(P.classify(RemindersWriter.syncedTitle("CS 101 Exam")) == "exam", "a titled event keeps its kind")
+    }
+
     // Declined and cancelled events are not on the day.
     static func includeChecks() {
         typealias P = CalendarEventPolicy
@@ -61,6 +79,37 @@ import Foundation
         check(P.include(cancelled: false, attendees: [organizer, otherDeclined, otherDeclined]),
               "an organizer's event stays when the invitees decline")
         check(!P.include(cancelled: true, attendees: [organizer]), "an organizer's cancelled event is dropped")
+    }
+
+    // Calendar is read off the main thread. One read runs at a time, a read asked
+    // for meanwhile follows it, and an older read never posts after a newer report
+    // (the service replaces Calendar's whole set on every post).
+    static func readGateChecks() {
+        var g = CalendarReadGate()
+        let first = g.issue()
+        check(g.begin(), "the first read starts")
+        let second = g.issue()
+        check(second > first, "numbers only go up")
+        check(!g.begin(), "a second read does not start while one runs")
+        check(!g.begin(), "nor a third")
+        check(g.finish(), "the running read is followed by one more")
+        check(g.accept(first), "the first report posts")
+        check(g.begin(), "the follow-up read starts")
+        check(!g.finish(), "nothing was asked for during it, so no further read")
+        check(g.accept(g.issue()), "its report posts")
+
+        // A slow read, then access goes away: the no-access report posts at once,
+        // and the old read's events must not land on top of it.
+        var h = CalendarReadGate()
+        let slow = h.issue()
+        check(h.begin(), "the slow read starts")
+        let noAccess = h.issue()
+        check(h.accept(noAccess), "the newer report posts first")
+        _ = h.finish()
+        check(!h.accept(slow), "the older read is dropped")
+        check(!h.accept(noAccess), "a report never posts twice")
+        check(h.begin(), "reading carries on afterwards")
+        check(h.accept(h.issue()), "and a newer report posts")
     }
 
     // Calendar is read when EventKit says it changed and on a heartbeat. The heartbeat
