@@ -815,6 +815,15 @@ def favorite_models() -> list[str]:
                   if isinstance(cfg, dict) and cfg.get("is_favorite"))
 
 
+IDLE_UNLOAD_MAX_MINUTES = 120
+
+
+def save_idle_unload_minutes(minutes: float) -> None:
+    """Persist Settings' "Auto-unload idle models" choice (0 = off) so a relaunch
+    keeps it. The chat model is never on this timer; Save memory parks it."""
+    _save_overlay({"idle_unload_minutes": minutes})
+
+
 def save_installed_models(models: list[str]) -> None:
     """Persist the most recently seen installed-models list to the user
     overlay, so it's available even when oMLX's server subprocess isn't

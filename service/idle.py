@@ -9,9 +9,10 @@ The actual unload loop (which DOES need the client) lives in
 from __future__ import annotations
 
 import contextlib
+import math
 import time
 
-from service.config import models_config
+from service.config import IDLE_UNLOAD_MAX_MINUTES, _packaged_config, models_config
 
 _last_used: dict[str, float] = {}
 # Per-model count of generations currently in flight. A model with count > 0 is
@@ -25,10 +26,21 @@ _in_flight: dict[str, int] = {}
 # use by another app on the user's oMLX.app. Only real requests and loads count.
 _own_access: dict[str, float] = {}
 _own_loads: dict[str, int] = {}
-# 0 (or less) disables auto-unload. Config value is the startup default;
-# runtime changes via /idle_timeout are in-memory only, matching how
-# read_only/full_access already behave — a restart reverts to the config file.
-_idle_minutes: float = float(models_config().get("idle_unload_minutes", 20))
+
+
+def _startup_minutes() -> float:
+    """The saved Settings choice (POST /idle_timeout persists it to the config
+    overlay), else the shipped default. A hand-edited value that isn't a number
+    falls back to the default instead of breaking startup."""
+    for source in (models_config, _packaged_config):
+        value = source().get("idle_unload_minutes")
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+            return min(float(IDLE_UNLOAD_MAX_MINUTES), max(0.0, float(value)))
+    return 5.0
+
+
+# 0 disables auto-unload. Keep-warm models (the chat model) are never on this timer.
+_idle_minutes: float = _startup_minutes()
 
 
 def touch(model: str) -> None:

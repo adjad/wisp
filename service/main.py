@@ -32,6 +32,7 @@ from service.inference.remote_policy import (remote_only_profile,
                                              require_generation_role,
                                              require_local_models_disabled)
 import json
+import math
 import os
 import re
 import subprocess
@@ -1565,9 +1566,17 @@ async def get_idle_timeout() -> dict[str, Any]:
 
 @app.post("/idle_timeout")
 async def set_idle_timeout(body: dict[str, Any]) -> dict[str, Any]:
-    """Set the auto-unload idle timeout in minutes (0 disables it)."""
+    """Set the auto-unload idle timeout in minutes (0 disables it). Saved, so a
+    relaunch keeps it."""
     if "idle_minutes" in body:
-        idle.set_idle_minutes(float(body["idle_minutes"]))
+        from service.config import IDLE_UNLOAD_MAX_MINUTES, save_idle_unload_minutes
+        value = body["idle_minutes"]
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value) or not 0 <= value <= IDLE_UNLOAD_MAX_MINUTES):
+            raise HTTPException(status_code=422,
+                                detail=f"Auto-unload takes 0 to {IDLE_UNLOAD_MAX_MINUTES} minutes.")
+        save_idle_unload_minutes(float(value))
+        idle.set_idle_minutes(float(value))
     return {"idle_minutes": idle.get_idle_minutes()}
 
 
