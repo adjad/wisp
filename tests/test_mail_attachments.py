@@ -137,7 +137,9 @@ class World:
 
 
 @pytest.fixture
-def world(monkeypatch):
+def world(monkeypatch, tmp_path):
+    # Readings are kept between requests (service/attachment_store.py); each test gets its own empty store.
+    monkeypatch.setenv("WISP_HOME", str(tmp_path / "home"))
     return World(monkeypatch)
 
 
@@ -343,7 +345,8 @@ async def test_mismatch_warning_shown(world):
     world.apple_rows = [row(name="invoice.pdf", rfc="e@x.com")]
     world.local_files[(1, "1.2")] = MZ
     out = await ma.run()
-    assert "Its name says .pdf, but it is really a Windows program." in out
+    # One risk line in Wisp's own words replaces the separate warnings.
+    assert "Looks risky:" in out and "program" in out and "Warning:" not in out
     assert world.kinds("extract") == []
 
 

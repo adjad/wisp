@@ -306,6 +306,9 @@ async def lifespan(app: FastAPI):
     refuse_sandbox_on_production_port()
     from service.config import quarantine
     quarantine.check()
+    # Text kept from attachments ages out even if no attachment is ever read again.
+    from service import attachment_store
+    await asyncio.to_thread(attachment_store.prune_if_due)
     global client
     if remote_only_profile() is None:
         # Make the first-launch engine choice sticky now, not when Settings is first opened.
