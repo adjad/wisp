@@ -112,6 +112,11 @@ _SIGNATURES: tuple[tuple[bytes, str, str], ...] = (
     (b"%PDF", "a PDF", "document"),
     (b"PK\x03\x04", "a ZIP-based file", "zip"),
     (b"PK\x05\x06", "an empty ZIP file", "zip"),
+    (b"PK\x07\x08", "a split ZIP file", "zip"),
+    (b"PK\x01\x02", "a ZIP file", "zip"),
+    (b"PK00", "a split ZIP file", "zip"),
+    (b"\xfd7zXZ\x00", "an xz archive", "archive"),
+    (b"MSCF", "a Windows cabinet archive", "archive"),
     (b"Rar!", "a RAR archive", "archive"),
     (b"7z\xbc\xaf\x27\x1c", "a 7-Zip archive", "archive"),
     (b"\x1f\x8b", "a gzip archive", "archive"),
@@ -130,16 +135,23 @@ _RISKY_SUFFIXES = frozenset({
     "workflow", "wsf", "zsh",
     "fileloc", "mobileconfig", "shortcut", "wflow", "saver", "prefpane", "qlgenerator", "mdimporter", "osax",
     "scptd",
+    "xip", "csh", "ksh", "tcsh", "fish", "chm", "xll", "xlam", "ppam", "one", "appx", "msix", "vhdx",
+    "scf", "library-ms", "settingcontent-ms",
 })
+# Archives Wisp never lists or unpacks. Saved, they carry a caution, since an app could be inside.
+_ARCHIVE_SUFFIXES = frozenset({"rar", "7z", "tar", "tgz", "gz", "bz2", "tbz", "tbz2", "xz", "txz", "cab", "zst",
+                               "lz", "lzma", "z", "arj"})
+_NO_LOOK = "It is an archive Wisp can't look inside."
 # Scripts that run when handed to an interpreter. Graded "caution": read as text, never run, but a saved one
 # sits where a double-click could start it, so the success text says "Take care".
 _SCRIPT_SUFFIXES = frozenset({"py", "pl", "rb", "bash"})
 # A folder that is really a program, as an archive's entry paths show it.
 _BUNDLE_PARTS = (".app", ".pkg", ".bundle", ".framework", ".kext", ".plugin", ".prefpane", ".saver",
-                 ".workflow", ".action")
+                 ".workflow", ".action", ".mpkg", ".saver", ".xpc", ".appex")
 # Shortcut files open a program or an address the moment they are opened.
-_SHORTCUT_SUFFIXES = frozenset({"desktop", "fileloc", "inetloc", "lnk", "url", "webloc"})
-_MACRO_SUFFIXES = frozenset({"docm", "dotm", "potm", "pptm", "ppsm", "xlam", "xlsm", "xltm"})
+_SHORTCUT_SUFFIXES = frozenset({"desktop", "fileloc", "inetloc", "lnk", "url", "webloc", "scf", "library-ms",
+                                "settingcontent-ms"})
+_MACRO_SUFFIXES = frozenset({"docm", "dotm", "potm", "pptm", "ppsm", "xlam", "ppam", "xlsm", "xltm"})
 # Types that have no signature to check, so unknown bytes under them mean nothing.
 _PLAIN_TEXT_SUFFIXES = frozenset({"txt", "csv", "md", "json", "html", "htm", "ics", "vcf", "rtf", "log", "xml"})
 _HTML_SUFFIXES = frozenset({"html", "htm", "xhtml", "shtml"})
@@ -187,6 +199,17 @@ def _plain_name(name) -> str:
 def _suffix(name: str) -> str:
     # Windows ignores spaces and dots at the end of a name, so "run.exe " is still run.exe.
     return PurePath(_plain_name(name).rstrip(" .")).suffix.lower().lstrip(".")
+
+
+def _risk_name(name) -> str:
+    """The name as the risk check reads it: invisible characters out, compatibility letters folded (fullwidth
+    `ｅｘｅ`, the long s of `ſh`) and case folded, so none of them can hide an extension. Only for the
+    decision; the shown and saved name is never changed by it."""
+    return unicodedata.normalize("NFKC", _plain_name(name)).casefold()
+
+
+def _risk_suffix(name) -> str:
+    return PurePath(_risk_name(name).rstrip(" .")).suffix.lstrip(".")
 
 
 def _pretty(text: str, limit: int = 120) -> str:
@@ -265,6 +288,10 @@ def _signature(data: bytes) -> tuple[str, str]:
     for magic, label, family in _SIGNATURES:
         if data.startswith(magic):
             return label, family
+    if data[:3] == b"BZh" and data[4:10] == b"1AY&SY":
+        return "a bzip2 archive", "archive"
+    if len(data) >= 262 and data[257:262] == b"ustar":
+        return "a tar archive", "archive"
     if len(data) >= 512 and data[-512:-508] == b"koly":
         return "a Mac disk image", "program"
     if len(data) >= 12 and data[4:8] == b"ftyp":
@@ -292,12 +319,12 @@ def _zip_listing(data: bytes) -> dict:
     # A bundle shows once, as the bundle, rather than as hundreds of inner files.
     # An Office file's own .bin parts (printer settings, OLE objects) are not a hidden program.
     office = "[Content_Types].xml" in names
-    risky = sorted({_pretty(n) for n in names if not n.endswith("/") and _suffix(n) in _RISKY_SUFFIXES
-                    and not (office and _suffix(n) == "bin")})
+    risky = sorted({_pretty(n) for n in names if not n.endswith("/") and _risk_suffix(n) in _RISKY_SUFFIXES
+                    and not (office and _risk_suffix(n) == "bin")})
     macros = any(PurePath(n).name.lower() == "vbaproject.bin" for n in names)
-    bundles = any(c.lower().endswith(_BUNDLE_PARTS) for n in names
-                  for c in _plain_name(n).replace("\\", "/").split("/") if c)
-    scripts = any(_suffix(n) in _SCRIPT_SUFFIXES for n in names if not n.endswith("/"))
+    bundles = any(c.endswith(_BUNDLE_PARTS) for n in names
+                  for c in _risk_name(n).replace("\\", "/").split("/") if c)
+    scripts = any(_risk_suffix(n) in _SCRIPT_SUFFIXES for n in names if not n.endswith("/"))
     return {"entries": [_pretty(n) for n in names[:MAX_ZIP_NAMES]], "entry_count": len(names),
             "risky_entries": risky[:12], "macros": macros, "holds_bundle": bundles, "holds_script": scripts,
             "encrypted": any(info.flag_bits & 0x1 for info in infos)}
@@ -312,7 +339,7 @@ def _risk(name: str, data: bytes, suffix: str, label: str, family: str, found: d
     except a name suffix that was matched against a known set first."""
     high: list[str] = []
     caution: list[str] = []
-    parts = [part.strip() for part in PurePath(_plain_name(name).rstrip(" .")).name.lower().split(".")]
+    parts = [part.strip() for part in PurePath(_risk_name(name).rstrip(" .")).name.split(".")]
     if family == "program":
         high.append(f"The file itself is {label}, which could run on your Mac or PC.")
     elif family == "script" and suffix not in _PLAIN_TEXT_SUFFIXES:
@@ -336,9 +363,12 @@ def _risk(name: str, data: bytes, suffix: str, label: str, family: str, found: d
     if family == "zip" and found.get("risky_entries"):
         high.append("The archive lists programs or scripts inside it.")
     elif family == "zip" and found.get("holds_bundle"):
-        caution.append("It holds an app.")
+        high.append("It holds an app.")        # refused at save: the card is shown before the risk is judged
     elif family == "zip" and found.get("holds_script"):
         caution.append("It holds a program or script.")
+    if (family == "archive" or (family == "zip" and found.get("zip_error"))
+            or (suffix in _ARCHIVE_SUFFIXES and family != "zip")):
+        caution.append(_NO_LOOK)
     if found.get("macros") or suffix in _MACRO_SUFFIXES or (
             label == "an old Office file" and _OLE_VBA in data):
         caution.append("It is an Office file that contains macros, which can run commands if you enable them.")
@@ -364,11 +394,11 @@ def _risk(name: str, data: bytes, suffix: str, label: str, family: str, found: d
 def inspect(name: str, data: bytes) -> dict:
     """What this file really is and what looks wrong, from its bytes alone."""
     label, family = _signature(data)
-    suffix = _suffix(name)
+    suffix = _risk_suffix(name)
     out: dict = {"real_type": label, "family": family, "warnings": []}
     if _hidden(name):
         out["warnings"].append("Its name contains hidden characters that change how it reads.")
-    parts = [part.strip() for part in PurePath(_plain_name(name).rstrip(" .")).name.lower().split(".")]
+    parts = [part.strip() for part in PurePath(_risk_name(name).rstrip(" .")).name.split(".")]
     if len(parts) >= 3 and parts[-1] in _RISKY_SUFFIXES and parts[-2] in _INNOCENT_SUFFIXES:
         out["warnings"].append(f"Its name is made to look like a .{parts[-2]}, but it ends in .{parts[-1]}.")
     if family == "program" and suffix in _INNOCENT_SUFFIXES:

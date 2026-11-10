@@ -771,6 +771,68 @@ async def test_with_a_message_id_a_look_alike_without_one_does_not_confuse_the_s
     assert (await sv.save(frozen))["ok"] is True
 
 
+async def test_a_forged_twin_with_the_same_message_id_and_another_sender_is_not_the_file(world, home):
+    frozen = await frozen_of(world)
+    real = world.emails.pop()
+    twin = world.add("invoice.pdf", sender="Evil <evil@x.test>", ts=real.ts)       # same id, time, name, size
+    twin.files[0].rowid = 7
+    assert (await sv.save(frozen))["reason"] == sv._GONE
+    assert world.fetches == 0 and list_dir(home / "Downloads") == []
+
+
+async def test_a_forged_twin_with_another_subject_is_not_the_file(world, home):
+    frozen = await frozen_of(world)
+    real = world.emails.pop()
+    world.add("invoice.pdf", subject="Payroll update", ts=real.ts)
+    assert (await sv.save(frozen))["reason"] == sv._GONE
+
+
+async def test_the_real_file_is_found_even_when_a_forged_twin_is_listed_first(world, home):
+    frozen = await frozen_of(world)
+    real = world.emails[0]
+    twin = world.add("invoice.pdf", sender="Evil <evil@x.test>", ts=real.ts)
+    world.emails.remove(twin)
+    world.emails.insert(0, twin)
+    assert (await sv.save(frozen))["ok"] is True
+
+
+async def test_a_twin_identical_in_every_compared_field_is_refused_as_more_than_one(world, home):
+    frozen = await frozen_of(world)
+    twin = world.add("invoice.pdf", ts=world.emails[0].ts)
+    twin.files[0].rowid = 7
+    got = await sv.save(frozen)
+    assert got == {"ok": False, "wrote": False, "reason": sv._AMBIGUOUS}
+    assert world.fetches == 0 and list_dir(home / "Downloads") == []
+
+
+async def test_a_renumbered_row_next_to_a_look_alike_is_refused_as_more_than_one(world, home):
+    frozen = await frozen_of(world)
+    world.emails[0].files[0].rowid = 9999
+    twin = world.add("invoice.pdf", ts=world.emails[0].ts)
+    twin.files[0].rowid = 4242
+    assert (await sv.save(frozen))["reason"] == sv._AMBIGUOUS
+
+
+async def test_a_name_over_300_characters_still_saves(world, home):
+    name = "n" * 350 + ".pdf"
+    frozen = await frozen_of(world, name)
+    assert len(frozen["name"]) == 300 and frozen["name"].endswith(".pdf")
+    got = await sv.save(frozen)
+    assert got["ok"] is True, got
+
+
+async def test_a_message_id_over_100_characters_still_saves(world, home):
+    world.add("invoice.pdf", rfc="<" + "i" * 150 + "@x.test>")
+    f = world.emails[0].files[0]
+    f.message_id, f.gmail_message, f.gmail_account = "m" * 150, "g" * 400, "a" * 400
+    got = await sv.prepare()
+    assert got["ok"], got
+    frozen = got["frozen"]
+    assert len(frozen["message_id"]) == 100 and len(frozen["gmail_message"]) == 300
+    saved = await sv.save(frozen)
+    assert saved["ok"] is True, saved
+
+
 # --- fail closed ----------------------------------------------------------------------------
 
 @pytest.mark.parametrize("answer", [{}, {"warnings": []}, {"risk": None}, {"risk": "high"}, {"risk": {}},

@@ -75,6 +75,21 @@ _FIELDS: dict[str, tuple] = {
 }
 
 
+_LIMITS = {"sender": 300, "subject": 300, "rfc": 300, "chat": 300, "name": 300, "attachment_id": 300,
+           "gmail_account": 300, "gmail_message": 300, "gmail_attachment": 600, "message_id": 100}
+
+
+def _cut(key: str, value) -> str:
+    """A stored field cut to the length `frozen` keeps. `prepare` and the comparison in `save` both use this,
+    so a long file name or Message-ID is compared as it was stored."""
+    text, room = str(value or ""), _LIMITS[key]
+    if key == "name" and len(text) > room:      # keep the real extension, which the risk check needs
+        stem, ext = os.path.splitext(text)
+        if 0 < len(ext) <= _MAX_EXT:
+            return stem[:room - len(ext)] + ext
+    return text[:room]
+
+
 class _Stop(Exception):
     """A plain reason nothing was saved."""
 
@@ -349,13 +364,15 @@ async def prepare(query=None, name=None, start=None, end=None, account=None,
         save_name = clean_name(f.name)
         frozen = {
             "source": "messages" if email.source == "messages" else "mail",
-            "ts": float(email.ts or 0), "sender": str(email.sender or "")[:300],
-            "subject": str(email.subject or "")[:300], "rfc": str(email.rfc or "")[:300],
-            "chat": str(email.chat or "")[:300], "from_me": bool(email.from_me),
-            "name": str(f.name or "")[:300], "nth": int(f.nth or 1), "size": int(f.size or 0),
-            "rowid": int(f.rowid or 0), "attachment_id": str(f.attachment_id or "")[:300],
-            "gmail_account": str(f.gmail_account or "")[:300], "gmail_message": str(f.gmail_message or "")[:300],
-            "gmail_attachment": str(f.gmail_attachment or "")[:600], "message_id": str(f.message_id or "")[:100],
+            "ts": float(email.ts or 0), "sender": _cut("sender", email.sender),
+            "subject": _cut("subject", email.subject), "rfc": _cut("rfc", email.rfc),
+            "chat": _cut("chat", email.chat), "from_me": bool(email.from_me),
+            "name": _cut("name", f.name), "nth": int(f.nth or 1), "size": int(f.size or 0),
+            "rowid": int(f.rowid or 0), "attachment_id": _cut("attachment_id", f.attachment_id),
+            "gmail_account": _cut("gmail_account", f.gmail_account),
+            "gmail_message": _cut("gmail_message", f.gmail_message),
+            "gmail_attachment": _cut("gmail_attachment", f.gmail_attachment),
+            "message_id": _cut("message_id", f.message_id),
             "folder": real, "save_name": save_name,
         }
         frozen["check"] = _seal(frozen)
@@ -374,52 +391,50 @@ def _strong(frozen: dict) -> bool:
     return bool(frozen["rfc"] or frozen["gmail_message"] or frozen["message_id"])
 
 
-def _differs(frozen_value, now) -> bool:
+def _differs(frozen: dict, key: str, now) -> bool:
     """Both sides name an id and they are not the same id."""
-    return bool(frozen_value) and bool(now) and str(now)[:600] != frozen_value
+    return bool(frozen[key]) and bool(now) and _cut(key, now) != frozen[key]
 
 
 def _same_basics(frozen: dict, email, f) -> bool:
-    return (email.source == frozen["source"] and f.name.casefold() == frozen["name"].casefold()
+    return (email.source == frozen["source"] and _cut("name", f.name).casefold() == frozen["name"].casefold()
             and int(f.nth or 1) == frozen["nth"] and int(f.size or 0) == frozen["size"])
 
 
 def _same(frozen: dict, email, f) -> bool:
-    """The file the person confirmed. With a stable identity (a Message-ID, a Gmail message or a Messages id)
-    every id that both sides have must agree. Apple Mail's row number and part id can be renumbered by an index
-    rebuild, so they are compared only when there is no Message-ID match to stand on; a rebuilt index with the
-    same Message-ID is the same file. Without any stable identity this is only the basics plus the time to the
-    second, sender and subject; `_locate` then insists on exactly one such file."""
+    """The file the person confirmed, judged without the Mail row number when a Message-ID stands in for it.
+    The time (within a second), file name, which of that name and size always have to agree, and so do the
+    sender and the subject, EXACTLY, whatever else matches: a Message-ID alone is not an identity, because a
+    sender can forge a second message with the same one. Every stable id that both sides have (Gmail account
+    and message, a Messages id) must agree too. When both sides have a Message-ID and it matches, Apple Mail's
+    row number and part id may differ (an index rebuild renumbers them); without a Message-ID match they have
+    to agree as well. `_locate` then insists on exactly ONE file that passes, so a twin is never picked."""
     if not _same_basics(frozen, email, f) or abs(float(email.ts or 0) - frozen["ts"]) > 1.0:
         return False
+    if _cut("sender", email.sender) != frozen["sender"] or _cut("subject", email.subject) != frozen["subject"]:
+        return False
     if not _strong(frozen):
-        return (int(float(email.ts or 0)) == int(frozen["ts"])
-                and str(email.sender or "")[:300] == frozen["sender"]
-                and str(email.subject or "")[:300] == frozen["subject"])
+        return int(float(email.ts or 0)) == int(frozen["ts"])
     for key in ("gmail_account", "gmail_message", "message_id"):
-        if _differs(frozen[key], getattr(f, key)):
+        if _differs(frozen, key, getattr(f, key)):
             return False
     if frozen["rfc"] and email.rfc:
-        return email.rfc[:300] == frozen["rfc"]
-    for key in ("rowid", "attachment_id", "gmail_attachment"):
-        now = getattr(f, key)
-        if key == "rowid":
-            if frozen[key] and now and int(now) != frozen[key]:
-                return False
-        elif _differs(frozen[key], now):
-            return False
-    return str(email.sender or "")[:300] == frozen["sender"] and str(email.subject or "")[:300] == frozen["subject"]
+        return _cut("rfc", email.rfc) == frozen["rfc"]
+    if frozen["rowid"] and f.rowid and int(f.rowid) != frozen["rowid"]:
+        return False
+    return not (_differs(frozen, "attachment_id", f.attachment_id)
+                or _differs(frozen, "gmail_attachment", f.gmail_attachment))
 
 
 async def _locate(frozen: dict):
-    """(email, file, ambiguous). `ambiguous` when the file has no stable identity and two look the same."""
+    """(email, file, ambiguous). `ambiguous` when more than one file passes `_same`."""
     emails, _notes = await mail_attachments.find(
         name=frozen["name"], start=frozen["ts"] - _WINDOW_S, end=frozen["ts"] + _WINDOW_S,
         source=frozen["source"], count=10, most=10)
     found = [(email, f) for email in emails or [] for f in email.files if _same(frozen, email, f)]
     if not found:
         return None, None, False
-    if not _strong(frozen) and len(found) > 1:
+    if len(found) > 1:
         return None, None, True
     return found[0][0], found[0][1], False
 

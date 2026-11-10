@@ -1528,13 +1528,11 @@ def test_a_script_is_at_least_a_caution(name):
 @pytest.mark.parametrize("entry", ["Tool.app/Contents/Info.plist", "x/Setup.pkg/Contents/a", "Thing.bundle/a",
                                    "F.framework/Versions/A/F", "k.kext/Contents/x", "p.plugin/x",
                                    "P.prefPane/Contents/x", "s.saver/x", "w.workflow/Contents/document.wflow2",
-                                   "a.action/x", "Tool.app/"])
-def test_an_archive_holding_a_bundle_is_a_caution(entry):
+                                   "a.action/x", "Tool.app/", "Setup.mpkg/Contents/x", "\uff34ool.\uff41pp/Contents/x"])
+def test_an_archive_holding_an_app_is_high_with_a_plain_reason(entry):
     result = A.inspect("stuff.zip", zipped({"readme.txt": b"hi", entry: b"x"}))
-    assert result["risk"]["level"] in ("caution", "high")
     assert result["holds_bundle"] is True
-    if result["risk"]["level"] == "caution":
-        assert result["risk"]["reasons"] == ["It holds an app."]
+    assert result["risk"] == {"level": "high", "reasons": ["It holds an app."]}
 
 
 def test_an_archive_holding_a_script_is_a_caution_and_plain_documents_stay_clean():
@@ -1909,3 +1907,54 @@ def test_other_sample_sizes_and_channel_counts_are_converted(width, channels, ra
     assert result["seconds"] == pytest.approx(3.0, abs=0.1) and len(result["windows"]) == 1
     assert result["stopped_early"] is False
     assert_window(result["windows"][0])
+
+
+# ------------------------------------------------------- more kinds, folded names, archives never listed
+
+@pytest.mark.parametrize("name", ["a.xip", "a.csh", "a.ksh", "a.tcsh", "a.fish", "a.chm", "a.xll", "a.xlam",
+                                  "a.ppam", "a.one", "a.appx", "a.msix", "a.vhd", "a.vhdx", "a.img", "a.iso",
+                                  "a.lnk", "a.scf", "a.library-ms", "a.settingcontent-ms"])
+def test_more_programs_disk_images_and_shortcuts_are_high(name):
+    assert risk_of(name)["level"] == "high"
+
+
+@pytest.mark.parametrize("name", ["run.\uff45\uff58\uff45", "run.\u017fh", "run.\uff53\uff48", "RUN.EXE", "disk.\uff49\uff53\uff4f",
+                                  "x.\uff4c\uff4e\uff4b"])
+def test_compatibility_letters_cannot_hide_a_program_extension(name):
+    assert risk_of(name)["level"] == "high"
+
+
+def test_folded_names_are_not_changed_in_the_answer_but_judged_folded():
+    assert risk_of("invoice.\uff45\uff58\uff45.pdf")["level"] == "high"
+    assert risk_of("\uff52eport.pdf", pdf_bytes())["level"] == ""
+
+
+def test_a_zip_with_a_folded_entry_name_is_still_read_as_holding_a_program():
+    result = A.inspect("s.zip", zipped({"setup.\uff45\uff58\uff45": b"MZ"}))
+    assert result["risk"]["level"] == "high"
+
+
+@pytest.mark.parametrize("name,data", [
+    ("a.rar", b"hello"), ("a.7z", b"hello"), ("a.tar", b"hello"), ("a.tgz", b"hello"), ("a.tar.gz", b"hello"),
+    ("a.bz2", b"hello"), ("a.xz", b"hello"), ("a.cab", b"hello"),
+    ("a.dat", b"Rar!\x1a\x07\x00rest"), ("a.dat", b"7z\xbc\xaf\x27\x1c\x00\x04rest"),
+    ("a.dat", b"\x1f\x8b\x08\x00rest"), ("a.dat", b"BZh91AY&SYrest"), ("a.dat", b"\xfd7zXZ\x00rest"),
+    ("a.dat", b"MSCF\x00\x00\x00\x00rest"), ("a.dat", b"x" * 257 + b"ustar" + b"x" * 300),
+])
+def test_an_archive_wisp_cannot_list_carries_a_caution(name, data):
+    assert risk_of(name, data) == {"level": "caution", "reasons": ["It is an archive Wisp can't look inside."]}
+
+
+@pytest.mark.parametrize("head", [b"PK\x05\x06", b"PK\x07\x08", b"PK00", b"PK\x01\x02"])
+def test_every_zip_start_is_a_zip(head):
+    assert A.inspect("a.zip", head + b"\x00" * 40)["family"] == "zip"
+
+
+def test_a_zip_that_cannot_be_listed_carries_the_same_caution():
+    risk = A.inspect("a.zip", b"PK\x07\x08" + b"\x00" * 40)["risk"]
+    assert risk == {"level": "caution", "reasons": ["It is an archive Wisp can't look inside."]}
+
+
+def test_a_zip_with_only_a_script_stays_a_caution_and_a_plain_zip_stays_clean():
+    assert A.inspect("s.zip", zipped({"run.py": b"print(1)"}))["risk"]["level"] == "caution"
+    assert A.inspect("s.zip", zipped({"a.txt": b"hi"}))["risk"] == {"level": "", "reasons": []}
