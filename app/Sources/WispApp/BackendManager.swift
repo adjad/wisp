@@ -180,6 +180,11 @@ final class BackendManager {
             "service.main:app",
             "--host", "127.0.0.1",
             "--port", "8765",
+            // On SIGTERM uvicorn waits for open responses, and the app's event stream
+            // stays open for up to 25 s. With this bound the service's own shutdown
+            // (which stops the bundled engine) runs inside `stopAndWait`'s 5 s wait
+            // instead of ending in a SIGKILL.
+            "--timeout-graceful-shutdown", "2",
         ]
         let configDigest = Self.configurationDigest()
         let launchNonce = UUID().uuidString
