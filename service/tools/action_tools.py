@@ -98,6 +98,49 @@ def _script_files_preview(args: dict) -> str:
     return "".join(parts)
 
 
+_FORWARD_NOT_FOUND = ("(Wisp couldn't find this email in the mail it has read, "
+                      "so it can't show the subject or sender.)")
+
+
+def _one_line(text: object, limit: int) -> str:
+    """Sender-written text as one clipped card line."""
+    line = " ".join(_ODD_SPACE.sub(" ", str(text or "")).split())
+    return line if len(line) <= limit else line[:limit].rstrip() + "…"
+
+
+def _forwarded_email_lines(message_id: object) -> list[str]:
+    """Subject, sender and date of the email a forward card is about, looked up
+    by Message-ID in the mail Wisp has already read. [] when it isn't there, or
+    when one ID matches different emails: the card then says it couldn't tell,
+    and never names an email it isn't sure of. Reads caches only."""
+    try:
+        from datetime import datetime
+
+        from service.tools import email_tools
+        wanted = email_tools._norm_mid(str(message_id or ""))
+        if not wanted:
+            return []
+        for rows in (email_tools.header_rows, email_tools._parse_raw, email_tools._history_records):
+            hits = [row for row in rows()
+                    if email_tools._norm_mid(str(row.get("message_id") or "")) == wanted]
+            if not hits:
+                continue
+            row = hits[0]
+            if any((hit.get("subject"), hit.get("sender")) != (row.get("subject"), row.get("sender"))
+                   for hit in hits):
+                return []
+            sender = str(row.get("sender") or "").strip() or "Unknown sender"
+            address = str(row.get("sender_address") or "").strip()
+            if address and address not in sender:
+                sender = f"{sender} <{address}>"
+            when = datetime.fromtimestamp(row["ts"]).strftime("%a %b %-d, %Y %-I:%M %p")
+            return [f"Email: {_one_line(row.get('subject'), 160) or '(no subject)'}",
+                    f"From: {_one_line(sender, 120)}", f"Date: {when}"]
+    except Exception:  # noqa: BLE001 - a cache problem never breaks the card
+        return []
+    return []
+
+
 def _action_preview(tool: str, args: dict) -> str:
     if tool == "run_shell":
         return ("Command:\n" + _clip_preview(str(args.get("cmd") or "").strip() or "(empty)")
@@ -206,7 +249,11 @@ def confirm_preview(tool: str, args: dict) -> str | None:
         to = ", ".join(_card_recipient(r, want_email=True) for r in _split_recipients(
             str(args.get("to", "")))) or "(no recipient given)"
         note = str(args.get("note", "")).strip()
-        return (f"Forward message {args.get('message_id', '?')}\nTo: {to}"
+        # The ID alone tells the user nothing: say which email this is.
+        about = _forwarded_email_lines(args.get("message_id"))
+        return ("".join(f"{line}\n" for line in about)
+                + f"Forward message {args.get('message_id', '?')}\n"
+                + ("" if about else _FORWARD_NOT_FOUND + "\n") + f"To: {to}"
                 + (f"\n\nNote:\n{_clip_preview(note)}" if note else "\n\n(no note)"))
     if tool in ("send_message", "draft_message"):
         to = _card_recipient(str(args.get("to", ""))) or "(no recipient given)"
