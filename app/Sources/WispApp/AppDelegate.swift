@@ -156,25 +156,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // launch. A live copy still gets the hand-over, as before.
             let defaults = UserDefaults.standard
             let shuttingDown = defaults.integer(forKey: Self.shuttingDownPIDKey)
-            if FirstRunSetup.waitsForPeerToQuit(
+            let waits = FirstRunSetup.waitsForPeerToQuit(
                 resumePending: defaults.bool(forKey: FirstRunSetup.resumeKey),
-                peerShuttingDown: peerApps.contains { Int($0.processIdentifier) == shuttingDown }) {
-                Task { @MainActor [weak self] in
-                    // Polled on the main actor between sleeps, so the run loop keeps
-                    // turning (isTerminated is updated there) and nothing hangs.
-                    let deadline = Date().addingTimeInterval(FirstRunSetup.peerQuitWait)
-                    while !peerApps.allSatisfy(\.isTerminated), Date() < deadline {
-                        try? await Task.sleep(nanoseconds: 250_000_000)
-                    }
-                    guard let self else { return }
-                    if peerApps.allSatisfy(\.isTerminated) { self.launch() } else { self.yield(to: peerApps) }
-                }
+                peerShuttingDown: peerApps.contains { Int($0.processIdentifier) == shuttingDown })
+            switch SingleInstance.handOver(
+                selfPath: Self.realLocation(Bundle.main.bundleURL).path,
+                peerPaths: peerApps.map { $0.bundleURL.map { Self.realLocation($0).path } },
+                waitsForPeerToQuit: waits) {
+            case .silent:
+                yield(to: peerApps)
                 return
+            case .ask:
+                // A different Wisp.app is running (a downloaded update opened while the
+                // old one runs). Handing over silently left the person on the old one.
+                guard asksToReplaceRunningWisp(peerApps) else {
+                    yield(to: peerApps)
+                    return
+                }
+                // An ordinary quit, never a forced one: the running copy stops its
+                // engine and service as on any quit, and this one waits for it below.
+                for peer in peerApps where !peer.isTerminated { peer.terminate() }
+            case .waitForQuit:
+                break
             }
-            yield(to: peerApps)
+            Task { @MainActor [weak self] in
+                // Polled on the main actor between sleeps, so the run loop keeps
+                // turning (isTerminated is updated there) and nothing hangs.
+                let deadline = Date().addingTimeInterval(FirstRunSetup.peerQuitWait)
+                while !peerApps.allSatisfy(\.isTerminated), Date() < deadline {
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                }
+                guard let self else { return }
+                if peerApps.allSatisfy(\.isTerminated) { self.launch() } else { self.yield(to: peerApps) }
+            }
             return
         }
         launch()
+    }
+
+    /// Where a copy of Wisp really is: the download, not macOS's temporary copy of it.
+    private static func realLocation(_ url: URL) -> URL {
+        Translocation.original(of: url).original ?? url
+    }
+
+    /// Another Wisp.app is running. Nothing is quit without the person's click: true
+    /// means quit the running one and open this one, false means keep the running one.
+    private func asksToReplaceRunningWisp(_ peers: [NSRunningApplication]) -> Bool {
+        let running = peers.first { !$0.isTerminated }?.bundleURL
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Another copy of Wisp is running"
+        alert.informativeText = SingleInstance.otherCopyDetail(
+            running: running.flatMap { MoveToApplications.version(at: $0.path) },
+            this: MoveToApplications.version(at: Bundle.main.bundleURL.path),
+            runningFolder: running.map {
+                (Self.realLocation($0).deletingLastPathComponent().path as NSString).abbreviatingWithTildeInPath
+            })
+        alert.addButton(withTitle: "Quit It and Open This One")
+        // Esc keeps things as they are.
+        alert.addButton(withTitle: "Keep the Running One").keyEquivalent = "\u{1b}"
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     /// Set by a Wisp that has started quitting (noteTerminating), so a copy
@@ -255,6 +296,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let message = note.userInfo?["message"] as? String ?? ""
             MainActor.assumeIsolated { self?.presentBackendRefusal(message) }
         }
+        backend.onBackendChangeEnded = { [weak self] in self?.releaseHeldRefusal() }
         // Something the listing missed (or that arrived after it) answering on the port
         // with no live child of ours: the manager stops and reports it here, once.
         backend.onPortConflict = { [weak self] in
@@ -341,10 +383,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             if case .conflict(let foreign) = verdict {
                 self.backend.portConflict = true
+                self.startupPortWasJudged()
                 self.presentPortConflict(PortGuard.conflictMessage(port: 8765, listeners: foreign,
                                                                    folderHints: folderHints))
                 return
             }
+            self.startupPortWasJudged()
             // `.owned` cannot occur without a receipt. On `.free`/`.unknown` a responder the
             // listing missed is still caught by BackendManager before it launches anything.
             await self.backend.startIfNeeded()
@@ -2271,11 +2315,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         exitNow()
     }
 
-    /// Exit without stopping the engine. Used when this launch only hands over to a
-    /// copy that is already running, and when an alert quits Wisp without a service.
+    /// Exit without the quit path's engine stop. Used when this launch only hands over
+    /// to a copy that is already running, and when an alert quits Wisp without a service.
     private func terminateWithoutShutdown() {
         noteTerminating()
         shutdownFinished = true
+        // "Quit Wisp" on the refusal alert can come while this app's own backend is
+        // alive: signal it so it does not outlive Wisp. Only the process this app
+        // spawned; with none (a hand-over, a port conflict at launch) this does nothing.
+        backend.stop()
         exitNow()
     }
 
@@ -2334,11 +2382,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var lastRefusalShown = ""
+    /// The port has been judged at launch (see launch()). Until then whatever holds it
+    /// is the port-conflict alert's to report, once.
+    private var startupPortJudged = false
+    /// A refusal arrived while it could not be shown (BackendTrust.RefusalNotice.hold).
+    private var refusalHeld = false
 
     /// The app has just refused to talk to the program on the backend port. Shown once
-    /// per distinct reason, never repeatedly while it stays refused.
+    /// per distinct reason, never repeatedly while it stays refused, and only when it is
+    /// news (BackendTrust.refusalNotice): not for Wisp stopping or restarting its own
+    /// service, not before the port is judged at launch, not beside the port-conflict alert.
     private func presentBackendRefusal(_ message: String) {
         guard !message.isEmpty, message != lastRefusalShown else { return }
+        switch BackendTrust.refusalNotice(startupJudged: startupPortJudged,
+                                          changingOwnBackend: backend.changingBackend,
+                                          portConflict: backend.portConflict,
+                                          quitting: shutdownStarted || appTerminating) {
+        case .show: break
+        case .hold: refusalHeld = true; return
+        case .drop: return
+        }
         lastRefusalShown = message
         let alert = NSAlert()
         alert.alertStyle = .warning
@@ -2346,7 +2409,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.informativeText = message
         alert.addButton(withTitle: "OK")
         alert.addButton(withTitle: "Quit Wisp")
-        if alert.runModal() == .alertSecondButtonReturn { terminateWithoutShutdown() }
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        // With a service of this app's own running, quit the usual way, so it and the
+        // engine have stopped before Wisp exits. With none there is nothing to stop.
+        if backend.childRunning { quit() } else { terminateWithoutShutdown() }
+    }
+
+    private func startupPortWasJudged() {
+        startupPortJudged = true
+        releaseHeldRefusal()
+    }
+
+    /// A refusal held back may have been true for that moment only (a holder that left
+    /// during the launch check, a request under Wisp's own restart), so it is not shown
+    /// from memory. The gate forgets it announced it, and the next check, a few seconds
+    /// away at most (the reachability watch), announces it again if it still holds.
+    private func releaseHeldRefusal() {
+        guard refusalHeld else { return }
+        refusalHeld = false
+        Task { await BackendTrustGate.shared.announceAgain() }
     }
 
     /// A program that is not Wisp's own holds the backend port. Wisp does not stop

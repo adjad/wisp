@@ -73,6 +73,18 @@ final class BackendManager {
     private(set) var everReachable = false
     /// Whether this manager's own backend process is alive (it may not answer yet).
     var childRunning: Bool { process?.isRunning == true }
+    /// True while this manager is stopping or restarting its own backend on purpose
+    /// (`stopAndWait`, `restart`). A request that straddles that is no sign of a stranger
+    /// on the port, so AppDelegate shows no refusal alert meanwhile.
+    var changingBackend: Bool { backendChanges > 0 }
+    private var backendChanges = 0
+    /// Called on the main actor when the last such change has finished.
+    var onBackendChangeEnded: () -> Void = {}
+
+    private func endBackendChange() {
+        backendChanges -= 1
+        if backendChanges == 0 { onBackendChangeEnded() }
+    }
 
     /// Probe the service while the app runs (every 5 s up, 2 s down) so the
     /// notch can say plainly that it isn't running. Independent of the launch
@@ -180,6 +192,15 @@ final class BackendManager {
             "service.main:app",
             "--host", "127.0.0.1",
             "--port", "8765",
+            // On SIGTERM uvicorn waits for open responses, and the app's event stream
+            // stays open for up to 25 s. With this bound the service's own shutdown
+            // (which stops the bundled engine) runs inside `stopAndWait`'s 5 s wait
+            // instead of ending in a SIGKILL.
+            "--timeout-graceful-shutdown", "2",
+            // One line per request (with its query string, which can hold what the
+            // person typed) is not worth keeping: the app alone asks about twice a
+            // second. Start-up errors, tracebacks and Wisp's own lines still reach the log.
+            "--no-access-log",
         ]
         let configDigest = Self.configurationDigest()
         let launchNonce = UUID().uuidString
@@ -211,6 +232,9 @@ final class BackendManager {
         }
 
         let logURL = FileManager.default.temporaryDirectory.appendingPathComponent("moe-backend.log")
+        // No backend of this app is running here, so nothing of ours is writing the
+        // log. Before the offset is read: a fresh file starts at 0.
+        Self.rotateBackendLogIfNeeded(at: logURL)
         let logStartOffset = Self.fileSize(at: logURL)
         if FileManager.default.fileExists(atPath: logURL.path),
            let handle = try? FileHandle(forWritingTo: logURL) {
@@ -382,7 +406,9 @@ final class BackendManager {
     /// would otherwise read as a foreign holder.
     func stopAndWait(timeout: TimeInterval = 5) async {
         guard let process = detachForStop() else { return }
+        backendChanges += 1
         _ = await Self.terminateAndWait(process, timeout: timeout)
+        endBackendChange()
     }
 
     /// Stop this manager's own backend (bounded, as on quit) and launch a fresh
@@ -390,8 +416,10 @@ final class BackendManager {
     /// nothing while a stranger holds the port.
     func restart() async {
         guard !portConflict else { return }
+        backendChanges += 1
         await stopAndWait()
         await startIfNeeded()
+        endBackendChange()
     }
 
     private func detachForStop() -> Process? {
@@ -590,6 +618,31 @@ final class BackendManager {
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
               let size = attributes[.size] as? NSNumber else { return 0 }
         return size.uint64Value
+    }
+
+    /// The backend log is appended to on every launch and nothing else trims it.
+    /// Past this size the next launch starts a new file.
+    nonisolated static let backendLogRotateBytes: UInt64 = 5 * 1024 * 1024
+
+    /// A log larger than `maxBytes` is moved to `<name>.1` (replacing the previous
+    /// `.1`), so the launch that follows creates a new file. Only one old log is
+    /// kept. If the log can't be moved it is removed instead: either way it stops
+    /// growing. True when the log is no longer at `url`. Call it only when no
+    /// backend of this app is running.
+    @discardableResult
+    nonisolated static func rotateBackendLogIfNeeded(
+        at url: URL, maxBytes: UInt64 = BackendManager.backendLogRotateBytes
+    ) -> Bool {
+        guard fileSize(at: url) > maxBytes else { return false }
+        let files = FileManager.default
+        let previous = url.appendingPathExtension("1")
+        try? files.removeItem(at: previous)
+        do {
+            try files.moveItem(at: url, to: previous)
+        } catch {
+            guard (try? files.removeItem(at: url)) != nil else { return false }
+        }
+        return true
     }
 
     nonisolated static func logText(at url: URL, after offset: UInt64) -> String? {
