@@ -123,6 +123,12 @@ final class MailMemoryReader {
         var wait: Double = 0
     }
 
+    /// True for a JSON `true`/`false`, which Foundation would otherwise read as the number 1 or 0.
+    static func isBoolean(_ value: Any?) -> Bool {
+        guard let number = value as? NSNumber else { return false }
+        return CFGetTypeID(number) == CFBooleanGetTypeID()
+    }
+
     /// True when the backend has already given up: more than `wait` seconds passed between
     /// receiving the request and its reaching the front of the recognition queue.
     static func isLate(received: Date, wait: Double, now: Date) -> Bool {
@@ -135,8 +141,9 @@ final class MailMemoryReader {
     /// {type, request_id, kind: "attachment", rowid, attachment_id} or
     /// {type, request_id, kind: "recognize", image_b64[, wait: 1...60 seconds]} (an oversize or non-JPEG image is
     /// still a well-formed request: it is answered `too_large` / `bad_image`, never dropped),
-    /// {type, request_id, kind: "message_attachments", terms (at most 5), handles (at most 10, each 1...100
-    /// characters, no control characters), since, until, limit 1...400} or
+    /// {type, request_id, kind: "message_attachments", terms (at most 5) and handles (at most 10), each 1...100
+    /// characters with no control characters, since, until, limit 1...400; none of the three numbers may be a
+    /// JSON boolean} or
     /// {type, request_id, kind: "message_attachment", attachment_id (1 to 18 digits)}.
     static func request(_ payload: [String: Any]) -> Request? {
         guard payload["type"] as? String == "mail_memory_read",
@@ -169,8 +176,10 @@ final class MailMemoryReader {
         if kind == "message_attachments" {
             guard keys == ["type", "request_id", "kind", "terms", "handles", "since", "until", "limit"],
                   let terms = payload["terms"] as? [String], terms.count <= maxAttachmentTerms,
+                  terms.allSatisfy(isValidHandle),
                   let handles = payload["handles"] as? [String], handles.count <= maxMessageHandles,
                   handles.allSatisfy(isValidHandle),
+                  !isBoolean(payload["since"]), !isBoolean(payload["until"]), !isBoolean(payload["limit"]),
                   let since = (payload["since"] as? NSNumber)?.doubleValue, since.isFinite, since >= 0,
                   let until = (payload["until"] as? NSNumber)?.doubleValue, until.isFinite, until >= 0,
                   let limit = payload["limit"] as? Int, (1...maxAttachmentRows).contains(limit) else { return nil }
@@ -962,6 +971,13 @@ final class MailMemoryReader {
         return (path, Int(info.st_size))
     }
 
+    /// True for a SQLite result that means the file can't be opened or isn't a readable database:
+    /// cannot open, authorisation denied, permission denied, not a database. With no Full Disk Access,
+    /// macOS makes the open itself fail, so the backend must see `no_messages_db`, not `unreadable`.
+    static func isAccessProblem(_ code: Int32) -> Bool {
+        [SQLITE_CANTOPEN, SQLITE_AUTH, SQLITE_PERM, SQLITE_NOTADB].contains(code & 0xFF)
+    }
+
     private static func openMessages(_ path: String) throws -> OpaquePointer? {
         var db: OpaquePointer?
         guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
@@ -970,20 +986,22 @@ final class MailMemoryReader {
         }
         sqlite3_busy_timeout(db, 2000)
         var probe: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM sqlite_master", -1, &probe, nil) == SQLITE_OK,
-              sqlite3_step(probe) == SQLITE_ROW else {
-            sqlite3_finalize(probe)
-            sqlite3_close(db)
-            throw MessagesFailure.unreadable
-        }
+        var result = sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM sqlite_master", -1, &probe, nil)
+        if result == SQLITE_OK { result = sqlite3_step(probe) }
         sqlite3_finalize(probe)
+        guard result == SQLITE_ROW else {
+            sqlite3_close(db)
+            throw isAccessProblem(result) ? MessagesFailure.noDatabase : MessagesFailure.unreadable
+        }
         return db
     }
 
     /// One row per attachment of a real message, newest first, at most `limit` (`capped` says there
     /// were more). Left out: link previews (`.pluginpayloadattachment`), stickers, hidden
     /// attachments, tapback rows, rows without a file name. Every term must be in the chat's name,
-    /// identifier or a member's handle, the sender's handle, or the file's name; a non-empty
+    /// the chat's identifier (a 1:1 chat's is the other person's handle; an opaque `chat...` one is not
+    /// searched), the sender's handle, or the file's name. Other members' handles are not searched, so
+    /// a term naming one person never returns files other people sent in a group; a non-empty
     /// `handles` also requires a sender (never the user) whose handle equals one of them. `since`
     /// and `until` are unix seconds on the message date (0 = no bound, bounds exclusive). `only`
     /// limits the read to one attachment ROWID with the same filters.
@@ -1028,12 +1046,6 @@ final class MailMemoryReader {
             if hasChat {
                 fields.append("\(displayName) LIKE ? ESCAPE '\\'")
                 fields.append("CASE WHEN \(identifier) LIKE 'chat%' THEN '' ELSE \(identifier) END LIKE ? ESCAPE '\\'")
-            }
-            if hasMembers {
-                fields.append("""
-                EXISTS (SELECT 1 FROM chat_handle_join chj JOIN handle hh ON hh.ROWID = chj.handle_id \
-                WHERE chj.chat_id = c.ROWID AND hh.id LIKE ? ESCAPE '\\')
-                """)
             }
             clauses.append("(" + fields.joined(separator: " OR ") + ")")
             for _ in fields { binds.append(.text(likePattern(term))) }

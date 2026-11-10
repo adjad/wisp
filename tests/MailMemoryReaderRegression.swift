@@ -650,6 +650,16 @@ enum MailMemoryReaderRegression {
         }
         check(MailMemoryReader.request(msgListRequest(["handles": [5]])) == nil, "message_attachments: non-string handle refused")
         check(MailMemoryReader.request(msgListRequest(["handles": "bob"])) == nil, "message_attachments: handles must be an array")
+        check(MailMemoryReader.request(msgListRequest(["terms": [""]])) == nil, "message_attachments: empty term refused")
+        check(MailMemoryReader.request(msgListRequest(["terms": [String(repeating: "t", count: 100)]])) != nil, "message_attachments: 100-character term allowed")
+        check(MailMemoryReader.request(msgListRequest(["terms": [String(repeating: "t", count: 101)]])) == nil, "message_attachments: 101-character term refused")
+        for bad in ["a\nb", "a\0b", "a\u{7}", "a\u{7F}"] {
+            check(MailMemoryReader.request(msgListRequest(["terms": [bad]])) == nil, "message_attachments: control character in term refused")
+        }
+        for key in ["since", "until", "limit"] {
+            check(MailMemoryReader.request(msgListRequest([key: true])) == nil, "message_attachments: boolean \(key) refused")
+            check(MailMemoryReader.request(msgListRequest([key: NSNumber(value: false)])) == nil, "message_attachments: NSNumber boolean \(key) refused")
+        }
         check(MailMemoryReader.request(msgListRequest(["limit": 0])) == nil, "message_attachments: limit 0 refused")
         check(MailMemoryReader.request(msgListRequest(["limit": 401])) == nil, "message_attachments: limit 401 refused")
         check(MailMemoryReader.request(msgListRequest(["limit": "5"])) == nil, "message_attachments: limit must be a number")
@@ -704,7 +714,7 @@ enum MailMemoryReaderRegression {
                                                    withDestinationPath: "\(msgBase)/outside/secret.txt")
         try FileManager.default.createSymbolicLink(atPath: "\(msgAttachments)/lnk", withDestinationPath: "\(msgBase)/outside")
         func appleNs(_ unix: Double) -> Int64 { Int64((unix - 978_307_200) * 1_000_000_000) }
-        let t0 = 1_700_000_000.0
+        let msgT0 = 1_700_000_000.0
         let conv = "~/Library/Messages/Attachments"
         let chatDB = makeDB("chatfixture", """
         CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
@@ -720,9 +730,9 @@ enum MailMemoryReaderRegression {
         INSERT INTO chat VALUES (1, '', '+15551234567'), (2, 'Book Club', 'chat123'), (3, '', 'chat456'),
           (4, '', 'Bob@Example.com');
         INSERT INTO chat_handle_join VALUES (1, 1), (2, 2), (2, 3), (3, 1), (3, 2), (4, 2);
-        INSERT INTO message VALUES (1, \(appleNs(t0)), 1, 0, 0), (2, \(appleNs(t0 + 100)), 2, 0, 0),
-          (3, \(appleNs(t0 + 200)), 2, 1, 0), (4, \(appleNs(t0 + 300)), 1, 0, 0), (5, \(appleNs(t0 + 350)), 1, 0, 2000),
-          (6, \(appleNs(t0 + 400)), 3, 0, 0);
+        INSERT INTO message VALUES (1, \(appleNs(msgT0)), 1, 0, 0), (2, \(appleNs(msgT0 + 100)), 2, 0, 0),
+          (3, \(appleNs(msgT0 + 200)), 2, 1, 0), (4, \(appleNs(msgT0 + 300)), 1, 0, 0), (5, \(appleNs(msgT0 + 350)), 1, 0, 2000),
+          (6, \(appleNs(msgT0 + 400)), 3, 0, 0);
         INSERT INTO chat_message_join VALUES (1, 1), (2, 2), (3, 2), (4, 3), (1, 4), (1, 5), (2, 6);
         INSERT INTO attachment VALUES
           (1, '\(conv)/ab/01/G1/lease.pdf', 'Lease 2026.pdf', 'application/pdf', 10, 0, 0),
@@ -769,16 +779,20 @@ enum MailMemoryReaderRegression {
         let mBy = Dictionary(uniqueKeysWithValues: mRows.map { ($0["id"] as? String ?? "", $0) })
         if let lease = mBy["1"] {
             check(lease["chat"] as? String == "+15551234567" && lease["sender"] as? String == "+15551234567"
-                  && lease["from_me"] as? Bool == false && lease["name"] as? String == "Lease 2026.pdf"
-                  && lease["mime"] as? String == "application/pdf" && lease["size"] as? Int == 10
-                  && lease["on_disk"] as? Bool == true && abs((lease["ts"] as? Double ?? 0) - t0) < 0.001,
-                  "message attachment row fields: \(lease)")
+                  && lease["from_me"] as? Bool == false, "message attachment row, chat and sender: \(lease)")
+            check(lease["name"] as? String == "Lease 2026.pdf" && lease["mime"] as? String == "application/pdf"
+                  && lease["size"] as? Int == 10 && lease["on_disk"] as? Bool == true,
+                  "message attachment row, file: \(lease)")
+            check(abs((lease["ts"] as? Double ?? 0) - msgT0) < 0.001, "message attachment row, time: \(lease)")
         } else { check(false, "message attachment 1 present") }
         check(mBy["3"]?["from_me"] as? Bool == true && mBy["3"]?["sender"] as? String == "" && mBy["3"]?["chat"] as? String == "Bob@Example.com",
               "a file the user sent has no sender: \(String(describing: mBy["3"]))")
         check(mBy["2"]?["chat"] as? String == "Group \"Book Club\"" && mBy["2"]?["sender"] as? String == "Bob@Example.com",
               "a named group's label, the lowest chat of a file in two: \(String(describing: mBy["2"]))")
-        check(mBy["7"]?["chat"] as? String == "Group of 2 (+15551234567, Bob@Example.com)", "an unnamed group lists its members: \(String(describing: mBy["7"]))")
+        check(mBy["7"]?["chat"] as? String == "+15551234567", "a file in a 1:1 chat is labelled by the other handle: \(String(describing: mBy["7"]))")
+        check(MailMemoryReader.messageChatLabel(chatName: "", chatIdentifier: "chat456", members: ["Bob@Example.com", "+15551234567"],
+                                                fallback: "x") == "Group of 2 (+15551234567, Bob@Example.com)",
+              "an unnamed group lists its members, sorted")
         check(mBy["10"]?["on_disk"] as? Bool == true, "a ~-prefixed name resolves against the Attachments root")
         for (id, why) in [("7", "a symlinked file"), ("9", "a path outside the root (/etc/hosts)"), ("11", "a symlinked folder below the root"),
                           ("12", "a missing file"), ("16", "a .. path out of the root"), ("17", "an absolute path outside the root")] {
@@ -787,9 +801,12 @@ enum MailMemoryReaderRegression {
         check(msgIDs(msgList(["terms": ["lease"]])) == ["1"], "term matches the file name")
         check(msgIDs(msgList(["terms": ["LEASE", "2026.PDF"]])) == ["1"], "terms are case-insensitive and all must match")
         check(msgIDs(msgList(["terms": ["lease", "book"]])).isEmpty, "every term must match")
-        check(msgIDs(msgList(["terms": ["book club"]])) == ["2"], "term matches the chat name")
-        check(msgIDs(msgList(["terms": ["bob@"]])) == ["3", "2"], "term matches the sender's handle and a member's handle")
-        check(msgIDs(msgList(["terms": ["+1555999"]])) == ["9", "10", "11", "12", "16", "17"], "term matches the sender's handle")
+        check(msgIDs(msgList(["terms": ["book club"]])) == ["9", "10", "11", "12", "16", "17", "2"],
+              "term matches the chat name: every file in that chat, whoever sent it")
+        check(msgIDs(msgList(["terms": ["bob@"]])) == ["3", "2"],
+              "term matches the sender's handle and a 1:1 chat's identifier, never another member's handle")
+        check(msgIDs(msgList(["terms": ["+1555999"]])) == ["9", "10", "11", "12", "16", "17"], "term matches the sender's handle only")
+        check(msgIDs(msgList(["terms": ["+1555123"]])) == ["7", "1"], "a sender's handle and a 1:1 chat's identifier")
         check(msgIDs(msgList(["terms": ["chat123"]])).isEmpty, "an opaque chat identifier is not searched")
         check(msgIDs(msgList(["terms": ["%"]])).isEmpty && msgIDs(msgList(["terms": ["_"]])).isEmpty, "% and _ are literal")
         check(msgIDs(msgList(["terms": ["' OR 1=1 --"]])).isEmpty, "a quote is just text")
@@ -800,16 +817,16 @@ enum MailMemoryReaderRegression {
         check(msgIDs(msgList(["handles": ["nobody"]])).isEmpty, "unknown handle: nothing")
         check(msgIDs(msgList(["handles": ["+15551234567"], "terms": ["lease"]])) == ["1"], "handles and terms together")
         check(msgIDs(msgList(["handles": ["' OR '1'='1"]])).isEmpty, "handles are bound")
-        check(msgIDs(msgList(["since": t0 + 100, "until": t0 + 300])) == ["3"], "since and until are exclusive")
-        check(msgIDs(msgList(["since": t0 + 250])) == ["9", "10", "11", "12", "16", "17", "7"], "since only")
-        check(msgIDs(msgList(["until": t0 + 150])) == ["2", "1"], "until only")
+        check(msgIDs(msgList(["since": msgT0 + 100, "until": msgT0 + 300])) == ["3"], "since and until are exclusive")
+        check(msgIDs(msgList(["since": msgT0 + 250])) == ["9", "10", "11", "12", "16", "17", "7"], "since only")
+        check(msgIDs(msgList(["until": msgT0 + 150])) == ["2", "1"], "until only")
         check(msgIDs(msgList(["since": 1e300])).isEmpty, "an absurd since can't trap")
         let mFew = msgList(["limit": 3])
         check(msgIDs(mFew) == ["9", "10", "11"] && mFew["capped"] as? Bool == true, "limit caps and says so")
         let mExact = msgList(["limit": 10])
         check(msgIDs(mExact).count == 10 && mExact["capped"] as? Bool == false, "exactly the limit is not capped")
         check(msgList([:], db: "\(root)/no-such-chat.db")["error"] as? String == "no_messages_db", "no chat.db: no_messages_db")
-        check(msgList([:], db: junk)["error"] as? String == "unreadable", "not a database: unreadable")
+        check(msgList([:], db: junk)["error"] as? String == "no_messages_db", "not a database: no_messages_db")
         check(msgList([:], db: bare)["error"] as? String == "unsupported_schema", "no attachment tables: unsupported_schema")
 
         // A schema without the optional columns and the chat tables still lists, by file name.
@@ -819,15 +836,16 @@ enum MailMemoryReaderRegression {
         CREATE TABLE attachment (ROWID INTEGER PRIMARY KEY, filename TEXT);
         CREATE TABLE message_attachment_join (message_id INTEGER, attachment_id INTEGER);
         INSERT INTO handle VALUES (1, '+15551234567');
-        INSERT INTO message VALUES (1, \(appleNs(t0)), 1, 0);
+        INSERT INTO message VALUES (1, \(appleNs(msgT0)), 1, 0);
         INSERT INTO attachment VALUES (1, '\(conv)/ab/01/G1/lease.pdf'), (2, '\(conv)/cd/03/G3/notes.txt');
         INSERT INTO message_attachment_join VALUES (1, 1), (1, 2);
         """)
         let thin = msgList(["terms": ["lease"]], db: thinDB)
-        check(msgIDs(thin) == ["1"] && (thin["rows"] as? [[String: Any]])?.first.map {
-            $0["name"] as? String == "lease.pdf" && $0["mime"] as? String == "" && $0["size"] as? Int == 0
-                && $0["chat"] as? String == "+15551234567" && $0["on_disk"] as? Bool == true
-        } == true, "thin schema: \(thin)")
+        let thinRow = (thin["rows"] as? [[String: Any]] ?? []).first ?? [:]
+        check(msgIDs(thin) == ["1"], "thin schema lists the matching file: \(thin)")
+        check(thinRow["name"] as? String == "lease.pdf" && thinRow["mime"] as? String == "" && thinRow["size"] as? Int == 0,
+              "thin schema, file: \(thinRow)")
+        check(thinRow["chat"] as? String == "+15551234567" && thinRow["on_disk"] as? Bool == true, "thin schema, chat: \(thinRow)")
         check(msgIDs(msgList([:], db: thinDB)) == ["1", "2"], "thin schema lists every file")
 
         // One attachment's bytes.
@@ -856,7 +874,8 @@ enum MailMemoryReaderRegression {
         check(msgFetch("1", cap: 9)["error"] as? String == "too_large", "over the cap: too_large")
         check(msgFetch("1", cap: 10)["ok"] as? Bool == true && msgFetch("2", cap: 9)["ok"] as? Bool == true, "exactly the cap, and under it, are read")
         check(msgFetch("1", db: "\(root)/no-such-chat.db")["error"] as? String == "no_messages_db", "read: no chat.db is no_messages_db")
-        check(msgFetch("1", db: junk)["error"] as? String == "unreadable", "read: not a database is unreadable")
+        check(msgFetch("1", db: junk)["error"] as? String == "no_messages_db", "read: not a database is no_messages_db")
+        check(msgFetch("1", db: "\(root)/no-such-dir/chat.db")["error"] as? String == "no_messages_db", "read: a missing folder is no_messages_db")
         check(MailMemoryReader.messageAttachmentFile(filename: "\(msgAttachments)/ab/01/G1/lease.pdf", root: msgAttachments)?.size == 10,
               "guard accepts the real file by its absolute path")
         check(MailMemoryReader.messageAttachmentFile(filename: "\(msgAttachments)/ab/01/G1", root: msgAttachments) == nil, "guard refuses a folder")
