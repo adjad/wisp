@@ -553,8 +553,11 @@ def test_a_big_document_never_blocks_the_event_loop_for_long():
 
 # ------------------------------------------------------------ parts of a file
 
-def paged(count: int = 40, kind: str = "Page", skip: tuple[int, ...] = ()) -> str:
-    return "\n\n".join(f"[{kind} {n}]\nText of {kind.lower()} {n}. Cat{n}." for n in range(1, count + 1) if n not in skip)
+def paged(count: int = 40, kind: str = "Page", skip: tuple[int, ...] = (), total: int | None = None,
+          header: bool = True) -> str:
+    """Text as the large-mode extractor writes it: PDFs lead with `[Pages: N]`; decks have no count."""
+    body = "\n\n".join(f"[{kind} {n}]\nText of {kind.lower()} {n}. Cat{n}." for n in range(1, count + 1) if n not in skip)
+    return f"[Pages: {count if total is None else total}]\n{body}" if kind == "Page" and header else body
 
 
 def heads(text: str) -> list[str]:
@@ -581,13 +584,16 @@ def test_select_pages_notes_say_where_and_keep_marker_lines():
     got = L.select(paged(), "pdf", pages="3-5")
     assert got.note == "Pages 3 to 5 of 40." and got.text.startswith("[Page 3]\nText of page 3.")
     assert L.select(paged(), "pdf", pages="7").note == "Page 7 of 40."
-    assert L.select(paged(22, "Slide"), "pptx", pages="7").note == "Slide 7 of 22."
+    assert L.select(paged(22, "Slide"), "pptx", pages="7").note == "Slide 7."
     assert L.select(paged(), "pdf", pages="1,4,9-10").note == "Pages 1, 4 and 9 to 10 of 40."
 
 
 def test_select_pages_selects_slides_for_a_deck():
     got = L.select(paged(22, "Slide"), "pptx", pages="2-3")
-    assert heads(got.text) == ["[Slide 2]", "[Slide 3]"] and got.note == "Slides 2 to 3 of 22."
+    assert heads(got.text) == ["[Slide 2]", "[Slide 3]"] and got.note == "Slides 2 to 3."
+    gone = L.select(paged(22, "Slide"), "pptx", pages="30")
+    assert gone.text == "" and gone.problem == "Wisp found no text for slide 30."
+    assert "exist" not in gone.problem and " has " not in gone.problem
 
 
 def test_select_pages_reports_pages_that_do_not_exist_and_keeps_the_rest():
@@ -600,8 +606,8 @@ def test_select_pages_reports_pages_that_do_not_exist_and_keeps_the_rest():
 
 def test_select_pages_with_none_existing_is_a_problem_with_no_text():
     got = L.select(paged(), "pdf", pages="60")
-    assert got.text == "" and got.problem == "It has 40 pages." and got.note == ""
-    assert L.select(paged(1), "pdf", pages="9").problem == "It has 1 page."
+    assert got.text == "" and got.problem == "Page 60 doesn't exist: it has 40 pages." and got.note == ""
+    assert L.select(paged(1), "pdf", pages="9").problem == "Page 9 doesn't exist: it has 1 page."
 
 
 def test_a_page_with_no_text_is_said_to_have_none_not_to_be_missing():
@@ -611,9 +617,91 @@ def test_a_page_with_no_text_is_said_to_have_none_not_to_be_missing():
     only = L.select(paged(6, skip=(1,)), "pdf", pages="1")
     assert only.text == "" and only.problem == "Page 1 has no text Wisp can read."
     mixed = L.select(paged(6, skip=(3,)), "pdf", pages="3,9")
-    assert mixed.text == "" and mixed.problem == "It has 6 pages."
+    assert mixed.text == "" and mixed.problem == "Page 9 doesn't exist: it has 6 pages. Page 3 has no text Wisp can read."
     both = L.select(paged(6, skip=(3,)), "pdf", pages="2-3,8")
     assert both.note == "Page 2 of 6. Page 8 doesn't exist: it has 6 pages. Page 3 has no text Wisp can read."
+
+
+def test_a_pdf_whose_last_pages_are_scans_does_not_claim_they_are_missing():
+    text = paged(9, total=12)          # 12 pages, the last three without text
+    got = L.select(text, "pdf", pages="12")
+    assert got.text == "" and got.problem == "Page 12 has no text Wisp can read."
+    assert "exist" not in got.problem
+    mixed = L.select(text, "pdf", pages="8-13")
+    assert heads(mixed.text) == ["[Page 8]", "[Page 9]"]
+    assert mixed.note == ("Pages 8 to 9 of 12. Page 13 doesn't exist: it has 12 pages. "
+                          "Pages 10 to 12 have no text Wisp can read.")
+
+
+def test_a_cut_extraction_says_it_did_not_read_that_far():
+    text = paged(9, total=500)         # 500 pages, the text stopped after page 9
+    got = L.select(text, "pdf", pages="400", cut=True)
+    assert got.text == "" and got.problem == "Wisp didn't read as far as page 400."
+    assert L.select(text, "pdf", pages="600", cut=True).problem == "Page 600 doesn't exist: it has 500 pages."
+    inside = L.select(paged(9, skip=(4,), total=500), "pdf", pages="3-5,400", cut=True)
+    assert inside.note == "Pages 3 and 5 of 500. Page 4 has no text Wisp can read. Wisp didn't read as far as page 400."
+    # Without the cut, the same request is a plain blank page.
+    assert L.select(text, "pdf", pages="400").problem == "Page 400 has no text Wisp can read."
+
+
+def test_text_stored_before_the_count_existed_never_says_a_page_does_not_exist():
+    old = paged(9, header=False)
+    assert L.page_facts(old) == (None, 9)
+    got = L.select(old, "pdf", pages="12")
+    assert got.text == "" and got.problem == "Wisp found no text for page 12."
+    some = L.select(paged(9, skip=(4,), header=False), "pdf", pages="3-5,12-14")
+    assert some.note == "Pages 3 and 5. Wisp found no text for pages 4 and 12 to 14."
+    for sentence in (got.problem, some.note):
+        assert "exist" not in sentence and "has 9" not in sentence
+
+
+def test_page_facts():
+    assert L.page_facts(paged(9, total=12)) == (12, 9)
+    assert L.page_facts(paged(5, skip=(2, 3), total=5)) == (5, 3)
+    assert L.page_facts("[Pages: 7]\n") == (7, 0)
+    assert L.page_facts("[Page 1]\nx\n\n[Page 2]\ny") == (None, 2)
+    assert L.page_facts("plain text") == (None, 0)
+    assert L.page_facts("x\n[Pages: 9]\n[Page 1]\nz") == (None, 1)       # only the first line counts
+
+
+def test_a_huge_page_range_is_clamped_before_anything_is_built():
+    text = paged(120)
+    began = time.monotonic()
+    got = L.select(text, "pdf", pages="1-9999999")
+    assert time.monotonic() - began < 1.0 and len(heads(got.text)) == 50
+    assert got.problem == "" and "Pages 121 to 9999999 don't exist: it has 120 pages." in got.note
+    old = paged(30, header=False)
+    began = time.monotonic()
+    gone = L.select(old, "pdf", pages="31-9999999,5000000-9999999")
+    assert time.monotonic() - began < 1.0
+    assert gone.text == "" and gone.problem == "Wisp found no text for pages 31 to 9999999."
+    # A forged-looking marker in OLD stored text still cannot make millions of tuples.
+    forged = old + "\n\n[Page 9999999]\nlast"
+    began = time.monotonic()
+    out = L.select(forged, "pdf", pages="1-9999999")
+    assert time.monotonic() - began < 1.0 and len(heads(out.text)) == 31
+
+
+def test_the_pages_line_is_never_content():
+    text = paged(60, total=60)
+    assert text.startswith("[Pages: 60]\n")
+    whole = run(L.condense(paged(2, total=2), name="a.pdf", kind="pdf", question=None, budget=5000))
+    assert whole.complete and "[Pages:" not in whole.text and whole.text.startswith("[Page 1]")
+    big = "[Pages: 90]\n" + "\n\n".join(f"[Page {n}]\n" + filler(900, f"Routine filler, page {n}.") for n in range(1, 91))
+    big = big.replace("Routine filler, page 40.", "The zebrafish quota is 4,711 tanks.", 1)
+    got = L.retrieve(big, "pages 90 zebrafish quota", 4000)
+    assert got is not None and "[Pages:" not in got.text and "4,711 tanks" in got.text
+    spread = L.head_and_spread(big, 3000)
+    assert "[Pages:" not in spread.text and spread.text.startswith("[Page 1]")
+    assert "[Pages:" not in L.head_and_spread("[Pages: 3]\n[Page 1]\nx", 2000).text
+    chat = FakeChat()
+    parts = run(L.read_in_parts(big, "big.pdf", "summarize", 6000, chat, L.PassBudget()))
+    assert parts is not None and all("[Pages:" not in c[0][1]["content"] for c in chat.calls)
+    both = run(L.condense(big, name="big.pdf", kind="pdf", question="summarize", budget=3000, chat=FakeChat(),
+                          passes=L.PassBudget()))
+    assert "[Pages:" not in both.text
+    # And BM25 gets nothing to match from it.
+    assert L.retrieve("[Pages: 800]\n" + filler(3000), "pages 800", 500) is None
 
 
 def test_select_pages_takes_at_most_fifty_pages():
@@ -652,6 +740,13 @@ def test_select_sheet_exact_beats_a_number_and_ambiguous_substring_does_not_matc
     got = L.select(book, "xlsx", sheet="plan")
     assert got.text == "" and got.problem == "It has no sheet by that name."
     assert got.available == ["2", "Q1 plan", "Q2 plan"]
+
+
+def test_select_sheet_from_a_cut_extraction_does_not_claim_the_sheet_is_absent():
+    got = L.select(SHEETS, "xlsx", sheet="Archive", cut=True)
+    assert got.text == "" and got.problem == "Wisp found no sheet by that name in the part it read."
+    assert L.select(SHEETS, "xlsx", sheet="Archive").problem == "It has no sheet by that name."
+    assert L.select(SHEETS, "xlsx", sheet="Notes", cut=True).problem == ""
 
 
 def test_select_sheet_keeps_file_text_out_of_note_and_problem_and_bounds_the_names():

@@ -32,6 +32,7 @@ import math
 import re
 import secrets
 import time
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
@@ -65,9 +66,29 @@ their them these this those through to up us want was we what whats what's which
 # Lines the extractor writes to say where text came from: PDF pages and deck slides.
 _MARKER = re.compile(r"^\[(Page|Slide) (\d+)\][ \t]*$", re.M)
 _MARKER_AT_START = re.compile(r"(?:\[(?:Page|Slide) \d+\][ \t]*(?:\n|\Z))")
+# First line of a large-mode PDF's text: its true page count. Never content, never counted.
+_PAGES_HEADER = re.compile(r"\A\[Pages: (\d{1,7})\][ \t]*(?:\n|\Z)")
 MAX_SELECTED_PAGES = 50
 MAX_SHEET_NAMES = 20
 CANT_PICK = "Wisp can't pick pages in this kind of file, so this is from the whole file."
+
+
+
+def _without_header(text: str) -> str:
+    """`text` without the extractor's `[Pages: N]` line, which is a fact about the file, not content."""
+    found = _PAGES_HEADER.match(text)
+    return text[found.end():] if found else text
+
+
+def page_facts(text: str) -> tuple[int | None, int]:
+    """(declared page count or None, how many `[Page N]` blocks have text).
+
+    Text stored before the `[Pages: N]` line existed has no declared count.
+    """
+    found = _PAGES_HEADER.match(text)
+    return (int(found.group(1)) if found else None,
+            len({int(m.group(2)) for m in _MARKER.finditer(text) if m.group(1) == "Page"}))
+
 
 ChatFn = Callable[[list[dict], int], Awaitable[str]]
 
@@ -316,6 +337,7 @@ def retrieve(text: str, question: str, budget: int) -> Condensed | None:
 
     When the text carries page or slide markers, each part says which one it came from.
     """
+    text = _without_header(text)
     chunks = chunk(text)
     if not chunks:
         return None
@@ -408,56 +430,88 @@ def _say_runs(runs: list[tuple[int, int]]) -> str:
     return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
 
 
-def _blocks(text: str) -> dict[int, list[str]]:
-    """Marker blocks by number: each marker line with the text up to the next marker."""
+def _blocks(text: str, word: str) -> dict[int, list[str]]:
+    """Marker blocks by number: each marker line with the text up to the next marker of any kind."""
     found = list(_MARKER.finditer(text))
     blocks: dict[int, list[str]] = {}
     for i, match in enumerate(found):
+        if match.group(1) != word:
+            continue
         end = found[i + 1].start() if i + 1 < len(found) else len(text)
         blocks.setdefault(int(match.group(2)), []).append(text[match.start():end].strip())
     return blocks
 
 
-def _select_pages(text: str, kind: str, pages: str) -> Selection:
+def _missing(asked: list[tuple[int, int]], present: list[int]) -> list[tuple[int, int]]:
+    """The parts of the asked ranges with no block. Cost follows the blocks, never the numbers asked."""
+    out: list[tuple[int, int]] = []
+    for a, b in asked:
+        cursor = a
+        for n in present[bisect_left(present, a):bisect_right(present, b)]:
+            if n > cursor:
+                out.append((cursor, n - 1))
+            cursor = n + 1
+        if cursor <= b:
+            out.append((cursor, b))
+    return out
+
+
+def _select_pages(text: str, kind: str, pages: str, cut: bool = False) -> Selection:
     word = _PAGE_KINDS[kind]
     plural = word + "s"
-    blocks = _blocks(text)
-    if not blocks:
+    declared = _PAGES_HEADER.match(text) if kind == "pdf" else None
+    total = int(declared.group(1)) if declared else None
+    blocks = _blocks(text, word)
+    if not blocks and total is None:
         return Selection(text, problem=CANT_PICK)
-    total = max(blocks)
     ranges = _page_ranges(pages)
     if not ranges:
         return Selection(text, problem=f"Wisp couldn't tell which {plural.lower()} were meant, "
                                        "so this is from the whole file.")
-    have = f"It has {total} {word.lower() if total == 1 else plural.lower()}."
-    asked = _merge_ranges([(max(a, 1), min(b, total)) for a, b in ranges if max(a, 1) <= min(b, total)])
-    existing = sorted(n for a, b in asked for n in range(a, b + 1) if n in blocks)
-    # Asked for but not there: past the end, or a page inside the file with no text (a picture, a blank).
-    beyond = _merge_ranges([(max(a, total + 1), b) for a, b in ranges if b > total])
-    gaps = _merge_ranges([(n, n) for a, b in asked for n in range(a, b + 1) if n not in blocks])
+    present = sorted(blocks)
+    last = present[-1] if present else 0
+    # Nothing below is sized by the numbers asked for: ranges are clamped to the declared count
+    # (or the highest real block) first, and gaps are found from the blocks.
+    top = total if total is not None else last
+    asked = _merge_ranges([(max(a, 1), min(b, top)) for a, b in ranges if max(a, 1) <= min(b, top)])
+    existing = [n for a, b in asked for n in present[bisect_left(present, a):bisect_right(present, b)]]
+    beyond = _merge_ranges([(max(a, top + 1), b) for a, b in ranges if b > top])
+    gaps = _merge_ranges(_missing(asked, present))
 
     def said(runs: list[tuple[int, int]], one: str, several: str) -> str:
         many = len(runs) > 1 or runs[0][0] != runs[0][1]
         return f"{plural if many else word} {_say_runs(runs)} {several if many else one}"
-    blank = said(gaps, "has", "have") + " no text Wisp can read." if gaps else ""
-    if not existing:
-        return Selection("", problem=blank if blank and not beyond else have)
     sentences = []
-    if beyond:
-        sentences.append(said(beyond, "doesn't", "don't")
-                         + f" exist: it has {total} {word.lower() if total == 1 else plural.lower()}.")
-    if blank:
-        sentences.append(blank)
+    if total is None:
+        # No declared count (slides, or text stored before the count was written): say only what was found.
+        nothing = _merge_ranges([*gaps, *beyond])
+        if nothing:
+            many = len(nothing) > 1 or nothing[0][0] != nothing[0][1]
+            sentences.append(f"Wisp found no text for {plural.lower() if many else word.lower()} "
+                             f"{_say_runs(nothing)}.")
+    else:
+        if beyond:
+            sentences.append(said(beyond, "doesn't", "don't")
+                             + f" exist: it has {total} {word.lower() if total == 1 else plural.lower()}.")
+        # Past the last page with text, a cut extraction may simply not have got that far.
+        unread = [(max(a, last + 1), b) for a, b in gaps if b > last] if cut else []
+        blank = [(a, min(b, last)) for a, b in gaps if a <= last] if cut else gaps
+        if blank:
+            sentences.append(said(blank, "has", "have") + " no text Wisp can read.")
+        if unread:
+            sentences.append(f"Wisp didn't read as far as {word.lower()} {unread[0][0]}.")
+    if not existing:
+        return Selection("", problem=" ".join(sentences) or "Wisp found no text there.")
     taken = existing[:MAX_SELECTED_PAGES]
     if len(existing) > len(taken):
         sentences.append(f"Only the first {MAX_SELECTED_PAGES} {plural.lower()} were taken.")
     chosen = "\n\n".join(block for n in taken for block in blocks[n])
     runs = _merge_ranges([(n, n) for n in taken])
-    lead = f"{plural if len(taken) > 1 else word} {_say_runs(runs)} of {total}."
+    lead = f"{plural if len(taken) > 1 else word} {_say_runs(runs)}" + (f" of {total}." if total is not None else ".")
     return Selection(chosen, " ".join([lead, *sentences]))
 
 
-def _select_sheet(text: str, kind: str, sheet: str) -> Selection:
+def _select_sheet(text: str, kind: str, sheet: str, cut: bool = False) -> Selection:
     if kind in ("csv", "tsv"):
         return Selection(text)
     found = list(re.finditer(r"^\[Sheet: (.*)\][ \t]*$", text, re.M))
@@ -475,14 +529,16 @@ def _select_sheet(text: str, kind: str, sheet: str) -> Selection:
         if digits and 1 <= int(digits.group(1)) <= len(names):
             index = int(digits.group(1)) - 1
     if index is None:
-        return Selection("", problem="It has no sheet by that name.",
+        return Selection("", problem=("Wisp found no sheet by that name in the part it read." if cut
+                                      else "It has no sheet by that name."),
                          available=[n[:60] for n in names[:MAX_SHEET_NAMES]])
     end = found[index + 1].start() if index + 1 < len(found) else len(text)
     return Selection(text[found[index].start():end].strip(), f"One sheet of {len(names)}.",
                      available=[names[index][:60]])
 
 
-def select(text: str, kind: str, *, pages: str | None = None, sheet: str | None = None) -> Selection:
+def select(text: str, kind: str, *, pages: str | None = None, sheet: str | None = None,
+           cut: bool = False) -> Selection:
     """The page, slide or sheet asked for. Both None: the text unchanged.
 
     `note` and `problem` are Wisp's own sentences. Sheet names come from the file, so they are
@@ -494,9 +550,9 @@ def select(text: str, kind: str, *, pages: str | None = None, sheet: str | None 
     if pages is None and sheet is None:
         return Selection(text)
     if pages is not None and kind in _PAGE_KINDS:
-        return _select_pages(text, kind, pages)
+        return _select_pages(text, kind, pages, cut)
     if sheet is not None and kind in _SHEET_KINDS:
-        return _select_sheet(text, kind, sheet)
+        return _select_sheet(text, kind, sheet, cut)
     return Selection(text, problem=CANT_PICK if pages is not None else _CANT_PICK_SHEET)
 
 
@@ -574,6 +630,7 @@ def _notes_request(question: str | None, name: str, part: str, index: int, total
 async def read_in_parts(text: str, name: str, question: str | None, budget: int, chat: ChatFn,
                         passes: PassBudget) -> Condensed | None:
     """Notes from up to `passes.left` parts. None when no part could be read."""
+    text = _without_header(text)
     plan = plan_parts(text, passes=min(MAX_PASSES, max(1, passes.left)))
     notes: list[str] = []
     done = 0
@@ -618,6 +675,7 @@ def _without_dangling_marker(piece: str) -> str:
 
 def head_and_spread(text: str, budget: int) -> Condensed:
     """No model calls left: the start of the file and spaced samples, labelled."""
+    text = _without_header(text)
     head = max(budget // 2, min(budget, 800))
     pieces = [text[:head].strip()]
     room = budget - head
@@ -637,6 +695,7 @@ async def condense(text: str, *, name: str, kind: str, question: str | None, bud
                    chat: ChatFn | None = None, passes: PassBudget | None = None,
                    extraction_cut: bool = False) -> Condensed:
     """`text` brought down to `budget` characters, with a plain note of what that covered."""
+    text = _without_header(text)
     condensed = await _condense(text, name, kind, question, budget, chat, passes)
     if extraction_cut:
         addition = "The file is longer than Wisp can open in full, so its end was not searched."

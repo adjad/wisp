@@ -21,13 +21,16 @@ Rules:
 - Extraction stops once MAX_TEXT_CHARS is reached (pages, paragraphs, slides
   and rows alike) and walks at most MAX_PDF_PAGES PDF pages. Large mode raises
   those three limits (LARGE_TEXT_CHARS, LARGE_PDF_PAGES, LARGE_DOCUMENT_BYTES)
-  and nothing else (plus a `[Page N]` line before each PDF page's text): the ZIP and stream bounds above stay exactly as tight.
+  and nothing else (plus a `[Pages: N]` line with the PDF's true page count and a `[Page N]` line
+  before each PDF page's text; file text that looks like a marker is defused): the ZIP and stream
+  bounds above stay exactly as tight.
 - Every failure is a ValueError with a plain sentence for the person.
 """
 from __future__ import annotations
 
 import io
 import json
+import re
 import struct
 import subprocess
 import sys
@@ -203,6 +206,15 @@ def zip_guard(data: bytes) -> None:
 
 # --- the formats ------------------------------------------------------------------
 
+# Large mode writes marker lines of its own ([Pages: N], [Page N], [Slide N], [Sheet: name]) for
+# service/large_document.py. A line of the FILE's text that looks like one is defused with a space
+# after the bracket, so a marker in the text is only ever the extractor's.
+_FORGED_MARKER = re.compile(r"^([ \t]*)\[(?=[ \t]*(?:pages?|slides?|sheet)\b)", re.I | re.M)
+
+
+def _neutralise(text: str) -> str:
+    return _FORGED_MARKER.sub(r"\1[ ", text)
+
 def _pdf(data: bytes, limit: int | None = None, pages: int | None = None, markers: bool = False) -> tuple[str, bool]:
     from pypdf import PdfReader, filters
     for name in ("ZLIB_MAX_OUTPUT_LENGTH", "LZW_MAX_OUTPUT_LENGTH", "RUN_LENGTH_MAX_OUTPUT_LENGTH",
@@ -223,16 +235,24 @@ def _pdf(data: bytes, limit: int | None = None, pages: int | None = None, marker
         out = _Text(limit)
         max_pages = MAX_PDF_PAGES if pages is None else pages
         total = len(reader.pages)
+        cut = total > max_pages
         try:
             for index, page in enumerate(reader.pages):
                 if index >= max_pages:
-                    return out.joined("\n\n"), True
+                    cut = True
+                    break
                 body = (page.extract_text() or "").strip()
                 # Large mode labels each page, so an answer can say where a figure is.
-                out.add(f"[Page {index + 1}]\n{body}" if markers and body else body)
+                if markers and body:
+                    body = f"[Page {index + 1}]\n{_neutralise(body)}"
+                out.add(body)
         except _Enough:
-            return out.joined("\n\n"), True
-        return out.joined("\n\n"), total > max_pages
+            cut = True
+        text = out.joined("\n\n")
+        # Large mode also says how many pages the PDF really has, even when the text is cut short.
+        if markers and text.strip():
+            text = f"[Pages: {total}]\n{text}"
+        return text, cut
     except ValueError:
         raise
     except Exception as error:  # noqa: BLE001 — a damaged PDF is unreadable, never a crash
@@ -259,17 +279,19 @@ def _docx(data: bytes, limit: int | None = None) -> tuple[str, bool]:
     return out.joined(), False
 
 
-def _xlsx(data: bytes, limit: int | None = None) -> tuple[str, bool]:
+def _xlsx(data: bytes, limit: int | None = None, markers: bool = False) -> tuple[str, bool]:
     from openpyxl import load_workbook
     book = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     out = _Text(limit)
     try:
         for sheet in book.worksheets:
-            out.add(f"[Sheet: {sheet.title}]")
+            title = " ".join(str(sheet.title).splitlines()) if markers else sheet.title
+            out.add(f"[Sheet: {title}]")
             for row in sheet.iter_rows(values_only=True):
                 cells = ["" if v is None else str(v) for v in row]
                 if any(c.strip() for c in cells):
-                    out.add(" | ".join(cells).rstrip(" |"))
+                    line = " | ".join(cells).rstrip(" |")
+                    out.add(_neutralise(line) if markers else line)
     except _Enough:
         return out.joined(), True
     finally:
@@ -277,7 +299,7 @@ def _xlsx(data: bytes, limit: int | None = None) -> tuple[str, bool]:
     return out.joined(), False
 
 
-def _pptx(data: bytes, limit: int | None = None) -> tuple[str, bool]:
+def _pptx(data: bytes, limit: int | None = None, markers: bool = False) -> tuple[str, bool]:
     from pptx import Presentation
     deck = Presentation(io.BytesIO(data))
     out = _Text(limit)
@@ -290,7 +312,8 @@ def _pptx(data: bytes, limit: int | None = None) -> tuple[str, bool]:
                 if notes:
                     lines.append(f"[speaker notes] {notes}")
             if lines:
-                out.add(f"[Slide {i}]\n" + "\n".join(lines))
+                body = "\n".join(lines)
+                out.add(f"[Slide {i}]\n" + (_neutralise(body) if markers else body))
     except _Enough:
         return out.joined("\n\n"), True
     return out.joined("\n\n"), False
@@ -373,9 +396,9 @@ def extract_text(name: str, data: bytes, large: bool = False) -> tuple[str, bool
         elif kind == "docx":
             text, cut = _docx(data, limit)
         elif kind == "xlsx":
-            text, cut = _xlsx(data, limit)
+            text, cut = _xlsx(data, limit, markers=large)
         elif kind == "pptx":
-            text, cut = _pptx(data, limit)
+            text, cut = _pptx(data, limit, markers=large)
         elif kind in _HTML:
             text = _html(data)
         elif kind in _TEXTUTIL:
@@ -390,6 +413,8 @@ def extract_text(name: str, data: bytes, large: bool = False) -> tuple[str, bool
         raise ValueError(DAMAGED) from None
     if not text.strip():
         raise ValueError("That document has no text Wisp can read.")
+    if large and kind not in ("pdf", "xlsx", "pptx"):
+        text = _neutralise(text)
     if len(text) > limit:
         text, cut = text[:limit], True
     return text, cut
