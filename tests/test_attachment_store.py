@@ -229,24 +229,88 @@ def test_get_within_age_still_serves_and_refreshes(monkeypatch):
     assert store.get(D1) is not None
 
 
-def test_get_and_locate_trigger_hourly_prune(monkeypatch):
+def test_get_and_locate_never_prune(monkeypatch):
     t = _clock(monkeypatch)
-    calls = []
-    real = store.prune
-    monkeypatch.setattr(store, "prune", lambda now=None: calls.append(now) or real(now))
     put(D1)
     store.remember("l", D1)
-    assert len(calls) == 1
-    t[0] += 60
-    store.get(D1)
-    store.locate("l")
-    assert len(calls) == 1
-    t[0] += 3600
-    store.get(D1)
-    assert len(calls) == 2
-    t[0] += 3600
-    store.locate("l")
-    assert len(calls) == 3
+
+    def boom(now=None):
+        raise AssertionError("a read must not prune")
+
+    monkeypatch.setattr(store, "prune", boom)
+    monkeypatch.setattr(store, "prune_if_due", boom)
+    for _ in range(3):
+        t[0] += 7200  # an hourly prune would be due every time
+        assert store.get(D1) is not None
+        assert store.locate("l") == D1
+
+
+def test_failed_prune_does_not_consume_the_hour(monkeypatch):
+    t = _clock(monkeypatch)
+    put(D1)  # its prune succeeds and records the hour
+    t[0] += store.MAX_AGE_S + 100
+    real_connect = store._connect
+    n = [0]
+
+    def flaky():
+        n[0] += 1
+        return None if n[0] == 2 else real_connect()  # 1: claim, 2: the prune
+
+    monkeypatch.setattr(store, "_connect", flaky)
+    assert store.prune_if_due() == 0  # the prune failed
+    monkeypatch.setattr(store, "_connect", real_connect)
+    t[0] += 1  # no hour wait: the failure released the claim
+    assert store.prune_if_due() == 1
+
+
+def test_running_prune_blocks_a_second_claim_until_the_lease_ends(monkeypatch):
+    t = _clock(monkeypatch)
+    put(D1)
+    t[0] += store._PRUNE_EVERY_S + 1
+    monkeypatch.setattr(store, "prune", lambda now=None: 0)  # claimer "still pruning"
+    assert store.prune_if_due() == 0
+    calls = []
+    monkeypatch.setattr(store, "prune", lambda now=None: calls.append(now) or 0)
+    t[0] += 5
+    assert store.prune_if_due() == 0 and calls == []  # lease held
+    t[0] += store._LEASE_S
+    store.prune_if_due()
+    assert len(calls) == 1  # a dead pruner's lease expires
+
+
+def test_put_still_prunes_when_due(monkeypatch):
+    t = _clock(monkeypatch)
+    put(D1)
+    t[0] += store.MAX_AGE_S + 100
+    put(D2)  # due: put prunes the stale D1
+    assert store.get(D1) is None
+    assert store.get(D2) is not None
+
+
+def test_prune_if_due_from_a_thread(monkeypatch):
+    import threading
+
+    t = _clock(monkeypatch)
+    put(D1)
+    t[0] += store.MAX_AGE_S + 100
+    out = []
+    th = threading.Thread(target=lambda: out.append(store.prune_if_due()))
+    th.start()
+    th.join(10)
+    assert out == [1]
+
+
+def test_lifespan_does_not_await_the_prune():
+    import inspect
+
+    from service import main
+
+    src = inspect.getsource(main.lifespan)
+    helper = src.index("async def _prune_attachment_store")
+    # The only call sits inside the background helper, which is started, not awaited.
+    assert src.count("prune_if_due") == 1 and src.index("prune_if_due") > helper
+    assert "create_task(_prune_attachment_store())" in src
+    assert "attachment_prune_task.cancel()" in src
 
 
 def test_prune_if_due_runs_once_per_hour_and_ages_out(monkeypatch):
