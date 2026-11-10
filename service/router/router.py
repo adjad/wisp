@@ -1469,6 +1469,28 @@ def _positive_write_intent(text: str) -> bool:
     return has_write_intent(_NEGATED_WRITE_TAIL_RE.sub(" ", _positive_clause_remainder(text)))
 
 
+# Change verbs has_write_intent does not know. They only keep a second request
+# beside a write prohibition ("don't create a new note, append this to Plans");
+# they never count as write intent anywhere else.
+_UNLISTED_WRITE_VERB_RE = re.compile(
+    r"\b(?:update|rename|append|set|turn\s+(?:on|off)|switch\s+(?:on|off)|enable|disable|"
+    r"complete|snooze|start|stop|pause|resume|play)\b", re.I)
+
+
+def _only_negated_write_intent(positive: str) -> bool:
+    """Whether every write verb left in `positive` sits in a prohibition.
+
+    "Don't change anything, what's on my calendar" names no calendar or
+    reminder noun, so the clause is not dropped as a tool rejection and its own
+    "change" read as a request to change something. A prohibition followed by
+    a colon or dash ("don't change anything: what's on my calendar") is closed
+    there, so a request after it is still seen.
+    """
+    clauses = re.sub(r"\s*(?:[\u2014\u2013]|:(?=\s)|\s-\s)\s*", "; ", positive)
+    remainder = _NEGATED_WRITE_TAIL_RE.sub(" ", clauses)
+    return not (has_write_intent(remainder) or _UNLISTED_WRITE_VERB_RE.search(remainder))
+
+
 _OUTBOUND_CHANNEL_CORE = frozenset({"lookup_contact", "send_message", "send_email"})
 _CONTINUED_EFFECT_TOOLS = frozenset({
     "send_email", "send_message", "reply_to_email", "forward_email", "schedule_send",
@@ -6813,7 +6835,7 @@ def routing_guard_contract(text: str, *, model_led: bool = False) -> tuple[froze
         forbidden.update(_SEND_TOOLS)
     positive = _positive_clause_remainder(t)
     if (re.search(r"\b(?:do\s+not|don'?t|never)\s+(?:add|set|create|change|modify)\b|\bread\s+only\b", t, re.I)
-            and not has_write_intent(positive)):
+            and (not has_write_intent(positive) or _only_negated_write_intent(positive))):
         forbidden.update(_ALL_MUTATING_TOOLS)
         forbidden.update(name for name, tool in REGISTRY.items()
                          if not tool.category.endswith("read"))

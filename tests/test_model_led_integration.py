@@ -296,6 +296,47 @@ def test_read_only_and_draft_prohibitions(synthetic):
     assert {"send_email", "send_message", "schedule_send"} <= forbidden
 
 
+@pytest.mark.parametrize("prompt", [
+    "Don't change anything, just tell me what's on my calendar tomorrow",
+    "do not add anything, what's on my calendar",
+    "just look, don't change anything: what's on my calendar",
+    "Don’t change anything, what's on my calendar",
+    "don't change my reminders, just show them",
+    "Show me tomorrow's schedule, but don't add or change anything.",
+])
+def test_generic_write_prohibition_forbids_every_change(synthetic, prompt):
+    # The prohibition's own verb is not a request to change something.
+    _, register = synthetic
+    register("set_timer", "everyday", "assistant_action")
+    forbidden, _ = routing_guard_contract(prompt)
+    assert {"add_reminder", "create_note", "append_note", "update_event",
+            "set_timer", "write_file"} <= forbidden
+    assert "get_upcoming" not in forbidden
+
+
+@pytest.mark.parametrize("prompt,wanted", [
+    ("don't add it to the calendar, remind me at 5 to call mom", "add_reminder"),
+    ("read only: remind me at 5 to call mom", "add_reminder"),
+    ("don't add a reminder, create a note called Plans", "create_note"),
+    ("don't change anything and cancel my 3pm", "cancel_event"),
+    ("Don't change anything else: add milk to my shopping list", "append_note"),
+    ("Don't change anything else — just add milk to my shopping list", "append_note"),
+    ("Don't change the 4:30 meeting - move the 5:00 one to Friday", "update_event"),
+    # Change verbs the write-intent grammar does not list still count as the
+    # second request beside a prohibition.
+    ("don't create a new note, append this to my Plans note", "append_note"),
+    ("Don't change the time, just rename the event to Standup", "update_event"),
+    ("Don't create a new event, update the existing one to 3pm", "update_event"),
+    ("don't change the title, but set a timer for 10 minutes", "set_timer"),
+    ("I never set a reminder for the dentist, add one for Friday", "add_reminder"),
+])
+def test_write_prohibition_beside_a_requested_change_keeps_that_change(synthetic, prompt, wanted):
+    _, register = synthetic
+    register("set_timer", "everyday", "assistant_action")
+    forbidden, _ = routing_guard_contract(prompt)
+    assert wanted not in forbidden
+
+
 # Private shell exception exercises the real builtin with a synthetic process
 # seam; no native process, shell, user data or outbound action executes.
 def _private_shell_fixture(synthetic, monkeypatch):
