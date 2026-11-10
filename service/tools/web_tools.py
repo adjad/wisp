@@ -25,8 +25,9 @@ from urllib.parse import quote, urlparse
 
 import httpx
 
-from service.research.web import (fetch_page as research_fetch_page,
-                                  render_search_results, search_web)
+from service.research.web import (WebError, _SSRF_MESSAGE_PREFIXES,
+                                  fetch_page as research_fetch_page,
+                                  render_search_results, search_web, short_text_fetch)
 from service.tools.registry import DisplayOnlyToolResult, PublicSearchToolResult, register
 from service.tools.untrusted import WEB_PAGE, fence, neutralize
 
@@ -122,25 +123,18 @@ def _recovery_hint(url: str, *, status: int | None = None) -> str:
     u = url.lower()
     host = (urlparse(url).hostname or "").lower()
 
-    if any(b in u for b in _BAD_FINANCE_HOSTS):
-        return (" That API needs a key this tool doesn't have. Use "
-                "https://query1.finance.yahoo.com/v8/finance/chart/<TICKER>"
-                "?range=1d&interval=1d instead, resolving a company name to a "
-                "ticker first via .../v1/finance/search?q=<name>.")
+    if any(b in u for b in _BAD_FINANCE_HOSTS) or "finance.yahoo.com" in host:
+        return (" If this was for a stock or ETF price, use get_stock_price "
+                "instead of building another URL.")
     if any(s in u for s in _SEARCH_HOSTS):
         return (" General search engines return navigation HTML, not data. Use "
-                "https://html.duckduckgo.com/html/?q=<query> for a web search, "
-                "or the documented endpoint for weather/crypto/stocks/news.")
-    if "finance.yahoo.com" in host and "/v8/finance/chart/" not in u:
-        return (" Only the v8 chart endpoint works without a key: "
-                "https://query1.finance.yahoo.com/v8/finance/chart/<TICKER>"
-                "?range=1d&interval=1d")
+                "web_search for a lookup by topic, or the documented endpoint "
+                "for crypto or news.")
     if "news.google.com" in host and status == 404:
         return (" news.google.com needs a non-empty q — try "
                 "q=top stories for a generic news ask.")
-    if "wikipedia.org" in host:
-        return (" That title doesn't exist. Try "
-                "https://html.duckduckgo.com/html/?q=<query> instead of "
+    if "wikipedia.org" in host and status == 404:
+        return (" That title doesn't exist. Use web_search instead of "
                 "guessing another article title.")
     if status in (401, 403):
         return (" This site blocks non-browser fetches. Don't retry it — use a "
@@ -148,6 +142,23 @@ def _recovery_hint(url: str, *, status: int | None = None) -> str:
     return (" Try ONE documented alternate endpoint; if that also fails, stop "
             "and tell the user you couldn't retrieve it rather than trying "
             "more URLs.")
+
+
+_HTTP_STATUS_RE = re.compile(r"HTTP (\d{3})$")
+
+
+def _fetch_failure_hint(url: str, exc: Exception) -> str:
+    """The hint web_fetch's description promises, for a failure it can help.
+
+    A refusal gets none: a blocked local address must not be retried another
+    way, and a refused redirect already names the host to ask for.
+    """
+    message = str(exc)
+    if isinstance(exc, WebError) and (message.startswith(_SSRF_MESSAGE_PREFIXES)
+                                      or message.startswith("redirect to a different host")):
+        return ""
+    status = _HTTP_STATUS_RE.match(message) if isinstance(exc, WebError) else None
+    return _recovery_hint(url, status=int(status.group(1)) if status else None)
 
 
 # The RECIPES stay in the description; the ANTI-PATTERNS moved to the failure
@@ -2644,9 +2655,13 @@ async def current_news(query: str, limit: int = 6) -> str:
 )
 async def web_fetch(url: str) -> str:
     try:
-        page = await research_fetch_page(url)
+        # Research drops pages under 120 characters as too thin to cite. Here a
+        # short body is often the whole answer (the crypto recipe above returns
+        # about 26 characters of JSON), so any non-empty response comes back.
+        with short_text_fetch():
+            page = await research_fetch_page(url)
     except Exception as exc:  # noqa: BLE001
-        return f"(fetch failed: {type(exc).__name__}: {exc})"
+        return f"(fetch failed: {type(exc).__name__}: {exc}){_fetch_failure_hint(url, exc)}"
     # The page is fenced as untrusted, as web_search's snippets already are
     # (_public_search_model_evidence): until 2026-11-04 the raw body followed
     # the header with nothing marking where Wisp's text ended. The title is

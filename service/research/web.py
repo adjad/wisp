@@ -705,6 +705,26 @@ def strict_host_fetch(enabled: bool = True):
         _STRICT_HOST.reset(token)
 
 
+# Research drops a page with almost no readable text: it is a consent wall, a
+# script-only shell or an error stub, and never evidence. A caller that wants
+# the body whatever its length (web_fetch on a JSON price or a one-line status
+# endpoint) lowers the floor for its own fetch; an empty body is still an error.
+_THIN_PAGE_CHARS = 120
+_THIN_PAGE_MESSAGE = "page contained too little readable text"
+_MIN_TEXT_CHARS: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "wisp_web_min_text_chars", default=_THIN_PAGE_CHARS)
+
+
+@contextlib.contextmanager
+def short_text_fetch(min_chars: int = 1):
+    """Accept any non-empty response inside this block, however short."""
+    token = _MIN_TEXT_CHARS.set(max(1, int(min_chars)))
+    try:
+        yield
+    finally:
+        _MIN_TEXT_CHARS.reset(token)
+
+
 async def _fetch_direct(raw_url: str) -> Page:
     """Fetch one public page with redirect and size limits plus SSRF checks."""
     current = await validate_public_url(raw_url)
@@ -761,8 +781,8 @@ async def _fetch_direct(raw_url: str) -> Page:
     else:
         text = data.decode(encoding, errors="replace")[:_MAX_TEXT_CHARS]
     text = _BLANKS.sub("\n\n", text).strip()
-    if len(text) < 120:
-        raise WebError("page contained too little readable text")
+    if len(text) < _MIN_TEXT_CHARS.get():
+        raise WebError(_THIN_PAGE_MESSAGE)
     if not published:
         match = _DATE_RE.search(text[:5000])
         published = match.group(0) if match else ""
@@ -921,6 +941,9 @@ async def fetch_page(raw_url: str) -> Page:
             raise
         if strict:
             raise  # never hand the URL to archive.org
+        if (isinstance(exc, WebError) and str(exc) == _THIN_PAGE_MESSAGE
+                and _MIN_TEXT_CHARS.get() < _THIN_PAGE_CHARS):
+            raise  # the caller took any length and the live answer was empty
         snapshot_url = await _wayback_snapshot_url(raw_url)
         if not snapshot_url:
             raise
