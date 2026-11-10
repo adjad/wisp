@@ -1,21 +1,21 @@
 {
   "version": 2,
   "id": "wisp-engine-overlay-v2",
-  "upstream_tree_sha256": "44617e1d99ef09ae4e7e443ffcc65c8c4fcab9b7b377b10ba8f4a3464fb8a55f",
+  "upstream_tree_sha256": "43bc865f4662bd5d137997edb25229798d56344e89a2c587353d0e2c01669fac",
   "patches": [
     {
       "path": "omlx/engine/vlm.py",
-      "input_sha256": "acf2256f59b56eece462e20014f36c36d14902d7a780e6ac06b928ac68b36562",
-      "output_sha256": "82f1edd2475e31c61cb74b5bb689fe25d78806e81b5cb7750577fc821e4e9437",
+      "input_sha256": "6fff38f74a2ed3966cf83b3cab6d9db50607734fccf926c8ce717e6b7f1ab4a2",
+      "output_sha256": "1a354a6ad3fd20534ea3c2123867dd5ffba12e0ee468cd05e0c61406980a3bb0",
       "patch": "vlm.py.patch.json",
-      "patch_sha256": "e05719cdf908f2bd9a33d3e05ae5da55d718a8cb1d1a3db22d57c7db65748fb5"
+      "patch_sha256": "3e3f6853096df092f5b56a4f2969099a6b7157cf9a37148c141fd47b544b4504"
     },
     {
       "path": "omlx/engine_pool.py",
-      "input_sha256": "8f9de18d2759cc6068f2eba64c855519ad071a0683d60436d841611c54c7d658",
-      "output_sha256": "8326838f0ad2212e0fcdcf895b48d3f558c72e0e6b780e22c9d6f86424e6624c",
+      "input_sha256": "cc1eae35aeda92c946a779cae327c06ea9d8b2082cb7f5406496833c79330a0a",
+      "output_sha256": "a9e694b4ffa37af3d98837ed2aff771ea87b20dc2ce87f06244167250ea42e77",
       "patch": "engine_pool.py.patch.json",
-      "patch_sha256": "6afc957b6f78c1d418fcdf45a58f2c3d118e942f2d7a8d25653c4658889d190b"
+      "patch_sha256": "b5fd7714fa962db12d1c3829f96a98d3218cd0a1c10c54dbbe0c26ac20ac0fd8"
     },
     {
       "path": "omlx/process_memory_enforcer.py",
@@ -26,10 +26,10 @@
     },
     {
       "path": "omlx/server.py",
-      "input_sha256": "76d160aadace9f22d1a5a3ba589f3a72f93e7f3e1d1cb9fe1d6e2b4a7b626183",
-      "output_sha256": "754856a501f15d849e25066bb146979f5420fde6b35692471f874b807d4249de",
+      "input_sha256": "e5ef48cdadc46167281eb861d9fe2fc08fc7af89dee6379fb2d46018a7c6400d",
+      "output_sha256": "5b12ebe1d1e0334e82d5427044993873f64857020d44c6fd070f07e4c12296e9",
       "patch": "server.py.patch.json",
-      "patch_sha256": "0cb8bf1f1cae11b4b9287d19e5f3841aced1f35285eebf31da6b424fba566d3f"
+      "patch_sha256": "4dda1707e68603f577ff408c103991fb993bf2488b0baa2c72a5baed974b1f0a"
     }
   ],
   "additions": [
