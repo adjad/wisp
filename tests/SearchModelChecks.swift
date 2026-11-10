@@ -130,6 +130,7 @@ enum SearchModelChecks {
         await unreadablePageKeepsExplanation()
         await emptyGlobalFailureExplainsNoAnswer()
         await everyLiteralMatchKeepsItsRow()
+        offsetsCountWhatTheBackendCounts()
         print("SearchModel: \(checks) regression checks passed (synthetic transport only)")
     }
 
@@ -387,5 +388,46 @@ enum SearchModelChecks {
         client.finish(request)
         await settle()
         model.reset()
+    }
+
+    // A result's offset counts Unicode scalars, as the backend's Python strings
+    // do. Selecting it in the source app counts UTF-16 units. The numbers here
+    // are Python's own: len() and len(s.encode("utf-16-le")) // 2.
+    static func offsetsCountWhatTheBackendCounts() {
+        let first = "Guest list"
+        // A family, " from ", a flag, " at the cafe" with a combining accent, " by noon".
+        let second = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} from \u{1F1E8}\u{1F1E6} at the cafe\u{301} by noon"
+        check(second.count < SearchOffset.length(second), "Swift counts fewer characters than Python does")
+        check(SearchOffset.length(first) == 10 && SearchOffset.length(second) == 34,
+              "lengths are Python's len()")
+
+        // The page as the reader joins it: each element, then a newline.
+        var text = ""
+        var ranges: [Range<Int>] = []
+        for piece in [first, second] {
+            let start = SearchOffset.length(text)
+            ranges.append(start..<(start + SearchOffset.length(piece)))
+            text += piece + "\n"
+        }
+        check(ranges == [0..<10, 11..<45] && SearchOffset.length(text) == 46,
+              "element ranges are Python offsets into the joined text")
+
+        // Python finds "noon" at 41: inside the second element, 30 scalars in.
+        check(ranges[1].contains(41) && !ranges[0].contains(41), "the result lands on its own element")
+        let noon = SearchOffset.utf16Range(in: second, offset: 41 - ranges[1].lowerBound, length: 4)
+        check(noon.location == 35 && noon.length == 4, "the selection starts 35 UTF-16 units in")
+        check((second as NSString).substring(with: NSRange(location: noon.location, length: noon.length)) == "noon",
+              "and selects the match itself")
+        let flag = SearchOffset.utf16Range(in: second, offset: 11, length: 2)
+        check(flag.location == 14 && flag.length == 4, "a flag is two scalars and four UTF-16 units")
+
+        let plain = SearchOffset.utf16Range(in: first, offset: 6, length: 4)
+        check(plain.location == 6 && plain.length == 4, "plain text is unchanged")
+        let tail = SearchOffset.utf16Range(in: second, offset: 30, length: 400)
+        check(tail.location == 35 && tail.length == 4, "a range is cut at the end of the text")
+        let past = SearchOffset.utf16Range(in: second, offset: 400, length: 4)
+        check(past.location == 39 && past.length == 0, "an offset past the end selects nothing")
+        let negative = SearchOffset.utf16Range(in: first, offset: -3, length: -1)
+        check(negative.location == 0 && negative.length == 0, "bad numbers select nothing")
     }
 }

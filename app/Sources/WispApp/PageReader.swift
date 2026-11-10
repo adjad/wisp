@@ -38,9 +38,11 @@ struct PageText {
     var source: PageSource
     var appName: String
     var title: String
-    // Absolute char offset → the AX element it came from, so a result can be
-    // scrolled to in the host app. Empty for the OCR path.
-    var anchors: [(range: Range<Int>, element: AXUIElement)]
+    // Offset in `text` → the AX element it came from and that element's own
+    // text, so a result can be scrolled to and selected in the host app. The
+    // offsets count Unicode scalars, as search results do (SearchOffset).
+    // Empty for the OCR path.
+    var anchors: [(range: Range<Int>, text: String, element: AXUIElement)]
     // The app the text was read from, so revealing a citation can bring it
     // forward. 0 when unknown.
     var pid: pid_t = 0
@@ -134,7 +136,7 @@ enum PageReader {
         var collected = Collected(
             deadline: DispatchTime.now().uptimeNanoseconds + harvestBudgetNanoseconds)
         harvest(window, into: &collected, depth: 0)
-        if collected.chars > 40 {
+        if collected.scalars > 40 {
             found.page = PageText(text: collected.text, source: .window,
                                   appName: appName, title: found.title,
                                   anchors: collected.anchors, pid: pid)
@@ -185,10 +187,11 @@ enum PageReader {
 
     private struct Collected {
         var text = ""
-        // `text.count`, kept as a running total: counting a String walks all
-        // of it, and doing that at every node made a long page quadratic.
-        var chars = 0
-        var anchors: [(range: Range<Int>, element: AXUIElement)] = []
+        // The length of `text` in Unicode scalars (SearchOffset.length), kept
+        // as a running total: counting a String walks all of it, and doing
+        // that at every node made a long page quadratic.
+        var scalars = 0
+        var anchors: [(range: Range<Int>, text: String, element: AXUIElement)] = []
         // Guardrails: a runaway tree (huge web page, deeply nested Electron
         // app) must not hang the hotkey. Both limits are generous for real
         // documents and hard stops for pathological ones.
@@ -203,7 +206,7 @@ enum PageReader {
 
     /// Depth-first walk in document order, appending every text-bearing node.
     private static func harvest(_ el: AXUIElement, into out: inout Collected, depth: Int) {
-        guard depth < maxDepth, out.visited < maxNodes, out.chars < maxChars,
+        guard depth < maxDepth, out.visited < maxNodes, out.scalars < maxChars,
               DispatchTime.now().uptimeNanoseconds < out.deadline
         else { return }
         out.visited += 1
@@ -238,17 +241,17 @@ enum PageReader {
     private static func append(_ s: String, _ el: AXUIElement, to out: inout Collected) {
         let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        // Anchor ranges are in Characters, as reveal() and the search results
-        // expect. The total stays exact: each piece is trimmed and followed by
-        // a newline, and a newline never joins the character on either side.
-        let length = trimmed.count
-        let start = out.chars
+        // Anchor ranges count Unicode scalars, as the search results that
+        // reveal() looks up do. Counting Characters put every result after a
+        // flag, a family emoji or a combining accent on the wrong element.
+        let length = SearchOffset.length(trimmed)
+        let start = out.scalars
         out.text += trimmed
-        out.anchors.append((start..<(start + length), el))
+        out.anchors.append((start..<(start + length), trimmed, el))
         // Blank line between nodes so the chunker sees real paragraph breaks.
         let gap = length > 60 ? "\n\n" : "\n"
         out.text += gap
-        out.chars += length + gap.count
+        out.scalars += length + SearchOffset.length(gap)
     }
 
     // MARK: - File-native
@@ -369,8 +372,10 @@ enum PageReader {
         // can take the app longer than that and still succeed, so it goes
         // back to the system's default here (0 means "use the default").
         AXUIElementSetMessagingTimeout(anchor.element, 0)
-        let local = offset - anchor.range.lowerBound
-        var range = CFRange(location: local, length: min(length, anchor.range.count - local))
+        // The offset counts scalars; the selection counts UTF-16 units.
+        let span = SearchOffset.utf16Range(in: anchor.text, offset: offset - anchor.range.lowerBound,
+                                           length: length)
+        var range = CFRange(location: span.location, length: span.length)
         var selected = false
         if let axRange = AXValueCreate(.cfRange, &range) {
             selected = AXUIElementSetAttributeValue(

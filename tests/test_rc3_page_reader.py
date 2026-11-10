@@ -113,13 +113,55 @@ def test_the_tree_walk_has_a_time_budget_and_counts_as_it_goes():
                      window)
     harvest = _body(reader, "static func harvest(_ el: AXUIElement, into out: inout Collected, depth: Int)")
     guard = harvest[:harvest.index("out.visited += 1")]
-    assert "out.chars < maxChars" in guard and "DispatchTime.now().uptimeNanoseconds < out.deadline" in guard
+    assert "out.scalars < maxChars" in guard and "DispatchTime.now().uptimeNanoseconds < out.deadline" in guard
     append = _body(reader, "static func append(_ s: String, _ el: AXUIElement, to out: inout Collected)")
     assert "text.count" not in harvest and "text.count" not in append
-    assert "collected.text.count" not in window and "collected.chars > 40" in window
-    # Anchors stay in Characters, from the running total.
-    assert "let start = out.chars" in append and "start..<(start + length)" in append
-    assert "out.chars += length + gap.count" in append
+    assert "collected.text.count" not in window and "collected.scalars > 40" in window
+    # Anchors come from the running total.
+    assert "let start = out.scalars" in append and "start..<(start + length)" in append
+    assert "out.scalars += length + SearchOffset.length(gap)" in append
+
+
+def test_anchors_and_results_count_the_same_units():
+    """A search result's offset is a Python string index: it counts Unicode
+    scalars. Swift's `count` counts whole characters, so a flag, a family emoji
+    or a combining accent earlier in the page moved every later result onto a
+    neighbouring element. The reader counts scalars, and converts to UTF-16
+    units only for the selection it asks the other app to make."""
+    reader = _reader()
+    append = _body(reader, "static func append(_ s: String, _ el: AXUIElement, to out: inout Collected)")
+    assert "let length = SearchOffset.length(trimmed)" in append
+    assert "trimmed.count" not in append and "gap.count" not in append
+    # Each anchor keeps its element's text, which the conversion needs.
+    assert "out.anchors.append((start..<(start + length), trimmed, el))" in append
+    whole = SOURCE.read_text()
+    assert whole.count("[(range: Range<Int>, text: String, element: AXUIElement)]") == 2
+    reveal = _body(reader, "static func reveal(_ page: PageText, offset: Int, length: Int) -> Bool")
+    assert "page.anchors.first(where: { $0.range.contains(offset) })" in reveal
+    assert re.search(r"SearchOffset\.utf16Range\(in: anchor\.text, offset: offset - anchor\.range\.lowerBound,\s*"
+                     r"length: length\)", reveal)
+    assert "CFRange(location: span.location, length: span.length)" in reveal
+    assert "CFRange(location: local" not in reveal
+
+    # The two units, in the Swift that defines them.
+    model = (ROOT / "app" / "Sources" / "WispApp" / "SearchModel.swift").read_text()
+    offsets = model[model.index("enum SearchOffset {"):]
+    assert "static func length(_ text: String) -> Int { text.unicodeScalars.count }" in offsets
+    convert = _body(offsets, "static func utf16Range(in text: String, offset: Int, length: Int)")
+    assert "for scalar in text.unicodeScalars" in convert and "scalar.value > 0xFFFF ? 2 : 1" in convert
+    # tests/SearchModelChecks.swift runs them against these numbers, which are
+    # Python's own for an element with a family emoji, a flag and "e" + U+0301
+    # that follows a plain one.
+    first = "Guest list"
+    second = "\U0001F468\u200D\U0001F469\u200D\U0001F467 from \U0001F1E8\U0001F1E6 at the cafe\u0301 by noon"
+    text = first + "\n" + second + "\n"
+    assert (len(first), len(second), len(text), text.index("noon")) == (10, 34, 46, 41)
+    units = len(second[:second.index("noon")].encode("utf-16-le")) // 2
+    assert units == 35
+    checks = (ROOT / "tests" / "SearchModelChecks.swift").read_text()
+    assert "ranges == [0..<10, 11..<45] && SearchOffset.length(text) == 46" in checks
+    assert "noon.location == 35 && noon.length == 4" in checks
+    assert "        offsetsCountWhatTheBackendCounts()\n" in checks
 
 
 def test_a_file_behind_the_window_is_bounded_before_it_is_read():
