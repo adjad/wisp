@@ -405,6 +405,39 @@ async def test_across_stops_at_the_deadline_and_the_second_call_continues(world,
     assert "USD 212.10 across 6 files" in second
 
 
+async def test_across_numbers_add_up_for_a_mix_of_facts_no_facts_skipped_and_not_reached(world, monkeypatch):
+    invoices(world, 2)                                                  # 2 files with facts
+    world.apple_rows += [row(rowid=10, name="setup.exe", rfc="e@x.com", attachment_id="1.10", ts=NOW - 3 * 3600),
+                         row(rowid=11, name="notes.txt", rfc="n@x.com", attachment_id="1.11", ts=NOW - 4 * 3600),
+                         row(rowid=12, name="late.txt", rfc="l@x.com", attachment_id="1.12", ts=NOW - 5 * 3600)]
+    world.local_files[(10, "1.10")] = MZ                                # a program: skipped by kind
+    world.local_files[(11, "1.11")] = b"Some meeting notes with no amounts in them at all."
+    world.local_files[(12, "1.12")] = b"Never read: the pass runs out of time first."
+    clock = [0.0]
+    monkeypatch.setattr(ma, "time", SimpleNamespace(monotonic=lambda: clock[0], time=__import__("time").time))
+    world.chat_hook = lambda: clock.__setitem__(0, clock[0] + 50)
+    real = documents.local_chat
+    calls = []
+
+    async def third_fails(client, model, messages, max_tokens, deadline):
+        calls.append(1)
+        reply = await real(client, model, messages, max_tokens, deadline)
+        if len(calls) == 3:
+            raise ValueError("no usable reply")
+        return reply
+    monkeypatch.setattr(documents, "local_chat", third_fails)
+    out = await ma.run(across=True)
+    lines = out.splitlines()
+    assert lines[0] == "Facts from 2 of 5 files, newest first."       # N facts of M considered
+    notes = [line for line in lines if not line.startswith("Totals") and line not in lines[:1]
+             and line not in fenced(out)[0].splitlines() and not line.startswith(ma.untrusted.begin_marker("email attachment"))
+             and not line.startswith(ma.untrusted.end_marker("email attachment"))]
+    assert notes[0] == "1 file had text but no facts Wisp could pull out."
+    assert notes[1] == "Skipped 1 file without text: a program or archive."
+    assert notes[2].startswith("1 file not reached;")
+    assert 2 + 1 + 1 + 1 == 5                                          # facts + no facts + skipped + not reached
+
+
 async def test_across_never_starts_a_file_in_the_last_seconds(world, monkeypatch):
     invoices(world, 3)
     clock = [0.0]

@@ -194,8 +194,11 @@ def test_the_real_transcribe_wav_sees_the_real_window_bytes(child, monkeypatch):
 @pytest.mark.parametrize("heard,expected", [
     (A.Heard("x", 42, 42, True), "Heard all 42 seconds."),
     (A.Heard("x", 1, 1, True), "Heard all 1 second."),
-    (A.Heard("x", 125, 125, True), "Heard all 2 minutes."),
-    (A.Heard("x", 60, 60, True), "Heard all 1 minute."),
+    (A.Heard("x", 125, 125, True), "Heard all of it (about 2 minutes)."),
+    (A.Heard("x", 70, 70, True), "Heard all of it (about 1 minute)."),
+    (A.Heard("x", 180, 180, True), "Heard all of it (about 3 minutes)."),
+    (A.Heard("x", 59, 59, True), "Heard all 59 seconds."),
+    (A.Heard("x", 60, 60, True), "Heard all of it (about 1 minute)."),
     (A.Heard("x", 120, 840, False), "Heard the first 2 minutes of 14."),
     (A.Heard("x", 20, 42, False), "Heard the first 20 seconds of 42."),
     (A.Heard("x", 30, 840, False), "Heard the first 30 seconds of 14 minutes."),

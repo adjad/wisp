@@ -108,7 +108,10 @@ def how_much(heard: Heard) -> str:
     """One plain sentence on how much of the recording was heard. Never says "all" unless complete."""
     count, unit = _span(heard.total_s)
     if heard.complete:
-        return f"Heard all {count} {unit}."
+        if unit.startswith("second"):
+            return f"Heard all {count} {unit}."
+        minutes = max(1, (int(round(heard.total_s)) + 30) // 60)
+        return f"Heard all of it (about {minutes} minute{'' if minutes == 1 else 's'})."
     first, first_unit = _span(heard.heard_s)
     if heard.total_s > 600.5 and heard.heard_s >= 595:
         return "Heard the first 10 minutes; the recording is longer than Wisp transcribes."

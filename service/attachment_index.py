@@ -128,7 +128,7 @@ def _wanted(f) -> bool:
         return False
     if f.size > MAX_BYTES:
         return False
-    if ma._is_picture(f.name, f.mime) and 0 < f.size < ma.TINY_IMAGE_BYTES:
+    if ma.is_picture(f.name, f.mime) and 0 < f.size < ma.TINY_IMAGE_BYTES:
         return False
     return not attachment_store.tried(_key(f))
 
@@ -141,7 +141,7 @@ async def _candidate(now: float):
     until = now + FUTURE_HOURS * 3600           # scheduled mail dated ahead must not crowd the list
     for _page in range(MAX_PAGES):
         rows, capped = await bridge.read_attachment_index([], since, until, [], limit=LIST_LIMIT)
-        for email in sorted(ma._merge(rows, []), key=lambda e: e.ts, reverse=True):
+        for email in sorted(ma.from_mail_rows(rows), key=lambda e: e.ts, reverse=True):
             for f in email.files:
                 if _wanted(f):
                     return email, f
