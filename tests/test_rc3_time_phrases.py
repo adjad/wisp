@@ -139,3 +139,16 @@ def test_typed_reminder_does_not_file_an_unplaced_time(text):
     from service.tasks.compiler import compile_reminder_create
     plan = compile_reminder_create(text, now=AFTERNOON)
     assert plan is None or (plan.status != "ready" and not plan.temporal.absolute_iso)
+
+
+@pytest.mark.parametrize("text", [
+    # A clock only inside the quoted title is title text, not the alert.
+    'remind me tomorrow to "review at 6pm"',
+    # Digits after "at" that are not a clock.
+    "remind me tomorrow to look at 3 houses",
+])
+def test_a_clock_that_is_title_text_keeps_the_day_default(text):
+    from service.tasks.compiler import compile_reminder_create
+    plan = compile_reminder_create(text, now=AFTERNOON)
+    assert plan is not None and plan.status == "ready"
+    assert plan.temporal.absolute_iso == "2026-11-11T09:00"

@@ -11,7 +11,7 @@ from service.reminder_intent import (
 )
 from service.tasks.models import SlotValue, TaskPlan, TemporalValue
 from service.tasks.temporal import (
-    has_unsupported_day, local_timezone_name, parse_delay_seconds, parse_lead_seconds,
+    has_clock_token, has_unsupported_day, local_timezone_name, parse_delay_seconds, parse_lead_seconds,
     resolve_named_time,
 )
 
@@ -949,7 +949,11 @@ def compile_reminder_create(text: str, *, now: datetime | None = None,
     ambiguous_dates = _conflicting_reminder_days(scoped_alerts, day_constraints, now)
     lead = parse_lead_seconds(temporal_text) if reference and not (unsupported_clock or ambiguous_dates) else None
     resolved, defaulted = ((None, "") if reference or unsupported_clock or ambiguous_dates
-                           else resolve_named_time(temporal_text, now=now))
+                           else resolve_named_time(
+                               temporal_text, now=now,
+                               # A clock only inside the quoted title is not a
+                               # stated alert time; keep the day's default.
+                               clock_check=has_clock_token(unquoted_request)))
     temporal_source = "explicit" if (resolved or reference) else ""
     plan = TaskPlan(
         original_request=text,

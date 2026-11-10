@@ -57,6 +57,11 @@ def has_unsupported_day(text: str) -> bool:
     return bool(_UNSUPPORTED_DAY.search(text or ""))
 
 
+def has_clock_token(text: str) -> bool:
+    """True when the text states a clock time anywhere."""
+    return bool(_CLOCK_TOKEN.search(text or ""))
+
+
 def _unused_clock(value: str, spans: list[tuple[int, int]]) -> bool:
     return any(not any(start <= token.start() < end for start, end in spans)
                for token in _CLOCK_TOKEN.finditer(value))
@@ -81,8 +86,14 @@ def unambiguous_local_time(value: datetime) -> bool:
         return False
 
 
-def resolve_named_time(text: str, *, now: datetime | None = None) -> tuple[datetime | None, str]:
-    """Resolve a user time and report which daypart default was applied."""
+def resolve_named_time(text: str, *, now: datetime | None = None,
+                       clock_check: bool = True) -> tuple[datetime | None, str]:
+    """Resolve a user time and report which daypart default was applied.
+
+    A default hour is refused when the text names a clock the day phrase did
+    not take. clock_check=False is for a caller that knows every such clock
+    came from quoted title words, which are not alert evidence.
+    """
     now = now or datetime.now()
     value = re.sub(r"\b(?:tommorow|tommorrow|tmrw|tmrow)\b", "tomorrow",
                    " ".join(text.lower().split()))
@@ -145,7 +156,7 @@ def resolve_named_time(text: str, *, now: datetime | None = None) -> tuple[datet
         elif match := re.search(rf"\b(?:{clock})\b", value[:dated.start()], re.I):
             clock_phrase = match.group()
         else:
-            if _unused_clock(value, [dated.span()]):
+            if clock_check and _unused_clock(value, [dated.span()]):
                 return None, ""
             morning = day.replace(hour=9)
             return (morning, "morning") if unambiguous_local_time(morning) else (None, "")
@@ -187,7 +198,7 @@ def resolve_named_time(text: str, *, now: datetime | None = None) -> tuple[datet
         phrases.insert(0, (f"{match.group('day')} at {said}", "", match.span()))
     if not phrases and (match := re.search(rf"\b(?:at|by|this|next|later)?\s*(?P<word>{timeword})\b",
                                            value, re.I)):
-        if _unused_clock(value, [match.span()]):
+        if clock_check and _unused_clock(value, [match.span()]):
             return None, ""
         word = match.group("word")
         target = now.replace(hour=DAYPART_HOURS[word], minute=0, second=0, microsecond=0)
@@ -199,7 +210,7 @@ def resolve_named_time(text: str, *, now: datetime | None = None) -> tuple[datet
 
     for phrase, defaulted, span in phrases:
         # A default hour stands only when no clock was said elsewhere.
-        if defaulted and _unused_clock(value, [span]):
+        if clock_check and defaulted and _unused_clock(value, [span]):
             continue
         try:
             resolved, _ = resolve_when(phrase, now=now)
