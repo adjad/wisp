@@ -219,6 +219,79 @@ def test_a_reply_that_does_not_answer_the_assistant_is_still_stopped(case, name,
     assert result and why in result
 
 
+# --- questions that need a skill tool or an MCP tool -------------------------
+# Wisp cannot tell their lookups from their writes, and each always shows its
+# own card, so a question reaches that card.
+
+def _opaque(name, category):
+    from types import SimpleNamespace
+    return SimpleNamespace(name=name, category=category)
+
+
+@pytest.mark.parametrize("tool,args,prompt", [
+    (_opaque("mcp_tracker_list_issues", "mcp_action"), {"assignee": "me"},
+     "what issues are assigned to me on the tracker?"),
+    (_opaque("skill_style_guide_lookup", "skill_tool"), {"topic": "commas"},
+     "what does the style guide skill say about commas?"),
+])
+def test_a_question_reaches_the_card_of_a_skill_or_mcp_call(tool, args, prompt):
+    assert read_only_question(prompt)
+    assert problem(tool, args, prompt) is None
+
+
+@pytest.mark.parametrize("tool,args,prompt,why", [
+    # Tools Wisp knows are sends or writes are still stopped on the same questions.
+    (_opaque("send_message", "messages_send"), {"to": "dad", "text": "3 issues"},
+     "what issues are assigned to me on the tracker?", "asked a question"),
+    (_opaque("add_reminder", "assistant_write"), {"title": "Issues"},
+     "what issues are assigned to me on the tracker?", "asked a question"),
+    (_opaque("run_shell", "shell"), {"cmd": "du -sh ~/Downloads"},
+     "how big is my downloads folder?", "asked a question"),
+    (_opaque("run_applescript", "shell"), {"script": "tell application \"Finder\" to empty trash"},
+     "how big is my downloads folder?", "asked a question"),
+    (_opaque("text_to_speech", "app_control"), {"text": "hello"},
+     "what does this say?", "asked a question"),
+    # The stops keyed on what a call does still apply to skill and MCP tools.
+    (_opaque("mcp_mail_send", "scheduled_send"), {"to": "dad"},
+     "what issues are assigned to me on the tracker?", "asked a question"),
+    (_opaque("delete_knowledge", "skill_tool"), {"id": "0" * 32},
+     "what issues are assigned to me on the tracker?", "did not ask for anything to be deleted"),
+    (_opaque("forget", "mcp_action"), {"query": "birthday"},
+     "what do you know about my allergies?", "does not match"),
+    (_opaque("remember", "skill_tool"), {"fact": "Three open issues"},
+     "what issues are assigned to me on the tracker?", "did not ask Wisp to remember"),
+])
+def test_only_the_question_stop_is_lifted_and_only_for_skill_and_mcp_calls(tool, args, prompt, why):
+    result = problem(tool, args, prompt)
+    assert result and why in result
+
+
+@pytest.mark.parametrize("name,category,family,args,prompt", [
+    ("mcp_tracker_list_issues", "mcp_action", "connected", {"name": "me"},
+     "what issues are assigned to me on the tracker?"),
+    ("skill_style_guide_lookup", "skill_tool", "skills", {"name": "commas"},
+     "what does the style guide skill say about commas?"),
+])
+def test_the_loop_asks_at_the_card_for_a_skill_or_mcp_call_on_a_question(
+        monkeypatch, name, category, family, args, prompt):
+    # Full access and a standing grant: the card is still the only way through,
+    # and declining it leaves the call unrun.
+    from tests.test_model_led_integration import Approval, call, discover, run
+    from tests.test_model_led_integration import synthetic as _synthetic
+    effects, register = _synthetic.__wrapped__(monkeypatch)
+    register(name, "automation_tools", category, parameters={
+        "type": "object", "properties": {"name": {"type": "string"}}})
+    monkeypatch.setattr("service.safety.policy._FULL_ACCESS", True)
+    monkeypatch.setattr("service.safety.grants.check", lambda *a: "allow")
+    approval = Approval(False)
+    _, events, _ = run([[discover(family, name)], [call(name, **args)], "I could not look that up."],
+                       prompt=prompt, approval=approval)
+    assert [a["tool"] for a in approval.calls] == [name]     # asked at its card
+    assert effects == []                                     # declined, so it never ran
+    results = [e["result"] for e in events if e.get("type") == "tool_result"]
+    assert not any("asked a question" in r for r in results)
+
+
 def test_reads_are_never_stopped():
     assert check("get_upcoming", {}, "did you send it?") is None
     assert check("view_messages", {"conversation": "dad"}, "what did dad say?") is None

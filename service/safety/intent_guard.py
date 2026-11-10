@@ -21,7 +21,10 @@ Stops (toolbench 2026-10-31 unsafe_call cases, Gemma and Bolt):
   offer (files_sort_downloads_by_type -> move_path, dev_timer_cancel_all ->
   clear_reminders).
 - any write or send on a read-only question ("what's on my calendar?",
-  "did you send it?").
+  "did you send it?"). A skill tool or an MCP tool is not stopped for this:
+  a question is how people use them ("what issues are assigned to me?"),
+  Wisp cannot tell their lookups from their writes, and each one always
+  shows its own card first.
 Calls to tools that were not offered are handled before this by the loop
 (they load a schema and never run that step, or are refused as unoffered).
 """
@@ -157,6 +160,15 @@ def read_only_question(prompt: str) -> bool:
                          or _DELETE_VERBS.search(text) or _MOVE_VERBS.search(text))
 
 
+def _asks_at_its_own_card(tool) -> bool:
+    """Calls a question may still reach: skill and MCP tools. The user answers
+    each one at its card in every access mode, and no standing grant skips it
+    (policy._ALWAYS_CONFIRM_EXTENSION). Nothing else: shell commands,
+    AppleScript and app controls stay stopped on a question."""
+    from service.safety.policy import OPAQUE_ACTION_CATEGORIES
+    return tool.category in OPAQUE_ACTION_CATEGORIES
+
+
 def _answers_own_question(prompt: str, last_assistant: str) -> bool:
     """The user is replying to the assistant, not asking something new: a bare
     assent to its closing offer ("Should I set a reminder?" -> "ok do"), or a
@@ -190,7 +202,8 @@ def problem(tool, args: dict, prompt: str, *, previous_user: str = "", last_assi
         return (f"({name} was NOT run: {why}. Nothing was changed or sent; do not say it ran. "
                 f"{instead})")
 
-    if read_only_question(prompt) and not _answers_own_question(prompt, last_assistant):
+    if (read_only_question(prompt) and not _asks_at_its_own_card(tool)
+            and not _answers_own_question(prompt, last_assistant)):
         return stop("the user asked a question and did not ask for any action",
                     "Answer the question from reads only; offer the action if it would help.")
     kind = _kind(tool, args)
