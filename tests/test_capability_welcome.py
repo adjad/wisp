@@ -67,8 +67,17 @@ def test_welcome_survives_unreadable_sources(monkeypatch):
 def test_specific_question_keeps_the_honest_report():
     text = wisp_capabilities("Can you send texts and create reminders?")
     assert "Yes — Send text messages (confirmation required)" in text
-    assert "No — inspect or understand the screen visually" in text
+    assert "No — inspect or understand the screen visually" not in text
+    assert "no vision model" not in text.lower()
     assert "usable tools" not in text
+
+
+def test_screen_question_says_wisp_can_look_when_asked():
+    text = wisp_capabilities("Can you see my screen?")
+    row = next(line for line in text.splitlines() if line.startswith("Yes — look at"))
+    assert "screen" in row and "picture" in row and "press send" in row
+    assert "No — watch your screen on its own" in text
+    assert "no vision model" not in text.lower()
 
 
 def test_router_still_sends_what_can_you_do_to_the_tool():
