@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Everything the Chat window needs from the Wisp service. The live
 /// implementation talks to the local backend; the QA harness supplies a
@@ -107,6 +108,9 @@ final class ChatConversation: ObservableObject, Identifiable {
     }
     var isEmpty: Bool { messages.isEmpty }
     var latestAssistant: ChatMessage? { messages.last(where: { $0.role == .assistant }) }
+    /// A card in this chat is waiting for a yes. Only a reply still running can
+    /// be answered, so the sidebar marks the chat only while it is.
+    var hasPendingApproval: Bool { busy && messages.contains { $0.approval?.state == .pending } }
 }
 
 @MainActor
@@ -141,6 +145,18 @@ final class ChatStore: ObservableObject {
 
     /// Debug Mode, read when a view is built (it gates debug-only tools such as image attach).
     var debugMode: Bool { debug() }
+
+    /// A reply's Markdown as words to speak. The window supplies the notch's
+    /// own cleanup (ChatRootView); the store checks compile without it.
+    var spokenText: (String) -> String = { $0 }
+
+    /// Tells VoiceOver one line (ChatAnnouncement), as the notch does for its
+    /// answers. The store checks record the lines instead.
+    var announce: @MainActor (String) -> Void = { line in
+        guard NSWorkspace.shared.isVoiceOverEnabled, NSApp != nil else { return }
+        NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                             userInfo: [.announcement: line, .priority: NSAccessibilityPriorityLevel.high.rawValue])
+    }
 
     // MARK: - List
 
@@ -645,6 +661,9 @@ final class ChatStore: ObservableObject {
             }
             return
         }
+        // A card is now waiting: VoiceOver says so, since focus is still in the
+        // composer and the card is denied by itself if nobody answers.
+        if event.type == "confirm", let line = ChatAnnouncement.approval(message) { announce(line) }
         switch outcome {
         case .none:
             conversation.messages[i] = message
@@ -660,6 +679,8 @@ final class ChatStore: ObservableObject {
             conversation.busy = false
             conversation.lastUsed = Date()
             conversation.preview = message.text.split(whereSeparator: { $0.isNewline }).first.map(String.init) ?? ""
+            // The whole answer or error, once: never the words as they stream.
+            if let line = ChatAnnouncement.reply(message, plain: spokenText) { announce(line) }
             if message.corpusEvaluation == nil { Task { await self.refresh() } }
         case .droppedEmpty:
             // Nothing arrived: take the exchange back and hand the prompt to the composer.
@@ -674,8 +695,10 @@ final class ChatStore: ObservableObject {
                     conversation.messages.removeSubrange((i - 1)...i)
                 }
                 // Never silent: say why above the composer, as the notch does.
-                conversation.notice = ChatSendNotice.text(message: event.str("message"),
-                                                          unsent: event.bool("unsent"))
+                let notice = ChatSendNotice.text(message: event.str("message"),
+                                                 unsent: event.bool("unsent"))
+                conversation.notice = notice
+                announce(notice)
                 // Re-read the service, so the sidebar stops saying Ready while it is
                 // down and says so again once it is back.
                 Task { await self.refreshWhenReady() }

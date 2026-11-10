@@ -98,6 +98,12 @@ final class ScriptedBackend: ChatBackend {
     func setFullAccess(_ on: Bool) async -> Bool? { fullAccessValue = on; return on }
 }
 
+/// What the store asked VoiceOver to say.
+@MainActor
+final class SpokenLines {
+    var lines: [String] = []
+}
+
 @main
 struct ChatStoreChecks {
     nonisolated(unsafe) static var count = 0
@@ -687,6 +693,62 @@ struct ChatStoreChecks {
             store.stop(store.selected!)
             await settle()
             check(backend.approvals.count == 1 && backend.approvals[0].approved == false, "stop denies the open card")
+        }
+
+        // VoiceOver hears the end of a reply, an error, a message that came back and
+        // a waiting card, each once; never the words as they stream, a Stop, or a corpus case.
+        do {
+            let backend = ScriptedBackend()
+            backend.script = { _ in [
+                ev("session", ["id": "s-voice"]), ev("routed", ["model": "m", "role": "general"]),
+                ev("delta", ["text": "You have "]), ev("delta", ["text": "**4** "]), ev("delta", ["text": "messages."]),
+                ev("done"),
+            ] }
+            let store = ChatStore(backend: backend)
+            let heard = SpokenLines()
+            store.announce = { heard.lines.append($0) }
+            store.spokenText = { $0.replacingOccurrences(of: "**", with: "") }
+            store.send("anything new?")
+            await settle()
+            let chat = store.selected!
+            check(heard.lines == ["Wisp: You have 4 messages."], "a finished answer is announced once, as words: \(heard.lines)")
+            check(!chat.hasPendingApproval, "a chat with no card is not marked as waiting")
+            heard.lines = []
+            backend.script = { _ in [ev("routed", ["model": "m", "role": "general"]), ev("error", ["message": "Out of memory"])] }
+            store.send("and again")
+            await settle()
+            check(heard.lines == ["Wisp couldn't answer: Out of memory"], "an error is announced as one: \(heard.lines)")
+            heard.lines = []
+            backend.script = { _ in [ev("error", ["message": "Wisp isn't running right now.", "dropped": true, "unsent": true])] }
+            store.send("once more")
+            await settle()
+            check(heard.lines == ["Wisp isn't running right now. Your message is back in the box. Press Return to send it again."],
+                  "a message that came back is announced with its note: \(heard.lines)")
+            heard.lines = []
+            backend.script = { _ in [
+                ev("routed", ["model": "m", "role": "agent", "needs_tools": true]),
+                ev("confirm", ["id": "a1", "request_id": "r1", "tool": "move_path", "reason": "Move 3 files to Archive", "grantable": true]),
+            ] }
+            store.send("tidy my desktop")
+            await settle()
+            check(heard.lines == ["Wisp needs your OK: Move 3 files to Archive"], "a waiting card is announced: \(heard.lines)")
+            check(chat.hasPendingApproval, "the sidebar can mark a chat whose card is waiting")
+            store.resolve(chat, messageID: chat.messages.last!.id, approved: false, scope: "once")
+            check(!chat.hasPendingApproval && chat.busy, "an answered card is no longer waiting")
+            store.stop(chat)
+            await settle()
+            check(heard.lines.count == 1, "answering a card or pressing Stop announces nothing more: \(heard.lines)")
+            heard.lines = []
+            let data = Data(#"{"id":"LIVE-001","split":"live","mode":"live","category":"messages","difficulty":"basic","target":"Example Person","token":"t1","conversation":[{"role":"user","content":"Read my recent messages with Example Person."}],"setup":"local","expected":{"tools":["view_messages"],"behavior":["Verify the source quote."]},"risk":"read_only"}"#.utf8)
+            backend.liveCases = [try! JSONDecoder().decode(AssistantTaskCorpusCase.self, from: data)]
+            backend.script = { _ in [
+                ev("confirm", ["id": "blocked", "tool": "send_message", "request_id": "request", "reason": "Send it"]),
+                ev("text", ["text": "A graded answer."]), ev("done"),
+            ] }
+            store.submit("/corpus smoke")
+            await settle(500)
+            check(store.selected?.messages.contains { $0.corpusEvaluation?.completed == true } == true, "the corpus case ran")
+            check(heard.lines.isEmpty, "a corpus case and its declined card are never announced: \(heard.lines)")
         }
 
         // Drafts are sent only on request and only once.

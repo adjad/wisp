@@ -454,6 +454,38 @@ enum ChatSendNotice {
     }
 }
 
+// MARK: - VoiceOver
+
+/// What VoiceOver is told about a reply in the Chat window. Focus stays in the
+/// composer while an answer, an error or a card is added above it, so without
+/// a line each would arrive silently. The notch says the same for its own
+/// answers (OverlayModel.answered). Streamed text is never announced: only the
+/// end of a reply, and a card that is waiting.
+enum ChatAnnouncement {
+    /// A reply that has just ended. `plain` turns its Markdown into words to
+    /// speak. nil for a corpus case, and when there is nothing to say.
+    static func reply(_ message: ChatMessage, plain: (String) -> String) -> String? {
+        guard message.role == .assistant, message.corpusEvaluation == nil else { return nil }
+        var spoken = plain(message.text).trimmingCharacters(in: .whitespacesAndNewlines)
+        if message.isError {
+            return "Wisp couldn't answer: " + (spoken.isEmpty ? "Something went wrong." : spoken)
+        }
+        if let draft = message.draft, !draft.sent, !draft.discarded {
+            spoken += (spoken.isEmpty ? "" : " ") + "There is a message draft, not sent yet."
+        }
+        return spoken.isEmpty ? nil : "Wisp: " + spoken
+    }
+
+    /// A card that is waiting for a yes. nil once it is answered, and for a
+    /// corpus case, whose cards are declined without being offered.
+    static func approval(_ message: ChatMessage) -> String? {
+        guard message.role == .assistant, message.corpusEvaluation == nil,
+              let approval = message.approval, approval.state == .pending else { return nil }
+        let reason = approval.reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        return reason.isEmpty ? "Wisp needs your OK to go on." : "Wisp needs your OK: " + reason
+    }
+}
+
 // MARK: - The conversation list
 
 struct ChatSummary: Identifiable, Equatable {

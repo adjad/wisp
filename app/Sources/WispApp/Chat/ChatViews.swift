@@ -65,6 +65,8 @@ struct ChatRootView: View {
         .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: sidebarVisible)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: store.showInspector)
         .background(shortcuts)
+        // VoiceOver hears a reply as words, not Markdown: the notch's own cleanup.
+        .onAppear { store.spokenText = SpokenText.plain }
         .task { await store.refreshWhenReady() }
         // Coming back from Settings (or any window) re-reads whether answers may
         // go to the cloud, so the Local label is never older than the last switch.
@@ -224,13 +226,21 @@ private struct ChatHistoryRow: View {
 
     var body: some View {
         Button(action: select) {
-            Text(conversation.title)
-                .font(.wisp(.body, on: .window)).lineLimit(1)
-                .foregroundStyle(isSelected ? ChatTheme.text : ChatTheme.text2)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 10).padding(.vertical, 6)
-                .background(RoundedRectangle(cornerRadius: 8).fill(isSelected ? ChatTheme.glass2 : (hovering ? ChatTheme.glass : .clear)))
-                .contentShape(Rectangle())
+            HStack(spacing: 8) {
+                Text(conversation.title)
+                    .font(.wisp(.body, on: .window)).lineLimit(1)
+                    .foregroundStyle(isSelected ? ChatTheme.text : ChatTheme.text2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                // A card in this chat is waiting for a yes, wherever the reader is now.
+                if conversation.hasPendingApproval {
+                    Circle().fill(ChatTheme.amber).frame(width: 7, height: 7)
+                        .help("Waiting for your OK")
+                        .accessibilityHidden(true)
+                }
+            }
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 8).fill(isSelected ? ChatTheme.glass2 : (hovering ? ChatTheme.glass : .clear)))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
@@ -242,6 +252,7 @@ private struct ChatHistoryRow: View {
             Text("\"\(conversation.title)\" and its history will be removed from this Mac.")
         }
         .accessibilityLabel(conversation.title)
+        .accessibilityValue(conversation.hasPendingApproval ? "Waiting for your OK" : "")
     }
 }
 
@@ -909,6 +920,9 @@ struct ChatApprovalCard: View {
         .background(RoundedRectangle(cornerRadius: 14).fill(approval.state == .pending ? ChatTheme.amberWash : ChatTheme.glass))
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(border, lineWidth: 1))
         .opacity(approval.state == .denied || approval.state == .timedOut ? 0.7 : 1)
+        // One named group for VoiceOver: what is asked, then its buttons.
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(approval.state == .pending ? "Wisp needs your OK" : "Wisp asked for your OK")
     }
 
     private var border: Color { approval.state == .pending ? ChatTheme.amberLine : ChatTheme.line }

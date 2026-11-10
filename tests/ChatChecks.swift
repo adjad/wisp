@@ -245,6 +245,37 @@ struct ChatChecks {
         var pendingOff = local; pendingOff["restart_required"] = true
         check(ChatCloudUse.active(from: pendingOff) == true, "a remote launch waiting to restart is still cloud")
 
+        // What VoiceOver is told: the end of a reply and a waiting card, never a corpus case.
+        let bare: (String) -> String = { $0.replacingOccurrences(of: "**", with: "") }
+        var said = ChatMessage(role: .assistant, text: "You have **4 messages**.")
+        check(ChatAnnouncement.reply(said, plain: bare) == "Wisp: You have 4 messages.", "an answer is announced as words")
+        check(ChatAnnouncement.approval(said) == nil, "an answer without a card announces no card")
+        said.draft = ChatDraft(to: "Example Person", text: "See you then.")
+        check(ChatAnnouncement.reply(said, plain: bare) == "Wisp: You have 4 messages. There is a message draft, not sent yet.",
+              "an unsent draft is mentioned")
+        said.draft?.sent = true
+        check(ChatAnnouncement.reply(said, plain: bare) == "Wisp: You have 4 messages.", "a sent draft is not")
+        var failedReply = ChatMessage(role: .assistant, phase: .waiting)
+        _ = ChatTurnReducer.apply(ev("error", ["message": "Out of memory"]), to: &failedReply, now: t0)
+        check(ChatAnnouncement.reply(failedReply, plain: bare) == "Wisp couldn't answer: Out of memory", "an error is announced as one")
+        check(ChatAnnouncement.reply(ChatMessage(role: .assistant), plain: bare) == nil, "an empty reply says nothing")
+        check(ChatAnnouncement.reply(ChatMessage(role: .user, text: "hello"), plain: bare) == nil, "the reader's own message is not announced")
+        var asking = ChatMessage(role: .assistant, phase: .working)
+        _ = ChatTurnReducer.apply(ev("confirm", ["id": "a1", "request_id": "r1", "tool": "move_path",
+                                                 "reason": "Move 3 files to Archive", "grantable": true]), to: &asking, now: t0)
+        check(ChatAnnouncement.approval(asking) == "Wisp needs your OK: Move 3 files to Archive", "a waiting card is announced with its reason")
+        asking.approval?.reason = "  "
+        check(ChatAnnouncement.approval(asking) == "Wisp needs your OK to go on.", "a card with no reason still says it is waiting")
+        asking.approval?.state = .denied
+        check(ChatAnnouncement.approval(asking) == nil, "an answered card is not announced")
+        var corpusReply = ChatMessage(role: .assistant, text: "A graded answer.")
+        corpusReply.corpusEvaluation = ChatCorpusEvaluation(caseID: "ATC-001", split: "smoke", category: "mail",
+                                                            expectedTools: [], behavior: [])
+        corpusReply.approval = ChatApproval(actionId: "a", requestId: "r", tool: "send_email", reason: "Send it",
+                                            grantable: false, scopeHint: "", preview: "")
+        check(ChatAnnouncement.reply(corpusReply, plain: bare) == nil && ChatAnnouncement.approval(corpusReply) == nil,
+              "a corpus case is never announced")
+
         print("Chat contract checks passed (\(count)).")
     }
 }
