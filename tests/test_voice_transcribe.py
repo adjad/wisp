@@ -300,3 +300,104 @@ def test_capability_follows_the_checkpoint_on_disk(checkpoint, tmp_path):
     (short / "config.json").write_text(json.dumps({"audio_config": {"x": 1}}))
     (short / "model.safetensors").write_bytes(b"\x01")   # cut short: no audio, no crash
     assert V.checkpoint_has_audio(str(short)) is False
+
+
+# --- transcribe_wav: one window of a file Wisp was asked to read -------------------
+
+def _later(seconds=5.0):
+    import time
+    return time.monotonic() + seconds
+
+
+def test_a_window_reaches_the_model_as_audio_with_thinking_off(checkpoint):
+    client = StubClient(checkpoint(), reply=' "Call the dentist." ')
+    text = run(V.transcribe_wav(wav(2.0), client=client, model=MODEL, deadline=_later()))
+    assert text == "Call the dentist."
+    call = client.calls[0]
+    part = call["messages"][0]["content"][0]
+    assert part["type"] == "input_audio" and part["input_audio"]["format"] == "wav"
+    assert base64.b64decode(part["input_audio"]["data"]) == wav(2.0)
+    assert call["chat_template_kwargs"] == {"enable_thinking": False}
+    assert call["temperature"] == 0 and "tools" not in call
+    assert call["engine_headers"] == {"X-oMLX-Cache-Store": "off"}
+
+
+def test_a_window_that_is_too_long_or_not_a_wav_is_refused_before_the_model(checkpoint):
+    client = StubClient(checkpoint())
+    for bad in (wav(31.0), b"not a wav at all, definitely not" * 3, b"", wav(1.0, bits=8)):
+        with pytest.raises(ValueError):
+            run(V.transcribe_wav(bad, client=client, model=MODEL, deadline=_later()))
+    assert client.calls == []
+
+
+def test_a_window_needs_a_model_with_ears(checkpoint):
+    client = StubClient(checkpoint(audio=False, weights=False))
+    with pytest.raises(V.VoiceUnavailable, match="can't hear audio"):
+        run(V.transcribe_wav(wav(1.0), client=client, model=MODEL, deadline=_later()))
+    assert client.calls == [] and not idle.foreground_busy()
+
+
+def test_a_window_past_its_deadline_is_a_timeout_and_asks_nothing(checkpoint):
+    client = StubClient(checkpoint())
+    with pytest.raises(TimeoutError, match="model busy"):
+        run(V.transcribe_wav(wav(1.0), client=client, model=MODEL, deadline=_later(-1.0)))
+    assert client.calls == []
+
+
+def test_a_busy_engine_until_the_deadline_is_a_timeout(checkpoint):
+    client = StubClient(checkpoint())
+    key = client.activity_key(MODEL)
+
+    async def scenario():
+        idle.begin(key)
+        try:
+            await V.transcribe_wav(wav(1.0), client=client, model=MODEL, deadline=_later(0.4))
+        finally:
+            idle.end(key)
+    with pytest.raises(TimeoutError, match="model busy"):
+        run(scenario())
+    assert client.calls == [] and not idle.foreground_busy()
+
+
+def test_a_window_waits_for_the_engine_inside_the_deadline(checkpoint):
+    client = StubClient(checkpoint())
+    key = client.activity_key(MODEL)
+
+    async def scenario():
+        idle.begin(key)
+        task = asyncio.create_task(V.transcribe_wav(wav(1.0), client=client, model=MODEL,
+                                                    deadline=_later(5.0)))
+        await asyncio.sleep(0.3)
+        assert client.calls == []
+        idle.end(key)
+        return await task
+    assert run(scenario())
+
+
+def test_a_window_holds_the_foreground_gate_and_chat_power_tier_for_the_call(checkpoint):
+    from service.inference import power_tier
+    client = StubClient(checkpoint())
+    seen = []
+    original = client.chat
+
+    async def chat(model, messages, **kwargs):
+        seen.append((idle.foreground_busy(), power_tier.current_tier()))
+        return await original(model, messages, **kwargs)
+    client.chat = chat
+    run(V.transcribe_wav(wav(1.0), client=client, model=MODEL, deadline=_later()))
+    assert seen == [(True, power_tier.CHAT)]
+    assert not idle.foreground_busy()
+
+
+def test_a_window_is_never_recorded_for_debugging(checkpoint):
+    client = StubClient(checkpoint())
+    recorded = []
+    with patch("service.debug_capture.record", lambda *a, **k: recorded.append((a, k))):
+        run(V.transcribe_wav(wav(1.0), client=client, model=MODEL, deadline=_later()))
+    assert recorded and "omitted" in repr(recorded)
+    assert b64(wav(1.0)) not in repr(recorded)
+
+
+def test_a_silent_window_reads_as_nothing(checkpoint):
+    client = StubClient(checkpoint(), reply="[silence]")
+    assert run(V.transcribe_wav(wav(1.0), client=client, model=MODEL, deadline=_later())) == ""

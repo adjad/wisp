@@ -30,7 +30,7 @@ from tests.test_send_recipient_preflight import chat as send_chat  # noqa: F401
 REAL_TOOLS = {name: registry.REGISTRY[name] for name in (
     "add_reminder", "update_reminder", "add_calendar_event", "update_event", "cancel_event",
     "complete_reminder", "schedule_send", "cancel_scheduled_send", "set_timer",
-    "create_note", "append_note", "remember")}
+    "create_note", "append_note", "remember", "save_email_attachment")}
 NOTICE = main.UNRESOLVED_ACTION_NOTICE
 LATER = (dt.datetime.now() + dt.timedelta(days=2)).replace(microsecond=0, second=0)
 LATER_ISO = LATER.isoformat(timespec="minutes")

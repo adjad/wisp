@@ -269,6 +269,12 @@ async def run() -> None:
             mail_memory.schedule_tick()
         except Exception:  # noqa: BLE001 — never break the scheduler loop
             pass
+        # Reads new saved Mail attachments, one file per run (off by default, no model).
+        try:
+            from service import attachment_index
+            attachment_index.schedule_tick()
+        except Exception:  # noqa: BLE001 — never break the scheduler loop
+            pass
         # The chief-of-staff loop (service/assistant/checkin.py): carry
         # unfinished tasks onto today each morning, and in the evening ask how
         # the day went, once, when the app is listening. No model, no sends.

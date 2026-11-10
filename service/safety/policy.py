@@ -976,6 +976,11 @@ def toggle_off_hit(tool: str | None, args: dict | None) -> str | None:
 # full shell. Full access and standing grants do not cover it (grants.py
 # refuses to store an allow for it).
 ALWAYS_CONFIRM_TOOLS = frozenset({"run_applescript"})
+# Writes onto this Mac a file somebody else sent. Its category is fs_write (so the
+# path floor, the credential check and view-only apply), but fs_write runs
+# unasked under full access; this file is confirmed on a card naming it in every
+# mode, and never grantable (grants._NEVER_GRANTABLE).
+ALWAYS_CONFIRM_FILE_TOOLS = frozenset({"save_email_attachment"})
 
 
 # Where keys, tokens and Wisp's own grants live. Reading one puts a secret in
@@ -1235,6 +1240,38 @@ def mcp_effect_word(tool: str | None) -> str | None:
     return None
 
 
+def _save_folder_problem(folder) -> str | None:
+    """Why a folder for a saved attachment is refused, or None. Mirrors the save
+    engine: an existing folder in the user's home, outside ~/Library and hidden
+    folders. Empty means Downloads. Judged on the spelling and on where it
+    really points, so a link cannot lead out."""
+    if folder in (None, ""):
+        return None
+    if not isinstance(folder, str) or "\x00" in folder:
+        return "invalid folder for a saved file"
+    try:
+        home = Path(os.path.realpath(Path.home()))
+        typed = Path(os.path.expanduser(folder))
+        if not typed.is_absolute():
+            typed = Path.home() / typed
+        for candidate in (Path(os.path.normpath(typed)), Path(os.path.realpath(typed))):
+            for base in (Path.home(), home):
+                try:
+                    parts = candidate.relative_to(base).parts
+                    break
+                except ValueError:
+                    continue
+            else:
+                return "a saved file goes in a folder inside your home folder"
+            if parts and parts[0] == "Library":
+                return "a saved file may not go into ~/Library"
+            if any(part.startswith(".") for part in parts):
+                return "a saved file may not go into a hidden folder"
+    except (ValueError, OSError, RuntimeError):
+        return "that folder could not be safely resolved"
+    return None
+
+
 def _hard_deny(category: str, args: dict, tool: str | None = None) -> Decision | None:
     """The unconditional safety floor: rules nothing can override — not
     full_access, not a standing grant, not the user clicking "always allow".
@@ -1248,6 +1285,8 @@ def _hard_deny(category: str, args: dict, tool: str | None = None) -> Decision |
         for cmd in shell_forms(args):
             if (hit := _any(_rules("shell_deny", _SHELL_DENY), cmd)):
                 return Decision(Tier.DENY, f"matches blocked pattern: {hit}")
+    if tool in ALWAYS_CONFIRM_FILE_TOOLS and (problem := _save_folder_problem(args.get("folder"))):
+        return Decision(Tier.DENY, problem)
     if category in ("fs_write", "fs_delete"):
         rules = _rules("path_deny", _PATH_DENY)
         # uninstall_app's `name` (an app basename joined onto each Applications
@@ -1663,8 +1702,8 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
         if verdict == "deny":
             return Decision(Tier.DENY, f"you blocked {tool} for this target")
         if (verdict == "allow" and category not in ALWAYS_CONFIRM_CATEGORIES
-                and tool not in ALWAYS_CONFIRM_TOOLS and not destructive
-                and not outbound and not secret and not cut_off
+                and tool not in ALWAYS_CONFIRM_TOOLS and tool not in ALWAYS_CONFIRM_FILE_TOOLS
+                and not destructive and not outbound and not secret and not cut_off
                 and grants.is_grantable(tool, args)):
             return Decision(Tier.ALLOW, f"you allowed {tool} for this target")
 
@@ -1689,6 +1728,12 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
             return Decision(Tier.DENY, "view-only mode: AppleScript is disabled")
         return Decision(Tier.CONFIRM, "AppleScript can send messages and mail as you, or run "
                         "shell commands — always confirmed. Check the script before allowing it.")
+
+    if tool in ALWAYS_CONFIRM_FILE_TOOLS:
+        if read_only():
+            return Decision(Tier.DENY, "view-only mode: saving files is disabled")
+        return Decision(Tier.CONFIRM, "saves a file somebody sent onto this Mac — always confirmed; "
+                        "the card names the exact file")
 
     if outbound and tool == "open_app":
         if read_only():

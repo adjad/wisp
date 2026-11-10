@@ -810,6 +810,44 @@ final class WispClient {
         return Self.saveWhenAwayFlag(data)
     }
 
+    /// What the "Read new attachments in the background" switch shows: the switch as the
+    /// service confirmed it, and how many files have kept text.
+    struct AttachmentBackground: Equatable {
+        let enabled: Bool
+        let kept: Int
+    }
+
+    /// GET /assistant/attachments/background, or nil when it can't be read.
+    func attachmentBackgroundState() async -> AttachmentBackground? {
+        let url = Self.baseURL.appendingPathComponent("assistant/attachments/background")
+        guard let (data, response) = try? await URLSession.shared.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return Self.attachmentBackground(data)
+    }
+
+    /// PUT the switch. Returns what the service confirmed, or nil when the reply was lost
+    /// or unreadable (the write may still have happened).
+    func setAttachmentBackground(_ on: Bool) async -> AttachmentBackground? {
+        var req = URLRequest(url: Self.baseURL.appendingPathComponent("assistant/attachments/background"))
+        req.httpMethod = "PUT"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["enabled": on])
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return Self.attachmentBackground(data)
+    }
+
+    private static func attachmentBackground(_ data: Data) -> AttachmentBackground? {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let flag = obj["enabled"] as? NSNumber,
+              CFGetTypeID(flag) == CFBooleanGetTypeID() else { return nil }
+        var kept = 0
+        if let number = obj["kept"] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() {
+            kept = max(0, number.intValue)
+        }
+        return AttachmentBackground(enabled: flag.boolValue, kept: kept)
+    }
+
     /// The "Save memory" switch (GET /memory_saver), or nil when it can't be read.
     func saveMemoryState() async -> Bool? {
         let url = Self.baseURL.appendingPathComponent("memory_saver")
