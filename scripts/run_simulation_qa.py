@@ -1134,7 +1134,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             "native/mail-memory-compile",
             [
                 TRUSTED_SWIFTC, "-module-cache-path", module_cache,
-                "app/Sources/WispApp/MailMemoryReader.swift",
+                "app/Sources/WispApp/MailMemoryReader.swift", "app/Sources/WispApp/TextRecognizer.swift",
                 "tests/MailMemoryReaderRegression.swift", "-lsqlite3", "-o", mail_memory,
             ],
         ),
