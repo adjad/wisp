@@ -484,16 +484,16 @@ struct ResetWispCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Reset Wisp?").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+            Text("Reset Wisp?").font(.wisp(size: 15, weight: .semibold)).foregroundStyle(Theme.textPrimary)
             switch model.resetCard {
             case .running:
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
                     Text("Resetting… Wisp restarts into setup when it's done.")
-                        .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                        .font(.wisp(size: 12)).foregroundStyle(Theme.textSecondary)
                 }
             case .failed(let message):
-                Text(message).font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                Text(message).font(.wisp(size: 12)).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack { Spacer(); Button("Close") { model.cancelReset() }.keyboardShortcut(.cancelAction) }
             default:
@@ -506,11 +506,11 @@ struct ResetWispCard: View {
     private var confirm: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("This deletes everything Wisp has, then restarts it as if it were the first time.")
-                .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                .font(.wisp(size: 12)).foregroundStyle(Theme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             list("Deletes", WispReset.deletes)
             list("Keeps", WispReset.keeps)
-            Text(WispReset.internetAccountsNote).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+            Text(WispReset.internetAccountsNote).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 10) {
                 Spacer()
@@ -526,9 +526,9 @@ struct ResetWispCard: View {
 
     private func list(_ title: String, _ rows: [String]) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.textMuted)
+            Text(title).font(.wisp(size: 11, weight: .semibold)).foregroundStyle(Theme.textMuted)
             ForEach(rows, id: \.self) { row in
-                Text("• " + row).font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                Text("• " + row).font(.wisp(size: 12)).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }

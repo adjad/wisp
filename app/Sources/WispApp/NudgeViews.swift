@@ -225,26 +225,26 @@ struct NudgeCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Image(systemName: "sparkles").font(.system(size: 12))
+                Image(systemName: "sparkles").font(.wisp(size: 12))
                     .foregroundStyle(Theme.textPrimary)
-                Text(nudge.title).font(.system(size: 13, weight: .medium))
+                Text(nudge.title).font(.wisp(size: 13, weight: .medium))
                     .foregroundStyle(Theme.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 4)
                 Button(action: dismiss) {
-                    Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+                    Image(systemName: "xmark").font(.wisp(size: 9, weight: .bold))
                 }
                 .buttonStyle(.plain).foregroundStyle(Theme.textMuted)
                 .help("Dismiss")
             }
             if !nudge.body.isEmpty {
-                Text(nudge.body).font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                Text(nudge.body).font(.wisp(size: 12)).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if !nudge.because.isEmpty {
                 HStack(alignment: .firstTextBaseline, spacing: 5) {
-                    Image(systemName: "chart.bar.xaxis").font(.system(size: 10))
-                    Text(nudge.because).font(.system(size: 11))
+                    Image(systemName: "chart.bar.xaxis").font(.wisp(size: 10))
+                    Text(nudge.because).font(.wisp(size: 11))
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .foregroundStyle(Theme.textMuted)
@@ -252,9 +252,9 @@ struct NudgeCard: View {
             if nudge.hasAuto {
                 HStack(alignment: .firstTextBaseline, spacing: 5) {
                     Image(systemName: nudge.undone ? "arrow.uturn.backward.circle" : "checkmark.circle")
-                        .font(.system(size: 10))
+                        .font(.wisp(size: 10))
                     Text(nudge.undone ? "Undone: \(nudge.autoSummary)" : "Already done: \(nudge.autoSummary)")
-                        .font(.system(size: 11))
+                        .font(.wisp(size: 11))
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .foregroundStyle(Theme.textSecondary)
@@ -277,7 +277,7 @@ struct NudgeCard: View {
             }
             .disabled(nudge.busy)
             if !nudge.status.isEmpty {
-                Text(nudge.status).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                Text(nudge.status).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
             }
         }
         .padding(10)
@@ -288,7 +288,7 @@ struct NudgeCard: View {
     private func chip(_ title: String, primary: Bool = false, _ action: @escaping () -> Void) -> some View {
         Button(title, action: action)
             .buttonStyle(.plain)
-            .font(.system(size: 11, weight: primary ? .medium : .regular))
+            .font(.wisp(size: 11, weight: primary ? .medium : .regular))
             .foregroundStyle(primary ? Color.black : Theme.textSecondary)
             .lineLimit(1)
             .padding(.horizontal, 10).padding(.vertical, 4)
