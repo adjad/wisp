@@ -750,6 +750,39 @@ def _extract_pdf(data: bytes) -> tuple[str, str]:
         raise WebError(f"could not read PDF: {type(exc).__name__}") from exc
 
 
+# How many elements a feed's titles and summaries may be read from in total.
+# A real feed needs a few hundred (one title, then 30 items); the 2.5 MB fetch
+# cap allows about 600,000 elements in all.
+_FEED_TEXT_NODES = 500_000
+
+
+def _feed_text(elem: ET.Element, left: list[int]) -> str:
+    """The text inside ``elem``, as ``"".join(elem.itertext())`` gives it,
+    read within the budget ``left[0]`` that every call for one feed shares.
+
+    Reading an element's text walks everything under it. Feed elements that
+    sit inside one another are each walked again from the top, so a response
+    made of nothing but nesting cost the square of its size. The shared budget
+    keeps the whole feed to one bounded amount of work.
+    """
+    left[0] -= 1
+    parts = [elem.text or ""]
+    stack: list[tuple[ET.Element | None, object]] = [(None, iter(elem))]
+    while stack and left[0] > 0:
+        owner, children = stack[-1]
+        child = next(children, None)
+        if child is None:
+            stack.pop()
+            if owner is not None and owner.tail:
+                parts.append(owner.tail)
+            continue
+        left[0] -= 1
+        if child.text:
+            parts.append(child.text)
+        stack.append((child, iter(child)))
+    return _clean_inline("".join(parts))
+
+
 def _extract_feed(data: bytes) -> tuple[str, str]:
     try:
         root = ET.fromstring(data)
@@ -757,22 +790,26 @@ def _extract_feed(data: bytes) -> tuple[str, str]:
         raise WebError("invalid XML/feed") from exc
     title = ""
     lines: list[str] = []
+    left = [_FEED_TEXT_NODES]
+    # Text is read only where it is used: the first title that has any, and
+    # the title and summary of each item. It used to be read for every element
+    # of the document, on the event loop.
     for elem in root.iter():
         local = elem.tag.rsplit("}", 1)[-1].lower()
-        value = _clean_inline("".join(elem.itertext()))
-        if local == "title" and value and not title:
-            title = value
+        if local == "title" and not title:
+            title = _feed_text(elem, left)
         if local in {"item", "entry"}:
             item_title = ""
             summary = ""
             for child in elem:
                 key = child.tag.rsplit("}", 1)[-1].lower()
-                val = _clean_inline("".join(child.itertext()))
-                if key == "title": item_title = val
-                elif key in {"summary", "description", "content"}: summary = val
+                if key == "title":
+                    item_title = _feed_text(child, left)
+                elif key in {"summary", "description", "content"}:
+                    summary = _feed_text(child, left)
             if item_title:
                 lines.append(f"{item_title}\n{summary}".strip())
-        if len(lines) >= 30:
+        if len(lines) >= 30 or left[0] <= 0:
             break
     return title, "\n\n".join(lines)[:_MAX_TEXT_CHARS]
 
@@ -891,7 +928,9 @@ async def _fetch_direct(raw_url: str) -> Page:
     if "pdf" in ctype or current.lower().endswith(".pdf"):
         title, text = await asyncio.to_thread(_extract_pdf, data)
     elif "xml" in ctype or "rss" in ctype or data.lstrip().startswith(b"<?xml"):
-        title, text = _extract_feed(data)
+        # Off the event loop, as the PDF branch is: a large feed is parsed in
+        # one piece, and replies and heartbeats must keep moving meanwhile.
+        title, text = await asyncio.to_thread(_extract_feed, data)
     elif "html" in ctype or b"<html" in data[:2000].lower():
         parser = _ReadableHTML()
         parser.feed(data.decode(encoding, errors="replace"))

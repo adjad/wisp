@@ -309,6 +309,29 @@ def test_web_fetch_shows_the_address_it_fetched_not_the_pages_claim(net):
     assert "health.example.gov" not in out
 
 
+# --- a feed is parsed off the event loop ---------------------------------------
+def test_a_feed_is_read_off_the_event_loop(net, monkeypatch):
+    import threading
+    seen, install = net
+    feed = ("<rss><channel><title>Harbor Town News</title>"
+            + "".join(f"<item><title>Story {i}</title><description>What happened in story "
+                      f"{i}, at some length.</description></item>" for i in range(1, 6))
+            + "</channel></rss>")
+    install(lambda request: httpx.Response(
+        200, headers={"content-type": "application/rss+xml"}, text=feed))
+    threads = []
+    real = web._extract_feed
+
+    def watched(data):
+        threads.append(threading.current_thread())
+        return real(data)
+
+    monkeypatch.setattr(web, "_extract_feed", watched)
+    page = asyncio.run(web.fetch_page("https://news.example.com/rss"))
+    assert page.title == "Harbor Town News" and page.text.startswith("Story 1\nWhat happened")
+    assert len(threads) == 1 and threads[0] is not threading.main_thread()
+
+
 # --- thin-page floor: research keeps it, web_fetch takes short answers ---------
 PRICE_URL = "https://api.example.com/v3/simple/price?ids=examplecoin&vs_currencies=usd"
 PRICE_JSON = '{"examplecoin":{"usd":64123}}'

@@ -115,6 +115,129 @@ class WebParsingTests(unittest.TestCase):
         self.assertEqual(addresses, ["8.8.8.8"])
 
 
+def _feed_as_before_rc3(data: bytes) -> tuple[str, str]:
+    """The feed reader as it was: text read for every element of the document."""
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(data)
+    clean = web_module._clean_inline
+    title, lines = "", []
+    for elem in root.iter():
+        local = elem.tag.rsplit("}", 1)[-1].lower()
+        value = clean("".join(elem.itertext()))
+        if local == "title" and value and not title:
+            title = value
+        if local in {"item", "entry"}:
+            item_title = summary = ""
+            for child in elem:
+                key = child.tag.rsplit("}", 1)[-1].lower()
+                val = clean("".join(child.itertext()))
+                if key == "title":
+                    item_title = val
+                elif key in {"summary", "description", "content"}:
+                    summary = val
+            if item_title:
+                lines.append(f"{item_title}\n{summary}".strip())
+        if len(lines) >= 30:
+            break
+    return title, "\n\n".join(lines)[:web_module._MAX_TEXT_CHARS]
+
+
+class FeedExtractionTests(unittest.TestCase):
+    RSS = ('<?xml version="1.0"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">'
+           "<channel><title>  Harbor   Town News </title><link>https://news.example.com/</link>"
+           "<description>Local stories</description>"
+           + "".join(f"<item><title>Story {i} &amp; more</title>"
+                     f"<link>https://news.example.com/{i}</link>"
+                     f"<description><![CDATA[Summary <b>{i}</b> of the story.]]></description>"
+                     f"<content:encoded>Full text {i}</content:encoded></item>"
+                     for i in range(1, 41))
+           + "</channel></rss>").encode()
+    ATOM = ('<feed xmlns="http://www.w3.org/2005/Atom"><title>Example <i>Lab</i> notes</title>'
+            + "".join(f'<entry><title type="html">Note {i}</title><id>urn:n:{i}</id>'
+                      f'<summary>Short {i}</summary>'
+                      f'<content type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml">'
+                      f'Body <b>{i}</b> ends <i>here</i>.</div></content></entry>'
+                      for i in range(1, 36))
+            + "</feed>").encode()
+    ODD = ("<rss><channel><title/><title> </title>"
+           "<item><description>No title, so it is left out.</description></item>"
+           "<item><title>First <em>real</em> title</title><summary>one</summary>"
+           "<description></description></item>"
+           "<item><title>Nested</title><description>outer"
+           "<item><title>Inner</title><description>inner text</description></item>"
+           " tail</description></item>"
+           "</channel></rss>").encode()
+
+    def test_rss_keeps_its_title_and_first_thirty_items(self):
+        title, text = web_module._extract_feed(self.RSS)
+        items = text.split("\n\n")
+        self.assertEqual(title, "Harbor Town News")
+        self.assertEqual(len(items), 30)
+        self.assertEqual(items[0], "Story 1 & more\nSummary <b>1</b> of the story.")
+        self.assertEqual(items[-1], "Story 30 & more\nSummary <b>30</b> of the story.")
+        self.assertNotIn("Full text", text)
+
+    def test_atom_keeps_its_title_and_first_thirty_entries(self):
+        title, text = web_module._extract_feed(self.ATOM)
+        items = text.split("\n\n")
+        self.assertEqual(title, "Example Lab notes")
+        self.assertEqual(len(items), 30)
+        self.assertEqual(items[0], "Note 1\nBody 1 ends here.")
+        self.assertEqual(items[-1], "Note 30\nBody 30 ends here.")
+
+    def test_feeds_read_exactly_as_before(self):
+        for data in (self.RSS, self.ATOM, self.ODD,
+                     b"<urlset><url><loc>https://example.com/a</loc></url></urlset>",
+                     b"<rss><channel><item><title>Only item</title></item></channel></rss>"):
+            self.assertEqual(web_module._extract_feed(data), _feed_as_before_rc3(data))
+        self.assertEqual(web_module._extract_feed(self.ODD)[0], "First real title")
+        with self.assertRaises(WebError):
+            web_module._extract_feed(b"<rss><channel>")
+
+    def _timed(self, data: bytes) -> tuple[float, tuple[str, str]]:
+        import time
+        started = time.perf_counter()
+        result = web_module._extract_feed(data)
+        return time.perf_counter() - started, result
+
+    def test_deep_nesting_is_not_read_once_per_level(self):
+        # 100,000 levels took over half a minute, on the event loop: every
+        # element re-read everything under it. Now it is one pass.
+        depth = 100_000
+        took, result = self._timed(b"<a>" * depth + b"</a>" * depth)
+        self.assertEqual(result, ("", ""))
+        self.assertLess(took, 5.0)
+
+    def test_nested_feed_elements_share_one_bounded_amount_of_reading(self):
+        # Items inside titles inside items: each one's text is everything below
+        # it, so reading only "the parts that are used" is still the square of
+        # the depth. The shared budget stops it.
+        depth = 60_000
+        took, result = self._timed(b"<item><title>" * depth + b"</title></item>" * depth)
+        self.assertEqual(result, ("", ""))
+        self.assertLess(took, 5.0)
+        took, result = self._timed(b"<title>" * depth + b"</title>" * depth)
+        self.assertEqual(result, ("", ""))
+        self.assertLess(took, 5.0)
+
+    def test_the_reading_budget_is_far_above_a_large_real_feed(self):
+        # 30 items is all a feed contributes, however long the feed is.
+        big = ("<rss><channel><title>Big</title>"
+               + "".join(f"<item><title>T{i}</title><description>D{i}</description></item>"
+                         for i in range(20_000)) + "</channel></rss>").encode()
+        left = []
+        real = web_module._feed_text
+
+        def counting(elem, budget):
+            left.append(budget)
+            return real(elem, budget)
+
+        with patch.object(web_module, "_feed_text", counting):
+            title, text = web_module._extract_feed(big)
+        self.assertEqual((title, text.count("\n\n")), ("Big", 29))
+        self.assertGreater(left[-1][0], web_module._FEED_TEXT_NODES - 200)
+
+
 class _FakeResearchClient:
     def __init__(self):
         self.exclusive_loads: list[bool] = []
