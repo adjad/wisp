@@ -1567,6 +1567,14 @@ def erase_account_data(account: str) -> dict:
         result["waiting_notices"] = "erased"
     except Exception as exc:  # noqa: BLE001
         result["waiting_notices"] = f"failed: {type(exc).__name__}"
+    try:
+        # The saved Daily Summary was composed from the combined inbox (both
+        # days, no per-account attribution), so it is withdrawn like the rest.
+        from service.assistant import brief_latest
+        brief_latest.clear()
+        result["daily_summary"] = "erased"
+    except Exception as exc:  # noqa: BLE001
+        result["daily_summary"] = f"failed: {type(exc).__name__}"
     print(f"[gmail] erased Google account data: {result}", flush=True)
     return result
 
