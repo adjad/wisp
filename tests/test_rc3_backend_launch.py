@@ -85,3 +85,60 @@ def test_shutdown_is_bounded_so_an_open_event_stream_cannot_hold_it(  # l05-live
     manager = _manager()
     assert re.search(r"func restart\(\) async \{\s*guard !portConflict else \{ return \}\s*"
                      r"await stopAndWait\(\)\s*await startIfNeeded\(\)\s*\}", manager)
+
+
+# -- the backend log (a01-app-lifecycle#6) ----------------------------------------
+
+def test_the_request_log_is_off():
+    """One line per request, with its query string (Memory search text among
+    them), about twice a second: none of it is kept."""
+    arguments = _uvicorn_arguments()
+    assert arguments.count("--no-access-log") == 1
+    assert "--access-log" not in arguments
+    # Start-up errors and tracebacks still reach the log: the level is not raised.
+    assert "--log-level" not in arguments and "--log-config" not in arguments
+    # A flag without a value must not sit where a value is read.
+    for flag in ("--host", "--port", "--timeout-graceful-shutdown"):
+        assert not _value_after(arguments, flag).startswith("--"), flag
+
+
+def _function(source: str, signature: str) -> str:
+    start = source.index(signature)
+    open_at = source.index("{", source.index(")", start))
+    depth = 0
+    for i in range(open_at, len(source)):
+        depth += {"{": 1, "}": -1}.get(source[i], 0)
+        if depth == 0:
+            return source[open_at:i + 1]
+    raise AssertionError(f"unbalanced body after {signature!r}")
+
+
+def test_the_log_is_rotated_before_this_launchs_offset_is_read():
+    manager = _manager()
+    launch = _function(manager, "private func startIfNeeded(freshRecovery: Bool) async")
+    rotate = launch.index("Self.rotateBackendLogIfNeeded(at: logURL)")
+    assert launch.count("rotateBackendLogIfNeeded(") == 1
+    # The path is unchanged (the README names it).
+    assert launch.index('appendingPathComponent("moe-backend.log")') < rotate
+    # Before the offset: otherwise the start-failure reason would be read from past the end.
+    assert rotate < launch.index("let logStartOffset = Self.fileSize(at: logURL)")
+    # Only on the way to a launch: after the port decision and with no child of ours alive.
+    assert launch.index("case .proceed:") < launch.index("guard process == nil") < rotate < launch.index("try proc.run()")
+    # Appending and the per-launch segment read are as before.
+    assert "try handle.seekToEnd()" in launch
+    assert "Self.logText(at: logURL, after: logStartOffset)" in launch
+    # Nowhere else: never while a backend is running.
+    assert manager.count("rotateBackendLogIfNeeded(") == 2
+
+
+def test_the_rotation_keeps_one_old_log_and_has_a_small_limit():
+    manager = _manager()
+    limit = re.search(r"static let backendLogRotateBytes: UInt64 = (?P<n>[0-9]+) \* 1024 \* 1024", manager)
+    assert limit and 1 <= int(limit.group("n")) <= 8
+    helper = _function(manager, "static func rotateBackendLogIfNeeded(")
+    assert "guard fileSize(at: url) > maxBytes else { return false }" in helper
+    assert 'url.appendingPathExtension("1")' in helper
+    assert helper.index("removeItem(at: previous)") < helper.index("moveItem(at: url, to: previous)")
+    # It touches the log and its one old copy, nothing else, and signals nothing.
+    for forbidden in ("terminate", "kill(", "receipt", "contentsOfDirectory", "NSHomeDirectory"):
+        assert forbidden not in helper, forbidden

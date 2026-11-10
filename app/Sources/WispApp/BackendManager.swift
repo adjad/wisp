@@ -185,6 +185,10 @@ final class BackendManager {
             // (which stops the bundled engine) runs inside `stopAndWait`'s 5 s wait
             // instead of ending in a SIGKILL.
             "--timeout-graceful-shutdown", "2",
+            // One line per request (with its query string, which can hold what the
+            // person typed) is not worth keeping: the app alone asks about twice a
+            // second. Start-up errors, tracebacks and Wisp's own lines still reach the log.
+            "--no-access-log",
         ]
         let configDigest = Self.configurationDigest()
         let launchNonce = UUID().uuidString
@@ -216,6 +220,9 @@ final class BackendManager {
         }
 
         let logURL = FileManager.default.temporaryDirectory.appendingPathComponent("moe-backend.log")
+        // No backend of this app is running here, so nothing of ours is writing the
+        // log. Before the offset is read: a fresh file starts at 0.
+        Self.rotateBackendLogIfNeeded(at: logURL)
         let logStartOffset = Self.fileSize(at: logURL)
         if FileManager.default.fileExists(atPath: logURL.path),
            let handle = try? FileHandle(forWritingTo: logURL) {
@@ -595,6 +602,31 @@ final class BackendManager {
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
               let size = attributes[.size] as? NSNumber else { return 0 }
         return size.uint64Value
+    }
+
+    /// The backend log is appended to on every launch and nothing else trims it.
+    /// Past this size the next launch starts a new file.
+    nonisolated static let backendLogRotateBytes: UInt64 = 5 * 1024 * 1024
+
+    /// A log larger than `maxBytes` is moved to `<name>.1` (replacing the previous
+    /// `.1`), so the launch that follows creates a new file. Only one old log is
+    /// kept. If the log can't be moved it is removed instead: either way it stops
+    /// growing. True when the log is no longer at `url`. Call it only when no
+    /// backend of this app is running.
+    @discardableResult
+    nonisolated static func rotateBackendLogIfNeeded(
+        at url: URL, maxBytes: UInt64 = BackendManager.backendLogRotateBytes
+    ) -> Bool {
+        guard fileSize(at: url) > maxBytes else { return false }
+        let files = FileManager.default
+        let previous = url.appendingPathExtension("1")
+        try? files.removeItem(at: previous)
+        do {
+            try files.moveItem(at: url, to: previous)
+        } catch {
+            guard (try? files.removeItem(at: url)) != nil else { return false }
+        }
+        return true
     }
 
     nonisolated static func logText(at url: URL, after offset: UInt64) -> String? {
