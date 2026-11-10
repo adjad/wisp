@@ -177,8 +177,20 @@ enum MailMemoryReaderRegression {
                         "imap://A/%5BGmail%5D/Sent%20Mail", "imap://A/[Gmail]/Sent Mail", "imap://A/INBOX/Sent",
                         "ews://A/Sent%20Items/", "imap://A/sent"]
         for u in sentURLs { check(MailMemoryReader.isSentMailbox(url: u), "sent: \(u)") }
+        // The folder's name in the account's language, whatever its case or accents
+        // (precomposed or as a letter plus a combining accent).
+        let localizedSentURLs = ["imap://A/%5BGmail%5D/Gesendet", "ews://A/Elementos%20enviados",
+                                 "ews://A/Gesendete%20Elemente", "imap://A/Gesendete%20Objekte",
+                                 "imap://A/%5BGmail%5D/Messages%20envoy%C3%A9s", "ews://A/%C3%89l%C3%A9ments%20envoy%C3%A9s",
+                                 "imap://A/Envoye%CC%81s", "imap://A/%5BGmail%5D/Enviados", "imap://A/Mensajes%20enviados",
+                                 "ews://A/Itens%20Enviados", "imap://A/%5BGmail%5D/Posta%20inviata", "imap://A/Inviati",
+                                 "imap://A/VERZONDEN%20ITEMS", "imap://A/Verzonden%20berichten", "imap://A/verzonden",
+                                 "imap://A/Skickat", "imap://A/Sendt"]
+        for u in localizedSentURLs { check(MailMemoryReader.isSentMailbox(url: u), "sent in another language: \(u)") }
         let otherURLs = ["imap://A/Consent", "imap://A/Presentations", "imap://A/Absent", "imap://A/Sentinel",
-                         "imap://A/Sent%20Messages/Archive", "imap://A/INBOX", "imap://Sent", "", "imap://A/Resent"]
+                         "imap://A/Sent%20Messages/Archive", "imap://A/INBOX", "imap://Sent", "", "imap://A/Resent",
+                         "imap://A/Gesendet/Archiv", "imap://A/Reenviados", "imap://A/Enviados%20antiguos",
+                         "imap://A/Gesendetes", "imap://A/Verzonden%20facturen", "imap://Gesendet"]
         for u in otherURLs { check(!MailMemoryReader.isSentMailbox(url: u), "not sent: \(u)") }
 
         // .emlx files: full wins over partial; the count line bounds the message.
@@ -375,9 +387,45 @@ enum MailMemoryReaderRegression {
             check(r.count == 1 && (r[0]["to"] as? [String]) == [] && r[0]["subject"] as? String == "" && !capped,
                   "no recipients/subjects tables: sent rows still come back")
         } else { check(false, "bare schema returns sent rows") }
-        if let (r, _) = try? MailMemoryReader.sentRows(dbPath: bare, since: now - 86400) {
-            check(r.isEmpty, "no Sent mailbox: an empty answer")
-        } else { check(false, "no Sent mailbox reads") }
+        // An account (an Inbox) with no mailbox recognised as Sent is a read problem, never
+        // "nothing was sent": its Sent folder may have a name Wisp doesn't know.
+        do { _ = try MailMemoryReader.sentRows(dbPath: bare, since: now - 86400); check(false, "an Inbox but no Sent mailbox throws") }
+        catch { check((error as? MailMemoryReader.IndexFailure) == .noSentMailbox, "an Inbox but no Sent mailbox: no_sent_mailbox") }
+        let noSentRoot = "\(root)/nosent"
+        try FileManager.default.createDirectory(atPath: "\(noSentRoot)/V10/MailData", withIntermediateDirectories: true)
+        try FileManager.default.copyItem(atPath: bare, toPath: "\(noSentRoot)/V10/MailData/Envelope Index")
+        let noSent = makeReader(noSentRoot)
+        let noSentReply = noSent.1.ask(noSent.0, ["type": "mail_memory_read", "request_id": "nosent-request-01",
+                                                  "kind": "sent", "days": 14])
+        check(noSentReply["ok"] as? Bool == false && noSentReply["error"] as? String == "no_sent_mailbox",
+              "the reply names no_sent_mailbox: \(noSentReply)")
+        // The mail-memory index is unchanged by that: the same file still lists its Inbox.
+        check((try? MailMemoryReader.indexRows(dbPath: bare, since: now - 86400))?.0.count == 1,
+              "no Sent mailbox: the index still reads the Inbox")
+        let noAccount = makeDB("sentnoaccount", """
+        CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
+        CREATE TABLE messages (ROWID INTEGER PRIMARY KEY, date_received REAL, mailbox INTEGER);
+        INSERT INTO mailboxes VALUES (1, 'local://L/Receipts');
+        INSERT INTO messages VALUES (1, \(now - 60), 1);
+        """)
+        if let (r, _) = try? MailMemoryReader.sentRows(dbPath: noAccount, since: now - 86400) {
+            check(r.isEmpty, "no account and no Sent mailbox: an empty answer")
+        } else { check(false, "no account and no Sent mailbox reads") }
+        let localized = makeDB("sentlocalized", """
+        CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
+        CREATE TABLE messages (ROWID INTEGER PRIMARY KEY, date_received REAL, mailbox INTEGER);
+        INSERT INTO mailboxes VALUES (1, 'imap://G/%5BGmail%5D/Gesendet'), (2, 'imap://G/INBOX'),
+          (3, 'ews://W/%C3%89l%C3%A9ments%20envoy%C3%A9s');
+        INSERT INTO messages VALUES (1, \(now - 60), 1), (2, \(now - 60), 2), (3, \(now - 120), 3);
+        """)
+        if let (r, _) = try? MailMemoryReader.sentRows(dbPath: localized, since: now - 86400) {
+            check(r.compactMap { $0["rowid"] as? Int64 } == [1, 3], "a Sent mailbox named in another language is read: \(r)")
+            check(r.compactMap { $0["account"] as? String } == ["G", "W"], "each under its own account: \(r)")
+        } else { check(false, "localized Sent mailboxes read") }
+        if let (r, _) = try? MailMemoryReader.indexRows(dbPath: localized, since: now - 86400) {
+            check(Set(r.filter { $0["box"] as? String == "sent" }.compactMap { $0["rowid"] as? Int64 }) == [1, 3],
+                  "the index marks mail in a localized Sent mailbox as sent: \(r)")
+        } else { check(false, "localized index reads") }
 
         // MARK: Attachments (kind "attachments" and "attachment")
 

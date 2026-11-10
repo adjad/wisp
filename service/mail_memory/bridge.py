@@ -16,6 +16,7 @@ import base64
 import math
 import re
 import secrets
+import time
 
 _pending: dict[str, tuple[str, asyncio.Future]] = {}
 
@@ -26,8 +27,15 @@ class BridgeError(RuntimeError):
 
 async def _ask(kind: str, timeout: float, **fields) -> dict:
     from service.assistant.hub import hub
-    if not hub.has_subscribers:
+    from service.assistant.outbox import RECONNECT_GRACE_S, app_connected
+    # The app's event stream is re-opened every half minute and is away for a few seconds
+    # each time. A request in that gap waits for it (never past its own timeout); an app
+    # that never connected or left long ago still fails at once. The request is published
+    # only once the app is listening, because a non-durable event with no listener is lost.
+    started = time.monotonic()
+    if not await app_connected(max(0.0, min(RECONNECT_GRACE_S, timeout)), via=hub):
         raise BridgeError("app_not_connected")
+    timeout = max(0.0, timeout - (time.monotonic() - started))
     request_id = secrets.token_urlsafe(24)
     future = asyncio.get_running_loop().create_future()
     _pending[request_id] = (kind, future)
@@ -127,7 +135,11 @@ def _sent_rows(reply: dict) -> list[dict]:
 
 async def read_sent(days: int, timeout: float = 8.0) -> tuple[list[dict], bool]:
     """Apple Mail's sent mail for the last `days` (at most SENT_DAYS_MAX), newest
-    first, headers and recipients only, and whether the app capped the list."""
+    first, headers and recipients only, and whether the app capped the list.
+
+    Raises BridgeError with the app's reason. `no_sent_mailbox` means Mail has an account
+    but no folder the app recognises as Sent (its name is in a language the app doesn't
+    know): that is a read that failed, never "nothing was sent"."""
     reply = await _ask("sent", timeout, days=max(1, min(int(days), SENT_DAYS_MAX)))
     if reply.get("ok") is not True:
         raise BridgeError(str(reply.get("error") or "sent_failed")[:40])

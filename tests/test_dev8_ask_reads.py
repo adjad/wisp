@@ -127,6 +127,30 @@ def test_sent_mail_says_when_mail_couldn_t_be_read_but_gmail_could(monkeypatch):
     assert "c@example.com" in out and "Apple Mail's Sent mailbox wasn't read" in out and "Full Disk Access" in out
 
 
+def test_a_mail_account_with_no_recognised_sent_folder_is_a_failed_read(monkeypatch):
+    # The app answers no_sent_mailbox when Mail has an Inbox but no folder it knows as Sent
+    # (a name in another language). The bridge passes that on as a failure, never as no rows.
+    async def no_sent(kind, timeout, **fields):
+        return {"ok": False, "error": "no_sent_mailbox"}
+    monkeypatch.setattr(bridge, "_ask", no_sent)
+    with pytest.raises(bridge.BridgeError, match="^no_sent_mailbox$"):
+        asyncio.run(bridge.read_sent(7))
+
+
+def test_sent_mail_does_not_say_nothing_was_sent_when_the_sent_folder_is_not_recognised(monkeypatch):
+    now = time.time()
+    _setup(monkeypatch, problem="no_sent_mailbox", accounts=())
+    alone = asyncio.run(email_tools.view_emails(mailbox="sent"))
+    assert "couldn't read your sent mail" in alone and "No sent mail" not in alone
+    _setup(monkeypatch, problem="no_sent_mailbox",
+           gmail=[{"ts": now - 60, "to": "c@example.com", "subject": "Hi", "account": "me@gmail.com"}])
+    out = asyncio.run(email_tools.sent_emails_view())
+    assert "c@example.com" in out and "Apple Mail's Sent mailbox wasn't read" in out
+    _setup(monkeypatch, problem="no_sent_mailbox")
+    empty = asyncio.run(email_tools.sent_emails_view())          # Gmail linked, nothing sent there either
+    assert "Apple Mail's Sent mailbox wasn't read" in empty and "from Apple Mail" not in empty
+
+
 def test_sent_mail_reaches_further_back_in_mail_than_gmail(monkeypatch):
     now = time.time()
     asked = _setup(monkeypatch, native=[_native(now - 20 * 86400, "Old plan")])

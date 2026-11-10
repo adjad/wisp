@@ -318,6 +318,9 @@ final class MailMemoryReader {
     enum IndexFailure: String, Error {
         case unreadable
         case unsupportedSchema = "unsupported_schema"
+        /// Mail has an account (an Inbox) but no mailbox recognised as Sent, so "nothing
+        /// was sent" can't be told from "the Sent folder has a name Wisp doesn't know".
+        case noSentMailbox = "no_sent_mailbox"
     }
 
     // MARK: - Envelope Index
@@ -342,9 +345,23 @@ final class MailMemoryReader {
         versionDirectory(mailRoot).map { "\($0)/MailData/Envelope Index" }
     }
 
-    /// True for a real Sent mailbox: the last path component is "Sent Messages", "Sent",
-    /// "Sent Mail" or "Sent Items" (so "[Gmail]/Sent Mail" counts), never a name that merely
-    /// contains "sent" like Consent or Presentations. The URL may be percent-encoded.
+    /// What servers call the Sent mailbox, with case and accents folded away: English, then
+    /// German, French, Spanish and Portuguese, Italian, Dutch, Swedish, Danish and Norwegian
+    /// (a Gmail or Exchange account in another language names the folder in that language).
+    static let sentMailboxNames: Set<String> = [
+        "sent messages", "sent", "sent mail", "sent items",
+        "gesendet", "gesendete elemente", "gesendete objekte",
+        "envoyes", "messages envoyes", "elements envoyes",
+        "enviados", "elementos enviados", "mensajes enviados", "itens enviados",
+        "posta inviata", "inviati",
+        "verzonden", "verzonden items", "verzonden berichten",
+        "skickat", "sendt",
+    ]
+
+    /// True for a real Sent mailbox: the last path component is one of `sentMailboxNames`,
+    /// whatever its case or accents (so "[Gmail]/Sent Mail" and "[Gmail]/Gesendet" count),
+    /// never a name that merely contains "sent" like Consent or Presentations. The URL may
+    /// be percent-encoded.
     static func isSentMailbox(url: String) -> Bool {
         let decoded = url.removingPercentEncoding ?? url
         guard let scheme = decoded.range(of: "://") else { return false }
@@ -352,7 +369,8 @@ final class MailMemoryReader {
         guard let slash = rest.firstIndex(of: "/") else { return false }
         let name = rest[rest.index(after: slash)...].split(separator: "/", omittingEmptySubsequences: true).last
         guard let name else { return false }
-        return ["sent messages", "sent", "sent mail", "sent items"].contains(name.lowercased())
+        let folded = String(name).folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+        return sentMailboxNames.contains(folded)
     }
 
     /// True for a mailbox nothing is read from: Trash, Deleted Messages/Items, Bin, Junk
@@ -698,6 +716,8 @@ final class MailMemoryReader {
     /// Message-ID and up to `maxRecipients` To recipients ("Name <address>" or the bare
     /// address; Cc when there is no To), plus how many recipients there were in all.
     /// Sent membership is the mailbox or a Gmail label, as in `indexRows`. No bodies.
+    /// Throws `.noSentMailbox` when an account has an Inbox but no mailbox is recognised as
+    /// Sent; an index with no Inbox either (no account) is an empty answer.
     static func sentRows(dbPath: String, since: Double) throws -> ([[String: Any]], Bool) {
         var db: OpaquePointer?
         guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
@@ -715,11 +735,20 @@ final class MailMemoryReader {
             sqlite3_finalize(list)
             throw IndexFailure.unreadable
         }
+        var hasInbox = false
         while sqlite3_step(list) == SQLITE_ROW {
-            if isSentMailbox(url: text(list, 1)) { sentIDs.append(sqlite3_column_int64(list, 0)) }
+            let url = text(list, 1)
+            if isSentMailbox(url: url) {
+                sentIDs.append(sqlite3_column_int64(list, 0))
+            } else if url.lowercased().hasSuffix("/inbox") {
+                hasInbox = true
+            }
         }
         sqlite3_finalize(list)
-        guard !sentIDs.isEmpty else { return ([], false) }
+        guard !sentIDs.isEmpty else {
+            if hasInbox { throw IndexFailure.noSentMailbox }
+            return ([], false)
+        }
         let sentList = sentIDs.map(String.init).joined(separator: ",")
         let labels = exists(db, table: "labels", column: "mailbox_id") && exists(db, table: "labels", column: "message_id")
         let membership = labels
