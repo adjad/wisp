@@ -237,6 +237,20 @@ def test_alert_cards_come_before_people_and_deadlines():
     assert ordered[0]["id"] == "c9" and len(ordered) == 5
 
 
+def test_a_critical_alert_the_judge_left_out_still_goes_first():
+    def entry(pid, critical=False, unranked=False):
+        return {"primary": pid, "unranked": unranked,
+                "item": {"person": not critical, "critical": critical}}
+
+    people = [entry(f"p{i}") for i in range(6)]
+    alert = entry("crit", critical=True, unranked=True)
+    out = cycle.with_waiting_people(people + [alert], [], {}, now=NOW, tz=TZ, suppressed=set(), allowed=set())
+    assert [e["primary"] for e in out] == ["crit"] + [f"p{i}" for i in range(6)]
+    judged_alert = entry("crit2", critical=True)
+    out = cycle.with_waiting_people(people + [judged_alert], [], {}, now=NOW, tz=TZ, suppressed=set(), allowed=set())
+    assert [e["primary"] for e in out].count("crit2") == 1 and out[0]["primary"] == "crit2"
+
+
 def test_one_email_seen_through_mail_and_gmail_is_one_card(store):
     """2026-10-29: the same GitHub alert showed as card 1 of 4 (Mail) and 4 of 4 (the
     linked Gmail account). One Message-ID is one card."""
