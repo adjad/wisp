@@ -36,6 +36,19 @@ private func filtered(_ chunks: [String]) -> String {
     #expect(d(": keepalive") == nil)
     #expect(d("data: not json") == nil)
 }
+@Test func messageDraftShowsTheDraftAsTheAnswer() {
+    func d(_ s: String) -> ChatEvent? { GatewayEventDecoder.decode(line: s, sessionId: "s1") }
+    guard case .replace(let text)? = d(#"data: {"type":"message_draft","to":"Mom","text":"Running late"}"#) else {
+        Issue.record("a draft must become answer text"); return
+    }
+    #expect(text.contains("Mom") && text.contains("Running late") && text.contains("Nothing has been sent"))
+    // No recipient still shows the body; no body falls back to the activity line.
+    guard case .replace(let noRecipient)? = d(#"data: {"type":"message_draft","text":"Running late"}"#) else {
+        Issue.record("a draft without a recipient must still show"); return
+    }
+    #expect(noRecipient.contains("Running late"))
+    #expect(d(#"data: {"type":"message_draft","to":"Mom","text":""}"#) == .activity("Drafted a message to Mom"))
+}
 @Test func confirmCarriesSessionAndRequest() {
     let line = #"data: {"type":"confirm","id":"a1","request_id":"r9","tool":"send_email","reason":"Send to Sam","preview":"Hi Sam","grantable":false}"#
     guard case .approval(let request)? = GatewayEventDecoder.decode(line: line, sessionId: "s42") else {
@@ -754,4 +767,96 @@ func uncleanAgentEndForgetsTheVerifiedBase(kind: String) async throws {
     for try await _ in client.agent(prompt: "hi", sessionId: nil) {}
     _ = try await client.hello()
     #expect(StubProtocol.requests(port: port).map { $0.url!.path } == ["/phone/v1/ping", "/phone/v1/agent", "/phone/v1/hello"])
+}
+
+@Test func draftOnlyTurnLeavesAnswerTextSoItIsNotStopped() async throws {
+    // The backend ends a draft turn with message_draft then done and no `text`.
+    let port = 18_840
+    let reply: StubProtocol.ReplyHandler = { request in
+        switch request.url!.path {
+        case "/phone/v1/ping": return proved(request)
+        default:
+            let lines = "data: {\"type\":\"message_draft\",\"to\":\"Mom\",\"text\":\"Running late\"}\ndata: {\"type\":\"done\"}\n"
+            return StubReply(status: 200, headers: ["Content-Type": "text/event-stream"], body: Data(lines.utf8))
+        }
+    }
+    let pairing = MacPairing(host: nil, ip: "100.64.0.1", port: port, macName: "Mac", token: token)
+    let client = GatewayClient(pairing: pairing, session: URLSession(configuration: StubProtocol.configuration(port: port, reply: reply)))
+    var answer = ""
+    for try await event in client.agent(prompt: "draft a text to Mom", sessionId: nil) {
+        if case .replace(let text) = event { answer = text }
+    }
+    #expect(answer.contains("Mom") && answer.contains("Running late"))
+}
+
+@Test(arguments: [(422, "prompt must be a string of 1..16000 characters"), (429, "too many failures")])
+func agentRefusalShowsTheGatewaysReason(status: Int, detail: String) async throws {
+    let port = 18_841 + (status == 429 ? 1 : 0)
+    let reply: StubProtocol.ReplyHandler = { request in
+        request.url!.path == "/phone/v1/ping" ? proved(request)
+            : StubReply(status: status, headers: ["Content-Type": "application/json"],
+                        body: Data("{\"detail\":\"\(detail)\"}".utf8))
+    }
+    let pairing = MacPairing(host: nil, ip: "100.64.0.1", port: port, macName: "Mac", token: token)
+    let client = GatewayClient(pairing: pairing, session: URLSession(configuration: StubProtocol.configuration(port: port, reply: reply)))
+    var thrown: GatewayError?
+    do { for try await _ in client.agent(prompt: "hi", sessionId: nil) {} } catch { thrown = error as? GatewayError }
+    #expect(thrown == .http(status, detail))
+}
+
+@Test func agentUnauthorizedStaysUnauthorizedWithABody() async throws {
+    let port = 18_843
+    let reply: StubProtocol.ReplyHandler = { request in
+        request.url!.path == "/phone/v1/ping" ? proved(request)
+            : StubReply(status: 401, body: Data(#"{"detail":"unauthorized"}"#.utf8))
+    }
+    let pairing = MacPairing(host: nil, ip: "100.64.0.1", port: port, macName: "Mac", token: token)
+    let client = GatewayClient(pairing: pairing, session: URLSession(configuration: StubProtocol.configuration(port: port, reply: reply)))
+    var thrown: GatewayError?
+    do { for try await _ in client.agent(prompt: "hi", sessionId: nil) {} } catch { thrown = error as? GatewayError }
+    #expect(thrown == .unauthorized)
+}
+
+private func approvalRequest() -> ApprovalRequest {
+    ApprovalRequest(id: "a1", requestId: "r9", sessionId: "s1", tool: "send_email",
+                    reason: "Send to Sam", preview: "Hi Sam", grantable: false)
+}
+
+@Test func approveThrowsWhenTheMacHasNothingPending() async throws {
+    // The Mac answers 200 with ok:false once the card was resolved or timed out.
+    let port = 18_844
+    let reply: StubProtocol.ReplyHandler = { request in
+        request.url!.path == "/phone/v1/ping" ? proved(request)
+            : StubReply(status: 200, body: Data(#"{"ok":false,"error":"no pending action for that id"}"#.utf8))
+    }
+    let pairing = MacPairing(host: nil, ip: "100.64.0.1", port: port, macName: "Mac", token: token)
+    let client = GatewayClient(pairing: pairing, session: URLSession(configuration: StubProtocol.configuration(port: port, reply: reply)))
+    await #expect(throws: GatewayError.requestEnded) {
+        try await client.approve(approvalRequest(), approved: true, scope: .once)
+    }
+}
+
+@Test func approveSucceedsOnlyOnOkTrue() async throws {
+    let port = 18_845
+    let reply: StubProtocol.ReplyHandler = { request in
+        request.url!.path == "/phone/v1/ping" ? proved(request)
+            : StubReply(status: 200, body: Data(#"{"ok":true,"scope":"once"}"#.utf8))
+    }
+    let pairing = MacPairing(host: nil, ip: "100.64.0.1", port: port, macName: "Mac", token: token)
+    let client = GatewayClient(pairing: pairing, session: URLSession(configuration: StubProtocol.configuration(port: port, reply: reply)))
+    try await client.approve(approvalRequest(), approved: false, scope: .once)
+    let sent = StubProtocol.requests(port: port).first { $0.url!.path == "/phone/v1/agent/approve" }
+    #expect(sent != nil)
+}
+
+@Test func approveWithAnUnreadableAnswerIsNotTreatedAsDelivered() async throws {
+    let port = 18_846
+    let reply: StubProtocol.ReplyHandler = { request in
+        request.url!.path == "/phone/v1/ping" ? proved(request) : StubReply(status: 200, body: Data("<html>".utf8))
+    }
+    let pairing = MacPairing(host: nil, ip: "100.64.0.1", port: port, macName: "Mac", token: token)
+    let client = GatewayClient(pairing: pairing, session: URLSession(configuration: StubProtocol.configuration(port: port, reply: reply)))
+    await #expect(throws: GatewayError.badResponse) {
+        try await client.approve(approvalRequest(), approved: true, scope: .once)
+    }
 }

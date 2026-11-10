@@ -37,6 +37,10 @@ final class AppModel {
     private let store: ConversationStore?
     private var gatewayClient: GatewayClient?
     private var turn: Task<Void, Never>?
+    /// The message the running turn writes into, so a late approval result can leave a note on it.
+    @ObservationIgnored private var activeAnswer: (conversation: UUID, message: UUID)?
+    /// Approval cards shown this turn and not yet resolved, so a timeout or a failed answer is never silent.
+    @ObservationIgnored private var openApprovals: Set<String> = []
 
     private enum Keys {
         static let engine = "engine"
@@ -138,6 +142,8 @@ final class AppModel {
 
         isSending = true
         statusText = ""
+        activeAnswer = (conversation.id, answer.id)
+        openApprovals = []
         let conversationID = conversation.id
         let stream = engineImpl.run(prompt: prompt, history: history, remoteSessionId: conversation.remoteSessionId)
         turn = Task { [weak self] in
@@ -162,9 +168,31 @@ final class AppModel {
         pendingApproval = nil
         guard let gatewayClient else { return }
         Task {
-            do { try await gatewayClient.approve(request, approved: approved, scope: scope) } catch {
-                statusText = "Couldn't send your answer to the Mac: \(error.localizedDescription)"
+            do {
+                try await gatewayClient.approve(request, approved: approved, scope: scope)
+                openApprovals.remove(request.id)
+            } catch GatewayError.requestEnded {
+                // Resolved elsewhere or timed out: there is nothing left to answer.
+                openApprovals.remove(request.id)
+                note("That request already ended")
+            } catch {
+                let reason = "Couldn't send your answer to the Mac: \(error.localizedDescription)"
+                if isSending, pendingApproval == nil, openApprovals.contains(request.id) {
+                    // The Mac is still waiting, so put the card back and let the user try again.
+                    pendingApproval = request
+                    statusText = reason
+                } else {
+                    note(reason)
+                }
             }
+        }
+    }
+
+    /// A line under the running (or just-finished) answer that stays after the status line clears.
+    private func note(_ line: String) {
+        guard let activeAnswer else { statusText = line; return }
+        update(activeAnswer.conversation, activeAnswer.message) { message in
+            if message.activity.last != line { message.activity.append(line) }
         }
     }
 
@@ -202,12 +230,13 @@ final class AppModel {
         case .activity(let line):
             update(id, answer) { if $0.activity.last != line { $0.activity.append(line) } }
         case .approval(let request):
+            openApprovals.insert(request.id)
             pendingApproval = request
         case .approvalExpired(let actionID):
-            if pendingApproval?.id == actionID {
-                pendingApproval = nil
-                update(id, answer) { $0.activity.append("Approval timed out, so nothing was done") }
-            }
+            let wasShown = openApprovals.remove(actionID) != nil
+            if pendingApproval?.id == actionID { pendingApproval = nil }
+            // The card may already be gone (answered while the answer was still in flight).
+            if wasShown { update(id, answer) { $0.activity.append("Approval timed out, so nothing was done") } }
         case .failed(let message):
             update(id, answer) { $0.failure = message }
         case .done:
@@ -220,6 +249,8 @@ final class AppModel {
         statusText = ""
         pendingApproval = nil
         turn = nil
+        openApprovals = []
+        activeAnswer = nil
         update(id, answer) { message in
             if message.text.isEmpty && message.failure == nil { message.failure = "Stopped." }
         }
