@@ -744,3 +744,52 @@ async def test_bridge_read_attachment(monkeypatch):
     assert await bridge.read_attachment(5, "1.2") == (None, "", "not_on_disk")
     assert await bridge.read_attachment(5, "1.2") == (None, "", "bad_base64")
     assert await bridge.read_attachment(5, "../etc") == (None, "", "not_found") and len(seen) == 3
+
+
+JPEG = b"\xff\xd8\xff\xe0" + b"x" * 20
+
+
+async def test_bridge_recognize_text(monkeypatch):
+    replies = [{"ok": True, "text": "INVOICE 4471", "lines": 1, "confidence": 0.9},
+               {"ok": False, "error": "no_text"},
+               {"ok": False, "error": "failed"},
+               {"ok": False, "error": "weird"},
+               {"ok": True, "text": "a" * 250_000, "lines": 1, "confidence": 7},
+               {"ok": True, "text": "a", "lines": 1, "confidence": -3},
+               {"ok": True, "text": "a", "lines": 1, "confidence": "high"},
+               {"ok": True, "text": "a", "lines": 1, "confidence": True},
+               {"ok": True, "text": "a", "lines": 1, "confidence": float("nan")},
+               {"ok": True, "text": 5, "lines": 1, "confidence": 0.5}]
+    seen = []
+
+    async def ask(kind, timeout, **fields):
+        seen.append((kind, timeout, fields))
+        return replies.pop(0)
+
+    monkeypatch.setattr(bridge, "_ask", ask)
+    assert await bridge.recognize_text(JPEG) == ("INVOICE 4471", 0.9)
+    assert seen[0] == ("recognize", 20.0, {"image_b64": base64.b64encode(JPEG).decode()})
+    assert await bridge.recognize_text(JPEG) == ("", 0.0)
+    with pytest.raises(bridge.BridgeError, match="failed"):
+        await bridge.recognize_text(JPEG)
+    with pytest.raises(bridge.BridgeError, match="recognize_failed"):
+        await bridge.recognize_text(JPEG)
+    text, confidence = await bridge.recognize_text(JPEG)
+    assert len(text) == 200_000 and confidence == 1.0
+    assert (await bridge.recognize_text(JPEG))[1] == 0.0
+    for _ in range(4):
+        with pytest.raises(bridge.BridgeError, match="recognize_failed"):
+            await bridge.recognize_text(JPEG)
+    assert len(seen) == 10
+
+
+async def test_bridge_recognize_refuses_locally(monkeypatch):
+    async def ask(kind, timeout, **fields):
+        raise AssertionError("must not ask the app")
+
+    monkeypatch.setattr(bridge, "_ask", ask)
+    for bad in (b"", b"\x89PNG\r\n", b"\xff\xd8", b"GIF89a" + b"\xff\xd8\xff"):
+        with pytest.raises(bridge.BridgeError, match="bad_image"):
+            await bridge.recognize_text(bad)
+    with pytest.raises(bridge.BridgeError, match="too_large"):
+        await bridge.recognize_text(b"\xff\xd8\xff" + b"0" * (4 * 1024 * 1024))
