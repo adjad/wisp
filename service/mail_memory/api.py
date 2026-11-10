@@ -195,6 +195,9 @@ async def forget_facts(body: Nothing) -> dict:
     runner.set_facts(False)
     # Off the loop: it waits for any fact pass that is saving right now.
     result = await asyncio.to_thread(profile_facts.forget_all, store(), facts)
+    # "Everything Wisp learned from mail" includes the text it kept from attachments it was asked to read.
+    from service import attachment_store
+    await asyncio.to_thread(attachment_store.forget_all)
     await _changed()
     return {"ok": True, **result, "enabled": False}
 

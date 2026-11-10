@@ -15,6 +15,13 @@ from service.tools.timeranges import PERIOD_ARG, BadPeriod, resolve_span
 ATTACHMENT_TOOL = "read_email_attachments"
 
 
+def _part(value) -> str | None:
+    """`pages` or `sheet` as the model gave it: a short string, or a bare number."""
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        return None
+    return str(value).strip()[:80] or None
+
+
 @register(
     ATTACHMENT_TOOL,
     "Read the FILES attached to the user's emails: pictures and screenshots, "
@@ -24,12 +31,16 @@ ATTACHMENT_TOOL = "read_email_attachments"
     "them, or about the files in a person's emails. It searches both Apple Mail "
     "(the saved copy, instant and offline) and Gmail, so older and brand-new mail are "
     "both covered. A program, script or archive is only inspected and described, "
-    "never run and never unpacked. Pass `query` for who or what the email is about "
+    "never run and never unpacked, and a file that looks risky is flagged. A calendar "
+    "invite (.ics) or contact card (.vcf) comes back as its details. Pass `query` for who or what the email is about "
     "(a sender's name, a subject word), `name` for part of the file's name, `period` "
     "for a date RANGE or `day` for one day, `count` for how many emails to look "
     "through (default 5, at most 10), and `account` for one linked mailbox. Pass "
     "`question` with what the user wants to know about the files (for example "
-    "'what is the total on the invoice'), so the reading looks for it. Pass "
+    "'what is the total on the invoice'), so the reading looks for it. Pass `pages` "
+    "for certain pages of a PDF or slides of a deck ('12', '3-5') and `sheet` for one tab "
+    "of a spreadsheet (its name or number). A file already read is remembered on this "
+    "Mac, so a follow-up question about it is quick. Pass "
     "`list_only` true to only list the attachments (name, type, size) without opening "
     "them: use it for 'what files did she send' or when there may be many. For the "
     "text of an email itself, with no attachment, view_emails is the better choice. "
@@ -52,6 +63,10 @@ ATTACHMENT_TOOL = "read_email_attachments"
                       "description": "what the user wants to know about the files, passed through to the reading"},
          "list_only": {"type": "boolean",
                        "description": "true to list the attachments without reading them"},
+         "pages": {"type": "string",
+                   "description": "only these pages of a PDF or slides of a deck, e.g. '12' or '3-5'"},
+         "sheet": {"type": "string",
+                   "description": "only this tab of a spreadsheet: its name, or its number"},
      }},
     category="email_read",
     aliases=["what's in the attachment", "read the PDF he emailed me",
@@ -60,7 +75,8 @@ ATTACHMENT_TOOL = "read_email_attachments"
 async def read_email_attachments(query: str | None = None, name: str | None = None,
                                  period: str | None = None, day: str | None = None,
                                  count: int = 5, account: str | None = None,
-                                 question: str | None = None, list_only: bool = False) -> str:
+                                 question: str | None = None, list_only: bool = False,
+                                 pages: str | None = None, sheet: str | None = None) -> str:
     if _CORPUS_MAIL_IDENTIFIER.get() is not None:
         return "Corpus mail scope rejected: email attachments are outside the corpus scope."
     start: float | None = None
@@ -85,4 +101,4 @@ async def read_email_attachments(query: str | None = None, name: str | None = No
     return await mail_attachments.run(
         query=query or None, name=name or None, start=start, end=end, label=label,
         count=n, account=account or None, question=question or None,
-        list_only=bool(list_only))
+        list_only=bool(list_only), pages=_part(pages), sheet=_part(sheet))

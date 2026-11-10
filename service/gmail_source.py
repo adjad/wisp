@@ -1520,6 +1520,12 @@ def erase_account_data(account: str) -> dict:
         except Exception as exc:  # noqa: BLE001
             result["proactive"] = f"failed: {type(exc).__name__}"
     try:
+        # Text Wisp read from this account's attachments (service/attachment_store.py).
+        from service import attachment_store
+        result["attachment_text"] = f"erased {attachment_store.forget_account(account)}"
+    except Exception as exc:  # noqa: BLE001
+        result["attachment_text"] = f"failed: {type(exc).__name__}"
+    try:
         from service.google_calendar_source import _store
         _store().erase_held_for_account(account)
         result["waiting_notices"] = "erased"
