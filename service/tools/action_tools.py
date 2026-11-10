@@ -724,7 +724,10 @@ async def send_email(to: str, subject: str, body: str, cc: str = "",
                      confirmed_self_send: bool = False) -> str:
     if (msg := _own_address_guard(to, "send_email", confirmed_self_send)):
         return msg
-    subject, body = _degarble(subject), _degarble(body)
+    # Repair the model's over-escaping only when no card showed this text. An
+    # approved card is sent exactly as shown: "C:\temp\new" keeps its backslashes.
+    if _unreviewed():
+        subject, body = _degarble(subject), _degarble(body)
     if _unreviewed() and (_looks_truncated(subject) or _looks_truncated(body)):
         return _not_sent("(NOT sent — the draft looks cut off mid-sentence rather than "
                          "a complete subject/body. Rewrite the complete subject and "
@@ -1314,7 +1317,9 @@ async def forward_email(message_id: str, to: str, note: str = "") -> str:
         if problem:
             return problem
         resolved.append(handle)
-    note = _degarble(note) if note else ""
+    note = note or ""
+    if _unreviewed():  # as send_email: an approved note goes out as its card showed it
+        note = _degarble(note)
     res = await app_request("forward_email", {
         "message_id": message_id, "to": resolved, "body": note,
     })
