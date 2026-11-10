@@ -362,3 +362,18 @@ def test_whats_new_prefers_release_notes_and_falls_back_to_the_changelog(monkeyp
 def test_the_app_bundles_this_version_s_release_notes():
     source = (Path(misc_t1.__file__).resolve().parents[2] / "build-support" / "pipeline.py").read_text()
     assert 'notes = docs / "releases"' in source and '(ROOT / "docs/releases").glob(meta["version"]' in source
+
+
+def test_default_sent_view_does_not_warn_about_gmail_reach(monkeypatch):
+    now = time.time()
+    asked = _setup(monkeypatch, native=[_native(now - 60, "Recent note")])
+    out = asyncio.run(email_tools.sent_emails_view())
+    assert "Recent note" in out
+    assert "goes back only" not in out
+    assert asked == [gmail_source.SENT_DAYS]
+
+
+def test_sent_view_without_gmail_points_to_the_google_pane(monkeypatch):
+    _setup(monkeypatch, accounts=(), problem="no_mail_index")
+    out = asyncio.run(email_tools.sent_emails_view())
+    assert "Settings › Google" in out and "Settings › Accounts" not in out

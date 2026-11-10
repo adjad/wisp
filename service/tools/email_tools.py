@@ -3900,7 +3900,10 @@ async def sent_emails_view(query: str | None = None, day: str | None = None, cou
     from service.mail_memory import bridge
     accounts = gmail_source.connected_accounts()
     label = f"the last {gmail_source.SENT_DAYS} days"
-    start, end = time.time() - gmail_source.SENT_DAYS * 86400, float("inf")
+    now = time.time()
+    gmail_reach = now - gmail_source.SENT_DAYS * 86400
+    start, end = gmail_reach, float("inf")
+    default_window = not period and not day
     if period:
         try:
             start, end, label = resolve_span(period)
@@ -3911,11 +3914,12 @@ async def sent_emails_view(query: str | None = None, day: str | None = None, cou
             start, end, label = _day_bounds(day)
         except ValueError:
             return f"(couldn't understand the date {day!r} — use 'today', 'yesterday', or YYYY-MM-DD)"
-    days = max(1, math.ceil((time.time() - start) / 86400))
+    days = (gmail_source.SENT_DAYS if default_window
+            else max(1, math.ceil((now - start) / 86400)))
     native, problem, capped = await _native_sent(min(days, bridge.SENT_DAYS_MAX))
     if problem and not native and not accounts:
         return (f"I couldn't read your sent mail: {problem}. No Gmail account is linked in "
-                "Settings › Accounts to read it from instead.")
+                "Settings › Google to read it from instead.")
     rows = [dict(r) for r in gmail_source.sent_rows()] + native
     if account:
         wanted = account.strip().lower()
@@ -3939,7 +3943,7 @@ async def sent_emails_view(query: str | None = None, day: str | None = None, cou
     notes = []
     if problem:
         notes.append(f"Apple Mail's Sent mailbox wasn't read: {problem}.")
-    if accounts and start < time.time() - gmail_source.SENT_DAYS * 86400:
+    if accounts and start < gmail_reach:
         notes.append(f"Gmail's sent mail goes back only {gmail_source.SENT_DAYS} days.")
     if capped:
         notes.append(f"Apple Mail's list stops at its newest {len(native)} sent emails.")
