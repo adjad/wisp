@@ -395,3 +395,18 @@ def test_accounts_report_points_to_the_google_pane(monkeypatch):
     monkeypatch.setattr(email_tools, "get_identity_emails", lambda: [])
     out = misc_t1._accounts_report()
     assert "Settings ▸ Google" in out and "Accounts" not in out.split("Settings")[1]
+
+
+def test_default_sent_view_does_not_warn_about_gmail_reach(monkeypatch):
+    now = time.time()
+    asked = _setup(monkeypatch, native=[_native(now - 60, "Recent note")])
+    out = asyncio.run(email_tools.sent_emails_view())
+    assert "Recent note" in out
+    assert "goes back only" not in out
+    assert asked == [gmail_source.SENT_DAYS]
+
+
+def test_sent_view_without_gmail_points_to_the_google_pane(monkeypatch):
+    _setup(monkeypatch, accounts=(), problem="no_mail_index")
+    out = asyncio.run(email_tools.sent_emails_view())
+    assert "Settings › Google" in out and "Settings › Accounts" not in out

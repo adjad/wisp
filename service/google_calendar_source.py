@@ -333,7 +333,9 @@ async def refresh_due(accounts: dict[str, dict], now: float | None = None) -> No
     for account, item in accounts.items():
         if not G.has_calendar(account, item):
             _erase_quietly(account, only_if_present=True)   # the scope was dropped on a reconnect
+    # An expired sign-in cannot get a token; a reconnect clears the flag.
     due = [account for account, item in accounts.items() if G.has_calendar(account, item)
+           and not item.get("auth_expired")
            and now - _status.get(account, {}).get("attempted", 0) >= CALENDAR_EVERY]
     await asyncio.gather(*(one(account) for account in due))
 
