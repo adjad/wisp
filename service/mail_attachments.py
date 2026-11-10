@@ -22,8 +22,10 @@ Rules:
   what it reads from a copy saved on this Mac, never downloads from Gmail, never shows anything, and a
   picture that isn't text, a scan the app can't recognise, a recording, a program, an archive or a video
   is skipped.
-- An attached email is parsed in a child process, in memory; nothing inside it is written to disk, and a
-  program, script or archive inside it is inspected only. An email inside it is listed, not opened.
+- An attached email is parsed in a child process, in memory; the email and its files are never written out
+  as files (apart from the child's private temporary copy used to convert a picture or recording, removed
+  right after), and a program, script or archive inside it is inspected only. An email inside it is listed,
+  not opened. The text read from inside it is kept like any other reading, so it can be found later.
 - Text that was read is kept in service/attachment_store.py (this Mac only, dropped after
   30 days unused and when its account is disconnected; texted files belong to the account "messages"),
   so a follow-up question about the same file needs no fetch and no second read. Nothing is kept for a
@@ -49,7 +51,7 @@ import inspect
 import json
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import NamedTuple
 from datetime import datetime
 from pathlib import PurePath
@@ -82,6 +84,8 @@ _OCR_REST_S = 300.0                 # after the app fails to answer, pictures go
 _ocr_resting_until = 0.0
 _STRUCTURED_NAMES = frozenset({"ics", "vcf"})
 _SAVED = "Wisp's saved reading"
+_RESTING_NOTE = "Text recognition is resting for a few minutes, so this picture was not tried yet. "
+_TEXT_ONLY = "Wisp has its text but hasn't looked at the picture itself. "
 _UNPRINTABLE = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c\ufeff]")
 _KIND = getattr(untrusted, "EMAIL_ATTACHMENT", "email attachment")
 
@@ -174,6 +178,12 @@ def _size_text(size: int) -> str:
 
 def _is_picture(name: str, mime: str = "") -> bool:
     return _suffix(name) in _PICTURE_NAMES or str(mime).startswith("image/")
+
+
+def _is_audio(family: str, suffix: str) -> bool:
+    """A recording: the bytes say audio, or the name says so and the bytes say nothing else. A file the
+    inspection calls a video is a video, whatever it is named."""
+    return family == "audio" or (suffix in _AUDIO_NAMES and family in ("", "unknown"))
 
 
 # --- merged model -----------------------------------------------------------------
@@ -335,6 +345,7 @@ class _Reading:
     risk: list[str] = field(default_factory=list)
     partial: bool = False       # some of the file was not read, so "Read the whole file." must not be said
     extra: str = ""             # readings of files inside this one (each with its own fence), shown after it
+    cut: bool = False           # the text kept is only the start of the file (set by `_whole`)
 
 
 @dataclass
@@ -349,6 +360,8 @@ class _Ctx:
     pages: str | None = None
     sheet: str | None = None
     lookups: dict = field(default_factory=dict)
+    background: bool = False    # the background reader: a failure of text recognition sets no rest
+    resting: bool = False       # set by `_recognised` when it skipped a picture only because recognition is resting
 
     def remaining(self) -> float:
         return self.deadline - time.monotonic()
@@ -509,6 +522,12 @@ def _meta_of(reading: _Reading) -> str:
                        "partial": reading.partial})
 
 
+def _recalled_note(reading: _Reading, stored) -> None:
+    """A picture's saved text came from text recognition alone: no description was kept with it."""
+    if getattr(stored, "kind", "") == "ocr" and getattr(stored, "how", "") == "recognized":
+        reading.note = (reading.note.rstrip() + " " if reading.note.strip() else "") + _TEXT_ONLY
+
+
 def _apply_cover(reading: _Reading, note: str) -> None:
     """The saved cover note only: how the text was got. The type and the risk always come from
     inspecting the bytes in hand."""
@@ -628,6 +647,7 @@ async def _recognised(ctx: _Ctx, name: str, data: bytes, *, paged: bool) -> _Rec
     from service import documents
     from service.assistant.hub import hub
     global _ocr_resting_until
+    ctx.resting = ctx.background and time.monotonic() < _ocr_resting_until
     if not hub.has_subscribers or ctx.remaining() < 15.0 or time.monotonic() < _ocr_resting_until:
         return None
     try:
@@ -663,7 +683,8 @@ async def _recognised(ctx: _Ctx, name: str, data: bytes, *, paged: bool) -> _Rec
             # An older app drops the request, and a stalled one never answers: don't make every
             # picture in the next few minutes wait for it. A wait that the overall deadline cut
             # short says nothing about the app.
-            if str(error) == "app_not_connected" or (str(error) == "recognize_timeout" and page_s >= _OCR_PAGE_S):
+            if not ctx.background and (str(error) == "app_not_connected" or (
+                    str(error) == "recognize_timeout" and page_s >= _OCR_PAGE_S)):
                 _ocr_resting_until = time.monotonic() + _OCR_REST_S
             if not parts:
                 return None
@@ -768,7 +789,7 @@ def _expected_kind(f: _File, name: str, suffix: str, family: str) -> str:
         return "eml"
     if family == "script" or suffix in _TEXT_NAMES:
         return "txt"
-    if family == "audio" or suffix in _AUDIO_NAMES:
+    if _is_audio(family, suffix):
         return "audio"
     if _is_picture(name, f.mime) or (family == "image" and suffix not in _DOCUMENT_NAMES):
         return "ocr"
@@ -794,6 +815,7 @@ async def _read_file(ctx: _Ctx, email: _Email, f: _File, budget: int, depth: int
             # A Gmail file seen before, under the same name: nothing to fetch. (Apple Mail's files
             # are never found by a row id, which a rebuild of Mail's index can hand to another file.)
             _apply_meta(reading, stored.note)
+            _recalled_note(reading, stored)
             reading.where = _SAVED
             await _seen(f, stored.digest)
             return await _shape(ctx, reading, stored.text, stored.cut, name, stored.kind, budget)
@@ -834,6 +856,7 @@ async def _read_file(ctx: _Ctx, email: _Email, f: _File, budget: int, depth: int
             # The type and the risk are this file's own, from the inspection above; only the text,
             # how it was got and how much of it there is come from the saved reading.
             _apply_cover(reading, stored.note)
+            _recalled_note(reading, stored)
             if stored.text.strip() and ENCRYPTED_PDF_REASON in reading.risk:
                 reading.risk = [reason for reason in reading.risk if reason != ENCRYPTED_PDF_REASON]
                 reading.risk_level = reading.risk_level if reading.risk else ""
@@ -860,7 +883,7 @@ async def _read_file(ctx: _Ctx, email: _Email, f: _File, budget: int, depth: int
             script = family == "script" or suffix in _SCRIPT_NAMES
             reading.note = ("Read as plain text; the script was not run. " if script else "Read as plain text. ")
             return await _settle(ctx, reading, f, digest, text, cut, name, "txt", budget)
-        if family == "audio" or suffix in _AUDIO_NAMES:
+        if _is_audio(family, suffix):
             return await _read_audio(ctx, f, reading, digest, name, data, budget)
         if family == "video":
             raise _Unreadable("It is a video, and Wisp doesn't read videos in "
@@ -1206,25 +1229,55 @@ async def _fetch_messages(ctx: _Ctx, f: _File) -> tuple[bytes, str]:
     raise _Unreadable(sentence)
 
 
-def _contact_split(terms: list[str]) -> tuple[list[str], list[str]]:
-    """(the words that are left, the handles of the contacts the words name). A word names a contact
-    when it is that contact's whole name or one word of it; without synced contacts nothing is taken."""
+def _contact_words(terms: list[str]) -> tuple[list[str], list[str], list[str]]:
+    """(the words that are left, the handles of the contacts the words name, those contacts' names).
+
+    A word names a contact only when it is that contact's whole name, or the first name of at least three
+    letters, or the family name right after the first name (and never a word that is also an everyday
+    word of a request, like "sent"). Without synced contacts nothing is taken."""
     try:
         from service.tools import imessage_tools
         names = dict(getattr(imessage_tools, "_name_handles", None) or {})
     except Exception:  # noqa: BLE001
-        return terms, []
+        return terms, [], []
     rest: list[str] = []
     handles: list[str] = []
+    who: list[str] = []
+    previous: set[str] = set()
     for term in terms:
-        found = [h for known, hs in names.items() if term == known or term in known.split() for h in hs]
+        found: list[str] = []
+        matched: set[str] = set()
+        if term not in _STOP_WORDS:
+            for known, hs in names.items():
+                parts = known.split()
+                first = bool(parts) and term == parts[0] and len(term) >= 3
+                if term == known or first or (known in previous and term in parts[1:]):
+                    matched.add(known)
+                    found.extend(hs)
+                    if known not in who:
+                        who.append(known)
+        previous = {k for k in matched if k.split() and k.split()[0] == term}
         if not found:
             rest.append(term)
             continue
         for h in found:
             if h not in handles:
                 handles.append(h)
-    return rest, handles[:10]
+    return rest, handles[:10], [_pretty(str(n).title(), 60) for n in who]
+
+
+def _contact_split(terms: list[str]) -> tuple[list[str], list[str]]:
+    """(the words that are left, the handles of the contacts the words name)."""
+    rest, handles, _who = _contact_words(terms)
+    return rest, handles
+
+
+def _names_text(names: list[str]) -> str:
+    """"Dana", "Dana and Sam", "Dana, Sam and 3 others"."""
+    if len(names) <= 2:
+        return " and ".join(names)
+    left = len(names) - 2
+    return f"{names[0]}, {names[1]} and {left} other{'' if left == 1 else 's'}"
 
 
 def _who_of(handle: str) -> str:
@@ -1279,7 +1332,7 @@ async def _heard(ctx: _Ctx, name: str, data: bytes):
     except voice.VoiceUnavailable:
         return None, "The model Ask is using on this Mac can't listen to audio."
     except ValueError as error:
-        return None, _pretty(str(error), 200) or "It couldn't be listened to."
+        return None, _file_problem(error) or "It couldn't be listened to."
     if not _UNPRINTABLE.sub(" ", str(heard.text or "")).strip():
         return None, "No speech could be heard in it."
     return heard, ""
@@ -1310,7 +1363,7 @@ async def _read_audio(ctx: _Ctx, f: _File, reading: _Reading, digest: str, name:
 
 # --- an email attached to an email ----------------------------------------------------------
 
-_EML_NOTE = "An email attached to an email. Nothing inside it was saved or opened. "
+_EML_NOTE = "An email attached to an email. Its files were read in memory; none was run or saved as a file. "
 
 
 @dataclass
@@ -1319,6 +1372,7 @@ class _Eml:
     cut: bool
     files: list[dict]
     more: int
+    walk_cut: bool = False      # the child skipped deep parts or left some uncounted
 
 
 def _email_file(entry: dict) -> bool:
@@ -1350,7 +1404,7 @@ def _parse_eml(info) -> _Eml | None:
     if not lines and not body and not files:
         return None
     text = "\n".join(lines) + (("\n\n" if lines else "") + body if body else "")
-    return _Eml(text, info.get("body_cut") is True, files, more)
+    return _Eml(text, info.get("body_cut") is True, files, more, info.get("walk_cut") is True)
 
 
 def _eml_listing(parsed: _Eml) -> str:
@@ -1370,8 +1424,9 @@ def _eml_listing(parsed: _Eml) -> str:
 
 
 async def _read_inner(ctx: _Ctx, email: _Email, outer: _File, outer_name: str, outer_data: bytes, entry: dict,
-                      room: int) -> str:
-    """The block for one file inside an attached email, read in memory. '' when it doesn't fit."""
+                      room: int, done: list | None = None) -> str:
+    """The block for one file inside an attached email, read in memory. '' when it doesn't fit.
+    `done`, when given, gets True appended when the file was really read (not a problem, not inspect-only)."""
     from service import documents
     inner = _File(entry["name"], entry["size"], mime=entry["mime"], nested=True, read_account=outer.read_account,
                   read_source=outer.read_source)
@@ -1391,6 +1446,8 @@ async def _read_inner(ctx: _Ctx, email: _Email, outer: _File, outer_name: str, o
         if isinstance(part.get("mime"), str):
             inner.mime = _pretty(part["mime"], 80)
         reading = await _read_file(ctx, email, inner, max(120, room - 380), depth=1)
+        if done is not None and not reading.problem and reading.text.strip():
+            done.append(True)
     except _Unreadable as error:
         reading.problem = str(error)
     except (TimeoutError, asyncio.TimeoutError):
@@ -1428,6 +1485,13 @@ async def _read_email(ctx: _Ctx, email: _Email, f: _File, reading: _Reading, dig
     reading.note = _EML_NOTE + (f"{parsed.more} more file{'' if parsed.more == 1 else 's'} not listed. "
                                 if parsed.more else "")
     text, cut, keep = parsed.text, parsed.cut, True
+    # Whatever the child could not show of the email itself: said plainly, and "Read the whole file." never is.
+    gaps = [sentence for flag, sentence in (
+        (parsed.cut, "Its text was cut short."),
+        (parsed.walk_cut, "Some of its parts were too deep or too many to read."),
+        (parsed.more > 0, "")) if flag]       # the files not listed are already said in the note
+    reading.partial = bool(gaps)
+    gaps = [g for g in gaps if g]
     stored = await _recall(digest=digest)
     if stored is not None and stored.kind == "eml" and stored.text.strip():
         text, cut, keep = stored.text, stored.cut, False
@@ -1442,6 +1506,7 @@ async def _read_email(ctx: _Ctx, email: _Email, f: _File, reading: _Reading, dig
     if candidates and not n:
         reading.note += "Its files are listed, not read, for lack of room. "
     blocks: list[str] = []
+    read_ok: list[bool] = []
     allowed = budget + 380
     skipped = 0
     for i, entry in enumerate(candidates[:n]):
@@ -1450,7 +1515,7 @@ async def _read_email(ctx: _Ctx, email: _Email, f: _File, reading: _Reading, dig
         if per < 400:
             skipped += n - i
             break
-        block = await _read_inner(ctx, email, f, name, data, entry, per)
+        block = await _read_inner(ctx, email, f, name, data, entry, per, read_ok)
         if block:
             blocks.append(block)
         else:
@@ -1459,6 +1524,14 @@ async def _read_email(ctx: _Ctx, email: _Email, f: _File, reading: _Reading, dig
         reading.note += "Some of its files were not shown for lack of room. "
     if blocks:
         reading.extra = "  Files read inside it, in memory only:\n" + "\n".join(blocks)
+    listed = len(parsed.files) + parsed.more
+    if listed:
+        reading.note += f"Read {len(read_ok)} of its {listed} file{'' if listed == 1 else 's'}. "
+        if len(read_ok) < listed:
+            reading.partial = True
+    if reading.partial:
+        reading.note = reading.note.replace("Read the whole file.", "").replace("  ", " ").rstrip() + " "
+        reading.note += " ".join(gaps + ["Only part of it was read."]) + " "
     return reading
 
 
@@ -1475,7 +1548,7 @@ class _Whole:
     reading: _Reading
     text: str = ""
     digest: str = ""
-    outcome: str = "unreadable"     # index_one's answer: kept | known | skipped | unreadable
+    outcome: str = "unreadable"     # index_one's answer: kept | known | skipped | resting | unreadable
 
 
 def _why(error: BaseException) -> str:
@@ -1501,7 +1574,7 @@ async def _whole_models(ctx: _Ctx, out: _Whole, f: _File, name: str, suffix: str
     """The branches that need the model. True when this handled the file."""
     from service import vision
     reading = out.reading
-    if family == "audio" or suffix in _AUDIO_NAMES:
+    if _is_audio(family, suffix):
         heard, problem = await _heard(ctx, name, data)
         if heard is None:
             reading.problem = problem
@@ -1542,6 +1615,7 @@ async def _whole(ctx: _Ctx, email: _Email, f: _File, *, models: bool) -> _Whole:
 
     async def keep(text: str, kind: str, cut: bool, how: str, complete: bool = True) -> None:
         out.text = text
+        reading.cut = bool(cut)
         if complete and text.strip():
             out.outcome = "kept" if await _keep(f, out.digest, kind=kind, text=text, cut=cut, how=how,
                                                 reading=reading) else "skipped"
@@ -1557,6 +1631,7 @@ async def _whole(ctx: _Ctx, email: _Email, f: _File, *, models: bool) -> _Whole:
             _apply_meta(reading, stored.note)
             reading.where = _SAVED
             out.text, out.digest, out.outcome = stored.text, stored.digest, "known"
+            reading.cut = bool(stored.cut)
             await _seen(f, stored.digest)
             return out
         data, where = await _fetch(ctx, email, f)
@@ -1593,6 +1668,7 @@ async def _whole(ctx: _Ctx, email: _Email, f: _File, *, models: bool) -> _Whole:
                             reading=reading)
             await _seen(f, digest)
             out.text, out.outcome = stored.text, "known"
+            reading.cut = bool(stored.cut)
             return out
         if emailish:
             try:
@@ -1624,7 +1700,7 @@ async def _whole(ctx: _Ctx, email: _Email, f: _File, *, models: bool) -> _Whole:
             reading.note = ("Read as plain text; the script was not run. " if script else "Read as plain text. ")
             await keep(text, "txt", cut, "text")
             return out
-        if family == "audio" or suffix in _AUDIO_NAMES:
+        if _is_audio(family, suffix):
             if not models or not await _whole_models(ctx, out, f, name, suffix, family, data, False):
                 reading.note = "Recordings are not transcribed in the background."
                 out.outcome = "skipped"
@@ -1639,6 +1715,9 @@ async def _whole(ctx: _Ctx, email: _Email, f: _File, *, models: bool) -> _Whole:
             if recognised:
                 reading.note = f"Its text was recognised {_exactness(recognised.confidence)}. "
                 await keep(recognised.text, "ocr", False, "recognized", recognised.complete)
+            elif ctx.resting:
+                reading.note = _RESTING_NOTE
+                out.outcome = "resting"
             else:
                 reading.note = ("It is a picture without text Wisp could recognise on this Mac, so it was not "
                                 "read or described. ")
@@ -1675,6 +1754,9 @@ async def _whole(ctx: _Ctx, email: _Email, f: _File, *, models: bool) -> _Whole:
                     return out
                 if models and await _whole_models(ctx, out, f, name, suffix, family, data, True):
                     out.outcome = "skipped"
+                    return out
+                if ctx.resting:
+                    reading.note, out.outcome = _RESTING_NOTE, "resting"
                     return out
                 reading.note = "A scanned PDF that Wisp could not recognise on this Mac, so it was not read."
                 out.outcome = "skipped"
@@ -1736,17 +1818,27 @@ async def fetch(email: _Email, f: _File, *, deadline: float) -> tuple[bytes, str
 
 async def index_one(email: _Email, f: _File, *, deadline: float) -> str:
     """Read one file for the store, without any language model: "kept", "known" (already stored),
-    "skipped" (nothing to keep, or only a model could read it) or "unreadable". Never raises.
+    "skipped" (nothing to keep, or only a model could read it), "resting" or "unreadable". Never raises.
+
+    "resting" means a picture or scan was not tried because on-device text recognition is resting (the app
+    failed to answer a foreground read in the last few minutes): the caller treats it as not tried and
+    comes back to it. The background path never starts that rest itself.
 
     Only plain extraction and the app's on-device text recognition are used. A picture that isn't text,
     a scan the app can't recognise, a recording, a program, an archive, a video and an invite or card
     are "skipped". An attached email keeps its headers and body; the files inside it are not read.
-    A file that is not on this Mac (a Gmail-only file) is "skipped": this never downloads from Gmail."""
+    A file that is not on this Mac (a Gmail-only file, or any file with no saved Apple Mail copy) and a
+    Messages file are "skipped": this never downloads from Gmail and never reads Messages."""
     try:
-        if not (f.has_messages or (f.has_local and f.on_disk)):
+        if f.source == "messages" or getattr(email, "source", "") == "messages" or f.has_messages:
             return "skipped"
+        if not (f.has_local and f.on_disk):
+            return "skipped"
+        # A copy with the Gmail fields cleared: the read can only try the local copy, even for a merged email.
+        local = replace(f, gmail_account="", gmail_message="", gmail_attachment="", data=None)
         ctx = _bare_ctx(deadline, [])           # no client, no model, no Gmail accounts
-        return (await _whole(ctx, email, f, models=False)).outcome
+        ctx.background = True
+        return (await _whole(ctx, email, local, models=False)).outcome
     except asyncio.CancelledError:
         raise
     except Exception:  # noqa: BLE001
@@ -1773,7 +1865,8 @@ async def run(query: str | None = None, name: str | None = None, start: float | 
 
     `pages` ("12", "3-5") and `sheet` (a tab's name or number) narrow the reading to that part.
     `inside` looks for words inside the files Wisp has already read (no new file is fetched). `across`
-    goes through many files and pulls the same few facts from each (and wins over `inside`)."""
+    goes through many files and pulls the same few facts from each (and wins over `inside`); `list_only`
+    wins over `across`, and with `inside` it shows who, what and when but no snippets."""
     shown: list[str] = []
     try:
         return await asyncio.wait_for(
@@ -1796,6 +1889,8 @@ class _Found:
     terms: list[str]
     accounts: list[str]
     named: str
+    senders: list[str] = field(default_factory=list)    # Messages: contacts whose names were turned into senders
+    errored: bool = False                                # Messages: the search itself failed
 
 
 async def find(query: str | None = None, name: str | None = None, start: float | None = None,
@@ -1809,7 +1904,21 @@ async def find(query: str | None = None, name: str | None = None, start: float |
     return found.chosen, found.notes
 
 
+_SENDER_NOTES = ("Looked for files sent by", "Nothing from ")
+
+
 async def _find(query, name, start, end, account, count, source: str, most: int) -> _Found:
+    """`_find_core`; in Messages, when words that name contacts were turned into senders and that found
+    nothing, once more with the words as plain terms and no senders."""
+    found = await _find_core(query, name, start, end, account, count, source, most, True)
+    if source == "messages" and found.senders and not found.chosen and not found.errored:
+        again = await _find_core(query, name, start, end, account, count, source, most, False)
+        again.notes = [f"Nothing from {_names_text(found.senders)}, so looked for the word instead.", *again.notes]
+        return again
+    return found
+
+
+async def _find_core(query, name, start, end, account, count, source: str, most: int, contacts: bool) -> _Found:
     from service import gmail_source
     messages = source == "messages"
     noun = "message" if messages else "email"
@@ -1827,8 +1936,12 @@ async def _find(query, name, start, end, account, count, source: str, most: int)
     problems: list[str] = []
     capped = False
     accounts: list[str] = []
+    senders: list[str] = []
+    errored = False
     if messages:
-        terms, handles = _contact_split(terms)
+        handles: list[str] = []
+        if contacts:
+            terms, handles, senders = _contact_words(terms)
         try:
             rows, capped = await bridge.read_message_attachment_index(terms, handles, since, until,
                                                                       limit=_APPLE_LIMIT)
@@ -1836,6 +1949,7 @@ async def _find(query, name, start, end, account, count, source: str, most: int)
             raise
         except Exception as error:  # noqa: BLE001 — a reason, never a crash
             rows = []
+            errored = True
             problems.append(f"Messages couldn't be searched: {_messages_problem(error)}.")
         emails = sorted(_messages_emails(rows), key=lambda e: e.ts, reverse=True)
     else:
@@ -1869,6 +1983,8 @@ async def _find(query, name, start, end, account, count, source: str, most: int)
         emails = sorted(_merge(apple_rows, gmail_messages), key=lambda e: e.ts, reverse=True)
 
     notes: list[str] = list(problems)
+    if senders:
+        notes.append(f"Looked for files sent by {_names_text(senders)}.")
     if not explicit and not messages:
         future = [e for e in emails if e.ts > cutoff]
         if future:
@@ -1900,7 +2016,7 @@ async def _find(query, name, start, end, account, count, source: str, most: int)
     if len(emails) > len(chosen):
         notes.append(f"{len(emails) - len(chosen)} more {noun}{'' if len(emails) - len(chosen) == 1 else 's'} "
                      f"with attachments (showing {len(chosen)}, newest first).")
-    return _Found(chosen, notes, terms, accounts, named)
+    return _Found(chosen, notes, terms, accounts, named, senders, errored)
 
 
 async def _run(query, name, start, end, label, count, account, question, list_only, shown: list[str],
@@ -1909,7 +2025,7 @@ async def _run(query, name, start, end, label, count, account, question, list_on
     deadline = time.monotonic() + DEADLINE_S
     messages = source == "messages"
     fell_through = ""
-    if across:
+    if across and not list_only:
         return await _run_across(query, name, start, end, label, account, question, source)
     words = _inside_words(inside)
     if words:
@@ -1933,8 +2049,11 @@ async def _run(query, name, start, end, label, count, account, question, list_on
         return _plain(f"I didn't find any email attachments{named_text}{what}{where}. "
                       + " ".join(notes)).strip()
 
-    top = _plain(f"Files in {len(chosen)} message{'' if len(chosen) == 1 else 's'}{where}, newest first." if messages
-                 else f"Attachments in {len(chosen)} email{'' if len(chosen) == 1 else 's'}{where}, newest first.")
+    said = [n for n in notes if n.startswith(_SENDER_NOTES)]
+    notes = [n for n in notes if n not in said]
+    top = _plain((f"Files in {len(chosen)} message{'' if len(chosen) == 1 else 's'}{where}, newest first." if messages
+                  else f"Attachments in {len(chosen)} email{'' if len(chosen) == 1 else 's'}{where}, newest first.")
+                 + "".join(" " + n for n in said))
     limit = RESULT_BUDGET_CHARS
 
     if list_only:
@@ -2050,8 +2169,19 @@ def _background_on() -> bool:
         return False
 
 
-def _search_inside(words: str, name, start, end, account, source: str) -> list:
-    """The store's hits for `words`, narrowed like a normal search. Synchronous: run in a thread."""
+def _search_failed() -> bool:
+    """Whether the store's last search in THIS thread failed (a store that cannot say reports no failure)."""
+    try:
+        from service import attachment_store
+        check = getattr(attachment_store, "last_search_failed", None)
+        return bool(check()) if check is not None else False
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _search_inside(words: str, name, start, end, account, source: str, failure: list | None = None) -> list:
+    """The store's hits for `words`, narrowed like a normal search. Synchronous: run in a thread.
+    `failure`, when given, gets True appended if any of the searches failed."""
     from service import attachment_store, gmail_source
     since, until = _finite_time(start), _finite_time(end)
     part = _pretty(name, 120) if isinstance(name, str) else ""
@@ -2069,8 +2199,11 @@ def _search_inside(words: str, name, start, end, account, source: str) -> list:
         jobs += [{"source": "gmail", "account": a} for a in ([] if no_match else chosen)]
     else:
         jobs += [{"source": "mail"}, {"source": "gmail"}]
-    lists = [attachment_store.search(words, limit=_INSIDE_SEARCHED, since=since, until=until, name=part, **job)
-             for job in jobs]
+    lists = []
+    for job in jobs:
+        lists.append(attachment_store.search(words, limit=_INSIDE_SEARCHED, since=since, until=until, name=part, **job))
+        if _search_failed() and failure is not None:
+            failure.append(True)
     if len(lists) == 1:
         return list(lists[0])
     newest: dict[str, object] = {}
@@ -2088,10 +2221,13 @@ def _hit_head(index: int, hit) -> str:
     if not (hit.sender or hit.subject or hit.name or hit.ts):
         return "A file Wisp read earlier"
     messages = hit.source == "messages"
+    if messages and not hit.sender:
+        # The store's seen row cannot tell a file the person sent from a text from someone unknown.
+        chat = _pretty(str(hit.subject or ""), 80) or "a conversation"
+        return _plain(f"A file in Messages, in {chat}" + (f", {_when(hit.ts)}" if hit.ts else ""))
     email = _Email("", float(hit.ts or 0), sender=str(hit.sender or ""), subject=str(hit.subject or ""),
                    apple=hit.source == "mail", gmail=[hit.account] if hit.source == "gmail" and hit.account else [],
-                   source="messages" if messages else "mail", chat=str(hit.subject or "") if messages else "",
-                   from_me=messages and not hit.sender)
+                   source="messages" if messages else "mail", chat=str(hit.subject or "") if messages else "")
     return _email_header(index, email)
 
 
@@ -2104,7 +2240,9 @@ def _hit_lines(index: int, hit) -> tuple[list[str], _Reading]:
     how ={"recognized": "Its text was recognised on this Mac.",
            "transcribed": "Transcribed on this Mac; some words may be wrong."}.get(hit.how, "")
     lines.append("  Coverage: " + ((reading.note.strip() or how or "Read by Wisp earlier.")
-                                    + (" Only the start of the file was kept." if hit.cut else "")))
+                                    + (" Only the start of the file was kept." if hit.cut else "")
+                                    + (" " + _TEXT_ONLY.strip() if hit.kind == "ocr" and hit.how == "recognized"
+                                       else "")))
     if reading.risk:
         lines.append(("  Looks risky: " if reading.risk_level == "high" else "  Take care: ")
                      + " ".join(reading.risk))
@@ -2113,7 +2251,7 @@ def _hit_lines(index: int, hit) -> tuple[list[str], _Reading]:
 
 def _fenced_block(lines: list[str], body: str, room: int) -> str:
     """The head lines and ONE fence holding `body`, at most `room` characters ('' when not even the lines fit)."""
-    base = "\n".join(lines)
+    base = _plain("\n".join(lines))
     free = room - len(base) - 1 - untrusted.overhead(_KIND)
     if not body.strip():
         return base if len(base) <= room else ""
@@ -2140,7 +2278,10 @@ async def _run_inside(words: str, query, name, start, end, label, account, quest
         except Exception:  # noqa: BLE001 — VisionUnavailable, ValueError, anything: nothing is shaped
             return _LOCAL_ONLY
     deadline = time.monotonic() + DEADLINE_S
-    hits = await asyncio.to_thread(_search_inside, words, name, start, end, account, source)
+    failure: list[bool] = []
+    hits = await asyncio.to_thread(_search_inside, words, name, start, end, account, source, failure)
+    if failure and not hits:
+        return "Wisp's saved readings couldn't be searched just now. Try again in a moment."
     try:
         total = int(await asyncio.to_thread(attachment_store.count))
     except Exception:  # noqa: BLE001
@@ -2168,7 +2309,9 @@ async def _run_inside(words: str, query, name, start, end, label, account, quest
                 continue                # aged out between the search and now
             stored_by_digest[hit.digest] = stored
         lines, reading = _hit_lines(len(blocks) + 1, hit)
-        blocks.append((lines, reading, hit, "\n".join("… " + _pretty(s, 200) for s in hit.snippets if s)))
+        # A snippet is file content: a listing shows who, what and when only.
+        blocks.append((lines, reading, hit, "" if list_only else
+                       "\n".join("… " + _pretty(s, 200) for s in hit.snippets if s)))
     if not blocks:
         if query or name or start is not None or end is not None:
             return None
@@ -2210,12 +2353,24 @@ async def _run_inside(words: str, query, name, start, end, label, account, quest
     return "\n".join(pieces)
 
 
+def _totals_once(attachment_fields, rows: list, unique: list) -> list[str]:
+    """The totals with a repeated file counted once: through the keys when `totals` takes them, else
+    over the de-duplicated rows."""
+    all_facts = [facts for _e, _f, facts, _d, _p in rows]
+    try:
+        return attachment_fields.totals(all_facts, keys=[digest for _e, _f, _x, digest, _p in rows])
+    except TypeError:
+        return attachment_fields.totals([facts for _e, _f, facts, _d, _p in unique])
+
+
 def _skip_kind(reading: _Reading) -> str:
     if reading.problem:
         return "unreadable"
     note = reading.note or ""
     if note.startswith("Inspected only"):
         return "program"
+    if "scanned PDF" in note:
+        return "scan"                   # pages that are pictures and gave no text, however they were tried
     if "not read or described" in note or "could not recognise" in note:
         return "picture"
     return "unreadable"
@@ -2246,8 +2401,8 @@ async def _run_across(query, name, start, end, label, account, question, source)
     considered = flat[:_ACROSS_FILES]
     ctx = _Ctx(deadline=work, gmail_source=gmail_source, gmail_accounts=found.accounts,
                passes=large_document.PassBudget(deadline=work), client=client, model=model)
-    rows: list[tuple[_Email, _File, dict | None]] = []
-    skipped = {"program": 0, "picture": 0, "unreadable": 0}
+    rows: list[tuple[_Email, _File, dict | None, str, bool]] = []     # (email, file, facts, digest, part only)
+    skipped = {"program": 0, "picture": 0, "scan": 0, "unreadable": 0}
     reached = risky = 0
     for email, f in considered:
         if ctx.remaining() < _ACROSS_MIN_S:
@@ -2281,14 +2436,25 @@ async def _run_across(query, name, start, end, label, account, question, source)
                     await asyncio.to_thread(attachment_store.put_facts, digest, attachment_fields.FACTS_VERSION, facts)
                 except Exception:  # noqa: BLE001
                     pass
-        rows.append((email, f, facts if isinstance(facts, dict) else None))
+        rows.append((email, f, facts if isinstance(facts, dict) else None, digest or "",
+                     bool(reading.partial or reading.cut)))
         reached += 1
 
     notes: list[str] = []
     not_reached = len(considered) - reached
+    # The same file arriving in two emails is one file: one line, counted once.
+    seen_digests: set[str] = set()
+    unique: list[tuple[_Email, _File, dict | None, str, bool]] = []
+    for item in rows:
+        if item[3] and item[3] in seen_digests:
+            continue
+        if item[3]:
+            seen_digests.add(item[3])
+        unique.append(item)
+    repeated = len(rows) - len(unique)
     # The first line counts files with facts out of the files considered; these notes account for the rest,
     # in this order: text but no facts, skipped by kind, not reached.
-    without_facts = sum(1 for _e, _f, facts in rows if facts is None)
+    without_facts = sum(1 for _e, _f, facts, _d, _p in unique if facts is None)
     if without_facts:
         notes.append(f"{without_facts} file{'' if without_facts == 1 else 's'} had text but no facts Wisp "
                      "could pull out.")
@@ -2297,6 +2463,7 @@ async def _run_across(query, name, start, end, label, account, question, source)
         notes.append(f"{left} more file{'' if left == 1 else 's'} not looked at (at most {_ACROSS_FILES} per request).")
     labels = {"program": ("a program or archive", "programs or archives"),
               "picture": ("a picture without text", "pictures without text"),
+              "scan": ("a scan Wisp couldn't read", "scans Wisp couldn't read"),
               "unreadable": ("one that could not be read", "that could not be read")}
     parts = [(labels[k][0] if n == 1 else f"{n} {labels[k][1]}") for k, n in skipped.items() if n]
     if parts:
@@ -2312,15 +2479,23 @@ async def _run_across(query, name, start, end, label, account, question, source)
     if found_notes:
         notes.append(found_notes)
 
-    all_facts = [facts for _e, _f, facts in rows]
-    with_facts = sum(1 for facts in all_facts if facts is not None)
+    all_facts = [facts for _e, _f, facts, _d, _p in rows]
+    with_facts = sum(1 for _e, _f, facts, _d, _p in unique if facts is not None)
     asked = _pretty(question, 80) if isinstance(question, str) else ""
     where = f" in {label}" if label else ""
     top = _plain(f"Facts from {with_facts} of {len(considered)} files{where}"
                  + (f" (for: {asked})" if asked else "") + ", newest first.")
-    sentences = attachment_fields.totals(all_facts) if rows else []
+    sentences = _totals_once(attachment_fields, rows, unique) if rows else []
     total_line = ("Totals added up by Wisp: " + "; ".join(sentences) + ".") if sentences else ""
-    lines = [attachment_fields.line(facts, name=_safe_name(f.name), when=_when(email.ts)) for email, f, facts in rows]
+    if repeated and "same file" not in total_line:
+        notes.append(f"{repeated} file{' was' if repeated == 1 else 's were'} the same file again and "
+                     f"{'was' if repeated == 1 else 'were'} counted once.")
+    partly = sum(1 for _e, _f, _facts, _d, part in unique if part)
+    if partly:
+        notes.append(f"{partly} file{' was' if partly == 1 else 's were'} only partly read, so "
+                     f"{'its' if partly == 1 else 'their'} amounts may be missing.")
+    lines = [attachment_fields.line(facts, name=_safe_name(f.name), when=_when(email.ts))
+             + (" · part of the file" if part else "") for email, f, facts, _d, part in unique]
 
     def fit(room: int) -> list[str]:
         kept, used = [], 0

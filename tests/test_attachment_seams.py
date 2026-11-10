@@ -103,6 +103,55 @@ def wav_bytes(seconds=40.0, rate=44_100, channels=2, silences=((9.0, 9.6), (19.0
     return out.getvalue()
 
 
+REAL_CHILD = documents.run_attachment_child          # before any fixture replaces it
+_audio_child_result: list[object] = []
+
+
+def _audio_child_runs() -> tuple[bool, str]:
+    """(whether the real `audio` job can run here, why not). The CI test sandbox refuses to exec
+    /usr/bin/afconvert, which the child calls for WAV as well as M4A. One real run on a tiny WAV made with the
+    stdlib `wave` module, cached for the whole module; any error means "cannot run here"."""
+    if _audio_child_result:
+        return _audio_child_result[0]
+    import asyncio
+    import threading
+    tiny = wav_bytes(seconds=1.0, rate=16_000, channels=1, silences=())
+    outcome: list[object] = []
+
+    def probe():
+        try:
+            outcome.append(asyncio.run(REAL_CHILD("audio", "probe.wav", tiny, timeout=30)))
+        except BaseException as error:  # noqa: BLE001 — any failure at all means "cannot run here"
+            outcome.append(error)
+    worker = threading.Thread(target=probe)
+    worker.start()
+    worker.join(60)
+    ok = bool(outcome) and isinstance(outcome[0], dict) and bool(outcome[0].get("windows"))
+    result = (ok, "" if ok else "the real audio child cannot run here (afconvert is refused by this sandbox)")
+    _audio_child_result.append(result)
+    return result
+
+
+def test_the_probe_treats_any_error_as_cannot_run_here(monkeypatch):
+    import sys
+    here = sys.modules[__name__]
+
+    async def refused(*a, **k):
+        raise ValueError("afconvert is refused")
+    monkeypatch.setattr(here, "_audio_child_result", [])
+    monkeypatch.setattr(here, "REAL_CHILD", refused)
+    ok, why = _audio_child_runs()
+    assert not ok and "afconvert" in why
+
+
+@pytest.fixture
+def audio_child():
+    """Skips a test that runs the real `audio` child job when afconvert cannot actually run."""
+    ok, why = _audio_child_runs()
+    if not ok:
+        pytest.skip(why)
+
+
 def wav_seconds(data: bytes) -> float:
     with wave.open(io.BytesIO(data), "rb") as w:
         return w.getnframes() / w.getframerate()
@@ -280,7 +329,7 @@ async def test_attached_email_is_read_by_the_real_child_and_kept(world):
     assert any("Lease ends on the thirtieth of June" in b for b in blocks)              # the PDF, in its own fence
     pdf_block = next(b for b in blocks if "Lease ends" in b)
     assert "Zebrafish" not in pdf_block
-    assert "An email attached to an email. Nothing inside it was saved or opened." in out
+    assert "An email attached to an email. Its files were read in memory; none was run or saved as a file." in out
     # the program named report.pdf: inspected only, with a risk line, its bytes never shown
     assert "report.pdf" in out and "Inspected only" in out
     assert ("Looks risky:" in out) or ("Take care:" in out)
@@ -329,7 +378,7 @@ def make_m4a(tmp_path: Path, wav: bytes) -> bytes:
     return dst.read_bytes()
 
 
-async def test_a_recording_goes_through_conversion_windows_and_the_real_wav_checks(world, memo_wav):
+async def test_a_recording_goes_through_conversion_windows_and_the_real_wav_checks(world, memo_wav, audio_child):
     world.engine.replies = ["Call me back about the lease.", "Thanks and bye for now."]
     world.apple_rows = [apple_row(name="memo.wav", subject="Voice memo")]
     world.apple_files[(1, "1.2")] = memo_wav
@@ -365,7 +414,7 @@ async def test_a_recording_goes_through_conversion_windows_and_the_real_wav_chec
     assert "Transcribed on this Mac" in again
 
 
-async def test_real_listen_on_the_real_child_returns_a_complete_heard(world, memo_wav):
+async def test_real_listen_on_the_real_child_returns_a_complete_heard(world, memo_wav, audio_child):
     from service import attachment_audio
     world.engine.replies = ["one", "two"]
     heard = await attachment_audio.listen("memo.wav", memo_wav, client=world.engine, model=MODEL, deadline=later())
@@ -374,7 +423,7 @@ async def test_real_listen_on_the_real_child_returns_a_complete_heard(world, mem
     assert attachment_audio.how_much(heard) == "Heard all 40 seconds."
 
 
-async def test_windows_are_cut_in_the_planted_silences(world, memo_wav):
+async def test_windows_are_cut_in_the_planted_silences(world, memo_wav, audio_child):
     info = await documents.run_attachment_child("audio", "memo.wav", memo_wav, timeout=60)
     clips = [base64.b64decode(w) for w in info["windows"]]
     assert len(clips) == 2 and info["stopped_early"] is False
@@ -386,7 +435,7 @@ async def test_windows_are_cut_in_the_planted_silences(world, memo_wav):
     assert max(abs(s) for s in samples) < 600       # the cut fell inside a planted silence
 
 
-async def test_m4a_is_audio_for_inspect_and_is_read_not_refused_as_video(world, memo_wav, tmp_path):
+async def test_m4a_is_audio_for_inspect_and_is_read_not_refused_as_video(world, memo_wav, tmp_path, audio_child):
     m4a = make_m4a(tmp_path, memo_wav)
     assert attachment_child.inspect("memo.m4a", m4a)["family"] == "audio"
     over_the_child = await documents.run_attachment_child("inspect", "memo.m4a", m4a, timeout=30)
@@ -800,7 +849,7 @@ async def test_a_html_only_attached_email_is_read_as_text(world):
     assert "Gazelle" in inside and "<b>" not in inside and "alert(1)" not in inside
 
 
-async def test_a_clip_too_short_to_hear_is_a_plain_sentence_and_asks_no_engine(world):
+async def test_a_clip_too_short_to_hear_is_a_plain_sentence_and_asks_no_engine(world, audio_child):
     short = wav_bytes(seconds=0.05, rate=16_000, channels=1, silences=())
     world.apple_rows = [apple_row(name="blip.wav", subject="Blip")]
     world.apple_files[(1, "1.2")] = short
@@ -809,14 +858,14 @@ async def test_a_clip_too_short_to_hear_is_a_plain_sentence_and_asks_no_engine(w
     assert attachment_store.count() == 0
 
 
-async def test_a_garbage_recording_is_a_plain_sentence(world):
+async def test_a_garbage_recording_is_a_plain_sentence(world, audio_child):
     world.apple_rows = [apple_row(name="junk.wav", subject="Junk")]
     world.apple_files[(1, "1.2")] = b"RIFF" + b"\x00" * 200
     out = await ma.run(query="junk")
     assert "Not read:" in out and world.engine.calls == [] and attachment_store.count() == 0
 
 
-async def test_a_twelve_minute_recording_is_heard_ten_minutes_and_not_kept(world):
+async def test_a_twelve_minute_recording_is_heard_ten_minutes_and_not_kept(world, audio_child):
     """Every one of ~21 windows must pass the real transcribe_wav checks; the answer says it is partial."""
     long = wav_bytes(seconds=660.0, rate=16_000, channels=1, silences=())
     world.engine.replies = ["word"]
