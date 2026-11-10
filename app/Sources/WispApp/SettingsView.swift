@@ -234,6 +234,11 @@ final class SettingsLoader: ObservableObject {
     @Published private(set) var briefTimes: WispClient.BriefTimes?
     @Published private(set) var briefTimesPending = false
     @Published var idleMinutes: Double = 5
+    /// Set when the service didn't confirm the last Auto-unload change, so the
+    /// row went back to what the service last confirmed.
+    @Published private(set) var idleSaveProblem: String?
+    private var confirmedIdleMinutes: Double = 5
+    private var idleSaveGeneration = 0
     @Published var humanizerEnabled = false
     @Published var behaviorEnabled: Bool? = nil
     @Published var behaviorChanging = false
@@ -354,7 +359,11 @@ final class SettingsLoader: ObservableObject {
             self.installed = m.installed
             self.roles = m.roles
             await self.refreshFullAccess()
-            self.idleMinutes = await client.idleTimeout()
+            // No answer leaves the row as it is, never at a made-up number.
+            if let idle = await SettingsLoader.idleTimeoutReply() {
+                self.idleMinutes = idle
+                self.confirmedIdleMinutes = idle
+            }
             self.humanizerEnabled = await client.humanizerEnabled()
             await self.refreshBehavior()
             await self.refreshCloud()
@@ -1245,7 +1254,37 @@ final class SettingsLoader: ObservableObject {
 
     func setIdleMinutes(_ minutes: Double) {
         idleMinutes = minutes
-        Task { self.idleMinutes = await client.setIdleTimeout(minutes) }
+        idleSaveProblem = nil
+        idleSaveGeneration += 1
+        let generation = idleSaveGeneration
+        Task {
+            let confirmed = await SettingsLoader.idleTimeoutReply(setting: minutes)
+            if let confirmed { self.confirmedIdleMinutes = confirmed }
+            // Only the latest change decides what the row shows.
+            guard generation == self.idleSaveGeneration else { return }
+            if let confirmed {
+                self.idleMinutes = confirmed
+            } else {
+                self.idleMinutes = self.confirmedIdleMinutes
+                self.idleSaveProblem = QuickSettingsText.idleUnloadSaveProblem
+            }
+        }
+    }
+
+    /// GET /idle_timeout, or POST it with `setting`. Nil when the service didn't
+    /// answer with the minutes it now uses: unreachable, an error status, or no value.
+    private static func idleTimeoutReply(setting minutes: Double? = nil) async -> Double? {
+        var req = URLRequest(url: WispClient.baseURL.appendingPathComponent("idle_timeout"))
+        if let minutes {
+            req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: ["idle_minutes": minutes])
+        }
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let value = object["idle_minutes"] as? Double, value.isFinite, value >= 0 else { return nil }
+        return value
     }
 
     func set(_ role: String, _ model: String) {
@@ -2088,11 +2127,16 @@ struct SettingsView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Auto-unload idle models")
                                     .font(.system(size: 14, weight: .medium))
-                                Text(loader.idleMinutes <= 0
-                                     ? "Never — models stay resident until you unload them."
-                                     : "Unload a model after \(Int(loader.idleMinutes)) min of no use.")
+                                Text(QuickSettingsText.idleUnload(minutes: loader.idleMinutes))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                if let problem = loader.idleSaveProblem {
+                                    Text(problem)
+                                        .font(.caption)
+                                        .foregroundStyle(.orange)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
                             }
                             Spacer()
                             Stepper(value: Binding(

@@ -220,6 +220,20 @@ enum QuickSettingsText {
             """
     }
 
+    /// Settings › Advanced › Auto-unload idle models. The timer never unloads the
+    /// chat model (service/idle_unloader.py skips keep-warm models); Save memory
+    /// does that, so the line says which models this is about.
+    static func idleUnload(minutes: Double) -> String {
+        let others = "Wisp's other models, like the one Smart Search uses,"
+        return (minutes <= 0
+                ? "Never. \(others) stay loaded until you unload them."
+                : "Unloads \(others) after \(Int(minutes)) min unused.")
+            + " The chat model follows Save memory instead."
+    }
+
+    static let idleUnloadSaveProblem = "Wisp couldn't save that change, so it's back to what it was. "
+        + "Check that Wisp is running, then try again."
+
     /// Learn my routines' line, and the trailing "stays on this Mac" when
     /// nothing learned is sent anywhere.
     static func learning(enabled: Bool?, changing: Bool, status: String?,

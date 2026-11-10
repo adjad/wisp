@@ -1,6 +1,7 @@
 """Source checks for the 0.5.0 rc3 Settings repairs: the role menus offer chat
 models only and say when a pick wasn't saved (the logic itself is checked in
-tests/QuickSettingsChecks.swift), and Google's Disconnect & erase asks first.
+tests/QuickSettingsChecks.swift), Google's Disconnect & erase asks first, and
+the Auto-unload row says which models it is about and when a change wasn't saved.
 Reads source only; no app, service or network."""
 import re
 from pathlib import Path
@@ -89,3 +90,40 @@ def test_google_disconnect_and_erase_asks_first():
     disconnect = _body(model, "    func disconnect(_ account: String)")
     assert '"assistant/gmail/disconnect", body: ["account": account]' in disconnect
     assert "GoogleErase.note(account: account, response: response)" in disconnect
+
+
+def test_auto_unload_row_says_what_it_governs_and_when_a_change_was_not_saved():
+    settings = _read("SettingsView.swift")
+    text = _read("QuickSettingsText.swift")
+    # The caption names the other models and sends the chat model to Save memory.
+    caption = _body(text, "static func idleUnload(minutes: Double) -> String")
+    assert "Smart Search" in caption and "The chat model follows Save memory instead." in caption
+    assert "Text(QuickSettingsText.idleUnload(minutes: loader.idleMinutes))" in settings
+    assert "models stay resident until you unload them" not in settings
+    assert "Unload a model after" not in settings
+    # A change the service didn't confirm goes back to the last confirmed value and says so.
+    save = _body(settings, "    func setIdleMinutes(_ minutes: Double)")
+    assert "client.setIdleTimeout" not in save
+    assert "SettingsLoader.idleTimeoutReply(setting: minutes)" in save
+    assert "self.idleMinutes = self.confirmedIdleMinutes" in save
+    assert "self.idleSaveProblem = QuickSettingsText.idleUnloadSaveProblem" in save
+    assert "guard generation == self.idleSaveGeneration else { return }" in save
+    reply = _body(settings, "private static func idleTimeoutReply(setting minutes: Double? = nil) async -> Double?")
+    assert "(200..<300).contains(http.statusCode)" in reply and "else { return nil }" in reply
+    assert "if let problem = loader.idleSaveProblem {" in settings
+    # An unanswered read no longer shows a made-up 20 minutes.
+    refresh = _body(settings, "    func refresh()")
+    assert "client.idleTimeout()" not in refresh
+    assert "if let idle = await SettingsLoader.idleTimeoutReply() {" in refresh
+
+
+def test_learning_copy_stays_free_of_transport_for_its_standalone_check():
+    # tests/test_behavior_activity_native.py compiles this stretch of SettingsLoader
+    # by itself, ending at setIdleMinutes, and it must not reach the network.
+    settings = _read("SettingsView.swift")
+    start = settings.index("    var behaviorExplanation: String {")
+    copy = settings[start:settings.index("    func setIdleMinutes", start)]
+    assert "URLSession" not in copy and "idleTimeoutReply" not in copy
+    properties = settings[settings.index("    @Published var behaviorEnabled"):
+                          settings.index("    @Published var behaviorForgetStatus")]
+    assert "idle" not in properties and "roleSaveProblem" not in properties

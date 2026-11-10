@@ -230,6 +230,16 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
           "chat models are told from the embedder and reranker")
     check(RoleModelChoices.saveProblem.contains("couldn't save"), "a failed model pick is said")
 
+    // Settings › Advanced: the idle timer says it is about the other models.
+    check(QuickSettingsText.idleUnload(minutes: 5)
+          == "Unloads Wisp's other models, like the one Smart Search uses, after 5 min unused. "
+          + "The chat model follows Save memory instead.", "the idle timer names what it unloads and when")
+    check(QuickSettingsText.idleUnload(minutes: 0).hasPrefix("Never. Wisp's other models")
+          && QuickSettingsText.idleUnload(minutes: 0).contains("stay loaded until you unload them")
+          && QuickSettingsText.idleUnload(minutes: 0).hasSuffix("The chat model follows Save memory instead."),
+          "an idle timer that is off says so, and still says the chat model is Save memory's")
+    check(QuickSettingsText.idleUnloadSaveProblem.contains("couldn't save"), "a failed idle timer change is said")
+
     // The service's reply.
     check(ModelMemory.parse(["available": false, "models": []]) == nil, "an unavailable engine is unknown")
     check(ModelMemory.parse(nil) == nil, "an unreadable reply is unknown")
