@@ -31,7 +31,8 @@ _STAGES: dict[str, list[tuple[str, float]]] = {
     "reminder":   [("due", 0)],
 }
 
-# grace after `when_ts` during which a just-passed trigger may still fire (s)
+# grace after `when_ts` during which a just-passed trigger may still fire (s).
+# A "due" stage that was already owed gets DUE_EXPIRY_S instead: see _late_window.
 _GRACE = 60.0
 
 # How long after its event time a reminder event stays worth showing (s).
@@ -49,6 +50,25 @@ _BEHAVIOR_SAME_AS_NUDGE_S = 600.0
 
 def reminder_expires_at(stage: str | None, when: float) -> float:
     return when + (DUE_EXPIRY_S if stage == "due" else REMINDER_EXPIRY_S)
+
+
+def _late_window(label: str, c: dict, when: float) -> float:
+    """How long after `when` a stage may still be queued (s).
+
+    The scheduler stops while the Mac sleeps or the backend restarts, so its
+    next tick can come minutes after a reminder's time. A "due" alert is the
+    reminder itself and stays worth showing for DUE_EXPIRY_S, so a late tick
+    still queues it. Only a reminder that existed before its time was owed
+    that alert: one added, or first read from Reminders, with a time already
+    past keeps the short grace, so adding it does not alert at once. A
+    lead-time stage ("in 10 min") is wrong once the event has started.
+    """
+    if label != "due":
+        return _GRACE
+    created = c.get("created_at")
+    if isinstance(created, (int, float)) and not isinstance(created, bool) and created <= when:
+        return DUE_EXPIRY_S
+    return _GRACE
 
 
 def _from_routine(store, c: dict) -> bool:
@@ -131,7 +151,7 @@ def due_reminders(store, now: float | None = None) -> list[dict]:
         stages = _STAGES.get(c["kind"], _STAGES["event"])
         # stages whose trigger time has passed but the event hasn't (plus grace)
         passed = [(label, lead) for label, lead in stages
-                  if when - lead <= now < when + _GRACE]
+                  if when - lead <= now < when + _late_window(label, c, when)]
         if not passed:
             continue
         if _from_routine(store, c):

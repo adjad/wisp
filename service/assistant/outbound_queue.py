@@ -122,6 +122,22 @@ class OutboundQueue:
             self._db.commit()
         return bool(changed)
 
+    def release(self, sid: str) -> bool:
+        """Put a claimed row back in the queue, for the next sweep to try again.
+
+        Only for a send the host proved never left: the app dropped between
+        the claim and publication, so nothing was dispatched. It reverts a
+        `sending` row and nothing else, so a row that was sent, cancelled or
+        marked unknown can never come back as deliverable. due() still stops
+        offering it past _STALE_AFTER_S, when sweep_stale() retires it.
+        """
+        with self._lock:
+            changed = self._db.execute(
+                "UPDATE scheduled_sends SET status='pending', fired_at=NULL "
+                "WHERE id=? AND status='sending'", (sid,)).rowcount
+            self._db.commit()
+        return bool(changed)
+
     def recover_in_flight(self) -> list[sqlite3.Row]:
         """Rows claimed but never resolved — a crash happened mid-send.
 

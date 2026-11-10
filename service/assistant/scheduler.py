@@ -219,9 +219,7 @@ async def run() -> None:
         # baseline on first use, then publishes only terminal transitions or a
         # one-time stalled alert; ordinary progress commentary stays quiet.
         try:
-            from service.codex_monitor import codex_monitor
-            for event in codex_monitor.poll_events():
-                await hub.publish(event)
+            await _poll_codex()
         except Exception:  # noqa: BLE001 — Codex may not be installed/open yet
             pass
         # Proactive attention: notice a commitment in a text that is not on the calendar.
@@ -287,6 +285,18 @@ async def run() -> None:
         await asyncio.sleep(TICK_S)
 
 
+async def _poll_codex() -> None:
+    """One Codex poll. The read runs on a worker thread: it opens Codex's own
+    SQLite files, which can be large and can make a statement wait up to two
+    seconds on Codex's lock, and none of that may hold up streaming answers or
+    approvals. Awaited by the loop, so only one poll runs at a time (its load,
+    compare and save of the checkpoint is not re-entrant); what it found is
+    published back here on the event loop."""
+    from service.codex_monitor import codex_monitor
+    for event in await asyncio.to_thread(codex_monitor.poll_events):
+        await hub.publish(event)
+
+
 async def _checkin_tick(now: float | None = None) -> None:
     from service.assistant import checkin
     from service.attention.detectors import local_timezone
@@ -304,11 +314,18 @@ async def _checkin_tick(now: float | None = None) -> None:
         checkin.mark_notified(day, now=now)   # nothing to ask about tonight
         return
     planned, done = card["planned"], card["done"]
-    if planned:
-        text = (f"You planned {planned} thing{'s' if planned != 1 else ''} today"
-                + (f" and finished {done}" if done else "") + ". How did the rest go?")
+    events = len(card["tomorrow"]["events"])
+    recap = (f"You planned {planned} thing{'s' if planned != 1 else ''} today"
+             + (f" and finished {done}" if done else "") + ".")
+    tomorrow = f"Tomorrow has {events} event{'s' if events != 1 else ''}. Anything to move?"
+    if card["tasks"]:
+        text = f"{recap} How did the rest go?"
+    elif planned:
+        # Every task is done or dropped, so there is no "rest" to ask about. The
+        # card was kept for tomorrow's events (see the guard above); ask about those.
+        text = f"{recap} {tomorrow}"
     else:
-        text = f"Tomorrow has {len(card['tomorrow']['events'])} event{'s' if len(card['tomorrow']['events']) != 1 else ''}. Anything to move?"
+        text = tomorrow
     from service import diagnostics
     await hub.publish({"trace_id": diagnostics.current_id(), "type": "checkin", "day": day,
                        "text": text, "planned": planned, "done": done,
@@ -325,10 +342,13 @@ async def _fire_scheduled_sends() -> None:
     outbound_queue's docstring for why the confirmation happens there and not
     here. This function therefore sends WITHOUT prompting, which is the whole
     point, and is also why the staleness sweep matters: an unattended send is
-    only acceptable when it goes out roughly when promised.
+    only acceptable when it goes out roughly when promised. The approval does
+    not outlive a switch to View-only: a send due in that mode fails, and the
+    user is told.
     """
     from service.assistant.outbound_queue import outbound_queue
-    from service.assistant.outbox import request as app_request
+    from service.assistant.outbox import app_connected, request as app_request
+    from service.safety import read_only
 
     for row in outbound_queue.sweep_stale():
         # Tell the user rather than silently dropping it. A queued message that
@@ -357,8 +377,29 @@ async def _fire_scheduled_sends() -> None:
         }, dedupe_key="scheduled_unknown:" + row["id"],
            target={"type": "scheduled_unknown", "id": row["id"]})
 
-    for row in outbound_queue.due():
+    rows = outbound_queue.due()
+    # The first tick after a launch runs before the app has subscribed. A send
+    # that came due while Wisp was closed is still wanted for up to 30 minutes
+    # (outbound_queue._STALE_AFTER_S), so leave it pending, unclaimed, and try
+    # again next tick. sweep_stale above retires it as missed if the app never
+    # comes. app_connected allows for the app's routine reconnect.
+    if rows and not await app_connected():
+        return
+    for row in rows:
         if not outbound_queue.claim(row["id"]):
+            continue
+        if read_only():
+            # The card approved this send, but View-only says Wisp may not act
+            # now, and every other unattended writer checks the mode when it
+            # runs. Claimed first so this cannot overwrite a cancel; failed,
+            # not left pending, so it cannot go out if the mode changes back.
+            error = "View-only mode was on; nothing was sent"
+            outbound_queue.mark(row["id"], "failed", error)
+            await hub.publish({
+                "type": "scheduled_send_result",
+                "ok": False, "channel": row["channel"], "display": row["display"],
+                "error": error,
+            })
             continue
         if row["channel"] == "email":
             res = await app_request("send_email", {
@@ -369,8 +410,16 @@ async def _fire_scheduled_sends() -> None:
             res = await app_request("send_message",
                                     {"to": row["recipient"], "text": row["body"]})
         ok = res.get("ok") is True and ("status" not in res or res["status"] == "succeeded")
-        if not ok and not (res.get("ok") is False and res.get("status") == "not_attempted"
-                           and res.get("dispatch_started") is False):
+        # Only the host can say this: the send never reached publication.
+        not_started = (res.get("ok") is False and res.get("status") == "not_attempted"
+                       and res.get("dispatch_started") is False)
+        if not_started and not await app_connected(0):
+            # The app dropped between the check above and this send. Nothing
+            # was dispatched, so the row goes back to pending for the next
+            # tick. The rest of this pass would only meet the same absence.
+            outbound_queue.release(row["id"])
+            break
+        if not ok and not not_started:
             # The claim already left the pending queue. A lost/generic native
             # receipt must never invite another send or a definite failed UI.
             outbound_queue.mark(row["id"], "unknown", "Sending was not confirmed; check the sending app before retrying")
