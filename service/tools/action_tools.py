@@ -566,10 +566,27 @@ def _resolve_recipient(name: str, *, want_email: bool = False) -> tuple[str, str
     resolved unambiguously. The explanation is written for the model to relay;
     it is a lookup failure, so it also proves that nothing was sent.
     """
+    from service.tools import imessage_tools as contacts
     from service.tools.imessage_tools import find_contacts
 
     ask = "What email address should I use?" if want_email else "What number or address should I use?"
     matches = find_contacts(name)
+    if not matches and not contacts._name_handles:
+        # No contact is loaded at all, so "no saved contact for Mom" would be
+        # wrong: say why the name can't be looked up (as lookup_contact does),
+        # and still ask for the address. Read from the module at call time:
+        # a contacts sync replaces these.
+        if contacts._contacts_not_allowed:
+            why = contacts._contacts_not_allowed_message()
+            return "", _not_sent((f"({why} So {name!r} can't be looked up, and it isn't a valid "
+                                  "address. Ask the user for it — don't guess.)"),
+                                 question=f"{why} {ask}", needs_recipient=True)
+        return "", _not_sent((f"(No contacts are synced yet — Contacts is off in Wisp, or the first "
+                              f"sync hasn't finished — so {name!r} can't be looked up, and it isn't "
+                              "a valid address. Ask the user for it — don't guess.)"),
+                             question=(f"I can't look up {name}: no contacts are synced yet, or "
+                                       f"Contacts is off in Wisp. {ask}"),
+                             needs_recipient=True)
     if not matches:
         return "", _not_sent((f"(no saved contact matches {name!r}, and it isn't a valid "
                               "address. Ask the user for it — don't guess.)"),

@@ -108,6 +108,69 @@ def test_unresolved_recipient_asks_instead_of_showing_a_card(chat, to, expected)
     assert chat.store.pending_model_effects(chat.sid) == []
 
 
+# ---- No contacts loaded at all: say so, and still ask ----
+
+@pytest.mark.parametrize("want_email, ask", [
+    (False, "What number or address should I use?"), (True, "What email address should I use?")])
+def test_a_name_with_contacts_not_allowed_says_so_and_still_asks(monkeypatch, want_email, ask):
+    monkeypatch.setattr(imessage_tools, "_name_handles", {})
+    monkeypatch.setattr(imessage_tools, "_contacts_not_allowed", True)
+    monkeypatch.setattr(imessage_tools, "messages_unavailable_kind", lambda: "")
+    handle, problem = action_tools._resolve_recipient("Mom", want_email=want_email)
+    assert handle == "" and type(problem) is registry._NotSentResult and problem.needs_recipient
+    assert problem.question.startswith("Wisp can't read Contacts yet. ")
+    assert "Allow next to Contacts" in problem.question and problem.question.endswith(ask)
+    assert "saved contact" not in problem.question and "saved contact" not in problem
+    assert "can't read Contacts" in problem and "don't guess" in problem
+
+
+def test_before_full_disk_access_the_question_names_that_step(monkeypatch):
+    monkeypatch.setattr(imessage_tools, "_name_handles", {})
+    monkeypatch.setattr(imessage_tools, "_contacts_not_allowed", True)
+    monkeypatch.setattr(imessage_tools, "messages_unavailable_kind", lambda: "full_disk_access")
+    _, problem = action_tools._resolve_recipient("Mom")
+    assert "Full Disk Access" in problem.question
+    assert problem.question.endswith("What number or address should I use?")
+
+
+def test_a_name_before_any_contacts_sync_says_so_and_still_asks(monkeypatch):
+    monkeypatch.setattr(imessage_tools, "_name_handles", {})
+    monkeypatch.setattr(imessage_tools, "_contacts_not_allowed", False)
+    handle, problem = action_tools._resolve_recipient("Mom")
+    assert handle == "" and type(problem) is registry._NotSentResult and problem.needs_recipient
+    assert problem.question == ("I can't look up Mom: no contacts are synced yet, or Contacts is off in Wisp. "
+                                "What number or address should I use?")
+    assert "saved contact" not in problem
+
+
+def test_with_contacts_loaded_an_unknown_name_keeps_its_wording(monkeypatch):
+    monkeypatch.setattr(imessage_tools, "_name_handles", {"brian chen": ["+15550101234"]})
+    monkeypatch.setattr(imessage_tools, "_contacts_not_allowed", True)  # stale flag: contacts are loaded
+    _, problem = action_tools._resolve_recipient("Mom")
+    assert problem.question == "I don't have a saved contact for Mom. What number or address should I use?"
+    assert problem.startswith("(no saved contact matches 'Mom'")
+
+
+def test_a_text_to_a_name_with_contacts_off_asks_with_no_card_and_does_not_lock(chat, monkeypatch):
+    monkeypatch.setattr(imessage_tools, "_name_handles", {})
+    monkeypatch.setattr(imessage_tools, "_contacts_not_allowed", True)
+    monkeypatch.setattr(imessage_tools, "messages_unavailable_kind", lambda: "")
+    family = family_for(registry_specs({"send_message": REAL_TOOLS["send_message"]})[0])
+    chat.script = [[tool_call("get_tool_schemas", families=[family], tools=["send_message"])],
+                   [tool_call("send_message", to="Mom", text="On my way")], "Unused."]
+    text = _text(chat.request("text Mom I'm on my way", chat.sid))
+    assert chat.cards.shown == [] and chat.dispatched == []
+    assert text.startswith("I haven't sent anything. Wisp can't read Contacts yet. ")
+    assert text.endswith("What number or address should I use?")
+    assert chat.store.unresolved_action(chat.sid) is None
+    assert chat.store.pending_model_effects(chat.sid) == []
+    # A number in reply still goes through the normal card.
+    chat.script = [[tool_call("send_message", to="+15550100199", text="On my way")], "Sent."]
+    assert NOTICE not in _text(chat.request("+15550100199", chat.sid))
+    assert len(chat.cards.shown) == 1
+    assert chat.dispatched == [("send_message", {"to": "+15550100199", "text": "On my way"})]
+
+
 def test_an_address_reply_sends_the_kept_draft_through_the_normal_card(chat):
     _attempt(chat)
     # The model need only call the tool; what it typed never reaches the card.
