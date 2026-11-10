@@ -173,6 +173,72 @@ def test_strict_mode_resets_after_context(net):
     assert web._STRICT_HOST.get() is False
 
 
+# --- rel=canonical is believed only for the host that served the page ---------
+def page_claiming(canonical):
+    return ("<html><head><title>Flu guidance</title>"
+            f'<link rel="canonical" href="{canonical}"></head><body>'
+            + ("Readable text. " * 30) + "</body></html>")
+
+
+def claiming_handler(canonical):
+    def handler(request):
+        if site(request) == "archive.org":
+            return httpx.Response(200, json={"archived_snapshots": {}})
+        if site(request) == "short.example.com":
+            return httpx.Response(302, headers={"location": "https://other.example.org/a"})
+        return httpx.Response(200, headers={"content-type": "text/html"},
+                              text=page_claiming(canonical))
+    return handler
+
+
+@pytest.mark.parametrize("claimed", [
+    "https://www.health.example.gov/flu/about",   # another site
+    "https://health.example.gov/flu/about",
+    "https://blog.example.com/a",                 # another host of the same name
+    "https://example.com.other.example.org/a",
+    "//www.health.example.gov/flu/about",
+])
+def test_page_cannot_claim_a_canonical_address_on_another_host(net, claimed):
+    seen, install = net
+    install(claiming_handler(claimed))
+    page = asyncio.run(web.fetch_page("https://example.com/a?id=4"))
+    assert page.url == page.canonical_url == "https://example.com/a?id=4"
+
+
+@pytest.mark.parametrize("fetched, claimed, expected", [
+    ("https://example.com/a?id=4", "/article/a?utm_source=feed", "https://example.com/article/a"),
+    ("https://example.com/a", "https://www.example.com/article/a", "https://www.example.com/article/a"),
+    ("https://www.example.com/a", "http://example.com/article/a", "http://example.com/article/a"),
+])
+def test_same_host_canonical_is_still_honoured(net, fetched, claimed, expected):
+    seen, install = net
+    install(claiming_handler(claimed))
+    page = asyncio.run(web.fetch_page(fetched))
+    assert page.url == fetched and page.canonical_url == expected
+
+
+def test_canonical_is_judged_against_the_host_a_redirect_landed_on(net):
+    seen, install = net
+    # short.example.com redirects to other.example.org, whose page then claims
+    # the address it was first asked at. It is not on that host.
+    install(claiming_handler("https://short.example.com/original"))
+    page = asyncio.run(web.fetch_page("https://short.example.com/x"))
+    assert page.url == page.canonical_url == "https://other.example.org/a"
+
+
+def test_web_fetch_shows_the_address_it_fetched_not_the_pages_claim(net):
+    seen, install = net
+    # Even a same-host claim is not what Wisp reports as the source.
+    install(claiming_handler("https://example.com/official/statement"))
+    out = run_web_fetch("https://example.com/users/mallory/notes")
+    assert out.startswith("Title: Flu guidance\nURL: https://example.com/users/mallory/notes\n\n")
+    assert "official/statement" not in out.split("\n\n", 1)[0]
+    install(claiming_handler("https://www.health.example.gov/flu/about"))
+    out = run_web_fetch("https://example.com/a")
+    assert out.startswith("Title: Flu guidance\nURL: https://example.com/a\n\n")
+    assert "health.example.gov" not in out
+
+
 # --- thin-page floor: research keeps it, web_fetch takes short answers ---------
 PRICE_URL = "https://api.example.com/v3/simple/price?ids=examplecoin&vs_currencies=usd"
 PRICE_JSON = '{"examplecoin":{"usd":64123}}'

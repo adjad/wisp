@@ -863,18 +863,26 @@ class ResearchManager:
         sem = asyncio.Semaphore(4)
         async def one(row: dict):
             async with sem:
+                # The cache is keyed by the address this row asked for, on the
+                # way in and on the way out. It used to be written under the
+                # page's own canonical URL, so a page could file its text under
+                # another page's address for every job in the next six hours
+                # (and an honest page was rarely found again). An entry without
+                # page_canonical_url was written that way and is not used.
                 cached = cache.get(row["canonical_url"])
-                if cached:
-                    return row, Page(url=cached["url"], canonical_url=cached["canonical_url"],
+                if cached and cached.get("page_canonical_url"):
+                    return row, Page(url=cached["url"],
+                                     canonical_url=cached["page_canonical_url"],
                                      title=cached["title"], text=cached["text"],
                                      content_type=cached["content_type"],
                                      published_at=cached["published_at"],
                                      via_archive=bool(cached.get("via_archive"))), ""
                 try:
                     page = await fetch_page(row["url"])
-                    cache.put(page.canonical_url, url=page.url, title=page.title, text=page.text,
-                             content_type=page.content_type, published_at=page.published_at,
-                             via_archive=page.via_archive)
+                    cache.put(row["canonical_url"], url=page.url, title=page.title,
+                             text=page.text, content_type=page.content_type,
+                             published_at=page.published_at, via_archive=page.via_archive,
+                             page_canonical_url=page.canonical_url)
                     return row, page, ""
                 except Exception as exc:  # noqa: BLE001
                     return row, None, f"{type(exc).__name__}: {exc}"

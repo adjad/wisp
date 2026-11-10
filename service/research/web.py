@@ -893,7 +893,13 @@ async def _fetch_direct(raw_url: str) -> Page:
         parser.feed(data.decode(encoding, errors="replace"))
         title, text, published = parser.title, parser.text(), parser.published
         if parser.canonical:
-            canonical = canonicalize_url(urljoin(current, parser.canonical)) or current
+            # rel=canonical is the page's own claim about its address. It is
+            # believed only for the host that served the page (with or without
+            # www.): a page on one site cannot name another site as its own.
+            claimed = canonicalize_url(urljoin(current, parser.canonical))
+            if claimed and (_without_www((urlparse(claimed).hostname or "").lower())
+                            == _without_www((urlparse(current).hostname or "").lower())):
+                canonical = claimed
     else:
         text = data.decode(encoding, errors="replace")[:_MAX_TEXT_CHARS]
     text = _BLANKS.sub("\n\n", text).strip()

@@ -2717,7 +2717,9 @@ async def web_fetch(url: str) -> str:
     # breaks would otherwise print lines of its own up here, above the fence,
     # and a very long one would push the fence out of the capped result.
     title = " ".join(str(page.title).split())[:_FETCH_TITLE_CHARS]
-    header = f"Title: {title}\nURL: {page.canonical_url}"
+    # The URL line is the address the text was fetched from (after redirects),
+    # never the page's own rel=canonical claim about where it lives.
+    header = f"Title: {title}\nURL: {' '.join(str(page.url).split())}"
     if page.published_at:
         header += "\nPublished: " + " ".join(str(page.published_at).split())
     header = neutralize(header)

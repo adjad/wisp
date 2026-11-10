@@ -423,6 +423,75 @@ class ResearchPipelineTests(unittest.IsolatedAsyncioTestCase):
         # The store is still usable after the refused write.
         self.assertEqual(self._dup_source(jid, "https://example.com/another"), "S3")
 
+    # --- the shared page cache is keyed by the address that was asked for ----
+    def _claiming_fetch(self, calls: list[str], claims: dict[str, str]):
+        """Each page says its canonical address is ``claims[url]`` and carries
+        text that names the URL it was really fetched from."""
+        async def fake_fetch(url: str):
+            calls.append(url)
+            return Page(url=url, canonical_url=claims.get(url, url), title=self._TITLE,
+                        text=f"{self._BODY} Served from {url}.", content_type="text/html",
+                        published_at="2026-08-25")
+        return fake_fetch
+
+    async def test_page_cannot_file_its_text_under_another_pages_address(self):
+        planted = "https://example.com/users/mallory/notes"
+        official = "https://example.com/official/vaccine-guidance"
+        calls: list[str] = []
+        fetch = self._claiming_fetch(calls, {planted: official})
+        with patch("service.research.orchestrator.fetch_page", fetch):
+            jid, plan = self._dup_job()
+            first = self._dup_source(jid, planted)
+            await self.manager._fetch(jid, 5, plan)
+            self.assertEqual(self._dup_rows(jid)[first]["status"], "read")
+            # Cached under the address that was requested, not the one it claimed.
+            entry = research_cache.get(canonicalize_url(planted))
+            self.assertEqual(entry["url"], planted)
+            self.assertEqual(entry["page_canonical_url"], official)
+            self.assertIsNone(research_cache.get(official))
+            # A later job that finds the real page fetches it and reads its own text.
+            other, plan = self._dup_job()
+            real = self._dup_source(other, official)
+            await self.manager._fetch(other, 5, plan)
+        self.assertEqual(calls, [planted, official])
+        row = self._dup_rows(other)[real]
+        self.assertEqual(row["status"], "read")
+        self.assertIn(f"Served from {official}.", row["body"])
+        self.assertNotIn("mallory", row["body"])
+
+    async def test_same_hit_in_a_later_job_is_served_from_the_cache(self):
+        hit = "https://example.com/vaccine-powder?page=1"
+        final = "https://example.com/vaccine-powder"
+        calls: list[str] = []
+        fetch = self._claiming_fetch(calls, {hit: final})
+        with patch("service.research.orchestrator.fetch_page", fetch):
+            jid, plan = self._dup_job()
+            first = self._dup_source(jid, hit)
+            await self.manager._fetch(jid, 5, plan)
+            other, plan = self._dup_job()
+            again = self._dup_source(other, hit)
+            await self.manager._fetch(other, 5, plan)
+        self.assertEqual(calls, [hit])  # one fetch; it used to miss every time
+        for job, sid in ((jid, first), (other, again)):
+            row = self._dup_rows(job)[sid]
+            self.assertEqual((row["status"], row["url"], row["canonical_url"]),
+                             ("read", hit, final))
+
+    async def test_cache_entry_written_under_a_pages_own_claim_is_not_used(self):
+        # The shape entries had before: keyed by what the page declared, with
+        # no record of that. Such an entry may hold another page's text.
+        official = "https://example.com/official/vaccine-guidance"
+        research_cache.put(official, url="https://example.com/users/mallory/notes",
+                           title=self._TITLE, text=self._BODY + " Planted.",
+                           content_type="text/html", published_at="")
+        calls: list[str] = []
+        with patch("service.research.orchestrator.fetch_page", self._claiming_fetch(calls, {})):
+            jid, plan = self._dup_job()
+            real = self._dup_source(jid, official)
+            await self.manager._fetch(jid, 5, plan)
+        self.assertEqual(calls, [official])
+        self.assertNotIn("Planted.", self._dup_rows(jid)[real]["body"])
+
 
 class SourceQualityTests(unittest.TestCase):
     def test_gov_domain_is_official(self):
