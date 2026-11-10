@@ -50,15 +50,17 @@ import SQLite3
         check(partial.readNotes() == nil && partial.lastFailure?.kind == "", "missing note tables")
 
         // A readable, empty store is a real empty result with no failure.
-        let emptyPath = root.appendingPathComponent("Empty.sqlite").path
-        check(sqlite3_open(emptyPath, &db) == SQLITE_OK, "fixture open")
-        check(sqlite3_exec(db, """
+        let noteTables = """
             CREATE TABLE Z_PRIMARYKEY (Z_ENT INTEGER, Z_NAME TEXT);
             INSERT INTO Z_PRIMARYKEY VALUES (5, 'ICNote');
             CREATE TABLE ZICCLOUDSYNCINGOBJECT (Z_PK INTEGER, Z_ENT INTEGER, ZTITLE1 TEXT, ZTITLE2 TEXT,
                 ZMODIFICATIONDATE1 REAL, ZFOLDER INTEGER, ZMARKEDFORDELETION INTEGER);
             CREATE TABLE ZICNOTEDATA (ZNOTE INTEGER, ZDATA BLOB);
-            """, nil, nil, nil) == SQLITE_OK, "fixture")
+
+            """
+        let emptyPath = root.appendingPathComponent("Empty.sqlite").path
+        check(sqlite3_open(emptyPath, &db) == SQLITE_OK, "fixture open")
+        check(sqlite3_exec(db, noteTables, nil, nil, nil) == SQLITE_OK, "fixture")
         sqlite3_close(db)
         let empty = R(storePath: emptyPath)
         check(empty.readNotes() == "" && empty.lastFailure == nil, "an empty readable store is empty")
@@ -80,6 +82,54 @@ import SQLite3
         check(P.longestString(in: Data(hugeLength)) == nil, "a length past Int.max is not followed")
         check(P.longestString(in: field("Call the plumber on Monday")) == "Call the plumber on Monday",
               "plain text is read as before")
+
+        // Six rows: a folder, two notes to return, and three to skip (no date,
+        // no saved text, in Recently Deleted). The skipped ones sit between and
+        // after the others, so the read must pass them and still end.
+        func hex(_ data: Data) -> String { data.map { String(format: "%02x", $0) }.joined() }
+        let greeting = "Hi\n你好吗?", plumber = "Call the plumber on Monday"
+        let greetingHex = hex(field(greeting)), plumberHex = hex(field(plumber))
+        let spareHex = hex(field("This one is left out"))
+        let noteRows = """
+            INSERT INTO ZICCLOUDSYNCINGOBJECT VALUES (10, 3, NULL, 'Home', NULL, NULL, 0);
+            INSERT INTO ZICCLOUDSYNCINGOBJECT VALUES (1, 5, 'Greeting', NULL, 700000000, 10, 0);
+            INSERT INTO ZICCLOUDSYNCINGOBJECT VALUES (2, 5, 'No date', NULL, 0, 10, 0);
+            INSERT INTO ZICCLOUDSYNCINGOBJECT VALUES (3, 5, 'Plumber', NULL, 600000000, NULL, 0);
+            INSERT INTO ZICCLOUDSYNCINGOBJECT VALUES (4, 5, 'Blank', NULL, 650000000, 10, 0);
+            INSERT INTO ZICCLOUDSYNCINGOBJECT VALUES (5, 5, 'Binned', NULL, 690000000, 10, 1);
+            INSERT INTO ZICNOTEDATA VALUES (1, X'\(greetingHex)');
+            INSERT INTO ZICNOTEDATA VALUES (2, X'\(spareHex)');
+            INSERT INTO ZICNOTEDATA VALUES (3, X'\(plumberHex)');
+            INSERT INTO ZICNOTEDATA VALUES (4, X'');
+            INSERT INTO ZICNOTEDATA VALUES (5, X'\(spareHex)');
+            """
+        let rowsPath = root.appendingPathComponent("Rows.sqlite").path
+        check(sqlite3_open(rowsPath, &db) == SQLITE_OK, "fixture open")
+        check(sqlite3_exec(db, noteTables + noteRows, nil, nil, nil) == SQLITE_OK, "fixture")
+        sqlite3_close(db)
+        let rows = R(storePath: rowsPath)
+        let newest: String = "1678307200\u{01}Greeting\u{01}Home\u{01}\(greeting)\u{02}"
+        let older: String = "1578307200\u{01}Plumber\u{01}\u{01}\(plumber)\u{02}"
+        check(rows.readNotes() == newest + older,
+              "the readable notes come back newest first, the skipped ones left out")
+        check(rows.lastFailure == nil, "a complete read has no failure")
+
+        // The same store with every page after the first two blanked: it opens
+        // and its tables are known, but the read stops before any row. That is
+        // a failed read with the plain reason, never an empty or shorter Notes.
+        let damagedURL = root.appendingPathComponent("Damaged.sqlite")
+        check(sqlite3_open(damagedURL.path, &db) == SQLITE_OK, "fixture open")
+        check(sqlite3_exec(db, noteTables + noteRows, nil, nil, nil) == SQLITE_OK, "fixture")
+        sqlite3_close(db)
+        var bytes = try Data(contentsOf: damagedURL)
+        let pageSize = (Int(bytes[16]) << 8) | Int(bytes[17])
+        check(pageSize >= 512 && bytes.count > 2 * pageSize, "the fixture has pages past its first two")
+        bytes.resetBytes(in: (2 * pageSize)..<bytes.count)
+        try bytes.write(to: damagedURL)
+        let damaged = R(storePath: damagedURL.path)
+        check(damaged.readNotes() == nil, "a read that stops early is not an empty Notes")
+        check(damaged.lastFailure?.kind == "" && damaged.lastFailure?.reason.contains("just now") == true,
+              "a read that stops early keeps the plain reason")
         print("synthetic Notes store checks passed")
     }
 }
