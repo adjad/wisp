@@ -50,8 +50,8 @@ def _osa(script: str, timeout: int = _TIMEOUT) -> subprocess.CompletedProcess:
 # --------------------------------------------------------------------------
 @register(
     "screen_capture",
-    "Take a screenshot and save it to a file. Use `region='window'` for the "
-    "frontmost window only, or 'selection' to let the user drag a region.",
+    "Take a screenshot and save it to a file. Use `region='window'` to let the "
+    "user click the window to capture, or 'selection' to let the user drag a region.",
     {
         "type": "object",
         "properties": {
@@ -81,14 +81,17 @@ def screen_capture(region: str = "screen", path: str = "") -> str:
 
     argv = ["screencapture", "-x"]           # -x: no shutter sound
     if region == "window":
-        argv += ["-o", "-w"]                 # frontmost window, no shadow
+        argv += ["-o", "-w"]                 # user clicks a window; no shadow
     elif region == "selection":
         argv += ["-i"]                       # interactive drag
     argv.append(str(out))
 
-    # `selection` blocks until the user finishes dragging (or presses Escape),
-    # so it gets a human-scale timeout rather than the module default.
-    p = _run(argv, timeout=120 if region == "selection" else _TIMEOUT)
+    # `selection` and `window` both wait for the user (a drag or a click, or
+    # Escape), so they get a human-scale timeout rather than the module default.
+    try:
+        p = _run(argv, timeout=120 if region in ("selection", "window") else _TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return "(The screenshot timed out waiting for you, so nothing was saved.)"
     if p.returncode != 0:
         msg = (p.stderr or "").strip()
         # "could not create image from display" is what screencapture actually

@@ -899,3 +899,45 @@ def test_a_dry_run_lookup_satisfies_the_restriction(_fake_tools):
                                act_first=frozenset({"fake_read"})))
     assert [e["name"] for e in events if e.get("type") == "tool_call"] == ["fake_read", "fake_write"]
     assert _fake_tools == []  # a dry run executes nothing
+
+
+# ---- screen_capture waits for the user, so it must wait long enough -------
+@pytest.mark.parametrize("region", ["window", "selection"])
+def test_interactive_screen_capture_gets_a_human_scale_timeout(monkeypatch, tmp_path, region):
+    import subprocess
+    from service.tools import system_extras as X
+    seen = {}
+
+    def fake_run(argv, **kw):
+        seen["argv"], seen["timeout"] = argv, kw.get("timeout", X._TIMEOUT)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+    monkeypatch.setattr(X, "_run", fake_run)
+    X.screen_capture(region=region, path=str(tmp_path / "s.png"))
+    assert seen["timeout"] >= 120
+    assert ("-w" in seen["argv"]) or ("-W" in seen["argv"]) or ("-i" in seen["argv"])
+
+
+def test_whole_screen_capture_keeps_the_short_timeout(monkeypatch, tmp_path):
+    import subprocess
+    from service.tools import system_extras as X
+    seen = {}
+
+    def fake_run(argv, **kw):
+        seen["timeout"] = kw.get("timeout", X._TIMEOUT)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+    monkeypatch.setattr(X, "_run", fake_run)
+    X.screen_capture(region="screen", path=str(tmp_path / "s.png"))
+    assert seen["timeout"] == X._TIMEOUT
+
+
+@pytest.mark.parametrize("region", ["screen", "window", "selection"])
+def test_screen_capture_timeout_is_a_plain_sentence_not_an_exception(monkeypatch, tmp_path, region):
+    import subprocess
+    from service.tools import system_extras as X
+
+    def fake_run(argv, **kw):
+        raise subprocess.TimeoutExpired(argv, kw.get("timeout", 1))
+    monkeypatch.setattr(X, "_run", fake_run)
+    out = X.screen_capture(region=region, path=str(tmp_path / "s.png"))
+    assert out.startswith("(") and "nothing was saved" in out
+    assert not (tmp_path / "s.png").exists()
