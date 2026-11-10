@@ -1142,15 +1142,21 @@ final class OverlayModel: ObservableObject {
 
     /// Quick settings' Model memory: unload the models now. Wisp reloads them on
     /// the next ask. Not while a reply is being written, which needs its model.
+    /// The row is read again either way; "unloaded" is said only when the
+    /// service answered that it was done.
     func freeUpMemory() {
         guard conversationSettled, !briefComposing, !freeingMemory else { return }
         freeingMemory = true
         Task { [weak self] in
             guard let self else { return }
-            await self.client.unloadAll()
+            let unloaded = await self.client.unloadAll()
             self.modelMemory = ModelMemory.parse(await self.client.modelMemoryReply())
             self.freeingMemory = false
-            self.showTransientNotice("Models unloaded. Wisp reloads them on the next ask.", info: true)
+            if unloaded {
+                self.showTransientNotice("Models unloaded. Wisp reloads them on the next ask.", info: true)
+            } else {
+                self.showTransientNotice("Couldn't unload the models. Try again in a moment.")
+            }
         }
     }
 

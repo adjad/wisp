@@ -241,3 +241,31 @@ def test_reading_labels_only_go_on_an_empty_chip():
     # A successful read replaces label and attachment together.
     attach = region(model, "private func setAttachment(", "\n    }\n")
     assert attach.index("clearAttachmentState()") < attach.index("attachedLabel = MediaAttachment.chipLabel(for: media)")
+
+
+# --- Unload says "unloaded" only when the service confirmed it --------------
+
+
+def test_unload_reports_what_the_service_answered():
+    client = swift("WispClient.swift")
+    unload = region(client, "func unloadAll() async -> Bool {", "\n    }\n")
+    assert '"unload_all"' in unload
+    # No answer at all is a failure, and so is any status but 200.
+    assert "guard let (_, response) = try? await URLSession.shared.data(for: req) else { return false }" in unload
+    assert "return (response as? HTTPURLResponse)?.statusCode == 200" in unload
+    assert "_ = try? await" not in unload
+
+
+def test_the_unload_notice_follows_the_result():
+    model = swift("OverlayModel.swift")
+    free = region(model, "func freeUpMemory() {", "\n    }\n")
+    result = free.index("let unloaded = await self.client.unloadAll()")
+    reread = free.index("self.modelMemory = ModelMemory.parse(await self.client.modelMemoryReply())")
+    done = free.index("self.freeingMemory = false")
+    branch = free.index("if unloaded {")
+    said = free.index('self.showTransientNotice("Models unloaded. Wisp reloads them on the next ask.", info: true)')
+    otherwise = free.index("} else {", branch)
+    failed = free.index('self.showTransientNotice("Couldn\'t unload the models. Try again in a moment.")')
+    # The row is read again and the button comes back whatever happened.
+    assert result < reread < done < branch < said < otherwise < failed
+    assert model.count('"Models unloaded.') == 1

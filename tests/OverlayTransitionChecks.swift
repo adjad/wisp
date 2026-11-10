@@ -3,6 +3,8 @@ import SwiftUI
 
 // Intercept every request in this test process; no request reaches a service.
 final class MotionFixtureProtocol: URLProtocol {
+    /// What POST /unload_all answers, so a failed unload can be checked.
+    static var unloadStatus = 200
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
@@ -11,7 +13,8 @@ final class MotionFixtureProtocol: URLProtocol {
         let settingMode = request.url?.path == "/mode" && request.httpMethod == "POST"
         let body = Data((settingMode ? #"{"full_access":true,"read_only":false}"#
                                      : #"{"text":"Synthetic daily summary","session_id":"fixture"}"#).utf8)
-        let response = HTTPURLResponse(url: request.url!, statusCode: 200,
+        let status = request.url?.path == "/unload_all" ? MotionFixtureProtocol.unloadStatus : 200
+        let response = HTTPURLResponse(url: request.url!, statusCode: status,
                                        httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
         let finish = { [weak self] in
             guard let self else { return }
@@ -356,6 +359,26 @@ struct OverlayTransitionChecks {
         print("PASS: a failed second attachment leaves the first one's chip unchanged")
     }
 
+    /// Quick settings' Unload says "unloaded" only when the service answered that it
+    /// was done; a failed unload says so, and the button comes back either way.
+    @MainActor
+    static func unloadNoticeChecks() async {
+        let model = OverlayModel(loadDebugMode: { false }, saveDebugMode: { _ in })
+        MotionFixtureProtocol.unloadStatus = 500
+        model.freeUpMemory()
+        check(model.freeingMemory, "Unload is under way")
+        await waitUntil { !model.freeingMemory }
+        check(model.transientNotice == "Couldn't unload the models. Try again in a moment." && !model.transientNoticeIsInfo,
+              "A failed unload is never reported as done")
+        MotionFixtureProtocol.unloadStatus = 200
+        model.freeUpMemory()
+        await waitUntil { !model.freeingMemory }
+        check(model.transientNotice == "Models unloaded. Wisp reloads them on the next ask." && model.transientNoticeIsInfo,
+              "An unload the service confirmed says so")
+        model.transientNotice = nil
+        print("PASS: Unload reports success only when the service confirmed it")
+    }
+
     /// Export Chat Debug Log… covers every chat since Wisp opened: New chat and opening
     /// another chat archive the one left, whole; reopening it continues it with its
     /// detail; the export lists each chat and keeps the open one's top-level fields.
@@ -505,6 +528,7 @@ struct OverlayTransitionChecks {
         await AppDelegate.checkInlineReportHoldsOpen()
         await AppDelegate.checkReportSaveHoldsUntilAnswered()
         await attachmentLabelChecks()
+        await unloadNoticeChecks()
         await chatArchiveChecks()
         await AppDelegate.checkMenuExportsDebugLog()
         #endif
