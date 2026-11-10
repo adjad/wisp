@@ -6721,10 +6721,13 @@ def _explanation_clause_contract(text: str) -> tuple[list[str], dict[str, dict]]
     return [], {}
 
 
-def routing_guard_contract(text: str) -> tuple[frozenset[str], dict[str, dict]]:
+def routing_guard_contract(text: str, *, model_led: bool = False) -> tuple[frozenset[str], dict[str, dict]]:
     """Negative-only envelope for discovery, never a positive heuristic menu.
 
     Typed tasks still own trusted identity/time and durable effects in main.
+    ``model_led`` is set only by the model-led turn in main: that turn has no
+    clarify step, so a named-time question the typed parser could not finish
+    keeps its one read-only source instead of losing every tool.
     """
     from service.tools.registry import REGISTRY
     from service.router.model_led import family_for, registry_specs
@@ -6773,6 +6776,26 @@ def routing_guard_contract(text: str) -> tuple[frozenset[str], dict[str, dict]]:
             allowed.add('get_upcoming')
             bindings['get_upcoming'] = named.calendar_bindings()
         elif named.supported and not named.personal and named.public_provenance and not named.no_web:
+            allowed.add('web_search')
+            bindings['web_search'] = {'query': named.query}
+        elif (model_led and not named.supported and named.single_request
+              and named.personal and not named.no_calendar):
+            # "When is my meeting with Sam?" / "... my dentist appointment on
+            # Friday?": the legacy route asks which event; a model-led turn
+            # cannot, and with no tool it guessed. It may read the calendar
+            # and nothing else. The title is not parsed, so the model keeps
+            # the query and the date: binding them would search for
+            # "meeting with Sam on Friday" as an event name and find nothing.
+            allowed.add('get_upcoming')
+            bindings['get_upcoming'] = {'calendar_only': True, 'include_holidays': False}
+        elif (model_led and not named.supported and named.single_request
+              and not named.personal and named.public_provenance and not named.no_web
+              and re.match(r"next\s+\S", named.title, re.I)
+              and not named_event_kind(named.title)):
+            # "When is the next lunar eclipse?" is the same public question as
+            # "When is the solar eclipse?": one search, of the user's own words.
+            # A title that names an event kind or is not provably public
+            # ("the next meeting", "the next review of my notes") gets no source.
             allowed.add('web_search')
             bindings['web_search'] = {'query': named.query}
         # This whole envelope already consumes every outside source policy.

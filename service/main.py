@@ -2278,7 +2278,7 @@ async def agent(body: dict[str, Any]):
             # grant permission for a source this new turn explicitly excludes.
             model_led_forbidden, model_led_bindings = frozenset(), {}
             if model_led_turn:
-                model_led_forbidden, model_led_bindings = routing_guard_contract(prompt)
+                model_led_forbidden, model_led_bindings = routing_guard_contract(prompt, model_led=True)
                 if memory_excluded(prompt):
                     from service.tools.registry import REGISTRY
                     model_led_forbidden |= frozenset({"recall", "search_memory", "search_conversations", "remember", "forget", "clear_memory"})
