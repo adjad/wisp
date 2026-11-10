@@ -288,6 +288,44 @@ def test_day_words() -> None:
           dt == datetime(2026, 8, 31, 9, 0), f"got {dt}")
 
 
+# Tuesday, 10 November 2026, 10:30.
+PART_NOW = datetime(2026, 11, 10, 10, 30)
+
+
+def test_part_of_day_decides_a_bare_hour() -> None:
+    print("\na part-of-day word decides which half of the day a bare hour means")
+    for phrase, expected in (
+            ("tomorrow morning at 7", datetime(2026, 11, 11, 7, 0)),
+            ("monday morning at 7", datetime(2026, 11, 16, 7, 0)),
+            ("tomorrow morning at 7:30", datetime(2026, 11, 11, 7, 30)),
+            ("tomorrow afternoon at 3", datetime(2026, 11, 11, 15, 0)),
+            ("tomorrow evening at 8", datetime(2026, 11, 11, 20, 0)),
+            ("tomorrow night at 10", datetime(2026, 11, 11, 22, 0)),
+            ("tonight at 8", datetime(2026, 11, 10, 20, 0)),
+            ("tonight at 11:15", datetime(2026, 11, 10, 23, 15)),
+            # "At 12" is noon, on a weekday said the same morning too.
+            ("friday at 12", datetime(2026, 11, 13, 12, 0)),
+            ("tomorrow at 12", datetime(2026, 11, 11, 12, 0)),
+            ("tuesday at 12", datetime(2026, 11, 10, 12, 0)),
+            ("tomorrow morning at 12", datetime(2026, 11, 11, 12, 0)),
+            ("tomorrow evening at 12", datetime(2026, 11, 11, 12, 0)),
+            # At night, 12 stays 00:00 of the named day, as "<day> midnight" does.
+            ("tomorrow night at 12", datetime(2026, 11, 11, 0, 0)),
+            ("tomorrow midnight", datetime(2026, 11, 11, 0, 0)),
+            # No part-of-day word: the old reading stands.
+            ("monday at 6", datetime(2026, 11, 16, 18, 0)),
+            ("tomorrow at 9", datetime(2026, 11, 11, 9, 0)),
+            ("tomorrow at 0:30", datetime(2026, 11, 11, 0, 30)),
+            # An explicit am/pm or 24-hour hour is never second-guessed.
+            ("tomorrow morning at 7pm", datetime(2026, 11, 11, 19, 0)),
+            ("tomorrow evening at 8am", datetime(2026, 11, 11, 8, 0)),
+            ("tonight at 19:30", datetime(2026, 11, 10, 19, 30)),
+            ("tomorrow morning", datetime(2026, 11, 11, 9, 0)),
+            ("tonight", datetime(2026, 11, 10, 20, 0))):
+        got = resolve_when(phrase, now=PART_NOW)[0]
+        check(f"{phrase!r} -> {expected:%a %H:%M}", got == expected, f"got {got}")
+
+
 def test_iso_fallback_and_bad_input() -> None:
     print("\nISO fallback and bad input teaches the vocabulary")
     dt, _ = when("2026-08-25T15:00")
@@ -315,6 +353,7 @@ if __name__ == "__main__":
     test_relative_durations()
     test_clock_times()
     test_day_words()
+    test_part_of_day_decides_a_bare_hour()
     test_iso_fallback_and_bad_input()
     print(f"\n{PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)

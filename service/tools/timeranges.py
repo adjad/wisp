@@ -531,6 +531,27 @@ def _resolve_clock(hour: int, minute: int, ampm: str | None,
     return candidates[-1]
 
 
+def _bare_hour_on_a_day(hour: int, day: str, timeword: str | None) -> int:
+    """The 24-hour hour for a 0-12 hour said with a day and no am/pm.
+
+    A part-of-day word decides the half of the day: "tomorrow morning at 7" is
+    7 AM, "tomorrow evening at 8" and "tonight at 8" are 8 PM. "At 12" is noon,
+    except at night, where it stays 00:00 of the named day as "<day> midnight"
+    does. With no such word, an explicit day removes the "nearest future
+    occurrence" trick (both readings are equally "in the future"), so fall
+    back to how these actually get said out loud: a small bare hour named
+    alongside a day is almost always evening ("Monday at 6").
+    """
+    night = timeword in ("night", "midnight") or (day == "tonight" and timeword is None)
+    if hour == 12:
+        return 0 if night else 12
+    if hour == 0 or timeword == "morning":
+        return hour
+    if timeword in ("afternoon", "evening", "night") or day == "tonight":
+        return hour + 12
+    return hour + (12 if hour <= 7 else 0)
+
+
 def _resolve_day_clock(m: re.Match, now: datetime) -> datetime:
     """A day word (today/tonight/tomorrow/a weekday), optionally with a
     time-of-day word or an explicit clock time attached."""
@@ -564,11 +585,7 @@ def _resolve_day_clock(m: re.Match, now: datetime) -> datetime:
         elif ampm:
             h = (hour % 12) + (12 if ampm == "pm" else 0)
         else:
-            # An explicit day removes the "nearest future occurrence" trick
-            # (both readings are equally "in the future"), so fall back to
-            # how these actually get said out loud: a small bare hour named
-            # alongside a day is almost always evening ("Monday at 6").
-            h = (hour % 12) + (12 if 1 <= hour <= 7 else 0)
+            h = _bare_hour_on_a_day(hour, day, timeword)
         dt = base.replace(hour=h, minute=minute)
     elif timeword:
         dt = base.replace(hour=_TIME_WORD_HOURS[timeword], minute=0)
