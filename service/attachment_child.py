@@ -520,7 +520,8 @@ def _pdf_stream_limits() -> None:
 
 
 def ocr_images(name: str, data: bytes, workdir: str = "") -> dict:
-    """{images: [data URL], pages, read_pages: [1-based]} for a picture (one image) or a PDF's page pictures."""
+    """{images: [data URL], pages, read_pages: [1-based]} for a picture (one image) or a PDF's page pictures.
+    `capped` is set when the page, pixel or size limit (not a blank page) left later pages out."""
     started = time.monotonic()
     if not data.startswith(b"%PDF"):
         picture = _open_picture(data, workdir)
@@ -535,10 +536,12 @@ def ocr_images(name: str, data: bytes, workdir: str = "") -> dict:
     pixels = encoded = attempts = 0
     slowest = 0.0
     stopped_early = False
+    capped = False          # a limit, not a blank page, left later pages unprepared
     try:
         reader = PdfReader(io.BytesIO(data))
         _unlock(reader)
         total = len(reader.pages)
+        capped = total > MAX_OCR_PAGES
         for number, page in enumerate(reader.pages[:MAX_OCR_PAGES], start=1):
             now = time.monotonic()
             # Another page of the slowest kind so far must still fit; the first page is always tried.
@@ -557,6 +560,7 @@ def ocr_images(name: str, data: bytes, workdir: str = "") -> dict:
                 if max(width, height) < OCR_MIN_PICTURE_SIDE:
                     continue
                 if pixels + width * height > OCR_MAX_TOTAL_PIXELS:
+                    capped = True
                     break
                 url = _recognition_jpeg(_open_picture(pictures[0].data, ""), OCR_PAGE_TEXT_SIDE)
             except Exception as error:  # noqa: BLE001 — one unreadable or oversized page, not an unreadable file
@@ -566,6 +570,7 @@ def ocr_images(name: str, data: bytes, workdir: str = "") -> dict:
             finally:
                 slowest = max(slowest, time.monotonic() - now)
             if encoded + len(url) > OCR_MAX_TOTAL_BYTES:
+                capped = True
                 break
             pixels += width * height
             encoded += len(url)
@@ -582,6 +587,8 @@ def ocr_images(name: str, data: bytes, workdir: str = "") -> dict:
     result = {"images": urls, "pages": total, "read_pages": read}
     if stopped_early:
         result["stopped_early"] = True
+    if capped:
+        result["capped"] = True
     return result
 
 

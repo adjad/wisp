@@ -634,6 +634,74 @@ async def test_pages_without_words_are_still_a_complete_recognition(world):
     assert attachment_store.get(attachment_store.digest(PDF)) is not None
 
 
+TOO_LONG = "longer than Wisp can open in full"
+FOUR_PAGES = [("page one says the deposit is 500 dollars and it is refundable", 0.9),
+              ("page two says the rent is 2100 dollars on the first of the month", 0.9),
+              ("page four says the notice period is ninety days in writing", 0.9),
+              ("page five says the landlord signs here on the dotted line", 0.9)]
+
+
+async def test_a_short_scan_with_a_wordless_page_is_not_called_too_long_to_open(world):
+    world.app = True
+    world.ocr = {"images": [JPEG_URL] * 4, "pages": 5, "read_pages": [1, 2, 4, 5]}
+    world.recognised = FOUR_PAGES
+    world.apple_rows = [row(name="scan.pdf", rfc="s@x.com")]
+    world.local_files[(1, "1.2")] = PDF
+    world.texts["scan.pdf"] = "   "
+    out = await ma.run()
+    assert "from 4 of its 5 pages" in out and "landlord signs" in out
+    assert TOO_LONG not in out and "end was not searched" not in out and "Read the whole file" not in out
+    # What is kept still says pages are missing, so a later "page 3" is answered honestly.
+    assert attachment_store.get(attachment_store.digest(PDF)).cut is True
+    world.calls.clear()
+    again = await ma.run()                                   # the saved reading, found by its bytes
+    assert world.kinds("recognise") == [] and "from 4 of its 5 pages" in again
+    assert TOO_LONG not in again and "Read the whole file" not in again
+
+
+async def test_a_saved_gmail_scan_with_a_wordless_page_is_not_called_too_long_either(world):
+    world.app = True
+    world.ocr = {"images": [JPEG_URL] * 4, "pages": 5, "read_pages": [1, 2, 4, 5]}
+    world.recognised = FOUR_PAGES
+    world.gmail["me@gmail.com"] = [gmsg(files=(("scan.pdf", 50_000),))]
+    world.gmail_bytes["g-scan.pdf"] = PDF
+    world.texts["scan.pdf"] = "   "
+    first = await ma.run()
+    assert "from 4 of its 5 pages" in first and TOO_LONG not in first
+    world.calls.clear()
+    again = await ma.run()                                   # no fetch: found by where it is in Gmail
+    assert world.kinds("gbytes") == [] and "read from Wisp's saved reading" in again
+    assert "from 4 of its 5 pages" in again and TOO_LONG not in again and "Read the whole file" not in again
+
+
+async def test_a_scan_past_the_page_limit_says_its_end_was_not_searched(world):
+    world.app = True
+    world.ocr = {"images": [JPEG_URL, JPEG_URL], "pages": 60, "read_pages": [1, 2], "capped": True}
+    world.recognised = FOUR_PAGES[:2]
+    world.apple_rows = [row(name="scan.pdf", rfc="s@x.com")]
+    world.local_files[(1, "1.2")] = PDF
+    world.texts["scan.pdf"] = "   "
+    out = await ma.run()
+    assert "from 2 of its 60 pages" in out and "Read the whole file" not in out
+    assert "Its later pages are past the limit Wisp reads, so its end was not searched." in out
+    assert TOO_LONG not in out
+    world.calls.clear()
+    again = await ma.run()
+    assert world.kinds("recognise") == [] and "so its end was not searched." in again and TOO_LONG not in again
+
+
+async def test_a_text_file_that_really_was_cut_is_still_called_too_long(world, monkeypatch):
+    async def extract(name, data, *, timeout=45.0, large=False):
+        return "The notice period is ninety days.", True
+    monkeypatch.setattr(documents, "extract_async", extract)
+    world.apple_rows = [row(name="contract.pdf", rfc="c@x.com")]
+    world.local_files[(1, "1.2")] = PDF
+    out = await ma.run()
+    assert "ninety days" in out and TOO_LONG in out and "so its end was not searched." in out
+    again = await ma.run()                                   # and so is its saved reading
+    assert TOO_LONG in again
+
+
 async def test_a_wait_cut_short_by_the_deadline_does_not_rest_recognition(world, monkeypatch):
     world.app = True
     seen = []

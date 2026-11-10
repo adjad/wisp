@@ -301,6 +301,7 @@ class _Reading:
     risk_level: str = ""        # "high", "caution" or ""
     risk: list[str] = field(default_factory=list)
     partial: bool = False       # some of the file was not read, so "Read the whole file." must not be said
+    scan: bool = False          # a scan read by recognition: its cover note says which pages have words
 
 
 @dataclass
@@ -563,6 +564,7 @@ class _Recognised(NamedTuple):
     image: str              # the child's small overview JPEG for the vision model; '' when it sent none
     confidence: float       # the lowest page confidence that was accepted
     complete: bool          # every prepared page was tried (none skipped for a failure or for time)
+    capped: bool = False    # the page, pixel or size limit left the file's later pages unprepared
 
 
 def _exactness(confidence: float) -> str:
@@ -643,7 +645,8 @@ async def _recognised(ctx: _Ctx, name: str, data: bytes, *, paged: bool) -> _Rec
     joined = (f"[Pages: {total}]\n" + "\n\n".join(f"[Page {n}]\n{text}" for n, text, _c in parts)
               if paged else parts[0][1])
     return _Recognised(joined, len(parts), total, overview, min(c for _n, _t, c in parts),
-                       attempted == len(images) and result.get("stopped_early") is not True)
+                       attempted == len(images) and result.get("stopped_early") is not True,
+                       paged and result.get("capped") is True)
 
 
 async def _describe(ctx: _Ctx, image: str) -> str:
@@ -755,6 +758,7 @@ async def _read_file(ctx: _Ctx, email: _Email, f: _File, budget: int) -> _Readin
             # A Gmail file seen before, under the same name: nothing to fetch. (Apple Mail's files
             # are never found by a row id, which a rebuild of Mail's index can hand to another file.)
             _apply_meta(reading, stored.note)
+            reading.scan = stored.how == "recognized"
             reading.where = _SAVED
             return await _shape(ctx, reading, stored.text, stored.cut, name, stored.kind, budget)
         data, where = await _fetch(ctx, email, f)
@@ -785,6 +789,7 @@ async def _read_file(ctx: _Ctx, email: _Email, f: _File, budget: int) -> _Readin
             # The type and the risk are this file's own, from the inspection above; only the text,
             # how it was got and how much of it there is come from the saved reading.
             _apply_cover(reading, stored.note)
+            reading.scan = stored.how == "recognized"
             if stored.text.strip() and ENCRYPTED_PDF_REASON in reading.risk:
                 reading.risk = [reason for reason in reading.risk if reason != ENCRYPTED_PDF_REASON]
                 reading.risk_level = reading.risk_level if reading.risk else ""
@@ -858,6 +863,11 @@ async def _read_file(ctx: _Ctx, email: _Email, f: _File, budget: int) -> _Readin
                                     f"{total} page{'' if total == 1 else 's'}"
                                     + ("; some words may be wrong" if ";" in exact else "") + ". ")
                     reading.partial = read < total
+                    # A page without words is not a file too long to open: the count above covers it,
+                    # and only a real limit is said to have left the end unread.
+                    reading.scan = True
+                    if recognised.capped:
+                        reading.note += "Its later pages are past the limit Wisp reads, so its end was not searched. "
                     if not recognised.complete:
                         reading.note += "Recognition stopped early, so Wisp will try the rest next time. "
                     return await _settle(ctx, reading, f, digest, recognised.text, read < total, name, "pdf",
@@ -961,7 +971,7 @@ async def _finish_text(ctx: _Ctx, reading: _Reading, text: str, cut: bool, name:
 
     condensed = await large_document.condense(text, name=name, kind=kind, question=ctx.question,
                                               budget=budget, chat=chat, passes=ctx.passes,
-                                              extraction_cut=bool(cut))
+                                              extraction_cut=bool(cut) and not reading.scan)
     reading.text = condensed.text
     whole = "" if reading.partial and not part else ("All of that part is shown." if part else "Read the whole file.")
     reading.note += condensed.note or (whole if condensed.complete else "")

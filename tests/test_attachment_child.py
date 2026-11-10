@@ -948,11 +948,17 @@ def test_ocr_pdf_skips_tiny_pictures_caps_pages_and_stops_at_the_pixel_budget(mo
         A.ocr_images("s.pdf", scanned_pdf(2, size=(100, 120)))
     monkeypatch.setattr(A, "MAX_OCR_PAGES", 2)
     capped = A.ocr_images("s.pdf", scanned_pdf(4, size=(320, 320)))
-    assert capped["pages"] == 4 and capped["read_pages"] == [1, 2]
+    assert capped["pages"] == 4 and capped["read_pages"] == [1, 2] and capped["capped"] is True
     monkeypatch.setattr(A, "MAX_OCR_PAGES", 40)
+    assert "capped" not in A.ocr_images("s.pdf", scanned_pdf(4, size=(320, 320)))
     monkeypatch.setattr(A, "OCR_MAX_TOTAL_PIXELS", 320 * 320 * 2 + 10)
     budget = A.ocr_images("s.pdf", scanned_pdf(4, size=(320, 320)))
-    assert budget["read_pages"] == [1, 2] and budget["pages"] == 4
+    assert budget["read_pages"] == [1, 2] and budget["pages"] == 4 and budget["capped"] is True
+    monkeypatch.setattr(A, "OCR_MAX_TOTAL_PIXELS", 400_000_000)
+    first = A.ocr_images("s.pdf", scanned_pdf(1, size=(320, 320)))
+    monkeypatch.setattr(A, "OCR_MAX_TOTAL_BYTES", len(first["images"][0]) + 10)
+    sized = A.ocr_images("s.pdf", scanned_pdf(4, size=(320, 320)))
+    assert sized["read_pages"] == [1] and sized["capped"] is True
 
 
 def test_ocr_pdf_errors_are_plain():
