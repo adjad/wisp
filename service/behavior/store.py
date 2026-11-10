@@ -159,6 +159,35 @@ def _row_obs(r: sqlite3.Row) -> Observation:
                        source_id=r["source_id"], attrs=json.loads(r["attrs"] or "{}"))
 
 
+
+def prune_category_cache(conn: sqlite3.Connection) -> int:
+    """Drop cached title labels whose title no longer appears in any observation.
+
+    ``meta.category_cache`` maps event/reminder titles to a label so the model is
+    asked once per title. A title that has aged out of the observations (or was purged
+    with a disconnected account) must not outlive them. Titles still present keep their
+    entry, "other" answers included, so they are not asked about again. The caller holds
+    the transaction. Returns the number of entries removed."""
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key='category_cache'").fetchone()
+        if row is None:
+            return 0
+        cache = json.loads(row[0])
+        if not isinstance(cache, dict) or not cache:
+            return 0
+        from service.behavior.categorize import CATEGORIZED_KINDS
+        kinds = sorted(CATEGORIZED_KINDS)
+        live = {r[0] for r in conn.execute(
+            "SELECT DISTINCT subject FROM observations WHERE kind IN (%s)" % ",".join("?" * len(kinds)),
+            kinds)}
+        kept = {k: v for k, v in cache.items() if k in live}
+        if len(kept) == len(cache):
+            return 0
+        conn.execute("UPDATE meta SET value=? WHERE key='category_cache'", (json.dumps(kept),))
+        return len(cache) - len(kept)
+    except (sqlite3.DatabaseError, ValueError):
+        return 0     # a different schema or a damaged blob: leave it alone
+
 class Store:
     """Thread-safe: a single connection guarded by an RLock (the runtime calls it
     from worker threads; SQLite connections are not safe to share without it)."""
@@ -277,6 +306,7 @@ class Store:
             obs += self._conn.execute("DELETE FROM observations WHERE kind='activity_bin' AND ts < ?", (now-56*86400,)).rowcount
             nud = self._conn.execute("DELETE FROM nudges WHERE created_at < ?",
                                      (now - nudge_retention_s,)).rowcount
+            prune_category_cache(self._conn)
         return {"observations": int(obs), "nudges": int(nud)}
 
     def close(self) -> None:

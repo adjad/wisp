@@ -113,6 +113,8 @@ def purge_google_calendar_rows(behavior_store, prefix: str) -> int:
                      "OR substr(id,1,?)=? OR substr(id,1,?)=?",
                      (len(prefix), prefix, *(x for i in ids for x in (len(i), i))))
         removed = conn.total_changes - before
+        from service.behavior.store import prune_category_cache
+        prune_category_cache(conn)
     snap = behavior_store.get_snapshot("calendar")
     if snap is not None:
         items = [it for it in snap["items"] if not str(it.get("source_id") or "").startswith(prefix)
@@ -1418,6 +1420,11 @@ class BehaviorRuntime:
         params = action.params or {}
         title = " ".join(str(params.get("title") or "").split())[:200]
         when = params.get("when_ts")
+        event_ts = params.get("event_ts")
+        if _finite(when) and _finite(event_ts) and float(when) < now - 60 and now < float(event_ts):
+            # A reminder tied to a still-upcoming event: the time frozen when the nudge was
+            # made has passed while it waited for a tap, so it is due now, not stale.
+            when = now
         if not title or not _finite(when) or float(when) < now - 60:
             return None
         when = float(when)
@@ -2007,6 +2014,8 @@ def age_out(home: Path | None = None, now: float | None = None) -> dict[str, int
                 from service.behavior.source_index import prune_connection
                 with conn:
                     removed = prune_connection(conn, now-OBSERVATION_RETENTION_S)
+                    from service.behavior.store import prune_category_cache
+                    prune_category_cache(conn)
                 if removed:
                     out["seed_metadata"] = removed
             except sqlite3.DatabaseError:

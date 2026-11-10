@@ -14,6 +14,10 @@ from typing import Any, Callable, Iterable, Mapping
 
 from service.behavior.types import CATEGORIES
 
+# Titles one phraser request carries. label_leftovers never sends more than this, so
+# every title it caches was actually in the request.
+CATEGORIZE_BATCH = 30
+
 CATEGORIZED_KINDS = frozenset({"event", "event_cancelled", "event_moved", "event_declined",
                                "reminder", "reminder_done", "reminder_dismissed"})
 
@@ -103,20 +107,25 @@ def needs_category(kind: str) -> bool:
 
 def label_leftovers(titles: Iterable[str], cache: dict[str, str],
                     categorize_fn: Callable[[list[str], tuple[str, ...]], dict[str, str]] | None,
-                    *, limit: int = 50) -> bool:
+                    *, limit: int = CATEGORIZE_BATCH) -> bool:
     """Ask the phraser to label uncached "other" titles, in place in ``cache``.
 
-    Titles the phraser omits (or answers outside the fixed list) are cached as
-    "other" so we never ask about them again. Any phraser failure is swallowed:
-    the keyword category stands. Returns True when the cache changed."""
-    pending = sorted({t for t in titles if t and t not in cache})[:limit]
+    When the phraser answers, titles it omits (or answers outside the fixed list) are
+    cached as "other" so we never ask about them again. An empty or missing answer
+    means it could not ask (model not loaded, busy, timed out, unparseable): nothing
+    is cached, so the same titles are asked again on a later pass. Any phraser
+    failure is swallowed: the keyword category stands. Returns True when the cache
+    changed."""
+    pending = sorted({t for t in titles if t and t not in cache})[:max(0, min(limit, CATEGORIZE_BATCH))]
     if not pending or categorize_fn is None:
         return False
     try:
-        answer = categorize_fn(pending, CATEGORIES) or {}
+        answer = categorize_fn(pending, CATEGORIES)
     except Exception:  # noqa: BLE001 - the model is optional; keyword categories stand
         return False
+    if not isinstance(answer, dict) or not answer:
+        return False
     for title in pending:
-        label = answer.get(title) if isinstance(answer, dict) else None
+        label = answer.get(title)
         cache[title] = label if label in CATEGORIES else "other"
     return True

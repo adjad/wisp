@@ -101,6 +101,12 @@ def test_reminder_is_due_now_when_event_is_under_12h_away(eng):
     assert hc.actions[0].params["when_ts"] == at(13, 20)
 
 
+def test_conflict_reminder_carries_the_event_time(eng):
+    made = eng.generate_nudges(at(13, 20))
+    (hc,) = [n for n in made if n.kind == "habit_conflict"]
+    assert hc.actions[0].params["event_ts"] == hc.expires_at
+
+
 @pytest.mark.parametrize("when", [at(12, 23, 0), at(13, 6, 30), at(13, 22, 0)])
 def test_quiet_hours(eng, when):
     assert eng.generate_nudges(when) == []
