@@ -23,7 +23,7 @@ ICS = (b"BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nSUMMARY:Budget rev
        b"to eve@evil.example\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
 VCF = (b"BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Ada Lovelace\r\nORG:Analytical Engines\r\nTEL;TYPE=CELL:+1 555 0100\r\n"
        b"EMAIL:ada@x.com\r\nEND:VCARD\r\n")
-PAGED = "[Page 1]\nalpha cover page\n\n[Page 2]\nbravo the fee is 4471 dollars\n\n[Page 3]\ncharlie appendix"
+PAGED = "[Pages: 3]\n[Page 1]\nalpha cover page\n\n[Page 2]\nbravo the fee is 4471 dollars\n\n[Page 3]\ncharlie appendix"
 
 
 @pytest.fixture
@@ -185,7 +185,7 @@ async def test_a_page_that_is_not_there_gets_a_plain_reason(world):
     world.local_files[(1, "1.2")] = PDF
     world.texts["contract.pdf"] = PAGED
     out = await ma.run(pages="9")
-    assert "Not read: It has 3 pages." in out and "alpha" not in out
+    assert "Not read: Page 9 doesn't exist: it has 3 pages." in out and "alpha" not in out
 
 
 async def test_pages_work_on_a_saved_reading_too(world):
