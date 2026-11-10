@@ -653,6 +653,36 @@ def test_new_topic_does_not_inherit_prior_calendar_date_obligation(prompt):
 
 
 
+@pytest.mark.parametrize("prompt", [
+    "How do I share my calendar with Sam?", "how do I export my calendar to a file",
+    "how do I back up my messages", "How to clean up my inbox",
+    "why won't my email sync", "why won\u2019t my email sync", "Why can't I open my messages?",
+    "why is my calendar not syncing with my phone",
+    "my calendar app is broken, any ideas?", "My inbox is overflowing, any tips?",
+    "my email app keeps crashing"])
+def test_how_to_or_troubleshooting_that_names_a_source_sets_no_obligation(prompt):
+    from service.router.model_led import fresh_personal_obligation
+    assert fresh_personal_obligation(prompt) == {}
+
+
+@pytest.mark.parametrize("prompt,scope", [
+    ("what's on my calendar tomorrow", "calendar"), ("summarize my inbox", "mail"),
+    ("how many meetings are on my calendar today", "calendar"),
+    ("How many events are on my calendar", "calendar"),
+    ("How much of my inbox is unread?", "mail"), ("how busy is my calendar", "calendar"),
+    ("How does my calendar look this week", "calendar"), ("show my messages", "messages"),
+    # A named day is a request about that day's records, whatever the shape.
+    ("How can I fit a workout into my calendar tomorrow?", "calendar"),
+    ("what does my calendar app say for tomorrow", "calendar"),
+    # "Why" about what a source holds is still a question about its records.
+    ("why is my inbox empty", "mail"),
+    ("why isn't my meeting with Sam on my calendar", "calendar"),
+    ("what did mom say today", "communications")])
+def test_data_request_that_names_a_source_keeps_its_obligation(prompt, scope):
+    from service.router.model_led import fresh_personal_obligation
+    assert fresh_personal_obligation(prompt)["scope"] == scope
+
+
 @pytest.mark.parametrize("mode", [None, "1"])
 def test_private_read_with_pending_owner_keeps_shell_unavailable_at_actual_executor(endpoint, monkeypatch, mode):
     from tests.test_model_led_entrypoint import _private_shell_endpoint

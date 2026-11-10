@@ -285,6 +285,15 @@ def test_capability_question_is_answered_not_guarded(synthetic):
     assert len(client.requests) == 1  # no forced re-prompt either
 
 
+def test_how_to_that_names_a_source_is_answered_not_guarded(synthetic):
+    prompt = "How do I back up my messages?"
+    reply = "Open Messages settings, turn on Messages in iCloud, and let it finish syncing."
+    client, _, answer = ask([reply], prompt=prompt,
+                            fresh_personal_scope=fresh_personal_obligation(prompt, ""))
+    assert answer == reply
+    assert len(client.requests) == 1  # no forced re-prompt for the user's own data
+
+
 def test_personal_answer_with_no_tool_is_reprompted_with_a_tool_required(synthetic):
     effects, _ = synthetic
     prompt = "What's on my calendar tomorrow?"
