@@ -272,6 +272,46 @@ def test_cancel_retires_the_whole_group() -> None:
           store.upcoming(now=now) == [], str(store.upcoming(now=now)))
 
 
+def test_cancel_reaches_items_far_ahead() -> None:
+    print("\ncancel_event: an item months ahead is found, and live items still win")
+    store = fresh_store()
+    now = time.time()
+    far = store.add_manual("Passport renewal", now + 120 * 86400)
+    past = store.add_manual("Car service", now - 2 * 86400)
+    soon = store.add_manual("Car service", now + 30 * 86400)
+    first = store.add_manual("Team offsite", now + 70 * 86400)
+    second = store.add_manual("Team offsite", now + 77 * 86400)
+
+    async def run() -> tuple[str, str, str, str]:
+        return (await assistant_tools.cancel_event("passport"),
+                await assistant_tools.cancel_event("car service"),
+                await assistant_tools.cancel_event("offsite"),
+                await assistant_tools.cancel_event("dental cleaning vist"))
+
+    real = assistant_tools.assistant_store
+    assistant_tools.assistant_store = store
+    try:
+        store.add_manual("Dental cleaning visit", now + 150 * 86400)
+        far_msg, soon_msg, several_msg, miss_msg = asyncio.run(run())
+    finally:
+        assistant_tools.assistant_store = real
+    check("a reminder four months out is cancelled", far_msg == "Cancelled “Passport renewal”.", far_msg)
+    check("and its row is gone", store.get(far["id"]) is None)
+    check("the live item wins over a past one with the same name",
+          soon_msg == "Cancelled “Car service”." and store.get(soon["id"]) is None
+          and store.get(past["id"]) is not None, soon_msg)
+    from datetime import datetime
+    days = [datetime.fromtimestamp(row["when_ts"]).strftime("%a %b %-d, ") for row in (first, second)]
+    check("two far-out matches are asked about, each with its date",
+          several_msg.startswith("Several items match “offsite”") and days[0] != days[1]
+          and all(day in several_msg for day in days), several_msg)
+    check("and neither is cancelled",
+          store.get(first["id"]) is not None and store.get(second["id"]) is not None)
+    check("a near miss suggests a far-out title",
+          miss_msg.startswith("Nothing upcoming or past matches") and "“Dental cleaning visit”" in miss_msg,
+          miss_msg)
+
+
 def test_seed_rows_never_shadow_real_ones() -> None:
     print("\nranking: QA seed rows lose to real rows")
     os.environ["WISP_QA_SEED"] = "1"
@@ -301,6 +341,7 @@ def main() -> int:
     test_no_resurrection_after_survivor_is_deleted()
     test_genuine_notification_not_suppressed()
     test_cancel_retires_the_whole_group()
+    test_cancel_reaches_items_far_ahead()
     test_seed_rows_never_shadow_real_ones()
     print(f"\n{PASS} passed, {FAIL} failed")
     shutil.rmtree(SCRATCH, ignore_errors=True)

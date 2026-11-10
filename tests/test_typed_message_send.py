@@ -423,6 +423,49 @@ def test_a_time_before_the_body_schedules_the_send():
         assert plan.temporal.source == "explicit", prompt
 
 
+def test_a_day_word_is_never_part_of_the_recipient():
+    # NOW is Tuesday 8 September 2026, 10:00.
+    for prompt, who, expected in (
+            ("text mom tomorrow at 7pm saying hi", "mom", "2026-09-09T19:00"),
+            ("text mom tonight at 9pm saying hi", "mom", "2026-09-08T21:00"),
+            ("text bob tomorrow at 7pm saying hi", "bob", "2026-09-09T19:00"),
+            ("text mom at 7pm tomorrow saying hi", "mom", "2026-09-09T19:00"),
+            ("send mom a text tomorrow at 7pm saying hi", "mom", "2026-09-09T19:00"),
+            ("text Sam Lee on friday at 9am saying hi", "Sam Lee", "2026-09-11T09:00")):
+        plan = compile_task(prompt, now=NOW)
+        assert plan is not None and plan.intent == "message.send", prompt
+        assert plan.recipient.value == who, prompt
+        assert plan.subject.value == "hi", prompt
+        assert plan.temporal.absolute_iso == expected, prompt
+    plan = compile_task("email bob tomorrow at 9am saying hi", now=NOW)
+    assert plan.recipient.value == "bob"
+    assert plan.temporal.absolute_iso == "2026-09-09T09:00"
+    # Several-word names still work.
+    plan = compile_task("text Sam Lee saying hi", now=NOW)
+    assert plan.recipient.value == "Sam Lee" and not plan.temporal.absolute_iso
+
+
+def test_a_time_opening_a_bare_body_asks_before_sending():
+    for prompt, when, body in (
+            ("text mom tomorrow 7pm hi", "tomorrow 7pm", "hi"),
+            ("text mom tomorrow hi", "tomorrow", "hi"),
+            ("text mom at 7pm tomorrow, see you", "at 7pm tomorrow", "see you")):
+        plan = compile_task(prompt, now=NOW)
+        assert plan is not None, prompt
+        assert plan.status != "ready", prompt
+        assert plan.temporal.absolute_iso == "", prompt
+        slot = plan.parameters["time_clarification"].value
+        assert slot == {"when": when, "body": body}, prompt
+    # A body that only mentions a time later on, or a quoted one, is unchanged.
+    plan = compile_task("text mom I'll be late", now=NOW)
+    assert plan.status == "ready" and plan.subject.value == "I'll be late"
+    plan = compile_task('text mom "tomorrow at 7"', now=NOW)
+    assert plan.status == "ready" and plan.subject.value == "tomorrow at 7"
+    # An introducer makes the body literal: no question.
+    plan = compile_task("text mom saying tomorrow is the party", now=NOW)
+    assert plan.status == "ready" and plan.subject.value == "tomorrow is the party"
+
+
 def test_a_scheduled_send_binds_the_address_at_approval_time():
     temp, store, assistant = _stores()
     resolver = _resolver(TRISHY)

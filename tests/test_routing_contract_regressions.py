@@ -351,6 +351,28 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[0][1]["symbols"], ["AAPL"])
         self.assertIn("emailed", result)
 
+    def test_unrelated_negation_does_not_drop_a_named_stock(self):
+        from service.workflows.reads import excluded_stock_symbols, permitted_stock_symbols
+        for prompt, symbol in (
+            ("What is the Roku stock price? I am not in a hurry.", "ROKU"),
+            ("What is the Roku stock price, I am not in a hurry.", "ROKU"),
+            ("Is Uber stock up? Not asking for advice.", "UBER"),
+            ("How is Spotify stock doing? Not great I think", "SPOT"),
+            ("Check Coinbase stock; I am not sure it is worth it", "COIN"),
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertEqual(excluded_stock_symbols(prompt), frozenset())
+                self.assertEqual(permitted_stock_symbols(prompt, [symbol]), [symbol])
+        # Real exclusions still hold, including a lowercase unknown name.
+        for prompt, proposed, expected in (
+            ("show prices of Apple and Tesla stock, not Tesla", ["AAPL", "TSLA"], ["AAPL"]),
+            ("email Sam the prices of Apple shares, not palantir", ["PLTR"], []),
+            ("show prices of Apple shares but not palantir or rivian", ["RIVN"], []),
+            ("show prices of Apple shares but not palantir or tesla shares", ["TSLA"], []),
+        ):
+            with self.subTest(prompt=prompt, proposed=proposed):
+                self.assertEqual(permitted_stock_symbols(prompt, proposed), expected)
+
     async def test_router_direct_stock_exclusion_cannot_fetch_excluded_symbol(self):
         cases = (
             ("show prices of Apple shares but not Microsoft shares", ["AAPL", "MSFT"], ["AAPL"]),

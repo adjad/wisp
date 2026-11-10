@@ -167,7 +167,8 @@ def _no_write_store(monkeypatch, *rows):
     def write(*args, **kwargs):
         raise AssertionError("a refusal must not write")
     store = SimpleNamespace(upcoming=lambda **kw: list(rows), history=lambda **kw: [], get=lambda cid: None,
-                            active_future=lambda **kw: list(rows), add_manual=write, update_schedule=write)
+                            active_future=lambda **kw: list(rows),
+                            active_between=lambda *a, **kw: list(rows), add_manual=write, update_schedule=write)
     monkeypatch.setattr(assistant_tools, "assistant_store", store)
     monkeypatch.setattr(assistant_tools, "reminders_matching", lambda *args, **kwargs: list(rows))
     monkeypatch.setattr(schedule_extras, "_store", store)

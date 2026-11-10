@@ -509,6 +509,12 @@ async def lifespan(app: FastAPI):
             pass
 
     attachment_prune_task = asyncio.create_task(_prune_attachment_store())
+    # Saved timers and alarms only ring once they are armed on this loop.
+    try:
+        from service.tools import timers_alarms
+        timers_alarms.rearm_all()
+    except Exception:  # noqa: BLE001 — a bad timer store never blocks startup
+        pass
     # A10 WP3: serves the app's private bridge socket only when the app launched
     # this process with one (a browser enabled by the user). Otherwise this is a no-op.
     bridge_link = None
