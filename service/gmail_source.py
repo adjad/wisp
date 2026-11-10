@@ -968,6 +968,10 @@ async def _sync_account(account: str, parts: tuple[str, ...]) -> bool:
         cfg = connected_accounts().get(account)
         if cfg is None:
             return False
+        if cfg.get("auth_expired"):
+            # The refresh token is dead. Retrying only POSTs it to Google again
+            # and re-persists the mail cache; a reconnect writes a fresh record.
+            return False
         token = _context.set((account, dict(cfg), _epochs.get(account, 0)))
         part = parts[0]
         try:

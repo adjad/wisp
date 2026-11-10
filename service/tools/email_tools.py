@@ -500,9 +500,17 @@ def _row_ts(row: str) -> float:
 
 def _recompose_all() -> None:
     global _headers, _history, _raw_emails
-    _headers = _compose_source(_swift_headers, "headers")
-    _history = _compose_source(_swift_history, "history")
-    _raw_emails = _compose_source(_swift_raw, "raw")
+    # Recomposing runs every minute. An equal result keeps the existing string
+    # object, so memos keyed by identity (_HISTORY_PARSE) survive a quiet minute.
+    headers = _compose_source(_swift_headers, "headers")
+    history = _compose_source(_swift_history, "history")
+    raw = _compose_source(_swift_raw, "raw")
+    if headers != _headers:
+        _headers = headers
+    if history != _history:
+        _history = history
+    if raw != _raw_emails:
+        _raw_emails = raw
 
 
 def cache_external_emails(*, account: str, headers: str | None = None,
@@ -534,6 +542,8 @@ def cache_external_emails(*, account: str, headers: str | None = None,
 
 def external_email_error(account: str, part: str, reason: str) -> None:
     if account in _external_accounts:
+        if _external_accounts[account].get(part + "_error", "") == (reason or ""):
+            return  # Same failure as last time (offline, expired): nothing changed.
         _external_accounts[account][part + "_error"] = reason
         _recompose_all()
         _persist_composed_sources()

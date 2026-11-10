@@ -1612,6 +1612,74 @@ print('fresh process retained original native fallback')
                 G._context.reset(token)
         asyncio.run(run())
 
+    def test_an_expired_sign_in_is_not_retried_every_minute(self):
+        self.accounts[ME]["auth_expired"] = int(time.time())
+        E.configure_external_accounts(self.accounts)
+        post = AsyncMock(return_value=httpx.Response(400, json={"error": "invalid_grant"}))
+        with patch.object(httpx.AsyncClient, "post", post), \
+             patch.object(E, "external_email_error") as failed, \
+             patch.object(E, "_persist_composed_sources") as persisted:
+            for _ in range(2):
+                self.assertFalse(asyncio.run(G._sync_account(ME, ("headers", "history", "raw", "sent"))))
+        post.assert_not_awaited()
+        failed.assert_not_called()
+        persisted.assert_not_called()
+        # Reconnecting writes a record without the flag, and syncing resumes.
+        del self.accounts[ME]["auth_expired"]
+        with patch.object(httpx.AsyncClient, "post", post), patch.object(G, "_sync_headers", AsyncMock()) as headers:
+            self.assertTrue(asyncio.run(G._sync_account(ME, ("headers",))))
+        headers.assert_awaited_once()
+
+    def test_the_calendar_skips_an_expired_sign_in(self):
+        from service import google_calendar_source as C
+        both = [G.SCOPE, G.CALENDAR_SCOPE]
+        accounts = {"gone@gmail.com": {"scopes": both, "auth_expired": 5}, "live@gmail.com": {"scopes": both}}
+        with patch.object(C, "refresh_account", AsyncMock()) as refresh, patch.dict(C._status, {}, clear=True):
+            asyncio.run(C.refresh_due(accounts, now=1e9))
+        self.assertEqual([call.args[0] for call in refresh.await_args_list], ["live@gmail.com"])
+
+    def test_a_quiet_minute_does_not_rewrite_the_mail_cache_files(self):
+        writes = []
+        real = cache_store.private_write_bytes
+        def counting(path, data):
+            writes.append(Path(path).name)
+            real(path, data)
+        self.accounts.clear()                       # no Google account at all
+        E.configure_external_accounts(self.accounts)
+        E.cache_emails(header("Native", "First"))
+        E.cache_history_headers(header("Native", "Older") + "\n")
+        E.cache_raw_emails(G.raw_record(msg("body", "Body"), "Native"))
+        with patch.object(cache_store, "private_write_bytes", counting):
+            for _ in range(3):
+                E.configure_external_accounts(self.accounts)       # the 60 s loop
+            self.assertEqual(writes, [], "unchanged data is not written again")
+            history_before = E._history
+            E.configure_external_accounts(self.accounts)
+            self.assertIs(E._history, history_before, "the parsed-history memo keeps its key")
+            cache_store._path("email_history").unlink()             # deleted: written back
+            E.configure_external_accounts(self.accounts)
+            self.assertEqual(writes, ["email_history.txt"])
+            del writes[:]
+            E.cache_emails(header("Native", "A different subject"))   # changed: written
+            self.assertIn("email_headers.txt", writes)
+            self.assertIn("email_mail_headers.txt", writes)
+        self.assertIn("A different subject", cache_store.load("email_headers"))
+
+    def test_a_cache_file_changed_behind_the_backend_is_restored(self):
+        cache_store.save("identity_emails", "me@example.test")
+        path = cache_store._path("identity_emails")
+        path.write_text("someone-else@example.test")
+        cache_store.save("identity_emails", "me@example.test")
+        self.assertEqual(path.read_text(), "me@example.test")
+
+    def test_the_same_failure_twice_does_not_rewrite_the_mail_cache(self):
+        with patch.object(E, "_persist_composed_sources") as persisted:
+            E.external_email_error(ME, "headers", "Google could not be reached; try again when online")
+            E.external_email_error(ME, "headers", "Google could not be reached; try again when online")
+            self.assertEqual(persisted.call_count, 1)
+            E.external_email_error(ME, "headers", "Google token refresh failed")
+            self.assertEqual(persisted.call_count, 2)
+
     def test_failed_current_cli_flow_does_not_report_older_account_success(self):
         import io
         import runpy
