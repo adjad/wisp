@@ -637,6 +637,7 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
         reuse = last.get("reply") if (not force and model_ok and last.get("model") and last.get("rkey") == rkey
                                       and isinstance(last.get("reply"), str)) else None
         captured: dict = {}
+        fell_back = False
         if model_ok:
             if not reuse and not await _wait_out_turn(abort, patient):
                 yielded = True
@@ -644,6 +645,7 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
             state, ranked, summary = await judge_mod.judge(mine, acct_sched, reply_fn, abort, now=now, tz=tz,
                                                            suppressed=suppressed, allowed=allowed,
                                                            cached_reply=reuse or None, capture=captured)
+            fell_back = state == "fallback"
             if state == "standdown":
                 if abort():
                     yielded = True
@@ -713,7 +715,9 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
             card = next((c for c in cards if c.get("todo_id") == old.get("id")), None)
             if card is not None and old.get("id") not in have and old.get("account") == acct:
                 todos_by_account[acct].append({**old, "card_id": card["id"]})
-        summaries[acct] = summary
+        # A model reply that could not be used (cut off, malformed) ranks by rule,
+        # but the day summary an earlier build wrote stays rather than going blank.
+        summaries[acct] = summary or (str(summaries.get(acct) or "") if fell_back else "")
         judged[acct] = {"key": key, "rkey": rkey, "at": now, "model": model_ok,
                         "reply": captured.get("reply") or (reuse or "")}
     # 3. Deadline cards: a real free slot for work due soon. Code only, every
