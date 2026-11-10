@@ -325,27 +325,42 @@ class _Unreadable(Exception):
     """A plain reason a file couldn't be read, for the person."""
 
 
+class _GmailRefused(_Unreadable):
+    """Gmail answered with an error of its own (most often a sign-in that ran out), so signing in
+    again may help. A network failure or a timeout is a plain _Unreadable."""
+
+
 async def _gmail_message(ctx: _Ctx, email: _Email) -> dict | None:
     """The email as Gmail has it, found by its Message-ID on each connected account."""
     if not email.rfc or email.rfc.lstrip("-").isdigit():
         return None
     if email.key in ctx.lookups:
         return ctx.lookups[email.key]
+    from service.gmail_source import GmailError
     found = None
-    failed = False
+    failed = refused = False
     for account in ctx.gmail_accounts:
         try:
             found = await asyncio.wait_for(ctx.gmail_source.find_by_rfc_id(account, email.rfc),
                                            max(1.0, min(20.0, ctx.remaining())))
-        except Exception:  # noqa: BLE001 — one account failing must not stop the next
+        except Exception as error:  # noqa: BLE001 — one account failing must not stop the next
             failed = True
+            refused = refused or isinstance(error, GmailError)
             continue
         if found:
             break
     if found is None and failed:
-        raise _Unreadable("Gmail couldn't be reached")
+        raise (_GmailRefused if refused else _Unreadable)("Gmail couldn't be reached")
     ctx.lookups[email.key] = found
     return found
+
+
+def _one_sentence(reasons: list[str]) -> str:
+    """The reasons as one sentence. A later reason starts in lower case unless it starts with a
+    name ("Gmail isn't connected", "Mail's index isn't available")."""
+    def later(reason: str) -> str:
+        return reason if re.match(r"(?:Gmail|Mail)\b", reason) else reason[0].lower() + reason[1:]
+    return ", and ".join(later(r) if i else r[0].upper() + r[1:] for i, r in enumerate(reasons)).rstrip(".") + "."
 
 
 def _same_file(file: _File, others: list[dict]) -> dict | None:
@@ -358,6 +373,8 @@ def _same_file(file: _File, others: list[dict]) -> dict | None:
 async def _fetch(ctx: _Ctx, email: _Email, f: _File) -> tuple[bytes, str]:
     """(bytes, where they came from). Raises _Unreadable with a plain reason."""
     reasons: list[str] = []
+    sign_in = False         # Gmail itself refused: signing in again may help. Never said for a network failure.
+    unreached = False       # the lookup in Gmail failed, so whether Gmail has the file isn't known
     if f.has_local and f.on_disk:
         try:
             data, _name, why = await bridge.read_attachment(f.rowid, f.attachment_id,
@@ -379,9 +396,11 @@ async def _fetch(ctx: _Ctx, email: _Email, f: _File) -> tuple[bytes, str]:
         if ctx.gmail_accounts:
             try:
                 message = await _gmail_message(ctx, email)
-            except _Unreadable:
+            except _Unreadable as error:
                 message = None
-                reasons.append("Gmail couldn't be reached. Sign in to Gmail again in Settings")
+                unreached = True
+                sign_in = isinstance(error, _GmailRefused)
+                reasons.append("Gmail couldn't be reached")
             if message:
                 item = _same_file(f, message.get("attachments") or [])
                 if item:
@@ -405,16 +424,20 @@ async def _fetch(ctx: _Ctx, email: _Email, f: _File) -> tuple[bytes, str]:
                            else "Gmail couldn't be reached")
         except Exception as error:  # noqa: BLE001 — GmailError and anything odd: a reason, never a crash
             from service.gmail_source import GmailError
-            reasons.append("Gmail couldn't give it up. Sign in to Gmail again in Settings"
-                           if isinstance(error, GmailError) else "Gmail couldn't give it up")
+            sign_in = isinstance(error, GmailError)
+            reasons.append("Gmail couldn't give it up")
     elif not ctx.gmail_accounts:
         reasons.append("Gmail isn't connected")
-    else:
+    elif not unreached:
         reasons.append("Gmail doesn't have it")
-    sentence = ", and ".join(r[0].lower() + r[1:] if i else r[0].upper() + r[1:]
-                             for i, r in enumerate(reasons or ["It couldn't be fetched"])).rstrip(".") + "."
+    sentence = _one_sentence(reasons or ["It couldn't be fetched"])
     if any("downloaded" in r for r in reasons):
-        sentence += " Open the email in Mail to download it, or sign in to Gmail."
+        # Signing in to Gmail is only worth saying when that could get the file.
+        sentence += " Open the email in Mail to download it" + (
+            ", or sign in to Gmail again in Settings." if sign_in
+            else ", or sign in to Gmail." if not ctx.gmail_accounts else ".")
+    elif sign_in:
+        sentence += " Sign in to Gmail again in Settings."
     raise _Unreadable(sentence)
 
 
