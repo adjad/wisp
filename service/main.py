@@ -566,12 +566,30 @@ async def _await_omlx(seconds: float) -> bool:
                 try:
                     await client.health()
                     return True
-                except ModelLoadError:
-                    raise
+                except ModelLoadError as exc:
+                    # The connection was reset under this check (another start, or a request
+                    # that failed while the engine was coming up). Nothing was learned about
+                    # who answers, so check again; every other refusal still fails at once.
+                    if getattr(exc, "reason", "") != "connection_invalidated":
+                        raise
+                    await asyncio.sleep(0.1)
                 except Exception:
                     await asyncio.sleep(0.5)
     except TimeoutError:
         return False
+
+
+# One engine start at a time. Each start resets the client's connections before it verifies
+# who answers, so two overlapping starts would refuse each other's check. Kept per event loop.
+_engine_start: tuple[asyncio.AbstractEventLoop, asyncio.Lock] | None = None
+
+
+def _engine_start_lock() -> asyncio.Lock:
+    global _engine_start
+    loop = asyncio.get_running_loop()
+    if _engine_start is None or _engine_start[0] is not loop:
+        _engine_start = (loop, asyncio.Lock())
+    return _engine_start[1]
 
 
 async def _prepare_remote_inference(active_client) -> None:
@@ -597,8 +615,17 @@ async def ensure_omlx() -> None:
         if seen is not None and await _await_omlx(2):
             manager().mark_verified(seen)
             return
-        client.invalidate_connections()
-        await _ensure_bundled_engine()
+        lock = _engine_start_lock()
+        waited = lock.locked()
+        async with lock:
+            if waited:
+                # Another call was starting the engine: use its launch and its verification.
+                seen = manager().incarnation()
+                if seen is not None and await _await_omlx(2):
+                    manager().mark_verified(seen)
+                    return
+            client.invalidate_connections()
+            await _ensure_bundled_engine()
         return
     if await _await_omlx(2):
         return
@@ -628,8 +655,9 @@ async def _ensure_bundled_engine() -> None:
         launched = bool(await asyncio.to_thread(engine.start))
     except EngineError as exc:
         raise ModelLoadError(f"The bundled AI engine could not start: {exc}") from None
+    # Stopping waits for the engine to leave, so it runs off the event loop.
     if not await engine.wait_ready(60):
-        engine.stop()
+        await asyncio.to_thread(engine.stop)
         raise ModelLoadError("The bundled AI engine did not become ready")
     incarnation = engine.incarnation()
     client.invalidate_connections()
@@ -640,11 +668,11 @@ async def _ensure_bundled_engine() -> None:
         verified = await _await_omlx(60)
     except ModelLoadError:
         if launched:
-            engine.stop()
+            await asyncio.to_thread(engine.stop)
         raise
     if not verified:
         if launched:
-            engine.stop()
+            await asyncio.to_thread(engine.stop)
         raise ModelLoadError("The bundled AI engine did not become ready")
     engine.mark_verified(incarnation)
 
@@ -1247,11 +1275,19 @@ async def _start_existing_omlx() -> None:
         return
     if _quitting:
         raise ModelLoadError("Wisp is quitting; the local AI engine stays stopped")
-    client.invalidate_connections()
-    if not await _omlx_cli("start", "--no-wait"):
-        raise ModelLoadError("The local oMLX CLI is unavailable")
-    if not await _await_omlx(45):
-        raise ModelLoadError("oMLX did not start")
+    lock = _engine_start_lock()
+    waited = lock.locked()
+    async with lock:
+        if waited:
+            if await _await_omlx(2):
+                return                  # another automatic start brought it up
+            if _quitting:
+                raise ModelLoadError("Wisp is quitting; the local AI engine stays stopped")
+        client.invalidate_connections()
+        if not await _omlx_cli("start", "--no-wait"):
+            raise ModelLoadError("The local oMLX CLI is unavailable")
+        if not await _await_omlx(45):
+            raise ModelLoadError("oMLX did not start")
 
 
 @app.post("/setup/start-engine")
