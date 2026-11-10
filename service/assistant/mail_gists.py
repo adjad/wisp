@@ -741,7 +741,9 @@ async def refresh(now: float | None = None, *, synth=None, abort=None, force: bo
     generation = _generation
     # Reading the inbox and the Messages cache is CPU work over up to ~20k
     # lines: off the event loop, so the app's requests keep being answered.
-    jobs = await asyncio.to_thread(_jobs, now, force=bool(force))
+    # The non-force call keeps the one-argument shape callers patch in.
+    jobs = await (asyncio.to_thread(_jobs, now, force=True) if force
+                  else asyncio.to_thread(_jobs, now))
     jobs = [j for j in jobs if kind is None or j["kind"] == kind]
     if not jobs:
         _stood_down("no new mail or texts to describe")
