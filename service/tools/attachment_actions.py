@@ -26,8 +26,9 @@ import time
 from collections import OrderedDict
 
 from service.tools.email_attachments import _span
+from service.tools.email_tools import _CORPUS_MAIL_IDENTIFIER
 from service.tools import untrusted
-from service.tools.registry import not_done, register
+from service.tools.registry import not_done, register, saved
 
 SAVE_TOOL = "save_email_attachment"
 
@@ -90,6 +91,9 @@ def _take(token, clean: dict) -> dict | None:
     return entry[2]
 
 
+_CORPUS_REFUSAL = "Corpus mail scope rejected: saving attachments is outside the corpus scope."
+
+
 def _stopped(reason: str, question: str = "") -> str:
     reason = untrusted.neutralize(" ".join(str(reason or "").split())[:400]) or "that file could not be settled on"
     return not_done(f"(NOT saved — {reason} Nothing was saved.)",
@@ -98,6 +102,8 @@ def _stopped(reason: str, question: str = "") -> str:
 
 async def prepare_save_args(args: dict) -> tuple[dict, str | None]:
     """Settle ONE file before the card. (arguments to run, None) or (args, a not-done result)."""
+    if _CORPUS_MAIL_IDENTIFIER.get() is not None:
+        return args, _stopped(_CORPUS_REFUSAL)
     clean = _clean(args)
     span = _span(clean.get("period"), clean.get("day"))
     if isinstance(span, str):
@@ -128,8 +134,9 @@ async def prepare_save_args(args: dict) -> tuple[dict, str | None]:
 @register(
     SAVE_TOOL,
     "Save ONE file attached to an email, or sent in Messages, into a folder (Downloads "
-    "by default) and show it in Finder. Always asks first, on a card naming the exact "
-    "file; a risky file is refused; the file is never opened or run. Pass `query` "
+    "by default) and show it in Finder. It is saved only after the user confirms on a "
+    "card that names the file and the folder; a risky file is refused; Wisp never opens "
+    "or runs it. Pass `query` "
     "(who, or the subject) and `name` (part of the file's name) to pick it; if several "
     "match it asks which. To send an email on with its files, use forward_email.",
     {"type": "object",
@@ -160,6 +167,8 @@ async def save_email_attachment(query: str | None = None, name: str | None = Non
                                 period: str | None = None, day: str | None = None,
                                 account: str | None = None, source: str = "mail",
                                 folder: str | None = None, prepared: str | None = None) -> str:
+    if _CORPUS_MAIL_IDENTIFIER.get() is not None:
+        return _stopped(_CORPUS_REFUSAL)
     clean = _clean({"query": query, "name": name, "period": period, "day": day,
                     "account": account, "source": source, "folder": folder})
     frozen = _take(prepared, clean)
@@ -171,7 +180,7 @@ async def save_email_attachment(query: str | None = None, name: str | None = Non
         return _stopped("saving attachments is not available in this build.")
     result = await attachment_save.save(frozen)
     if isinstance(result, dict) and result.get("ok") is True and isinstance(result.get("text"), str):
-        return untrusted.neutralize(result["text"])
+        return saved(untrusted.neutralize(result["text"]))
     reason = untrusted.neutralize(str(result.get("reason") or "")) if isinstance(result, dict) else ""
     if isinstance(result, dict) and result.get("wrote") is False:
         # The engine says it stopped before leaving anything behind.

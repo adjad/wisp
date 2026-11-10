@@ -11,6 +11,7 @@ import os
 import re
 import shlex
 import stat
+import unicodedata
 from contextlib import contextmanager
 from contextvars import ContextVar
 from itertools import chain
@@ -1240,6 +1241,10 @@ def mcp_effect_word(tool: str | None) -> str | None:
     return None
 
 
+_SAVE_BUNDLE_SUFFIXES = (".app", ".bundle", ".framework", ".plugin", ".kext", ".xpc", ".appex",
+                         ".photoslibrary")
+
+
 def _save_folder_problem(folder) -> str | None:
     """Why a folder for a saved attachment is refused, or None. Mirrors the save
     engine: an existing folder in the user's home, outside ~/Library and hidden
@@ -1263,10 +1268,15 @@ def _save_folder_problem(folder) -> str | None:
                     continue
             else:
                 return "a saved file goes in a folder inside your home folder"
-            if parts and parts[0] == "Library":
-                return "a saved file may not go into ~/Library"
+            # Compared the way the save engine does: case-folded and NFC, since
+            # on the usual case-insensitive volume ~/library IS ~/Library.
+            parts = tuple(unicodedata.normalize("NFC", part).casefold() for part in parts)
+            if parts and parts[0] in ("library", "applications"):
+                return "a saved file may not go into ~/Library or ~/Applications"
             if any(part.startswith(".") for part in parts):
                 return "a saved file may not go into a hidden folder"
+            if any(part.endswith(_SAVE_BUNDLE_SUFFIXES) for part in parts):
+                return "a saved file may not go into an application bundle"
     except (ValueError, OSError, RuntimeError):
         return "that folder could not be safely resolved"
     return None

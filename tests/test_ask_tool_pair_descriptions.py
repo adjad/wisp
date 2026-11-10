@@ -68,7 +68,7 @@ def test_sharpened_descriptions_did_not_grow_the_schema_budget():
     # Batch 3 adds `inside`/`across` to it and two tools, read_message_attachments
     # and save_email_attachment (96 built-ins): 42,140.
     builtin = [t for t in REGISTRY.values() if t.category not in {"skill_tool", "mcp_read", "mcp_action"}]
-    assert sum(len(t.description or "") for t in builtin) <= 42_140
+    assert sum(len(t.description or "") for t in builtin) <= 42_171  # +31: save_email_attachment now says it is saved only after the card is confirmed and is never opened
 
 
 def test_retrieval_text_stays_pinned_so_rankings_do_not_move():

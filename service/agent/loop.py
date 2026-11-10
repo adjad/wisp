@@ -1547,9 +1547,23 @@ def mark_attachment_turn(tool_name: str, args: dict) -> None:
     if tool_name not in ("read_email_attachments", "read_message_attachments"):
         return
     if isinstance(args, dict) and args.get("list_only") is True:
-        return
+        # A listing reads no content, but `inside` returns snippets of file text
+        # and `across` reads and extracts many files, whatever `list_only` says.
+        from service.tools.email_attachments import _inside
+        if not _inside(args.get("inside")) and args.get("across") is not True:
+            return
     from service.safety.policy import mark_picture_turn
     mark_picture_turn()
+
+
+async def settle_save_card(tier, name: str, args: dict) -> tuple[dict, str | None]:
+    """Settle ONE attachment before its card: (args to show, None), or (args, the
+    typed not-done result when no file can be settled, so no card is shown).
+    Every path that can raise a confirmation card calls this beside it."""
+    if tier is Tier.CONFIRM and name == "save_email_attachment":
+        from service.tools.attachment_actions import prepare_save_args
+        return await prepare_save_args(args)
+    return args, None
 
 
 # How each source is introduced when several are merged into a fallback answer.
@@ -3334,6 +3348,9 @@ async def run_agent(
         await emit({"type": "tool_call", "id": _cid, "name": _name, "args": _args,
                     "decision": _dec.tier.value, "reason": _dec.reason,
                     **({"test_mode": True} if test_mode else {})})
+        _save_stopped = None
+        if not test_mode:
+            _args, _save_stopped = await settle_save_card(_dec.tier, _name, _args)
         if test_mode:
             # Same contract as the loop's own dry run: report what WOULD happen,
             # execute nothing (see _TEST_MODE_STUB / the endpoint docstring).
@@ -3341,6 +3358,11 @@ async def run_agent(
         elif _dec.tier is Tier.DENY:
             _result = f"BLOCKED by safety policy: {_dec.reason}"
             audit("deny", tool=_name, args=_args, reason=_dec.reason)
+        elif _save_stopped:
+            # No file could be settled: the typed not-done is the result and no
+            # card is shown.
+            _result = _save_stopped
+            audit("save_preflight", tool=_name, args=_args, reason=str(_save_stopped))
         elif _dec.tier is Tier.CONFIRM:
             # A system_write or network_active direct call is CONFIRM tier, so
             # a direct call is NOT a way around the card.
@@ -5250,10 +5272,7 @@ async def run_agent(
                     args, _no_recipient = prepare_send_recipient(tool, args)
                 # Settle ONE attachment before its card: a file that cannot be
                 # settled is the tool result, with no card to approve.
-                _save_stopped = None
-                if dec.tier is Tier.CONFIRM and name == "save_email_attachment":
-                    from service.tools.attachment_actions import prepare_save_args
-                    args, _save_stopped = await prepare_save_args(args)
+                args, _save_stopped = await settle_save_card(dec.tier, name, args)
 
                 if dec.tier is Tier.DENY:
                     result = f"BLOCKED by safety policy: {dec.reason}"
