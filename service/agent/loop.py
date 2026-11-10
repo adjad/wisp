@@ -2063,8 +2063,11 @@ async def run_agent(
             # private_web_problem. Never when the request names private data.
             try:
                 from service.model_only import public_fact_question
-                public_fact_text = (_last_user if public_fact_question(_last_user)
-                                    and not classify_public_lookup(_last_user).private else None)
+                # So may an explicit search held back only by a possessive
+                # ("search the web for Dana's tour dates"): same words-only rule.
+                _lookup = classify_public_lookup(_last_user)
+                public_fact_text = (_last_user if _lookup.explicit_unknown_owner or (
+                    public_fact_question(_last_user) and not _lookup.private) else None)
             except Exception:  # noqa: BLE001 — unclassifiable means no exemption
                 public_fact_text = None
         # Hosts the user typed in this message. In a turn that starts private,
