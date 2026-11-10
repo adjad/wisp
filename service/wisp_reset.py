@@ -702,31 +702,18 @@ def _command_of(pid: int) -> str | None:
 def _engine_running(home: Path) -> bool:
     """Whether the bundled engine recorded in engine/engine.pid is still alive.
 
-    A live pid counts only while it is still that engine (its command ends with
-    this home's ``--base-path``, as engine.manager.reap_orphan checks), so a
-    recycled pid doesn't keep the prompt cache forever. A command that can't be
-    read counts as the engine: the cache is kept rather than deleted under it."""
-    try:
-        pid = int((home / "engine" / "engine.pid").read_text().strip())
-    except (OSError, ValueError):
-        return False
-    if pid <= 1:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except OSError:
-        pass
-    command = _command_of(pid)
-    if command is None:
-        return True
-    if not command:
-        return False                 # gone between the two checks
-    bases = {str(Path(home) / "engine" / "base")}
-    with contextlib.suppress(OSError):
-        bases.add(str((Path(home) / "engine" / "base").resolve()))
-    return any(command.endswith(f"--base-path {base}") for base in bases)
+    A live pid counts only while it is still that engine, by the rule
+    engine.manager.reap_orphan kills by (the start time recorded with the pid,
+    since a running engine shows as ``omlx-server`` with no arguments; for a
+    bare pid, this home's ``--base-path``), so a recycled pid doesn't keep the
+    prompt cache forever. A process that can't be read counts as the engine:
+    the cache is kept rather than deleted under it."""
+    from service.engine.manager import recorded_engine
+    engine = Path(home) / "engine"
+    # No interpreter path: finding it means resolving the engine mode, which must not
+    # happen before the restart pass. A bare pid named like the engine counts as it.
+    record = recorded_engine(engine / "engine.pid", engine / "base", None, command_of=_command_of)
+    return record is not None and record[1] is not False
 
 
 def _service_live(port: int = 8765) -> bool:

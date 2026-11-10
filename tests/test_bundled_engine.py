@@ -387,7 +387,7 @@ def test_audit_followups() -> None:
         try:
             check("overlapping starts raise nothing", not errors, str(errors))
             check("and leave exactly the one recorded engine",
-                  race.layout.pid_path.read_text().strip() == str(race._proc.pid))
+                  race.layout.pid_path.read_text().split()[0] == str(race._proc.pid))
             race.verified = True
             race.stop()
             check("stop clears the verified flag", race.verified is False)
@@ -439,6 +439,130 @@ def test_audit_followups() -> None:
                   stat.S_IMODE(logged.layout.log_path.stat().st_mode) == 0o600)
         finally:
             logged.stop()
+
+
+# What setproctitle does for the real engine (omlx/cli.py serve): it overwrites the argument
+# area `ps` reads, so the command line becomes `omlx-server` with no arguments.
+SLEEPER = textwrap.dedent('''
+    import ctypes, pathlib, sys, time
+    ready, retitle = sys.argv[1], sys.argv[2] == "retitle"
+    if retitle:
+        libc = ctypes.CDLL(None)
+        libc._NSGetArgc.restype = ctypes.POINTER(ctypes.c_int)
+        libc._NSGetArgv.restype = ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))
+        count = libc._NSGetArgc().contents.value
+        argv = libc._NSGetArgv().contents
+        first, last = argv[0], argv[count - 1]
+        ctypes.memset(first, 0, last + len(ctypes.string_at(last)) - first)
+        ctypes.memmove(first, b"omlx-server", 11)
+    pathlib.Path(ready).touch()
+    time.sleep(60)
+''')
+
+
+def _sleeper(tmp: Path, retitle: bool) -> tuple[EngineManager, subprocess.Popen]:
+    """Start a stand-in engine that listens on nothing, and forget its handle the way a
+    crashed backend does: the pid file stays, the process runs on."""
+    tmp.mkdir()
+    script, ready = tmp / "sleeper.py", tmp / "ready"
+    script.write_text(SLEEPER)
+    layout = EngineLayout(root=tmp / "engine", data_dir=tmp / "data")
+    m = EngineManager(layout, port=free_port(), api_key=KEY,
+                      launcher=[sys.executable, str(script), str(ready), "retitle" if retitle else "keep"])
+    m.start()
+    for _ in range(200):
+        if ready.exists():
+            break
+        time.sleep(0.05)
+    proc, m._proc = m._proc, None
+    return m, proc
+
+
+def _reap_quickly(layout: EngineLayout, proc: subprocess.Popen) -> bool:
+    """reap_orphan, with the test collecting its own child so the wait for exit is short."""
+    import threading
+    from service.engine.manager import reap_orphan
+    waiter = threading.Thread(target=proc.wait, daemon=True)
+    waiter.start()
+    try:
+        return reap_orphan(layout)
+    finally:
+        waiter.join(10)
+
+
+def test_reaps_a_retitled_orphan() -> None:
+    # A real engine shows in `ps` as `omlx-server` with no arguments, so nothing on its
+    # command line says whose it is. It is known by the start time recorded with its pid.
+    from service.engine import manager as manager_module
+    from service.inference.local_peer import process_path
+    procs: list[subprocess.Popen] = []
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        try:
+            m, engine = _sleeper(tmp / "retitled", retitle=True)
+            procs.append(engine)
+            check("the stand-in shows as omlx-server with no arguments",
+                  manager_module._command_of(engine.pid) == "omlx-server",
+                  manager_module._command_of(engine.pid))
+            fields = m.layout.pid_path.read_text().split()
+            check("the pid is recorded with its start time",
+                  len(fields) == 3 and fields[0] == str(engine.pid), str(fields))
+            check("the pid file is private", stat.S_IMODE(m.layout.pid_path.stat().st_mode) == 0o600)
+            original = manager_module._parent_of
+            try:
+                manager_module._parent_of = lambda pid: os.getpid() + 1      # another backend's child
+                check("a retitled engine another live backend owns is left alone",
+                      manager_module.reap_orphan(m.layout) is False and engine.poll() is None
+                      and m.layout.pid_path.exists())
+                manager_module._parent_of = lambda pid: 1                      # orphaned to launchd
+                check("a retitled orphan is reaped", _reap_quickly(m.layout, engine) is True)
+            finally:
+                manager_module._parent_of = original
+            check("and gone", engine.poll() is not None)
+            check("and its pid file with it", not m.layout.pid_path.exists())
+
+            # A recycled pid: alive, even named like the engine, but started at another time.
+            m, other = _sleeper(tmp / "recycled", retitle=True)
+            procs.append(other)
+            pid, seconds, micros = map(int, m.layout.pid_path.read_text().split())
+            m.layout.pid_path.write_text(f"{pid} {seconds - 1} {micros}")
+            check("a pid whose start time differs is not killed",
+                  manager_module.reap_orphan(m.layout) is False)
+            time.sleep(0.2)
+            check("it is still running", other.poll() is None)
+            check("and the stale record is removed", not m.layout.pid_path.exists())
+
+            # A record that cannot be read as a pid, or as a pid with a start time: nothing is done.
+            for text in ("", "not-a-pid", f"{pid} {seconds}", f"{pid} {seconds} {micros} 9", str(2 ** 40)):
+                m.layout.pid_path.write_text(text)
+                check(f"record {text!r} kills nothing",
+                      manager_module.reap_orphan(m.layout) is False and other.poll() is None)
+
+            # A bare pid, as 0.5.0 rc2 wrote it: the old command-line rule still applies.
+            m, legacy = _sleeper(tmp / "legacy", retitle=False)
+            procs.append(legacy)
+            m.layout.pid_path.write_text(str(legacy.pid))
+            check("a bare pid still reaps an engine that kept its arguments",
+                  _reap_quickly(m.layout, legacy) is True and legacy.poll() is not None)
+
+            # A bare pid for a retitled process: the name alone is also a person's own oMLX.
+            m, named = _sleeper(tmp / "named", retitle=True)
+            procs.append(named)
+            m.layout.pid_path.write_text(str(named.pid))
+            check("a bare pid named omlx-server that is not this engine's Python is not killed",
+                  manager_module.reap_orphan(m.layout) is False)
+            time.sleep(0.2)
+            check("it is still running too", named.poll() is None)
+            m.layout.python.parent.mkdir(parents=True)
+            m.layout.python.symlink_to(process_path(named.pid))     # as py/bin/python3 links to python3.11
+            m.layout.pid_path.write_text(str(named.pid))
+            check("a bare pid named omlx-server running this engine's Python is reaped",
+                  _reap_quickly(m.layout, named) is True and named.poll() is not None)
+        finally:
+            for proc in procs:
+                if proc.poll() is None:
+                    proc.kill()
+                proc.wait()
 
 
 def test_quit_keeps_the_engine_stopped() -> None:
@@ -494,7 +618,7 @@ def main() -> int:
     plain = (test_builders, test_refusals, test_prepare_permissions, test_key_and_settings_persistence)
     live = (test_lifecycle, test_quit_keeps_the_engine_stopped, test_quit_kills_an_engine_that_ignores_sigterm,
             test_busy_port, test_reaps_orphan, test_reap_only_the_launched_engine,
-            test_audit_followups)
+            test_reaps_a_retitled_orphan, test_audit_followups)
     for fn in plain:
         run_or_skip(fn, False)
     for fn in live:

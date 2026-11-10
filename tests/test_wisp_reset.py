@@ -1036,6 +1036,28 @@ def test_a_recycled_engine_pid_does_not_keep_the_cache(world, monkeypatch):
     assert R._engine_running(home) is False
 
 
+def test_a_running_engine_is_known_by_its_start_time_not_its_command(world, monkeypatch):
+    # A running engine renames itself: `ps` shows `omlx-server` and no arguments, so no
+    # --base-path. The start time recorded with its pid is what says it is still that engine.
+    from service.inference.local_peer import process_identity
+    home = world["home"]
+    record = home / "engine" / "engine.pid"
+    pid, _, seconds, micros = process_identity(os.getpid(), os.getuid())
+    monkeypatch.setattr(R, "_command_of", lambda pid: "omlx-server")
+    record.write_text(f"{pid} {seconds} {micros}")
+    assert R._engine_running(home) is True
+    record.write_text(f"{pid} {seconds - 1} {micros}")
+    assert R._engine_running(home) is False, "a recycled pid, whatever it is called"
+    monkeypatch.setattr(R, "_command_of", lambda pid: f"python serve --base-path {home / 'engine' / 'base'}")
+    assert R._engine_running(home) is False, "the start time decides; the command is not asked"
+    monkeypatch.setattr(R, "_command_of", lambda pid: "omlx-server")
+    record.write_text(str(pid))
+    assert R._engine_running(home) is True, "a bare pid named like the engine: keep the cache"
+    for unreadable in ("", "soon", f"{pid} {seconds}", "0", "1", "-4", str(2 ** 40)):
+        record.write_text(unreadable)
+        assert R._engine_running(home) is False, unreadable
+
+
 # --------------------------------------------------------------------------
 # Follow-up: engine trash, pinned databases, one marker definition, child envs
 # --------------------------------------------------------------------------
