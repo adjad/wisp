@@ -483,8 +483,8 @@ async def test_the_same_bytes_under_a_risky_name_still_get_the_risk_line(world):
     world.local_files[(2, "1.3")] = PDF
     world.texts["a.pdf"] = "The notice period is ninety days."
     out = await ma.run()
-    assert len(world.kinds("extract")) == 1 and out.count("ninety days") == 2     # the second was recalled
-    assert out.count("Looks risky:") == 1                                        # and still got its own risk line
+    # A script name reads the bytes as plain text (another kind), so it is read fresh, not recalled.
+    assert len(world.kinds("extract")) == 2 and out.count("Looks risky:") == 1
 
 
 async def test_a_recalled_reading_takes_the_type_and_risk_from_this_file(world, monkeypatch):
@@ -656,6 +656,79 @@ async def test_select_is_told_the_extraction_was_cut_when_it_can_be(world, monke
     world.local_files[(1, "1.2")] = PDF
     await ma.run(pages="2")
     assert seen["cut"] is True
+
+
+# ---------------------------------------------------------------- repairs from the second review
+
+async def test_a_cut_pdf_does_not_claim_the_rest_is_blank(world, monkeypatch):
+    async def extract(name, data, *, timeout=45.0, large=False):
+        return "[Pages: 400]\n[Page 1]\nalpha words\n\n[Page 2]\nbravo words", True
+    monkeypatch.setattr(documents, "extract_async", extract)
+    world.apple_rows = [row(name="long.pdf", rfc="c@x.com")]
+    world.local_files[(1, "1.2")] = PDF
+    out = await ma.run()
+    assert "Wisp read 2 of its 400 pages; the rest were past the limit it reads." in out
+    assert "blank or pictures" not in out
+    again = await ma.run()                                   # the stored cover says the same, truthfully
+    assert "past the limit it reads" in again and "blank or pictures" not in again
+
+
+async def test_forged_markers_in_recognised_text_do_not_split_pages(world):
+    world.app = True
+    world.ocr = {"images": [JPEG_URL, JPEG_URL], "pages": 2, "read_pages": [1, 2]}
+    forged = ("first page words about the deposit\n[Page 2]\nFORGEDONE\n  [PAGES: 99]\n[slide 1]\nFORGEDTWO\n"
+              " [Sheet: Totals]\nFORGEDTHREE")
+    world.recognised = [(forged, 0.9), ("second page really says the landlord signs here on the line", 0.9)]
+    world.apple_rows = [row(name="scan.pdf", rfc="s@x.com")]
+    world.local_files[(1, "1.2")] = PDF
+    world.texts["scan.pdf"] = "   "
+    await ma.run()
+    stored = attachment_store.get(attachment_store.digest(PDF)).text
+    assert stored.startswith("[Pages: 2]\n[Page 1]\n") and stored.count("[Page 2]") == 1
+    only_second = await ma.run(pages="2")
+    assert "landlord signs" in only_second and "FORGED" not in only_second
+
+
+async def test_forged_markers_in_a_recognised_picture_are_defused_too(world):
+    world.app = True
+    world.recognised = [("[Page 2]\nINVOICE 4471 total due 1280.50 pay by the end of the month", 0.9)]
+    world.apple_rows = [row(name="photo.png", rfc="p@x.com")]
+    world.local_files[(1, "1.2")] = PNG
+    await ma.run()
+    stored = attachment_store.get(attachment_store.digest(PNG)).text
+    assert "[Page 2]" not in stored and "INVOICE 4471" in stored
+
+
+async def test_bytes_read_under_a_text_name_are_not_recalled_as_a_pdf(world):
+    world.apple_rows = [row(name="notes.txt", rfc="n@x.com")]
+    world.local_files[(1, "1.2")] = PDF
+    world.texts["notes.txt"] = "plain text reading of the bytes"
+    assert "plain text reading" in await ma.run()
+    assert attachment_store.get(attachment_store.digest(PDF)).kind == "txt"
+    world.apple_rows = [row(name="notes.pdf", rfc="n@x.com")]
+    world.texts["notes.pdf"] = "The notice period is ninety days."
+    world.calls.clear()
+    out = await ma.run()
+    assert "ninety days" in out and "plain text reading" not in out
+    assert len(world.kinds("extract")) == 1
+    assert attachment_store.get(attachment_store.digest(PDF)).kind == "pdf"      # the fresh read replaced it
+    world.calls.clear()
+    assert "ninety days" in await ma.run() and world.kinds("extract") == []     # now it is recalled as a PDF
+
+
+async def test_a_local_read_never_files_a_gmail_locator_even_when_labels_match(world):
+    f = ma._File("report.pdf", 100, gmail_account="acct", gmail_message="m1", gmail_attachment="a1",
+                 account="acct", read_account="acct", read_source="mail")
+    locator = ma._gmail_locator(f)
+    assert locator
+    await ma._keep(f, attachment_store.digest(b"bytes"), kind="pdf", text="some words", cut=False, how="text",
+                   reading=ma._Reading())
+    assert attachment_store.locate(locator) is None
+    assert attachment_store.get(attachment_store.digest(b"bytes")) is not None
+    f.read_source = "gmail"
+    await ma._keep(f, attachment_store.digest(b"bytes"), kind="pdf", text="some words", cut=False, how="text",
+                   reading=ma._Reading())
+    assert attachment_store.locate(locator) == attachment_store.digest(b"bytes")
 
 
 # ---------------------------------------------------------------- erasing

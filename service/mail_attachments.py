@@ -172,6 +172,7 @@ class _File:
     nth: int = 1           # which file of this name in its email, so repeats keep their own bytes
     account: str = ""      # Apple Mail's own label for the account the saved copy is in
     read_account: str = ""  # the account the bytes were actually read from (set by _fetch)
+    read_source: str = ""   # where the bytes came from: "mail" or "gmail" (set by _fetch)
 
     @property
     def has_gmail(self) -> bool:
@@ -363,7 +364,7 @@ async def _fetch(ctx: _Ctx, email: _Email, f: _File) -> tuple[bytes, str]:
         except bridge.BridgeError as error:
             data, why = None, str(error)
         if data is not None:
-            f.read_account = f.account
+            f.read_account, f.read_source = f.account, "mail"
             return data, "Mail's saved copy"
         if why == "too_large":
             raise _Unreadable(_LOCAL_WHY["too_large"][0].upper() + _LOCAL_WHY["too_large"][1:] + ".")
@@ -387,7 +388,7 @@ async def _fetch(ctx: _Ctx, email: _Email, f: _File) -> tuple[bytes, str]:
                                        gmail_message=message["message_id"],
                                        gmail_attachment=str(item.get("attachment_id") or ""), data=item.get("data"))
     if gmail_file is not None:
-        f.read_account = gmail_file.gmail_account
+        f.read_account, f.read_source = gmail_file.gmail_account, "gmail"
         if gmail_file.data is not None:
             return gmail_file.data, "Gmail"
         if gmail_file.size > ctx.gmail_source.MAX_ATTACHMENT_BYTES:
@@ -519,7 +520,7 @@ async def _keep(f: _File, digest: str, *, kind: str, text: str, cut: bool, how: 
     from service import attachment_store
     account, meta = f.read_account, _meta_of(reading)
     # Only bytes that really came from this Gmail file may be filed under its Gmail locator.
-    locator = _gmail_locator(f) if account and account == f.gmail_account else ""
+    locator = _gmail_locator(f) if f.read_source == "gmail" and account and account == f.gmail_account else ""
 
     def save():
         if attachment_store.put(digest, kind=kind, text=text, cut=cut, note=meta, how=how, account=account) \
@@ -569,6 +570,14 @@ def _exactness(confidence: float) -> str:
     return "exactly on this Mac" if confidence >= _OCR_SURE_CONFIDENCE else "on this Mac; some words may be wrong"
 
 
+def _defuse(text: str) -> str:
+    """Recognised text can contain lines that look like the page markers Wisp itself writes
+    (`[Page 2]`, `[Pages: 99]`, `[Slide 1]`, `[Sheet: x]`); the extractors' own defusing is used."""
+    from service import document_extract
+    fn = getattr(document_extract, "defuse_markers", None) or document_extract._neutralise
+    return fn(text)
+
+
 async def _recognised(ctx: _Ctx, name: str, data: bytes, *, paged: bool) -> _Recognised | None:
     """The app's text recognition of a picture or the pages of a scan.
 
@@ -615,7 +624,7 @@ async def _recognised(ctx: _Ctx, name: str, data: bytes, *, paged: bool) -> _Rec
                 return None
             break
         attempted += 1
-        text = _UNPRINTABLE.sub(" ", str(text or "")).strip()
+        text = _defuse(_UNPRINTABLE.sub(" ", str(text or "")).strip())
         if text and confidence >= _OCR_MIN_CONFIDENCE:
             parts.append((number, text, float(confidence)))
     if sum(len(re.sub(r"\s", "", text)) for _n, text, _c in parts) < _OCR_MIN_CHARS:
@@ -707,6 +716,18 @@ def _structured_text(result) -> tuple[str, str]:
     return "", ""
 
 
+def _expected_kind(f: _File, name: str, suffix: str, family: str) -> str:
+    """The kind a fresh read of this file under this name would be saved as (the same order of
+    checks as `_read_file`); '' for a file that is never saved."""
+    if family == "script" or suffix in _TEXT_NAMES:
+        return "txt"
+    if _is_picture(name, f.mime) or (family == "image" and suffix not in _DOCUMENT_NAMES):
+        return "ocr"
+    if suffix in _DOCUMENT_NAMES or family == "document":
+        return _MACRO_MAP.get(suffix, suffix)
+    return ""
+
+
 async def _read_file(ctx: _Ctx, email: _Email, f: _File, budget: int) -> _Reading:
     """Fetch, inspect and read one file. Never raises."""
     from service import attachment_store, documents, vision
@@ -746,6 +767,8 @@ async def _read_file(ctx: _Ctx, email: _Email, f: _File, budget: int) -> _Readin
             reading.note = "Inspected only. Wisp never opens, unpacks or runs programs, scripts or archives."
             return reading
         stored = await _recall(digest=digest)
+        if stored is not None and stored.kind != _expected_kind(f, name, suffix, family):
+            stored = None       # these bytes were read as another kind of file under another name
         if stored is not None:
             # The same bytes read before (this file again, or another email's copy): no second read.
             # The type and the risk are this file's own, from the inspection above; only the text,
@@ -754,7 +777,7 @@ async def _read_file(ctx: _Ctx, email: _Email, f: _File, budget: int) -> _Readin
             if stored.text.strip() and ENCRYPTED_PDF_REASON in reading.risk:
                 reading.risk = [reason for reason in reading.risk if reason != ENCRYPTED_PDF_REASON]
                 reading.risk_level = reading.risk_level if reading.risk else ""
-            if _gmail_locator(f) and f.read_account == f.gmail_account:
+            if _gmail_locator(f) and f.read_source == "gmail" and f.read_account == f.gmail_account:
                 await _keep(f, digest, kind=stored.kind, text=stored.text, cut=stored.cut, how=stored.how,
                             reading=reading)
             return await _shape(ctx, reading, stored.text, stored.cut, name, stored.kind, budget)
@@ -846,7 +869,9 @@ async def _read_file(ctx: _Ctx, email: _Email, f: _File, budget: int) -> _Readin
                 declared, with_text = _page_facts(large_document, text)
                 if declared and 0 < with_text < declared:
                     reading.partial = True
-                    reading.note = (f"{with_text} of its {declared} pages have text Wisp could read; "
+                    reading.note = (f"Wisp read {with_text} of its {declared} pages; the rest were past the "
+                                    "limit it reads. " if cut else
+                                    f"{with_text} of its {declared} pages have text Wisp could read; "
                                     "the rest are blank or pictures. ")
             return await _settle(ctx, reading, f, digest, text, cut, name, kind, budget)
         raise _Unreadable("Wisp can't read this kind of file."
