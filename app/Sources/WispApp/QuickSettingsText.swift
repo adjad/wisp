@@ -389,3 +389,63 @@ enum RoleModelChoices {
     static let saveProblem = "Wisp couldn't save that model choice, so it's back to the one before. "
         + "Check that Wisp is running, then try again."
 }
+
+/// One standing rule from GET /permissions: an "Always allow" the person tapped on
+/// a card, or an always-block. Settings › Privacy & Access lists them so each can
+/// be seen and removed (service/safety/grants.py keeps them in ~/.moe/grants.json).
+struct StandingRule: Identifiable, Equatable {
+    let tool: String
+    /// The folder, site, command or setting the rule is limited to. Empty means
+    /// every action of that tool.
+    let scope: String
+    let allow: Bool
+
+    var id: String { (allow ? "allow|" : "deny|") + tool + "|" + scope }
+
+    /// "Always allow · every action", or "… · only ~/Documents" for a limited rule.
+    var summary: String {
+        let kind = allow ? "Always allow" : "Always block"
+        let covers = scope.isEmpty ? "every action" : "only " + scope
+        return kind + " · " + covers
+    }
+
+    static let title = "Always allow rules"
+    static let caption = "Answers you gave with Always allow on a card. Wisp doesn't ask before these, "
+        + "in any chat. Remove a rule and Wisp checks that action the usual way again."
+    static let noRules = "No rules. Wisp has nothing set to always allow or always block."
+    static let checking = "Checking…"
+    static let unread = "Couldn't read the rules. Check that Wisp is running."
+    static let removeFailed = "Couldn't remove that rule. Try again."
+
+    /// The reply's `grants`, sorted by tool. Nil when it can't be read, which is
+    /// never shown as "no rules".
+    static func parse(_ data: Data) -> [StandingRule]? {
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let grants = object["grants"] as? [String: Any] else { return nil }
+        var rules: [StandingRule] = []
+        for (tool, value) in grants {
+            guard let entry = value as? [String: Any] else { continue }
+            for row in entry["allow"] as? [[String: Any]] ?? [] {
+                rules.append(StandingRule(tool: tool, scope: row["scope"] as? String ?? "", allow: true))
+            }
+            for row in entry["deny"] as? [[String: Any]] ?? [] {
+                rules.append(StandingRule(tool: tool, scope: row["scope"] as? String ?? "", allow: false))
+            }
+        }
+        return rules.sorted { ($0.tool, $0.scope, $0.id) < ($1.tool, $1.scope, $1.id) }
+    }
+
+    /// DELETE /permissions/{tool}?scope=…, which drops this one rule. The scope is
+    /// always sent, empty too: without it the service drops every rule of the tool.
+    func removeURL(base: URL) -> URL? {
+        let plain = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")
+        guard !tool.isEmpty, let name = tool.addingPercentEncoding(withAllowedCharacters: plain),
+              let value = scope.addingPercentEncoding(withAllowedCharacters: plain),
+              var parts = URLComponents(url: base, resolvingAgainstBaseURL: false) else { return nil }
+        let root = parts.percentEncodedPath.hasSuffix("/")
+            ? String(parts.percentEncodedPath.dropLast()) : parts.percentEncodedPath
+        parts.percentEncodedPath = root + "/permissions/" + name
+        parts.percentEncodedQuery = "scope=" + value
+        return parts.url
+    }
+}

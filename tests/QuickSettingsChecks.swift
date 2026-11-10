@@ -269,4 +269,36 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
     check(parsed?.models == [.init(id: "a", bytes: 5), .init(id: "b", bytes: nil), .init(id: "c", bytes: nil), .init(id: "d", bytes: nil)],
           "only positive measured sizes count")
     check(parsed?.totalBytes == nil && ModelMemory(models: [.init(id: "a", bytes: 5)]).totalBytes == 5, "a total needs every size")
+
+    // Always allow rules (Settings › Privacy & Access): every rule in GET /permissions
+    // is listed with what it covers, and Remove names exactly one rule.
+    let folder = "/Users/sam/C++ notes"
+    let rulesReply = #"{"grants":{"write_file":{"allow":[{"scope":"/Users/sam/C++ notes","granted_at":1.5},{"scope":""}],"deny":[]},"#
+        + #""open_app":{"allow":[],"deny":[{"scope":""}]}},"never_grantable":[],"read_only":false,"full_access":false}"#
+    let blockApp = StandingRule(tool: "open_app", scope: "", allow: false)
+    let anyWrite = StandingRule(tool: "write_file", scope: "", allow: true)
+    let folderWrite = StandingRule(tool: "write_file", scope: folder, allow: true)
+    let listed: [StandingRule]? = StandingRule.parse(Data(rulesReply.utf8))
+    let expectedRules: [StandingRule] = [blockApp, anyWrite, folderWrite]
+    check(listed == expectedRules, "every standing rule is listed, sorted by tool")
+    let unreadRules: [StandingRule]? = StandingRule.parse(Data(#"{"detail":"x"}"#.utf8))
+    check(unreadRules == nil, "an unreadable rules reply is never an empty list")
+    let emptyRules: [StandingRule]? = StandingRule.parse(Data(#"{"grants":{}}"#.utf8))
+    check(emptyRules?.isEmpty == true, "no rules is an empty list")
+    check(anyWrite.summary == "Always allow · every action", "a tool-wide rule says it covers every action")
+    check(folderWrite.summary == "Always allow · only /Users/sam/C++ notes", "a limited rule names its folder")
+    check(blockApp.summary == "Always block · every action", "a block rule is named as one")
+    check(anyWrite.id != folderWrite.id, "two rules of one tool are told apart")
+    let service = URL(string: "http://127.0.0.1:8765")!
+    let removeAny: String? = anyWrite.removeURL(base: service)?.absoluteString
+    check(removeAny == "http://127.0.0.1:8765/permissions/write_file?scope=",
+          "removing a tool-wide rule sends an empty scope, never none: \(removeAny ?? "nil")")
+    let removeFolder: String? = folderWrite.removeURL(base: service)?.absoluteString
+    check(removeFolder == "http://127.0.0.1:8765/permissions/write_file?scope=%2FUsers%2Fsam%2FC%2B%2B%20notes",
+          "a folder's slashes, plus signs and spaces are percent-encoded: \(removeFolder ?? "nil")")
+    let slashBase = URL(string: "http://127.0.0.1:8765/")!
+    let removeSlash: String? = anyWrite.removeURL(base: slashBase)?.absoluteString
+    check(removeSlash == removeAny, "a base with a trailing slash gives the same request")
+    let noTool = StandingRule(tool: "", scope: "", allow: true)
+    check(noTool.removeURL(base: service) == nil, "a rule with no tool has nothing to remove")
 }

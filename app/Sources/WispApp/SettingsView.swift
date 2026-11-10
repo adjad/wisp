@@ -225,6 +225,12 @@ final class SettingsLoader: ObservableObject {
     /// Set when the service applied the last change but couldn't save it, so it
     /// will go back at the next restart (#409 audit: the 500 was never shown).
     @Published private(set) var fullAccessSaveProblem: String?
+    /// The standing Always allow / Always block rules (GET /permissions). Nil
+    /// until read and when a read failed: never shown as "no rules" then.
+    @Published private(set) var standingRules: [StandingRule]?
+    @Published private(set) var standingRulesAsked = false
+    @Published private(set) var standingRulesBusy = false
+    @Published private(set) var standingRulesStatus: String?
     @Published private(set) var saveWhenAway: Bool?
     @Published private(set) var saveWhenAwayPending = false
     /// False when the service says Save power caps nothing on this engine (the
@@ -1185,6 +1191,50 @@ final class SettingsLoader: ObservableObject {
         return confirmed
     }
 
+    func refreshStandingRules() async {
+        guard !standingRulesBusy else { return }
+        standingRulesBusy = true
+        standingRules = await SettingsLoader.standingRulesReply()
+        standingRulesAsked = true
+        standingRulesBusy = false
+    }
+
+    /// Removes one rule, then reads the list again: the service's "ok" only says
+    /// the tool had rules, so the fresh list decides whether this one went.
+    func removeStandingRule(_ rule: StandingRule) {
+        guard !standingRulesBusy else { return }
+        standingRulesBusy = true
+        standingRulesStatus = nil
+        Task {
+            var removed = false
+            if let url = rule.removeURL(base: WispClient.baseURL) {
+                var req = URLRequest(url: url)
+                req.httpMethod = "DELETE"
+                if let (data, response) = try? await URLSession.shared.data(for: req),
+                   let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+                   let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+                    removed = object["ok"] as? Bool == true
+                }
+            }
+            if let now = await SettingsLoader.standingRulesReply() {
+                self.standingRules = now
+                if now.contains(rule) { self.standingRulesStatus = StandingRule.removeFailed }
+            } else if removed {
+                self.standingRules = self.standingRules?.filter { $0 != rule }
+            } else {
+                self.standingRulesStatus = StandingRule.removeFailed
+            }
+            self.standingRulesBusy = false
+        }
+    }
+
+    private static func standingRulesReply() async -> [StandingRule]? {
+        let url = WispClient.baseURL.appendingPathComponent("permissions")
+        guard let (data, response) = try? await URLSession.shared.data(from: url),
+              let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
+        return StandingRule.parse(data)
+    }
+
     #if WISP_NOTCH_QA || WISP_CHAT_QA
     func qaShow(fullAccess: Bool?, briefTimes: WispClient.BriefTimes?,
                 saveWhenAway: Bool? = nil, saveMemory: Bool? = nil) {
@@ -1344,6 +1394,57 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    /// Every standing Always allow / Always block rule, each with Remove, so a
+    /// rule made on a card can be found again and taken back.
+    private var standingRulesSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(StandingRule.title)
+                .font(.system(size: 14, weight: .medium))
+            Text(StandingRule.caption)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let rules = loader.standingRules {
+                if rules.isEmpty {
+                    Text(StandingRule.noRules).font(.caption).foregroundStyle(.secondary)
+                }
+                ForEach(rules) { rule in
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(rule.tool).font(.system(size: 13, design: .monospaced))
+                            Text(rule.summary)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                                .truncationMode(.middle)
+                        }
+                        Spacer(minLength: 8)
+                        Button("Remove") { loader.removeStandingRule(rule) }
+                            .controlSize(.small)
+                            .disabled(loader.standingRulesBusy)
+                            .help("Remove this rule. Wisp checks this action the usual way again.")
+                            .accessibilityLabel("Remove the rule for \(rule.tool), \(rule.summary)")
+                    }
+                }
+            } else if loader.standingRulesBusy || !loader.standingRulesAsked {
+                Text(StandingRule.checking).font(.caption).foregroundStyle(.secondary)
+            } else {
+                HStack(spacing: 10) {
+                    Text(StandingRule.unread).font(.caption).foregroundStyle(.secondary)
+                    Button("Check again") { Task { await loader.refreshStandingRules() } }
+                        .controlSize(.small)
+                }
+            }
+            if let status = loader.standingRulesStatus {
+                Text(status)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .task { await loader.refreshStandingRules() }
     }
 
     private var behaviorLearningLabel: some View {
@@ -1956,6 +2057,8 @@ struct SettingsView: View {
                                 .disabled(loader.fullAccessPending)
                             }
                         }
+
+                        standingRulesSection
 
                         Divider()
 
