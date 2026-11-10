@@ -646,6 +646,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 UserDefaults.standard.set(true, forKey: FirstRunSetup.aboutYouDecidedKey)
                 UserDefaults.standard.set(Date(), forKey: KnowYouSecondOffer.decidedAtKey)
             },
+            // The notch can't be opened during setup, so the window carries why Wisp's
+            // start failed and the same Retry the notch has. A service that answers is
+            // left alone: only its next answer ends the notch's "Starting Wisp…" hold.
+            recordedStartFailure: { [weak self] in self?.model.serviceStartFailure },
+            restartWisp: { [weak self] in
+                guard let self, self.backend.lastReachable != true else { return }
+                self.model.retryService()
+            },
             closeForNow: { [weak self] in
                 // Put aside while the model downloads: the first Brief is owed, so it
                 // is composed the moment the model answers, before Wisp is opened.

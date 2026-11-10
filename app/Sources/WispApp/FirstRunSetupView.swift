@@ -246,7 +246,7 @@ enum FirstRunSetup {
     /// The same line when the model isn't on its way, naming the way out, so a
     /// download that keeps failing (or a service that won't answer) never leaves
     /// a closed Wisp with no next step. Pure.
-    static func heldBackLine(_ footer: FirstRunBrain.Footer) -> String {
+    static func heldBackLine(_ footer: FirstRunBrain.Footer, startFailed: Bool = false) -> String {
         switch footer {
         case .retry, .download:
             return "Wisp opens once its model is ready, and the download isn't running. Choose Model above to start "
@@ -255,8 +255,11 @@ enum FirstRunSetup {
             return "Wisp opens once its model is ready. On the Model step, try again or open the detailed setup "
                 + "to use another app's model."
         case .checkAgain:
-            return "Wisp is slow to start, so it can't open yet. On the Model step, choose Check again, "
-                + "or quit and reopen Wisp."
+            // `startFailed`: Wisp's own start stopped, and the Model step says why.
+            return startFailed
+                ? "Wisp couldn't start, so it can't open yet. The Model step says why; choose Retry there."
+                : "Wisp is slow to start, so it can't open yet. On the Model step, choose Check again, "
+                    + "or quit and reopen Wisp."
         case .ready, .working:
             return heldBackLine
         }
@@ -589,6 +592,36 @@ enum FirstRunBrain: Equatable {
 
     /// The service has had longer than a slow first launch takes.
     static func serviceSlow(waited: TimeInterval) -> Bool { waited >= serviceStartLimit }
+
+    /// Step 1 needs a click while Wisp hasn't answered yet: its start failed (the
+    /// app recorded why, so the card says it at once, with Retry), or it has had
+    /// longer than a slow first launch takes. Pure.
+    static func startNeedsClick(failure: String?, waited: TimeInterval) -> Bool {
+        failure != nil || serviceSlow(waited: waited)
+    }
+
+    /// The card's title once Wisp's start has failed. Its detail is the recorded reason.
+    static let startFailedTitle = "Wisp couldn't start"
+
+    /// The reason when a failed start came with none.
+    static let startFailedFallback = "Wisp stopped while it was starting."
+
+    /// The reason shown for a failed start: the recorded one, or the fallback. Pure.
+    static func startFailure(reason: String?) -> String {
+        guard let reason, !reason.isEmpty else { return startFailedFallback }
+        return reason
+    }
+
+    /// The button that starts Wisp again and then asks it once more: Retry after a
+    /// failed start, Check again after a slow one. Pure.
+    static func startAgainTitle(failed: Bool, checking: Bool) -> String {
+        checking ? "Checking…" : (failed ? "Retry" : "Check again")
+    }
+
+    /// The last step's footer, beside that button. Pure.
+    static func slowStartLine(failed: Bool) -> String {
+        failed ? "Wisp couldn't start" : "Wisp is slow to start"
+    }
 
     /// How long a cold start has taken, once it is long enough to be worth saying.
     static func waited(_ seconds: Int) -> String? {
@@ -1295,9 +1328,16 @@ struct FirstRunSetupView: View {
     /// Closes the window without finishing setup: the model is still on its way,
     /// and Wisp opens once it can answer (FirstRunSetup.gatesUse).
     var closeForNow: () -> Void
+    /// Why Wisp's own start last failed, if it did and nothing has answered since
+    /// (the app's record of it), read when the window opens.
+    var recordedStartFailure: () -> String?
+    /// Starts Wisp again after a failed or slow start.
+    var restartWisp: () -> Void
     /// When a click on the notch, the menu bar icon or a shortcut was held back
     /// while the model downloads, so the window says why it came forward.
     @State private var heldBackAt: Date?
+    /// Wisp's start failed while nothing had answered yet: step 1 says why, with Retry.
+    @State private var startFailure: String?
 
     init(setup: SetupGuideModel, knowYou: KnowYouModel, google: GoogleAccountModel,
          initialStep: Step = .brain,
@@ -1307,9 +1347,12 @@ struct FirstRunSetupView: View {
          stepChanged: @escaping (Step) -> Void = { _ in },
          askKeyRegistered: Bool = true, searchKeyRegistered: Bool = true, voiceKeyRegistered: Bool = true,
          setupDone: Bool = false, aboutYouDecided: @escaping () -> Void = {}, qaFixture: Bool = false,
+         recordedStartFailure: @escaping () -> String? = { nil }, restartWisp: @escaping () -> Void = {},
          closeForNow: @escaping () -> Void = {}) {
         self.setup = setup
         self.closeForNow = closeForNow
+        self.recordedStartFailure = recordedStartFailure
+        self.restartWisp = restartWisp
         self.setupDone = setupDone
         self.aboutYouDecided = aboutYouDecided
         self.qaFixture = qaFixture
@@ -1379,6 +1422,8 @@ struct FirstRunSetupView: View {
             // The search window belongs to the whole look for their oMLX, not to one
             // stage of it: ending it when the card changes would restart it forever.
             if setup.status?.usesOwnOmlx != true { connectingSince = nil }
+            // Wisp answered, so an earlier failed start is behind it.
+            if brain != .checking { startFailure = nil }
             if setup.busy == nil, setup.messageIsError {
                 setup.message = nil
                 setup.messageIsError = false
@@ -1386,6 +1431,8 @@ struct FirstRunSetupView: View {
         }
         .onAppear {
             drive(brain)
+            // A start that failed before this window opened (or reopened) is said here too.
+            if brain == .checking { startFailure = recordedStartFailure() }
             OnboardingTimeline.record("window opened at \(step)")
             // A window that opens on a model already ready (or stuck) never sees the
             // stage change that records it.
@@ -1417,6 +1464,13 @@ struct FirstRunSetupView: View {
         .onReceive(NotificationCenter.default.publisher(for: .wispAskHotkeyPressed)) { _ in
             if !askKeyPressed { OnboardingTimeline.record("ask shortcut worked") }
             askKeyPressed = true
+        }
+        // Wisp's own start stopped before it ever answered: say why at once, with
+        // Retry, instead of minutes of Starting Wisp.
+        .onReceive(NotificationCenter.default.publisher(for: .wispBackendStartFailed)) { note in
+            guard brain == .checking else { return }
+            startFailure = FirstRunBrain.startFailure(reason: note.userInfo?["reason"] as? String)
+            OnboardingTimeline.record("start failed")
         }
         .onDisappear { permissions.stop() }
         // The automatic start of the person's oMLX may have been skipped (a request in
@@ -1636,7 +1690,7 @@ struct FirstRunSetupView: View {
         switch brain {
         case .checking:
             _ = serviceSlowTick
-            return FirstRunBrain.serviceSlow(waited: Date().timeIntervalSince(openedAt))
+            return FirstRunBrain.startNeedsClick(failure: startFailure, waited: Date().timeIntervalSince(openedAt))
         case .startingEngine:
             _ = connectGraceTick
             return FirstRunBrain.startStalled(
@@ -1676,19 +1730,31 @@ struct FirstRunSetupView: View {
         case .detailedSetup:
             Button("Open detailed setup") { openDetailedSetup() }.buttonStyle(FirstRunButtonStyle())
         case .checkAgain:
-            Text("Wisp is slow to start").font(.system(size: 12)).foregroundStyle(Theme.textMuted).lineLimit(1)
+            Text(FirstRunBrain.slowStartLine(failed: startFailure != nil))
+                .font(.system(size: 12)).foregroundStyle(Theme.textMuted).lineLimit(1)
             checkAgainButton()
         }
     }
 
-    /// Asks the service once more when it has been slow to come up. Wisp keeps
-    /// starting it in the background either way. `takesReturn` on step 1's card
-    /// only: on the last step Return stays with Done.
+    /// When Wisp has been slow to come up, or its start failed: one click starts
+    /// it again and then asks it once more. Nothing else restarts a Wisp that
+    /// stopped while starting. `takesReturn` on step 1's card only: on the last
+    /// step Return stays with Done.
     @ViewBuilder private func checkAgainButton(takesReturn: Bool = false) -> some View {
-        let button = Button(setup.loading ? "Checking…" : "Check again") { Task { await setup.refresh() } }
+        let title = FirstRunBrain.startAgainTitle(failed: startFailure != nil, checking: setup.loading)
+        let button = Button(title) { startAgainAndCheck() }
             .buttonStyle(FirstRunButtonStyle(primary: takesReturn))
             .disabled(setup.loading)
         if takesReturn { button.keyboardShortcut(.defaultAction) } else { button }
+    }
+
+    /// Starts Wisp again (a start already under way, or a Wisp that is only slow,
+    /// is left alone), then asks it. A start that fails again says so again.
+    private func startAgainAndCheck() {
+        OnboardingTimeline.record("start retried")
+        startFailure = nil
+        restartWisp()
+        Task { await setup.refresh() }
     }
 
     /// Every Download, Retry, Resume and Download again goes through here, so the
@@ -1785,27 +1851,35 @@ struct FirstRunSetupView: View {
     @ViewBuilder private var modelCard: some View {
         switch brain {
         case .checking:
-            // Wisp's service is still starting: a cold first launch (bundle checks,
-            // first imports) can take minutes, so say so and show the time. Past the
-            // 3 minutes the notch allows too, it stops promising and offers a click.
-            TimelineView(.periodic(from: openedAt, by: 5)) { context in
-                let elapsed = context.date.timeIntervalSince(openedAt)
-                // `stalled` too, so the card and the footer change over together
-                // (Return moves from the footer to Check again at that moment).
-                if stalled || FirstRunBrain.serviceSlow(waited: elapsed) {
-                    OnboardingCard(icon: "hourglass", title: "Wisp is taking longer than usual to start",
-                                   detail: "It keeps trying in the background. Check again in a moment, "
-                                       + "or open the detailed setup to see what's going on.") {
-                        HStack(spacing: 8) {
-                            checkAgainButton(takesReturn: true)
-                            Button("Open detailed setup") { openDetailedSetup() }.buttonStyle(FirstRunButtonStyle())
+            if let failure = startFailure {
+                // Wisp's own start stopped before it answered: the cause, and the one
+                // click that starts it again.
+                OnboardingCard(icon: "exclamationmark.triangle", title: FirstRunBrain.startFailedTitle, detail: failure) {
+                    checkAgainButton(takesReturn: true)
+                }
+            } else {
+                // Wisp's service is still starting: a cold first launch (bundle checks,
+                // first imports) can take minutes, so say so and show the time. Past the
+                // 3 minutes the notch allows too, it stops promising and offers a click.
+                TimelineView(.periodic(from: openedAt, by: 5)) { context in
+                    let elapsed = context.date.timeIntervalSince(openedAt)
+                    // `stalled` too, so the card and the footer change over together
+                    // (Return moves from the footer to Check again at that moment).
+                    if stalled || FirstRunBrain.serviceSlow(waited: elapsed) {
+                        OnboardingCard(icon: "hourglass", title: "Wisp is taking longer than usual to start",
+                                       detail: "Choose Check again to give it another go, "
+                                           + "or open the detailed setup to see what's going on.") {
+                            HStack(spacing: 8) {
+                                checkAgainButton(takesReturn: true)
+                                Button("Open detailed setup") { openDetailedSetup() }.buttonStyle(FirstRunButtonStyle())
+                            }
                         }
-                    }
-                } else {
-                    let waited = FirstRunBrain.waited(Int(elapsed))
-                    OnboardingCard(icon: "hourglass", title: "Starting Wisp…",
-                                   detail: "The first launch can take a few minutes." + (waited.map { " (\($0))" } ?? "")) {
-                        ProgressView().controlSize(.small)
+                    } else {
+                        let waited = FirstRunBrain.waited(Int(elapsed))
+                        OnboardingCard(icon: "hourglass", title: "Starting Wisp…",
+                                       detail: "The first launch can take a few minutes." + (waited.map { " (\($0))" } ?? "")) {
+                            ProgressView().controlSize(.small)
+                        }
                     }
                 }
             }
@@ -2204,7 +2278,8 @@ struct FirstRunSetupView: View {
         if let at = heldBackAt {
             TimelineView(.periodic(from: at, by: 1)) { context in
                 if context.date.timeIntervalSince(at) < FirstRunSetup.heldBackShownFor {
-                    Label(FirstRunSetup.heldBackLine(brain.footer(stalled: stalled)), systemImage: "hourglass")
+                    Label(FirstRunSetup.heldBackLine(brain.footer(stalled: stalled), startFailed: startFailure != nil),
+                          systemImage: "hourglass")
                         .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
                         .padding(.horizontal, 12).padding(.vertical, 8)
                         .frame(maxWidth: .infinity, alignment: .leading)

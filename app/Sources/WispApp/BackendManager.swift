@@ -129,7 +129,9 @@ final class BackendManager {
     /// port (seen at app startup, or answering /mode with no live child of ours). The
     /// manager then neither starts a second backend (which would only fail to bind)
     /// nor treats the stranger's /mode reply as a healthy Wisp.
-    var portConflict = false
+    var portConflict = false {
+        didSet { if portConflict, !oldValue { startBlocked(BackendManager.portInUseReason) } }
+    }
     private let readyURL = URL(string: "http://127.0.0.1:8765/mode")!
 
     func startIfNeeded() async {
@@ -144,9 +146,10 @@ final class BackendManager {
     var backendRootPath: String? { backendRoot()?.resolvingSymlinksInPath().path }
 
     private func startIfNeeded(freshRecovery: Bool) async {
-        guard !portConflict else { return }
+        guard !portConflict else { startBlocked(Self.portInUseReason); return }
         startMonitor()
-        guard !starting, enforceCredentialState() else { return }
+        guard !starting else { return }
+        guard enforceCredentialState() else { startBlocked(Self.credentialsBlockedReason); return }
         // A child that exited (a crash, a failed start) is not a running backend:
         // forget it so Retry launches a fresh one instead of doing nothing.
         process = Self.liveChild(process)
@@ -168,7 +171,9 @@ final class BackendManager {
         case .proceed:
             break
         }
-        guard process == nil, let root = backendRoot(), let python = pythonPath(in: root) else {
+        guard process == nil else { return }
+        guard let root = backendRoot(), let python = pythonPath(in: root) else {
+            startBlocked(Self.missingFilesReason)
             return
         }
 
@@ -207,6 +212,7 @@ final class BackendManager {
                 credentialState.quarantine()
             }
             _ = enforceCredentialState()
+            startBlocked(Self.credentialsBlockedReason)
             return
         }
 
@@ -334,6 +340,21 @@ final class BackendManager {
                                              logTail: Self.logText(at: logURL, after: offset).flatMap(Self.lastLogLine))
         NotificationCenter.default.post(name: .wispBackendStartFailed, object: nil, userInfo: ["reason": reason])
     }
+
+    /// A start that stopped before any process was launched. Said the same way as a
+    /// launch that exited, so the notch and the setup window show why with Retry
+    /// instead of a long "Starting Wisp…". Each reason is a fixed sentence: never a
+    /// credential, a Keychain value or a path from this Mac.
+    private func startBlocked(_ reason: String) {
+        NotificationCenter.default.post(name: .wispBackendStartFailed, object: nil, userInfo: ["reason": reason])
+    }
+
+    nonisolated static let portInUseReason = "Another program is using the port Wisp needs, so Wisp can't start. "
+        + "Quit that program, then quit and reopen Wisp."
+    nonisolated static let credentialsBlockedReason = "Wisp couldn't safely read its own keys, so it didn't start. "
+        + "Retry; if it keeps failing, quit and reopen Wisp."
+    nonisolated static let missingFilesReason = "Some of Wisp's own files are missing, so it can't start. "
+        + "Download Wisp again and replace this copy."
 
     /// The child to keep: nil for one that has exited.
     nonisolated static func liveChild(_ process: Process?) -> Process? {

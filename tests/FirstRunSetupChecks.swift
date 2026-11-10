@@ -506,6 +506,33 @@ struct FirstRunSetupChecks {
         check(FirstRunBrain.checking.footer(stalled: false) == .working("Starting Wisp…")
               && FirstRunBrain.checking.footer(stalled: true) == .checkAgain, "The last step's footer offers Check again too")
 
+        // A start that failed says why at once, with Retry: never 3 minutes of Starting Wisp
+        // and a Check again that restarts nothing.
+        let exited = "Wisp's service stopped while starting (exit status 1). Last log line: ModuleNotFoundError"
+        check(!FirstRunBrain.startNeedsClick(failure: nil, waited: 5)
+              && FirstRunBrain.startNeedsClick(failure: exited, waited: 5)
+              && FirstRunBrain.startNeedsClick(failure: nil, waited: 180),
+              "A failed start needs a click at once; a slow one only after 3 minutes")
+        check(FirstRunBrain.checking.cardTakesReturn(stalled: FirstRunBrain.startNeedsClick(failure: exited, waited: 5))
+              && FirstRunBrain.checking.footer(stalled: FirstRunBrain.startNeedsClick(failure: exited, waited: 5)) == .checkAgain,
+              "A failed start: Return is the card's Retry, and the last step's footer offers it too")
+        check(FirstRunBrain.startFailure(reason: exited) == exited
+              && FirstRunBrain.startFailure(reason: nil) == FirstRunBrain.startFailedFallback
+              && FirstRunBrain.startFailure(reason: "") == FirstRunBrain.startFailedFallback,
+              "The card's detail is the recorded reason, or a plain line when there is none")
+        check(FirstRunBrain.startAgainTitle(failed: true, checking: false) == "Retry"
+              && FirstRunBrain.startAgainTitle(failed: false, checking: false) == "Check again"
+              && FirstRunBrain.startAgainTitle(failed: true, checking: true) == "Checking…",
+              "The button says Retry after a failed start, Check again after a slow one")
+        check(FirstRunBrain.slowStartLine(failed: true) == FirstRunBrain.startFailedTitle
+              && FirstRunBrain.slowStartLine(failed: false) == "Wisp is slow to start",
+              "The last step's footer names a failed start")
+        check(FirstRunSetup.heldBackLine(.checkAgain, startFailed: true).contains("Retry")
+              && !FirstRunSetup.heldBackLine(.checkAgain, startFailed: true).contains("Check again")
+              && FirstRunSetup.heldBackLine(.checkAgain, startFailed: false) == FirstRunSetup.heldBackLine(.checkAgain)
+              && FirstRunSetup.heldBackLine(.retry, startFailed: true) == FirstRunSetup.heldBackLine(.retry),
+              "Held back after a failed start: the line names Retry, and only for that state")
+
         // A stop is a stop: its words name the card's own button.
         if case .failed(_, _, let message, true) = FirstRunBrain.from(status: status(), downloads: [task("cancelled")]) {
             check(message == FirstRunBrain.stoppedMessage && message.contains("Resume") && !message.contains("Retry"),
