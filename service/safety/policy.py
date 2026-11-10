@@ -376,8 +376,24 @@ _PLAIN_SCHEMES = frozenset({"http", "https", "file"})
 _ACTIVE_FILE = re.compile(r"\.(?:command|tool|terminal|webloc|inetloc|fileloc|app|pkg|mpkg|shortcut"
                           r"|workflow)/?[\"']?$", re.IGNORECASE)
 # Apps that act on what they are handed: Terminal runs it, Shortcuts runs it.
-_ACTING_APPS = re.compile(r"^(?:shortcuts|terminal|iterm2?)(?:\.app)?$",
-                          re.IGNORECASE)
+# Matched against the app's own name however the call spells it (see
+# _app_base_name), and by bundle id. Other terminal apps run a file the same way.
+_ACTING_APPS = frozenset({
+    "shortcuts", "terminal", "iterm", "iterm2",
+    "com.apple.shortcuts", "com.apple.terminal", "com.googlecode.iterm2",
+    "warp", "ghostty", "kitty", "alacritty", "wezterm", "hyper",
+})
+
+
+def _app_base_name(name: str) -> str:
+    """The app an `open -a` name points at, for comparing: `open -a` takes a
+    bundle path as readily as a name, so "/System/Applications/Utilities/
+    Terminal.app", "Terminal.app/" and "TERMINAL" are all "terminal"."""
+    name = name.strip().strip("\"'").strip()
+    if "/" in name:                      # also folds "Terminal.app/." and "x/../Terminal.app"
+        name = os.path.normpath(name).rsplit("/", 1)[-1]
+    name = name.strip().casefold()
+    return name[:-4].rstrip() if name.endswith(".app") else name
 
 
 def _open_hit(text: str) -> str | None:
@@ -401,7 +417,7 @@ def app_open_hit(args: dict) -> str | None:
     file that runs or links somewhere when opened."""
     name = str(args.get("name") or "").strip()
     target = str(args.get("target") or "").strip()
-    if _ACTING_APPS.match(name):
+    if _app_base_name(name) in _ACTING_APPS:
         return f"opens {name}, which runs what it is given"
     if (m := re.match(r"\s*([a-z][a-z0-9+.-]*):", target, re.IGNORECASE)) and len(m.group(1)) > 1:
         if m.group(1).lower() not in _PLAIN_SCHEMES:

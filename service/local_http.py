@@ -15,21 +15,32 @@ reach the port two ways:
 This middleware refuses both, on every route and WebSocket, before any
 handler runs:
 
-* A browser request (one carrying `Origin` or any `Sec-Fetch-*` header) must
-  name a loopback Host: 127.0.0.1, localhost or [::1], any port. This applies
-  to reads as well, because rebinding is how a page would read your data.
-* A browser request that can change something (anything but GET, HEAD and
-  OPTIONS) must also be same-origin: its Origin, when present, is exactly
-  http://<that Host>, and Sec-Fetch-Site, when present, is same-origin or none.
-  A WebSocket handshake is held to the same rule: it can push and receive
-  anything, and browsers send Origin on every handshake.
+* Every request and WebSocket handshake, browser or not, must name a loopback
+  Host: 127.0.0.1, localhost or [::1], any port, in exactly one Host header.
+  This applies to reads as well, because rebinding is how a page would read
+  your data. It cannot wait for a browser header: a rebinding page's
+  same-origin GET carries no `Origin`, and browsers leave `Sec-Fetch-*` off
+  requests to a plain-http name that is not loopback, so such a read looks
+  exactly like a native client apart from its Host. The app, the gateway and
+  the CLI all address 127.0.0.1 or localhost, so they pass.
+* A browser request (one carrying `Origin` or any `Sec-Fetch-*` header) that
+  can change something (anything but GET, HEAD and OPTIONS) must also be
+  same-origin: its Origin, when present, is exactly http://<that Host>, and
+  Sec-Fetch-Site, when present, is same-origin or none. A WebSocket handshake
+  is held to the same rule: it can push and receive anything, and browsers
+  send Origin on every handshake.
 
 What it does not do: a local program that is not a browser can send any
 headers it likes, so this is no defence against code already running on the
 Mac (that is what the shell deny in safety/policy.py and the confirmation
-cards are for). It also relies on the browser sending these headers; every
-current Safari, Chrome and Firefox does for POST, and for GET they send
-Sec-Fetch-Site. A browser too old to send either on GET is not covered.
+cards are for). The same-origin rule relies on the browser sending `Origin`
+or `Sec-Fetch-Site` on a request that changes something; every current
+Safari, Chrome and Firefox does.
+
+Tests drive the app in-process under made-up names such as "testserver".
+Those names are not accepted by a running Wisp: `_TEST_HOSTS` is empty unless
+the repository's conftest.py fills it, and nothing reads it from the
+environment, a file or a request.
 """
 from __future__ import annotations
 
@@ -40,6 +51,10 @@ from starlette.websockets import WebSocketClose
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "[::1]"})
 _SAME_ORIGIN_SITES = frozenset({"same-origin", "none"})
+# Extra Host names for in-process test clients. Always empty in a running
+# Wisp; only the repository's conftest.py adds to it. Never fill it from the
+# environment, settings or anything a request carries.
+_TEST_HOSTS: set[str] = set()
 
 
 def _host_name(host: str) -> str:
@@ -47,19 +62,25 @@ def _host_name(host: str) -> str:
     host = host.strip().lower()
     if host.startswith("["):
         end = host.find("]")
-        return host[:end + 1] if end != -1 else host
+        # Only "[v6]" or "[v6]:port"; anything else after the bracket is not ours.
+        if end != -1 and host[end + 1:end + 2] in ("", ":"):
+            return host[:end + 1]
+        return host
     return host.split(":", 1)[0]
 
 
 def browser_request_problem(method: str, headers: Headers) -> str | None:
     """Why a request must be refused, or None. See the module docstring."""
+    # Host first, for every caller: a rebinding page's read carries no browser
+    # header at all, only the attacker's name here.
+    hosts = headers.getlist("host")
+    name = _host_name(hosts[0]) if len(hosts) == 1 else ""
+    if name not in _LOOPBACK_HOSTS and name not in _TEST_HOSTS:
+        return "Wisp only answers web pages served from this Mac's own address"
     origins = headers.getlist("origin")
     sites = headers.getlist("sec-fetch-site")
     if not origins and not any(key.startswith("sec-fetch-") for key in headers.keys()):
-        return None                          # not a browser; Host proves nothing here
-    hosts = headers.getlist("host")
-    if len(hosts) != 1 or _host_name(hosts[0]) not in _LOOPBACK_HOSTS:
-        return "Wisp only answers web pages served from this Mac's own address"
+        return None                          # not a browser, and it named this Mac
     if method.upper() in _SAFE_METHODS:
         return None
     if len(origins) > 1 or (origins and origins[0].strip().lower()

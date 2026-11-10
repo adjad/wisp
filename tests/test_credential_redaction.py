@@ -213,6 +213,53 @@ def test_ordinary_text_is_untouched(text):
     assert scrub(text) == (text, 0)
 
 
+# Words that end in a key prefix ("risk-", "task-", "ask-", "..._chf_") followed
+# by a long slug or file name. None of these is a key.
+SLUGS = [
+    "summarize https://example.com/blog/risk-management-strategies-for-early-stage-startups",
+    "whats in the repo github.com/acme/task-scheduler-for-distributed-background-workers",
+    "open the note called ask-hn-what-are-you-working-on-this-month",
+    "read ~/Documents/risk-assessment-report-final-version-2026-q3.pdf and tell me the top three risks",
+    "open disk-usage-report-for-the-shared-family-drive-october.numbers",
+    "my notes are in ask-ant-man-and-the-wasp-review-second-draft.md",
+    "the old routes are under flask-or-v1-0123456789abcdefghij0123",
+    "export totals_chf_2026q3summaryforthewholefamilybudget.csv",
+    "attach laughs_fromtheschoolplayrecordingpart2final.mov",
+]
+
+
+@pytest.mark.parametrize("text", SLUGS)
+def test_a_slug_or_file_name_ending_in_a_key_prefix_is_not_a_key(text):
+    assert scrub(text) == (text, 0)
+    assert scrub_obj({"path": text}) == {"path": text}
+
+
+def test_a_slug_prompt_is_stored_whole(tmp_path):
+    from service.memory.store import SessionStore
+    sessions = SessionStore(tmp_path / "sessions.db")
+    sid = sessions.create_session()
+    for text in SLUGS:
+        sessions.add_turn(sid, "user", text)
+    assert [row[0] for row in sessions._db.execute("SELECT content FROM turns ORDER BY rowid")] == SLUGS
+
+
+GENERIC_SK = "sk-" + "m4n5p6q7" * 5
+# Everything that can sit right before a key and still leave it a key: the
+# start of the text, plain separators, and separators written as escapes.
+BEFORE_A_KEY = ["", " ", "=", ": ", ":", '"', "'", "`", "(", "[", "<", ",", ";", "/", "-", "_", ".",
+                "\n", "\t", "\\n", "\\t", "\\r", "%3D", "%20", "%3d", "key=", "KEY=", "token is ", "Bearer "]
+
+
+@pytest.mark.parametrize("secret", [OPENROUTER, OPENAI, ANTHROPIC, GENERIC_SK, GITHUB, HF, SLACK])
+@pytest.mark.parametrize("before", BEFORE_A_KEY)
+def test_a_real_key_is_still_redacted_after_any_separator(secret, before):
+    for text in (before + secret, "here you go " + before + secret + " thanks",
+                 json.dumps({"note": "line one\n" + before + secret})):
+        clean, count = scrub(text)
+        assert secret not in clean and PLACEHOLDER in clean and count >= 1, text
+    assert is_key_handoff(scrub("here is my key " + before + secret)[0])
+
+
 def test_scrub_is_idempotent_and_never_raises():
     once, _ = scrub("use " + OPENROUTER)
     assert scrub(once) == (once, 0)
