@@ -134,3 +134,21 @@ def test_a_finished_setup_gets_no_setup_cue_while_the_model_warms_up():
     assert "setupFinished && notReadyFor < warmUpGrace" in _body(
         setup, "static func warmingUp(setupFinished: Bool, notReadyFor: TimeInterval) -> Bool")
 
+
+def test_a_download_frozen_before_the_window_opened_is_still_timed():
+    """a03-setup-onboarding#2: the No progress warning needs a first reading to time
+    from. A download that was already frozen when the window opened never changes
+    the state, so the window takes that reading as it appears, like the notch's row."""
+    setup = _read("FirstRunSetupView.swift")
+    helper = _body(setup, "private func watchProgress(_ state: FirstRunBrain)")
+    assert "progressWatch.observe(doneGb: done, at: Date())" in helper and "progressWatch.reset()" in helper
+    view = setup[setup.index("struct FirstRunSetupView: View"):]
+    assert "watchProgress(brain)" in _body(view, ".onAppear {")
+    assert "watchProgress(next)" in _body(view, ".onChange(of: brain) { _, next in")
+    # One place observes, so the two paths can't drift apart.
+    assert setup.count("progressWatch.observe(") == 1 and setup.count("progressWatch.reset()") == 1
+    # Both cards still read the same watch.
+    assert setup.count("progressWatch.stalled(at: context.date)") == 2
+    notch = _read("NotchSetupDownload.swift")
+    assert ".onAppear { observe(brain) }" in notch
+

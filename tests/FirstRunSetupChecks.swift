@@ -767,6 +767,14 @@ struct FirstRunSetupChecks {
         check(watch.stalled(at: t0.addingTimeInterval(31)), "30 s without a byte: No progress")
         watch.observe(doneGb: 1.2, at: t0.addingTimeInterval(32))
         check(!watch.stalled(at: t0.addingTimeInterval(40)), "Moving again")
+        // The window opened (or reopened) on a download already frozen: the state never
+        // changes again, so the one reading taken at open has to start the clock.
+        var frozenAtOpen = DownloadProgressWatch()
+        frozenAtOpen.observe(doneGb: 2.2, at: t0)
+        check(!frozenAtOpen.stalled(at: t0.addingTimeInterval(10)), "Just opened: not called stalled yet")
+        check(frozenAtOpen.stalled(at: t0.addingTimeInterval(31)), "Frozen since the window opened: No progress after 30 s")
+        frozenAtOpen.reset()
+        check(!frozenAtOpen.stalled(at: t0.addingTimeInterval(120)), "Outside a download the clock is cleared")
 
         // The window names the model plainly; build details stay in the detailed setup.
         check(FirstRunBrain.plainLabel(realLabel) == "Gemma 4 E4B" && FirstRunBrain.plainLabel("Ling") == "Ling",

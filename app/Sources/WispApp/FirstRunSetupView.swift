@@ -1457,11 +1457,7 @@ struct FirstRunSetupView: View {
         .preferredColorScheme(.dark)
         .onChange(of: brain) { _, next in
             drive(next)
-            if case .downloading(_, _, _, let done, _, _) = next {
-                progressWatch.observe(doneGb: done, at: Date())
-            } else {
-                progressWatch.reset()
-            }
+            watchProgress(next)
         }
         // An error belongs to the stage it happened in: a red line from a failed
         // start or download must not sit under the next one.
@@ -1480,6 +1476,9 @@ struct FirstRunSetupView: View {
         }
         .onAppear {
             drive(brain)
+            // A download that was already frozen when the window opened never changes
+            // `brain`, so the No progress clock starts here, as the notch's row does.
+            watchProgress(brain)
             // A start that failed before this window opened (or reopened) is said here too.
             if brain == .checking { startFailure = recordedStartFailure() }
             OnboardingTimeline.record("window opened at \(step)")
@@ -1530,6 +1529,17 @@ struct FirstRunSetupView: View {
 
     private func retryStart() {
         if case .startingEngine = brain { drive(brain) }
+    }
+
+    /// Times the download's bytes (DownloadProgressWatch): on every change of the
+    /// state, and once when the window opens. The clock only restarts when the
+    /// byte count moves, and is cleared outside a download.
+    private func watchProgress(_ state: FirstRunBrain) {
+        if case .downloading(_, _, _, let done, _, _) = state {
+            progressWatch.observe(doneGb: done, at: Date())
+        } else {
+            progressWatch.reset()
+        }
     }
 
     /// The one test question failed: the model is listed, but the window no longer
