@@ -3500,6 +3500,10 @@ def _search_rows(query: str, rows: list[dict]) -> tuple[list[dict], bool]:
     return (search(words), True) if words and words != [phrase] else ([], False)
 
 
+def _subject_key(subject: str | None) -> str:
+    return " ".join((subject or "").split()).casefold()
+
+
 def _header_matches(query: str, found: list[dict], account: str | None,
                     start: float | None, end: float | None) -> tuple[list[dict], float | None]:
     """Mail matching by sender or subject in the header caches, which reach far
@@ -3508,6 +3512,22 @@ def _header_matches(query: str, found: list[dict], account: str | None,
     records = _parse_header_records(_headers) + _history_records()
     oldest = min((r["ts"] for r in records), default=None)
     shown = {_norm_mid(r.get("message_id") or "") for r in found} - {""}
+    # Mail's local index gives an opaque numeric id where the saved body has the
+    # RFC one, so ids alone never match; the same subject, account and minute do.
+    shown_stamps: dict[tuple[str, str], list[float]] = {}
+    for r in found:
+        shown_stamps.setdefault((_subject_key(r.get("subject")), (r.get("account") or "").casefold()),
+                                []).append(float(r.get("ts") or 0))
+
+    def already_shown(record: dict) -> bool:
+        mid = _norm_mid(record.get("message_id") or "")
+        if mid and mid in shown:
+            return True
+        if _rfc_mid(record):
+            return False
+        stamps = shown_stamps.get((_subject_key(record.get("subject")),
+                                   (record.get("account") or "").casefold()), ())
+        return any(abs(ts - record["ts"]) <= 60 for ts in stamps)
 
     def search(needles: list[str]) -> list[dict]:
         hits = []
@@ -3515,7 +3535,7 @@ def _header_matches(query: str, found: list[dict], account: str | None,
             text = f"{record['sender']} {record.get('sender_address', '')} {record['subject']}".casefold()
             if (all(n in text for n in needles)
                     and (start is None or start <= record["ts"] < end)
-                    and _norm_mid(record.get("message_id") or "") not in shown):
+                    and not already_shown(record)):
                 hits.append(record)
         return hits
 
@@ -3535,7 +3555,7 @@ def _mail_line(row: dict) -> str:
     address = row.get("sender_address") or ""
     if address and address not in sender:
         sender = f"{sender} <{address}>"
-    message_id = (row.get("message_id") or "").strip()
+    message_id = (row.get("message_id") or "").strip() if _rfc_mid(row) else ""
     line = f"- {when} | {_clip(sender, 70)} | {_clip(row.get('subject') or '(no subject)', 90)}"
     if message_id and len(message_id) <= 60:
         line += f" | Message-ID: {message_id}"
