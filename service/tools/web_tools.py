@@ -206,8 +206,8 @@ async def _yahoo_get(url: str) -> httpx.Response | str:
         return f"(error reaching Yahoo Finance: {type(e).__name__}: {e})"
 
 
-# A bare ticker: 1-5 letters, optionally one dot-suffix (BRK.B), all caps once
-# stripped/upper()'d. Anything else — "nvidia", "the governor's stock", spaces —
+# A bare ticker: 1-5 letters, optionally one dot-suffix (BRK.B), in capitals AS
+# GIVEN. Anything else — "nvidia", "Ford", "the governor's stock", spaces —
 # needs the search endpoint to resolve to a real symbol first.
 _TICKER_RE = re.compile(r"^[A-Z]{1,5}(\.[A-Z]{1,2})?$")
 
@@ -234,13 +234,33 @@ async def _resolve_symbol(query: str, *,
     through this source". Search resolves "VICOR" to VICR on the first hit —
     the information was one call away the whole time. Callers now retry with
     force_search=True on a 404 (see _chart_404_retry).
+
+    The shortcut is taken only for text already in capitals. A short company
+    name written as a word ("Ford", "Coke") used to be upper-cased into a
+    ticker, and when that happened to be a real symbol of ANOTHER company
+    (FORD is Forward Industries, COKE is Coca-Cola Consolidated) the chart
+    call succeeded, so nothing ever corrected it and the wrong company's price
+    was reported under the name the user said. Words go through search, which
+    also resolves a lower-case ticker ("nvda") on its first hit. If search
+    cannot answer, a word that looks like a ticker still falls back to the
+    upper-cased guess rather than failing; the report names the company from
+    the chart itself in that case (see _quote_label).
     """
     q = (query or "").strip()
     if not q:
         return "(empty symbol)"
     candidate = q.upper()
-    if _TICKER_RE.match(candidate) and not force_search:
+    looks_like_ticker = bool(_TICKER_RE.match(candidate))
+    if looks_like_ticker and q == candidate and not force_search:
         return candidate, candidate
+    searched = await _search_symbol(q)
+    if isinstance(searched, str) and looks_like_ticker and not force_search:
+        return candidate, candidate
+    return searched
+
+
+async def _search_symbol(q: str) -> tuple[str, str] | str:
+    """First equity/ETF hit for `q` on Yahoo's search endpoint, or an error string."""
     r = await _yahoo_get(
         f"https://query1.finance.yahoo.com/v1/finance/search?q={quote(q)}")
     if isinstance(r, str):
@@ -256,6 +276,27 @@ async def _resolve_symbol(query: str, *,
     if not hit or not hit.get("symbol"):
         return f"(no ticker found for {q!r} — check the spelling or give the symbol directly)"
     return hit["symbol"], hit.get("shortname") or hit.get("longname") or q
+
+
+def _quote_label(symbol: str, name: str, result: object) -> str:
+    """`SYMBOL (Company)` for a report header; `result` is one chart result.
+
+    A symbol taken at face value (name == symbol) was never checked against a
+    company, so the name comes from the chart's own meta when it has one. The
+    reader then sees which company the price belongs to even when the model
+    passed a symbol the user never said.
+    """
+    if not name or name == symbol:
+        meta = result.get("meta") if isinstance(result, dict) else None
+        if isinstance(meta, dict):
+            for key in ("shortName", "longName"):
+                value = meta.get(key)
+                if isinstance(value, str) and value.strip():
+                    # One line, bounded, and never the ": (" that marks a
+                    # failed block in get_stock_price.
+                    name = " ".join(value.split())[:80].replace(": (", " (")
+                    break
+    return f"{symbol} ({name})" if name and name != symbol else symbol
 
 
 async def _chart_404_retry(query: str, resolved: tuple[str, str]
@@ -972,7 +1013,7 @@ async def _one_quote(query: str) -> str:
         result = r.json()["chart"]["result"][0]
     except Exception:  # noqa: BLE001
         return f"{symbol}: (quote data missing or in an unexpected shape)"
-    label = f"{symbol} ({name})" if name and name != symbol else symbol
+    label = _quote_label(symbol, name, result)
     result = await _with_previous_close(result, symbol)
     try:
         return _quote_report(result, label)
@@ -1212,7 +1253,7 @@ async def _one_history(query: str, period: str, *, exact_days: int | None = None
     pct = (delta / first * 100) if first else 0.0
     hi_i = max(range(len(closes)), key=lambda i: closes[i])
     lo_i = min(range(len(closes)), key=lambda i: closes[i])
-    label = f"{symbol} ({name})" if name and name != symbol else symbol
+    label = _quote_label(symbol, name, {"meta": meta})
     head = (f"{label} over {period} ({_fmt_day(stamps[0], tz)} to "
             f"{_fmt_day(stamps[-1], tz)}, {ccy}):\n"
             f"  start {first:.2f} -> end {last:.2f}  "
