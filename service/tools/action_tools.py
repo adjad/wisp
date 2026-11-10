@@ -655,6 +655,21 @@ def _card_recipient(to: str, *, want_email: bool = False) -> str:
         return to
 
 
+def _cc_addresses(cc: str) -> tuple[list[str], str]:
+    """A cc field -> (addresses, ""), or ([], explanation). A saved contact's
+    NAME becomes its one email address, exactly as a name in `to` does."""
+    resolved: list[str] = []
+    for r in _split_recipients(cc):
+        if _EMAIL_RE.match(r):
+            resolved.append(r)
+            continue
+        handle, problem = _resolve_recipient(r, want_email=True)
+        if problem:
+            return [], problem
+        resolved.append(handle)
+    return resolved, ""
+
+
 def prepare_send_recipient(tool, args: dict) -> tuple[dict, str | None]:
     """(args, problem): settle a send's recipient once, BEFORE its card.
 
@@ -662,10 +677,10 @@ def prepare_send_recipient(tool, args: dict) -> tuple[dict, str | None]:
     asked to approve a send that can't happen, and is asked for the address
     instead. An email to a name is bound to the one saved address here, so the
     card shows where it really goes and the approved send can't resolve to
-    anything else. A text keeps its name: the tool resolves that same single
-    match again, and both its card and its receipt name the contact that
-    matched, "Mom (…1234)". Only ever refuses or narrows to the one address,
-    and sends nothing.
+    anything else; a name in cc is settled the same way. A text keeps its
+    name: the tool resolves that same single match again, and both its card
+    and its receipt name the contact that matched, "Mom (…1234)". Only ever
+    refuses or narrows to the one address, and sends nothing.
     """
     name = getattr(tool, "name", "")
     # Only the real tools: another tool of that name resolves its own recipient.
@@ -691,8 +706,17 @@ def prepare_send_recipient(tool, args: dict) -> tuple[dict, str | None]:
     if not resolved:
         return args, None  # the tool's own "no recipient" answer covers it
     bound = ", ".join(resolved)
-    return ({**args, "to": bound},
-            _own_address_guard(bound, tool, bool(args.get("confirmed_self_send"))))
+    if (problem := _own_address_guard(bound, tool, bool(args.get("confirmed_self_send")))):
+        return {**args, "to": bound}, problem
+    # A name in cc: refused here when it has no single address, never after the
+    # card was approved, and otherwise shown on the card as the address it is.
+    copies = str(args.get("cc") or "").strip()
+    if not copies:
+        return {**args, "to": bound}, None
+    cc, problem = _cc_addresses(copies)
+    if problem:
+        return args, problem
+    return {**args, "to": bound, "cc": ", ".join(cc)}, None
 
 
 @register(
@@ -749,7 +773,10 @@ async def send_email(to: str, subject: str, body: str, cc: str = "",
             return problem
         resolved.append(handle)
     recipients = resolved
-    bad = [r for r in recipients + _split_recipients(cc) if not _EMAIL_RE.match(r)]
+    copies, problem = _cc_addresses(cc)
+    if problem:
+        return problem
+    bad = [r for r in recipients + copies if not _EMAIL_RE.match(r)]
     if bad:
         return _not_sent((f"(not valid email addresses: {', '.join(bad)}. Don't guess an "
                           "address — look it up in the user's mail or ask them for it.)"),
@@ -763,7 +790,7 @@ async def send_email(to: str, subject: str, body: str, cc: str = "",
                           "email signed '[Your Name]' is worse than one with no sign-off.)"))
 
     res = await app_request("send_email", {
-        "to": recipients, "cc": _split_recipients(cc),
+        "to": recipients, "cc": copies,
         "subject": subject or "", "body": body or "",
     })
     if res.get("ok") is not True or ("status" in res and res["status"] != "succeeded"):

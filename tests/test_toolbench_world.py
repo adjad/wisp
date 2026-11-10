@@ -73,6 +73,8 @@ def test_outbound_receipts_are_classified_as_success(fk):
     mail = fk["schedule_send"](channel="email", to="Dad", when="in 2 hours", body="hi", subject="s")
     assert mail.startswith("Scheduled: email to Dad (dad@example.com)")
     assert status("send_email", fk["send_email"](to="acct@example.com", subject="s", body="b")) == "succeeded"
+    assert status("send_email", fk["send_email"](to="acct@example.com", subject="s", body="b", cc="Dad")) == "succeeded"
+    assert "has no email address saved" in fk["send_email"](to="acct@example.com", subject="s", body="b", cc="Mom")
     assert status("send_message", fk["send_message"](to="Mom", text="on my way")) == "succeeded"
     assert status("reply_to_email", fk["reply_to_email"](message_id="m-1004", body="thanks")) == "succeeded"
     assert status("add_reminder", fk["add_reminder"](title="x", when_iso="2026-10-20T09:00")) == "succeeded"

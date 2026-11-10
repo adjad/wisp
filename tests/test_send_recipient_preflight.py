@@ -507,3 +507,59 @@ def test_several_matches_in_a_chat_still_ask_with_no_card(chat, monkeypatch):
     text = _text(events)
     assert "Ian matches several contacts" in text and text.endswith("?")
     assert chat.store.unresolved_action(chat.sid) is None
+
+
+# ---- A name in cc is settled before the card, like a name in `to` ----
+
+def _cc_turn(chat, cc):
+    family = family_for(registry_specs({"send_email": REAL_TOOLS["send_email"]})[0])
+    chat.script = [[tool_call("get_tool_schemas", families=[family], tools=["send_email"])],
+                   [_email_call(ADDRESS, cc=cc)], "Unused."]
+    return chat.request(f"email {ADDRESS} my plan and cc {cc}", chat.sid)
+
+
+def test_a_saved_name_in_cc_goes_on_the_card_as_its_address(chat):
+    _cc_turn(chat, "One Address")
+    assert len(chat.cards.shown) == 1, "the email still asks, exactly once"
+    card = chat.cards.shown[0]
+    assert card["args"]["cc"] == "one.fixture@example.com"
+    assert f"To: {ADDRESS}\nCc: one.fixture@example.com\nSubject: {SUBJECT}" in card["preview"]
+    assert chat.dispatched == [("send_email", {
+        "to": [ADDRESS], "cc": ["one.fixture@example.com"], "subject": SUBJECT, "body": BODY})]
+
+
+@pytest.mark.parametrize("cc, expected", [
+    ("Phone Only", "Phone Only has no email address saved"),
+    ("Nobody Here", "I don't have a saved contact for Nobody Here"),
+    ("Sam", "Sam matches several contacts"),
+    ("Two Addresses", "several email addresses saved"),
+])
+def test_an_unresolved_name_in_cc_asks_instead_of_showing_a_card(chat, cc, expected):
+    events = _cc_turn(chat, cc)
+    assert chat.cards.shown == [] and chat.dispatched == []  # asked before any approval
+    text = _text(events)
+    assert text.startswith("I haven't sent anything. ") and expected in text and text.endswith("?")
+    assert chat.store.unresolved_action(chat.sid) is None
+
+
+def test_the_preflight_binds_cc_and_leaves_addresses_alone(contacts):
+    tool = REAL_TOOLS["send_email"]
+    base = {"to": ADDRESS, "subject": "s", "body": "b"}
+    bound, problem = action_tools.prepare_send_recipient(tool, {**base, "cc": "Ian; copy.fixture@example.com"})
+    assert problem is None and bound["cc"] == f"{BRIAN}, copy.fixture@example.com" and bound["to"] == ADDRESS
+    # No cc: none is added, and an empty one is left as it came.
+    assert action_tools.prepare_send_recipient(tool, dict(base)) == (base, None)
+    assert action_tools.prepare_send_recipient(tool, {**base, "cc": " "}) == ({**base, "cc": " "}, None)
+    args = {**base, "cc": "Nobody Here"}
+    unchanged, problem = action_tools.prepare_send_recipient(tool, args)
+    assert unchanged is args and problem.needs_recipient and registry.not_sent_receipt(tool, problem)
+
+
+async def test_send_email_resolves_a_cc_name_without_a_card_too(contacts, app_bridge):
+    assert await action_tools.send_email(ADDRESS, "s", "b", cc="Ian") == f"Email sent to {ADDRESS}."
+    assert app_bridge == [("send_email", {"to": [ADDRESS], "cc": [BRIAN], "subject": "s", "body": "b"})]
+    refused = await action_tools.send_email(ADDRESS, "s", "b", cc="Nobody Here")
+    assert refused.needs_recipient and "Nobody Here" in refused.question and len(app_bridge) == 1
+    # Still only addresses reach Mail: a cc that is neither is refused as before.
+    assert (await action_tools.send_email("not an address, x", "s", "b")).needs_recipient
+    assert len(app_bridge) == 1

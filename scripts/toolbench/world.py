@@ -1834,10 +1834,10 @@ def make_fakes(w: World) -> dict:
         resolved, problem = _emails_for(w, to)
         if problem:
             return problem
-        bad = [r for r in _split_recipients(cc) if not _EMAIL_RE.match(r)]
-        if bad:
-            return (f"(not valid email addresses: {', '.join(bad)}. Don't guess an "
-                    "address — look it up in the user's mail or ask them for it.)")
+        if _split_recipients(cc):  # a contact name in cc resolves like one in `to`
+            _copies, problem = _emails_for(w, cc)
+            if problem:
+                return problem
         _record(w, "send_email", {"to": to, "subject": subject, "body": body})
         return f"Email sent to {', '.join(resolved)}."
 
