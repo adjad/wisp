@@ -184,6 +184,44 @@ struct OverlayTransitionChecks {
         check(mask.bounds.size == panel.frame.size, "Compact mask fits after close")
         check(mask.animationKeys()?.isEmpty != false, "No residual animation at rest")
 
+        // A display change (a resolution switch, a monitor plugged in) while an
+        // open or close is in flight cancels the animation but must still end
+        // the step that started it, once, or the notch can never move again.
+        compact = false
+        var machine = OverlayTransition()
+        machine.request(.chat)
+        let cutOpen = machine.next()!
+        var cutOpens = 0
+        panel.dropOpen { cutOpens += 1; machine.finish(cutOpen) }
+        check(panel.isRevealing && cutOpens == 0, "The open is in flight")
+        panel.applyDisplayChange()
+        check(cutOpens == 1 && !panel.isRevealing, "A display change finishes the open it interrupts")
+        check(machine.active == nil && machine.settled == .chat, "The interrupted open's step is settled")
+        check(mask.bounds.size == panel.frame.size && mask.animationKeys()?.isEmpty != false,
+              "The interrupted open is refit and fully shown")
+        machine.request(.bar)
+        let cutClose = machine.next()
+        check(cutClose?.to == .bar, "The notch can still close after a display change")
+        var cutCloses = 0
+        panel.rollUp {
+            cutCloses += 1
+            compact = true
+            if let cutClose { machine.finish(cutClose) }
+        }
+        check(panel.isRevealing && cutCloses == 0, "The close is in flight")
+        panel.applyDisplayChange()
+        check(cutCloses == 1 && !panel.isRevealing, "A display change finishes the close it interrupts")
+        panel.settleToBar()
+        check(machine.active == nil && machine.settled == .bar, "The interrupted close's step is settled")
+        check(mask.bounds.size == panel.frame.size, "Compact mask fits after an interrupted close")
+        // The cancelled animations' own callbacks land later and add nothing.
+        try? await Task.sleep(for: .milliseconds(450))
+        check(cutOpens == 1 && cutCloses == 1, "An interrupted reveal completes exactly once")
+        panel.applyDisplayChange()
+        check(cutOpens == 1 && cutCloses == 1, "A display change at rest completes nothing")
+        machine.request(.chat)
+        check(machine.next()?.to == .chat, "The notch can open again after a display change")
+
         panel.reduceMotion = { true }
         compact = false
         var reducedOpened = false
