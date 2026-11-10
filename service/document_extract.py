@@ -305,6 +305,24 @@ def _docx(data: bytes, limit: int | None = None) -> tuple[str, bool]:
     return out.joined(), False
 
 
+def _cell(value, markers: bool = False) -> str:
+    """One spreadsheet cell on one line, unable to pass for a column break.
+
+    A row is written as one line with " | " between cells, and service/large_document.py reads it
+    back by splitting on exactly those. So a line break inside a cell (Alt+Enter in a notes or
+    address column) becomes a space, as does any other run of blanks, and a `|` standing alone
+    between blanks becomes `/`. A `|` inside a word ("A|B") cannot be taken for a column break and
+    stays.
+    """
+    if value is None:
+        return ""
+    text = str(value)
+    if markers:
+        # Before the lines are joined: a marker at the start of a cell's second line is still one.
+        text = defuse_markers(text)
+    return " ".join("/" if word == "|" else word for word in text.split())
+
+
 def _xlsx(data: bytes, limit: int | None = None, markers: bool = False) -> tuple[str, bool]:
     from openpyxl import load_workbook
     book = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
@@ -314,7 +332,7 @@ def _xlsx(data: bytes, limit: int | None = None, markers: bool = False) -> tuple
             title = " ".join(str(sheet.title).splitlines()) if markers else sheet.title
             out.add(f"[Sheet: {title}]")
             for row in sheet.iter_rows(values_only=True):
-                cells = ["" if v is None else str(v) for v in row]
+                cells = [_cell(v, markers) for v in row]
                 if any(c.strip() for c in cells):
                     line = " | ".join(cells).rstrip(" |")
                     out.add(defuse_markers(line) if markers else line)
