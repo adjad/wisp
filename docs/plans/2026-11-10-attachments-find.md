@@ -197,3 +197,36 @@ Another session's rc3 fixes touch `_fetch`, `_read_file`, `_recognised`, `_finis
 `mail_attachments.py`, `_SIGNATURES`/`_risk`/`ocr_images` in the child, the sent-mailbox lookup
 in `MailMemoryReader.swift`, the bridge's connect wait, and add `attachment_store.accounts()`.
 Keep changes in those functions small and additive so the later merge is easy.
+
+## Wave 2 interfaces (added after wave 1 merged at f22fbf8a)
+
+Owners changed from the list above: W9 is the engine only (`inside`, `across` in
+`mail_attachments.py`); W10a is the save engine; W10b is the whole tool layer for every new
+argument and both new tools.
+
+### H. `service/attachment_save.py` (new, W10a)
+```python
+async def prepare(query=None, name=None, start=None, end=None, account=None,
+                  source="mail", folder=None) -> dict
+    # Finds with mail_attachments.find and settles on ONE file. No bytes are fetched, nothing is written.
+    # {"ok": True, "frozen": {...}, "card": str}  or  {"ok": False, "reason": str, "question": str | ""}
+    # `frozen` is a JSON-safe dict naming exactly one file and the resolved folder: enough to fetch that
+    # file again and to notice it is no longer the same one (source, email time, sender, subject,
+    # Message-ID, file name, which-of-that-name, size, the ids fetch needs, absolute folder, clean save name).
+    # `card` is one line for the confirmation card: what, how big, from whom, where to.
+    # More than one candidate file: ok False with a `question` listing up to 5 cleaned names.
+async def save(frozen: dict) -> dict
+    # Runs after the user said yes. Re-finds the frozen file, fetches, inspects, refuses a `high`
+    # risk file, writes it, quarantines it, shows it in Finder.
+    # {"ok": True, "text": "Saved ... to ...", "path": str}  or
+    # {"ok": False, "wrote": False, "reason": str}   (wrote is always False: a failed save leaves nothing behind)
+```
+
+### I. Tool layer (W10b)
+- `read_email_attachments(..., inside: str | None = None, across: bool = False)` passes through to
+  `mail_attachments.run(..., inside=, across=)`.
+- `read_message_attachments(query, name, period, day, count, question, list_only, pages, sheet, inside)`
+  calls `mail_attachments.run(..., source="messages")`.
+- `save_email_attachment(query, name, period, day, account, source, folder)`: the loop calls
+  `attachment_save.prepare` before the card (as `prepare_reply_args` is called for replies) and puts
+  `frozen` and `card` into the action; on yes the tool calls `attachment_save.save(frozen)`.
