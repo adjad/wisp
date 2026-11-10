@@ -19,6 +19,7 @@ from typing import Awaitable, Callable
 import httpx
 
 from service.inference.omlx_client import (
+    REQUEST_MEMORY_MESSAGE,
     IncompleteStreamError,
     ModelLoadError,
     SanitizedHTTPStatusError,
@@ -74,10 +75,12 @@ def translate(exc: Exception, *, retry_omlx: _RetryHook = None, endpoint_name: s
             body = exc.response.text
         except Exception:  # noqa: BLE001 — body read is best-effort
             pass
-        if "prefill_memory_exceeded" in body:
-            return ("That request needed more memory than Wisp is allowed to "
-                    "use. Try a shorter question or fewer attachments."), detail
-        if "exceeds max context window" in body:
+        if "prefill_memory_exceeded" in body or "prefill_memory_aborted" in body:
+            return REQUEST_MEMORY_MESSAGE, detail
+        # oMLX 0.7.3 says "Prompt is too long: N tokens > M maximum context length" with the
+        # code context_length_exceeded; earlier engines said "exceeds max context window".
+        if any(sign in body for sign in ("exceeds max context window", "maximum context length",
+                                         "context_length_exceeded")):
             # _fit_window (service/memory/context.py) exists specifically to
             # keep every request under the model's window — reaching this
             # branch means it missed a case, not that the user did anything

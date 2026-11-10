@@ -348,6 +348,7 @@ class _Reading:
     extra: str = ""             # readings of files inside this one (each with its own fence), shown after it
     cut: bool = False           # the text kept is only the start of the file (set by `_whole`)
     inspected: bool = False     # only its bytes were inspected (a program or archive): its contents were not read
+    scan: bool = False          # a scan read by recognition: its cover note says which pages have words
 
 
 @dataclass
@@ -390,27 +391,42 @@ class _Unreadable(Exception):
     """A plain reason a file couldn't be read, for the person."""
 
 
+class _GmailRefused(_Unreadable):
+    """Gmail answered with an error of its own (most often a sign-in that ran out), so signing in
+    again may help. A network failure or a timeout is a plain _Unreadable."""
+
+
 async def _gmail_message(ctx: _Ctx, email: _Email) -> dict | None:
     """The email as Gmail has it, found by its Message-ID on each connected account."""
     if not email.rfc or email.rfc.lstrip("-").isdigit():
         return None
     if email.key in ctx.lookups:
         return ctx.lookups[email.key]
+    from service.gmail_source import GmailError
     found = None
-    failed = False
+    failed = refused = False
     for account in ctx.gmail_accounts:
         try:
             found = await asyncio.wait_for(ctx.gmail_source.find_by_rfc_id(account, email.rfc),
                                            max(1.0, min(20.0, ctx.remaining())))
-        except Exception:  # noqa: BLE001 — one account failing must not stop the next
+        except Exception as error:  # noqa: BLE001 — one account failing must not stop the next
             failed = True
+            refused = refused or isinstance(error, GmailError)
             continue
         if found:
             break
     if found is None and failed:
-        raise _Unreadable("Gmail couldn't be reached")
+        raise (_GmailRefused if refused else _Unreadable)("Gmail couldn't be reached")
     ctx.lookups[email.key] = found
     return found
+
+
+def _one_sentence(reasons: list[str]) -> str:
+    """The reasons as one sentence. A later reason starts in lower case unless it starts with a
+    name ("Gmail isn't connected", "Mail's index isn't available")."""
+    def later(reason: str) -> str:
+        return reason if re.match(r"(?:Gmail|Mail)\b", reason) else reason[0].lower() + reason[1:]
+    return ", and ".join(later(r) if i else r[0].upper() + r[1:] for i, r in enumerate(reasons)).rstrip(".") + "."
 
 
 def _same_file(file: _File, others: list[dict]) -> dict | None:
@@ -427,6 +443,8 @@ async def _fetch(ctx: _Ctx, email: _Email, f: _File) -> tuple[bytes, str]:
     if f.source == "messages":
         return await _fetch_messages(ctx, f)
     reasons: list[str] = []
+    sign_in = False         # Gmail itself refused: signing in again may help. Never said for a network failure.
+    unreached = False       # the lookup in Gmail failed, so whether Gmail has the file isn't known
     if f.has_local and f.on_disk:
         try:
             data, _name, why = await bridge.read_attachment(f.rowid, f.attachment_id,
@@ -448,9 +466,11 @@ async def _fetch(ctx: _Ctx, email: _Email, f: _File) -> tuple[bytes, str]:
         if ctx.gmail_accounts:
             try:
                 message = await _gmail_message(ctx, email)
-            except _Unreadable:
+            except _Unreadable as error:
                 message = None
-                reasons.append("Gmail couldn't be reached. Sign in to Gmail again in Settings")
+                unreached = True
+                sign_in = isinstance(error, _GmailRefused)
+                reasons.append("Gmail couldn't be reached")
             if message:
                 item = _same_file(f, message.get("attachments") or [])
                 if item:
@@ -474,16 +494,20 @@ async def _fetch(ctx: _Ctx, email: _Email, f: _File) -> tuple[bytes, str]:
                            else "Gmail couldn't be reached")
         except Exception as error:  # noqa: BLE001 — GmailError and anything odd: a reason, never a crash
             from service.gmail_source import GmailError
-            reasons.append("Gmail couldn't give it up. Sign in to Gmail again in Settings"
-                           if isinstance(error, GmailError) else "Gmail couldn't give it up")
+            sign_in = isinstance(error, GmailError)
+            reasons.append("Gmail couldn't give it up")
     elif not ctx.gmail_accounts:
         reasons.append("Gmail isn't connected")
-    else:
+    elif not unreached:
         reasons.append("Gmail doesn't have it")
-    sentence = ", and ".join(r[0].lower() + r[1:] if i else r[0].upper() + r[1:]
-                             for i, r in enumerate(reasons or ["It couldn't be fetched"])).rstrip(".") + "."
+    sentence = _one_sentence(reasons or ["It couldn't be fetched"])
     if any("downloaded" in r for r in reasons):
-        sentence += " Open the email in Mail to download it, or sign in to Gmail."
+        # Signing in to Gmail is only worth saying when that could get the file.
+        sentence += " Open the email in Mail to download it" + (
+            ", or sign in to Gmail again in Settings." if sign_in
+            else ", or sign in to Gmail." if not ctx.gmail_accounts else ".")
+    elif sign_in:
+        sentence += " Sign in to Gmail again in Settings."
     raise _Unreadable(sentence)
 
 
@@ -644,6 +668,7 @@ class _Recognised(NamedTuple):
     image: str              # the child's small overview JPEG for the vision model; '' when it sent none
     confidence: float       # the lowest page confidence that was accepted
     complete: bool          # every prepared page was tried (none skipped for a failure or for time)
+    capped: bool = False    # the page, pixel or size limit left the file's later pages unprepared
 
 
 def _exactness(confidence: float) -> str:
@@ -667,9 +692,15 @@ async def _recognised(ctx: _Ctx, name: str, data: bytes, *, paged: bool) -> _Rec
     text is `[Pages: total]` then a `[Page n]` block per page that had words."""
     from service import documents
     from service.assistant.hub import hub
+    from service.assistant.outbox import RECONNECT_GRACE_S, app_connected
     global _ocr_resting_until
     ctx.resting = ctx.background and time.monotonic() < _ocr_resting_until
-    if not hub.has_subscribers or ctx.remaining() < 15.0 or time.monotonic() < _ocr_resting_until:
+    if ctx.remaining() < 15.0 or time.monotonic() < _ocr_resting_until:
+        return None
+    # The app's event stream is away for a few seconds every half minute while it reconnects.
+    # Wait that out, but never into the 15 seconds the recognition itself needs.
+    if (not await app_connected(max(0.0, min(RECONNECT_GRACE_S, ctx.remaining() - 15.0)), via=hub)
+            or ctx.remaining() < 15.0):
         return None
     try:
         result = await documents.run_attachment_child("ocr_images", name, data,
@@ -703,9 +734,9 @@ async def _recognised(ctx: _Ctx, name: str, data: bytes, *, paged: bool) -> _Rec
         except (bridge.BridgeError, ValueError) as error:
             # An older app drops the request, and a stalled one never answers: don't make every
             # picture in the next few minutes wait for it. A wait that the overall deadline cut
-            # short says nothing about the app.
-            if not ctx.background and (str(error) == "app_not_connected" or (
-                    str(error) == "recognize_timeout" and page_s >= _OCR_PAGE_S)):
+            # short says nothing about the app; that goes for the wait for it to reconnect too.
+            if not ctx.background and ((str(error) == "app_not_connected" and page_s >= RECONNECT_GRACE_S)
+                    or (str(error) == "recognize_timeout" and page_s >= _OCR_PAGE_S)):
                 _ocr_resting_until = time.monotonic() + _OCR_REST_S
             if not parts:
                 return None
@@ -719,7 +750,8 @@ async def _recognised(ctx: _Ctx, name: str, data: bytes, *, paged: bool) -> _Rec
     joined = (f"[Pages: {total}]\n" + "\n\n".join(f"[Page {n}]\n{text}" for n, text, _c in parts)
               if paged else parts[0][1])
     return _Recognised(joined, len(parts), total, overview, min(c for _n, _t, c in parts),
-                       attempted == len(images) and result.get("stopped_early") is not True)
+                       attempted == len(images) and result.get("stopped_early") is not True,
+                       paged and result.get("capped") is True)
 
 
 async def _describe(ctx: _Ctx, image: str) -> str:
@@ -837,6 +869,7 @@ async def _read_file(ctx: _Ctx, email: _Email, f: _File, budget: int, depth: int
             # are never found by a row id, which a rebuild of Mail's index can hand to another file.)
             _apply_meta(reading, stored.note)
             _recalled_note(reading, stored)
+            reading.scan = stored.how == "recognized"
             reading.where = _SAVED
             await _seen(f, stored.digest)
             return await _shape(ctx, reading, stored.text, stored.cut, name, stored.kind, budget)
@@ -879,6 +912,7 @@ async def _read_file(ctx: _Ctx, email: _Email, f: _File, budget: int, depth: int
             # how it was got and how much of it there is come from the saved reading.
             _apply_cover(reading, stored.note)
             _recalled_note(reading, stored)
+            reading.scan = stored.how == "recognized"
             if stored.text.strip() and ENCRYPTED_PDF_REASON in reading.risk:
                 reading.risk = [reason for reason in reading.risk if reason != ENCRYPTED_PDF_REASON]
                 reading.risk_level = reading.risk_level if reading.risk else ""
@@ -955,6 +989,11 @@ async def _read_file(ctx: _Ctx, email: _Email, f: _File, budget: int, depth: int
                                     f"{total} page{'' if total == 1 else 's'}"
                                     + ("; some words may be wrong" if ";" in exact else "") + ". ")
                     reading.partial = read < total
+                    # A page without words is not a file too long to open: the count above covers it,
+                    # and only a real limit is said to have left the end unread.
+                    reading.scan = True
+                    if recognised.capped:
+                        reading.note += "Its later pages are past the limit Wisp reads, so its end was not searched. "
                     if not recognised.complete:
                         reading.note += "Recognition stopped early, so Wisp will try the rest next time. "
                     return await _settle(ctx, reading, f, digest, recognised.text, read < total, name, "pdf",
@@ -1058,7 +1097,7 @@ async def _finish_text(ctx: _Ctx, reading: _Reading, text: str, cut: bool, name:
 
     condensed = await large_document.condense(text, name=name, kind=kind, question=ctx.question,
                                               budget=budget, chat=chat, passes=ctx.passes,
-                                              extraction_cut=bool(cut))
+                                              extraction_cut=bool(cut) and not reading.scan)
     reading.text = condensed.text
     whole = "" if reading.partial and not part else ("All of that part is shown." if part else "Read the whole file.")
     reading.note += condensed.note or (whole if condensed.complete else "")

@@ -119,6 +119,7 @@ def world(tmp_path):
     _write(home / "engine" / "home" / "state.json", "{}")
     _write(home / "engine" / "memory_guard.json", "{}")
     _write(home / "engine" / "engine.log", "request text")
+    _write(home / "engine" / "engine.log.1", "older request text")
     _write(home / "engine" / "base" / "cache" / "kv-0001.safetensors", "prompt cache")
     _write(home / "engine" / "base" / "logs" / "server.log", "request text")
     _write(home / "provisioning" / "endpoints.json", "{}")
@@ -134,7 +135,7 @@ def test_reset_removes_exactly_the_delete_list_and_keeps_the_model(world):
     assert {p.name for p in home.iterdir()} == DELETED | KEPT
     result = R.erase_home(home, user)
     assert result["failed"] == []
-    assert set(result["removed"]) == DELETED | {"engine/engine.log"}
+    assert set(result["removed"]) == DELETED | {"engine/engine.log", "engine/engine.log.1"}
     assert set(result["kept"]) == KEPT
     assert {p.name for p in home.iterdir()} == KEPT
     assert R.leftover_entries(home) == []
@@ -146,6 +147,7 @@ def test_reset_removes_exactly_the_delete_list_and_keeps_the_model(world):
                  "engine/base/cache/kv-0001.safetensors", "engine/base/logs/server.log"):
         assert (home / kept).exists(), kept
     assert not (home / "engine" / "engine.log").exists()
+    assert not (home / "engine" / "engine.log.1").exists(), "the set-aside log holds request text too"
     # Links were removed as links; what they pointed at outside is untouched.
     assert (world["outside"] / "precious.txt").read_text() == "not Wisp's"
     assert (world["outside"] / "dir" / "inner.txt").read_text() == "not Wisp's either"
@@ -165,7 +167,7 @@ def test_config_keeps_only_the_engine_and_model_choice(world):
 def test_the_keep_list_is_explicit():
     assert R.KEEP_ENTRIES == frozenset(KEPT | {R.MARKER, R.APP_DONE})
     assert R.MARKER == ".reset-pending" and R.APP_DONE == ".reset-pending.app" and R.MAX_ATTEMPTS == 3
-    assert R.ENGINE_DELETE == frozenset({"engine.log"})
+    assert R.ENGINE_DELETE == frozenset({"engine.log", "engine.log.1"})
     assert R.ENGINE_CACHES == ("base/cache", "base/logs")
     assert R.trimmed_config(None) == {} and R.trimmed_config(["x"]) == {}
 
@@ -480,6 +482,40 @@ def test_an_in_flight_gist_cannot_write_its_cache_back_after_the_erase(monkeypat
         loop.close()
     assert not any(p["part"] == "background" for p in problems)
     assert not cache.exists()
+
+
+def test_an_in_flight_summary_fold_cannot_write_after_the_erase(monkeypatch):
+    """A chat's rolling-summary fold outlives its turn (service/main.py), so it is not a
+    request the reset cancels: it is stopped with the background work."""
+    import sys
+    from types import SimpleNamespace
+    from service.assistant import behavior_runtime
+    monkeypatch.setattr(behavior_runtime, "stop_for_reset", lambda: None)
+    folds = {}
+    monkeypatch.setitem(sys.modules, "service.main", SimpleNamespace(_SUMMARY_TASKS=folds))
+    written = []
+
+    async def fold():
+        await asyncio.sleep(0.3)                 # the model is still answering
+        written.append("summary")
+
+    async def go():
+        folds["chat-1"] = asyncio.create_task(fold())
+        await asyncio.sleep(0)
+        app = SimpleNamespace(state=SimpleNamespace(wisp_background_tasks=[], wisp_bridge_link=None))
+        problems = []
+        await R._stop_background(app, problems)
+        assert folds["chat-1"].cancelled()
+        await asyncio.sleep(0.5)                 # longer than the call had left
+        return problems
+
+    loop = asyncio.new_event_loop()
+    try:
+        problems = loop.run_until_complete(go())
+    finally:
+        loop.close()
+    assert not any(p["part"] == "background" for p in problems)
+    assert written == []
 
 
 def test_the_reset_knows_every_scheduler_child():
@@ -1000,6 +1036,28 @@ def test_a_recycled_engine_pid_does_not_keep_the_cache(world, monkeypatch):
     assert R._engine_running(home) is True
     monkeypatch.setattr(R, "_command_of", lambda pid: f"python serve --base-path {home / 'engine' / 'base2'}")
     assert R._engine_running(home) is False
+
+
+def test_a_running_engine_is_known_by_its_start_time_not_its_command(world, monkeypatch):
+    # A running engine renames itself: `ps` shows `omlx-server` and no arguments, so no
+    # --base-path. The start time recorded with its pid is what says it is still that engine.
+    from service.inference.local_peer import process_identity
+    home = world["home"]
+    record = home / "engine" / "engine.pid"
+    pid, _, seconds, micros = process_identity(os.getpid(), os.getuid())
+    monkeypatch.setattr(R, "_command_of", lambda pid: "omlx-server")
+    record.write_text(f"{pid} {seconds} {micros}")
+    assert R._engine_running(home) is True
+    record.write_text(f"{pid} {seconds - 1} {micros}")
+    assert R._engine_running(home) is False, "a recycled pid, whatever it is called"
+    monkeypatch.setattr(R, "_command_of", lambda pid: f"python serve --base-path {home / 'engine' / 'base'}")
+    assert R._engine_running(home) is False, "the start time decides; the command is not asked"
+    monkeypatch.setattr(R, "_command_of", lambda pid: "omlx-server")
+    record.write_text(str(pid))
+    assert R._engine_running(home) is True, "a bare pid named like the engine: keep the cache"
+    for unreadable in ("", "soon", f"{pid} {seconds}", "0", "1", "-4", str(2 ** 40)):
+        record.write_text(unreadable)
+        assert R._engine_running(home) is False, unreadable
 
 
 # --------------------------------------------------------------------------

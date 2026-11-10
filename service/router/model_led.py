@@ -234,10 +234,39 @@ def personal_communication_request(prompt: str) -> bool:
     return bool(_PERSONAL_COMMUNICATION.search(prompt))
 
 
+def _fold_apostrophes(text: str) -> str:
+    # Apple text entry, dictation and paste emit typographic apostrophes; a
+    # prohibition spelled "don\u2019t" is the same prohibition. Double quotes
+    # are left alone: they mark quoted source text.
+    return (text.replace("\u2018", "'").replace("\u2019", "'")
+            .replace("\u02bc", "'").replace("\uff07", "'"))
+
+
 def memory_excluded(prompt: str) -> bool:
     # Quoted instructions are source text, not the user's source prohibition.
     text = re.sub(r'"[^"\n]*"|“[^”\n]*”|`[^`\n]*`', "", prompt)
+    text = _fold_apostrophes(text)
     return bool(re.search(r"\b(?:do\s+not|don't|dont|never)\s+(?:use|read|check|access)\s+(?:my\s+|your\s+|the\s+)?(?:memory|memories)\b|\bwithout\s+(?:using\s+)?memory\b", text, re.I))
+
+
+# A how-to, troubleshooting or advice question that only names a source asks
+# for no record: "How do I share my calendar with Sam?", "why won't my email
+# sync", "my inbox is overflowing, any tips?". The model answered these from
+# knowledge and was then told to call the tool that holds the data. "How many
+# events are on my calendar" and "why is my inbox empty" are still data.
+_SOURCE_HOW_TO = re.compile(
+    r"^\s*(?:how\s+(?:do|can|should|would|could)\s+(?:i|we)\b|how\s+to\b)"
+    r"|^\s*why\s+(?:won'?t|can'?t|doesn'?t|isn'?t|aren'?t|don'?t|does|is|are|do|did)\b"
+    r"(?=.*\b(?:sync\w*|load\w*|open\w*|work\w*|connect\w*|refresh\w*|updat\w*|crash\w*|"
+    r"freez\w*|frozen|slow|broken|respond\w*|log(?:ging)?\s+in|sign(?:ing)?\s+in)\b)"
+    r"|\bany\s+(?:tips|advice|ideas|suggestions)\b", re.I | re.S)
+# "my calendar app keeps crashing" names the app, not what is in it.
+_SOURCE_APP = re.compile(r"\bmy\s+(?:calendar|agenda|messages|e-?mail|inbox)\s+apps?\b", re.I)
+# A named day keeps the obligation whatever the shape: "How can I fit a run
+# into my calendar tomorrow?" needs the calendar read.
+_NAMED_DAY = re.compile(
+    r"\b(?:today|tonight|tomorrow|tommrow|yesterday|this\s+(?:morning|afternoon|evening|week|weekend|month)|"
+    r"next\s+(?:week|month)|(?:mon|tues|wednes|thurs|fri|satur|sun)day)\b", re.I)
 
 
 def fresh_personal_obligation(prompt: str, last_tools: str = "") -> dict:
@@ -247,9 +276,12 @@ def fresh_personal_obligation(prompt: str, last_tools: str = "") -> dict:
         scope = "communications"
         contact = re.search(r"\b(mom|mum|dad|mother|father)\b", prompt, re.I).group(1).lower()
     else:
+        named = _fold_apostrophes(prompt).lower()
+        if not _NAMED_DAY.search(named):
+            named = "" if _SOURCE_HOW_TO.search(named) else _SOURCE_APP.sub(" ", named)
         for phrase, candidate in (("my calendar", "calendar"), ("my agenda", "calendar"),
                                   ("my messages", "messages"), ("my email", "mail"), ("my inbox", "mail")):
-            if phrase in prompt.lower():
+            if phrase in named:
                 scope = candidate
                 break
     day_match = re.search(r"\b(today|tomorrow|tommrow|yesterday)\b", prompt, re.I)
@@ -583,6 +615,8 @@ def continuation_requires_baseline(prompt: str, last_assistant: str | None) -> b
     A calendar follow-up such as 'and tomorrow?' remains model-led. This is a
     conservative negative execution-authority guard, never a family selector.
     """
+    # A bare "Don\u2019t" declines exactly as "Don't" does.
+    prompt = _fold_apostrophes(prompt)
     words = re.findall(r"[a-z']+", prompt.lower())
     if re.fullmatch(r"\s*(?:never\s*mind|forget\s*it|do\s*not|don't)\s*[.!]?\s*", prompt, re.I):
         return True

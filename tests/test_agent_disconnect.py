@@ -747,6 +747,159 @@ def test_a_stop_inside_the_real_summary_never_unsettles_a_finished_turn(monkeypa
     asyncio.run(scenario())
 
 
+def _long_chat(context):
+    """A chat already past its window: the next turn has turns to fold."""
+    sid = main.store.create_session()
+    for index in range(context.KEEP_MESSAGES + context._FOLD_BATCH):
+        main.store.add_turn(sid, "user" if index % 2 == 0 else "assistant", f"earlier {index}")
+    return sid
+
+
+def _real_summary(monkeypatch):
+    from service.memory import context
+    monkeypatch.setattr(main, "maybe_summarize", context.maybe_summarize)
+
+    async def quick(client, model, messages, emit, approver, **kw):
+        await emit({"type": "text", "text": "all done"})
+        await emit({"type": "done"})
+        return "all done"
+    monkeypatch.setattr(main, "run_agent", quick, raising=False)
+    monkeypatch.setattr(main, "_SUMMARY_TASKS", {})
+    return context
+
+
+def test_the_rolling_summary_is_written_after_the_app_closes_at_done(monkeypatch, isolated, tmp_path):
+    """The Swift client closes the stream at `done`. The fold was awaited inside the turn,
+    so that close cancelled it on every turn: no summary was ever stored, the same fold was
+    retried on a growing transcript, and the finished turn was journaled "cancelled". The
+    fold now outlives the response, one per chat at a time."""
+    from service import diagnostics
+    monkeypatch.setattr(diagnostics, "MOE_DIR", tmp_path)
+    context = _real_summary(monkeypatch)
+
+    async def scenario():
+        entered, calls = asyncio.Event(), []
+
+        async def summary_call(*args, **kwargs):
+            calls.append(args[0])
+            entered.set()
+            await asyncio.sleep(0.3)                    # the model is still writing it
+            return {"choices": [{"finish_reason": "stop",
+                                 "message": {"content": "Earlier: planning notes."}}]}
+        main.client.chat = summary_call
+        sid = _long_chat(context)
+        iterator = await start("tell me something", session_id=sid)
+        seen = await read_until(iterator, "done")
+        trace_id = seen[0]["trace_id"]
+        await asyncio.wait_for(entered.wait(), 5)
+        await iterator.aclose()                         # the app stops reading at `done`
+        fold = main._SUMMARY_TASKS[sid]
+        assert not fold.done() and idle.foreground_busy(), "background model work stands down for it"
+        assert not main.store.get_session(sid)["summary"]
+
+        # The next turn ends while that fold still runs: it starts no second one.
+        async for _ in await start("and one more thing", session_id=sid):
+            pass
+        assert main._SUMMARY_TASKS[sid] is fold and len(calls) == 1
+
+        await asyncio.wait_for(fold, 5)
+        await asyncio.sleep(0)
+        session = main.store.get_session(sid)
+        assert session["summary"] == "Earlier: planning notes."
+        assert session["summarized_idx"] > 0
+        assert not main._SUMMARY_TASKS and not idle.foreground_busy()
+        payload = json.loads((tmp_path / "diagnostics" / (trace_id + ".json")).read_text())
+        assert payload["status"] == "completed"
+        assert not any("could not be completed" in text for _, text in turns(sid))
+        assert [text for role, text in turns(sid) if role == "assistant"][-2:] == ["all done", "all done"]
+    asyncio.run(scenario())
+
+
+def test_the_fold_runs_outside_the_finished_turns_context(monkeypatch, isolated):
+    # The turn's trace and power tier end with the turn; the fold sets its own tier.
+    from service import diagnostics
+    from service.inference import power_tier
+    context = _real_summary(monkeypatch)
+
+    async def scenario():
+        seen = []
+
+        async def summary_call(*args, **kwargs):
+            seen.append((diagnostics._current.get(), power_tier.current_tier(), idle.foreground_busy()))
+            return {"choices": [{"finish_reason": "stop", "message": {"content": "Earlier notes."}}]}
+        main.client.chat = summary_call
+        sid = _long_chat(context)
+        async for _ in await start("tell me something", session_id=sid):
+            pass
+        for _ in range(50):
+            if not main._SUMMARY_TASKS:
+                break
+            await asyncio.sleep(0.01)
+        assert seen == [(None, power_tier.CHAT, True)]
+        assert main.store.get_session(sid)["summary"] == "Earlier notes."
+        assert not idle.foreground_busy()
+    asyncio.run(scenario())
+
+
+def test_deleting_a_chat_stops_its_fold(monkeypatch, isolated):
+    context = _real_summary(monkeypatch)
+
+    async def scenario():
+        entered = asyncio.Event()
+
+        async def summary_call(*args, **kwargs):
+            entered.set()
+            await asyncio.sleep(30)
+        main.client.chat = summary_call
+        sid = _long_chat(context)
+        async for _ in await start("tell me something", session_id=sid):
+            pass
+        await asyncio.wait_for(entered.wait(), 5)
+        fold = main._SUMMARY_TASKS[sid]
+        await main.delete_session(sid)
+        await asyncio.wait({fold}, timeout=5)
+        assert fold.cancelled() and not main._SUMMARY_TASKS and not idle.foreground_busy()
+        assert main.store.get_session(sid) is None
+    asyncio.run(scenario())
+
+
+def test_shutdown_stops_the_folds_still_running(monkeypatch, isolated):
+    context = _real_summary(monkeypatch)
+
+    async def scenario():
+        entered = asyncio.Event()
+
+        async def summary_call(*args, **kwargs):
+            entered.set()
+            await asyncio.sleep(30)
+        main.client.chat = summary_call
+        sid = _long_chat(context)
+        async for _ in await start("tell me something", session_id=sid):
+            pass
+        await asyncio.wait_for(entered.wait(), 5)
+        fold = main._SUMMARY_TASKS[sid]
+        await asyncio.wait_for(main._stop_summary_folds(), 5)
+        assert fold.cancelled() and not main._SUMMARY_TASKS and not idle.foreground_busy()
+        assert not main.store.get_session(sid)["summary"]
+    asyncio.run(scenario())
+
+
+def test_no_fold_starts_once_a_reset_has_begun(monkeypatch, isolated):
+    from service import wisp_reset
+    context = _real_summary(monkeypatch)
+    monkeypatch.setattr(wisp_reset.state, "sealed", True)
+
+    async def scenario():
+        main.client.chat = AsyncMock(side_effect=AssertionError("no model call during a reset"))
+        sid = _long_chat(context)
+        async for _ in await start("tell me something", session_id=sid):
+            pass
+        await asyncio.sleep(0.05)
+        assert not main._SUMMARY_TASKS and not idle.foreground_busy()
+        main.client.chat.assert_not_awaited()
+    asyncio.run(scenario())
+
+
 def test_diagnostic_trace_survives_disconnect_and_records_approval_without_contents(isolated, monkeypatch, tmp_path):
     from service import diagnostics
     monkeypatch.setattr(diagnostics, "MOE_DIR", tmp_path)

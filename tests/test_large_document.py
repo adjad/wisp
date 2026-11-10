@@ -283,6 +283,51 @@ def test_a_real_workbook_goes_through_the_whole_path():
     assert "Amount: total -1,275" in table.text and "Acme" in table.text
 
 
+def _workbook_with_awkward_cells() -> bytes:
+    import io
+    from openpyxl import Workbook
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "Sales"
+    sheet.append(["Customer", "Notes", "Amount"])
+    sheet.append(["Dana Reyes", "line one\nline two\nline three", 100])
+    sheet.append(["Omar Field", "12 Mill Lane\r\nFlat 3", 250])
+    sheet.append(["Priya Wells", "either | or", 40])
+    sheet.append(["Sam Ito", "| leading and trailing |", 10])
+    sheet.append(["Lee Park", "code A|B\tkept", 0.5])
+    out = io.BytesIO()
+    book.save(out)
+    return out.getvalue()
+
+
+@pytest.mark.parametrize("large", [True, False])
+def test_line_breaks_and_bars_inside_a_cell_do_not_make_rows_or_columns(large):
+    from service import document_extract as E
+    text, _ = E.extract_text("sales.xlsx", _workbook_with_awkward_cells(), large)
+    assert text.split("\n") == [
+        "[Sheet: Sales]",
+        "Customer | Notes | Amount",
+        "Dana Reyes | line one line two line three | 100",
+        "Omar Field | 12 Mill Lane Flat 3 | 250",
+        "Priya Wells | either / or | 40",
+        "Sam Ito | / leading and trailing / | 10",
+        "Lee Park | code A|B kept | 0.5",
+    ]
+    (sheet,) = L._sheets(text, "xlsx")
+    assert len(sheet.rows) == 6 and all(len(row) == 3 for row in sheet.rows)
+    table = L.condense_table(text, "xlsx", None, 4000)
+    assert 'Sheet "Sales": 5 rows' in table.text and "15 rows" not in table.text
+    assert "Amount: total 400.5" in table.text
+
+
+def test_a_marker_on_a_cells_second_line_is_still_defused_once_the_lines_are_joined():
+    from service import document_extract as E
+    assert E._cell("note\n[Sheet: Evil]", markers=True) == "note [ Sheet: Evil]"
+    assert E._cell("  [Page 3]\n [slide 2]", markers=True) == "[ Page 3] [ slide 2]"
+    assert E._cell("note\n[Sheet: Evil]") == "note [Sheet: Evil]"
+    assert E._cell(None) == "" and E._cell(0) == "0" and E._cell(" \n ") == ""
+
+
 # ---------------------------------------------------------------------- retrieve
 
 def needle_doc(position: float, needle="The termination notice period is ninety days."):

@@ -117,6 +117,115 @@ def test_incomplete_cloud_stream_gets_specific_recovery_message() -> None:
     check("detail keeps the exception class", "IncompleteStreamError" in detail)
 
 
+def _streamed(handler, *, managed: bool = True):
+    """Run one stream_events call against a fake engine; returns the exception it raised."""
+    from service.inference.omlx_client import OMLXClient
+
+    async def run():
+        client = OMLXClient(base_url="http://127.0.0.1:8000" if managed else "https://provider.invalid/v1",
+                            api_key="test")
+        client._client = httpx.AsyncClient(base_url=client.base_url, transport=httpx.MockTransport(handler))
+        try:
+            async for _ in client.stream_events("some-model", [{"role": "user", "content": "hello"}],
+                                                max_tokens=64):
+                pass
+        except Exception as exc:  # noqa: BLE001 - the exception is the result
+            return exc
+        finally:
+            await client._client.aclose()
+        return None
+
+    return asyncio.run(run())
+
+
+def _sse(*chunks: dict) -> httpx.Response:
+    import json
+    body = "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks) + "data: [DONE]\n\n"
+    return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body.encode())
+
+
+# What oMLX 0.7.3 sends (server.py: _prefill_memory_openai_error_body, validate_context_window).
+_GUARD_BODY = {"type": "error", "error": {
+    "message": "Request rejected by the prefill memory guard: private-prompt-words",
+    "type": "invalid_request_error", "code": "prefill_memory_exceeded",
+    "omlx_code": "prefill_memory_exceeded", "estimated_bytes": 9, "limit_bytes": 5}}
+_MEMORY = "That request needed more memory than Wisp is allowed to use."
+
+
+def test_a_streamed_refusal_keeps_the_engines_reason() -> None:
+    print("\nevery Ask turn is streamed: the engine's reason must survive an unread error body")
+    exc = _streamed(lambda request: httpx.Response(400, json=_GUARD_BODY))
+    check("a streamed 400 is still a status error", isinstance(exc, httpx.HTTPStatusError), repr(exc))
+    msg, detail = translate(exc)
+    check("a streamed memory-guard 400 says the request needed more memory", msg.startswith(_MEMORY), msg)
+    check("and suggests a shorter question", "shorter question" in msg)
+    check("the engine's own message is not shown or put in the detail",
+          "private-prompt-words" not in msg + detail)
+
+    overflow = {"error": {"message": "Prompt is too long: 20000 tokens > 16384 maximum context length",
+                          "type": "invalid_request_error", "code": "context_length_exceeded"}}
+    msg, _ = translate(_streamed(lambda request: httpx.Response(400, json=overflow)))
+    check("a streamed context overflow says to start a new chat", "new chat" in msg, msg)
+    msg, _ = translate(_status_error("Prompt is too long: 20000 tokens > 16384 maximum context length"))
+    check("the 0.7.3 overflow wording is recognised on its own", "new chat" in msg, msg)
+    msg, _ = translate(_status_error('{"error": {"code": "context_length_exceeded"}}'))
+    check("and so is its code", "new chat" in msg, msg)
+    msg, _ = translate(_status_error("Prompt too long: exceeds max context window of 16000"))
+    check("the earlier wording still is", "new chat" in msg, msg)
+
+    msg, _ = translate(_streamed(lambda request: httpx.Response(500, json={"error": {"message": "boom"}})))
+    check("any other streamed failure keeps the plain status sentence", "(500)" in msg and "boom" not in msg, msg)
+    big = httpx.Response(400, content=b"x" * 200_000 + b"prefill_memory_exceeded")
+    msg, _ = translate(_streamed(lambda request: big))
+    check("only the start of an oversized error body is kept", "(400)" in msg, msg)
+
+
+def test_a_memory_guard_error_inside_the_stream_is_named() -> None:
+    print("\nthe engine can also report its memory guard inside a 200 stream")
+    from service.inference.omlx_client import ModelMemoryLimitError
+    delta = {"choices": [{"index": 0, "delta": {"content": "Sure"}, "finish_reason": None}]}
+    for code in ("prefill_memory_aborted", "prefill_memory_exceeded"):
+        body = {"type": "error", "error": {"message": "guard: private-prompt-words", "omlx_code": code}}
+        exc = _streamed(lambda request, body=body: _sse(delta, body))
+        check(f"{code} raises the memory-limit error", isinstance(exc, ModelMemoryLimitError), repr(exc))
+        msg, detail = translate(exc)
+        check(f"{code} says the request needed more memory", msg.startswith(_MEMORY), msg)
+        check(f"{code} keeps the engine's message out", "private-prompt-words" not in msg + detail)
+    exc = _streamed(lambda request: _sse(delta, {"error": {"code": "prefill_memory_exceeded"}}))
+    check("the code is read from error.code too", isinstance(exc, ModelMemoryLimitError), repr(exc))
+    exc = _streamed(lambda request: _sse(delta, {"error": {"message": "x"}, "omlx_code": "prefill_memory_aborted"}))
+    check("and from the top level", isinstance(exc, ModelMemoryLimitError), repr(exc))
+
+    exc = _streamed(lambda request: _sse(delta, {"error": {"message": "boom", "type": "server_error"}}))
+    check("any other in-stream error is still an incomplete stream",
+          isinstance(exc, IncompleteStreamError), repr(exc))
+    check("with the no-actions sentence", "no actions" in translate(exc)[0].lower())
+    for odd in ({"error": "prefill_memory_exceeded"}, {"error": {"code": 7}}, {"error": None}):
+        exc = _streamed(lambda request, odd=odd: _sse(odd))
+        check(f"a malformed error chunk {odd} is an incomplete stream",
+              isinstance(exc, IncompleteStreamError), repr(exc))
+
+
+def test_a_remote_providers_error_body_is_never_read() -> None:
+    print("\na remote provider's error text stays out of Wisp")
+    from service.inference import remote_policy
+    from service.inference.omlx_client import SanitizedHTTPStatusError
+    original = remote_policy.remote_only_profile
+    remote_policy.remote_only_profile = lambda: None
+    try:
+        exc = _streamed(lambda request: httpx.Response(400, json=_GUARD_BODY), managed=False)
+        check("a remote 400 is the sanitized status error", isinstance(exc, SanitizedHTTPStatusError), repr(exc))
+        check("with no body at all", exc.response.content == b"")
+        msg, _ = translate(exc, endpoint_name="cloud")
+        check("and the plain status sentence", "(400)" in msg and "memory" not in msg, msg)
+        guard = {"error": {"code": "prefill_memory_exceeded"}}
+        exc = _streamed(lambda request: _sse(guard), managed=False)
+        check("a remote in-stream error is never read for a code",
+              isinstance(exc, IncompleteStreamError), repr(exc))
+    finally:
+        remote_policy.remote_only_profile = original
+
+
 if __name__ == "__main__":
     test_model_load_error_passes_through()
     test_connect_error_fires_retry_hook_without_waiting()
@@ -124,5 +233,8 @@ if __name__ == "__main__":
     test_unrecognized_status_still_gets_a_plain_sentence()
     test_unknown_exception_gets_generic_fallback()
     test_incomplete_cloud_stream_gets_specific_recovery_message()
+    test_a_streamed_refusal_keeps_the_engines_reason()
+    test_a_memory_guard_error_inside_the_stream_is_named()
+    test_a_remote_providers_error_body_is_never_read()
     print(f"\n{PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)

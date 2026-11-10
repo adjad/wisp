@@ -2081,6 +2081,38 @@ print('external venv readable; private home and writes denied')
         self.assertTrue(p.plist(dict(meta, dirty=False))["WispPreviewBuild"])
         self.assertFalse(p.plist(dict(meta, dirty=False, preview=False))["WispPreviewBuild"])
 
+    def test_tag_builds_accept_pre_release_tags_but_publishing_stays_final_only(self):
+        version = p.CONFIG["version"]
+        major, minor, fix = version.split(".")
+        other = f"{major}.{minor}.{int(fix) + 1}"
+        def git(*args):
+            if args[:1] == ("status",):
+                return ""
+            if args == ("rev-parse", "--is-shallow-repository"):
+                return "false"
+            return "1700000000" if args[0] == "show" else "7" if args[0] == "rev-list" else "b" * 40
+        def build(ref):
+            with patch.object(p, "git", side_effect=git), patch.dict(os.environ, {"GITHUB_REF": ref}):
+                return p.metadata(False, None)
+        for ref in ("refs/heads/main", "refs/pull/7/merge", f"refs/tags/v{version}", f"refs/tags/v{version}-rc3",
+                    f"refs/tags/v{version}-dev8", f"refs/tags/v{version}-rc2-beta2", f"refs/tags/v{version}-rc1-beta1"):
+            with self.subTest(ref=ref):
+                self.assertEqual(build(ref)["version"], version)
+        for ref in (f"refs/tags/v{other}", f"refs/tags/v{other}-rc1", f"refs/tags/v{version}-foo",
+                    f"refs/tags/v{version}-rc", f"refs/tags/v{version}-rc3-extra", f"refs/tags/v{version}-beta1",
+                    f"refs/tags/v{version}rc3", f"refs/tags/{version}-rc3", f"refs/tags/v{version}-rc3\n",
+                    "refs/tags/v" + version.replace(".", "x") + "-rc3", f"refs/tags/v{version}.1", "refs/tags/nightly"):
+            with self.subTest(ref=ref), self.assertRaisesRegex(p.BuildError, "Release tag must be"):
+                build(ref)
+        # Both publishing paths still take only the final tag.
+        args = Namespace(allow_dirty=False, test_python=None, offline=False, output=self.root)
+        dispatch = {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "workflow_dispatch",
+                    "GITHUB_REF": f"refs/tags/v{version}-rc3"}
+        with self.assertRaisesRegex(p.BuildError, "exact version tag"):
+            release.preflight(args, dict(dispatch, WISP_RELEASE_APPROVED="true"))
+        with self.assertRaisesRegex(p.BuildError, "exact version tag"):
+            release.ad_hoc_preflight(args, dict(dispatch, WISP_AD_HOC_RELEASE_APPROVED="true"))
+
     def run_preview(self, *flags, uv=None):
         """main() for a preview build with every stage faked; returns (exit code, stages, uv fetch mock)."""
         meta = dict(self.meta, preview=True, tracked_source_sha256="0" * 64)
@@ -2139,6 +2171,176 @@ print('external venv readable; private home and writes denied')
         self.assertEqual(code, 0)
         uv_fetch.assert_not_called()
         self.assertIn(("assemble", None), stages)
+
+    def test_packaging_without_a_google_client_warns_on_stderr(self):
+        import io
+        from contextlib import redirect_stderr
+        client = self.root / "client.json"
+        client.write_text(json.dumps(self.FAKE_GOOGLE_CLIENT))
+        for flags, warned in (((), True), (("--google-oauth-client", str(client)), False)):
+            err = io.StringIO()
+            with self.subTest(flags=flags), redirect_stderr(err), patch.dict(os.environ):
+                os.environ.pop(p.GOOGLE_OAUTH_CLIENT_ENV, None)
+                code, stages, _, _ = self.run_preview(*flags)
+                self.assertEqual(code, 0)
+                self.assertIn("finalize", stages)
+                self.assertEqual("no built-in Google sign-in" in err.getvalue(), warned)
+                self.assertNotIn(self.FAKE_GOOGLE_CLIENT["client_secret"], err.getvalue())
+
+    def run_build(self, command, *flags, fail=None, engine_version="7.7.7", identity_error=None, fetch_error=None):
+        """main() for `all` or `preview` below a temporary dist/, with every stage faked and recorded.
+
+        `fail` is (stage name, exception) for the stage that should fail. Returns (exit code, stages, stderr)."""
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        meta = dict(self.meta, preview=command == "preview", tracked_source_sha256="0" * 64)
+        stages = []
+        def stage(name, result=None):
+            def run(*args, **kwargs):
+                stages.append(name)
+                if fail and fail[0] == name:
+                    raise fail[1]
+                return result
+            return run
+        def assemble(runner, binary, destination, meta, offline, engine_app, **kwargs):
+            stages.append(("assemble", engine_app))
+            (destination / "Wisp.app" / "Contents").mkdir(parents=True)
+            (destination / "Wisp.app" / "Contents" / "partly-written").write_text("fixture")
+            if fail and fail[0] == "assemble":
+                raise fail[1]
+            return destination / "Wisp.app"
+        @contextmanager
+        def fetched_app(cache, offline=False):
+            if fetch_error:
+                raise fetch_error
+            stages.append("mount")
+            try:
+                yield self.root / "mounted" / "oMLX.app"
+            finally:
+                stages.append("unmount")
+        def identity(app, **kwargs):
+            stages.append(("engine-identity", app))
+            if identity_error:
+                raise identity_error
+            return {"version": engine_version, "build": "1"}
+        class FakeRunner:
+            logs = self.root
+            records = []
+            env = {}
+            def run(inner, *args, **kwargs):
+                return 0, self.root / "x.log"
+        err = io.StringIO()
+        with ExitStack() as stack:
+            for target, name, replacement in (
+                    (sys, "argv", ["pipeline.py", command, *flags]), (p, "ROOT", self.root), (p, "Runner", FakeRunner),
+                    (p, "check_locks", lambda: None), (p, "doctor", lambda *a, **k: {}),
+                    (p, "metadata", lambda *a, **k: meta), (p, "source_fingerprint", lambda: "0" * 64),
+                    (p, "git", lambda *a: meta["commit"]),
+                    (p.uv_tool, "verified_archive", lambda *a, **k: Path("pinned-uv.tar.gz")),
+                    (p.engine_build, "fetched_app", fetched_app), (p.engine_build, "verify_source_identity", identity),
+                    (p.engine_build, "load_lock", lambda: {"omlx_version": "7.7.7"}),
+                    (p, "bootstrap", stage("bootstrap", Path(sys.executable))), (p, "simulation_tests", stage("simulation")),
+                    (p, "build_swift", stage("swift", Path("bin"))), (p, "assemble", assemble),
+                    (p, "validate_structure", stage("structure")), (p, "prepare_native_for_signing", stage("prepare")),
+                    (p, "validate_native", stage("native")), (p, "sign_adhoc", stage("sign")),
+                    (p, "relocation_smoke", stage("smoke")), (p, "finalize", stage("finalize")),
+                    (p, "verify_artifacts", stage("verify"))):
+                stack.enter_context(patch.object(target, name, replacement))
+            stack.enter_context(redirect_stderr(err))
+            stack.enter_context(redirect_stdout(io.StringIO()))
+            code = p.main()
+        return code, stages, err.getvalue()
+
+    def test_taken_or_misplaced_output_stops_before_any_test_or_build_step(self):
+        dist = self.root / "dist"
+        taken = dist / "taken"
+        taken.mkdir(parents=True)
+        (taken / "keep.txt").write_text("an earlier build")
+        for command in ("all", "preview"):
+            with self.subTest(command=command):
+                code, stages, err = self.run_build(command, "--output", str(taken))
+                self.assertEqual((code, stages), (1, []))
+                self.assertIn("Output directory already exists", err)
+                self.assertNotIn("Removed", err)
+                self.assertEqual((taken / "keep.txt").read_text(), "an earlier build")
+        for misplaced in (self.root / "elsewhere", dist, dist / ".." / "sideways"):
+            with self.subTest(output=misplaced):
+                code, stages, err = self.run_build("all", "--output", str(misplaced))
+                self.assertEqual((code, stages), (1, []))
+                self.assertIn("below this checkout's dist/", err)
+                self.assertFalse((self.root / "elsewhere").exists() or (self.root / "sideways").exists())
+        # The default name of an earlier attempt at the same commit is caught the same way.
+        default = dist / f"{self.meta['version']}-12-{'a' * 12}"
+        default.mkdir()
+        code, stages, err = self.run_build("all")
+        self.assertEqual((code, stages), (1, []))
+        self.assertTrue(default.is_dir())
+        code, stages, _ = self.run_build("preview")          # its own -preview name is still free
+        self.assertEqual(code, 0)
+        self.assertTrue((dist / (default.name + "-preview")).is_dir())
+
+    def test_engine_source_is_checked_before_any_test_or_build_step(self):
+        app = self.root / "oMLX.app"
+        out = self.root / "dist" / "candidate"
+        code, stages, err = self.run_build("all", "--engine-app", str(app), "--output", str(out), engine_version="7.7.8")
+        self.assertEqual((code, stages), (1, [("engine-identity", app.resolve())]))
+        self.assertIn("oMLX source does not match engine.lock.json (version '7.7.8', the lock pins '7.7.7')", err)
+        code, stages, err = self.run_build("all", "--engine-app", str(app), "--output", str(out),
+                                           identity_error=p.engine_build.EngineBuildError("Source is not signed by the oMLX Team ID"))
+        self.assertEqual((code, len(stages)), (1, 1))
+        self.assertIn("BUILD FAILED: Source is not signed by the oMLX Team ID", err)
+        code, stages, err = self.run_build("all", "--fetch-engine", "--output", str(out),
+                                           fetch_error=p.engine_build.EngineBuildError("The downloaded oMLX release does not match engine-source.json"))
+        self.assertEqual((code, stages), (1, []))
+        self.assertIn("BUILD FAILED: The downloaded oMLX release does not match engine-source.json", err)
+        code, stages, err = self.run_build("all", "--fetch-engine", "--output", str(out), engine_version="7.7.8")
+        self.assertEqual((code, stages[0], stages[-1], len(stages)), (1, "mount", "unmount", 3))
+        self.assertFalse(out.exists())                        # none of these runs got as far as creating it
+        # A good source: opened and checked first, kept mounted through staging, released straight after.
+        mounted = self.root / "mounted" / "oMLX.app"
+        code, stages, _ = self.run_build("all", "--fetch-engine", "--output", str(out))
+        self.assertEqual(code, 0)
+        self.assertEqual(stages, ["mount", ("engine-identity", mounted), "bootstrap", "simulation", "swift",
+                                  ("assemble", mounted), "unmount", "structure", "prepare", "native", "sign", "smoke",
+                                  "finalize", "verify"])
+        code, stages, _ = self.run_build("preview", "--engine-app", str(app), "--output", str(out) + "-2")
+        self.assertEqual(code, 0)
+        self.assertEqual(stages[:4], [("engine-identity", app.resolve()), "bootstrap", "swift", ("assemble", app.resolve())])
+        code, stages, _ = self.run_build("preview", "--output", str(out) + "-3")
+        self.assertEqual(stages[:3], ["bootstrap", "swift", ("assemble", None)])
+        # Packaging only: `test` and `bootstrap` never open the engine source.
+        code, stages, _ = self.run_build("bootstrap", "--fetch-engine")
+        self.assertEqual((code, stages), (0, ["bootstrap"]))
+
+    def test_failed_build_removes_only_the_output_directory_it_created(self):
+        dist = self.root / "dist"
+        earlier = dist / "earlier"
+        earlier.mkdir(parents=True)
+        for name in ("assemble", "structure", "prepare", "native", "sign", "smoke", "finalize"):
+            for error in (p.BuildError(f"{name} failed"), OSError(f"{name} hit a full disk"),
+                          subprocess.CalledProcessError(1, [name])):
+                with self.subTest(stage=name, error=type(error).__name__):
+                    out = dist / "candidate"
+                    code, stages, err = self.run_build("preview", "--fetch-engine", "--output", str(out), fail=(name, error))
+                    self.assertEqual(code, 1)
+                    self.assertFalse(out.exists())
+                    self.assertTrue(earlier.is_dir())
+                    self.assertIn(f"Removed the incomplete output directory: {out.resolve()}", err)
+                    self.assertIn("BUILD FAILED", err)
+                    self.assertIn("unmount", stages)
+        # A step that fails before the directory exists has nothing to remove.
+        for name in ("bootstrap", "simulation", "swift"):
+            with self.subTest(stage=name):
+                out = dist / "candidate"
+                code, stages, err = self.run_build("all", "--output", str(out), fail=(name, p.BuildError(f"{name} failed")))
+                self.assertEqual(code, 1)
+                self.assertNotIn("Removed", err)
+                self.assertFalse(out.exists())
+                self.assertTrue(earlier.is_dir())
+        # The same output name works again straight after a failed attempt.
+        code, stages, _ = self.run_build("preview", "--output", str(dist / "candidate"))
+        self.assertEqual(code, 0)
+        self.assertTrue((dist / "candidate" / "Wisp.app" / "Contents" / "partly-written").is_file())
 
 
 

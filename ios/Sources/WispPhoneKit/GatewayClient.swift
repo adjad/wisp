@@ -81,6 +81,8 @@ public enum GatewayError: Error, Equatable, LocalizedError {
     case backendDown
     case http(Int, String)
     case badResponse
+    /// The Mac has no pending action for the answer: it was already resolved or timed out.
+    case requestEnded
 
     public var errorDescription: String? {
         switch self {
@@ -96,6 +98,8 @@ public enum GatewayError: Error, Equatable, LocalizedError {
             detail.isEmpty ? "Your Mac answered with an error (\(code))." : detail
         case .badResponse:
             "Your Mac sent a response the app couldn't read."
+        case .requestEnded:
+            "That request already ended."
         }
     }
 }
@@ -180,7 +184,11 @@ public actor GatewayClient {
         var body: [String: Any] = ["session_id": request.sessionId, "action_id": request.id,
                                    "approved": approved, "scope": scope.rawValue]
         if !request.requestId.isEmpty { body["request_id"] = request.requestId }
-        _ = try await send(path: "phone/v1/agent/approve", method: "POST", body: body, timeout: 15)
+        let (data, _) = try await send(path: "phone/v1/agent/approve", method: "POST", body: body, timeout: 15)
+        // The Mac answers 200 {"ok": false} when nothing is waiting on this id any more.
+        guard let reply = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let ok = reply["ok"] as? Bool else { throw GatewayError.badResponse }
+        if !ok { throw GatewayError.requestEnded }
     }
 
     /// A request for one model file, against a base proved by a ping made just now, never the
@@ -211,6 +219,11 @@ public actor GatewayClient {
                     request.setValue("Bearer \(self.pairing.token)", forHTTPHeaderField: "Authorization")
                     request.httpBody = try JSONSerialization.data(withJSONObject: body)
                     let (bytes, response) = try await self.session.bytes(for: request)
+                    if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                        // The gateway explains a refusal in its JSON body (a too-long prompt, too many failures).
+                        let refusal = await Self.errorBody(bytes)
+                        try Self.check(response, body: refusal)
+                    }
                     try Self.check(response, body: nil)
                     var current = sessionId ?? ""
                     var finished = false, clean = false
@@ -292,6 +305,20 @@ public actor GatewayClient {
     }
 
     private func forgetBase() { preferredBase = nil }
+
+    /// The first few KB of a non-2xx streamed body: enough for a JSON `detail`, never the whole stream.
+    private static func errorBody(_ bytes: URLSession.AsyncBytes) async -> Data {
+        var data = Data()
+        do {
+            for try await byte in bytes {
+                data.append(byte)
+                if data.count >= 4096 { break }
+            }
+        } catch {
+            // A read that fails here still leaves the status code to report.
+        }
+        return data
+    }
 
     @discardableResult
     private static func check(_ response: URLResponse, body: Data?) throws -> HTTPURLResponse {

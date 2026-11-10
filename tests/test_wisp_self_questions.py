@@ -649,3 +649,9 @@ def test_everything_off_keeps_the_calendar_promise(monkeypatch):
     for text in (wisp_about.privacy(), wisp_about.overview()):
         assert CALENDAR_PROMISE in text
         assert "on my own" not in text
+
+
+def test_quit_and_report_answers_say_right_click_the_menu_bar_icon():
+    for query in ("how do I quit Wisp", "something is broken, how do I report a problem",
+                  "how do I update Wisp"):
+        assert "right-click" in wisp_about.howto(query), query

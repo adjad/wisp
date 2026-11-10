@@ -118,14 +118,28 @@ def test_scheduled_receipt_cannot_prove_immediate_delivery():
     assert verify_delivery_claims('Done — message sent to Alex.', outcomes).startswith('Scheduled:')
 
 
-@pytest.mark.parametrize('claim', ['Message delivered to Dad.', "I've sent the email.", 'Your email was sent to Morgan.'])
+@pytest.mark.parametrize('claim', [
+    'Message delivered to Dad.', "I've sent the email.", 'Your email was sent to Morgan.',
+    'Your email was sent.', '**Your message has been sent** to Morgan.', 'The report was sent to you.',
+    'Your email was sent to Morgan at 3 PM.', 'The email was sent by me.',
+    'Your message is scheduled at 9 PM.', 'The email is queued on Friday.'])
 def test_absent_effect_is_detected_even_on_read_only_route(claim):
     assert 'haven\'t sent' in verify_delivery_claims(claim, [])
 
 
 @pytest.mark.parametrize('text', ['The message was not sent.', 'Should I send the report?',
                                   '> Message sent to Alex.', 'I will send it tomorrow.',
-                                  'I prepared a summary.', 'I scheduled the meeting.'])
+                                  'I prepared a summary.', 'I scheduled the meeting.',
+                                  # What a read found about someone else's message, or when one arrived.
+                                  'The email was sent on Tuesday at 3 PM by Alex.',
+                                  'The report was sent to you by Dana last Friday.',
+                                  'Your message was delivered at 9:02 PM, but Mom hasn\u2019t replied yet.',
+                                  'Alex emailed you Tuesday. The message was sent at 9:14 AM from his work address.',
+                                  '**The email was sent by billing@example.com** on Nov 3.',
+                                  '**The email was sent** on Monday, November 3 by your landlord.',
+                                  'The summary was forwarded from Dana yesterday.',
+                                  'The draft was sent 3 days ago.',
+                                  'The text was delivered, but Mom hasn\u2019t read it.'])
 def test_nonclaims_are_preserved(text):
     assert verify_delivery_claims(text, []) == text
 

@@ -97,3 +97,69 @@ def test_a_replaced_classifier_is_never_answered_from_the_old_memo(monkeypatch):
     assert M.summary_message_rows()
     monkeypatch.setattr(M, "important_message_reason", lambda text: None)
     assert M.summary_message_rows() == []
+
+
+# --- the parsed records are memoized too (l01-perf-backend#2) -------------------
+
+
+def parses(monkeypatch):
+    count = [0]
+    real = M._parse_records_uncached
+
+    def parse(source):
+        count[0] += 1
+        return real(source)
+
+    monkeypatch.setattr(M, "_parse_records_uncached", parse)
+    monkeypatch.setattr(M, "_records_memo", None)
+    return count
+
+
+HANDLE_LINES = [
+    'V2 | 5 | R | chat:20 | +15550100123 | +15550100123: Can you send the report by Friday?',
+    'V2 | 6 | U | chat:21 | Jordan | Me: On my way.',
+]
+
+
+def test_one_today_poll_parses_the_cache_once(monkeypatch):
+    count = parses(monkeypatch)
+    monkeypatch.setattr(M, "_lines", "\n".join(LINES))
+    first = M.summary_message_rows()
+    assert M.summary_message_rows() == first
+    assert M.summary_message_rows(require_read_state=True) == first
+    M.latest_outgoing_by_context()
+    assert count[0] == 1
+
+
+def test_each_read_gets_its_own_list(monkeypatch):
+    parses(monkeypatch)
+    monkeypatch.setattr(M, "_lines", "\n".join(LINES))
+    first = M._parse_records()
+    first.clear()
+    assert len(M._parse_records()) == len(LINES)
+
+
+def test_new_contacts_or_a_new_sync_are_parsed_again(monkeypatch):
+    count = parses(monkeypatch)
+    for name in ("_name_handles", "_birthdays", "_snapshot_generation", "_snapshot_captured_at",
+                 "_publication_expires_monotonic", "_issued_snapshot", "_unavailable_reason", "_unavailable_kind"):
+        monkeypatch.setattr(M, name, getattr(M, name))
+    # cache_messages and cache_contacts also publish and persist: keep both out
+    # of the module state and the disk cache later tests in this process see.
+    from service.publication_authority import Authority
+    monkeypatch.setattr(M, "_publication_authority", Authority("native-messages"))
+    monkeypatch.setattr(M.cache_store, "save", lambda *args, **kwargs: None)
+    monkeypatch.setattr(M, "_lines", "\n".join(HANDLE_LINES))
+    assert M._parse_records()[0][2] == "+15550100123"
+    M.cache_contacts({"+15550100123": "Robin Example"})
+    assert M._parse_records()[0][2] == "Robin Example" and count[0] == 2
+    # An in-place edit of the map counts as a change too.
+    M._contacts[M._norm_handle("+15550100123")] = "Robin Sample"
+    assert M._parse_records()[0][2] == "Robin Sample" and count[0] == 3
+    M.clear_contacts()
+    assert M._records_memo is None, "names from the old map are not kept"
+    assert M._parse_records()[0][2] == "+15550100123" and count[0] == 4
+    M.cache_messages(HANDLE_LINES[1], True)
+    assert M._records_memo is None
+    records = M._parse_records()
+    assert [r[2] for r in records] == ["Jordan"] and count[0] == 5

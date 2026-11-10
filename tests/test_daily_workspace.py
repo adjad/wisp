@@ -367,6 +367,38 @@ def test_communication_items_carry_who_and_when_never_more(cached_sources, monke
     assert sam["replied"] is True
 
 
+def test_a_reply_from_apple_mail_marks_a_non_google_email_answered(cached_sources, monkeypatch):
+    """Apple Mail's Sent rows carry Mail's own account id and no reply header: a later one
+    under the same subject to the person who wrote answers the email; one to anyone else does not."""
+    from types import SimpleNamespace
+    from service.assistant.daily_workspace import collect_evidence
+    from service.proactive import sources
+    store, _, email, _, _ = cached_sources
+    row = dict(ts=NOW - 3600, account="iCloud", account_id="a", message_id="<q1@school.example>", subject="Thesis meeting",
+               sender="Prof. Lee", sender_address="lee@school.example",
+               body="Could we move the thesis meeting to Tuesday?", unread=True)
+    monkeypatch.setattr(email, "raw_email_snapshot", lambda: SimpleNamespace(rows=[row]))
+    monkeypatch.setattr(sources, "sent_rows", lambda: [])
+
+    def native(subject, ts, to):
+        return {"ts": ts, "account": "9F3C2A10-AAAA-BBBB-CCCC-123456789ABC", "subject": subject,
+                "rfc_message_id": f"<n{ts}@mail.example>", "to": [to], "recipients": 1}
+
+    def record(sent):
+        monkeypatch.setattr(sources, "_native_sent", sent)
+        evidence = collect_evidence(store, state(), DAY, ZONE, now=NOW)["email"]
+        [found] = evidence["records"]
+        [item] = run(e={"email": evidence})["attention"]
+        assert item.get("replied") == found.get("replied")
+        return found
+
+    assert "replied" not in record([])
+    assert record([native("Re: Thesis meeting", NOW - 60, "Prof. Lee <LEE@school.example>")])["replied"] is True
+    assert "replied" not in record([native("Re: Thesis meeting", NOW - 60, "someone@else.example")]), "other recipient"
+    assert "replied" not in record([native("Re: Lunch?", NOW - 60, "lee@school.example")]), "other subject"
+    assert "replied" not in record([native("Re: Thesis meeting", NOW - 7200, "lee@school.example")]), "sent before it arrived"
+
+
 @pytest.mark.parametrize("sender,address,shown", [
     ("John Morada <john@example.edu>", "john@example.edu", "John Morada"),
     ('"Morada, John" <john@example.edu>', "", "Morada, John"),

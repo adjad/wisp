@@ -129,6 +129,8 @@ enum SearchModelChecks {
         await explicitRetryCanRecover()
         await unreadablePageKeepsExplanation()
         await emptyGlobalFailureExplainsNoAnswer()
+        await everyLiteralMatchKeepsItsRow()
+        offsetsCountWhatTheBackendCounts()
         print("SearchModel: \(checks) regression checks passed (synthetic transport only)")
     }
 
@@ -345,5 +347,87 @@ enum SearchModelChecks {
         check(!model.errorText.contains("matches are still available"), "empty failure does not promise matches")
         check(!model.busy && !model.answering, "empty failed answer finishes")
         model.reset()
+    }
+
+    static func hit(_ match: String, _ start: Int, _ end: Int) -> [String: Any] {
+        ["match": match, "start": start, "end": end]
+    }
+
+    // Reads rows only: moving the selection would navigate the source app.
+    static func everyLiteralMatchKeepsItsRow() async {
+        let (model, client) = fixture()
+        let request = await start(model, client, query: "amber")
+        // Three real matches a few characters apart, as in a list of names.
+        let literal: [[String: Any]] = [hit("amber", 100, 105), hit("amber", 118, 123),
+                                        hit("amber", 123, 128)]
+        client.emit(request, "literal", ["results": literal])
+        await settle()
+        check(model.rows.map(\.start) == [100, 118, 123], "close literal matches each keep a row")
+
+        // A passage around matches already shown is the same hit; one elsewhere is new.
+        let lexical: [[String: Any]] = [hit("amber stone", 96, 140), hit("resin", 400, 460)]
+        client.emit(request, "lexical", ["results": lexical])
+        await settle()
+        check(model.rows.map(\.start) == [100, 118, 123, 400],
+              "a passage overlapping a literal match is merged into it")
+
+        let semantic: [[String: Any]] = [hit("fossil resin", 402, 470), hit("tree sap", 430, 500),
+                                         hit("jewellery", 900, 960), hit("beads", 960, 1000)]
+        client.emit(request, "semantic", ["results": semantic])
+        await settle()
+        check(model.rows.map(\.start) == [100, 118, 123, 400, 900, 960],
+              "passages overlapping one already shown are merged, the rest are kept")
+        check(model.rows.map(\.kind) == ["literal", "literal", "literal", "lexical", "semantic", "semantic"],
+              "literal rows stay first, then lexical, then semantic")
+
+        // Rows follow the tiers as they stand: nothing stays hidden by a row that left.
+        client.emit(request, "lexical", ["results": [[String: Any]]()])
+        await settle()
+        check(model.rows.map(\.start) == [100, 118, 123, 402, 900, 960],
+              "with the lexical row gone the passage it hid shows, after the literal rows")
+        client.finish(request)
+        await settle()
+        model.reset()
+    }
+
+    // A result's offset counts Unicode scalars, as the backend's Python strings
+    // do. Selecting it in the source app counts UTF-16 units. The numbers here
+    // are Python's own: len() and len(s.encode("utf-16-le")) // 2.
+    static func offsetsCountWhatTheBackendCounts() {
+        let first = "Guest list"
+        // A family, " from ", a flag, " at the cafe" with a combining accent, " by noon".
+        let second = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} from \u{1F1E8}\u{1F1E6} at the cafe\u{301} by noon"
+        check(second.count < SearchOffset.length(second), "Swift counts fewer characters than Python does")
+        check(SearchOffset.length(first) == 10 && SearchOffset.length(second) == 34,
+              "lengths are Python's len()")
+
+        // The page as the reader joins it: each element, then a newline.
+        var text = ""
+        var ranges: [Range<Int>] = []
+        for piece in [first, second] {
+            let start = SearchOffset.length(text)
+            ranges.append(start..<(start + SearchOffset.length(piece)))
+            text += piece + "\n"
+        }
+        check(ranges == [0..<10, 11..<45] && SearchOffset.length(text) == 46,
+              "element ranges are Python offsets into the joined text")
+
+        // Python finds "noon" at 41: inside the second element, 30 scalars in.
+        check(ranges[1].contains(41) && !ranges[0].contains(41), "the result lands on its own element")
+        let noon = SearchOffset.utf16Range(in: second, offset: 41 - ranges[1].lowerBound, length: 4)
+        check(noon.location == 35 && noon.length == 4, "the selection starts 35 UTF-16 units in")
+        check((second as NSString).substring(with: NSRange(location: noon.location, length: noon.length)) == "noon",
+              "and selects the match itself")
+        let flag = SearchOffset.utf16Range(in: second, offset: 11, length: 2)
+        check(flag.location == 14 && flag.length == 4, "a flag is two scalars and four UTF-16 units")
+
+        let plain = SearchOffset.utf16Range(in: first, offset: 6, length: 4)
+        check(plain.location == 6 && plain.length == 4, "plain text is unchanged")
+        let tail = SearchOffset.utf16Range(in: second, offset: 30, length: 400)
+        check(tail.location == 35 && tail.length == 4, "a range is cut at the end of the text")
+        let past = SearchOffset.utf16Range(in: second, offset: 400, length: 4)
+        check(past.location == 39 && past.length == 0, "an offset past the end selects nothing")
+        let negative = SearchOffset.utf16Range(in: first, offset: -3, length: -1)
+        check(negative.location == 0 && negative.length == 0, "bad numbers select nothing")
     }
 }

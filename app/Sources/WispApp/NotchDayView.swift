@@ -655,7 +655,10 @@ struct NotchDayView: View {
     /// The time column in words, for VoiceOver.
     private func spokenTime(_ item: DayItem) -> String {
         if item.style == .overdue { return "overdue" }
-        if let due = item.due { return "due " + today.clock(due) }
+        if let due = item.due {
+            // A date-only reminder has no time to read out.
+            return item.allDay ? (today.isShowingCurrentDay ? "due today" : "due that day") : "due " + today.clock(due)
+        }
         let begins = today.clock(item.begins ?? item.start)
         return item.ends.map { "\(begins) to \(today.clock($0))" } ?? "at " + begins
     }
@@ -1105,7 +1108,9 @@ extension TodayModel {
 extension TodayPlan {
     /// The workspace's "Needs you" items, for the timeline and the badge.
     var dayNeeds: [DayNeedInput] {
-        (workspace?.attention ?? []).map { DayNeedInput(id: $0.id, title: $0.title, source: $0.source, due: $0.due_ts) }
+        (workspace?.attention ?? []).map {
+            DayNeedInput(id: $0.id, title: $0.title, source: $0.source, due: $0.due_ts, allDay: $0.all_day == true)
+        }
     }
 }
 

@@ -88,9 +88,12 @@ struct MailMemorySection: View {
     }
 }
 
-/// Settings → Privacy & Access: whether mail suggestions run, and whether the Brief shows them.
+/// Settings → Privacy & Access: whether mail suggestions run, whether the Brief shows
+/// them, whether Wisp learns facts from mail, and the button that forgets those facts
+/// and the text kept from attachments.
 struct MailMemorySettingsRow: View {
     @ObservedObject var memory: MailMemoryModel = MailMemoryCards.model
+    @State private var confirmForgetMail = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -120,8 +123,47 @@ struct MailMemorySettingsRow: View {
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            factsControls.padding(.top, 6)
         }
         .task { await memory.refresh() }
+    }
+
+    /// The facts switch and "Forget what Wisp learned from mail…". The switch stays
+    /// disabled until the service has said whether it is on; forgetting asks first.
+    private var factsControls: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(isOn: Binding(
+                get: { memory.factsEnabled == true },
+                set: { value in Task { await memory.setFacts(value) } })) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(MailFactsText.title).font(.system(size: 14, weight: .medium))
+                    Text(MailFactsText.caption(known: memory.known, enabled: memory.factsEnabled, mode: memory.mode))
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .toggleStyle(.switch)
+            .disabled(!memory.known || memory.factsEnabled == nil || memory.factsChanging)
+            HStack(spacing: 10) {
+                Button(MailFactsText.forgetButton, role: .destructive) { confirmForgetMail = true }
+                    .disabled(!memory.known || memory.factsChanging)
+                    .help(MailFactsText.forgetHelp)
+                if let status = memory.factsStatus {
+                    Text(status).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .confirmationDialog(MailFactsText.forgetTitle, isPresented: $confirmForgetMail, titleVisibility: .visible) {
+            Button("Forget", role: .destructive) {
+                // The chats that read that mail may still be held for the debug log: drop them too.
+                NotificationCenter.default.post(name: .wispForgetChatDebugArchive, object: nil)
+                Task { await memory.forgetFromMail() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(MailFactsText.forgetMessage)
+        }
     }
 
     private var caption: String {

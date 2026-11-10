@@ -1240,7 +1240,11 @@ async def cancel_event(title: str) -> str:
     #
     # Upcoming is checked first so an ambiguous title still prefers the live
     # commitment over a stale one with the same name.
-    matches = [c for c in assistant_store.upcoming(days=60) if q in c["title"].lower()]
+    #
+    # Every future item, with the usual five-minute grace and no horizon: a
+    # reminder four months out is as cancellable as one due tomorrow.
+    upcoming = assistant_store.active_between(time.time() - 300, None, include_stale=True)
+    matches = [c for c in upcoming if q in c["title"].lower()]
     if not matches:
         # A reminder the stale policy hides is still cancellable by name: hiding an item
         # must never stop the user removing it.
@@ -1249,10 +1253,10 @@ async def cancel_event(title: str) -> str:
     if not matches:
         from service.tools.title_match import near_miss_note
         return f"Nothing upcoming or past matches “{title}”." + near_miss_note(
-            title, [c["title"] for c in assistant_store.upcoming(days=60)])
+            title, [c["title"] for c in upcoming])
     if len(matches) > 1:
         lst = "; ".join(
-            f"{c['title']} ({datetime.fromtimestamp(c['when_ts']).strftime('%a %-I:%M %p')})"
+            f"{c['title']} ({datetime.fromtimestamp(c['when_ts']).strftime('%a %b %-d, %-I:%M %p')})"
             for c in matches[:5])
         return not_done(f"Several items match “{title}”: {lst}. Which one? Please be more specific.")
     c = matches[0]

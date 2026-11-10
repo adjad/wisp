@@ -98,6 +98,49 @@ def _script_files_preview(args: dict) -> str:
     return "".join(parts)
 
 
+_FORWARD_NOT_FOUND = ("(Wisp couldn't find this email in the mail it has read, "
+                      "so it can't show the subject or sender.)")
+
+
+def _one_line(text: object, limit: int) -> str:
+    """Sender-written text as one clipped card line."""
+    line = " ".join(_ODD_SPACE.sub(" ", str(text or "")).split())
+    return line if len(line) <= limit else line[:limit].rstrip() + "…"
+
+
+def _forwarded_email_lines(message_id: object) -> list[str]:
+    """Subject, sender and date of the email a forward card is about, looked up
+    by Message-ID in the mail Wisp has already read. [] when it isn't there, or
+    when one ID matches different emails: the card then says it couldn't tell,
+    and never names an email it isn't sure of. Reads caches only."""
+    try:
+        from datetime import datetime
+
+        from service.tools import email_tools
+        wanted = email_tools._norm_mid(str(message_id or ""))
+        if not wanted:
+            return []
+        for rows in (email_tools.header_rows, email_tools._parse_raw, email_tools._history_records):
+            hits = [row for row in rows()
+                    if email_tools._norm_mid(str(row.get("message_id") or "")) == wanted]
+            if not hits:
+                continue
+            row = hits[0]
+            if any((hit.get("subject"), hit.get("sender")) != (row.get("subject"), row.get("sender"))
+                   for hit in hits):
+                return []
+            sender = str(row.get("sender") or "").strip() or "Unknown sender"
+            address = str(row.get("sender_address") or "").strip()
+            if address and address not in sender:
+                sender = f"{sender} <{address}>"
+            when = datetime.fromtimestamp(row["ts"]).strftime("%a %b %-d, %Y %-I:%M %p")
+            return [f"Email: {_one_line(row.get('subject'), 160) or '(no subject)'}",
+                    f"From: {_one_line(sender, 120)}", f"Date: {when}"]
+    except Exception:  # noqa: BLE001 - a cache problem never breaks the card
+        return []
+    return []
+
+
 def _action_preview(tool: str, args: dict) -> str:
     if tool == "run_shell":
         return ("Command:\n" + _clip_preview(str(args.get("cmd") or "").strip() or "(empty)")
@@ -207,12 +250,17 @@ def confirm_preview(tool: str, args: dict) -> str | None:
     if tool not in _OUTBOUND_PREVIEW_TOOLS:
         return None
     if tool == "forward_email":
-        to = str(args.get("to", "")).strip() or "(no recipient given)"
+        to = ", ".join(_card_recipient(r, want_email=True) for r in _split_recipients(
+            str(args.get("to", "")))) or "(no recipient given)"
         note = str(args.get("note", "")).strip()
-        return (f"Forward message {args.get('message_id', '?')}\nTo: {to}"
+        # The ID alone tells the user nothing: say which email this is.
+        about = _forwarded_email_lines(args.get("message_id"))
+        return ("".join(f"{line}\n" for line in about)
+                + f"Forward message {args.get('message_id', '?')}\n"
+                + ("" if about else _FORWARD_NOT_FOUND + "\n") + f"To: {to}"
                 + (f"\n\nNote:\n{_clip_preview(note)}" if note else "\n\n(no note)"))
     if tool in ("send_message", "draft_message"):
-        to = str(args.get("to", "")).strip() or "(no recipient given)"
+        to = _card_recipient(str(args.get("to", ""))) or "(no recipient given)"
         text = str(args.get("text", "")).strip() or "(empty)"
         return f"To: {to}\n\n{text}"
     if tool in ("send_email", "draft_email"):
@@ -231,7 +279,11 @@ def confirm_preview(tool: str, args: dict) -> str | None:
             "email": "Email",
             "message": "Message",
         }.get(channel, raw_channel or "(no channel given)")
-        to = str(args.get("to", "")).strip() or "(no recipient given)"
+        to = str(args.get("to", "")).strip()
+        # One recipient only; the tool refuses a list, so a list is shown as given.
+        if len(parts := _split_recipients(to)) == 1:
+            to = _card_recipient(parts[0], want_email=channel == "email")
+        to = to or "(no recipient given)"
         raw_when = str(args.get("when", "")).strip()
         when = "(no delivery time given)"
         if raw_when:
@@ -518,10 +570,27 @@ def _resolve_recipient(name: str, *, want_email: bool = False) -> tuple[str, str
     resolved unambiguously. The explanation is written for the model to relay;
     it is a lookup failure, so it also proves that nothing was sent.
     """
+    from service.tools import imessage_tools as contacts
     from service.tools.imessage_tools import find_contacts
 
     ask = "What email address should I use?" if want_email else "What number or address should I use?"
     matches = find_contacts(name)
+    if not matches and not contacts._name_handles:
+        # No contact is loaded at all, so "no saved contact for Mom" would be
+        # wrong: say why the name can't be looked up (as lookup_contact does),
+        # and still ask for the address. Read from the module at call time:
+        # a contacts sync replaces these.
+        if contacts._contacts_not_allowed:
+            why = contacts._contacts_not_allowed_message()
+            return "", _not_sent((f"({why} So {name!r} can't be looked up, and it isn't a valid "
+                                  "address. Ask the user for it — don't guess.)"),
+                                 question=f"{why} {ask}", needs_recipient=True)
+        return "", _not_sent((f"(No contacts are synced yet — Contacts is off in Wisp, or the first "
+                              f"sync hasn't finished — so {name!r} can't be looked up, and it isn't "
+                              "a valid address. Ask the user for it — don't guess.)"),
+                             question=(f"I can't look up {name}: no contacts are synced yet, or "
+                                       f"Contacts is off in Wisp. {ask}"),
+                             needs_recipient=True)
     if not matches:
         return "", _not_sent((f"(no saved contact matches {name!r}, and it isn't a valid "
                               "address. Ask the user for it — don't guess.)"),
@@ -558,6 +627,70 @@ def _resolve_recipient(name: str, *, want_email: bool = False) -> tuple[str, str
     return handle, ""
 
 
+def _is_handle(to: str) -> bool:
+    """A literal address or number, as opposed to a contact name to resolve."""
+    return bool(_EMAIL_RE.match(to) or re.fullmatch(r"[+()\-.\s\d]{7,}", to))
+
+
+def _saved_name(handle: str) -> str:
+    """The saved contact a literal handle belongs to, or ""."""
+    try:
+        from service.tools.imessage_tools import contact_name_for_handle
+        return contact_name_for_handle(handle)
+    except Exception:  # noqa: BLE001 - a label never stops a card or a receipt
+        return ""
+
+
+def _named(handle: str, typed: str = "") -> str:
+    """One recipient for a card or receipt: the saved contact and where it goes,
+    "Brian Chen (+15550101234)". The contact is found from the handle itself, so
+    the name is the person the handle belongs to and never only the name that
+    was typed; `typed` is used when the handle isn't saved under any name."""
+    who = _saved_name(handle) or typed
+    return f"{who} ({handle})" if who else handle
+
+
+def _card_recipient(to: str, *, want_email: bool = False) -> str:
+    """One recipient as a card shows it, resolved the way the tool will.
+
+    A name that matches one contact names that contact and the handle, and says
+    what was typed when the saved name is a different one ("Ian" matching only
+    Brian Chen). A literal handle gains its saved name. Anything that doesn't
+    resolve is shown as given: the tool's own answer covers it.
+    """
+    to = (to or "").strip()
+    if not to:
+        return to
+    try:
+        if _is_handle(to):
+            return _named(to)
+        handle, problem = _resolve_recipient(to, want_email=want_email)
+        if problem or not handle:
+            return to
+        who = _saved_name(handle)
+        label = _named(handle, to)
+        if who and who.casefold() != to.casefold():
+            label += f' - matched from "{to}"'
+        return label
+    except Exception:  # noqa: BLE001 - a lookup problem leaves the card as it was
+        return to
+
+
+def _cc_addresses(cc: str) -> tuple[list[str], str]:
+    """A cc field -> (addresses, ""), or ([], explanation). A saved contact's
+    NAME becomes its one email address, exactly as a name in `to` does."""
+    resolved: list[str] = []
+    for r in _split_recipients(cc):
+        if _EMAIL_RE.match(r):
+            resolved.append(r)
+            continue
+        handle, problem = _resolve_recipient(r, want_email=True)
+        if problem:
+            return [], problem
+        resolved.append(handle)
+    return resolved, ""
+
+
 def prepare_send_recipient(tool, args: dict) -> tuple[dict, str | None]:
     """(args, problem): settle a send's recipient once, BEFORE its card.
 
@@ -565,9 +698,10 @@ def prepare_send_recipient(tool, args: dict) -> tuple[dict, str | None]:
     asked to approve a send that can't happen, and is asked for the address
     instead. An email to a name is bound to the one saved address here, so the
     card shows where it really goes and the approved send can't resolve to
-    anything else. A text keeps its name: the tool resolves that same single
-    match again, and its receipt reads "Mom (…1234)". Only ever refuses or
-    narrows to the one address, and sends nothing; the card is unchanged.
+    anything else; a name in cc is settled the same way. A text keeps its
+    name: the tool resolves that same single match again, and both its card
+    and its receipt name the contact that matched, "Mom (…1234)". Only ever
+    refuses or narrows to the one address, and sends nothing.
     """
     name = getattr(tool, "name", "")
     # Only the real tools: another tool of that name resolves its own recipient.
@@ -576,7 +710,7 @@ def prepare_send_recipient(tool, args: dict) -> tuple[dict, str | None]:
     tool = name
     to = str(args.get("to") or "").strip()
     if tool == "send_message":
-        if to and not (_EMAIL_RE.match(to) or re.fullmatch(r"[+()\-.\s\d]{7,}", to)):
+        if to and not _is_handle(to):
             _, problem = _resolve_recipient(to)
             if problem:
                 return args, problem
@@ -593,8 +727,17 @@ def prepare_send_recipient(tool, args: dict) -> tuple[dict, str | None]:
     if not resolved:
         return args, None  # the tool's own "no recipient" answer covers it
     bound = ", ".join(resolved)
-    return ({**args, "to": bound},
-            _own_address_guard(bound, tool, bool(args.get("confirmed_self_send"))))
+    if (problem := _own_address_guard(bound, tool, bool(args.get("confirmed_self_send")))):
+        return {**args, "to": bound}, problem
+    # A name in cc: refused here when it has no single address, never after the
+    # card was approved, and otherwise shown on the card as the address it is.
+    copies = str(args.get("cc") or "").strip()
+    if not copies:
+        return {**args, "to": bound}, None
+    cc, problem = _cc_addresses(copies)
+    if problem:
+        return args, problem
+    return {**args, "to": bound, "cc": ", ".join(cc)}, None
 
 
 @register(
@@ -626,7 +769,10 @@ async def send_email(to: str, subject: str, body: str, cc: str = "",
                      confirmed_self_send: bool = False) -> str:
     if (msg := _own_address_guard(to, "send_email", confirmed_self_send)):
         return msg
-    subject, body = _degarble(subject), _degarble(body)
+    # Repair the model's over-escaping only when no card showed this text. An
+    # approved card is sent exactly as shown: "C:\temp\new" keeps its backslashes.
+    if _unreviewed():
+        subject, body = _degarble(subject), _degarble(body)
     if _unreviewed() and (_looks_truncated(subject) or _looks_truncated(body)):
         return _not_sent("(NOT sent — the draft looks cut off mid-sentence rather than "
                          "a complete subject/body. Rewrite the complete subject and "
@@ -648,7 +794,10 @@ async def send_email(to: str, subject: str, body: str, cc: str = "",
             return problem
         resolved.append(handle)
     recipients = resolved
-    bad = [r for r in recipients + _split_recipients(cc) if not _EMAIL_RE.match(r)]
+    copies, problem = _cc_addresses(cc)
+    if problem:
+        return problem
+    bad = [r for r in recipients + copies if not _EMAIL_RE.match(r)]
     if bad:
         return _not_sent((f"(not valid email addresses: {', '.join(bad)}. Don't guess an "
                           "address — look it up in the user's mail or ask them for it.)"),
@@ -662,7 +811,7 @@ async def send_email(to: str, subject: str, body: str, cc: str = "",
                           "email signed '[Your Name]' is worse than one with no sign-off.)"))
 
     res = await app_request("send_email", {
-        "to": recipients, "cc": _split_recipients(cc),
+        "to": recipients, "cc": copies,
         "subject": subject or "", "body": body or "",
     })
     if res.get("ok") is not True or ("status" in res and res["status"] != "succeeded"):
@@ -749,29 +898,33 @@ async def schedule_send(channel: str, to: str, when: str, body: str = "",
                          f"{'send_email' if channel == 'email' else 'send_message'}.)",
                          question=f"That time has already passed, so nothing is scheduled. What time should I send it?")
 
-    display = to
+    # What the queue row, the cancel card and the receipt call the recipient:
+    # the saved contact the handle belongs to, not only the name that was typed.
     if channel == "email":
         if not recipients:
             return _not_sent("(no recipient — ask the user who this should go to)",
                              question="Who should this go to?")
-        r = recipients[0]
-        if not _EMAIL_RE.match(r):
+        r = typed = recipients[0]
+        if _EMAIL_RE.match(r):
+            display = _named(r)
+        else:
             r, problem = _resolve_recipient(r, want_email=True)
             if problem:
                 return problem
-            display = f"{to} ({r})"
+            display = _named(r, typed)
         recipient = r
     else:
         if not recipients:
             return _not_sent("(no recipient — ask the user who to text)",
                              question="Who should I text?")
         recipient = recipients[0]
-        if not (_EMAIL_RE.match(recipient)
-                or re.fullmatch(r"[+()\-.\s\d]{7,}", recipient)):
+        if _is_handle(recipient):
+            display = _named(recipient)
+        else:
             handle, problem = _resolve_recipient(recipient)
             if problem:
                 return problem
-            display = f"{to} ({handle})"
+            display = _named(handle, recipient)
             recipient = handle
 
     sid = outbound_queue.add(channel=channel, recipient=recipient, body=body,
@@ -890,7 +1043,7 @@ def _cancel_scheduled_preview(args: dict) -> str:
         return f"Cancel scheduled send [{sid}]: no queued item has this ID; nothing would be cancelled."
     kind = {"email": "email", "message": "text"}.get(row["channel"], str(row["channel"]))
     to = row["display"] or row["recipient"]
-    if row["display"] and row["display"] != row["recipient"]:
+    if row["display"] and str(row["recipient"]) not in row["display"]:
         to += f" ({row['recipient']})"
     lines = [f"Cancel scheduled {kind} [{row['id']}]", f"To: {to}",
              f"Scheduled: {_scheduled_time(row['when_ts'])}",
@@ -1165,11 +1318,16 @@ _TRIAGE_ACTIONS = {
 )
 async def email_triage(message_id: str, action: str) -> str:
     message_id = (message_id or "").strip()
+    # Both refusals come before the app bridge is asked for anything, so they
+    # are proof nothing changed. A bridge failure below is not.
     if not message_id:
-        return ("(no message_id — call view_emails first and use the Message-ID "
-                "it prints for the email you mean)")
+        return not_done("(no message_id — call view_emails first and use the Message-ID "
+                        "it prints for the email you mean)",
+                        question="Which email do you mean?")
     if action not in _TRIAGE_ACTIONS:
-        return f"(error: unknown action {action!r}. Use {', '.join(_TRIAGE_ACTIONS)}.)"
+        return not_done(f"(error: unknown action {action!r}. Use {', '.join(_TRIAGE_ACTIONS)}.)",
+                        question="I can archive an email, mark it read or unread, or flag or unflag it. "
+                                 "Which would you like?")
     operation, extra, receipt = _TRIAGE_ACTIONS[action]
     res = await app_request(operation, {"message_id": message_id, **extra})
     if not res.get("ok"):
@@ -1212,7 +1370,9 @@ async def forward_email(message_id: str, to: str, note: str = "") -> str:
         if problem:
             return problem
         resolved.append(handle)
-    note = _degarble(note) if note else ""
+    note = note or ""
+    if _unreviewed():  # as send_email: an approved note goes out as its card showed it
+        note = _degarble(note)
     res = await app_request("forward_email", {
         "message_id": message_id, "to": resolved, "body": note,
     })
@@ -1224,7 +1384,7 @@ async def forward_email(message_id: str, to: str, note: str = "") -> str:
                 "Forward outcome unknown — sending was not confirmed. Check Mail before trying again; do not retry automatically.",
                 operation="forward_email", action_id=res.get("action_id") or "")
         return _not_sent(f"(the forward was NOT sent: {res.get('error') or 'unknown error'})")
-    return f"Forwarded to {', '.join(resolved)}."
+    return f"Forwarded to {', '.join(_named(r) for r in resolved)}."
 
 
 @register(
@@ -1267,8 +1427,11 @@ async def send_message(to: str, text: str, confirmed_self_send: bool = False) ->
     # dialed — if `to` resolves from a contact name, the transcript should say
     # "Mom (…1234)", not just the raw number, so a resolution mistake leaves a
     # visible trace instead of a plausible-looking but wrong send.
-    display = to
-    if not (_EMAIL_RE.match(to) or re.fullmatch(r"[+()\-.\s\d]{7,}", to)):
+    # The name shown is the saved contact the handle belongs to, not what was
+    # typed: "Ian" can match only Brian Chen, and "Ian (…1234)" would hide that.
+    if _is_handle(to):
+        display = _named(to)
+    else:
         # `to` is a NAME. Resolve it here rather than only erroring: the model
         # gets the user's phrasing ("text Mom"), and making the send fail
         # unless it first thinks to call lookup_contact is a failure mode that
@@ -1277,7 +1440,7 @@ async def send_message(to: str, text: str, confirmed_self_send: bool = False) ->
         handle, problem = _resolve_recipient(to)
         if problem:
             return problem
-        display = f"{to} ({handle})"
+        display = _named(handle, to)
         to = handle
 
     if not (text or "").strip():

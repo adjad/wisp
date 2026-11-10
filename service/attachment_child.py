@@ -51,7 +51,7 @@ import warnings
 from pathlib import Path, PurePath
 from zipfile import BadZipFile, ZipFile
 
-from service.document_extract import _limit_self
+from service.document_extract import _limit_self, is_locked_office
 
 MAX_INPUT_BYTES = 32 * 1024 * 1024
 MAX_PIXELS = 80_000_000
@@ -98,6 +98,10 @@ MAX_URLS = 8
 _URL_SCAN_BYTES = 2 * 1024 * 1024
 _URL = re.compile(rb"https?://[!-~]{4,200}")
 
+_OLD_OFFICE_LABEL = "an old Office file"
+# A docx, xlsx or pptx saved with a password: the same container as an old Office file, holding
+# the encrypted document (document_extract.is_locked_office).
+_LOCKED_OFFICE_LABEL = "a password-protected Office file"
 # Longest signatures first where one is a prefix of another.
 _SIGNATURES: tuple[tuple[bytes, str, str], ...] = (
     (b"MZ", "a Windows program", "program"),
@@ -120,7 +124,7 @@ _SIGNATURES: tuple[tuple[bytes, str, str], ...] = (
     (b"Rar!", "a RAR archive", "archive"),
     (b"7z\xbc\xaf\x27\x1c", "a 7-Zip archive", "archive"),
     (b"\x1f\x8b", "a gzip archive", "archive"),
-    (b"\xd0\xcf\x11\xe0", "an old Office file", "document"),
+    (b"\xd0\xcf\x11\xe0", _OLD_OFFICE_LABEL, "document"),
     (b"\x89PNG\r\n\x1a\n", "a PNG image", "image"),
     (b"\xff\xd8\xff", "a JPEG image", "image"),
     (b"GIF8", "a GIF image", "image"),
@@ -288,6 +292,25 @@ def _looks_like_email(data: bytes) -> bool:
     return len(names & _EMAIL_HEADERS) >= 2
 
 
+def _is_windows_program(data: bytes) -> bool:
+    """Whether bytes that start with "MZ" are a program and not text that happens to start so.
+
+    A Windows program names where its PE header is at byte 0x3C, and "PE\\0\\0" is there. An older
+    DOS or 16-bit program has no PE header, but its header is binary, so it has a zero byte early
+    on, which text does not. Anything else that starts "MZ" is left to be read as what its name says.
+    """
+    if len(data) >= 64:
+        at = int.from_bytes(data[0x3C:0x40], "little")
+        if 0 < at <= len(data) - 4 and data[at:at + 4] == b"PE\x00\x00":
+            return True
+    return b"\x00" in data[:8192]
+
+
+def _is_bmp(data: bytes) -> bool:
+    """Whether bytes that start with "BM" carry a BMP header: one of the known header sizes at byte 14."""
+    return len(data) >= 26 and int.from_bytes(data[14:18], "little") in (12, 40, 52, 56, 64, 108, 124)
+
+
 def _signature(data: bytes) -> tuple[str, str]:
     """(what the bytes say this is, its family), or ('', '') when they say nothing."""
     audio = _audio_label(data)
@@ -295,6 +318,11 @@ def _signature(data: bytes) -> tuple[str, str]:
         return audio, "audio"
     for magic, label, family in _SIGNATURES:
         if data.startswith(magic):
+            # Two letters are not enough: a list of part numbers or a name can start with them.
+            if (magic == b"MZ" and not _is_windows_program(data)) or (magic == b"BM" and not _is_bmp(data)):
+                continue
+            if label == _OLD_OFFICE_LABEL and is_locked_office(data):
+                return _LOCKED_OFFICE_LABEL, family
             return label, family
     if data[:3] == b"BZh" and data[4:10] == b"1AY&SY":
         return "a bzip2 archive", "archive"
@@ -379,10 +407,12 @@ def _risk(name: str, data: bytes, suffix: str, label: str, family: str, found: d
             or (suffix in _ARCHIVE_SUFFIXES and family != "zip")):
         caution.append(_NO_LOOK)
     if found.get("macros") or suffix in _MACRO_SUFFIXES or (
-            label == "an old Office file" and _OLE_VBA in data):
+            label in (_OLD_OFFICE_LABEL, _LOCKED_OFFICE_LABEL) and _OLE_VBA in data):
         caution.append("It is an Office file that contains macros, which can run commands if you enable them.")
     if found.get("encrypted"):
         caution.append("The archive is password-protected, so its contents can't be checked.")
+    if label == _LOCKED_OFFICE_LABEL:
+        caution.append("It is password-protected, so its contents can't be checked.")
     if label == "a PDF" and (b"/Encrypt" in data[-8192:] or b"/Encrypt" in data[:2048]):
         caution.append(ENCRYPTED_PDF_REASON)
     if _looks_like_html(suffix, data):
@@ -646,7 +676,8 @@ def _pdf_stream_limits() -> None:
 
 
 def ocr_images(name: str, data: bytes, workdir: str = "") -> dict:
-    """{images: [data URL], pages, read_pages: [1-based]} for a picture (one image) or a PDF's page pictures."""
+    """{images: [data URL], pages, read_pages: [1-based]} for a picture (one image) or a PDF's page pictures.
+    `capped` is set when the page, pixel or size limit (not a blank page) left later pages out."""
     started = time.monotonic()
     if not data.startswith(b"%PDF"):
         picture = _open_picture(data, workdir)
@@ -661,10 +692,12 @@ def ocr_images(name: str, data: bytes, workdir: str = "") -> dict:
     pixels = encoded = attempts = 0
     slowest = 0.0
     stopped_early = False
+    capped = False          # a limit, not a blank page, left later pages unprepared
     try:
         reader = PdfReader(io.BytesIO(data))
         _unlock(reader)
         total = len(reader.pages)
+        capped = total > MAX_OCR_PAGES
         for number, page in enumerate(reader.pages[:MAX_OCR_PAGES], start=1):
             now = time.monotonic()
             # Another page of the slowest kind so far must still fit; the first page is always tried.
@@ -683,6 +716,7 @@ def ocr_images(name: str, data: bytes, workdir: str = "") -> dict:
                 if max(width, height) < OCR_MIN_PICTURE_SIDE:
                     continue
                 if pixels + width * height > OCR_MAX_TOTAL_PIXELS:
+                    capped = True
                     break
                 url = _recognition_jpeg(_open_picture(pictures[0].data, ""), OCR_PAGE_TEXT_SIDE)
             except Exception as error:  # noqa: BLE001 — one unreadable or oversized page, not an unreadable file
@@ -692,6 +726,7 @@ def ocr_images(name: str, data: bytes, workdir: str = "") -> dict:
             finally:
                 slowest = max(slowest, time.monotonic() - now)
             if encoded + len(url) > OCR_MAX_TOTAL_BYTES:
+                capped = True
                 break
             pixels += width * height
             encoded += len(url)
@@ -708,6 +743,8 @@ def ocr_images(name: str, data: bytes, workdir: str = "") -> dict:
     result = {"images": urls, "pages": total, "read_pages": read}
     if stopped_early:
         result["stopped_early"] = True
+    if capped:
+        result["capped"] = True
     return result
 
 

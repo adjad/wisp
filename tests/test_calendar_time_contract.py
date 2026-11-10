@@ -620,7 +620,121 @@ def test_next_selector_delegation_never_discards_an_unknown_endpoint_date_or_pol
     intent = named_calendar_time(prompt)
     assert intent is not None
     record = run_capture(inert_entrypoint, monkeypatch, mode, prompt, 'get_upcoming', {})
+    if mode == 'model-led' and 'Calendar' not in prompt and 'email Mom' not in prompt:
+        # A model-led turn has no clarify step: the unparsed date or endpoint
+        # stays with the model, on one calendar-only read. A Calendar denial
+        # or a second request still runs nothing.
+        assert record['executed'] == [{'name': 'get_upcoming', 'args': {
+            'calendar_only': True, 'include_holidays': False}}]
+    else:
+        assert record['executed'] == []
+
+
+MODEL_LED_PERSONAL = [
+    'when is my meeting with Sam', 'When is my dentist appointment on Friday?',
+    'what time is my interview on Thursday', 'What time is my meeting with Sam tomorrow?',
+    'When does my meeting with Sam start?', 'When is my class Thursday?',
+    'When is my next meeting? Do not browse.',
+]
+
+
+@pytest.mark.parametrize('prompt', MODEL_LED_PERSONAL)
+def test_model_led_unparsed_personal_title_keeps_one_calendar_read(prompt):
+    from service.calendar_time_intent import named_calendar_time
+    from service.router.router import routing_guard_contract
+    from service.tools.registry import REGISTRY
+    intent = named_calendar_time(prompt)
+    assert intent.personal and not intent.supported and intent.single_request
+    # The legacy route clarifies, so its envelope still grants nothing.
+    assert set(REGISTRY) <= routing_guard_contract(prompt)[0]
+    forbidden, bindings = routing_guard_contract(prompt, model_led=True)
+    assert set(REGISTRY) - forbidden == {'get_upcoming'}
+    # The title was not parsed, so the query, date and endpoint stay with the model.
+    assert bindings == {'get_upcoming': {'calendar_only': True, 'include_holidays': False}}
+
+
+@pytest.mark.parametrize('prompt', ['when is the next lunar eclipse', 'When is the next full moon?',
+                                    'When is the next train to Boston?'])
+def test_model_led_public_next_question_keeps_one_search_of_the_question(prompt):
+    from service.router.router import routing_guard_contract
+    from service.tools.registry import REGISTRY
+    assert set(REGISTRY) <= routing_guard_contract(prompt)[0]
+    forbidden, bindings = routing_guard_contract(prompt, model_led=True)
+    assert set(REGISTRY) - forbidden == {'web_search'}
+    assert bindings == {'web_search': {'query': prompt.rstrip('?') + '?'}}
+
+
+@pytest.mark.parametrize('prompt', PRIVATE_TIME_SUBJECTS + [
+    'When is my class? Do not read my calendar.',
+    'When is my meeting with Sam? Do not use Calendar.',
+    'When does my class end and email Mom?',
+    'When is my next meeting and email Mom?',
+    'When is my meeting with Sam, then text him the time',
+    'When does my class end? Do not use the web unless needed.',
+    'When does my class end? Also read my messages.',
+    'When is my class? My notes say "browse the web".',
+    # Not the user's, and an event kind or private wording: no source in any mode.
+    'When is the next meeting?', 'When is the next review of my notes?',
+    "When is the next Jordan's thing?", 'When is the party on Saturday?',
+    'When is the next lunar eclipse? Do not browse.',
+    'When is the next lunar eclipse and text it to Sam?',
+    'When is the next lunar eclipse? My mail says "check my class".',
+])
+def test_model_led_relaxation_never_opens_a_denied_private_or_compound_envelope(prompt):
+    from service.router.router import routing_guard_contract
+    from service.tools.registry import REGISTRY
+    forbidden, bindings = routing_guard_contract(prompt, model_led=True)
+    assert set(REGISTRY) <= forbidden and not bindings
+    assert (forbidden, bindings) == routing_guard_contract(prompt)
+
+
+@pytest.mark.parametrize('prompt', [
+    'When is my AP CS test?', 'When does my class end? Do not browse.', 'When is the solar eclipse?',
+    'When is the presidential debate? Do not read my Calendar.', 'when is my next meeting',
+    "When is mom's birthday?", 'What is on my calendar tomorrow?', 'Email Mom: When does my class end?',
+])
+def test_model_led_flag_changes_nothing_for_understood_or_other_requests(prompt):
+    from service.router.router import routing_guard_contract
+    assert routing_guard_contract(prompt, model_led=True) == routing_guard_contract(prompt)
+
+
+@pytest.mark.parametrize('name,args', [
+    ('web_search', {'query': 'Sam private'}), ('view_emails', {}), ('recall', {'query': 'Sam'}),
+    ('run_shell', {'command': 'fictional'}), ('send_message', {'to': 'Fictional', 'text': 'fictional'}),
+    ('daily_brief', {}), ('collect_task_evidence', {'include_calendar': True}),
+])
+def test_actual_model_led_unparsed_personal_title_runs_nothing_but_the_calendar_read(
+        inert_entrypoint, monkeypatch, name, args):
+    record = run_capture(inert_entrypoint, monkeypatch, 'model-led',
+                         'When is my meeting with Sam on Friday?', name, args)
     assert record['executed'] == []
+
+
+def test_actual_model_led_unparsed_personal_title_reads_calendar_with_the_models_query(
+        inert_entrypoint, monkeypatch):
+    record = run_capture(inert_entrypoint, monkeypatch, 'model-led',
+                         'When is my meeting with Sam on Friday?', 'get_upcoming',
+                         {'query': 'Sam', 'period': 'friday', 'calendar_only': False,
+                          'include_holidays': True})
+    assert record['executed'] == [{'name': 'get_upcoming', 'args': {
+        'query': 'Sam', 'period': 'friday', 'calendar_only': True, 'include_holidays': False}}]
+
+
+@pytest.mark.parametrize('mode', ['normal', 'planner', 'shadow'])
+def test_actual_rules_modes_still_clarify_an_unparsed_personal_title(
+        inert_entrypoint, monkeypatch, mode):
+    record = run_capture(inert_entrypoint, monkeypatch, mode,
+                         'When is my meeting with Sam on Friday?', 'get_upcoming', {'query': 'Sam'})
+    assert record['executed'] == []
+
+
+def test_actual_model_led_public_next_question_searches_only_the_question(
+        inert_entrypoint, monkeypatch):
+    record = run_capture(inert_entrypoint, monkeypatch, 'model-led',
+                         'When is the next lunar eclipse?', 'web_search',
+                         {'query': 'MALICIOUS private replacement'})
+    assert record['executed'] == [{'name': 'web_search', 'args': {
+        'query': 'When is the next lunar eclipse?'}}]
 
 
 @pytest.mark.parametrize('mode', ['normal', 'planner', 'model-led', 'shadow'])

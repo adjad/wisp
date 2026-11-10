@@ -129,7 +129,8 @@ enum MoveToApplications {
 
     /// Asks, and on the person's click moves Wisp into Applications and arranges
     /// the relaunch. `.relaunching` means the caller must quit now (nothing has
-    /// started yet). Runs at the top of launch, on the main thread.
+    /// started yet). Runs at the top of launch, on the main thread; the move itself
+    /// runs off it, under a small progress window (runShowingProgress).
     @MainActor static func offerIfNeeded(defaults: UserDefaults = .standard) -> Outcome {
         let bundle = Bundle.main.bundleURL
         let translocation = Translocation.original(of: bundle)
@@ -168,7 +169,7 @@ enum MoveToApplications {
             }
         }
         do {
-            try move(from: bundle, original: original)
+            try runShowingProgress { try move(from: bundle, original: original) }
         } catch {
             let trashed = (error as? MoveFailure)?.oldWispTrashed == true
             let error = (error as? MoveFailure)?.underlying ?? error
@@ -229,6 +230,88 @@ enum MoveToApplications {
         if let original, original.standardizedFileURL != target.standardizedFileURL {
             try? fm.trashItem(at: original, resultingItemURL: nil)
         }
+    }
+
+    static let progressTitle = "Moving Wisp to Applications…"
+    static let progressDetail = "This can take a little while. Wisp reopens when it's done."
+
+    /// The move copies about a gigabyte in tens of thousands of files and then clears
+    /// their quarantine marks, which takes several seconds. On the main thread, with
+    /// no window up yet, that read as Wisp having quit: nothing on screen and a Dock
+    /// icon that didn't answer. So `work` runs on a background queue while a small
+    /// window says what is happening, and this returns (or throws what `work` threw)
+    /// only when it is done, so launch goes on exactly as before.
+    @MainActor private static func runShowingProgress(_ work: @escaping @Sendable () throws -> Void) throws {
+        let window = progressWindow()
+        window.makeKeyAndOrderFront(nil)
+        // A modal session, not runModal: this loop decides when it ends.
+        let session = NSApp.beginModalSession(for: window)
+        var sessionOpen = true
+        defer {
+            NSApp.endModalSession(session)
+            window.orderOut(nil)
+        }
+        try offMainThread(work) {
+            if sessionOpen, NSApp.runModalSession(session) != .continue { sessionOpen = false }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+    }
+
+    /// Runs `work` on a background queue and returns once it is done, throwing what it
+    /// threw. Until then `wait` is called over and over on the calling thread, so that
+    /// thread keeps its window and the Dock icon alive instead of blocking.
+    static func offMainThread(_ work: @escaping @Sendable () throws -> Void, wait: () -> Void) throws {
+        let result = BackgroundResult()
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try work()
+                result.finish(nil)
+            } catch {
+                result.finish(error)
+            }
+        }
+        while !result.isFinished { wait() }
+        if let failure = result.failure { throw failure }
+    }
+
+    /// How the background work ended, handed across threads under a lock.
+    private final class BackgroundResult: @unchecked Sendable {
+        private let lock = NSLock()
+        private var finished = false
+        private var error: Error?
+
+        func finish(_ error: Error?) {
+            lock.lock()
+            self.error = error
+            finished = true
+            lock.unlock()
+        }
+        var isFinished: Bool { lock.lock(); defer { lock.unlock() }; return finished }
+        var failure: Error? { lock.lock(); defer { lock.unlock() }; return error }
+    }
+
+    /// A small window with nothing to click but minimize (every Wisp window can be
+    /// minimized): it goes away by itself when the move is done.
+    @MainActor private static func progressWindow() -> NSWindow {
+        let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 82),
+                             styleMask: [.titled, .miniaturizable], backing: .buffered, defer: false)
+        window.title = progressTitle
+        window.isReleasedWhenClosed = false
+        // A panel hides when another app comes forward; this one must stay in view.
+        window.hidesOnDeactivate = false
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 82))
+        let detail = NSTextField(labelWithString: progressDetail)
+        detail.frame = NSRect(x: 20, y: 46, width: 320, height: 18)
+        let bar = NSProgressIndicator(frame: NSRect(x: 20, y: 18, width: 320, height: 20))
+        bar.style = .bar
+        bar.isIndeterminate = true
+        bar.usesThreadedAnimation = true
+        bar.startAnimation(nil)
+        content.addSubview(detail)
+        content.addSubview(bar)
+        window.contentView = content
+        window.center()
+        return window
     }
 
     /// Opens the moved Wisp once this one has fully quit, so the new copy never

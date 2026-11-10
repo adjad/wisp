@@ -258,6 +258,16 @@ class Store:
         with self._lock:
             self._db.execute("UPDATE items SET state='new' WHERE id=? AND state='accepting'", (item_id,))
 
+    def recover_claims(self) -> int:
+        """accepting -> new for every row, once, when the backend starts (`store()`).
+        An Add that was cut off by a quit or a crash left its claim behind, and
+        nothing else ever clears one: the suggestion was gone from the Brief and
+        could be neither added nor dismissed. Offering it again is safe: Add checks
+        what is already on file before it creates anything. Never call this while
+        the backend is serving, or it would hand back an Add that is still running."""
+        with self._lock:
+            return self._db.execute("UPDATE items SET state='new' WHERE state='accepting'").rowcount
+
     def expire(self, today: str) -> int:
         """Suggestions whose day has passed are never offered."""
         with self._lock:
@@ -362,10 +372,18 @@ class Store:
 
 
 _store: Store | None = None
+_store_lock = threading.Lock()
 
 
 def store() -> Store:
+    """The backend's one Store. Making it is the backend starting, so claims left
+    by an Add the last run never finished are handed back here, and only here: a
+    second `Store(path)` on the same file never touches a claim in flight."""
     global _store
     if _store is None:
-        _store = Store()
+        with _store_lock:
+            if _store is None:
+                fresh = Store()
+                fresh.recover_claims()
+                _store = fresh
     return _store

@@ -100,6 +100,10 @@ def _action_fingerprint(tool: str, args: dict) -> str:
 # a picture or a list is several distinct writes; past this many, a turn is a
 # runaway, not a request.
 _MAX_EFFECT_CALLS_PER_TURN = 8
+# Times one send tool's draft is handed back to the model in a turn for an
+# unfilled placeholder or a cut-off body, before the turn stops with a plain
+# sentence. Each bounce is a full model step.
+_MAX_DRAFT_REWRITES = 2
 # The arguments that name WHAT an effect acts on, for tools where a second call
 # on the same target in one turn is a repeat even when the rest differs: a
 # reworded second email to the same person, a flip-flopped setting, a delete
@@ -598,6 +602,12 @@ def _parse_args(raw: str) -> dict:
         return {}
 
 
+_CALENDAR_BATCH_STALE_MESSAGE = (
+    "Your Mac's clock or time zone changed while I was waiting, so I didn't change "
+    "your calendar. Ask me again and I'll set it up with the new times."
+)
+
+
 def _calendar_create_preview(args: dict) -> str:
     from service.tools.assistant_tools import calendar_interval_label
     interval = calendar_interval_label(args.get("when_iso", "?"),
@@ -732,6 +742,45 @@ _ASK_DONE_CLAIM = re.compile(
     r"\b(?:i(?:'|’)ve|i\s+have|i|it(?:'|’)s|has\s+been|have\s+been)\s+(?:just\s+|now\s+)?"
     r"(?:sent|added|created|scheduled|set|saved|deleted|removed|moved|cancel+ed|texted|emailed|"
     r"messaged|replied|forwarded|booked|updated|completed|marked)\b|^\s*(?:done|all\s+set|sent)\b", re.I)
+# A reply sentence that says what happened to a reminder made this turn, as
+# opposed to one that reports a reminder a read returned ("You have a reminder
+# to pay rent at 9.", "- Reminder: get the report done").
+_REMINDER_CLAIM = re.compile(
+    # "I've set a reminder…", "I'll remind you…", "I also added it to your reminders."
+    r"\bi(?:'ll|'ve|\s+will|\s+have)?\s+(?:(?:also|just|now|already)\s+)?"
+    r"(?:remind\b|(?:set|created|added|scheduled|saved|made|put)\b[^.!?]*\bremind)"
+    # "Reminder set for 8 PM.", "Your reminder is set.", "The reminder to pack is now set."
+    r"|\breminders?\s+(?:(?:is|was|are|has\s+been|have\s+been)\s+)?(?:now\s+|all\s+)?"
+    r"(?:set|created|added|scheduled|saved)\b"
+    r"|\breminders?\b[^.!?]{1,60}?\b(?:is|are|has\s+been|have\s+been)\s+(?:now\s+|all\s+)?"
+    r"(?:set|created|added|scheduled|saved)\b"
+    # "Set a reminder for 8 PM.", "…and added the reminder."
+    r"|\b(?:set|created|added|scheduled|saved)\s+(?:up\s+)?(?:a|an|the|your|that|this|another)\s+"
+    r"(?:\w+\s+)?reminders?\b"
+    # "You'll be reminded at 8.", "You'll get a reminder…", "It's in Apple Reminders."
+    r"|\byou(?:'ll|\s+will)\s+(?:be\s+reminded|(?:get|receive|see)\s+(?:a|the|your|that)\s+reminder)"
+    r"|\bapple\s+reminders\b", re.I)
+
+
+def _answer_beside_reminder(text: str) -> str:
+    """The part of a reply that answers the question asked alongside a reminder
+    ("What's on tomorrow? Also remind me to pack."). Sentences about what
+    happened to the reminder are dropped: only the tool's receipt says that."""
+    kept: list[str] = []
+    for line in (text or "").splitlines():
+        if not line.strip():
+            if kept and kept[-1]:
+                kept.append("")
+            continue
+        indent = line[:len(line) - len(line.lstrip())]
+        rest = " ".join(
+            sentence for sentence in re.split(r"(?<=[.!?])\s+", line.strip())
+            if not _REMINDER_CLAIM.search(sentence.replace("\u2019", "'")))
+        if re.search(r"\w", rest):
+            kept.append(indent + rest)
+    return "\n".join(kept).strip()
+
+
 # Offered on a web-only personal re-prompt when the head start held none.
 _ASK_OWN_SOURCE_READS = ("view_emails", "search_reminders", "search_notes", "view_messages")
 _ASK_GUARD_MESSAGE = (
@@ -742,6 +791,21 @@ _ASK_NOTHING_MESSAGE = (
     "I looked, but the lookup didn't return anything usable. Want me to try it "
     "a different way?"
 )
+# Status reads whose category is not a read category (model_led.effectful_call
+# excludes the same names): running one is never an action.
+_ASK_STATUS_READS = frozenset({"list_running_apps", "wisp_status", "wisp_capabilities",
+                               "wisp_skills", "wisp_mcp"})
+# A step whose request (or newest tool traffic) cannot fit the model's window
+# even with all older history gone. Not _ASK_GUARD_MESSAGE: that one blames
+# memory and suggests asking again, which fails the same way every time.
+_ASK_TOO_LONG_MESSAGE = (
+    "That is too long for me to read in one go. Send it to me in smaller parts."
+)
+# Room a model-only Ask step always leaves for messages outside the system
+# prefix, and the slack kept on top of what the step must carry when that is
+# more (see _ask_window).
+_ASK_STEP_MESSAGE_FLOOR = 2500
+_ASK_MUST_CARRY_MARGIN = 300
 
 # Appended to the system prompt only when run_agent(test_mode=True). Tells
 # the model directly, rather than relying on it inferring anything from the
@@ -1526,7 +1590,12 @@ def _fit_tool_result(result: str, name: str, limit: int = _MAX_TOOL_RESULT_CHARS
         return DisplayOnlyToolResult.model_text
     if len(result) <= limit:
         return result
-    kept = result[:limit].rsplit("\n", 1)[0]
+    # Cut on a line boundary only when that keeps most of the budget. A fetched
+    # page of minified JSON is a header, a fence line and one long line: cut
+    # back to the last newline, the model got the header and none of the page.
+    head = result[:limit]
+    line_end = head.rfind("\n")
+    kept = head[:line_end] if line_end >= limit // 2 else head
     # A cut inside a fenced page or email body would leave the note below
     # inside the fence, where the model is told to read it as untrusted data.
     from service.tools.untrusted import close_open_fences
@@ -2078,8 +2147,11 @@ async def run_agent(
             # private_web_problem. Never when the request names private data.
             try:
                 from service.model_only import public_fact_question
-                public_fact_text = (_last_user if public_fact_question(_last_user)
-                                    and not classify_public_lookup(_last_user).private else None)
+                # So may an explicit search held back only by a possessive
+                # ("search the web for Dana's tour dates"): same words-only rule.
+                _lookup = classify_public_lookup(_last_user)
+                public_fact_text = (_last_user if _lookup.explicit_unknown_owner or (
+                    public_fact_question(_last_user) and not _lookup.private) else None)
             except Exception:  # noqa: BLE001 — unclassifiable means no exemption
                 public_fact_text = None
         # Hosts the user typed in this message. In a turn that starts private,
@@ -2250,6 +2322,29 @@ async def run_agent(
             if (problem := script_file_problem(args)) is not None:
                 return problem
         return dec
+
+    def card_offers_no_always(tool, args):
+        """Whether tool_policy would show this card again whatever grant is stored.
+
+        A model-led turn confirms three kinds of call after decide() has
+        answered, so a standing "Always allow" never lifts them: web egress
+        once private data was read this turn, egress to a host the user did not
+        type when the turn started private, and every opaque outbound action
+        (run_shell unless it is a validated read). The card then offers no
+        "Always allow": tapping it changed nothing, and the same card came back
+        on the next call. Legacy routing is unchanged.
+        """
+        if not model_led_discovery:
+            return False
+        if in_turn_private_web(tool, args) or start_private_egress(tool, args):
+            return True
+        from service.safety.policy import (
+            Decision, OPAQUE_ACTION_CATEGORIES, opaque_outbound_decision)
+        # The question a grant would have to survive: decide() says ALLOW, and
+        # the opaque rule above turns it back into a card.
+        return opaque_outbound_decision(
+            tool.name, tool.category, args, Decision(Tier.ALLOW, ""),
+            categories=OPAQUE_ACTION_CATEGORIES, reason="").tier is not Tier.ALLOW
 
     # Set once a tool runs whose result carries outside text (a file, page, mail...).
     # A picture's reading is outside text from the start.
@@ -2916,6 +3011,8 @@ async def run_agent(
     failed_tools: set[str] = set()
     hard_failed: set[str] = set()
     skills_misnamed: set[str] = set()
+    # Drafts handed back before their card, per send tool (_MAX_DRAFT_REWRITES).
+    draft_rewrites: Counter = Counter()
     waived_tools: set[str] = set()
     attempted_tools: set[str] = set()
     tool_outcomes: list[tuple[str, object]] = []
@@ -3114,7 +3211,9 @@ async def run_agent(
             receipts.append("I couldn't complete every requested step.")
         return "\n".join(receipts)
 
-    def _verified_final(text: str) -> str:
+    def _verified_final(text: str, *, narration: bool = False) -> str:
+        """`narration`: `text` is the model's own answer (or its summary of the
+        results), not a fallback built from the tool results."""
         uncertain = [outcome for name, outcome in tool_outcomes
                      if name in {"send_email", "send_message", "forward_email", "reply_to_email"}
                      and outcome.status == "unknown"]
@@ -3128,13 +3227,17 @@ async def run_agent(
             # Preserve reference history, but refuse to promote an old answer,
             # memory or unrelated public search into a current personal fact.
             if ask_quality and (_ask_capability_prompt or _ask_personal_source_ran()
-                                or _ask_short_question(text)):
+                                or _ask_action_ran() or _ask_short_question(text)):
                 # Model-only Ask: the guard fired after get_upcoming had run
                 # (its arguments did not name the day the obligation parsed)
                 # and on capability questions ("What can you do with my
                 # calendar?"). It now fires only when NO personal source ran
                 # this turn, the prompt asks for personal data, and the
                 # answer is not a clarifying question.
+                # Nor after an action: "Add lunch to my calendar" sets a
+                # calendar scope on the words "my calendar", the event was
+                # created, and the reply said nothing had been checked. What an
+                # action did is for the receipt checks below to say.
                 pass
             elif not re.fullmatch(r"(?:Which (?:source|channel|person|conversation) (?:should I check|do you mean)|Who do you mean|Do you mean Messages or email)\?", text.strip(), re.I):
                 return "I haven't checked a current personal source for that yet. Which source should I check?"
@@ -3198,6 +3301,16 @@ async def run_agent(
                     receipts.append(f"Required source result ({name}): " + _user_facing_failure(outcome.text))
             if _unmet_group() is not None:
                 receipts.append("I couldn't complete every requested step.")
+            elif (narration and not required_reads
+                  and all(outcome.status == "succeeded" for _, outcome in actions)
+                  and any(outcome.effect == "read" and outcome.status in {"succeeded", "no_match"}
+                          for _, outcome in tool_outcomes)
+                  and (beside := _answer_beside_reminder(text))):
+                # "What's on my calendar tomorrow? Also remind me to pack." read
+                # the calendar too, and the receipt alone dropped that answer.
+                # The receipt stays first, and nothing the model says about the
+                # reminder itself is kept.
+                receipts.append(beside)
             return "\n\n".join(receipts)
         # Priority evidence is bounded even when narration sounds exhaustive.
         # Keep selected/unavailable/excluded sources visible on the successful
@@ -3220,6 +3333,24 @@ async def run_agent(
                             and registered.category in PERSONAL_SOURCE_CATEGORIES))
                    for name, outcome in tool_outcomes)
 
+    def _ask_action_ran() -> bool:
+        """An action (not a read) was attempted this turn and not refused.
+        Model-led turns already mark every effectful call as a change
+        (_record_outcome, by its arguments: listing timers is not one); other
+        callers fall back to the tool's category. A shell command and the
+        status reads never count: after `date` in a shell, "What's on my
+        calendar?" is as ungrounded as before."""
+        from service.router.model_led import needs_effect_owner
+        for name, outcome in tool_outcomes:
+            registered = get_tool(name)
+            if (outcome.status in {"denied", "planned"} or registered is None
+                    or registered.category == "shell" or name in _ASK_STATUS_READS):
+                continue
+            if outcome.effect != "read" or (
+                    not model_led_discovery and needs_effect_owner(registered.category)):
+                return True
+        return False
+
     def _ask_grounding_tool_ran() -> bool:
         """A tool that could hold a fact ran and was not denied (weather and
         web count; a calculator or Mac status read does not)."""
@@ -3228,6 +3359,11 @@ async def run_agent(
                    and (registered := get_tool(name)) is not None
                    and registered.category not in UNGROUNDING_CATEGORIES
                    for name, outcome in tool_outcomes)
+
+    def _ask_tool_answered() -> bool:
+        """Some tool ran this turn and returned a result (not refused, not an
+        error)."""
+        return any(outcome.status == "succeeded" for _, outcome in tool_outcomes)
 
     def _prior_requirements_met(tool_name: str) -> bool:
         """Effect tools may not run before earlier source obligations."""
@@ -3369,6 +3505,8 @@ async def run_agent(
             _action = {"id": _cid, "tool": _name, "args": _args,
                        "reason": _dec.reason,
                        "fingerprint": _action_fingerprint(_name, _args)}
+            if card_offers_no_always(_tool, _args):
+                _action["grantable"] = False
             # Router-direct bulk reminder calls bypass the model-driven block
             # that normally builds confirmation previews. Preserve the same
             # safety contract here: the card must show the exact reminder set
@@ -3817,6 +3955,10 @@ async def run_agent(
     ask_expect_tool = False
     ask_reprompt_step = False
     ask_reprompted = False
+    # The re-prompt fired for a fact of the user's own (not for a stall, and
+    # not for a question about this Mac or about Wisp): the one case where a
+    # calculator or a status read cannot be the answer.
+    ask_reprompt_personal = False
     ask_reprompt_no_web = False
     ask_write_nudged = False
     ask_text_call_nudged = False
@@ -3839,14 +3981,42 @@ async def run_agent(
     _ask_has_history = any(isinstance(m, dict) and (m.get("role") == "assistant" or _is_digest(m))
                            for m in messages)
 
+    def _ask_must_carry() -> int:
+        """Estimated tokens of the messages outside the system prefix that
+        _fit_window can never drop from this step: the request, the newest two
+        messages, and a tool call kept because one of its results is among
+        them. Asked of _fit_window itself (an empty window, so it sheds all it
+        is allowed to) rather than restating its rules here."""
+        kept = _fit_window(
+            msgs, [], 0, model, None, protected_prefix_count=len(system_prefix),
+            history_end=turn_history_end, context_window=0, min_output_tokens=0)[0]
+        return sum(_est_tokens(m.get("content") or "")
+                   + (_est_tokens(m["tool_calls"]) if m.get("tool_calls") else 0)
+                   for m in kept[len(system_prefix):])
+
     def _ask_window(offered, stubs, scale: float) -> int:
         """This step's fit window: the Ask prompt budget (scaled down after a
-        guard refusal), never below what the protected prefix and the real
-        schemas need, never above the model's own window."""
+        guard refusal), never below what the protected prefix, the real schemas
+        and the messages the step must carry need, never above the model's own
+        window.
+
+        The room for messages used to be a fixed 2,500 estimated tokens. A
+        12,000-character pasted request, or two capped tool results from one
+        step, is more than that and can never be dropped, so _fit_window
+        dropped tool schemas instead and the turn ended in an error. An
+        ordinary step carries far less than the fixed room and gets exactly the
+        window it always did.
+
+        `scale` shrinks the room for messages as well as the budget. The prefix
+        and real schemas alone are past the budget, so scaling only the budget
+        left the retry after a guard refusal the same size as the request that
+        was refused. What the step must carry is never scaled away."""
         from service.config import model_context_window
         from service.model_only import ASK_HISTORY_RESERVE, ASK_PROMPT_BUDGET
         real = [sch for sch in offered if sch["function"]["name"] not in stubs]
-        floor = _est_tokens(msgs[:len(system_prefix)]) + _est_tokens(real) + 2500
+        floor = (_est_tokens(msgs[:len(system_prefix)]) + _est_tokens(real)
+                 + max(int(_ASK_STEP_MESSAGE_FLOOR * scale),
+                       _ask_must_carry() + _ASK_MUST_CARRY_MARGIN))
         window = (getattr(getattr(client, "target", None), "context_window", None)
                   or model_context_window(model))
         # Earlier conversation gets its own room: without it a tool result
@@ -4192,7 +4362,23 @@ async def run_agent(
                     context_window=step_context_window)
             allowed_names = {s["function"]["name"] for s in step_schemas} - step_stubs
             if model_led_discovery and step_schemas != offered_schemas:
-                raise ValueError("Model-led schemas cannot fit intact; narrow the requested tools")
+                if not ask_quality:
+                    raise ValueError("Model-led schemas cannot fit intact; narrow the requested tools")
+                # What this step must carry (the request, the newest results)
+                # is more than the model's window holds beside the offered
+                # tools. Never send a trimmed toolset or a cut request: end the
+                # turn in words. With results in hand, the tool-free summary
+                # step fits (its nudge makes the older result trimmable).
+                audit("ask_step_too_large", step=_step, results=len(clean_results))
+                if clean_results:
+                    return await _ask_finish((await _ask_summarize()) or _ask_results_text()
+                                             or _ASK_TOO_LONG_MESSAGE)
+                if tool_outcomes:
+                    # Something was attempted: its receipt checks still apply.
+                    return await _ask_finish(_ASK_TOO_LONG_MESSAGE)
+                await emit({"type": "text", "text": _ASK_TOO_LONG_MESSAGE})
+                await emit({"type": "done"})
+                return _ASK_TOO_LONG_MESSAGE
             # Verify before publication. Otherwise even a read-only route can
             # stream a false "delivered" before the receipt checker retracts it.
             stream = False
@@ -4468,6 +4654,11 @@ async def run_agent(
                     # mail, not on the web): re-prompt once with a tool
                     # required instead of trusting it.
                     ask_reprompted = True
+                    from service.model_only import _DEVICE_STATE, wisp_self_question
+                    ask_reprompt_personal = bool(
+                        (asks_personal_data(memory_query) or fresh_personal_scope)
+                        and not _DEVICE_STATE.search(memory_query)
+                        and not wisp_self_question(memory_query))
                     ask_expect_tool = True
                     ask_reprompt_no_web = web_only
                     audit("ask_personal_reprompt", step=_step, web_only=web_only, stalled=stalled)
@@ -4540,6 +4731,8 @@ async def run_agent(
                 await emit({"type": "text", "text": text})
                 await emit({"type": "done"})
                 return text
+            # The model's own words; any fallback below replaces `text` only.
+            narrated = text
             if unmet is not None:
                 if content_streamed:
                     await emit({"type": "clear_answer"})
@@ -4567,7 +4760,8 @@ async def run_agent(
             if ask_quality and not text.strip() and last_tool_result:
                 # Model-only Ask: one short tool-free summarization, then a
                 # compact readable view; never the raw results themselves.
-                text = ((await _ask_summarize()) if clean_results else "") or _ask_results_text()
+                narrated = (await _ask_summarize()) if clean_results else ""
+                text = narrated or _ask_results_text()
                 if not text:
                     text = _ASK_NOTHING_MESSAGE
             if not text.strip() and last_tool_result:
@@ -4607,10 +4801,15 @@ async def run_agent(
                     'has no requests. Keep useful facts and exact source dates from the results already returned. '
                     'Qualify coverage and any missing sources. Do not call tools again.')})
                 continue
-            if ask_quality and ask_reprompted and not _ask_grounding_tool_ran():
+            if (ask_quality and ask_reprompted and not _ask_grounding_tool_ran()
+                    and (ask_reprompt_personal or not _ask_tool_answered())):
                 # The forced re-prompt ran nothing that could hold the fact (a
                 # calculation, a Mac status read) or nothing at all: say so
                 # plainly instead of publishing an invented number.
+                # Not when the question was about this Mac or Wisp, or the
+                # re-prompt only followed a stall, and a tool then answered:
+                # "How much battery do I have left?" read 64% from the status
+                # tool and the reply was replaced with "I don't have that".
                 audit("ask_unknown_personal_fact", step=_step)
                 from service.model_only import ASK_UNKNOWN_MESSAGE
                 text = ASK_UNKNOWN_MESSAGE
@@ -4624,7 +4823,7 @@ async def run_agent(
                     await emit({"type": "clear_answer"})
                 text = ASK_CLAIM_NOT_DONE
             # Publish once, after checking receipts and obligations.
-            verified = _verified_final(text)
+            verified = _verified_final(text, narration=bool(text.strip()) and text == narrated)
             if verified != text:
                 if content_streamed:
                     await emit({"type": "clear_answer"})
@@ -4718,12 +4917,18 @@ async def run_agent(
             _batch_calls.append((tc.get("id", ""), _batch_name, _batch_args))
         from service.tools.assistant_tools import (bind_calendar_local_start,
                                                    calendar_time_problem)
+        # An add whose start time cannot be used never joins the card. It used
+        # to end the whole turn here with the raw error and no `done` event
+        # (the app then showed "The assistant didn't respond."), and nothing
+        # was added. Left out of the batch, it reaches the per-call loop below,
+        # which answers it with that problem as its own tool result, so the
+        # model can correct it; the card lists only what can actually be added,
+        # and the call never runs under the batch's approval.
+        _batch_calls = [
+            (_bcid, _batch_name, _batch_args) for _bcid, _batch_name, _batch_args in _batch_calls
+            if not (_batch_name == "add_calendar_event"
+                    and calendar_time_problem(_batch_args.get("when_iso")))]
         if len(_batch_calls) > 1:
-            for _, _batch_name, _batch_args in _batch_calls:
-                if _batch_name == "add_calendar_event" and (
-                        problem := calendar_time_problem(_batch_args.get("when_iso"))):
-                    await emit({"type": "text", "text": problem})
-                    return problem
             for _bcid, _batch_name, _batch_args in _batch_calls:
                 if _batch_name == "add_calendar_event":
                     _batch_args["when_iso"] = bind_calendar_local_start(
@@ -4744,10 +4949,15 @@ async def run_agent(
             _batch_approved = _note_decision("calendar_changes", await approver.confirm(_batch_action))
             if _batch_approved:
                 for _, _batch_name, _batch_args in _batch_calls:
-                    if _batch_name == "add_calendar_event" and (
-                            problem := calendar_time_problem(_batch_args["when_iso"])):
-                        await emit({"type": "text", "text": problem})
-                        return problem
+                    if _batch_name == "add_calendar_event" and calendar_time_problem(
+                            _batch_args["when_iso"]):
+                        # The approved start no longer matches this Mac's local
+                        # time (its zone or clock changed while the card was
+                        # open). Nothing in the batch has run yet; stop in words
+                        # and close the turn.
+                        await emit({"type": "text", "text": _CALENDAR_BATCH_STALE_MESSAGE})
+                        await emit({"type": "done"})
+                        return _CALENDAR_BATCH_STALE_MESSAGE
             for _bcid, _, _ in _batch_calls:
                 batch_verdict[_bcid] = _batch_approved
 
@@ -5298,6 +5508,24 @@ async def run_agent(
                     result = _preflight
                     audit("content_preflight", tool=name, args=args,
                           reason=_preflight)
+                    # No card was shown and nothing ran, so this is not an
+                    # outcome: recorded as one it is a failed send, which ends
+                    # the turn and shows the person the rewrite instructions
+                    # written for the model. A model that keeps producing the
+                    # same bad draft is stopped with a sentence for the person.
+                    draft_rewrites[name] += 1
+                    await emit({"type": "tool_result", "id": cid, "result": result})
+                    if draft_rewrites[name] > _MAX_DRAFT_REWRITES:
+                        _kept = "scheduled" if name == "schedule_send" else "sent"
+                        response = _earlier_effect_receipts(
+                            "I couldn't finish a clean draft of that message, so nothing "
+                            f"was {_kept}. Tell me what you'd like it to say.")
+                        await emit({"type": "text", "text": response})
+                        await emit({"type": "done"})
+                        return response
+                    msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                    failed_tools.add(name)
+                    continue
                 elif dec.tier is Tier.CONFIRM:
                     if name == "reply_to_email":
                         from service.tools.action_tools import prepare_reply_args
@@ -5312,6 +5540,8 @@ async def run_agent(
                     action = {"id": cid, "tool": name, "args": args,
                               "reason": dec.reason,
                               "fingerprint": _action_fingerprint(name, args)}
+                    if card_offers_no_always(tool, args):
+                        action["grantable"] = False
                     # Installing a self-authored tool is the one confirm where the
                     # args don't describe what's actually at stake — `{"name": "x"}`
                     # says nothing about the code about to be written. Attach the

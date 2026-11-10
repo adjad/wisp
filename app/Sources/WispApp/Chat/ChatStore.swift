@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Everything the Chat window needs from the Wisp service. The live
 /// implementation talks to the local backend; the QA harness supplies a
@@ -59,6 +60,28 @@ struct CorpusExportFiles: Equatable {
     let saved: Bool
 }
 
+/// What is typed in a composer but not sent yet. The composer view is rebuilt
+/// when another chat or section opens and when the Text size changes; this
+/// outlives it, so the words are still there afterwards. Plain, not published:
+/// the composer reads it as it appears and writes it as the person types, so
+/// typing never redraws the window. Kept in memory only, never saved. Only
+/// its conversation, the store and the composer touch it, all on the main actor.
+final class ChatComposerDraft {
+    var text = ""
+    var image: (name: String, dataURL: String)?
+    /// The message a dropped request put back: typing over it clears the note
+    /// that says it is back in the box.
+    var restoredText: String?
+
+    var isEmpty: Bool { text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && image == nil }
+
+    func clear() {
+        text = ""
+        image = nil
+        restoredText = nil
+    }
+}
+
 /// One conversation in the sidebar and the window.
 @MainActor
 final class ChatConversation: ObservableObject, Identifiable {
@@ -78,6 +101,11 @@ final class ChatConversation: ObservableObject, Identifiable {
     fileprivate(set) var corpusNormal = false
     /// Text to put back in the composer after a dropped request.
     @Published var restoredInput: String?
+    /// Why the last message didn't go through, shown above the composer until
+    /// the next send or edit.
+    @Published var notice: String?
+    /// What is typed in this chat's composer and not sent yet.
+    let composerDraft = ChatComposerDraft()
 
     // Per-run streaming state, outside the published surface.
     fileprivate var task: Task<Void, Never>?
@@ -104,6 +132,21 @@ final class ChatConversation: ObservableObject, Identifiable {
     }
     var isEmpty: Bool { messages.isEmpty }
     var latestAssistant: ChatMessage? { messages.last(where: { $0.role == .assistant }) }
+    /// A card in this chat is waiting for a yes. Only a reply still running can
+    /// be answered, so the sidebar marks the chat only while it is.
+    var hasPendingApproval: Bool { busy && messages.contains { $0.approval?.state == .pending } }
+}
+
+/// Whether a finished `forget` call removed something, read from the tool's own
+/// result and never from the model's wording. The strings are the tool's
+/// (service/tools/memory_tools.py `forget`): "Forgot N matching memory
+/// record(s)…", or "… Also withdrew N notice(s)…" when only a held notice went.
+/// Keep the two in step. A forget that matched nothing, was denied or was
+/// rejected removed nothing.
+enum ForgetToolResult {
+    static func removedSomething(tool: String, result: String, isInternal: Bool) -> Bool {
+        tool == "forget" && !isInternal && (result.hasPrefix("Forgot ") || result.contains("Also withdrew "))
+    }
 }
 
 @MainActor
@@ -130,6 +173,8 @@ final class ChatStore: ObservableObject {
     private let debug: () -> Bool
     /// Chats deleted this session, so a list fetched before the delete finished cannot bring one back.
     private var deletedSessionIds = Set<String>()
+    /// What is typed in the composer shown while no chat is open.
+    let welcomeDraft = ChatComposerDraft()
 
     init(backend: ChatBackend, debug: @escaping () -> Bool = { false }) {
         self.backend = backend
@@ -138,6 +183,18 @@ final class ChatStore: ObservableObject {
 
     /// Debug Mode, read when a view is built (it gates debug-only tools such as image attach).
     var debugMode: Bool { debug() }
+
+    /// A reply's Markdown as words to speak. The window supplies the notch's
+    /// own cleanup (ChatRootView); the store checks compile without it.
+    var spokenText: (String) -> String = { $0 }
+
+    /// Tells VoiceOver one line (ChatAnnouncement), as the notch does for its
+    /// answers. The store checks record the lines instead.
+    var announce: @MainActor (String) -> Void = { line in
+        guard NSWorkspace.shared.isVoiceOverEnabled, NSApp != nil else { return }
+        NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                             userInfo: [.announcement: line, .priority: NSAccessibilityPriorityLevel.high.rawValue])
+    }
 
     // MARK: - List
 
@@ -248,6 +305,13 @@ final class ChatStore: ObservableObject {
     @discardableResult
     func newChat() -> ChatConversation {
         if let current = selected, current.isEmpty, current.sessionId.isEmpty { return current }
+        // An unsent chat the reader stepped away from leaves the sidebar, but it
+        // still holds what they typed: New chat goes back to it.
+        if let parked = conversations.first(where: { $0.isEmpty && $0.sessionId.isEmpty && !$0.composerDraft.isEmpty }) {
+            selected = parked
+            inspectedMessage = nil
+            return parked
+        }
         let fresh = ChatConversation()
         conversations.insert(fresh, at: 0)
         selected = fresh
@@ -451,6 +515,7 @@ final class ChatStore: ObservableObject {
         let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else { return }
         guard !conversation.busy, !conversation.loading else { return }
+        conversation.notice = nil
         if conversation.messages.isEmpty && corpusCase == nil { conversation.title = ChatTitle.make(from: prompt) }
         var user = ChatMessage(role: .user, text: prompt)
         user.attachmentName = attachmentName
@@ -591,6 +656,8 @@ final class ChatStore: ObservableObject {
             if conversation.messages[i].approval?.state == .pending {
                 resolve(conversation, messageID: conversation.messages[i].id, approved: false, scope: "once")
             }
+            conversation.messages[i].interruptOpenTools()
+            conversation.messages[i].stoppedByUser = true
             conversation.messages[i].phase = .done
             conversation.messages[i].meta?.finishedAt = Date()
         }
@@ -624,6 +691,12 @@ final class ChatStore: ObservableObject {
                 message.needsAccess.append(kind)
             }
         }
+        // Ask's own forget removed something: the notch's debug-log memory of every
+        // chat goes too, as Memory › Forget does. The fact may be in any of them.
+        if event.type == "tool_result", let row = message.tools.last(where: { $0.id == event.str("id") }),
+           ForgetToolResult.removedSomething(tool: row.name, result: event.str("result"), isInternal: event.bool("internal")) {
+            NotificationCenter.default.post(name: .wispForgetChatDebugArchive, object: nil)
+        }
         // Corpus replies are text and read evidence, never actionable drafts.
         if message.corpusEvaluation != nil { message.draft = nil }
         if let start = conversation.streamStart, message.meta != nil {
@@ -639,6 +712,9 @@ final class ChatStore: ObservableObject {
             }
             return
         }
+        // A card is now waiting: VoiceOver says so, since focus is still in the
+        // composer and the card is denied by itself if nobody answers.
+        if event.type == "confirm", let line = ChatAnnouncement.approval(message) { announce(line) }
         switch outcome {
         case .none:
             conversation.messages[i] = message
@@ -654,6 +730,8 @@ final class ChatStore: ObservableObject {
             conversation.busy = false
             conversation.lastUsed = Date()
             conversation.preview = message.text.split(whereSeparator: { $0.isNewline }).first.map(String.init) ?? ""
+            // The whole answer or error, once: never the words as they stream.
+            if let line = ChatAnnouncement.reply(message, plain: spokenText) { announce(line) }
             if message.corpusEvaluation == nil { Task { await self.refresh() } }
         case .droppedEmpty:
             // Nothing arrived: take the exchange back and hand the prompt to the composer.
@@ -662,9 +740,19 @@ final class ChatStore: ObservableObject {
                 message.text = "Wisp did not return a response. This case was not scored."
                 message.phase = .failed
                 conversation.messages[i] = message
-            } else if i > 0, conversation.messages[i - 1].role == .user {
-                conversation.restoredInput = conversation.messages[i - 1].text
-                conversation.messages.removeSubrange((i - 1)...i)
+            } else {
+                if i > 0, conversation.messages[i - 1].role == .user {
+                    conversation.restoredInput = conversation.messages[i - 1].text
+                    conversation.messages.removeSubrange((i - 1)...i)
+                }
+                // Never silent: say why above the composer, as the notch does.
+                let notice = ChatSendNotice.text(message: event.str("message"),
+                                                 unsent: event.bool("unsent"))
+                conversation.notice = notice
+                announce(notice)
+                // Re-read the service, so the sidebar stops saying Ready while it is
+                // down and says so again once it is back.
+                Task { await self.refreshWhenReady() }
             }
             conversation.busy = false
         }

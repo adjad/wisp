@@ -281,6 +281,17 @@ final class RemindersWriter {
         return String(view)
     }
 
+    /// The title a dated reminder or a Calendar event is synced with: its own, unchanged,
+    /// or "(untitled)" when it has none. EventKit reads a missing title back as "", not
+    /// nil, and the service keeps no row with an empty title, so an untitled meeting was
+    /// missing from the day and its time read as free. Blank is what Python's `strip()`
+    /// leaves empty, the service's own test.
+    static func syncedTitle(_ raw: String?) -> String {
+        guard let raw, raw.unicodeScalars.contains(where: { !pythonWhitespace.contains($0.value) })
+        else { return "(untitled)" }
+        return raw
+    }
+
     /// What an exact update/complete/delete targets. A missing expected due time (JSON null)
     /// means "a reminder with no due date", which only a delete may target; any other value
     /// must be a real time. Nothing stands in for null, so a bad or missing number can never
@@ -680,7 +691,7 @@ final class RemindersWriter {
                 return [
                     "source_id": r.calendarItemIdentifier,
                     "kind": self.commitmentKind(r),
-                    "title": r.title ?? "(untitled)",
+                    "title": Self.syncedTitle(r.title),
                     "context": calendar.title,
                     "when_ts": (self.allDayDate(r) != nil
                         ? (Calendar.current.date(byAdding: .day, value: 1, to: date)?.addingTimeInterval(-60) ?? date)

@@ -25,6 +25,30 @@ RECONNECT_GRACE_S = 8.0
 _pending: dict[str, asyncio.Future] = {}
 _pending_waiters: dict[str, int] = {}
 
+# The one native failure taken as proof that nothing was sent: macOS refused
+# the Apple Event (TCC -1743) before Mail or Messages saw it, which the app
+# reports as this fixed code. Error text is never read for it, and every other
+# native failure of a send stays "unknown".
+_AUTOMATION_DENIED = "automation_denied"
+
+
+def _automation_refusal(event_type: str, result) -> str | None:
+    """Host-written guidance when macOS refused to let Wisp control the sending
+    app, else None. Nothing from the native error text is passed on."""
+    if not (isinstance(result, dict) and result.get("ok") is False and "status" not in result
+            and type(result.get("refusal")) is str and result["refusal"] == _AUTOMATION_DENIED):
+        return None
+    app = "Messages" if event_type == "send_message" else "Mail"
+    if app == "Mail":
+        try:
+            # Ask shows its own "Allow…" button for this kind under the reply.
+            from service.tools import access_needed
+            access_needed.need("email", "mail_automation")
+        except Exception:  # noqa: BLE001 — the button is a convenience, never the outcome
+            pass
+    return (f"Wisp isn't allowed to control {app}, so nothing was sent. Turn on {app} for Wisp in "
+            "System Settings > Privacy & Security > Automation, then try again.")
+
 
 def _reminder_base_action_id(event_type: str, payload: dict) -> str | None:
     try:
@@ -249,6 +273,12 @@ async def _request(event_type: str, payload: dict,
             # generic native failure cannot prove an external send did not run.
             if (not isinstance(result, dict) or result.get("ok") is not True
                     or ("status" in result and result["status"] != "succeeded")):
+                refused = _automation_refusal(event_type, result)
+                if refused:
+                    # The event reached the app, but macOS stopped the app's
+                    # first request to Mail or Messages, so no send began.
+                    return {"ok": False, "status": "not_attempted", "dispatch_started": False,
+                            "action_id": action_id, "error": refused}
                 return {"ok": False, "status": "unknown", "dispatch_started": dispatch_started,
                         "action_id": action_id,
                         "error": "Outbound result was not confirmed; check the sending app before retrying"}

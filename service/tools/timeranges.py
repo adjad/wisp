@@ -469,6 +469,10 @@ _CLOCK_RE = re.compile(
     r"^(?:at\s+)?(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<ampm>am|pm)?$"
 )
 
+# A clock time said as a word: "noon", "at midnight", "tomorrow at noon".
+_CLOCK_WORDS = ("noon", "midday", "midnight")
+_CLOCK_WORD_RE = re.compile(r"^(?:at\s+)?(?P<word>" + "|".join(_CLOCK_WORDS) + r")$")
+
 # "tonight", "tomorrow morning", "monday at 9am", "next friday"
 _DAY_CLOCK_RE = re.compile(
     r"^(?:(?P<modifier>this|next)\s+)?"
@@ -531,6 +535,27 @@ def _resolve_clock(hour: int, minute: int, ampm: str | None,
     return candidates[-1]
 
 
+def _bare_hour_on_a_day(hour: int, day: str, timeword: str | None) -> int:
+    """The 24-hour hour for a 0-12 hour said with a day and no am/pm.
+
+    A part-of-day word decides the half of the day: "tomorrow morning at 7" is
+    7 AM, "tomorrow evening at 8" and "tonight at 8" are 8 PM. "At 12" is noon,
+    except at night, where it is midnight (the caller picks which day's). With
+    no such word, an explicit day removes the "nearest future occurrence" trick
+    (both readings are equally "in the future"), so fall back to how these
+    actually get said out loud: a small bare hour named alongside a day is
+    almost always evening ("Monday at 6").
+    """
+    night = timeword in ("night", "midnight") or (day == "tonight" and timeword is None)
+    if hour == 12:
+        return 0 if night else 12
+    if hour == 0 or timeword == "morning":
+        return hour
+    if timeword in ("afternoon", "evening", "night") or day == "tonight":
+        return hour + 12
+    return hour + (12 if hour <= 7 else 0)
+
+
 def _resolve_day_clock(m: re.Match, now: datetime) -> datetime:
     """A day word (today/tonight/tomorrow/a weekday), optionally with a
     time-of-day word or an explicit clock time attached."""
@@ -548,7 +573,17 @@ def _resolve_day_clock(m: re.Match, now: datetime) -> datetime:
         if modifier == "next":
             base += timedelta(days=7)
 
-    if clock:
+    # Midnight named with a night ("tonight at midnight", "friday night at 12")
+    # is the one that ends that night: 00:00 of the next day. With only a day
+    # ("tomorrow at midnight", "tomorrow midnight") it is 00:00 of that day.
+    late = timeword == "night" or (day == "tonight" and timeword in (None, "midnight"))
+
+    if clock and clock.strip() in _CLOCK_WORDS:
+        # "tomorrow at noon" is "tomorrow noon": the same hour of the named day.
+        dt = base.replace(hour=_TIME_WORD_HOURS[clock.strip()], minute=0)
+        if late and clock.strip() == "midnight":
+            dt += timedelta(days=1)
+    elif clock:
         cm = _CLOCK_RE.match(clock.strip())
         if not cm:
             raise BadWhen(f"(couldn't understand the time {clock!r})")
@@ -564,14 +599,14 @@ def _resolve_day_clock(m: re.Match, now: datetime) -> datetime:
         elif ampm:
             h = (hour % 12) + (12 if ampm == "pm" else 0)
         else:
-            # An explicit day removes the "nearest future occurrence" trick
-            # (both readings are equally "in the future"), so fall back to
-            # how these actually get said out loud: a small bare hour named
-            # alongside a day is almost always evening ("Monday at 6").
-            h = (hour % 12) + (12 if 1 <= hour <= 7 else 0)
+            h = _bare_hour_on_a_day(hour, day, timeword)
         dt = base.replace(hour=h, minute=minute)
+        if late and hour == 12 and not ampm:
+            dt += timedelta(days=1)
     elif timeword:
         dt = base.replace(hour=_TIME_WORD_HOURS[timeword], minute=0)
+        if late and timeword == "midnight":
+            dt += timedelta(days=1)
     elif day == "tonight":
         dt = base.replace(hour=_TIME_WORD_HOURS["tonight"], minute=0)
     else:
@@ -615,6 +650,12 @@ def resolve_when(when: str, *, now: datetime | None = None
     if (m := _DAY_CLOCK_RE.match(p)):
         dt = _checked_wall_time(_resolve_day_clock(m, now))
         return dt, dt.strftime("%A %b %-d at %-I:%M %p")
+
+    if (m := _CLOCK_WORD_RE.match(p)):
+        # On its own, the next noon or the next midnight.
+        dt = _checked_wall_time(_resolve_clock(0, 0, None, now) if m.group("word") == "midnight"
+                                else _resolve_clock(12, 0, "pm", now))
+        return dt, dt.strftime("%a %b %-d at %-I:%M %p")
 
     if (m := _CLOCK_RE.match(p)):
         hour, minute = int(m.group("hour")), int(m.group("minute") or 0)

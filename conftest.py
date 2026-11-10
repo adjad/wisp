@@ -30,6 +30,23 @@ os.environ.update({
     "PYTHONDONTWRITEBYTECODE": "1",
 })
 
+# service/local_http.py refuses any request whose Host is not this Mac's
+# loopback address. In-process test clients use made-up names instead, so the
+# names in use are allowed here, for the test run only. A running Wisp never
+# loads this file and keeps the set empty. tests/test_local_http_guard.py
+# empties it again to check the real rules.
+_IN_PROCESS_TEST_HOSTS = frozenset({
+    "testserver",                # Starlette's TestClient default
+    "test", "fixture",
+    "test.invalid", "fixture.invalid", "synthetic.invalid",
+})
+try:
+    from service import local_http as _local_http
+except ImportError:              # no web stack installed, so no guarded app either
+    pass
+else:
+    _local_http._TEST_HOSTS.update(_IN_PROCESS_TEST_HOSTS)
+
 
 def pytest_sessionstart(session: pytest.Session) -> None:
     """Fail closed if Wisp storage escaped the disposable test directory."""

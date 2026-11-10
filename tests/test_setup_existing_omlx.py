@@ -272,6 +272,25 @@ def test_automatic_start_never_restarts_even_when_it_fails(monkeypatch):
     assert [c[0] for c in calls if c[0] != "await"] == ["start"]
 
 
+def test_two_automatic_starts_at_once_start_the_persons_omlx_once(monkeypatch):
+    import service.main as main
+    calls = _lifecycle(monkeypatch, main, comes_up=True)
+    up = []
+
+    async def await_omlx(seconds):
+        calls.append(("await", seconds))
+        await asyncio.sleep(0.01)
+        if seconds == 45:
+            up.append(True)             # the start's own wait sees it come up
+        return bool(up)
+    monkeypatch.setattr(main, "_await_omlx", await_omlx)
+
+    async def both():
+        return await asyncio.gather(main._start_existing_omlx(), main._start_existing_omlx())
+    assert asyncio.run(both()) == [None, None]
+    assert [c for c in calls if c[0] == "start"] == [("start", "--no-wait")]
+
+
 def test_an_already_running_omlx_is_left_alone(monkeypatch):
     import service.main as main
     calls = _lifecycle(monkeypatch, main, comes_up=True)

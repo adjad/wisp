@@ -5,7 +5,9 @@ question now gets: one line on what Wisp does, which sources are connected
 right now (service/assistant/sync_status), three try-it prompts that fit those
 sources, and where the hotkey, the / shortcuts, Brief, Day and Getting to know
 you live. A question about a specific ability still gets the Yes/No report,
-because its honest "No" rows are the answer to "can you read my screen?".
+because its honest rows are the answer to "can you read my screen?": Yes when
+you show Wisp a picture, a window or a part of the screen, No to watching on
+its own.
 """
 import asyncio
 import os
@@ -67,8 +69,22 @@ def test_welcome_survives_unreadable_sources(monkeypatch):
 def test_specific_question_keeps_the_honest_report():
     text = wisp_capabilities("Can you send texts and create reminders?")
     assert "Yes — Send text messages (confirmation required)" in text
-    assert "No — inspect or understand the screen visually" in text
+    assert "No — inspect or understand the screen visually" not in text
+    assert "no vision model" not in text.lower()
     assert "usable tools" not in text
+
+
+def test_screen_question_says_wisp_can_look_when_asked():
+    text = wisp_capabilities("Can you see my screen?")
+    row = next(line for line in text.splitlines() if line.startswith("Yes — look at"))
+    assert "screen" in row and "picture" in row and "press send" in row
+    # The look is captured at once and held as a preview; only sending waits.
+    assert "nothing is sent until you press send" in row
+    assert "you see what Wisp captured first" in row
+    assert "nothing is captured" not in row
+    assert "window in front" in row and "drag over" in row
+    assert "No — watch your screen on its own" in text
+    assert "no vision model" not in text.lower()
 
 
 def test_router_still_sends_what_can_you_do_to_the_tool():

@@ -431,9 +431,13 @@ async def complete_reminder(title: str, expected_id: str = "") -> str:
                         question="Which reminder is done?")
 
     reminder_sources = {"manual", "reminders"}
-    rows = [row for row in _store.active_future(horizon_days=365)
-            if row.get("source") in reminder_sources
-            or bool(reminder_sources & set(row.get("duplicate_sources") or []))]
+    # Every active reminder, overdue ones too: finishing something after it was
+    # due is the usual case. Naming a reminder the stale policy hides may still
+    # complete it, as update_reminder allows.
+    rows = [row for row in _store.active_between(None, None, include_stale=True)
+            if row.get("when_ts") is not None
+            and (row.get("source") in reminder_sources
+                 or bool(reminder_sources & set(row.get("duplicate_sources") or [])))]
     hits = [r for r in rows if needle in (r.get("title") or "").lower()]
     exact = [r for r in hits if " ".join((r.get("title") or "").split()).casefold()
              == " ".join(title.split()).casefold()]
@@ -452,7 +456,17 @@ async def complete_reminder(title: str, expected_id: str = "") -> str:
                 f"Ask me what's upcoming if you're not sure of the wording."
                 + near_miss_note(title, [r.get("title") or "" for r in rows]))
     if len(hits) > 1:
-        listed = "\n".join(f"  - {r['title']} ({_fmt_time(r['when_ts'])})" for r in hits[:8])
+        # A reminder every other view has stopped showing should not turn a clear
+        # request into a question: prefer the ones still shown.
+        shown_ids = {row["id"] for row in _store.active_between(None, None)}
+        shown = [row for row in hits if row["id"] in shown_ids]
+        if shown:
+            hits = shown
+    if len(hits) > 1:
+        today = dt.date.today()
+        listed = "\n".join(
+            f"  - {r['title']} ({_fmt_day(dt.datetime.fromtimestamp(r['when_ts']).date(), today)}, "
+            f"{_fmt_time(r['when_ts'])})" for r in hits[:8])
         return not_done(f"Several match {title!r} — which one?\n{listed}")
 
     _, message = await complete_commitment(hits[0])

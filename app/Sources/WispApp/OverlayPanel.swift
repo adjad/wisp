@@ -37,6 +37,10 @@ final class OverlayPanel: NSPanel {
     private var stage: NSView?
     private var revealMask: CALayer?
     private var revealGeneration: UInt64 = 0
+    // The caller's completion for the reveal in flight, and which way it runs.
+    // A display change cancels the animation but still owes the caller its
+    // completion (see applyDisplayChange); every other cancel drops it.
+    private var pendingReveal: (opening: Bool, completion: () -> Void)?
     // A shrink waits for the content's own animation (a Brief row closing) to
     // finish before the window follows; see resizeToFit.
     private var pendingShrink: DispatchWorkItem?
@@ -178,20 +182,31 @@ final class OverlayPanel: NSPanel {
     }
 
     /// Re-fit after displays changed (attached, removed, rearranged, rescaled).
-    /// Cancels any in-flight reveal so its stale geometry can't win.
+    /// Cancels any in-flight reveal so its stale geometry can't win, then
+    /// finishes it for the caller: the open or close it belonged to is waiting
+    /// on that completion, and nothing else would ever end the step.
     func applyDisplayChange() {
         let l = layout
         level = l.windowLevel
         revealMask?.maskedCorners = l.maskedCorners
         passMouseThrough(collapsed: isCompact())
         guard isVisible else { return }
+        let interrupted = pendingReveal
         cancelReveal()
         if isCompact() {
             settleToBar()
+        } else if interrupted?.opening == false {
+            // A close cut short keeps its small mask, as a finished close does,
+            // until the caller's completion swaps in the bar or hides the panel.
         } else if let f = frame(compact: false) {
             setFrame(f, display: true)
             fillMask()
         }
+        guard let interrupted else { return }
+        let token = revealGeneration
+        interrupted.completion()
+        // As after a finished open, unless the completion began another reveal.
+        if interrupted.opening, revealGeneration == token { resizeToFit() }
     }
 
     /// How long a shrink waits for SwiftUI to finish animating the content
@@ -297,6 +312,7 @@ final class OverlayPanel: NSPanel {
     private func cancelReveal() {
         revealGeneration &+= 1
         isRevealing = false
+        pendingReveal = nil
         revealMask?.removeAllAnimations()
     }
 
@@ -339,6 +355,7 @@ final class OverlayPanel: NSPanel {
         let endRadius = opening ? panelCornerRadius : barCornerRadius
         let token = revealGeneration
         isRevealing = true
+        pendingReveal = (opening: opening, completion: completion)
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -351,6 +368,7 @@ final class OverlayPanel: NSPanel {
         let finish = { [weak self] in
             guard let self, self.revealGeneration == token else { return }
             self.isRevealing = false
+            self.pendingReveal = nil
             completion()
             // Coalesce height changes received while opening. A close keeps
             // its small mask until the caller has swapped in the compact bar.

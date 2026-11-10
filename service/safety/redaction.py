@@ -18,17 +18,24 @@ from typing import Any
 
 PLACEHOLDER = "[redacted credential]"
 
+# These short prefixes only mean a key at the start of a word. "risk-", "task-"
+# and "ask-" end in "sk-" too, and the long URL slug or file name after them is
+# not a key. Any separator may come before the prefix (space, quote, "=", ":",
+# "/", "-", "_"); only a letter or digit joined straight onto it rules it out.
+# A separator written as an escape ends in a letter or digit and still counts:
+# \n, \t and \r in serialized text, %3D or %20 in a URL.
+_WORD_START = r"(?:(?<![A-Za-z0-9])|(?<=\\[nrt])|(?<=%[0-9A-Fa-f]{2}))"
 _PREFIXED = (
     r"wisp_meeting_cap_[0-9a-f]{64}",          # transient private Calendar capability
-    r"sk-or-v1-[A-Za-z0-9]{20,}",               # OpenRouter
-    r"sk-ant-[A-Za-z0-9_-]{20,}",               # Anthropic
-    r"sk-(?:proj-)?[A-Za-z0-9_-]{32,}",         # OpenAI-style
-    r"gh[pousr]_[A-Za-z0-9]{30,}",              # GitHub tokens
+    _WORD_START + r"sk-or-v1-[A-Za-z0-9]{20,}",        # OpenRouter
+    _WORD_START + r"sk-ant-[A-Za-z0-9_-]{20,}",        # Anthropic
+    _WORD_START + r"sk-(?:proj-)?[A-Za-z0-9_-]{32,}",  # OpenAI-style
+    _WORD_START + r"gh[pousr]_[A-Za-z0-9]{30,}",       # GitHub tokens
     r"github_pat_[A-Za-z0-9_]{40,}",
-    r"xox[abprs]-[A-Za-z0-9-]{20,}",            # Slack
+    _WORD_START + r"xox[abprs]-[A-Za-z0-9-]{20,}",     # Slack
     r"AKIA[0-9A-Z]{16}",                        # AWS access key id
     r"AIza[0-9A-Za-z_-]{35}",                   # Google API key
-    r"hf_[A-Za-z0-9]{30,}",                     # Hugging Face
+    _WORD_START + r"hf_[A-Za-z0-9]{30,}",              # Hugging Face
     r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}",  # JWT
 )
 _PEM = r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)"

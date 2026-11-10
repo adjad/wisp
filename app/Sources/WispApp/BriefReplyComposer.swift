@@ -33,13 +33,21 @@ struct BriefReplyComposer: View {
         self.onDismiss = onDismiss
     }
 
+    /// Shows a reply whose state is kept outside the view (the Brief keeps one
+    /// per thread), so the notch tucking away or a tab change loses nothing:
+    /// the row comes back with the same text, phase and send result.
+    init(model: BriefReplyModel, onDismiss: @escaping () -> Void) {
+        _model = StateObject(wrappedValue: model)
+        self.onDismiss = onDismiss
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             header
             editor
             if !model.status.isEmpty {
                 Text(model.status)
-                    .font(.system(size: 11))
+                    .font(.wisp(size: 11))
                     .foregroundStyle(model.phase == .sent ? Theme.textSecondary
                                      : model.phase == .sending ? Theme.textMuted : Theme.bad)
                     .fixedSize(horizontal: false, vertical: true)
@@ -55,7 +63,7 @@ struct BriefReplyComposer: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(model.phase == .sent ? "REPLY · SENT" : "REPLY · \(model.account.uppercased())")
-                .font(.system(size: 10, design: .monospaced))
+                .font(.wisp(size: 10, design: .monospaced))
                 .foregroundStyle(Theme.textMuted)
                 .lineLimit(1)
             // Never truncated: these are the people the reply goes to.
@@ -64,7 +72,7 @@ struct BriefReplyComposer: View {
             recipientLine("BCC", model.bcc)
             if !model.subject.isEmpty {
                 Text("Subject: \(model.subject)")
-                    .font(.system(size: 11, design: .monospaced))
+                    .font(.wisp(size: 11, design: .monospaced))
                     .foregroundStyle(Theme.textSecondary)
                     .lineLimit(1)
             }
@@ -74,7 +82,7 @@ struct BriefReplyComposer: View {
     @ViewBuilder private func recipientLine(_ label: String, _ addresses: [String]) -> some View {
         if !addresses.isEmpty {
             Text("\(label): \(addresses.joined(separator: ", "))")
-                .font(.system(size: 11, design: .monospaced))
+                .font(.wisp(size: 11, design: .monospaced))
                 .foregroundStyle(label == "To" ? Theme.textSecondary : Theme.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
@@ -87,7 +95,7 @@ struct BriefReplyComposer: View {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
                     Text("Drafting…")
-                        .font(.system(size: 12))
+                        .font(.wisp(size: 12))
                         .foregroundStyle(Theme.textSecondary)
                     Spacer()
                 }
@@ -95,7 +103,7 @@ struct BriefReplyComposer: View {
                 .padding(.horizontal, 8)
             } else {
                 TextEditor(text: $model.text)
-                    .font(.system(size: 12.5))
+                    .font(.wisp(size: 12.5))
                     .foregroundStyle(Theme.textPrimary)
                     .scrollContentBackground(.hidden)
                     .frame(minHeight: 90, maxHeight: 200)
@@ -135,7 +143,7 @@ struct BriefReplyComposer: View {
     private func chip(_ title: String, primary: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: 12, weight: primary ? .semibold : .regular))
+                .font(.wisp(size: 12, weight: primary ? .semibold : .regular))
                 .foregroundStyle(primary ? Color.black : Theme.textPrimary)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 5)
@@ -218,14 +226,31 @@ final class BriefReplyModel: ObservableObject {
         phase == .ready && canSend && envelope != nil && !holding
             && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
+    /// Whether tucking the panel away now would hide work in progress: a draft
+    /// being written, text that hasn't been sent, or a send with no answer yet.
+    /// False once the reply is sent or its outcome is unknown, and for a draft
+    /// that can't be sent from here (offered to copy or open elsewhere): the
+    /// text is kept either way, and nothing is waiting on the panel.
+    var holdsPanelOpen: Bool {
+        switch phase {
+        case .drafting, .sending: return true
+        case .ready: return canSend && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .sent, .unknown: return false
+        }
+    }
 
     func loadDraft() async {
         guard !loaded else { return }
         loaded = true
         phase = .drafting
         status = ""
-        let obj = await post("assistant/email_reply/draft", ["reply_ref": replyRef], timeout: 90)
-        apply(draft: obj)
+        // In its own task: the view's `.task` is cancelled when the notch tucks
+        // away or the tab changes, and a reply kept across that must still get
+        // its draft instead of a cancelled request's failure.
+        await Task { @MainActor in
+            let obj = await self.post("assistant/email_reply/draft", ["reply_ref": self.replyRef], timeout: 90)
+            self.apply(draft: obj)
+        }.value
     }
 
     /// Exposed for checks: applies a /draft response.

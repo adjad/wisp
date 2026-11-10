@@ -162,4 +162,46 @@ enum SingleInstance {
         guard let bundleIdentifier, !bundleIdentifier.isEmpty else { return false }
         return peers.contains { $0 != selfPID && $0 > 0 }
     }
+
+    /// How a second launch hands over once `shouldYield` says a copy is running.
+    enum HandOver: Equatable {
+        /// To the running copy, without a word: it is this same app.
+        case silent
+        /// The running copy is quitting, or setup expects a relaunch: wait for it to
+        /// go, then launch (FirstRunSetup.waitsForPeerToQuit). Never asked about.
+        case waitForQuit
+        /// The running copy is a different Wisp.app (another folder, usually another
+        /// version, as when a downloaded update is opened while the old one runs).
+        /// Handing over silently left the person using the old one: ask.
+        case ask
+    }
+
+    /// Pure. `peerPaths` are the running copies' bundle folders, nil where macOS
+    /// would not say; an unknown one is treated as this same app, as before.
+    static func handOver(selfPath: String, peerPaths: [String?], waitsForPeerToQuit: Bool) -> HandOver {
+        if waitsForPeerToQuit { return .waitForQuit }
+        let own = canonicalPath(selfPath)
+        let different = peerPaths.contains { peer in peer.map { canonicalPath($0) != own } ?? false }
+        return different ? .ask : .silent
+    }
+
+    /// One spelling per folder: no trailing slash, no "..", symlinks resolved.
+    static func canonicalPath(_ path: String) -> String {
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    /// What the question says: which Wisp is running, from where, and which this is.
+    /// The versions read like "0.5.0 (3468)"; nil when one can't be read. Pure.
+    static func otherCopyDetail(running: String?, this: String?, runningFolder: String?) -> String {
+        var text = running.map { "Wisp \($0) is already running" } ?? "Wisp is already running"
+        if let runningFolder, !runningFolder.isEmpty { text += " from \(runningFolder)" }
+        text += ". "
+        switch (running, this) {
+        case let (old?, new?) where old != new: text += "This one is \(new). "
+        case (_?, _?): text += "This one is the same version. "
+        case (nil, let new?): text += "This one is \(new). "
+        default: break
+        }
+        return text + "Only one can run at a time. Your chats, memory and settings are the same in both."
+    }
 }

@@ -367,7 +367,11 @@ final class OverlayModel: ObservableObject {
         }
     }
     @Published var turns: [Turn] = []      // conversation history
-    @Published var heartbeats = 0          // keepalive pings during long silent generation (e.g. reasoning)
+    // Keepalive pings since the answer last moved (a long think, a stall): a
+    // delta, text, reasoning or a cleared answer starts the count again.
+    @Published var heartbeats = 0
+    // Every ping this turn, for the turn's record.
+    private var turnHeartbeats = 0
     // Current-source reads, including a sync that outlives a tool/summary's
     // bounded wait. Kept visible after "still syncing" until readers finish.
     @Published var dailySyncProgress: Double?
@@ -467,13 +471,15 @@ final class OverlayModel: ObservableObject {
 
     // True while auto-collapse must hold off: the panel is pinned, a file
     // dialog it opened is up, there is an edit the person hasn't finished
-    // (typed input, a message draft being edited), the setup card is open, or an
-    // answer is being written (the person is waiting for it, and said so).
+    // (typed input, a message draft being edited, a reply being written in the
+    // Brief), the setup card is open, or an answer is being written (the person
+    // is waiting for it, and said so).
     var holdsOpen: Bool {
         answerInFlight
             || pinned || pickingFile || !input.trimmingCharacters(in: .whitespaces).isEmpty || messageDraft?.isEditing == true
             || voice.isActive || speaker.speaking
             || (tab == .day && !todayTaskTitle.trimmingCharacters(in: .whitespaces).isEmpty)
+            || (tab == .brief && ProactiveActions.shared.replyInProgress)
             || knowYou != nil
             || setupCard == .open || report.isOpen || (tab == .day && todayReport?.isOpen == true)
     }
@@ -735,15 +741,35 @@ final class OverlayModel: ObservableObject {
             // A slow tool (e.g. a screen capture) can run silent for 30-40s+ with
             // no new activity line — show elapsed time so it doesn't look frozen.
             // Agent-loop heartbeats fire every ~1.5s (loop.py's _run_step).
-            let elapsed = Int(Double(heartbeats) * 1.5)
+            let elapsed = Self.heartbeatSeconds(heartbeats, fromLoop: true)
             return heartbeats > 0 ? "\(base) (\(elapsed)s)" : base
         default:
             // The model's name is a detail for Debug Mode, not a first-time user.
             let base = modelAbbrev.isEmpty || !debugMode ? "Thinking…" : "Thinking with \(modelAbbrev)…"
             // Hard reasoning prompts can run silent for a while; heartbeats prove
             // it's still working rather than stuck.
-            return heartbeats > 0 ? "\(base) (\(heartbeats * 12)s)" : base
+            return heartbeats > 0 ? "\(base) (\(stallSeconds)s)" : base
         }
+    }
+
+    /// What one `heartbeat` stands for, by who sends it. The agent loop (a turn
+    /// routed with tools) sends one about every 1.5 s while the model thinks
+    /// (loop.py's _run_step). Plain chat sends one after each 8 s with nothing
+    /// from the model (service/inference/heartbeat.py).
+    static let loopHeartbeatSeconds = 1.5
+    static let silenceHeartbeatSeconds = 8.0
+
+    static func heartbeatSeconds(_ count: Int, fromLoop: Bool) -> Int {
+        Int(Double(count) * (fromLoop ? loopHeartbeatSeconds : silenceHeartbeatSeconds))
+    }
+
+    /// Seconds since the answer last moved, as far as the heartbeats can tell.
+    var stallSeconds: Int { Self.heartbeatSeconds(heartbeats, fromLoop: turnNeededTools == true) }
+
+    /// Real content arrived, so the stall count starts again. Only written
+    /// when it changes: this runs for every streamed token.
+    private func answerMoved() {
+        if heartbeats != 0 { heartbeats = 0 }
     }
 
     var routeLabel: String {
@@ -797,12 +823,44 @@ final class OverlayModel: ObservableObject {
         }
         if !isError, VoiceReplyMode.current.speaks(askedByVoice: byVoice) {
             speaker.speak(text)
-        } else if NSWorkspace.shared.isVoiceOverEnabled {
-            let spoken = SpokenText.plain(text)
-            let line = (isError ? "Wisp couldn't answer: " : "Wisp: ") + spoken
-            NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
-                                 userInfo: [.announcement: line, .priority: NSAccessibilityPriorityLevel.high.rawValue])
+        } else {
+            announceForVoiceOver((isError ? "Wisp couldn't answer: " : "Wisp: ") + SpokenText.plain(text))
         }
+    }
+
+    /// Says a line to VoiceOver, for what appears without focus moving: the
+    /// panel never activates Wisp, so a reply, an approval card or a notice
+    /// would otherwise arrive silently. The line is only built, and only said,
+    /// while VoiceOver is on.
+    private func announceForVoiceOver(_ line: @autoclosure () -> String,
+                                      priority: NSAccessibilityPriorityLevel = .high) {
+        guard NSWorkspace.shared.isVoiceOverEnabled else { return }
+        let text = line()
+        guard !text.isEmpty else { return }
+        NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                             userInfo: [.announcement: text, .priority: priority.rawValue])
+    }
+
+    /// What VoiceOver hears when an approval card appears: the card's own
+    /// sentence, then the buttons it shows, in their order. "Always allow" is
+    /// named only when the card has that button. The preview stays on the card;
+    /// it can be a long script.
+    nonisolated static func approvalAnnouncement(reason: String, grantable: Bool) -> String {
+        var why = reason.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        while let last = why.last, ".:;,".contains(last) { why.removeLast() }
+        if let last = why.last, !"?!".contains(last) { why += "." }
+        let ask = why.isEmpty ? "Wisp needs your approval." : "Wisp needs your approval: \(why)"
+        return ask + (grantable ? " Choices: Deny, Always allow, Allow once." : " Choices: Deny, Allow once.")
+    }
+
+    /// What "Always allow" on an approval card would cover, shown whenever the
+    /// card has that button: the folder, site or command the rule is limited
+    /// to, or, when the service names no limit (an empty scope hint), every
+    /// action of that tool.
+    nonisolated static func alwaysAllowLine(tool: String, scopeHint: String) -> String {
+        scopeHint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "Always allow applies to every \(tool) action"
+            : "Always allow applies to \(tool) on \(scopeHint)"
     }
 
     func submit() {
@@ -926,7 +984,7 @@ final class OverlayModel: ObservableObject {
         answer = ""; reasoning = ""; showReasoning = false; activity = []
         role = ""; modelAbbrev = ""; routeSource = ""; statusText = ""
         tokPerSec = 0; pending = nil; messageDraft = nil
-        streamStart = nil; streamChars = 0; heartbeats = 0
+        streamStart = nil; streamChars = 0; heartbeats = 0; turnHeartbeats = 0
         pendingDelta = ""; flushScheduled = false
         lastDroppedReport = nil
         lastDroppedReportKey = nil
@@ -1096,15 +1154,21 @@ final class OverlayModel: ObservableObject {
 
     /// Quick settings' Model memory: unload the models now. Wisp reloads them on
     /// the next ask. Not while a reply is being written, which needs its model.
+    /// The row is read again either way; "unloaded" is said only when the
+    /// service answered that it was done.
     func freeUpMemory() {
         guard conversationSettled, !briefComposing, !freeingMemory else { return }
         freeingMemory = true
         Task { [weak self] in
             guard let self else { return }
-            await self.client.unloadAll()
+            let unloaded = await self.client.unloadAll()
             self.modelMemory = ModelMemory.parse(await self.client.modelMemoryReply())
             self.freeingMemory = false
-            self.showTransientNotice("Models unloaded. Wisp reloads them on the next ask.", info: true)
+            if unloaded {
+                self.showTransientNotice("Models unloaded. Wisp reloads them on the next ask.", info: true)
+            } else {
+                self.showTransientNotice("Couldn't unload the models. Try again in a moment.")
+            }
         }
     }
 
@@ -1309,8 +1373,10 @@ final class OverlayModel: ObservableObject {
             }
             return
         }
-        let loading = kind == .movie
-        if loading { attachedLabel = "Reading clip…" }
+        // Only on an empty chip. An attachment already there keeps its own label
+        // until the new one is read (setAttachment), so a clip that can't be read
+        // never leaves "Reading clip…" beside the old one.
+        if kind == .movie && !hasAttachment { attachedLabel = "Reading clip…" }
         loadAttachment(name: url.lastPathComponent) { [weak self] in
             let reader = Task.detached(priority: .userInitiated) { () -> MediaAttachment.Pending? in
                 guard !Task.isCancelled else { return nil }
@@ -1347,7 +1413,8 @@ final class OverlayModel: ObservableObject {
 
     /// A picked, dropped or pasted document: size-checked, then read in memory.
     private func loadDocument(url: URL) {
-        attachedLabel = "Reading document…"
+        // Only on an empty chip, as for a clip (loadAttachment(url:)).
+        if !hasAttachment { attachedLabel = "Reading document…" }
         loadAttachment(name: url.lastPathComponent) { [weak self] in
             let reader = Task.detached(priority: .userInitiated) { () -> MediaAttachment.Pending? in
                 guard !Task.isCancelled else { return nil }
@@ -1941,17 +2008,21 @@ final class OverlayModel: ObservableObject {
             answer = ""; pendingDelta = ""; flushScheduled = false
             streamStart = nil; streamChars = 0; tokPerSec = 0
             turnFirstTokenAt = nil
+            answerMoved()
         case "confirm":
-            pending = Pending(sessionId: sessionId, actionId: ev.str("id"),
-                              requestId: ev.str("request_id"),
-                              tool: ev.str("tool"), reason: ev.str("reason"),
-                              // Older backends don't send `grantable`; default
-                              // to hiding the button rather than showing one
-                              // whose answer wouldn't be recorded.
-                              grantable: ev.payload["grantable"] as? Bool ?? false,
-                              scopeHint: ev.str("scope_hint"),
-                              preview: ev.str("preview"))
+            let card = Pending(sessionId: sessionId, actionId: ev.str("id"),
+                               requestId: ev.str("request_id"),
+                               tool: ev.str("tool"), reason: ev.str("reason"),
+                               // Older backends don't send `grantable`; default
+                               // to hiding the button rather than showing one
+                               // whose answer wouldn't be recorded.
+                               grantable: ev.payload["grantable"] as? Bool ?? false,
+                               scopeHint: ev.str("scope_hint"),
+                               preview: ev.str("preview"))
+            pending = card
             phase = .confirming
+            // Focus never moves to the card, so VoiceOver is told it is waiting.
+            announceForVoiceOver(Self.approvalAnnouncement(reason: card.reason, grantable: card.grantable))
         case "message_draft":
             messageDraft = MessageDraft(to: ev.str("to"), text: ev.str("text"))
             phase = .streaming
@@ -1982,12 +2053,23 @@ final class OverlayModel: ObservableObject {
                                         json: Self.prettyJSON(rec))
                     }
                 }
+                // Ask's own forget removed something: the debug log's memory of
+                // every chat goes too, this one's included, as Memory › Forget
+                // does. The fact may have been read back in any of them. The
+                // chat stays on screen; a forget that removed nothing changes
+                // nothing here.
+                if ForgetToolResult.removedSomething(tool: turnToolCalls[idx].name, result: ev.str("result"),
+                                                     isInternal: ev.bool("internal")) {
+                    forgetArchivedChats(sessionId: nil)
+                }
             }
         case "heartbeat":
             heartbeats += 1
+            turnHeartbeats += 1
         case "reasoning":
             reasoning = ev.str("text"); phase = .streaming
             if turnFirstTokenAt == nil { turnFirstTokenAt = Date() }
+            answerMoved()
         case "delta":
             if streamStart == nil { streamStart = Date() }
             if turnFirstTokenAt == nil { turnFirstTokenAt = Date() }
@@ -1999,6 +2081,7 @@ final class OverlayModel: ObservableObject {
             pendingDelta += t
             scheduleFlush()
             phase = .streaming
+            answerMoved()
             // Return early instead of falling through to the trailing
             // onResize() below: `answer` didn't actually change yet (it's
             // buffered — see scheduleFlush), so resizing now would repeat the
@@ -2014,6 +2097,7 @@ final class OverlayModel: ObservableObject {
             flushPendingDelta()
             if turnFirstTokenAt == nil { turnFirstTokenAt = Date() }
             answer += ev.str("text"); phase = .streaming
+            answerMoved()
         case "error":
             // A "dropped" error that arrived before ANY reply content (no route,
             // no tokens, no tool activity): put the prompt back and remove the
@@ -2146,12 +2230,28 @@ final class OverlayModel: ObservableObject {
         }
     }
 
-    /// Try again on an error reply that ran nothing: the question that led to it
-    /// goes back in the box and is sent again.
-    func tryAgain(_ turn: Turn) {
+    /// Whether Try again belongs under this reply: an error that ran nothing,
+    /// last in a settled chat, right after the question that led to it. Not
+    /// when that question went with a picture, screen, clip or document: the
+    /// transcript keeps only its marker ("What's this? [image]"), so sending
+    /// the line again would ask about something the model never gets.
+    func offersTryAgain(_ turn: Turn) -> Bool {
         guard turn.isError, turn.activity.isEmpty, conversationSettled,
-              let index = turns.firstIndex(where: { $0.id == turn.id }), index > 0,
-              turns[index - 1].role == "user" else { return }
+              turns.count >= 2, turn.id == turns[turns.count - 1].id else { return false }
+        let question = turns[turns.count - 2]
+        return question.role == "user" && !QueuedPrompt.endsWithHistoryMarker(question.text)
+    }
+
+    /// Try again on an error reply that ran nothing: the question that led to it
+    /// goes back in the box and is sent again. Whatever is already in the box
+    /// is the person's: it is never replaced or sent along with the old question.
+    func tryAgain(_ turn: Turn) {
+        guard offersTryAgain(turn) else { return }
+        guard input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !hasAttachment else {
+            showTransientNotice("Send or clear what's in the box first, then try again.")
+            return
+        }
+        let index = turns.count - 1
         let question = turns[index - 1].text
         turns.removeSubrange((index - 1)...index)
         input = question
@@ -2176,7 +2276,7 @@ final class OverlayModel: ObservableObject {
         turn.startedAt = turnStartedAt
         turn.firstTokenAt = turnFirstTokenAt
         turn.finishedAt = Date()
-        turn.heartbeatCount = heartbeats
+        turn.heartbeatCount = turnHeartbeats
         turn.reasoningText = reasoning
         turn.toolCalls = turnToolCalls
         turn.rawIO = turnRawIO
@@ -2270,6 +2370,12 @@ final class OverlayModel: ObservableObject {
     /// drawn quietly; otherwise a problem, drawn in the error color.
     func showTransientNotice(_ message: String, duration: TimeInterval = 4, info: Bool = false) {
         transientNoticeTask?.cancel()
+        // The line appears without focus moving, so VoiceOver is told. One
+        // already showing (shown again only to change how long it stays) is
+        // not said twice.
+        if transientNotice != message {
+            announceForVoiceOver(message, priority: info ? .medium : .high)
+        }
         transientNoticeIsInfo = info
         transientNotice = message
         transientNoticeTask = Task { [weak self] in

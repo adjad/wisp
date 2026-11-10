@@ -359,11 +359,14 @@ def with_waiting_people(ranked: list[dict], pool: list[dict], sched: dict, *, no
             made["waiting"] = True
             waiting.append(made)
     taken = {w["primary"] for w in waiting}
-    judged = [i for i in ranked if not i.get("unranked")]
-    critical = [i for i in judged if (i.get("item") or {}).get("critical")]
-    people = [i for i in judged if (i.get("item") or {}).get("person") and i not in critical]
-    others = [i for i in judged if not (i.get("item") or {}).get("person") and i not in critical]
-    rest = [i for i in ranked if i.get("unranked") and i["primary"] not in taken]
+    # A critical alert leads even when the judge left it out (it then arrives
+    # unranked): prepare stops at the card cap, so a last place means no card.
+    critical = [i for i in ranked if (i.get("item") or {}).get("critical")]
+    alert_ids = {i["primary"] for i in critical}
+    judged = [i for i in ranked if not i.get("unranked") and i["primary"] not in alert_ids]
+    people = [i for i in judged if (i.get("item") or {}).get("person")]
+    others = [i for i in judged if not (i.get("item") or {}).get("person")]
+    rest = [i for i in ranked if i.get("unranked") and i["primary"] not in taken and i["primary"] not in alert_ids]
     # A security or account alert comes before everything, so people never push it past the cap.
     return critical + people + waiting + others + rest
 
@@ -546,6 +549,13 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
                    finished_at=None, progress={"done": 0, "total": 0})
     # Reading the caches parses megabytes of mail and texts: off the event loop.
     looked: dict = {}
+    if collect is None:
+        # Apple Mail's Sent list (read at most every five minutes) so a reply sent
+        # from a non-Google account clears its thread; collect() reads the cache.
+        try:
+            await sources.all_sent_rows(now)
+        except Exception:  # noqa: BLE001 — no list means the item stands
+            pass
     items = await asyncio.to_thread(collect or (lambda n, z: sources.collect(n, z, counts=looked)), now, tz)
     if account:
         items.sort(key=lambda i: str(i.get("account", "")).casefold() != account.casefold())
@@ -630,6 +640,7 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
         reuse = last.get("reply") if (not force and model_ok and last.get("model") and last.get("rkey") == rkey
                                       and isinstance(last.get("reply"), str)) else None
         captured: dict = {}
+        fell_back = False
         if model_ok:
             if not reuse and not await _wait_out_turn(abort, patient):
                 yielded = True
@@ -637,6 +648,7 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
             state, ranked, summary = await judge_mod.judge(mine, acct_sched, reply_fn, abort, now=now, tz=tz,
                                                            suppressed=suppressed, allowed=allowed,
                                                            cached_reply=reuse or None, capture=captured)
+            fell_back = state == "fallback"
             if state == "standdown":
                 if abort():
                     yielded = True
@@ -706,7 +718,9 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
             card = next((c for c in cards if c.get("todo_id") == old.get("id")), None)
             if card is not None and old.get("id") not in have and old.get("account") == acct:
                 todos_by_account[acct].append({**old, "card_id": card["id"]})
-        summaries[acct] = summary
+        # A model reply that could not be used (cut off, malformed) ranks by rule,
+        # but the day summary an earlier build wrote stays rather than going blank.
+        summaries[acct] = summary or (str(summaries.get(acct) or "") if fell_back else "")
         judged[acct] = {"key": key, "rkey": rkey, "at": now, "model": model_ok,
                         "reply": captured.get("reply") or (reuse or "")}
     # 3. Deadline cards: a real free slot for work due soon. Code only, every
@@ -1107,7 +1121,10 @@ async def _sweep_handled() -> None:
         texts = await asyncio.to_thread(lambda: handled.latest_sent_texts(sources.text_records()))
         store = default_store()
         now = time.time()
-        sent = await sources.all_sent_rows(now) if handled.contact_work(store.state()) else sources.sent_rows()
+        state = store.state()
+        mail_work = handled.contact_work(state) or any(
+            isinstance(e, dict) and e.get("source") == "mail" for e in (state.get("seen") or {}).values())
+        sent = await sources.all_sent_rows(now) if mail_work else sources.sent_rows()
         tz = store.state().get("timezone") or _zone()
         own, linked = sources.own_account(), sources.gmail_accounts()
         try:

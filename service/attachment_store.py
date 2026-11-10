@@ -1087,6 +1087,34 @@ def _words(query: object) -> list[str]:
     return found
 
 
+def account_key(value: object) -> str:
+    """An account label as this store keeps and compares it (trimmed, lower case)."""
+    return _account(value)
+
+
+def accounts() -> set[str]:
+    """Every known account that owns a reading or a remembered locator, each as
+    ``account_key`` spells it. Read-only; the unknown owner ``""`` is left out.
+
+    Mail memory asks this when it looks for accounts that have left Mail, so a
+    reading goes with its account even when nothing else was learned from it.
+    """
+    conn = _connect()
+    if conn is None:
+        return set()
+    try:
+        with closing(conn):
+            return {
+                r[0]
+                for r in conn.execute(
+                    "SELECT account FROM owners WHERE account<>''"
+                    " UNION SELECT account FROM locators WHERE account<>''"
+                )
+            }
+    except (sqlite3.Error, OSError):
+        return set()
+
+
 def _fill(conn: sqlite3.Connection) -> None:
     """Index some texts that predate the index (bounded in rows and time)."""
     if not _has_ft(conn):

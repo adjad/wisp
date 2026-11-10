@@ -12,6 +12,7 @@ import pytest
 
 from service import main
 from service.agent import loop
+from service.assistant import outbound_queue as queue_module
 from service.memory import subject
 from service.memory.store import SessionStore
 from service.router.model_led import family_for, registry_specs
@@ -107,6 +108,96 @@ def test_unresolved_recipient_asks_instead_of_showing_a_card(chat, to, expected)
     assert chat.store.pending_model_effects(chat.sid) == []
 
 
+# ---- No contacts loaded at all: say so, and still ask ----
+
+@pytest.mark.parametrize("want_email, ask", [
+    (False, "What number or address should I use?"), (True, "What email address should I use?")])
+def test_a_name_with_contacts_not_allowed_says_so_and_still_asks(monkeypatch, want_email, ask):
+    monkeypatch.setattr(imessage_tools, "_name_handles", {})
+    monkeypatch.setattr(imessage_tools, "_contacts_not_allowed", True)
+    monkeypatch.setattr(imessage_tools, "messages_unavailable_kind", lambda: "")
+    handle, problem = action_tools._resolve_recipient("Mom", want_email=want_email)
+    assert handle == "" and type(problem) is registry._NotSentResult and problem.needs_recipient
+    assert problem.question.startswith("Wisp can't read Contacts yet. ")
+    assert "Allow next to Contacts" in problem.question and problem.question.endswith(ask)
+    assert "saved contact" not in problem.question and "saved contact" not in problem
+    assert "can't read Contacts" in problem and "don't guess" in problem
+
+
+def test_before_full_disk_access_the_question_names_that_step(monkeypatch):
+    monkeypatch.setattr(imessage_tools, "_name_handles", {})
+    monkeypatch.setattr(imessage_tools, "_contacts_not_allowed", True)
+    monkeypatch.setattr(imessage_tools, "messages_unavailable_kind", lambda: "full_disk_access")
+    _, problem = action_tools._resolve_recipient("Mom")
+    assert "Full Disk Access" in problem.question
+    assert problem.question.endswith("What number or address should I use?")
+
+
+def test_a_name_before_any_contacts_sync_says_so_and_still_asks(monkeypatch):
+    monkeypatch.setattr(imessage_tools, "_name_handles", {})
+    monkeypatch.setattr(imessage_tools, "_contacts_not_allowed", False)
+    handle, problem = action_tools._resolve_recipient("Mom")
+    assert handle == "" and type(problem) is registry._NotSentResult and problem.needs_recipient
+    assert problem.question == ("I can't look up Mom: no contacts are synced yet, or Contacts is off in Wisp. "
+                                "What number or address should I use?")
+    assert "saved contact" not in problem
+
+
+@pytest.fixture
+def synced(monkeypatch):
+    """cache_contacts as the app's sync calls it, with nothing written to disk."""
+    for name in ("_contacts", "_name_handles", "_lines"):
+        monkeypatch.setattr(imessage_tools, name, getattr(imessage_tools, name))
+    monkeypatch.setattr(imessage_tools, "_lines", "")
+    monkeypatch.setattr(imessage_tools.cache_store, "save", lambda *args: None)
+    return imessage_tools.cache_contacts
+
+
+def test_two_people_saved_under_one_name_are_asked_about(synced):
+    # ContactsReader labels two different cards saved as "Chris" (see its
+    # handleMap), so a text to Chris asks which one instead of picking a number.
+    synced({"+1 (555) 010-0142": "Chris (…0142)", "555-010-0199": "chris (…0199)",
+            "+15550100177": "Dana Reyes"})
+    handle, problem = action_tools._resolve_recipient("Chris")
+    assert handle == "" and type(problem) is registry._NotSentResult and problem.needs_recipient
+    assert problem.question == ("Chris matches several contacts: Chris (…0142), Chris (…0199). "
+                                "Which one do you mean?")
+    assert action_tools._resolve_recipient("Chris (…0199)") == ("555-010-0199", "")
+
+
+def test_one_person_with_one_number_in_two_formats_still_resolves(synced):
+    synced({"+1 (555) 010-0142": "Chris", "555-010-0142": "Chris"})
+    assert action_tools._resolve_recipient("Chris") == ("+1 (555) 010-0142", "")
+
+
+def test_with_contacts_loaded_an_unknown_name_keeps_its_wording(monkeypatch):
+    monkeypatch.setattr(imessage_tools, "_name_handles", {"brian chen": ["+15550101234"]})
+    monkeypatch.setattr(imessage_tools, "_contacts_not_allowed", True)  # stale flag: contacts are loaded
+    _, problem = action_tools._resolve_recipient("Mom")
+    assert problem.question == "I don't have a saved contact for Mom. What number or address should I use?"
+    assert problem.startswith("(no saved contact matches 'Mom'")
+
+
+def test_a_text_to_a_name_with_contacts_off_asks_with_no_card_and_does_not_lock(chat, monkeypatch):
+    monkeypatch.setattr(imessage_tools, "_name_handles", {})
+    monkeypatch.setattr(imessage_tools, "_contacts_not_allowed", True)
+    monkeypatch.setattr(imessage_tools, "messages_unavailable_kind", lambda: "")
+    family = family_for(registry_specs({"send_message": REAL_TOOLS["send_message"]})[0])
+    chat.script = [[tool_call("get_tool_schemas", families=[family], tools=["send_message"])],
+                   [tool_call("send_message", to="Mom", text="On my way")], "Unused."]
+    text = _text(chat.request("text Mom I'm on my way", chat.sid))
+    assert chat.cards.shown == [] and chat.dispatched == []
+    assert text.startswith("I haven't sent anything. Wisp can't read Contacts yet. ")
+    assert text.endswith("What number or address should I use?")
+    assert chat.store.unresolved_action(chat.sid) is None
+    assert chat.store.pending_model_effects(chat.sid) == []
+    # A number in reply still goes through the normal card.
+    chat.script = [[tool_call("send_message", to="+15550100199", text="On my way")], "Sent."]
+    assert NOTICE not in _text(chat.request("+15550100199", chat.sid))
+    assert len(chat.cards.shown) == 1
+    assert chat.dispatched == [("send_message", {"to": "+15550100199", "text": "On my way"})]
+
+
 def test_an_address_reply_sends_the_kept_draft_through_the_normal_card(chat):
     _attempt(chat)
     # The model need only call the tool; what it typed never reaches the card.
@@ -192,6 +283,53 @@ def test_the_bridge_saying_it_never_started_is_not_sent(chat, response):
     assert len(chat.cards.shown) == 1
     assert "I haven't sent anything" in _text(events) and "Mail is closed" in _text(events)
     assert chat.store.unresolved_action(chat.sid) is None
+
+
+# -- A draft that is not sendable goes back to the model, not to the person. --
+
+_UNSIGNED = "Hi Sam,\n\nThe report is ready.\n\nBest,\n[Your Name]"
+_SIGNED = "Hi Sam,\n\nThe report is ready.\n\nBest,\nAdi"
+
+
+def _draft_attempts(chat, *bodies):
+    family = family_for(registry_specs({"send_email": REAL_TOOLS["send_email"]})[0])
+    chat.script = [[tool_call("get_tool_schemas", families=[family], tools=["send_email"])],
+                   *[[_email_call(ADDRESS, "Report", body)] for body in bodies], "Sent it."]
+    return chat.request(f"email {ADDRESS} that the report is ready", chat.sid)
+
+
+def test_a_draft_with_a_placeholder_goes_back_to_the_model_for_a_rewrite(chat):
+    events = _draft_attempts(chat, _UNSIGNED, _SIGNED)
+    # The first draft never became a card; the model was told why and tried again.
+    retry = chat.owned[-1].requests[2]["messages"]
+    bounced = [str(m["content"]) for m in retry if m["role"] == "tool"]
+    assert any("NOT sent" in text and "[Your Name]" in text for text in bounced)
+    assert len(chat.cards.shown) == 1, "the rewritten draft still gets its card"
+    assert _SIGNED in chat.cards.shown[0]["preview"] and "[Your Name]" not in chat.cards.shown[0]["preview"]
+    assert chat.dispatched == [("send_email", {"to": [ADDRESS], "cc": [], "subject": "Report", "body": _SIGNED})]
+    text = _text(events)
+    assert "verified success" not in text and "placeholders" not in text and "call send_email" not in text
+    assert chat.store.unresolved_action(chat.sid) is None
+
+
+def test_a_draft_that_stays_unsendable_ends_with_a_plain_sentence(chat):
+    events = _draft_attempts(chat, *[_UNSIGNED] * (loop._MAX_DRAFT_REWRITES + 2))
+    assert chat.cards.shown == [] and chat.dispatched == []  # no card, nothing sent
+    assert len(chat.owned[-1].requests) == loop._MAX_DRAFT_REWRITES + 2  # schemas, then each draft
+    text = _text(events)
+    assert text == ("I couldn't finish a clean draft of that message, so nothing was sent. "
+                    "Tell me what you'd like it to say.")
+    # Nothing was claimed, so nothing can lock the chat.
+    assert chat.store.unresolved_action(chat.sid) is None
+    assert chat.store.pending_model_effects(chat.sid) == []
+
+
+def test_a_draft_refused_at_the_card_is_not_reworded_and_asked_again(chat):
+    chat.cards.allow = False
+    events = _draft_attempts(chat, _SIGNED, _SIGNED)
+    # A bounce is for a draft the person never saw. A "no" on the card is final.
+    assert len(chat.cards.shown) == 1 and chat.dispatched == []
+    assert "didn’t send it" in _text(events)
 
 
 # -- The other side: an outcome that may have gone out still locks the chat. --
@@ -334,3 +472,234 @@ def test_get_upcoming_steers_a_reminders_question_away_from_calendar_only():
     from service.tools.assistant_tools import get_upcoming  # noqa: F401 - registers it
     text = registry.get_tool("get_upcoming").parameters["properties"]["calendar_only"]["description"]
     assert "search_reminders" in text and "leaving reminders out" in text
+
+
+# -- Who a send goes to, on its card and its receipt (rc3). --
+#
+# A typed name can match a contact saved under a different name: "Ian" matches
+# only "Brian Chen" when nobody is saved as Ian. The card and the receipt name
+# the contact that matched, and several matches still ask.
+
+PHONE, BRIAN = "+15550101234", "brian.chen@example.com"
+FUTURE = "2099-01-02T15:04:00"
+
+
+@pytest.fixture
+def contacts(monkeypatch):
+    """One contact, saved as Brian Chen. Nobody is saved as Ian."""
+    monkeypatch.setattr(imessage_tools, "_name_handles", {"brian chen": [PHONE, BRIAN]})
+    monkeypatch.setattr(imessage_tools, "_contacts", {"5550101234": "Brian Chen", BRIAN: "Brian Chen"})
+    monkeypatch.setattr(imessage_tools, "_lines", "")
+
+
+@pytest.fixture
+def app_bridge(monkeypatch):
+    sent: list[tuple[str, dict]] = []
+
+    async def request(op, payload, **kwargs):
+        sent.append((op, payload))
+        return {"ok": True, "status": "succeeded"}
+    monkeypatch.setattr(action_tools, "app_request", request)
+    return sent
+
+
+@pytest.fixture
+def queued(monkeypatch):
+    rows: list[dict] = []
+
+    def add(**row):
+        rows.append(row)
+        return "fixture-id"
+    monkeypatch.setattr(queue_module.outbound_queue, "add", add)
+    return rows
+
+
+# ---- The card names the contact that matched ----
+
+@pytest.mark.parametrize("tool, args, shown", [
+    ("send_message", {"to": "Ian", "text": "Running late"}, f"Brian Chen ({PHONE})"),
+    ("draft_message", {"to": "Ian", "text": "Running late"}, f"Brian Chen ({PHONE})"),
+    ("schedule_send", {"channel": "message", "to": "Ian", "when": FUTURE, "body": "Running late"},
+     f"Brian Chen ({PHONE})"),
+    ("schedule_send", {"channel": "email", "to": "Ian", "when": FUTURE, "subject": "Late", "body": "Running late"},
+     f"Brian Chen ({BRIAN})"),
+    ("forward_email", {"message_id": "<m1@example.com>", "to": "Ian"}, f"Brian Chen ({BRIAN})"),
+])
+def test_a_card_names_the_contact_a_typed_name_matched(contacts, tool, args, shown):
+    preview = action_tools.confirm_preview(tool, dict(args))
+    assert f'To: {shown} - matched from "Ian"\n' in preview
+    assert "To: Ian\n" not in preview
+
+
+def test_a_card_for_the_saved_name_shows_the_handle_and_no_matched_note(contacts):
+    preview = action_tools.confirm_preview("send_message", {"to": "brian chen", "text": "Hi"})
+    assert preview == f"To: Brian Chen ({PHONE})\n\nHi"
+    # The scheduled card resolves the one recipient the tool will, stray separator or not.
+    assert f"\nTo: Brian Chen ({PHONE})\n" in action_tools.confirm_preview(
+        "schedule_send", {"channel": "message", "to": "Brian Chen;", "when": FUTURE, "body": "Hi"})
+
+
+def test_a_card_for_a_literal_handle_names_its_saved_contact(contacts):
+    preview = action_tools.confirm_preview("send_message", {"to": PHONE, "text": "Hi"})
+    assert preview == f"To: Brian Chen ({PHONE})\n\nHi"
+    # The same number typed another way is the same contact.
+    assert action_tools.confirm_preview("send_message", {"to": "(555) 010-1234", "text": "Hi"}).startswith(
+        "To: Brian Chen ((555) 010-1234)\n")
+    forward = action_tools.confirm_preview("forward_email", {
+        "message_id": "<m1@example.com>", "to": f"{BRIAN}, other.fixture@example.com"})
+    assert f"To: Brian Chen ({BRIAN}), other.fixture@example.com\n" in forward
+
+
+@pytest.mark.parametrize("to", ["Nobody Here", "+15550109999", "stranger.fixture@example.com"])
+def test_a_card_shows_an_unknown_recipient_as_given(contacts, to):
+    assert action_tools.confirm_preview("send_message", {"to": to, "text": "Hi"}) == f"To: {to}\n\nHi"
+    assert f"\nTo: {to}\n" in action_tools.confirm_preview(
+        "schedule_send", {"channel": "message", "to": to, "when": FUTURE, "body": "Hi"})
+
+
+def test_a_card_does_not_pick_between_several_matches(monkeypatch):
+    monkeypatch.setattr(imessage_tools, "_name_handles", {
+        "brian chen": [PHONE], "adrian cole": ["+15550105678"]})
+    monkeypatch.setattr(imessage_tools, "_contacts", {})
+    assert action_tools.confirm_preview("send_message", {"to": "Ian", "text": "Hi"}) == "To: Ian\n\nHi"
+    handle, problem = action_tools._resolve_recipient("Ian")
+    assert not handle and problem.needs_recipient and "Which one do you mean?" in problem.question
+
+
+def test_a_saved_name_is_shown_as_saved_and_an_exact_handle_wins(monkeypatch):
+    monkeypatch.setattr(imessage_tools, "_name_handles", {
+        "dana mcfixture": ["+15550100001"], "old card": ["(555) 010-0001"]})
+    # The lossy last-10-digits map holds only one of the two names.
+    monkeypatch.setattr(imessage_tools, "_contacts", {"5550100001": "Dana McFixture"})
+    assert imessage_tools.contact_name_for_handle("+15550100001") == "Dana McFixture"
+    assert imessage_tools.contact_name_for_handle("(555) 010-0001") == "Old Card"
+    assert imessage_tools.contact_name_for_handle("555.010.0001") == "Dana McFixture"
+    assert imessage_tools.contact_name_for_handle("Dana") == ""
+    assert imessage_tools.contact_name_for_handle("") == ""
+
+
+# ---- The receipt names the contact too ----
+
+async def test_a_text_receipt_names_the_matched_contact(contacts, app_bridge):
+    assert await action_tools.send_message("Ian", "Running late") == f"Message sent to Brian Chen ({PHONE})."
+    assert await action_tools.send_message(PHONE, "Running late") == f"Message sent to Brian Chen ({PHONE})."
+    assert [payload["to"] for _, payload in app_bridge] == [PHONE, PHONE]
+
+
+async def test_a_text_receipt_for_an_unsaved_number_is_unchanged(contacts, app_bridge):
+    assert await action_tools.send_message("+15550109999", "Hi") == "Message sent to +15550109999."
+
+
+async def test_a_scheduled_send_stores_the_matched_contact(contacts, queued):
+    text = await action_tools.schedule_send(channel="message", to="Ian", when=FUTURE, body="Running late")
+    mail = await action_tools.schedule_send(channel="email", to="Ian", when=FUTURE, subject="s", body="b")
+    assert text.startswith(f"Scheduled: text to Brian Chen ({PHONE}) on ")
+    assert mail.startswith(f"Scheduled: email to Brian Chen ({BRIAN}) on ")
+    assert [(row["recipient"], row["display"]) for row in queued] == [
+        (PHONE, f"Brian Chen ({PHONE})"), (BRIAN, f"Brian Chen ({BRIAN})")]
+
+
+def test_the_cancel_card_shows_the_handle_once(monkeypatch):
+    row = {"id": "fixture-id", "channel": "message", "recipient": PHONE, "display": f"Brian Chen ({PHONE})",
+           "when_ts": 4070908800.0, "status": "pending", "subject": "", "body": "Running late"}
+    monkeypatch.setattr(queue_module.outbound_queue, "get", lambda sid: row)
+    preview = action_tools._cancel_scheduled_preview({"id": "fixture-id"})
+    assert f"To: Brian Chen ({PHONE})\n" in preview and preview.count(PHONE) == 1
+    # An older row that stored only a name still gains its handle.
+    row["display"] = "Ian"
+    assert f"To: Ian ({PHONE})\n" in action_tools._cancel_scheduled_preview({"id": "fixture-id"})
+
+
+async def test_a_forward_receipt_names_the_matched_contact(contacts, app_bridge):
+    receipt = await action_tools.forward_email("<m1@example.com>", "Ian, other.fixture@example.com")
+    assert receipt == f"Forwarded to Brian Chen ({BRIAN}), other.fixture@example.com."
+    assert app_bridge[0][1]["to"] == [BRIAN, "other.fixture@example.com"]
+
+
+# ---- Through the real loop: the approved card is the one that names them ----
+
+def _text_turn(chat, to):
+    family = family_for(registry_specs({"send_message": REAL_TOOLS["send_message"]})[0])
+    chat.script = [[tool_call("get_tool_schemas", families=[family], tools=["send_message"])],
+                   [tool_call("send_message", to=to, text="Running late")], "Unused."]
+    return chat.request(f"text {to} I'm running late", chat.sid)
+
+
+def test_the_text_card_in_a_chat_names_the_matched_contact(chat, monkeypatch):
+    monkeypatch.setattr(imessage_tools, "_name_handles", {"brian chen": [PHONE]})
+    monkeypatch.setattr(imessage_tools, "_contacts", {"5550101234": "Brian Chen"})
+    events = _text_turn(chat, "Ian")
+    assert len(chat.cards.shown) == 1, "a text still asks, exactly once"
+    card = chat.cards.shown[0]
+    assert card["preview"] == f'To: Brian Chen ({PHONE}) - matched from "Ian"\n\nRunning late'
+    # The call keeps the typed name, so a repeat in the same turn is still caught.
+    assert card["args"]["to"] == "Ian"
+    assert chat.dispatched == [("send_message", {"to": PHONE, "text": "Running late"})]
+    results = [e["result"] for e in events if e["type"] == "tool_result" and "Message sent" in e["result"]]
+    assert results == [f"Message sent to Brian Chen ({PHONE})."]
+
+
+def test_several_matches_in_a_chat_still_ask_with_no_card(chat, monkeypatch):
+    monkeypatch.setattr(imessage_tools, "_name_handles", {
+        "brian chen": [PHONE], "adrian cole": ["+15550105678"]})
+    events = _text_turn(chat, "Ian")
+    assert chat.cards.shown == [] and chat.dispatched == []
+    text = _text(events)
+    assert "Ian matches several contacts" in text and text.endswith("?")
+    assert chat.store.unresolved_action(chat.sid) is None
+
+
+# ---- A name in cc is settled before the card, like a name in `to` ----
+
+def _cc_turn(chat, cc):
+    family = family_for(registry_specs({"send_email": REAL_TOOLS["send_email"]})[0])
+    chat.script = [[tool_call("get_tool_schemas", families=[family], tools=["send_email"])],
+                   [_email_call(ADDRESS, cc=cc)], "Unused."]
+    return chat.request(f"email {ADDRESS} my plan and cc {cc}", chat.sid)
+
+
+def test_a_saved_name_in_cc_goes_on_the_card_as_its_address(chat):
+    _cc_turn(chat, "One Address")
+    assert len(chat.cards.shown) == 1, "the email still asks, exactly once"
+    card = chat.cards.shown[0]
+    assert card["args"]["cc"] == "one.fixture@example.com"
+    assert f"To: {ADDRESS}\nCc: one.fixture@example.com\nSubject: {SUBJECT}" in card["preview"]
+    assert chat.dispatched == [("send_email", {
+        "to": [ADDRESS], "cc": ["one.fixture@example.com"], "subject": SUBJECT, "body": BODY})]
+
+
+@pytest.mark.parametrize("cc, expected", [
+    ("Phone Only", "Phone Only has no email address saved"),
+    ("Nobody Here", "I don't have a saved contact for Nobody Here"),
+    ("Sam", "Sam matches several contacts"),
+    ("Two Addresses", "several email addresses saved"),
+])
+def test_an_unresolved_name_in_cc_asks_instead_of_showing_a_card(chat, cc, expected):
+    events = _cc_turn(chat, cc)
+    assert chat.cards.shown == [] and chat.dispatched == []  # asked before any approval
+    text = _text(events)
+    assert text.startswith("I haven't sent anything. ") and expected in text and text.endswith("?")
+    assert chat.store.unresolved_action(chat.sid) is None
+
+
+def test_the_preflight_binds_cc_and_leaves_addresses_alone(contacts):
+    tool = REAL_TOOLS["send_email"]
+    base = {"to": ADDRESS, "subject": "s", "body": "b"}
+    bound, problem = action_tools.prepare_send_recipient(tool, {**base, "cc": "Ian; copy.fixture@example.com"})
+    assert problem is None and bound["cc"] == f"{BRIAN}, copy.fixture@example.com" and bound["to"] == ADDRESS
+    # No cc: none is added, and an empty one is left as it came.
+    assert action_tools.prepare_send_recipient(tool, dict(base)) == (base, None)
+    assert action_tools.prepare_send_recipient(tool, {**base, "cc": " "}) == ({**base, "cc": " "}, None)
+    args = {**base, "cc": "Nobody Here"}
+    unchanged, problem = action_tools.prepare_send_recipient(tool, args)
+    assert unchanged is args and problem.needs_recipient and registry.not_sent_receipt(tool, problem)
+
+
+async def test_send_email_resolves_a_cc_name_without_a_card_too(contacts, app_bridge):
+    assert await action_tools.send_email(ADDRESS, "s", "b", cc="Ian") == f"Email sent to {ADDRESS}."
+    assert app_bridge == [("send_email", {"to": [ADDRESS], "cc": [BRIAN], "subject": "s", "body": "b"})]
+    refused = await action_tools.send_email(ADDRESS, "s", "b", cc="Nobody Here")
+    assert refused.needs_recipient and "Nobody Here" in refused.question and len(app_bridge) == 1
+    # Still only addresses reach Mail: a cc that is neither is refused as before.
+    assert (await action_tools.send_email("not an address, x", "s", "b")).needs_recipient
+    assert len(app_bridge) == 1

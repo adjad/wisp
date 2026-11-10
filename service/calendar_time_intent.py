@@ -15,6 +15,10 @@ _PERIOD = r"today|tomorrow|(?:this|next)\s+(?:week|month)"
 _KIND = re.compile(r"\b(?:tests?|exams?|examinations?|assessments?|midterms?|finals?|quiz|quizzes|review|standup|dentist|appointments?|meetings?|events?|classes|class|lectures?|workshops?|interviews?)\b", re.I)
 # These are unconsumed grammatical operators, not a list of public event nouns.
 _RESIDUE = re.compile(r"\b(?:and|or|then|also|but|without|except|not|never|only|using|unless|if|from|on|in|at|to|for|with|before|after|during|between|next|last|this|today|tomorrow|yesterday|tonight|now|week|month|year|hours?|minutes?|calendar|schedule|start|starts|begin|begins|happen|happens|end|ends|finish|finishes|over|done|send|email|text|remind|create|delete)\b", re.I)
+# The residue that adds a second request, a condition, a negation or a source
+# word. A title carrying one is a compound envelope even on a model-led turn;
+# plain prepositions and dates ("with Sam", "on Friday", "next") are not.
+_COMPOUND = re.compile(r"\b(?:and|or|then|also|but|without|except|not|never|only|using|unless|if|calendar|schedule|send|email|text|remind|create|delete)\b", re.I)
 _TEMPORAL = re.compile(
     r"\b(?:(?:mon|tues?|wed(?:nes)?|thu(?:rs)?|fri|sat(?:ur)?|sun)(?:day)?|"
     r"january|february|march|april|may|june|july|august|september|october|november|december|"
@@ -38,6 +42,9 @@ class CalendarTimeIntent:
     no_calendar: bool = False
     query: str = ''
     public_provenance: bool = False
+    # False when a trailing clause did not parse, or the title carries a second
+    # request, a condition, a negation or punctuation: nothing may be relaxed.
+    single_request: bool = True
 
     def calendar_args(self) -> dict:
         args = {'calendar_only': True, 'query': self.title}
@@ -81,12 +88,13 @@ def named_calendar_time(text: str) -> CalendarTimeIntent | None:
     subject, policies = parts[0], parts[1:]
     no_web = no_calendar = False
     supported = True
+    single_request = True
     for policy in policies:
         if not policy.strip():
             continue
         match = _POLICY.fullmatch(policy.strip())
         if not match:
-            supported = False
+            supported = single_request = False
             continue
         source = (match['source'] or '').casefold()
         no_web |= bool(match['browse']) or source in {'web', 'internet'}
@@ -130,8 +138,9 @@ def named_calendar_time(text: str) -> CalendarTimeIntent | None:
         title = subject.strip()
         supported &= bool(re.fullmatch(r"[\w][\w ’'/-]{0,100}", title)) and not bool(_RESIDUE.search(title) or _TEMPORAL.search(title))
         supported &= not bool(re.search(r'QUOTEDTITLE\d+TOKEN', title))
+        single_request &= bool(re.fullmatch(r"[\w][\w ’'/-]{0,100}", title)) and not _COMPOUND.search(title)
     if not title:
-        supported = False
+        supported = single_request = False
     # Admission precedes completeness: a generic when-clause is not an
     # incomplete Calendar request. Indefinite conceptual subjects and arbitrary
     # owned domains keep their original science/coding/conversation owners.
@@ -162,4 +171,5 @@ def named_calendar_time(text: str) -> CalendarTimeIntent | None:
     from service.router.web_request import Provenance, classify
     public_provenance = classify(question).provenance == Provenance.EXTERNAL
     return CalendarTimeIntent(title, personal, boundary, period, bool(supported),
-                              no_web, no_calendar, question, public_provenance)
+                              no_web, no_calendar, question, public_provenance,
+                              bool(single_request))

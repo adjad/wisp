@@ -296,6 +296,47 @@ def test_read_only_and_draft_prohibitions(synthetic):
     assert {"send_email", "send_message", "schedule_send"} <= forbidden
 
 
+@pytest.mark.parametrize("prompt", [
+    "Don't change anything, just tell me what's on my calendar tomorrow",
+    "do not add anything, what's on my calendar",
+    "just look, don't change anything: what's on my calendar",
+    "Don’t change anything, what's on my calendar",
+    "don't change my reminders, just show them",
+    "Show me tomorrow's schedule, but don't add or change anything.",
+])
+def test_generic_write_prohibition_forbids_every_change(synthetic, prompt):
+    # The prohibition's own verb is not a request to change something.
+    _, register = synthetic
+    register("set_timer", "everyday", "assistant_action")
+    forbidden, _ = routing_guard_contract(prompt)
+    assert {"add_reminder", "create_note", "append_note", "update_event",
+            "set_timer", "write_file"} <= forbidden
+    assert "get_upcoming" not in forbidden
+
+
+@pytest.mark.parametrize("prompt,wanted", [
+    ("don't add it to the calendar, remind me at 5 to call mom", "add_reminder"),
+    ("read only: remind me at 5 to call mom", "add_reminder"),
+    ("don't add a reminder, create a note called Plans", "create_note"),
+    ("don't change anything and cancel my 3pm", "cancel_event"),
+    ("Don't change anything else: add milk to my shopping list", "append_note"),
+    ("Don't change anything else — just add milk to my shopping list", "append_note"),
+    ("Don't change the 4:30 meeting - move the 5:00 one to Friday", "update_event"),
+    # Change verbs the write-intent grammar does not list still count as the
+    # second request beside a prohibition.
+    ("don't create a new note, append this to my Plans note", "append_note"),
+    ("Don't change the time, just rename the event to Standup", "update_event"),
+    ("Don't create a new event, update the existing one to 3pm", "update_event"),
+    ("don't change the title, but set a timer for 10 minutes", "set_timer"),
+    ("I never set a reminder for the dentist, add one for Friday", "add_reminder"),
+])
+def test_write_prohibition_beside_a_requested_change_keeps_that_change(synthetic, prompt, wanted):
+    _, register = synthetic
+    register("set_timer", "everyday", "assistant_action")
+    forbidden, _ = routing_guard_contract(prompt)
+    assert wanted not in forbidden
+
+
 # Private shell exception exercises the real builtin with a synthetic process
 # seam; no native process, shell, user data or outbound action executes.
 def _private_shell_fixture(synthetic, monkeypatch):
@@ -1155,3 +1196,35 @@ def test_the_real_recall_returns_the_exact_notice(monkeypatch):
     monkeypatch.setattr(memory_tools, "retrieve", lambda *a, **k: {"facts": [], "passages": []})
     assert asyncio.run(memory_tools.recall("zebra")) == memory_tools.RECALL_NOTHING_FOUND
     assert "zebra" not in memory_tools.RECALL_NOTHING_FOUND
+
+
+@pytest.mark.parametrize("model_led_route,offered", [(True, False), (False, True)])
+def test_a_shell_card_offers_always_allow_only_where_a_grant_is_honoured(
+        synthetic, model_led_route, offered):
+    # b09-safety#6: on a model-led turn every run_shell that is not a validated
+    # read is confirmed after decide() (policy.opaque_outbound_decision), so a
+    # stored "Always allow git" never lifted the next `git status` card. That
+    # card offers no "Always allow"; the legacy route, where the grant works, still does.
+    effects, _ = synthetic
+    approval = Approval(False)
+    script = ([[discover("automation", "run_shell")]] if model_led_route else []) + [
+        [call("run_shell", cmd="git status")], "Synthetic reply."]
+    run(script, prompt="run git status", approval=approval,
+        model_led_discovery=model_led_route, tools=[] if model_led_route else ["run_shell"],
+        **_owners())
+    assert [a["tool"] for a in approval.calls] == ["run_shell"]
+    assert (approval.calls[0].get("grantable", True) is not False) is offered
+    assert "run_shell" not in [n for n, _ in effects]
+
+
+def test_a_model_led_card_a_grant_can_lift_keeps_always_allow(synthetic):
+    # Only the overridden cards lose the button: an ordinary file write on a
+    # model-led turn is decided by decide(), where a stored grant is honoured.
+    effects, _ = synthetic
+    approval = Approval(False)
+    run([[discover("files", "write_file")],
+         [call("write_file", path="/tmp/notes/a.txt", content="x")], "Synthetic reply."],
+        prompt="save x to /tmp/notes/a.txt", approval=approval, **_owners())
+    assert [a["tool"] for a in approval.calls] == ["write_file"]
+    assert approval.calls[0].get("grantable", True) is not False
+    assert not effects

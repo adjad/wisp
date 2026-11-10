@@ -149,10 +149,10 @@ def _accounts_report() -> str:
             uses.append("Drive, Docs and Sheets")
         kind = ("work or school (Google Workspace) account" if _is_work_address(email)
                 else "personal Google account")
-        note = " (sign-in expired: reconnect it in Settings › Accounts)" if item.get("auth_expired") else ""
+        note = " (sign-in expired: reconnect it in Settings ▸ Google)" if item.get("auth_expired") else ""
         lines.append(f"- {email}: {kind}; {', '.join(uses)}{note}")
     out = (["Google accounts linked to Wisp:"] + lines) if lines else [
-        "No Google account is linked to Wisp (Settings › Accounts links one)."]
+        "No Google account is linked to Wisp (Settings ▸ Google links one)."]
     try:
         from service.tools.email_tools import get_identity_emails, native_email_accounts
         mail = sorted({row["name"] for row in native_email_accounts() if row.get("name")})
@@ -465,7 +465,10 @@ def _capability_report(query: str) -> str:
         rows.append(f"{'Yes' if supported else 'No'} — {label}{suffix}")
     rows += [
         "No — schedule a reply inside an existing email thread (only new standalone emails and texts can be scheduled)",
-        "No — inspect or understand the screen visually (Wisp has no vision model)",
+        "Yes — look at a picture you attach, or at the window in front (⌥⇧L) or a part of "
+        "your screen you drag over, from the eye button; you see what Wisp captured first, "
+        "nothing is sent until you press send, and it is read on this Mac",
+        "No — watch your screen on its own, or see it without you choosing what to show",
         "No — access a bank balance unless a dedicated connected banking tool is installed",
     ]
     return "Here's what Wisp can and can't do:\n" + "\n".join(rows)
