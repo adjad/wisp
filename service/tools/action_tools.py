@@ -277,8 +277,8 @@ def confirm_preview(tool: str, args: dict) -> str | None:
         }.get(channel, raw_channel or "(no channel given)")
         to = str(args.get("to", "")).strip()
         # One recipient only; the tool refuses a list, so a list is shown as given.
-        if len(_split_recipients(to)) == 1:
-            to = _card_recipient(to, want_email=channel == "email")
+        if len(parts := _split_recipients(to)) == 1:
+            to = _card_recipient(parts[0], want_email=channel == "email")
         to = to or "(no recipient given)"
         raw_when = str(args.get("when", "")).strip()
         when = "(no delivery time given)"

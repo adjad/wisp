@@ -397,6 +397,9 @@ def test_a_card_names_the_contact_a_typed_name_matched(contacts, tool, args, sho
 def test_a_card_for_the_saved_name_shows_the_handle_and_no_matched_note(contacts):
     preview = action_tools.confirm_preview("send_message", {"to": "brian chen", "text": "Hi"})
     assert preview == f"To: Brian Chen ({PHONE})\n\nHi"
+    # The scheduled card resolves the one recipient the tool will, stray separator or not.
+    assert f"\nTo: Brian Chen ({PHONE})\n" in action_tools.confirm_preview(
+        "schedule_send", {"channel": "message", "to": "Brian Chen;", "when": FUTURE, "body": "Hi"})
 
 
 def test_a_card_for_a_literal_handle_names_its_saved_contact(contacts):
