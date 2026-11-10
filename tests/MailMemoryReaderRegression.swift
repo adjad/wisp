@@ -688,6 +688,65 @@ enum MailMemoryReaderRegression {
             (CGRect(x: 0.1, y: 0.40, width: 0.2, height: 0.05), "Lamp"), (CGRect(x: 0.5, y: 0.401, width: 0.2, height: 0.05), "9.50")])
         check(grouped == ["Item\tPrice", "Lamp\t9.50"], "cells go left to right with a tab, rows top to bottom: \(grouped)")
 
+        // Declared-size gate (read from the header, before any pixel is decoded).
+        check(TextRecognizer.acceptableSize(width: 6000, height: 4000), "size: 6000x4000 passes")
+        check(TextRecognizer.acceptableSize(width: 8192, height: 4880), "size: 8192x4880 (39.98 MP) passes")
+        check(!TextRecognizer.acceptableSize(width: 8193, height: 10), "size: side over 8192 refused")
+        check(!TextRecognizer.acceptableSize(width: 10, height: 8193), "size: tall side over 8192 refused")
+        check(!TextRecognizer.acceptableSize(width: 8192, height: 4883), "size: over 40 MP refused")
+        check(!TextRecognizer.acceptableSize(width: 0, height: 100) && !TextRecognizer.acceptableSize(width: 100, height: 0),
+              "size: zero refused")
+        check(!TextRecognizer.acceptableSize(width: nil, height: 100) && !TextRecognizer.acceptableSize(width: 100, height: nil),
+              "size: missing refused")
+        check(!TextRecognizer.acceptableSize(width: -5, height: 100), "size: negative refused")
+        if let small = textJPEG(["SIZE"]), let source = CGImageSourceCreateWithData(small as CFData, nil),
+           let declared = TextRecognizer.declaredSize(source) {
+            check(declared.width == 900 && declared.height == 150
+                  && TextRecognizer.acceptableSize(width: declared.width, height: declared.height),
+                  "a real small JPEG declares its size and passes: \(declared)")
+            var patched = small
+            var sof = -1
+            var i = 2
+            while i + 9 < patched.count {
+                if patched[i] == 0xFF, patched[i + 1] == 0xC0 || patched[i + 1] == 0xC2 { sof = i; break }
+                i += 1
+            }
+            check(sof > 0, "found the JPEG start-of-frame marker")
+            if sof > 0 {
+                // SOF layout: FF Cn, length(2), precision(1), height(2), width(2).
+                patched[sof + 5] = 0x75; patched[sof + 6] = 0x30   // 30000
+                patched[sof + 7] = 0x75; patched[sof + 8] = 0x30
+                if let huge = CGImageSourceCreateWithData(patched as CFData, nil) {
+                    let size = TextRecognizer.declaredSize(huge)
+                    // ImageIO may report 30000x30000 or no size at all for it; both are refused.
+                    check(!TextRecognizer.acceptableSize(width: size?.width, height: size?.height),
+                          "a header declaring 30000x30000 is refused by the size gate: \(String(describing: size))")
+                } else { check(false, "patched JPEG header could not be opened") }
+                check(TextRecognizer.recognize(jpeg: patched) == nil, "recognize refuses the 30000x30000 header")
+                check(MailMemoryReader.answerRecognize(patched.base64EncodedString())["error"] as? String == "failed",
+                      "recognize reply for the 30000x30000 header is an error, not a decode")
+            }
+        } else { check(false, "could not draw the small JPEG for the size checks") }
+
+        // `wait`: optional, 1...60, a real number; the staleness decision is pure.
+        check(MailMemoryReader.request(recognizeRequest(["wait": 20]))?.wait == 20, "recognize: wait 20 parses")
+        check(MailMemoryReader.request(recognizeRequest(["wait": 1]))?.wait == 1
+              && MailMemoryReader.request(recognizeRequest(["wait": 60]))?.wait == 60, "recognize: wait 1 and 60 parse")
+        check(MailMemoryReader.request(recognizeRequest(["wait": 2.5]))?.wait == 2.5, "recognize: fractional wait parses")
+        check(MailMemoryReader.request(recognizeRequest())?.wait == 0, "recognize: no wait means unstated")
+        for bad: Any in [0, 61, -3, 0.5, "20", true, false, NSNull(), Double.nan, Double.infinity] {
+            check(MailMemoryReader.request(recognizeRequest(["wait": bad])) == nil, "recognize: wait \(bad) refused")
+        }
+        check(MailMemoryReader.request(recognizeRequest(["wait": 20, "rowid": 1])) == nil, "recognize: wait plus another key refused")
+        check(MailMemoryReader.request(["type": "mail_memory_read", "request_id": "abcdefghijklmnop", "kind": "body",
+                                        "rowid": 1, "wait": 20]) == nil, "wait is refused on other kinds")
+        let t0 = Date(timeIntervalSince1970: 1_000_000)
+        check(!MailMemoryReader.isLate(received: t0, wait: 20, now: t0.addingTimeInterval(19.9)), "not late inside the wait")
+        check(!MailMemoryReader.isLate(received: t0, wait: 20, now: t0.addingTimeInterval(20)), "exactly the wait is not late")
+        check(MailMemoryReader.isLate(received: t0, wait: 20, now: t0.addingTimeInterval(20.1)), "past the wait is late")
+        check(!MailMemoryReader.isLate(received: t0, wait: 0, now: t0.addingTimeInterval(500)), "no stated wait is never late")
+        check(!MailMemoryReader.isLate(received: t0, wait: 20, now: t0.addingTimeInterval(-5)), "a clock step back is not late")
+
         if failures > 0 { print("\(failures) failure(s)"); exit(1) }
         print("MailMemoryReader: \(total) checks passed")
     }

@@ -7,6 +7,25 @@ import Vision
 /// and the backend only sends JPEGs its own child process produced from decoded pixels.
 enum TextRecognizer {
     static let maxCharacters = 200_000
+    /// The backend sends at most 6000 px on the long side and about 24 MP; anything larger
+    /// than these limits is refused from the header alone, before a single pixel is decoded.
+    static let maxSide = 8192
+    static let maxPixels = 40_000_000
+
+    /// True when the declared size is present, positive and within `maxSide` / `maxPixels`.
+    static func acceptableSize(width: Int?, height: Int?) -> Bool {
+        guard let width, let height, width > 0, height > 0,
+              width <= maxSide, height <= maxSide else { return false }
+        return width * height <= maxPixels
+    }
+
+    /// The size the JPEG declares, read without decoding it.
+    static func declaredSize(_ source: CGImageSource) -> (width: Int, height: Int)? {
+        guard let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = (props[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
+              let height = (props[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue else { return nil }
+        return (width, height)
+    }
 
     /// `(text, lines, confidence)`; an image with no text is `("", 0, 0)`. Nil only when the
     /// bytes can't be decoded or the request fails. Runs synchronously on the caller's queue.
@@ -15,6 +34,7 @@ enum TextRecognizer {
               jpeg[jpeg.startIndex + 2] == 0xFF,
               let source = CGImageSourceCreateWithData(jpeg as CFData, nil),
               CGImageSourceGetCount(source) > 0,
+              acceptableSize(width: declaredSize(source)?.width, height: declaredSize(source)?.height),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate

@@ -42,6 +42,9 @@ final class MailMemoryReader {
     private let mailRoot: String
     private let rebuildInterval: TimeInterval
     private let work = DispatchQueue(label: "wisp.mail-memory", qos: .utility)
+    /// Text recognition has its own serial queue: a 40-page scan is 40 requests of up to a
+    /// few seconds each and must not hold up Mail index and attachment reads.
+    private let recognition = DispatchQueue(label: "wisp.text-recognition", qos: .userInitiated)
     private let send: ([String: Any]) -> Void
     private var emlx: [Int64: (path: String, partial: Bool)] = [:]
     private var emlxBuiltAt: Date?
@@ -59,6 +62,22 @@ final class MailMemoryReader {
     @discardableResult
     func handle(_ payload: [String: Any]) -> Bool {
         guard let request = MailMemoryReader.request(payload) else { return false }
+        if request.kind == "recognize" {
+            let received = Date()
+            recognition.async { [weak self] in
+                guard let self else { return }
+                var reply: [String: Any]
+                if MailMemoryReader.isLate(received: received, wait: request.wait, now: Date()) {
+                    reply = ["ok": false, "error": "late"]
+                } else {
+                    reply = MailMemoryReader.answerRecognize(request.imageB64)
+                }
+                reply["request_id"] = request.id
+                reply["kind"] = request.kind
+                self.send(reply)
+            }
+            return true
+        }
         work.async { [weak self] in
             guard let self else { return }
             var reply = self.answer(request)
@@ -81,13 +100,21 @@ final class MailMemoryReader {
         var limit: Int = 0
         var attachmentID: String = ""
         var imageB64: String = ""
+        /// Seconds the backend will wait for a `recognize` reply (0 = not stated).
+        var wait: Double = 0
+    }
+
+    /// True when the backend has already given up: more than `wait` seconds passed between
+    /// receiving the request and its reaching the front of the recognition queue.
+    static func isLate(received: Date, wait: Double, now: Date) -> Bool {
+        wait > 0 && now.timeIntervalSince(received) > wait
     }
 
     /// Strict shape: {type, request_id, kind: "index", days}, {type, request_id, kind: "body", rowid},
     /// {type, request_id, kind: "sent", days} (at most `maxSentDays`),
     /// {type, request_id, kind: "attachments", terms, since, until, rfc_ids, limit} or
     /// {type, request_id, kind: "attachment", rowid, attachment_id} or
-    /// {type, request_id, kind: "recognize", image_b64} (an oversize or non-JPEG image is
+    /// {type, request_id, kind: "recognize", image_b64[, wait: 1...60 seconds]} (an oversize or non-JPEG image is
     /// still a well-formed request: it is answered `too_large` / `bad_image`, never dropped).
     static func request(_ payload: [String: Any]) -> Request? {
         guard payload["type"] as? String == "mail_memory_read",
@@ -126,9 +153,19 @@ final class MailMemoryReader {
             return Request(id: id, kind: kind, days: 0, rowid: rowid, attachmentID: attachmentID)
         }
         if kind == "recognize" {
-            guard keys == ["type", "request_id", "kind", "image_b64"],
+            // `wait` is optional, but an app from before it existed drops a request that has it
+            // (strict keys); app and backend ship together in one bundle.
+            guard keys == ["type", "request_id", "kind", "image_b64"]
+                    || keys == ["type", "request_id", "kind", "image_b64", "wait"],
                   let image = payload["image_b64"] as? String else { return nil }
-            return Request(id: id, kind: kind, days: 0, rowid: 0, imageB64: image)
+            var wait = 0.0
+            if keys.contains("wait") {
+                guard let number = payload["wait"] as? NSNumber,
+                      CFGetTypeID(number) != CFBooleanGetTypeID(),
+                      number.doubleValue.isFinite, (1...60).contains(number.doubleValue) else { return nil }
+                wait = number.doubleValue
+            }
+            return Request(id: id, kind: kind, days: 0, rowid: 0, imageB64: image, wait: wait)
         }
         if kind == "body" {
             guard keys == ["type", "request_id", "kind", "rowid"],
