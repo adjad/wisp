@@ -182,7 +182,8 @@ def _tasks(payload: dict) -> list[tuple[float, str, dict]]:
             "downloaded_bytes": int(_number(row.get("downloaded_size"), 10**13)),
             "total_bytes": int(_number(row.get("total_size"), 10**13)),
             "bytes_per_second": _number(row.get("speed_bps"), 10**12),
-            "message": ("Download failed. Check your connection and free disk space, then choose Retry."
+            # No button name: each surface adds its own (Retry, Retry download, Try again).
+            "message": ("Download failed. Check your connection and free disk space."
                         if state == "failed" else None),
         }
         created = _number(row.get("created_at"), 10**12)

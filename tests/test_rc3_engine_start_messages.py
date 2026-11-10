@@ -62,3 +62,12 @@ def test_other_start_failures_point_at_the_engine_log_without_leaking_text(monke
     assert "~/.moe/engine/engine.log" in detail
     assert "synthetic-secret" not in response.text and "/Users/someone" not in response.text
 
+
+def test_failed_download_message_names_no_button():
+    repo = next(iter(downloads._catalogue().values()))
+    rows = downloads._tasks({"tasks": [dict(task_id="task-1", repo_id=repo, status="failed",
+                                            error=SECRET, created_at=1)]})
+    message = rows[0][2]["message"]
+    # Each surface names its own button (Retry, Retry download, Try again) after this text.
+    assert message == "Download failed. Check your connection and free disk space."
+    assert "Retry" not in message and "synthetic-secret" not in message
