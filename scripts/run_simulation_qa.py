@@ -119,6 +119,7 @@ PROFILE_TESTS = {
         "tests/test_email_attachment_tool.py",
         "tests/test_large_document.py",
         "tests/test_mail_attachments.py",
+        "tests/test_recognize_bridge.py",
         "tests/test_corpus_prompts.py",
         "tests/test_corpus_reasoning_export.py",
         "tests/test_gmail_source.py",

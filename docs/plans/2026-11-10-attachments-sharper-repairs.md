@@ -44,3 +44,7 @@ text of page 4
 | R3 child | `service/attachment_child.py`, `tests/test_attachment_child.py` | 7, 11 (child side), 40-page time bound |
 | R4 store | `service/attachment_store.py`, `tests/test_attachment_store.py`, `service/mail_memory/api.py` | 9 |
 | R5 app link | `app/Sources/WispApp/TextRecognizer.swift`, `app/Sources/WispApp/MailMemoryReader.swift`, `tests/MailMemoryReaderRegression.swift`, `service/mail_memory/bridge.py`, new `tests/test_recognize_bridge.py` | 10 |
+
+## Finding 10c: who can see the picture bytes (recorded decision)
+
+The `recognize` request carries the JPEG in a hub event, and `GET /assistant/events` streams hub events to any client on 127.0.0.1 with no authentication. The phone gateway does not carry these events and browsers are refused by `LocalOriginGuard`. So a program already running on this Mac as the user could listen and see a picture Wisp is recognising. That is inside the boundary `service/local_http.py` states for the whole backend (it does not defend against other programs on the Mac: the same program can already call the backend and ask it to read mail), so this change does not move the boundary; `hub.publish(target=...)` does not restrict the live fan-out, and nothing else on loopback is authenticated, so fetching the picture by request id would add nothing. Left as is, stated in the PR, and put to the re-review.
