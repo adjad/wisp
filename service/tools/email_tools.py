@@ -2917,9 +2917,26 @@ def _digest_entry(line: str) -> dict | None:
     return {"account": account, "sender": sender.strip(), "subject": subject.strip()}
 
 
+_MD_INLINE_LINK = re.compile(r"!?\[([^\[\]]*)\]\(\s*<?([^)>]*)>?\s*\)")
+
+
+def _unlink(text: str) -> str:
+    """Header text as plain words: a Markdown link or image becomes "label (url)".
+
+    A sender name or subject that reads ``[Verify](https://...)`` would otherwise
+    draw as a live link in Wisp's own list. Plain bracket tags such as
+    ``[EXTERNAL]`` are left as they are."""
+    while True:
+        changed = _MD_INLINE_LINK.sub(r"\1 (\2)", text)
+        if changed == text:
+            break
+        text = changed
+    return text.replace("](", "] (").replace("][", "] [")
+
+
 def _digest_text(text: str, *, fallback: str) -> str:
     """Keep display text compact and prevent header text from changing Markdown."""
-    text = re.sub(r"\s*<[^>]+>", "", text or "")
+    text = re.sub(r"\s*<[^>]+>", "", _unlink(text or ""))
     text = re.sub(r"[\x00-\x1f]+", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text.replace("*", r"\*") if text else fallback
@@ -2928,6 +2945,7 @@ def _digest_text(text: str, *, fallback: str) -> str:
 def _subject_text(text: str) -> str:
     """Display the original subject, escaping markup but retaining its words."""
     text = re.sub(r"[\x00-\x1f]+", " ", text or "").strip()
+    text = re.sub(r"<([A-Za-z][A-Za-z0-9+.-]*:[^<>\s]+)>", r"\1", _unlink(text))
     return text.replace("\\", r"\\").replace("*", r"\*") or "(no subject)"
 
 
