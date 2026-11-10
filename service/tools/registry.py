@@ -129,6 +129,7 @@ _NOT_DONE_TOOLS = {
     "create_note": "service.tools.notes_write",
     "append_note": "service.tools.notes_write",
     "remember": "service.tools.memory_tools",
+    "save_email_attachment": "service.tools.attachment_actions",
 }
 
 
@@ -343,7 +344,7 @@ _TOOL_EFFECTS = {
     "cancel_event": "cancelled", "cancel_scheduled_send": "cancelled",
     "clear_past_reminders": "deleted", "clear_reminders": "deleted",
     "toggle_setting": "changed", "write_file": "written", "move_path": "moved",
-    "organize_files": "moved",
+    "organize_files": "moved", "save_email_attachment": "saved",
     "commit_private_meeting": "created",
     "save_knowledge": "created", "edit_knowledge": "updated", "delete_knowledge": "deleted",
 }

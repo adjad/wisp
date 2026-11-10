@@ -114,6 +114,18 @@ PROFILE_TESTS = {
         # Email attachments and large files: the isolated reader, condensing, the tool and its
         # safety wiring (synthetic files, fake Mail and Gmail, stub model).
         "tests/test_attachment_child.py",
+        # Finding a file by what is inside it, the background switch, many files at once, saving a
+        # file, recordings, Messages files and the seams between them (synthetic files, fake Mail,
+        # Gmail and Messages, stub model, tmp_path as the home folder).
+        "tests/test_attachment_audio.py",
+        "tests/test_attachment_fields.py",
+        "tests/test_attachment_find.py",
+        "tests/test_attachment_index.py",
+        "tests/test_attachment_save.py",
+        "tests/test_attachment_seams.py",
+        "tests/test_attachment_sources.py",
+        "tests/test_attachment_tools.py",
+        "tests/test_message_attachment_bridge.py",
         "tests/test_attachment_reading_sharper.py",
         "tests/test_attachment_store.py",
         "tests/test_email_attachment_tool.py",

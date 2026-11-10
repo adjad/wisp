@@ -69,7 +69,10 @@ _NEVER_GRANTABLE = {"send_email", "send_message", "create_tool",
                     # agreement to the next (policy._ALWAYS_CONFIRM_CONTACTS).
                     # Its category already refuses an allow; named here too so
                     # the refusal holds before the registry has loaded the tool.
-                    "manage_contacts"}
+                    "manage_contacts",
+                    # Saves a file somebody else sent onto this Mac: each one is
+                    # confirmed on a card naming that file (policy.ALWAYS_CONFIRM_FILE_TOOLS).
+                    "save_email_attachment"}
 
 # Tools that absorbed several single-purpose tools in the 100-tool
 # consolidation: (argument that selects the behaviour, its default, the
