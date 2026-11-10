@@ -809,8 +809,7 @@ struct OverlayView: View {
                     MarkdownView(text: turn.text)
                 }
                 if !turn.needsAccess.isEmpty { accessFixes(turn.needsAccess) }
-                if turn.isError && turn.activity.isEmpty && model.conversationSettled
-                    && turn.id == model.turns.last?.id {
+                if model.offersTryAgain(turn) {
                     // Nothing ran, so sending the same question again is safe.
                     Button("Try again") { model.tryAgain(turn) }
                         .buttonStyle(.plain).font(.wisp(.body, weight: .medium)).foregroundStyle(Theme.textPrimary)

@@ -288,6 +288,45 @@ struct OverlayTransitionChecks {
         print("PASS: a cold-launch start failure shows the down card; a running service ignores stale failures")
     }
 
+    /// Try again is offered only where sending the same line again asks the same
+    /// question, and never takes over what is already in the box.
+    @MainActor
+    static func tryAgainChecks() {
+        let model = OverlayModel(loadDebugMode: { false }, saveDebugMode: { _ in })
+        func failed() -> OverlayModel.Turn { OverlayModel.Turn(role: "assistant", text: "Something went wrong.", isError: true) }
+        var error = failed()
+        model.turns = [OverlayModel.Turn(role: "user", text: "What's the weather?"), error]
+        check(model.offersTryAgain(error), "A plain question that failed offers Try again")
+        var ran = failed(); ran.activity = ["read_mail — ok"]
+        model.turns = [OverlayModel.Turn(role: "user", text: "What's the weather?"), ran]
+        check(!model.offersTryAgain(ran), "Not after a tool ran")
+        model.turns = [OverlayModel.Turn(role: "user", text: "What's the weather?"), error,
+                       OverlayModel.Turn(role: "user", text: "next"), OverlayModel.Turn(role: "assistant", text: "ok")]
+        check(!model.offersTryAgain(error), "Only under the last reply")
+
+        // A question sent with an attachment keeps only its marker.
+        for marker in QueuedPrompt.historyMarkers {
+            error = failed()
+            model.turns = [OverlayModel.Turn(role: "user", text: "Explain this \(marker)"), error]
+            check(!model.offersTryAgain(error), "No Try again after a \(marker) question")
+            model.tryAgain(error)
+            check(model.turns.count == 2 && model.input.isEmpty && model.transientNotice == nil,
+                  "Nor is the \(marker) line ever sent again as text")
+        }
+
+        // Something already typed is kept, and the failed exchange stays.
+        error = failed()
+        model.turns = [OverlayModel.Turn(role: "user", text: "What's the weather?"), error]
+        model.input = "a new question"
+        model.tryAgain(error)
+        check(model.input == "a new question" && model.turns.count == 2 && model.turns[1].id == error.id,
+              "Try again leaves a typed draft alone")
+        check(model.transientNotice == "Send or clear what's in the box first, then try again.", "And says why nothing was sent")
+        model.input = ""
+        model.transientNotice = nil
+        print("PASS: Try again never resends an attachment's marker as text or replaces a typed draft")
+    }
+
     #if WISP_MOTION_APP_DELEGATE_CHECKS
     /// Export Chat Debug Log… covers every chat since Wisp opened: New chat and opening
     /// another chat archive the one left, whole; reopening it continues it with its
@@ -422,6 +461,7 @@ struct OverlayTransitionChecks {
         await MainActor.run {
             heartbeatSecondsChecks()
             coldStartFailureChecks()
+            tryAgainChecks()
         }
         #if WISP_MOTION_APP_DELEGATE_CHECKS
         precondition(URLProtocol.registerClass(MotionFixtureProtocol.self))

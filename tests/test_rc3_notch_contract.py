@@ -175,3 +175,49 @@ def test_heartbeat_seconds_come_from_one_place_at_the_senders_pace():
     assert "if model.heartbeats > 0 {" in view
     for source in (label, view):
         assert not re.search(r"heartbeats\)? \* \d", source)
+
+
+# --- Try again never resends an attachment's marker or eats a draft ----------
+
+
+def test_one_list_holds_every_attachment_marker():
+    queue = swift("PromptQueue.swift")
+    listed = re.search(r"static let historyMarkers = \[(.*)\]$", queue, re.M).group(1)
+    markers = re.findall(r'"(\[[a-z]+\])"', listed)
+    assert markers == ["[image]", "[screen]", "[clip]", "[document]"]
+    # Each marker a prompt or an attachment can write is in the list.
+    given = region(queue, "var historyMarker: String? {", "\n    }\n")
+    media = region(swift("MediaAttachment.swift"), "var historyMarker: String {", "\n        }\n")
+    assert set(re.findall(r'"(\[[a-z]+\])"', given)) == set(markers)
+    assert set(re.findall(r'"(\[[a-z]+\])"', media)) == set(markers)
+    # The transcript writes "<question> <marker>", and the check reads it back so.
+    model = swift("OverlayModel.swift")
+    assert 'submission.historyMarker.map { prompt + " " + $0 } ?? prompt' in model
+    assert 'historyMarkers.contains { text.hasSuffix(" " + $0) }' in queue
+
+
+def test_try_again_is_not_offered_for_a_question_that_had_an_attachment():
+    model = swift("OverlayModel.swift")
+    offers = region(model, "func offersTryAgain(_ turn: Turn) -> Bool {", "\n    }\n")
+    # Still only an error that ran nothing, last in a settled chat.
+    for kept in ("turn.isError", "turn.activity.isEmpty", "conversationSettled",
+                 "turn.id == turns[turns.count - 1].id"):
+        assert kept in offers, kept
+    assert 'question.role == "user" && !QueuedPrompt.endsWithHistoryMarker(question.text)' in offers
+    # The button and the action share the one rule.
+    view = swift("OverlayView.swift")
+    assert 'if model.offersTryAgain(turn) {' in view
+    button = view.index('Button("Try again") { model.tryAgain(turn) }')
+    assert view.rindex("if model.offersTryAgain(turn) {", 0, button) > view.rindex("MarkdownView(text: turn.text)", 0, button)
+    again = region(model, "func tryAgain(_ turn: Turn) {", "\n    }\n")
+    assert again.index("guard offersTryAgain(turn) else { return }") < again.index("input = question")
+
+
+def test_try_again_keeps_what_is_in_the_box():
+    model = swift("OverlayModel.swift")
+    again = region(model, "func tryAgain(_ turn: Turn) {", "\n    }\n")
+    guard = again.index(
+        "guard input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !hasAttachment else {")
+    # Checked before the failed exchange is removed or the box is written.
+    assert guard < again.index("turns.removeSubrange(") < again.index("input = question") < again.index("submit()")
+    assert again.count("input = ") == 1

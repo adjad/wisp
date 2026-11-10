@@ -2200,12 +2200,28 @@ final class OverlayModel: ObservableObject {
         }
     }
 
-    /// Try again on an error reply that ran nothing: the question that led to it
-    /// goes back in the box and is sent again.
-    func tryAgain(_ turn: Turn) {
+    /// Whether Try again belongs under this reply: an error that ran nothing,
+    /// last in a settled chat, right after the question that led to it. Not
+    /// when that question went with a picture, screen, clip or document: the
+    /// transcript keeps only its marker ("What's this? [image]"), so sending
+    /// the line again would ask about something the model never gets.
+    func offersTryAgain(_ turn: Turn) -> Bool {
         guard turn.isError, turn.activity.isEmpty, conversationSettled,
-              let index = turns.firstIndex(where: { $0.id == turn.id }), index > 0,
-              turns[index - 1].role == "user" else { return }
+              turns.count >= 2, turn.id == turns[turns.count - 1].id else { return false }
+        let question = turns[turns.count - 2]
+        return question.role == "user" && !QueuedPrompt.endsWithHistoryMarker(question.text)
+    }
+
+    /// Try again on an error reply that ran nothing: the question that led to it
+    /// goes back in the box and is sent again. Whatever is already in the box
+    /// is the person's: it is never replaced or sent along with the old question.
+    func tryAgain(_ turn: Turn) {
+        guard offersTryAgain(turn) else { return }
+        guard input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !hasAttachment else {
+            showTransientNotice("Send or clear what's in the box first, then try again.")
+            return
+        }
+        let index = turns.count - 1
         let question = turns[index - 1].text
         turns.removeSubrange((index - 1)...index)
         input = question
