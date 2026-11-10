@@ -210,6 +210,29 @@ def test_unreadable_documents_say_so_plainly(name, data, match):
         X(name, data)
 
 
+def locked_office(*streams: str) -> bytes:
+    """The outside of an Office file saved with a password: the old container naming these streams."""
+    names = b"".join(name.encode("utf-16-le") + b"\x00" * 40 for name in streams)
+    return b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 504 + names + b"\x07" * 600
+
+
+@pytest.mark.parametrize("name", ["payroll.docx", "payroll.xlsx", "payroll.pptx"])
+def test_an_office_file_saved_with_a_password_says_so_and_is_not_called_damaged(name):
+    for large in (False, True):
+        with pytest.raises(ValueError) as caught:
+            E.extract_text(name, locked_office("EncryptionInfo", "EncryptedPackage"), large)
+        assert str(caught.value) == "That document is password-protected. Wisp can't read it without the password."
+        assert "damaged" not in str(caught.value)
+
+
+def test_an_old_container_that_is_not_locked_keeps_the_plain_refusal():
+    for data in (locked_office(), locked_office("EncryptedPackage"), locked_office("EncryptionInfo"),
+                 b"\xd0\xcf\x11\xe0", b"junk" + locked_office("EncryptionInfo", "EncryptedPackage")):
+        with pytest.raises(ValueError, match="couldn't be read. It may be damaged"):
+            X("renamed.docx", data)
+    assert E.is_locked_office(b"") is False
+
+
 def test_size_and_encoding_limits():
     with pytest.raises(ValueError, match="20 MB"):
         X("big.txt", b"a" * (D.MAX_DOCUMENT_BYTES + 1))

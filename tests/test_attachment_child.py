@@ -596,6 +596,31 @@ def test_a_password_protected_archive_or_pdf_is_a_caution():
     assert locked["level"] == "caution" and locked["reasons"] == [A.ENCRYPTED_PDF_REASON]
 
 
+def locked_office(extra: bytes = b"") -> bytes:
+    names = b"".join(name.encode("utf-16-le") + b"\x00" * 40 for name in ("EncryptionInfo", "EncryptedPackage"))
+    return b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 504 + names + extra + b"\x07" * 600
+
+
+def test_an_office_file_saved_with_a_password_is_named_and_is_a_caution():
+    from service import mail_attachments as ma
+    from service.document_extract import LOCKED
+    for name in ("payroll.xlsx", "letter.docx", "deck.pptx"):
+        result = A.inspect(name, locked_office())
+        assert result["real_type"] == "a password-protected Office file" and result["family"] == "document"
+        assert result["warnings"] == []
+        assert result["risk"] == {"level": "caution", "reasons": [
+            "It is password-protected, so its contents can't be checked."]}
+    # The sentence the reader gives for it is one of Wisp's own, so it is shown as the reason.
+    assert ma._file_problem(ValueError(LOCKED)) == LOCKED
+    # An old Office file that is not locked is described as before, with no new caution.
+    old = A.inspect("old.doc", b"\xd0\xcf\x11\xe0" + b"\x00" * 100)
+    assert old["real_type"] == "an old Office file" and old["risk"]["level"] == ""
+    # Naming the two streams does not hide macros.
+    both = risk_of("old.doc", locked_office("_VBA_PROJECT".encode("utf-16-le")))
+    assert both["level"] == "caution" and len(both["reasons"]) == 2
+    assert both["reasons"][0].startswith("It is an Office file that contains macros")
+
+
 def test_a_web_page_with_a_password_field_or_form_is_a_caution():
     for html in (b"<html><body><INPUT class=a TYPE = 'Password' name=p></body></html>",
                  b'<input name="x" type="password">', b"<input type=password>"):

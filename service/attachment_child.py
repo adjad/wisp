@@ -48,7 +48,7 @@ import warnings
 from pathlib import Path, PurePath
 from zipfile import BadZipFile, ZipFile
 
-from service.document_extract import _limit_self
+from service.document_extract import _limit_self, is_locked_office
 
 MAX_INPUT_BYTES = 32 * 1024 * 1024
 MAX_PIXELS = 80_000_000
@@ -95,6 +95,10 @@ MAX_URLS = 8
 _URL_SCAN_BYTES = 2 * 1024 * 1024
 _URL = re.compile(rb"https?://[!-~]{4,200}")
 
+_OLD_OFFICE_LABEL = "an old Office file"
+# A docx, xlsx or pptx saved with a password: the same container as an old Office file, holding
+# the encrypted document (document_extract.is_locked_office).
+_LOCKED_OFFICE_LABEL = "a password-protected Office file"
 # Longest signatures first where one is a prefix of another.
 _SIGNATURES: tuple[tuple[bytes, str, str], ...] = (
     (b"MZ", "a Windows program", "program"),
@@ -112,7 +116,7 @@ _SIGNATURES: tuple[tuple[bytes, str, str], ...] = (
     (b"Rar!", "a RAR archive", "archive"),
     (b"7z\xbc\xaf\x27\x1c", "a 7-Zip archive", "archive"),
     (b"\x1f\x8b", "a gzip archive", "archive"),
-    (b"\xd0\xcf\x11\xe0", "an old Office file", "document"),
+    (b"\xd0\xcf\x11\xe0", _OLD_OFFICE_LABEL, "document"),
     (b"\x89PNG\r\n\x1a\n", "a PNG image", "image"),
     (b"\xff\xd8\xff", "a JPEG image", "image"),
     (b"GIF8", "a GIF image", "image"),
@@ -164,6 +168,8 @@ def _signature(data: bytes) -> tuple[str, str]:
     """(what the bytes say this is, its family), or ('', '') when they say nothing."""
     for magic, label, family in _SIGNATURES:
         if data.startswith(magic):
+            if label == _OLD_OFFICE_LABEL and is_locked_office(data):
+                return _LOCKED_OFFICE_LABEL, family
             return label, family
     if len(data) >= 512 and data[-512:-508] == b"koly":
         return "a Mac disk image", "program"
@@ -227,10 +233,12 @@ def _risk(name: str, data: bytes, suffix: str, label: str, family: str, found: d
     if family == "zip" and found.get("risky_entries"):
         high.append("The archive lists programs or scripts inside it.")
     if found.get("macros") or suffix in _MACRO_SUFFIXES or (
-            label == "an old Office file" and _OLE_VBA in data):
+            label in (_OLD_OFFICE_LABEL, _LOCKED_OFFICE_LABEL) and _OLE_VBA in data):
         caution.append("It is an Office file that contains macros, which can run commands if you enable them.")
     if found.get("encrypted"):
         caution.append("The archive is password-protected, so its contents can't be checked.")
+    if label == _LOCKED_OFFICE_LABEL:
+        caution.append("It is password-protected, so its contents can't be checked.")
     if label == "a PDF" and (b"/Encrypt" in data[-8192:] or b"/Encrypt" in data[:2048]):
         caution.append(ENCRYPTED_PDF_REASON)
     if _looks_like_html(suffix, data):

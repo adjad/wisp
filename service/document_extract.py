@@ -81,6 +81,11 @@ SCANNED = "That PDF has no text Wisp can read (it looks scanned)."
 # AES-encrypted PDFs need a cipher library Wisp doesn't ship, even when they open with no password.
 ENCRYPTED = "That PDF is encrypted in a way Wisp can't open."
 DAMAGED = "That document couldn't be read. It may be damaged."
+LOCKED = "That document is password-protected. Wisp can't read it without the password."
+# A docx, xlsx or pptx saved with a password is not a ZIP: Office wraps the encrypted file in its
+# older container format, which starts with these bytes and names these two streams (in UTF-16).
+_OLE = b"\xd0\xcf\x11\xe0"
+_LOCKED_STREAMS = tuple(name.encode("utf-16-le") for name in ("EncryptedPackage", "EncryptionInfo"))
 
 
 class _Enough(Exception):
@@ -110,6 +115,11 @@ class _Text:
 
 def _kind(name: str) -> str:
     return PurePath(name or "").suffix.lower().lstrip(".")
+
+
+def is_locked_office(data: bytes) -> bool:
+    """Whether these bytes are an Office file saved with a password (see _OLE). Nothing is parsed."""
+    return data.startswith(_OLE) and all(stream in data for stream in _LOCKED_STREAMS)
 
 
 # --- ZIP preflight ----------------------------------------------------------------
@@ -459,6 +469,8 @@ def extract_text(name: str, data: bytes, large: bool = False) -> tuple[str, bool
     if kind in _LEGACY:
         raise ValueError(f"Wisp can't read old .{kind} files. Save it as {_LEGACY[kind]} and try again.")
     if kind in _ZIPPED:
+        if is_locked_office(data):
+            raise ValueError(LOCKED)
         zip_guard(data)
     cut = False
     try:
