@@ -112,6 +112,19 @@ struct OverlayTransitionChecks {
         print("PASS: approval cards are announced with the choices they show")
     }
 
+    /// A heartbeat is about 1.5 s from the agent loop and 8 s of silence from
+    /// plain chat; the stall line and the working label count with the same two.
+    @MainActor
+    static func heartbeatSecondsChecks() {
+        check(OverlayModel.loopHeartbeatSeconds == 1.5 && OverlayModel.silenceHeartbeatSeconds == 8,
+              "The two heartbeat paces are the backend's")
+        check(OverlayModel.heartbeatSeconds(6, fromLoop: true) == 9, "Six loop heartbeats are 9 s, not 48")
+        check(OverlayModel.heartbeatSeconds(1, fromLoop: true) == 1, "A part second rounds down")
+        check(OverlayModel.heartbeatSeconds(2, fromLoop: false) == 16, "Two silent waits are 16 s")
+        check(OverlayModel.heartbeatSeconds(0, fromLoop: false) == 0, "No heartbeat, no seconds")
+        print("PASS: heartbeats count seconds at their sender's pace")
+    }
+
     @MainActor
     static func waitUntil(_ condition: () -> Bool) async {
         for _ in 0..<100 {
@@ -406,7 +419,10 @@ struct OverlayTransitionChecks {
     static func main() async {
         lifecycleChecks()
         approvalAnnouncementChecks()
-        await MainActor.run { coldStartFailureChecks() }
+        await MainActor.run {
+            heartbeatSecondsChecks()
+            coldStartFailureChecks()
+        }
         #if WISP_MOTION_APP_DELEGATE_CHECKS
         precondition(URLProtocol.registerClass(MotionFixtureProtocol.self))
         await AppDelegate.checkDismissReopenInput()

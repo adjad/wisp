@@ -929,10 +929,12 @@ struct OverlayView: View {
             // generation genuinely PAUSES mid-stream (backend hiccup), that
             // signal disappears: partial text just sits there with nothing
             // indicating whether it's still alive. This stays visible for the
-            // whole streaming phase — a subtle pulse normally, and if the
-            // backend's stall-watchdog heartbeat fires (main.py's 8s
-            // next-chunk timeout on this path), it names the silence
-            // explicitly instead of leaving it ambiguous.
+            // whole streaming phase — a subtle pulse normally, and if a
+            // heartbeat arrives after the last of the text (the backend's
+            // stall watchdog, or the model thinking again), it names the
+            // silence explicitly instead of leaving it ambiguous. The count
+            // starts again whenever text arrives, so a flowing answer never
+            // shows it (OverlayModel.stallSeconds).
             if model.phase == .streaming {
                 HStack(spacing: 6) {
                     Circle().fill(Theme.textMuted).frame(width: 5, height: 5)
@@ -940,7 +942,7 @@ struct OverlayView: View {
                         .animation(reduceMotion ? nil : .easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: breathe)
                         .accessibilityHidden(true)
                     if model.heartbeats > 0 {
-                        Text("still generating… (\(model.heartbeats * 8)s)")
+                        Text("still generating… (\(model.stallSeconds)s)")
                             .font(.wisp(.caption)).foregroundStyle(Theme.textMuted)
                     }
                 }

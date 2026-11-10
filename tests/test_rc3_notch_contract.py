@@ -6,6 +6,7 @@ reveal's behavior is exercised natively by scripts/test_overlay_transition.sh
 shape in CI.
 """
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -113,3 +114,64 @@ def test_a_notice_is_announced_once():
     said = notice.index("if transientNotice != message {")
     assert "announceForVoiceOver(message, priority: info ? .medium : .high)" in notice
     assert said < notice.index("transientNotice = message")
+
+
+# --- "still generating…" only for a real stall, in real seconds --------------
+
+
+def _handle(model: str) -> str:
+    return region(model, "private func handle(_ ev: WispClient.Event, dispatchID: UInt64) {",
+                  "private var notReadyRetried")
+
+
+def test_real_content_restarts_the_stall_count():
+    model = swift("OverlayModel.swift")
+    handle = _handle(model)
+    cases = {
+        "delta": region(handle, 'case "delta":', 'case "text":'),
+        "text": region(handle, 'case "text":', 'case "error":'),
+        "reasoning": region(handle, 'case "reasoning":', 'case "delta":'),
+        "clear_answer": region(handle, 'case "clear_answer":', 'case "confirm":'),
+    }
+    for name, body in cases.items():
+        assert body.count("answerMoved()") == 1, name
+    # The delta case leaves early, so the reset has to come before that.
+    delta = cases["delta"]
+    assert delta.index("answerMoved()") < delta.index("return")
+    # It runs per streamed token: written only when it changes.
+    moved = region(model, "private func answerMoved() {", "\n    }\n")
+    assert "if heartbeats != 0 { heartbeats = 0 }" in moved
+
+
+def test_the_turn_record_keeps_every_heartbeat():
+    model = swift("OverlayModel.swift")
+    beat = region(_handle(model), 'case "heartbeat":', 'case "reasoning":')
+    assert "heartbeats += 1" in beat and "turnHeartbeats += 1" in beat
+    assert "heartbeats = 0; turnHeartbeats = 0" in model
+    assert "turn.heartbeatCount = turnHeartbeats" in model
+    assert "turn.heartbeatCount = heartbeats" not in model
+    # Only a new turn clears the turn's count.
+    assert model.count("turnHeartbeats = 0") == 2  # its declaration and start()
+
+
+def test_heartbeat_seconds_come_from_one_place_at_the_senders_pace():
+    model = swift("OverlayModel.swift")
+    view = swift("OverlayView.swift")
+    loop = float(re.search(r"static let loopHeartbeatSeconds = ([\d.]+)", model).group(1))
+    silence = float(re.search(r"static let silenceHeartbeatSeconds = ([\d.]+)", model).group(1))
+    # The agent loop's throttle and the plain-chat silence wait.
+    agent = (ROOT / "service" / "agent" / "loop.py").read_text()
+    paces = {float(x) for x in re.findall(r"last_hb > ([\d.]+)", agent)}
+    assert paces == {loop}, paces
+    waits = (ROOT / "service" / "inference" / "heartbeat.py").read_text()
+    assert float(re.search(r"interval: float = ([\d.]+)", waits).group(1)) == silence
+    # A turn routed with tools is the loop's; anything else is plain chat.
+    assert "Self.heartbeatSeconds(heartbeats, fromLoop: turnNeededTools == true)" in model
+    # The stall line, the working label and the thinking label all convert there.
+    label = region(model, "var processingLabel: String {", "\n    }\n")
+    assert "Self.heartbeatSeconds(heartbeats, fromLoop: true)" in label
+    assert "(\\(stallSeconds)s)" in label
+    assert "still generating… (\\(model.stallSeconds)s)" in view
+    assert "if model.heartbeats > 0 {" in view
+    for source in (label, view):
+        assert not re.search(r"heartbeats\)? \* \d", source)
