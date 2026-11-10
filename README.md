@@ -3,7 +3,7 @@
 **A private assistant that lives in your Mac's notch, keeps track of what needs you, and does the
 busywork. Its AI runs on your Mac, so your mail, texts and calendar never go to a cloud.**
 
-[Download Wisp](https://github.com/adjad/wisp/releases/latest) · [What's new in 0.5.0-rc1](docs/releases/0.5.0-rc1.md) · Apple silicon, macOS 26.2+
+[Download Wisp](https://github.com/adjad/wisp/releases/latest) · [What's new in 0.5.0-rc2](docs/releases/0.5.0-rc2.md) · Apple silicon, macOS 26.2+
 
 ## The problem
 
@@ -70,7 +70,7 @@ by default), and your Brief and answers fit you.
 | --- | --- |
 | Mac | Apple silicon (M1 or later) |
 | macOS | 26.2 or newer for Wisp's built-in engine. On macOS 14–26.1 you need another engine, such as oMLX, Ollama or LM Studio ([details](docs/technical-overview.md#using-another-local-inference-app)). |
-| Memory | 16 GB minimum, 24 GB recommended |
+| Memory | 16 GB |
 | Disk | About 8 GB free for the first download |
 
 ### Install
