@@ -380,6 +380,9 @@ async def answer_request(prompt: str, document: dict, *, client=None, model: str
         client, model = local_model()      # refuse before reading anything for a cloud binding
     text, cut = await extract_async(name, data, timeout=min(_EXTRACT_TIMEOUT_S, deadline - time.monotonic()),
                                     large=True)
+    # The `[Pages: N]` line is a fact about the file for page picking, never content. The `[Page n]`
+    # lines stay: they let the answer say which page a figure is on.
+    text = large_document.without_header(text)
     if len(text) <= MAX_TEXT_CHARS:
         return await answer_text(prompt, name, text, truncated=cut, client=client, model=model,
                                  deadline=deadline)
