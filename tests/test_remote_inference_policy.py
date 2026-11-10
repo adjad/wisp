@@ -157,7 +157,8 @@ class PolicyChecks(RemoteFixture):
 
     def test_tool_exclusions_are_exactly_the_local_runtime_tools(self):
         self.assertEqual(policy._REMOTE_EXCLUDED, {'create_tool', 'use_skill', 'wisp_skills', 'wisp_mcp',
-                                                   'read_email_attachments'})
+                                                   'read_email_attachments',
+                                                   'read_message_attachments'})
         for n in [*policy._REMOTE_EXCLUDED, 'mcp_anything', 'not_a_registered_tool', '', None, []]:
             self.assertFalse(policy.remote_tool_allowed(n), n)
         self.assertFalse(hasattr(policy, 'remote_read_only_mode'))

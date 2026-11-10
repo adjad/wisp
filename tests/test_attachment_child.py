@@ -973,3 +973,478 @@ def test_enlargement_stays_bounded():
     tall = Image.new("RGB", (2000, 3000), "white")
     assert max(image_of(A._recognition_jpeg(tall, A.OCR_PAGE_TEXT_SIDE)).size) == A.OCR_PAGE_TEXT_SIDE
     assert max(image_of(A._recognition_jpeg(Image.new("RGB", (3000, 2000), "white"))).size) == A.OCR_TEXT_SIDE
+
+
+# ================================================== recordings and attached emails
+
+import hashlib
+import math
+import subprocess
+import sys
+import wave
+from email import message_from_bytes
+from email.message import EmailMessage
+
+
+def _tool_works(argv) -> bool:
+    try:
+        return subprocess.run(argv, capture_output=True, timeout=30).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def tone_samples(seconds: float, rate: int = 16000, quiet=(), amplitude=8000) -> bytes:
+    """16-bit mono PCM: a 440 Hz tone, with a silent stretch for each (start, end) in `quiet` (seconds)."""
+    one = bytearray()
+    for i in range(rate):
+        one += struct.pack("<h", int(amplitude * math.sin(2 * math.pi * 440 * i / rate)))
+    whole, rest = divmod(seconds, 1)
+    out = bytearray(bytes(one) * int(whole)) + bytes(one[:int(rest * rate) * 2])
+    for start, end in quiet:
+        out[int(start * rate) * 2:int(end * rate) * 2] = b"\x00" * (int(end * rate) * 2 - int(start * rate) * 2)
+    return bytes(out)
+
+
+def wav_file(seconds: float, rate: int = 16000, **kwargs) -> bytes:
+    out = io.BytesIO()
+    with wave.open(out, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(rate)
+        wav.writeframes(tone_samples(seconds, rate, **kwargs))
+    return out.getvalue()
+
+
+def encode_with_afconvert(wav: bytes, tmp_path, fmt: str, codec: str) -> bytes | None:
+    """The recording as another format, made by the system's own tool; None where it can't do that here."""
+    source, target = tmp_path / "in.wav", tmp_path / "out.bin"
+    source.write_bytes(wav)
+    if not _tool_works(["/usr/bin/afconvert", "-f", fmt, "-d", codec, str(source), str(target)]) \
+            or not target.is_file():
+        return None
+    return target.read_bytes()
+
+
+AFCONVERT = pytest.mark.skipif(not (os.path.exists("/usr/bin/afconvert") and _child_can_start()),
+                               reason="needs macOS's afconvert and a child process")
+M4A_HEAD = b"\x00\x00\x00\x1cftypM4A " + b"\x00" * 40
+
+
+def assert_window(b64: str) -> float:
+    """The window is a complete 16 kHz mono 16-bit WAV of at most 29.5 s; returns its length in seconds."""
+    with wave.open(io.BytesIO(base64.b64decode(b64)), "rb") as wav:
+        assert (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()) == (1, 2, 16000)
+        seconds = wav.getnframes() / 16000
+    assert 0 < seconds <= 29.5
+    return seconds
+
+
+def hear(name, data, timeout=90):
+    return run(D.run_attachment_child("audio", name, data, timeout=timeout))
+
+
+# ------------------------------------------------------------------ inspect: audio and email
+
+@pytest.mark.parametrize("magic,kind", [
+    (b"\x00\x00\x00\x1cftypM4A \x00\x00\x00\x00", "M4A"), (b"\x00\x00\x00\x1cftypM4B \x00\x00\x00\x00", "M4B"),
+    (b"RIFF\x24\x00\x00\x00WAVEfmt ", "WAV"), (b"ID3\x04\x00\x00\x00\x00\x00\x00", "MP3"),
+    (b"\xff\xfb\x90\x00\x00\x00", "MP3"), (b"caff\x00\x01\x00\x00", "CAF"), (b"OggS\x00\x02", "Ogg"),
+    (b"#!AMR\n\x3c", "AMR"), (b"FORM\x00\x00\x10\x00AIFFCOMM", "AIFF"), (b"FORM\x00\x00\x10\x00AIFCFVER", "AIFF"),
+    (b"\xff\xf1\x50\x80\x02\x1f\xfc", "AAC")])
+def test_audio_is_recognised_by_its_bytes(magic, kind):
+    result = A.inspect("memo", magic + b"\x00" * 40)
+    assert result["family"] == "audio" and result["real_type"] == f"an audio recording ({kind})"
+    assert result["risk"]["level"] == ""
+
+
+def test_video_brands_stay_video_and_audio_look_alikes_are_not_audio():
+    assert A.inspect("clip", b"\x00\x00\x00\x18ftypisom" + b"\x00" * 40)["family"] == "video"
+    assert A.inspect("clip", b"\x00\x00\x00\x18ftypqt  " + b"\x00" * 40)["family"] == "video"
+    assert A.inspect("a.mp3", b"\xff\xfb\xf0\x00" + b"\x00" * 40)["family"] != "audio"        # bitrate 15 is invalid
+    assert A.inspect("a.mp3", b"\xff\xfb\x9c\x00" + b"\x00" * 40)["family"] != "audio"        # sample rate 3 is invalid
+    assert A.inspect("a", b"\xff\xd8\xff\xe0" + b"\x00" * 40)["family"] == "image"
+    assert A.inspect("run.sh", b"#!/bin/sh\necho hi\n")["family"] == "script"
+
+
+def test_a_program_is_still_a_program_whatever_its_audio_name_and_audio_with_a_wrong_name_is_flagged():
+    program = A.inspect("voice memo.m4a", MZ)
+    assert program["family"] == "program" and program["risk"]["level"] == "high"
+    assert A.inspect("voice.m4a.exe", M4A_HEAD)["risk"]["level"] == "high"
+    mismatch = A.inspect("invoice.pdf", M4A_HEAD)
+    assert mismatch["family"] == "audio" and mismatch["risk"]["level"] == "caution"
+    assert warned(mismatch, "really an audio recording")
+    assert A.inspect("memo.m4a", M4A_HEAD)["warnings"] == []
+
+
+def test_an_attached_email_is_recognised_by_its_headers():
+    head = b"From: Ann <ann@example.com>\r\nTo: bob@example.com\r\nSubject: Hello\r\n\r\nbody"
+    result = A.inspect("forwarded.eml", head)
+    assert result["family"] == "email" and result["real_type"] == "an email message" and result["risk"]["level"] == ""
+    assert A.inspect("x", b"Received: from a\nMessage-ID: <1@x>\nX-Other: y\n\nhi")["family"] == "email"
+    assert A.inspect("x", b"From me@example.com Mon Nov  9 00:00:00 2026\nFrom: me@example.com\nDate: today\n\nx"
+                     )["family"] == "email"
+    assert A.inspect("x", b"Subject: only one known header\n\nbody")["family"] == ""
+    assert A.inspect("x", b"Dear Ann,\nFrom: here\nTo: there\n")["family"] == ""
+    assert A.inspect("x", b"From: a\nTo: b\x00\x00\n")["family"] == ""
+    assert A.inspect("invoice.pdf", head)["risk"]["level"] == "caution"
+    assert A.inspect("x.csv", head)["risk"]["level"] == ""
+
+
+@CHILD
+def test_inspect_in_the_child_knows_audio_and_email():
+    assert run(D.run_attachment_child("inspect", "memo.m4a", M4A_HEAD, timeout=30))["family"] == "audio"
+    mail = b"From: a@example.com\nTo: b@example.com\nSubject: s\n\nbody\n"
+    assert run(D.run_attachment_child("inspect", "m.eml", mail, timeout=30))["family"] == "email"
+
+
+# ------------------------------------------------------------------ audio, for real
+
+@CHILD
+@AFCONVERT
+def test_a_wav_is_heard_in_windows_that_cover_it():
+    result = hear("memo.wav", wav_file(5.0))
+    assert result["seconds"] == pytest.approx(5.0, abs=0.05) and result["stopped_early"] is False
+    assert len(result["windows"]) == 1 and assert_window(result["windows"][0]) == pytest.approx(5.0, abs=0.05)
+    assert result["heard"] == pytest.approx(5.0, abs=0.05)
+
+
+@CHILD
+@AFCONVERT
+def test_other_sample_rates_and_the_file_name_do_not_matter(tmp_path):
+    result = hear("whatever.pdf", wav_file(2.0, rate=44100))                # a wrong name changes nothing
+    assert result["seconds"] == pytest.approx(2.0, abs=0.05)
+    caf = encode_with_afconvert(wav_file(2.0), tmp_path, "caff", "LEI16")
+    aiff = encode_with_afconvert(wav_file(2.0), tmp_path, "AIFF", "BEI16")
+    for name, data in (("a.caf", caf), ("a.aiff", aiff)):
+        assert data is not None and hear(name, data)["seconds"] == pytest.approx(2.0, abs=0.05)
+
+
+@CHILD
+@AFCONVERT
+def test_an_m4a_is_heard_too(tmp_path):
+    m4a = encode_with_afconvert(wav_file(4.0), tmp_path, "m4af", "aac")
+    if m4a is None:
+        pytest.skip("this environment's afconvert cannot make AAC")
+    assert A.inspect("memo.m4a", m4a)["family"] == "audio"
+    result = hear("memo.m4a", m4a)
+    assert result["seconds"] == pytest.approx(4.0, abs=0.2) and len(result["windows"]) == 1
+    assert_window(result["windows"][0])
+
+
+@CHILD
+@AFCONVERT
+def test_a_70_second_recording_is_three_windows_cut_in_the_planted_silence():
+    result = hear("long.wav", wav_file(70.0, quiet=[(27.0, 27.6)]))
+    lengths = [assert_window(w) for w in result["windows"]]
+    assert len(lengths) == 3 and result["stopped_early"] is False
+    assert sum(lengths) == pytest.approx(result["heard"], abs=0.01)
+    assert result["heard"] == pytest.approx(70.0, abs=0.05) and result["seconds"] == pytest.approx(70.0, abs=0.05)
+    assert 27.0 <= lengths[0] <= 27.6                                    # the cut is inside the silence
+
+
+@CHILD
+@AFCONVERT
+def test_a_700_second_recording_stops_at_600_seconds_and_says_so():
+    result = hear("long.wav", wav_file(700.0), timeout=120)
+    assert result["seconds"] == pytest.approx(700.0, abs=0.1)
+    assert result["heard"] == pytest.approx(600.0, abs=0.05) and result["stopped_early"] is True
+    lengths = [assert_window(w) for w in result["windows"]]
+    assert sum(lengths) == pytest.approx(result["heard"], abs=0.01)
+
+
+@CHILD
+@AFCONVERT
+def test_text_renamed_to_a_recording_and_a_tiny_one_get_plain_sentences():
+    with pytest.raises(ValueError, match=r"^That recording couldn't be read\.$"):
+        hear("note.m4a", b"This is only a text file, not a recording at all.")
+    with pytest.raises(ValueError, match=r"^That recording couldn't be read\.$"):
+        hear("note.m4a", b"")
+    with pytest.raises(ValueError, match=r"^That recording is empty\.$"):
+        hear("blip.wav", wav_file(0.1))
+    with pytest.raises(ValueError, match=r"^That recording couldn't be read\.$"):
+        hear("x.m4a", MZ)                                                  # a program is never given to the decoder
+    with pytest.raises(ValueError, match=r"^That recording (couldn't be read|is empty)\.$"):
+        hear("x.wav", wav_file(3.0)[:40] + os.urandom(500))                # a damaged header
+
+
+@CHILD
+def test_the_audio_job_gets_a_private_work_directory_that_is_removed():
+    made = []
+    real = tempfile.mkdtemp
+
+    def spy(*args, **kwargs):
+        path = real(*args, **kwargs)
+        made.append(path)
+        return path
+    with patch.object(D.tempfile, "mkdtemp", spy):
+        with pytest.raises(ValueError):
+            hear("a.wav", b"nothing")
+    assert len(made) == 1 and not os.path.exists(made[0])
+
+
+def test_the_audio_job_without_a_work_directory_is_refused():
+    with pytest.raises(ValueError, match="can't read that kind of recording"):
+        A.audio("a.wav", wav_file(1.0), "")
+
+
+def test_quietest_cut_picks_the_silent_stretch_inside_the_region():
+    import array
+    samples = array.array("h", [5000] * (30 * 16000))
+    for i in range(int(27.0 * 16000), int(27.5 * 16000)):
+        samples[i] = 0
+    for i in range(int(20.0 * 16000), int(21.0 * 16000)):                # quieter, but outside the last 4 s
+        samples[i] = 0
+    cut = A._quietest_cut(samples, int(25.5 * 16000), int(29.5 * 16000))
+    assert 27.0 * 16000 <= cut <= 27.5 * 16000
+
+
+# ------------------------------------------------------------------ attached emails
+
+def build_mail(body="Hello there.", *, html=None, files=(), subject="Quarterly numbers") -> bytes:
+    message = EmailMessage()
+    message["From"] = "Ann Lee <ann@example.com>"
+    message["To"] = "bob@example.com, Cy <cy@example.com>"
+    message["Cc"] = "dee@example.com"
+    message["Subject"] = subject
+    message["Date"] = "Mon, 09 Nov 2026 10:00:00 +0000"
+    message["Message-ID"] = "<abc@example.com>"
+    if body is not None:
+        message.set_content(body)
+    if html is not None:
+        if body is None:
+            message.set_content(html, subtype="html")
+        else:
+            message.add_alternative(html, subtype="html")
+    for name, mime, content in files:
+        major, minor = mime.split("/")
+        message.add_attachment(content, maintype=major, subtype=minor, filename=name)
+    return message.as_bytes()
+
+
+def read_eml(data: bytes, timeout=60):
+    return run(D.run_attachment_child("eml", "forwarded.eml", data, timeout=timeout))
+
+
+def read_part(data: bytes, index: int, timeout=60):
+    return run(D.run_attachment_child("eml_part", "forwarded.eml", data, timeout=timeout, part=index))
+
+
+@CHILD
+def test_a_plain_email_comes_back_with_clean_headers_and_its_body():
+    result = read_eml(build_mail("Hello there.\r\nSecond line."))
+    assert result["from"] == "Ann Lee <ann@example.com>" and result["cc"] == "dee@example.com"
+    assert result["to"] == "bob@example.com, Cy <cy@example.com>" and result["subject"] == "Quarterly numbers"
+    assert result["date"].startswith("Mon, 09 Nov 2026") and result["body"] == "Hello there.\nSecond line."
+    assert result["body_cut"] is False and result["files"] == [] and result["more_files"] == 0
+
+
+@CHILD
+def test_an_html_only_email_is_turned_to_text_by_the_document_readers_code():
+    html = "<html><body><p>Total <b>due</b>: $240</p><script>evil()</script><style>p{}</style><div>Thanks</div>" \
+           "<img src='http://tracker.example/x.gif'></body></html>"
+    result = read_eml(build_mail(None, html=html))
+    assert "Total due: $240" in result["body"] and "Thanks" in result["body"]
+    assert "evil" not in result["body"] and "tracker" not in result["body"] and "<" not in result["body"]
+
+
+@CHILD
+def test_multipart_alternative_prefers_the_plain_text():
+    result = read_eml(build_mail("Plain version", html="<p>HTML version</p>"))
+    assert result["body"] == "Plain version" and result["files"] == []
+
+
+@CHILD
+def test_an_empty_plain_part_falls_back_to_the_html():
+    result = read_eml(build_mail("   ", html="<p>Only the web version has words</p>"))
+    assert result["body"] == "Only the web version has words"
+
+
+@CHILD
+def test_attachments_are_listed_with_decoded_names_and_sizes():
+    content = os.urandom(3000)
+    raw = build_mail("See attached", files=[("report.pdf", "application/pdf", content),
+                                            ("notes.txt", "text/plain", "line one\nline two\n".encode())])
+    # An RFC 2231 name, as many mail programs write it for non-ASCII names.
+    raw = raw.replace(b'filename="report.pdf"', b"filename*=UTF-8''r%C3%A9sum%C3%A9%20Q3%20%E2%80%AEfdp.pdf")
+    result = read_eml(raw)
+    assert result["body"] == "See attached"
+    assert [f["index"] for f in result["files"]] == [0, 1]
+    first, second = result["files"]
+    assert first["name"] == "résumé Q3 fdp.pdf" and first["mime"] == "application/pdf" and first["size"] == 3000
+    assert second["name"] == "notes.txt" and second["mime"] == "text/plain" and second["size"] == 18
+
+
+@CHILD
+def test_encoded_word_names_and_path_parts_are_cleaned():
+    raw = build_mail("x", files=[("a.bin", "application/octet-stream", b"12345")])
+    raw = raw.replace(b'filename="a.bin"', b'filename="=?utf-8?q?..=2F..=2Fevil=0A.txt?="')
+    assert read_eml(raw)["files"][0]["name"] == "evil .txt"
+    raw = build_mail("x", files=[("a.bin", "application/octet-stream", b"12345")])
+    raw = raw.replace(b'filename="a.bin"', b'filename="C:\\\\Users\\\\me\\\\Desktop\\\\x.exe"')
+    assert read_eml(raw)["files"][0]["name"] == "x.exe"
+
+
+@CHILD
+def test_an_inline_image_counts_as_a_file_and_unnamed_parts_get_a_plain_name():
+    message = EmailMessage()
+    message["From"], message["To"], message["Subject"] = "a@example.com", "b@example.com", "pic"
+    message.set_content("text")
+    message.add_alternative("<p>hi <img src='cid:logo'></p>", subtype="html")
+    message.get_payload()[1].add_related(b"\x89PNG\r\n\x1a\n" + b"0" * 50, "image", "png", cid="<logo>")
+    result = read_eml(message.as_bytes())
+    assert result["body"] == "text"
+    assert [(f["mime"], f["size"]) for f in result["files"]] == [("image/png", 58)]
+    assert result["files"][0]["name"] == "image.png"
+
+
+@CHILD
+def test_an_email_inside_the_email_is_listed_not_opened():
+    inner = build_mail("Inner secret body", subject="Re: lunch / plans",
+                       files=[("deep.pdf", "application/pdf", b"%PDF-1")])
+    outer = EmailMessage()
+    outer["From"], outer["To"], outer["Subject"] = "a@example.com", "b@example.com", "Fwd"
+    outer.set_content("forwarded below")
+    outer.add_attachment(message_from_bytes(inner), disposition="attachment")
+    raw = outer.as_bytes()
+    result = read_eml(raw)
+    assert result["body"] == "forwarded below" and "Inner secret" not in json.dumps(result)
+    assert len(result["files"]) == 1
+    entry = result["files"][0]
+    assert entry["name"] == "Re: lunch - plans.eml"
+    assert entry["mime"] == "message/rfc822" and entry["size"] > 100
+    part = read_part(raw, 0)
+    assert part["name"] == entry["name"] and part["size"] == entry["size"]
+    assert b"Inner secret body" in base64.b64decode(part["data_b64"])
+
+
+@CHILD
+def test_eml_part_gives_back_exactly_the_attached_bytes():
+    blobs = [os.urandom(5000), b"plain,csv\n1,2\n", os.urandom(77)]
+    raw = build_mail("x", files=[("a.bin", "application/octet-stream", blobs[0]), ("t.csv", "text/csv", blobs[1]),
+                                 ("b.dat", "application/x-thing", blobs[2])])
+    listed = read_eml(raw)["files"]
+    assert [f["size"] for f in listed] == [len(b) for b in blobs]
+    for index, blob in enumerate(blobs):
+        part = read_part(raw, index)
+        data = base64.b64decode(part["data_b64"])
+        assert hashlib.sha256(data).hexdigest() == hashlib.sha256(blob).hexdigest()
+        assert part["size"] == len(blob) and part["name"] == listed[index]["name"]
+        assert part["mime"] == listed[index]["mime"]
+
+
+@CHILD
+def test_eml_part_refuses_a_missing_index():
+    raw = build_mail("x", files=[("a.bin", "application/octet-stream", b"1")])
+    for index in (1, 99, -1):
+        with pytest.raises(ValueError, match="isn't in the email"):
+            read_part(raw, index)
+    with pytest.raises(ValueError, match="isn't in the email"):
+        run(D.run_attachment_child("eml_part", "m.eml", raw, timeout=30))        # no index at all
+
+
+def test_eml_part_refuses_a_file_over_the_limit(monkeypatch):
+    raw = build_mail("x", files=[("a.bin", "application/octet-stream", b"0" * 5000)])
+    assert A.MAX_EML_PART_BYTES == 24 * 1024 * 1024
+    monkeypatch.setattr(A, "MAX_EML_PART_BYTES", 1000)
+    with pytest.raises(ValueError, match=r"^That file inside the email is too large\.$"):
+        A.eml_part("m.eml", raw, 0)
+
+
+def test_a_long_list_of_files_is_cut_at_fifty_and_counted():
+    raw = build_mail("x", files=[(f"f{n}.bin", "application/octet-stream", b"x" * n) for n in range(60)])
+    result = A.eml("m.eml", raw)
+    assert len(result["files"]) == 50 and result["more_files"] == 10 and result["files"][49]["index"] == 49
+    assert A.eml_part("m.eml", raw, 55)["name"] == "f55.bin"
+
+
+def test_a_very_long_body_is_cut_and_says_so():
+    result = A.eml("m.eml", build_mail("word " * 100_000))
+    assert len(result["body"]) == 200_000 and result["body_cut"] is True
+
+
+def test_headers_are_cleaned_and_cut():
+    raw = (b"From: =?utf-8?b?QW5u4oCuZ25pcw==?= <a@example.com>\nTo: " + b"x" * 5000 + b"@example.com\n"
+           b"Subject: tab\there\x07bell\nDate: today\n\nbody\n")
+    result = A.eml("m.eml", raw)
+    assert result["from"] == "Anngnis <a@example.com>" and len(result["to"]) == 300
+    assert result["subject"] == "tab here bell"
+
+
+@CHILD
+def test_a_file_that_is_not_an_email_is_a_plain_sentence():
+    for data in (b"", b"just some words\nand more words\n", os.urandom(2000), b"\x00" * 100):
+        with pytest.raises(ValueError, match=r"^That email file couldn't be read\.$"):
+            read_eml(data)
+
+
+def _hostile(name, data, timeout=60):
+    started = time.monotonic()
+    try:
+        result = run(D.run_attachment_child("eml", name, data, timeout=timeout))
+    except ValueError as error:
+        result = str(error)
+    assert time.monotonic() - started < 40
+    return result
+
+
+@CHILD
+def test_hostile_emails_end_in_a_result_or_a_plain_sentence_never_a_hang():
+    head = b"From: a@example.com\nTo: b@example.com\nSubject: s\n"
+    cases = {
+        "truncated base64": head + b"Content-Type: application/octet-stream; name=x.bin\n"
+                            b"Content-Transfer-Encoding: base64\n\nQUJDREVGR0hJSktMTU5P" + b"AAAA" * 3 + b"A",
+        "boundary never closes": head + b'Content-Type: multipart/mixed; boundary="zz"\n\n--zz\n'
+                                 b"Content-Type: text/plain\n\nbody that never ends\n--zz\nContent-Type: text/plain\n\nmore",
+        "no boundary at all": head + b"Content-Type: multipart/mixed\n\nsome text\n",
+        "5 MB header": b"From: a@example.com\nTo: b@example.com\nSubject: " + b"A" * (5 * 1024 * 1024)
+                       + b"\n\nbody\n",
+        "5 MB of encoded words": b"From: a@example.com\nTo: b@example.com\nSubject: " + b"=?utf-8?q?A?= " * 400_000
+                                 + b"\n\nbody\n",
+        "bad charset": head + b"Content-Type: text/plain; charset=nonsense-9\n\ncaf\xe9\n",
+        "claims a huge size": head + b"Content-Type: application/octet-stream; name=big.bin; size=99999999999999\n"
+                              b"Content-Length: 99999999999999\nContent-Transfer-Encoding: base64\n\nQUJD\n",
+    }
+    results = {label: _hostile(label, data) for label, data in cases.items()}
+    for label, result in results.items():
+        assert isinstance(result, dict) or result.startswith("That "), label
+    assert isinstance(results["truncated base64"], dict) and results["truncated base64"]["files"][0]["size"] > 0
+    assert results["claims a huge size"]["files"][0]["size"] == 3
+    assert "caf" in results["bad charset"]["body"]
+    assert results["5 MB header"]["subject"] == "A" * 300
+
+
+@CHILD
+def test_a_message_nested_ten_thousand_levels_deep_is_handled():
+    parts = [b"From: a@example.com\nTo: b@example.com\nSubject: deep\n"]
+    for level in range(10_000):
+        parts.append(f'Content-Type: multipart/mixed; boundary="b{level}"\n\n--b{level}\n'.encode())
+    parts.append(b"Content-Type: text/plain\n\nbottom\n")
+    result = _hostile("deep", b"".join(parts))
+    assert isinstance(result, dict) or result == "That email file couldn't be read."
+
+
+def test_the_walk_is_capped_in_parts_and_in_depth():
+    many = b"From: a@example.com\nTo: b@example.com\nContent-Type: multipart/mixed; boundary=q\n\n" + b"".join(
+        b"--q\nContent-Type: application/octet-stream\nContent-Disposition: attachment; filename=f%d.bin\n\nx\n" % n
+        for n in range(500)) + b"--q--\n"
+    assert len(A._eml_parts(message_from_bytes(many))) == A.MAX_EML_PARTS
+    deep = [b"From: a@example.com\nTo: b@example.com\n"]
+    for level in range(20):
+        deep.append(f'Content-Type: multipart/mixed; boundary="b{level}"\n\n--b{level}\n'.encode())
+    deep.append(b"Content-Type: text/plain\n\nbottom\n")
+    assert A._eml_parts(message_from_bytes(b"".join(deep))) == []          # the text part is below the depth cap
+
+
+@CHILD
+def test_the_eml_jobs_get_no_work_directory_and_part_is_the_last_argument():
+    captured = []
+    real = D.run_child
+
+    async def spy(code, argv, data, *, timeout, fallback=None):
+        captured.append(argv)
+        return await real(code, argv, data, timeout=timeout, fallback=fallback)
+    raw = build_mail("x", files=[("a.bin", "application/octet-stream", b"1")])
+    with patch.object(D, "run_child", spy):
+        read_eml(raw)
+        read_part(raw, 0)
+    assert captured[0] == ["eml", "forwarded.eml"] and captured[1] == ["eml_part", "forwarded.eml", "", "0"]
