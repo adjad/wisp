@@ -31,15 +31,29 @@ import re
 
 _SEND_VERBS = re.compile(
     r"\b(?:send|sent|te+x+t|txt|e-?mail|mail|message|msg|imessage|dm|tell|reply|respond|"
-    r"forward|fwd|share|notify|ping|invite|write\s+back)\b|\blet\s+\w+\s+know\b|\bask\s+\w+\s+(?:if|whether|to|for|about)\b",
+    r"forward|fwd|share|notify|ping|invite|write\s+back)\b"
+    # "let my mom know", "ask the whole team if": one to three words between.
+    r"|\blet\s+(?:[\w'’]+\s+){1,3}know\b|\bask\s+(?:[\w'’]+\s+){1,3}(?:if|whether|to|for|about)\b",
     re.I)
+# "take the dentist off my calendar" counts; "take friday off" does not.
 _DELETE_VERBS = re.compile(
     r"\b(?:delete|remove|cancel|clear|erase|trash|forget|drop|wipe|purge|kill|stop|end|scrap|"
-    r"empty|unsubscribe|call\s+off|get\s+rid\s+of|clean\s+(?:up|out)|turn\s+off)\b", re.I)
+    r"empty|unsubscribe|call\s+off|get\s+rid\s+of|clean\s+(?:up|out)|turn\s+off|"
+    r"take\s+(?:\S+\s+){1,5}off\s+(?:of\s+)?(?:my|the|our))\b", re.I)
+# Ways to call off a send that is waiting. Accepted for cancel_scheduled_send
+# only (the user sees and approves the exact item every time): these words do
+# not ask for an event, reminder, file or memory to be removed.
+_UNSEND_WORDS = re.compile(r"\b(?:(?:don['’]?t|do\s+not)\s+send|unsend|hold\s+off)\b", re.I)
 _MOVE_VERBS = re.compile(
     r"\b(?:move|moved|rename|reschedule|push|shift|bump|postpone|delay|bring\s+forward|organi[sz]e|"
     r"reorgani[sz]e|sort|tidy|clean\s+up|file|put|dump|relocate|separate|group|archive|change|switch|"
-    r"make\s+(?:it|that)|missed)\b", re.I)
+    r"make\s+(?:it|that)|missed|transfer)\b", re.I)
+# More ways to ask for a calendar event to change. Accepted for update_event
+# only, which always shows its card: "update", "set the…" and "instead" are too
+# loose to let a file move run on (move_path can run with no card).
+_EVENT_CHANGE = re.compile(
+    r"\b(?:update|edit|extend|shorten|lengthen|adjust|modify|instead|(?:set|make)\s+(?:the|my)|"
+    r"needs?\s+to\s+be|got\s+pushed)\b", re.I)
 _WRITE_VERBS = re.compile(
     r"\b(?:add|create|make|set|remind|nudge|book|pencil|block|put|save|remember|note|jot|write|draft|"
     r"update|change|fix|correct|mark|check\s+(?:it|that|this)?\s*off|complete|done|finish|open|launch|start|"
@@ -208,7 +222,8 @@ def problem(tool, args: dict, prompt: str, *, previous_user: str = "", last_assi
                     "Reply to what they said; offer to remember it only if it seems useful.")
     if kind == "send" and not (_SEND_VERBS.search(said) or _answers_send_offer(prompt, last_assistant)):
         return stop("the user did not ask for anything to be sent", "Ask before sending anything.")
-    if kind == "delete" and not _DELETE_VERBS.search(said):
+    if kind == "delete" and not (_DELETE_VERBS.search(said)
+                                 or (name == "cancel_scheduled_send" and _UNSEND_WORDS.search(said))):
         return stop("the user did not ask for anything to be deleted or cancelled",
                     "Ask before deleting anything.")
     if kind == "delete" and name in {"clear_reminders", "clear_past_reminders"} and \
@@ -221,7 +236,8 @@ def problem(tool, args: dict, prompt: str, *, previous_user: str = "", last_assi
     if name == "move_path" and _BULK_SORT.search(prompt) and not re.search(r"\bmove\b", prompt, re.I):
         return stop("sorting or organizing a folder is organize_files, which previews first",
                     "Call organize_files for the folder (its preview changes nothing).")
-    if kind == "move" and not _MOVE_VERBS.search(said):
+    if kind == "move" and not (_MOVE_VERBS.search(said)
+                               or (name == "update_event" and _EVENT_CHANGE.search(said))):
         return stop("the user did not ask for anything to be moved or rescheduled",
                     "Ask before moving anything.")
     return None
