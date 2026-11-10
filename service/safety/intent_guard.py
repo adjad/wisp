@@ -88,12 +88,21 @@ _OPEN_QUESTION = re.compile(
     r"^\W*(?:(?:and|so|ok(?:ay)?|sure|got\s+it|great|alright)[,.!\s]+)*(?:(?:at|for|on|to|by|until)\s+)?"
     r"(?:what|when|which|who|whom|where|how\s+(?:long|many|much|often|early|late|soon))\b", re.I)
 _IMMEDIATE = re.compile(r"\b(?:now|right\s+now|right\s+away|immediately|asap|straight\s+away)\b", re.I)
+# A later time for a send, in digits or words: "at 6pm", "at five", "in two
+# hours", "in half an hour", "friday saying…", "next week". A bare day that
+# may only be the message's subject is not one ("text Sam the weather for
+# tomorrow", "email me my schedule for next week").
+_HOURS = r"one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve"
 _SEND_TIME = re.compile(
     r"\b(?:later|tonight|this\s+(?:evening|afternoon))\b"
     r"|\bat\s+\d|\b\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)\b|\bnoon\b|\bmidnight\b"
+    r"|\bat\s+(?:" + _HOURS + r")\b(?!\s+(?:of|point|time)\b)"
     r"|\b(?:tomorrow|tmrw|tmrow|tomorow|mon|tues?|wed(?:nes)?|thu(?:rs)?|fri|sat(?:ur)?|sun)(?:day)?\s+"
-    r"(?:morning|afternoon|evening|night|at)\b"
-    r"|\bin\s+(?:an?|\d+|a\s+few)\s+(?:min(?:ute)?s?|hours?)\b|\b(?:on|next|this)\s+(?:mon|tue|wed|thu|fri|sat|sun)",
+    r"(?:morning|afternoon|evening|night|at|saying|to\s+say)\b"
+    r"|\bin\s+(?:an?|\d+|a\s+few|a\s+couple(?:\s+of)?|half\s+an|" + _HOURS +
+    r"|fifteen|twenty|thirty|forty[\s-]?five|ninety)\s+(?:min(?:ute)?s?|hours?)\b"
+    r"|\b(?:on|next|this)\s+(?:mon|tue|wed|thu|fri|sat|sun)"
+    r"|(?<!\bfor\s)(?<!\babout\s)(?<!\bof\s)\bnext\s+week\b",
     re.I)
 _SCHEDULE_ASK = re.compile(
     r"\b(?:schedule|scedule|shedule)\s+(?:a|an|the|this|that|my|it|me)?\s*(?:text|e-?mail|message|send|it|this)\b"
@@ -208,12 +217,16 @@ def problem(tool, args: dict, prompt: str, *, previous_user: str = "", last_assi
                     "Answer the question from reads only; offer the action if it would help.")
     kind = _kind(tool, args)
     if name == "schedule_send":
-        if _IMMEDIATE.search(prompt) and not _SCHEDULE_ASK.search(prompt):
+        # "text Sam at 6pm tonight saying I'm leaving now": a "now" that comes
+        # after the send time belongs to the message, not to when it goes.
+        now, timed = _IMMEDIATE.search(prompt), _SEND_TIME.search(prompt)
+        if now and not _SCHEDULE_ASK.search(prompt) and not (timed and timed.start() < now.start()):
             return stop("the user asked to send it now, not later",
                         "Use send_message or send_email for an immediate send, or ask when it should go.")
         if not (_SEND_TIME.search(said) or _SCHEDULE_ASK.search(said)):
             return stop("the user named no later send time",
-                        "Use send_message or send_email to send it now, or ask the user when it should go.")
+                        "If the user gave any time or day for it, ask them when it should go and "
+                        "do not send it now. If they gave none, use send_message or send_email.")
     if name in _IMMEDIATE_SENDS and _SCHEDULE_ASK.search(prompt):
         return stop("the user asked to schedule it for later",
                     "Use schedule_send with the time they gave, or ask what time they meant.")

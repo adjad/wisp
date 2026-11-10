@@ -59,6 +59,25 @@ STOPPED = [
      "add the dentist at 3 tomorrow", "did not ask for anything to be sent"),
     ("unasked_delete", "cancel_event", {"title": "Dentist"},
      "add the dentist at 3 tomorrow", "did not ask for anything to be deleted"),
+    # A day that is only the message's subject is still not a send time, and a
+    # "now" before any time still means now.
+    ("schedule_for_next_week_is_a_subject", "schedule_send",
+     {"to": "Sam", "body": "Schedule", "when": "2026-11-09T09:00:00"},
+     "text sam my schedule for next week", "named no later send time"),
+    ("coming_friday_is_the_message", "schedule_send",
+     {"to": "mom", "body": "Coming Friday", "when": "2026-11-06T09:00:00"},
+     "text mom that im coming friday", "named no later send time"),
+    ("at_one_of_the_shops", "schedule_send",
+     {"to": "mom", "body": "At the shops", "when": "2026-11-01T13:00:00"},
+     "text mom im at one of the shops", "named no later send time"),
+    ("now_before_a_time_in_the_message", "schedule_send",
+     {"to": "mom", "body": "Home at 6", "when": "2026-11-01T18:00:00"},
+     "text mom now that ill be home at 6pm", "send it now"),
+    ("right_now_before_a_time_in_the_message", "schedule_send",
+     {"to": "Sam", "body": "Dinner is at five", "when": "2026-11-01T17:00:00"},
+     "text sam right now saying dinner is at five", "send it now"),
+    ("plain_now", "schedule_send", {"to": "Sam", "body": "x", "when": "2026-11-01T08:00:00"},
+     "text Sam now", "send it now"),
     # The wider wording below stays scoped to the tool it was added for.
     ("update_is_not_a_file_move", "move_path", {"source": "~/a.pdf", "destination": "~/Documents"},
      "update my dentist appointment to 4pm", "did not ask for anything to be moved"),
@@ -131,6 +150,21 @@ ALLOWED = [
       "last_assistant": "Coming up: dentist at 3. Who should I text it to?"}),
     ("ok_so_fix_it", "update_event", {"title": "Dentist", "when_iso": "2026-11-01T15:00:00"},
      "ok so fix it?", {"previous_user": "move the dentist to 3"}),
+    # A send time in words, and a "now" that is part of the message.
+    ("send_in_two_hours", "schedule_send", {"to": "mom", "body": "I landed", "when": "2026-11-01T12:00:00"},
+     "text mom in two hours that i landed", {}),
+    ("send_at_five", "schedule_send", {"to": "Bob", "body": "The deck is ready", "when": "2026-11-01T17:00:00"},
+     "email bob at five that the deck is ready", {}),
+    ("send_in_half_an_hour", "schedule_send", {"to": "dad", "body": "Dinner is ready", "when": "2026-11-01T12:30:00"},
+     "text dad in half an hour that dinner is ready", {}),
+    ("send_friday_saying", "schedule_send", {"to": "mom", "body": "Happy birthday", "when": "2026-11-06T09:00:00"},
+     "send mom a text friday saying happy birthday", {}),
+    ("send_next_week", "schedule_send", {"to": "team", "body": "Offsite", "when": "2026-11-09T09:00:00"},
+     "email the team next week about the offsite", {}),
+    ("leaving_now_in_the_message", "schedule_send", {"to": "Sam", "body": "I'm leaving now", "when": "2026-11-01T18:00:00"},
+     "text sam at 6pm tonight saying im leaving now", {}),
+    ("now_boarding_in_the_message", "schedule_send", {"to": "mom", "body": "Now boarding", "when": "2026-11-02T08:00:00"},
+     "text mom tomorrow morning: now boarding", {}),
     # Everyday wording for a change, a send and a cancel.
     ("update_appointment", "update_event", {"title": "Dentist", "when_iso": "2026-11-01T16:00:00"},
      "update my dentist appointment to 4pm", {}),
@@ -311,6 +345,16 @@ def test_read_only_questions(prompt):
                                     "do not disturb on", "have it remind me at 5 instead"])
 def test_questions_that_ask_for_an_action_are_not_read_only(prompt):
     assert not read_only_question(prompt)
+
+
+def test_a_send_with_no_time_found_is_not_steered_to_go_out_now():
+    # A time the guard did not recognise must not turn into an early send: the
+    # model is told to ask, and to send now only when no time was given at all.
+    result = check("schedule_send", {"to": "mom", "body": "hi", "when": "2026-11-05T09:00:00"},
+                   "text mom on thanksgiving that we are on our way")
+    assert result and "named no later send time" in result
+    assert "ask them when it should go" in result and "do not send it now" in result
+    assert "to send it now" not in result
 
 
 def test_the_guard_never_rewrites_arguments():
