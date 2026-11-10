@@ -114,6 +114,42 @@ class WebParsingTests(unittest.TestCase):
         url, addresses = asyncio.run(web_module._resolve_public("https://8.8.8.8/"))
         self.assertEqual(addresses, ["8.8.8.8"])
 
+    def test_the_fetched_address_keeps_the_query_it_was_given(self):
+        # canonicalize_url drops ref and source; a GitHub contents URL's
+        # ?ref=dev picks the branch, so the request must keep them.
+        given = ("https://user:secret@API.Example.com:443/repos/o/r/contents//README.md"
+                 "?ref=dev&source=x&a=1&utm_source=feed#readme")
+        with self._resolving_to("8.8.8.8"):
+            url = asyncio.run(validate_public_url(given))
+            checked, addresses = asyncio.run(web_module._resolve_public(given))
+        self.assertEqual(url, "https://api.example.com/repos/o/r/contents//README.md"
+                              "?ref=dev&source=x&a=1&utm_source=feed")
+        self.assertEqual((checked, addresses), (url, ["8.8.8.8"]))
+        self.assertNotIn("secret", url)
+        # The identity key used to spot the same page twice is unchanged.
+        self.assertEqual(canonicalize_url(given),
+                         "https://api.example.com/repos/o/r/contents/README.md?a=1")
+        self.assertEqual(asyncio.run(validate_public_url("http://8.8.8.8:8080?q=1")),
+                         "http://8.8.8.8:8080/?q=1")
+
+    def test_the_fetched_address_is_still_checked_on_its_own_host(self):
+        # Userinfo that looks like a public host does not move the check.
+        for url in ("http://8.8.8.8@127.0.0.1/?ref=x", "http://user@[::1]/a?source=b",
+                    "http://localhost/?ref=8.8.8.8", "ftp://8.8.8.8/?ref=dev"):
+            with self.assertRaises(WebError):
+                asyncio.run(validate_public_url(url))
+        with self._resolving_to("10.0.0.4"), self.assertRaises(WebError):
+            asyncio.run(validate_public_url("https://public.example.com@intranet.example/?ref=1"))
+        with self._resolving_to("8.8.8.8"):
+            self.assertEqual(asyncio.run(validate_public_url("https://8.8.4.4@www.example.com/p")),
+                             "https://www.example.com/p")
+
+    def test_duckduckgo_target_is_decoded_once(self):
+        real = "https://example.com/s?q=C%2B%2B&x=100%25&tag=%23top"
+        href = "//duckduckgo.com/l/?uddg=" + web_module.quote(real, safe="") + "&rut=abc"
+        self.assertEqual(_ddg_target(href), real)
+        self.assertEqual(_ddg_target("https://example.org/plain"), "https://example.org/plain")
+
 
 def _feed_as_before_rc3(data: bytes) -> tuple[str, str]:
     """The feed reader as it was: text read for every element of the document."""

@@ -134,17 +134,36 @@ def _public_ip(value: str) -> bool:
     return True
 
 
+def _request_url(raw: str, canonical: str) -> str:
+    """The address to request: the one given, on the checked host.
+
+    ``canonicalize_url`` is an identity key for spotting the same page twice.
+    It drops parameters such as ``ref`` and ``source`` that some sites need
+    (a GitHub contents URL's ``?ref=dev`` picks the branch), so it is not the
+    address to fetch. Scheme, host and port come from the canonical form,
+    which is what was checked; userinfo and the fragment are dropped; path
+    and query are kept as given.
+    """
+    original = urlparse(html.unescape((raw or "").strip()))
+    checked = urlparse(canonical)
+    return urlunparse((checked.scheme, checked.netloc, original.path or "/",
+                       original.params, original.query, ""))
+
+
 async def _resolve_public(raw: str) -> tuple[str, list[str]]:
     """Validate a destination and return it with the addresses that passed.
 
     Every DNS answer has to be public. The fetch then connects to one of the
     returned addresses and to nothing else (``_PinnedTransport``), so a name
     cannot give a public answer here and a private one to the connection.
+    The returned URL is the request address (``_request_url``), on the host
+    that was checked.
     """
-    url = canonicalize_url(raw)
-    if not url:
+    canonical = canonicalize_url(raw)
+    if not canonical:
         raise WebError("only public http(s) URLs are allowed")
-    p = urlparse(url)
+    url = _request_url(raw, canonical)
+    p = urlparse(canonical)
     host = p.hostname or ""
     if host in {"localhost", "localhost.localdomain"} or host.endswith(".local"):
         raise WebError("local and private-network URLs are blocked")
@@ -325,7 +344,9 @@ def _ddg_target(href: str) -> str:
     if "duckduckgo.com" in (p.hostname or ""):
         target = parse_qs(p.query).get("uddg", [""])[0]
         if target:
-            return unquote(target)
+            # parse_qs has decoded it once already; decoding again turned
+            # %2B into + and %25 into %, a different address.
+            return target
     return href
 
 
