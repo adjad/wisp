@@ -211,6 +211,11 @@ public actor GatewayClient {
                     request.setValue("Bearer \(self.pairing.token)", forHTTPHeaderField: "Authorization")
                     request.httpBody = try JSONSerialization.data(withJSONObject: body)
                     let (bytes, response) = try await self.session.bytes(for: request)
+                    if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                        // The gateway explains a refusal in its JSON body (a too-long prompt, too many failures).
+                        let refusal = await Self.errorBody(bytes)
+                        try Self.check(response, body: refusal)
+                    }
                     try Self.check(response, body: nil)
                     var current = sessionId ?? ""
                     var finished = false, clean = false
@@ -292,6 +297,20 @@ public actor GatewayClient {
     }
 
     private func forgetBase() { preferredBase = nil }
+
+    /// The first few KB of a non-2xx streamed body: enough for a JSON `detail`, never the whole stream.
+    private static func errorBody(_ bytes: URLSession.AsyncBytes) async -> Data {
+        var data = Data()
+        do {
+            for try await byte in bytes {
+                data.append(byte)
+                if data.count >= 4096 { break }
+            }
+        } catch {
+            // A read that fails here still leaves the status code to report.
+        }
+        return data
+    }
 
     @discardableResult
     private static func check(_ response: URLResponse, body: Data?) throws -> HTTPURLResponse {

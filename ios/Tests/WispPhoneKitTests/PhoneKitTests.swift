@@ -788,3 +788,31 @@ func uncleanAgentEndForgetsTheVerifiedBase(kind: String) async throws {
     }
     #expect(answer.contains("Mom") && answer.contains("Running late"))
 }
+
+@Test(arguments: [(422, "prompt must be a string of 1..16000 characters"), (429, "too many failures")])
+func agentRefusalShowsTheGatewaysReason(status: Int, detail: String) async throws {
+    let port = 18_841 + (status == 429 ? 1 : 0)
+    let reply: StubProtocol.ReplyHandler = { request in
+        request.url!.path == "/phone/v1/ping" ? proved(request)
+            : StubReply(status: status, headers: ["Content-Type": "application/json"],
+                        body: Data("{\"detail\":\"\(detail)\"}".utf8))
+    }
+    let pairing = MacPairing(host: nil, ip: "100.64.0.1", port: port, macName: "Mac", token: token)
+    let client = GatewayClient(pairing: pairing, session: URLSession(configuration: StubProtocol.configuration(port: port, reply: reply)))
+    var thrown: GatewayError?
+    do { for try await _ in client.agent(prompt: "hi", sessionId: nil) {} } catch { thrown = error as? GatewayError }
+    #expect(thrown == .http(status, detail))
+}
+
+@Test func agentUnauthorizedStaysUnauthorizedWithABody() async throws {
+    let port = 18_843
+    let reply: StubProtocol.ReplyHandler = { request in
+        request.url!.path == "/phone/v1/ping" ? proved(request)
+            : StubReply(status: 401, body: Data(#"{"detail":"unauthorized"}"#.utf8))
+    }
+    let pairing = MacPairing(host: nil, ip: "100.64.0.1", port: port, macName: "Mac", token: token)
+    let client = GatewayClient(pairing: pairing, session: URLSession(configuration: StubProtocol.configuration(port: port, reply: reply)))
+    var thrown: GatewayError?
+    do { for try await _ in client.agent(prompt: "hi", sessionId: nil) {} } catch { thrown = error as? GatewayError }
+    #expect(thrown == .unauthorized)
+}
