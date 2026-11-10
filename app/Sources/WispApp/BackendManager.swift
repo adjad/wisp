@@ -73,6 +73,18 @@ final class BackendManager {
     private(set) var everReachable = false
     /// Whether this manager's own backend process is alive (it may not answer yet).
     var childRunning: Bool { process?.isRunning == true }
+    /// True while this manager is stopping or restarting its own backend on purpose
+    /// (`stopAndWait`, `restart`). A request that straddles that is no sign of a stranger
+    /// on the port, so AppDelegate shows no refusal alert meanwhile.
+    var changingBackend: Bool { backendChanges > 0 }
+    private var backendChanges = 0
+    /// Called on the main actor when the last such change has finished.
+    var onBackendChangeEnded: () -> Void = {}
+
+    private func endBackendChange() {
+        backendChanges -= 1
+        if backendChanges == 0 { onBackendChangeEnded() }
+    }
 
     /// Probe the service while the app runs (every 5 s up, 2 s down) so the
     /// notch can say plainly that it isn't running. Independent of the launch
@@ -394,7 +406,9 @@ final class BackendManager {
     /// would otherwise read as a foreign holder.
     func stopAndWait(timeout: TimeInterval = 5) async {
         guard let process = detachForStop() else { return }
+        backendChanges += 1
         _ = await Self.terminateAndWait(process, timeout: timeout)
+        endBackendChange()
     }
 
     /// Stop this manager's own backend (bounded, as on quit) and launch a fresh
@@ -402,8 +416,10 @@ final class BackendManager {
     /// nothing while a stranger holds the port.
     func restart() async {
         guard !portConflict else { return }
+        backendChanges += 1
         await stopAndWait()
         await startIfNeeded()
+        endBackendChange()
     }
 
     private func detachForStop() -> Process? {

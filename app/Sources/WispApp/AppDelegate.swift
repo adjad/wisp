@@ -255,6 +255,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let message = note.userInfo?["message"] as? String ?? ""
             MainActor.assumeIsolated { self?.presentBackendRefusal(message) }
         }
+        backend.onBackendChangeEnded = { [weak self] in self?.releaseHeldRefusal() }
         // Something the listing missed (or that arrived after it) answering on the port
         // with no live child of ours: the manager stops and reports it here, once.
         backend.onPortConflict = { [weak self] in
@@ -341,10 +342,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             if case .conflict(let foreign) = verdict {
                 self.backend.portConflict = true
+                self.startupPortWasJudged()
                 self.presentPortConflict(PortGuard.conflictMessage(port: 8765, listeners: foreign,
                                                                    folderHints: folderHints))
                 return
             }
+            self.startupPortWasJudged()
             // `.owned` cannot occur without a receipt. On `.free`/`.unknown` a responder the
             // listing missed is still caught by BackendManager before it launches anything.
             await self.backend.startIfNeeded()
@@ -2338,11 +2341,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var lastRefusalShown = ""
+    /// The port has been judged at launch (see launch()). Until then whatever holds it
+    /// is the port-conflict alert's to report, once.
+    private var startupPortJudged = false
+    /// A refusal arrived while it could not be shown (BackendTrust.RefusalNotice.hold).
+    private var refusalHeld = false
 
     /// The app has just refused to talk to the program on the backend port. Shown once
-    /// per distinct reason, never repeatedly while it stays refused.
+    /// per distinct reason, never repeatedly while it stays refused, and only when it is
+    /// news (BackendTrust.refusalNotice): not for Wisp stopping or restarting its own
+    /// service, not before the port is judged at launch, not beside the port-conflict alert.
     private func presentBackendRefusal(_ message: String) {
         guard !message.isEmpty, message != lastRefusalShown else { return }
+        switch BackendTrust.refusalNotice(startupJudged: startupPortJudged,
+                                          changingOwnBackend: backend.changingBackend,
+                                          portConflict: backend.portConflict,
+                                          quitting: shutdownStarted || appTerminating) {
+        case .show: break
+        case .hold: refusalHeld = true; return
+        case .drop: return
+        }
         lastRefusalShown = message
         let alert = NSAlert()
         alert.alertStyle = .warning
@@ -2350,7 +2368,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.informativeText = message
         alert.addButton(withTitle: "OK")
         alert.addButton(withTitle: "Quit Wisp")
-        if alert.runModal() == .alertSecondButtonReturn { terminateWithoutShutdown() }
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        // With a service of this app's own running, quit the usual way, so it and the
+        // engine have stopped before Wisp exits. With none there is nothing to stop.
+        if backend.childRunning { quit() } else { terminateWithoutShutdown() }
+    }
+
+    private func startupPortWasJudged() {
+        startupPortJudged = true
+        releaseHeldRefusal()
+    }
+
+    /// A refusal held back may have been true for that moment only (a holder that left
+    /// during the launch check, a request under Wisp's own restart), so it is not shown
+    /// from memory. The gate forgets it announced it, and the next check, a few seconds
+    /// away at most (the reachability watch), announces it again if it still holds.
+    private func releaseHeldRefusal() {
+        guard refusalHeld else { return }
+        refusalHeld = false
+        Task { await BackendTrustGate.shared.announceAgain() }
     }
 
     /// A program that is not Wisp's own holds the backend port. Wisp does not stop

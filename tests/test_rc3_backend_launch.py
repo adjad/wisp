@@ -84,7 +84,8 @@ def test_shutdown_is_bounded_so_an_open_event_stream_cannot_hold_it(  # l05-live
     # Quit and restart still wait for the child; the wait itself is unchanged.
     manager = _manager()
     assert re.search(r"func restart\(\) async \{\s*guard !portConflict else \{ return \}\s*"
-                     r"await stopAndWait\(\)\s*await startIfNeeded\(\)\s*\}", manager)
+                     r"backendChanges \+= 1\s*await stopAndWait\(\)\s*await startIfNeeded\(\)\s*"
+                     r"endBackendChange\(\)\s*\}", manager)
 
 
 # -- the backend log (a01-app-lifecycle#6) ----------------------------------------
@@ -142,3 +143,79 @@ def test_the_rotation_keeps_one_old_log_and_has_a_small_limit():
     # It touches the log and its one old copy, nothing else, and signals nothing.
     for forbidden in ("terminate", "kill(", "receipt", "contentsOfDirectory", "NSHomeDirectory"):
         assert forbidden not in helper, forbidden
+
+
+# -- the "Wisp isn't using its service" alert (a01-app-lifecycle#3) -----------------
+
+APP = ROOT / "app" / "Sources" / "WispApp" / "AppDelegate.swift"
+TRUST = ROOT / "app" / "Sources" / "WispApp" / "BackendTrust.swift"
+
+
+def _app() -> str:
+    return _code(APP.read_text(encoding="utf-8"))
+
+
+def test_the_refusal_alert_is_decided_before_anything_is_shown():
+    """The alert used to come up for Wisp's own restart and, at launch, under the
+    port-conflict alert. BackendTrust.refusalNotice decides (its table is checked
+    in BackendTrustChecks.swift); here: it is asked first, with the real state."""
+    present = _function(_app(), "private func presentBackendRefusal(_ message: String)")
+    asked = present.index("BackendTrust.refusalNotice(")
+    assert asked < present.index("lastRefusalShown = message") < present.index("alert.runModal()")
+    for argument in ("startupJudged: startupPortJudged", "changingOwnBackend: backend.changingBackend",
+                     "portConflict: backend.portConflict", "quitting: shutdownStarted || appTerminating"):
+        assert argument in present, argument
+    # A held or dropped refusal is not remembered as shown, so it can be shown later.
+    assert re.search(r"case \.hold: refusalHeld = true; return\s*case \.drop: return", present)
+    # A held one is never shown from memory: the gate is asked to say it again.
+    release = _function(_app(), "private func releaseHeldRefusal()")
+    assert "BackendTrustGate.shared.announceAgain()" in release
+    assert "runModal" not in release and "presentBackendRefusal" not in release
+
+
+def test_at_launch_the_port_conflict_alert_is_the_only_alert():
+    app = _app()
+    conflict = re.search(r"if case \.conflict\(let foreign\) = verdict \{(?P<body>.*?)\n            \}", app, re.DOTALL)
+    assert conflict, "the startup conflict branch is missing"
+    body = conflict.group("body")
+    # The conflict is recorded before the port counts as judged, so a refusal for the
+    # same holder is dropped, not shown under (or after) the conflict alert.
+    assert (body.index("self.backend.portConflict = true") < body.index("self.startupPortWasJudged()")
+            < body.index("self.presentPortConflict("))
+    # Judged only once the settled verdict is in, on both paths.
+    assert app.index("settledStartupVerdict(") < app.index("self.startupPortWasJudged()")
+    assert app.count("self.startupPortWasJudged()") == 2
+    assert app.count("startupPortJudged = true") == 1
+
+
+def test_the_manager_marks_its_own_stop_and_restart():
+    manager = _manager()
+    stop = _function(manager, "func stopAndWait(timeout: TimeInterval = 5) async")
+    assert (stop.index("detachForStop()") < stop.index("backendChanges += 1")
+            < stop.index("terminateAndWait(") < stop.index("endBackendChange()"))
+    end = _function(manager, "private func endBackendChange()")
+    assert "backendChanges -= 1" in end and "if backendChanges == 0 { onBackendChangeEnded() }" in end
+    assert manager.count("backendChanges += 1") == manager.count("endBackendChange()") - 1 == 2
+    assert "backend.onBackendChangeEnded = { [weak self] in self?.releaseHeldRefusal() }" in _app()
+
+
+def test_quit_on_the_refusal_alert_stops_wisps_own_service_first():
+    present = _function(_app(), "private func presentBackendRefusal(_ message: String)")
+    assert re.search(r"if backend\.childRunning \{ quit\(\) \} else \{ terminateWithoutShutdown\(\) \}", present)
+    assert present.count("terminateWithoutShutdown()") == 1
+
+
+def test_a_port_that_changes_mid_check_is_never_trusted():
+    """Whatever the second look finds, the request is not sent: every way out of
+    the mismatch branch is unreachable or refused."""
+    trust = _code(TRUST.read_text(encoding="utf-8"))
+    tail = trust[trust.index("let current = inspect()"):trust.index("return decide(current, answer)")]
+    assert "guard let current else { return .refused(.cannotInspect) }" in tail
+    assert "if current.isEmpty { return .unreachable }" in tail
+    returns = re.findall(r"return ([^\n}]+)", tail)
+    assert returns and all(value.strip().startswith((".refused(", ".unreachable", "why", "nil")) for value in returns), returns
+    assert ".trusted" not in tail
+    # The pure policy: an exited process is unreachable only when no stranger is listed.
+    decide = trust[trust.index("static func decide("):trust.index("let pids = listeners.map")]
+    assert decide.index("if !unproven.isEmpty { return .refused(.unproven(unproven)) }") < decide.index("if exited { return .unreachable }")
+    assert "if known == nil { exited = true } else { return .refused(.cannotInspect) }" in decide

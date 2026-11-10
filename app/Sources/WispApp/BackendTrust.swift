@@ -93,16 +93,24 @@ enum BackendTrust {
         case .answered(let answer): evidence = .answered(nonce: answer.launchNonce)
         }
         var unproven: [PortGuard.Listener] = []
+        var exited = false
         for listener in listeners {
-            switch BackendOwnership.verdict(listener: listener, receipt: receipt, facts: facts(listener.pid),
+            let known = facts(listener.pid)
+            switch BackendOwnership.verdict(listener: listener, receipt: receipt, facts: known,
                                             identity: evidence) {
             case .wispBackend: continue
-            case .notWisp(.processGone): return .refused(.cannotInspect)
+            case .notWisp(.processGone):
+                // The kernel no longer has the listed process: it exited after the listing
+                // (Wisp's own service stopping, restarting or crashing does this). Nothing
+                // is there to refuse, and nothing is trusted. A process that exists but
+                // does not match its listing is still "couldn't check".
+                if known == nil { exited = true } else { return .refused(.cannotInspect) }
             case .notWisp(.nonceMismatch): return .refused(.launchMismatch)
             case .notWisp: unproven.append(listener)
             }
         }
         if !unproven.isEmpty { return .refused(.unproven(unproven)) }
+        if exited { return .unreachable }
         let pids = listeners.map(\.pid)
         switch identity {
         case .failed:
@@ -155,6 +163,30 @@ enum BackendTrust {
             return "Wisp stopped talking to the program on port \(productionPort), so it can't act on "
                 + "your Mail, Messages or Calendar through it. \(why) Quit it and reopen Wisp."
         }
+    }
+
+    /// What the app does with a refusal the gate has just announced.
+    enum RefusalNotice: Equatable {
+        /// Show the "Wisp isn't using its service" alert.
+        case show
+        /// Not now. Once the app can show one it asks the gate to announce again
+        /// (BackendTrustGate.announceAgain), so a refusal that still holds is shown
+        /// then, and one that was only that moment is never shown.
+        case hold
+        /// Never: the person is told another way, or Wisp is ending.
+        case drop
+    }
+
+    /// Pure. A refusal is shown only when it is news: not while Wisp is quitting, not
+    /// when the port-conflict alert already says a program Wisp didn't start holds the
+    /// port, not before the port has been judged at launch (a holder then is that
+    /// alert's to report, once), and not while Wisp is stopping or restarting its own
+    /// service. None of this changes what is trusted: a refused request is still not sent.
+    static func refusalNotice(startupJudged: Bool, changingOwnBackend: Bool,
+                              portConflict: Bool, quitting: Bool) -> RefusalNotice {
+        if quitting || portConflict { return .drop }
+        if !startupJudged || changingOwnBackend { return .hold }
+        return .show
     }
 }
 
@@ -215,6 +247,13 @@ actor BackendTrustGate {
                                         userInfo: ["message": BackendTrust.describe(verdict)])
     }
 
+    /// Forgets what was last announced, so the next check announces a refusal that
+    /// still holds. For a listener that could not show the last one (BackendTrust.RefusalNotice.hold).
+    /// Only the wording's once-per-change rule is reset; every request is checked as before.
+    func announceAgain() {
+        lastAnnounced = nil
+    }
+
     /// A process incarnation: the kernel start time (see BackendOwnership.StartTime).
     typealias Incarnation = BackendOwnership.StartTime
 
@@ -238,18 +277,37 @@ actor BackendTrustGate {
         // without being asked anything: nothing is sent to it.
         let unasked = decide(found, .failed)
         if case .refused = unasked { return unasked }
-        let incarnations = found.map { facts($0.pid)?.start }
+        let seen = found.map { facts($0.pid) }
+        // A listed process the kernel no longer has exited while it was being checked.
+        guard seen.allSatisfy({ $0 != nil }) else { return .unreachable }
+        let incarnations = seen.map { $0?.start }
         guard incarnations.allSatisfy({ $0 != nil }) else { return .refused(.cannotInspect) }
         let answer = await (identity ?? { await fetchIdentity(port: port) })()
         // Identity is asynchronous. Inspect again before allowing the private request,
         // including kernel start times (a reused pid is not the same process) and the
         // receipt itself (a launch meanwhile names a different process).
         let current = inspect()
-        guard current == found, found.map({ facts($0.pid)?.start }) == incarnations, receipt() == launched else {
-            if let current, !current.isEmpty, current != found, case .refused(let why) = decide(current, .failed) {
-                return .refused(why)   // name a replacement stranger plainly
+        let latest = receipt()
+        guard current == found, found.map({ facts($0.pid)?.start }) == incarnations, latest == launched else {
+            // The port changed while the backend was being asked, so the answer is not
+            // trusted and the request is not sent, whatever is said below. What is said
+            // depends on what is there now, judged without asking it anything.
+            guard let current else { return .refused(.cannotInspect) }
+            // The listener went away: Wisp's own service stopping, restarting or crashing
+            // under a request. Nothing is there to refuse.
+            if current.isEmpty { return .unreachable }
+            func refusal(under receipt: BackendOwnership.ReceiptState) -> BackendTrust.Refusal? {
+                if case .refused(let why) = BackendTrust.decide(listeners: current, identity: .failed,
+                                                                receipt: receipt, facts: facts) { return why }
+                return nil
             }
-            return .refused(.cannotInspect)
+            // A different program, or a reused pid, is refused by name. A restart
+            // meanwhile recorded a new launch: a listener that is this app's own under
+            // the launch the check began with, or under the new one, is not a stranger.
+            let underLatest = refusal(under: latest)
+            let underLaunched = latest == launched ? underLatest : refusal(under: launched)
+            if let underLatest, underLaunched != nil { return .refused(underLatest) }
+            return .unreachable
         }
         return decide(current, answer)
     }
