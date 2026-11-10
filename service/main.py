@@ -515,6 +515,8 @@ from service.mail_memory.api import router as mail_memory_router
 app.include_router(mail_memory_router)
 from service.power_api import router as power_router
 app.include_router(power_router)
+from service.attachment_api import router as attachment_router
+app.include_router(attachment_router)
 from service.memory_saver_api import native_only, router as memory_saver_router
 app.include_router(memory_saver_router)
 from service.corpus import router as corpus_router
