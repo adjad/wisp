@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import sqlite3
 import time
 from collections import Counter, defaultdict
 from typing import Any
@@ -897,12 +898,41 @@ class ResearchManager:
                 url=page.url, domain=row["domain"], title=title, text=page.text)
             if page.via_archive:
                 quality_reason += " (fetched via the Wayback Machine after the live page was unavailable)"
-            self.store.update_source(job_id, row["source_id"], status="read",
-                url=page.url, canonical_url=page.canonical_url, title=title,
-                published_at=page.published_at, content_type=page.content_type, body=page.text,
-                quality_class=quality_class, quality_reason=quality_reason,
-                score=row["score"] + relevance + rank.quality_bonus(quality_class),
-                fetched_at=time.time())
+            # The fetched page's canonical URL can differ from the search hit's
+            # (a redirect, rel=canonical, the Wikipedia API's title form) and
+            # may already belong to another row of this job. Two rows cannot
+            # share one, and one page must not count as two sources.
+            holder = self.store.source_for_canonical(job_id, page.canonical_url)
+            duplicate_of = ""
+            read_fields: dict[str, Any] = {"canonical_url": page.canonical_url}
+            if holder and holder["source_id"] != row["source_id"]:
+                if holder["status"] in {"failed", "rejected"}:
+                    # That row never kept this page, so this one does, under
+                    # the address it was found at.
+                    read_fields = {}
+                else:
+                    duplicate_of = f"Duplicate of {holder['source_id']}"
+            if not duplicate_of:
+                try:
+                    self.store.update_source(job_id, row["source_id"], status="read",
+                        url=page.url, title=title,
+                        published_at=page.published_at, content_type=page.content_type,
+                        body=page.text, quality_class=quality_class,
+                        quality_reason=quality_reason,
+                        score=row["score"] + relevance + rank.quality_bonus(quality_class),
+                        fetched_at=time.time(), **read_fields)
+                except sqlite3.IntegrityError:
+                    # Never let one source's address clash fail the whole job.
+                    duplicate_of = "Duplicate of another source"
+            if duplicate_of:
+                # Its own canonical URL stays, so the same hit found again in a
+                # later round lands on this row and is not fetched a second time.
+                self.store.update_source(job_id, row["source_id"], status="rejected",
+                    error=duplicate_of)
+                self.store.event(job_id, "source_skipped", {"source_id": row["source_id"],
+                    "title": title, "url": page.url, "domain": row["domain"],
+                    "text": duplicate_of})
+                continue
             self.store.event(job_id, "source_read", {"source_id": row["source_id"],
                 "title": title, "url": page.url, "characters": len(page.text),
                 "quality_class": quality_class, "via_archive": page.via_archive})

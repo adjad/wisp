@@ -258,6 +258,127 @@ class ResearchPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(client.exclusive_loads)
         self.assertTrue(all(client.exclusive_loads))
 
+    # --- two search hits that turn out to be one page ----------------------
+    _OBJECTIVE = "Compare vaccine efficacy in powdered versus frozen storage"
+    _QUERY = "freeze-dried vaccine powder storage stability"
+    _TITLE = "Development of Stable Influenza Vaccine Powder Formulations"
+    _BODY = ("A study of freeze-dried vaccine stability and storage. The vaccine powder kept its "
+             "efficacy in frozen storage and in powdered storage across the whole study period.")
+
+    def _dup_job(self) -> tuple[str, dict]:
+        plan = _fallback_plan(self._OBJECTIVE, "quick")
+        plan["objective"] = self._OBJECTIVE
+        return self.store.create_job(self._OBJECTIVE, plan, state="running")["id"], plan
+
+    def _dup_source(self, jid: str, url: str, *, score: float = 0) -> str:
+        return self.store.add_source(jid, url=url, canonical_url=canonicalize_url(url),
+            title=self._TITLE, snippet="A study of freeze-dried vaccine stability and storage.",
+            query=self._QUERY, domain="example.com", score=score)
+
+    def _dup_fetch(self, canonical: dict[str, str]):
+        async def fake_fetch(url: str):
+            return Page(url=canonical[url], canonical_url=canonical[url], title=self._TITLE,
+                        text=self._BODY, content_type="text/html", published_at="2026-08-25")
+        return fake_fetch
+
+    def _dup_rows(self, jid: str) -> dict[str, dict]:
+        return {row["source_id"]: row for row in self.store.sources(jid)}
+
+    async def test_two_hits_converging_on_one_canonical_url_keep_one_source(self):
+        jid, plan = self._dup_job()
+        final = "https://www.example.com/vaccine-powder"
+        first = self._dup_source(jid, "http://example.com/vaccine-powder", score=2)
+        second = self._dup_source(jid, "https://example.com/vaccine-powder?page=1", score=1)
+        self.assertNotEqual(first, second)
+        fetch = self._dup_fetch({"http://example.com/vaccine-powder": final,
+                                 "https://example.com/vaccine-powder?page=1": final})
+        with patch("service.research.orchestrator.fetch_page", fetch):
+            await self.manager._fetch(jid, 5, plan)  # used to raise IntegrityError
+        rows = self._dup_rows(jid)
+        self.assertEqual(rows[first]["status"], "read")
+        self.assertEqual(rows[first]["canonical_url"], final)
+        self.assertEqual(rows[second]["status"], "rejected")
+        self.assertEqual(rows[second]["error"], f"Duplicate of {first}")
+        self.assertEqual(rows[second]["body"], "")
+        # The duplicate keeps the address it was found at.
+        self.assertEqual(rows[second]["canonical_url"],
+                         canonicalize_url("https://example.com/vaccine-powder?page=1"))
+        skipped = self.store.event_payloads(jid, "source_skipped")
+        self.assertEqual([e["source_id"] for e in skipped], [second])
+        self.assertEqual(skipped[0]["text"], f"Duplicate of {first}")
+
+    async def test_hit_whose_page_is_another_unread_hit_defers_to_that_hit(self):
+        jid, plan = self._dup_job()
+        final = "https://example.com/vaccine-powder"
+        redirecting = self._dup_source(jid, "http://example.com/vaccine-powder", score=2)
+        target = self._dup_source(jid, final, score=1)
+        fetch = self._dup_fetch({"http://example.com/vaccine-powder": final, final: final})
+        with patch("service.research.orchestrator.fetch_page", fetch):
+            await self.manager._fetch(jid, 5, plan)
+        rows = self._dup_rows(jid)
+        self.assertEqual(rows[redirecting]["status"], "rejected")
+        self.assertEqual(rows[redirecting]["error"], f"Duplicate of {target}")
+        self.assertEqual(rows[target]["status"], "read")
+        self.assertEqual(len(self.store.sources(jid, statuses={"read", "extracted"})), 1)
+
+    async def test_same_hit_found_again_in_a_later_round_is_not_read_twice(self):
+        jid, plan = self._dup_job()
+        hit = "https://en.wikipedia.org/wiki/Vaccine_(powder)"
+        final = "https://en.wikipedia.org/wiki/Vaccine_%28powder%29"
+        fetch = self._dup_fetch({hit: final})
+        with patch("service.research.orchestrator.fetch_page", fetch):
+            first = self._dup_source(jid, hit)
+            await self.manager._fetch(jid, 5, plan)
+            self.assertEqual(self._dup_rows(jid)[first]["canonical_url"], final)
+            # The next round's search surfaces the very same hit.
+            second = self._dup_source(jid, hit)
+            self.assertNotEqual(first, second)
+            await self.manager._fetch(jid, 5, plan)  # used to raise IntegrityError
+            rows = self._dup_rows(jid)
+            self.assertEqual(rows[first]["status"], "read")
+            self.assertEqual(rows[second]["status"], "rejected")
+            self.assertEqual(rows[second]["error"], f"Duplicate of {first}")
+            # A third sighting lands on the rejected row: no new row, no new fetch.
+            self.assertEqual(self._dup_source(jid, hit), second)
+            self.assertEqual(self.store.sources(jid, statuses={"found"}), [])
+        self.assertEqual(len(self._dup_rows(jid)), 2)
+
+    async def test_page_whose_canonical_belongs_to_a_failed_row_is_still_read(self):
+        jid, plan = self._dup_job()
+        final = "https://example.com/vaccine-powder"
+        failed = self._dup_source(jid, final)
+        self.store.update_source(jid, failed, status="failed", error="ReadTimeout")
+        later = self._dup_source(jid, "http://example.com/vaccine-powder")
+        fetch = self._dup_fetch({"http://example.com/vaccine-powder": final})
+        with patch("service.research.orchestrator.fetch_page", fetch):
+            await self.manager._fetch(jid, 5, plan)
+        rows = self._dup_rows(jid)
+        self.assertEqual(rows[failed]["status"], "failed")
+        self.assertEqual(rows[later]["status"], "read")
+        self.assertEqual(rows[later]["url"], final)
+        self.assertEqual(rows[later]["canonical_url"],
+                         canonicalize_url("http://example.com/vaccine-powder"))
+        self.assertEqual(rows[later]["body"], self._BODY)
+
+    async def test_a_store_clash_on_one_source_never_fails_the_job(self):
+        jid, plan = self._dup_job()
+        final = "https://example.com/vaccine-powder"
+        holder = self._dup_source(jid, final)
+        self.store.update_source(jid, holder, status="read", body=self._BODY)
+        clashing = self._dup_source(jid, "http://example.com/vaccine-powder")
+        fetch = self._dup_fetch({"http://example.com/vaccine-powder": final})
+        # The lookup misses (as if the other row landed a moment later), so the
+        # write itself hits the UNIQUE constraint.
+        with patch("service.research.orchestrator.fetch_page", fetch), \
+             patch.object(self.store, "source_for_canonical", return_value=None):
+            await self.manager._fetch(jid, 5, plan)
+        rows = self._dup_rows(jid)
+        self.assertEqual(rows[holder]["status"], "read")
+        self.assertEqual(rows[clashing]["status"], "rejected")
+        self.assertIn("Duplicate", rows[clashing]["error"])
+        # The store is still usable after the refused write.
+        self.assertEqual(self._dup_source(jid, "https://example.com/another"), "S3")
+
 
 class SourceQualityTests(unittest.TestCase):
     def test_gov_domain_is_official(self):
