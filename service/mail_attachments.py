@@ -586,8 +586,14 @@ async def _recognised(ctx: _Ctx, name: str, data: bytes, *, paged: bool) -> _Rec
     text is `[Pages: total]` then a `[Page n]` block per page that had words."""
     from service import documents
     from service.assistant.hub import hub
+    from service.assistant.outbox import RECONNECT_GRACE_S, app_connected
     global _ocr_resting_until
-    if not hub.has_subscribers or ctx.remaining() < 15.0 or time.monotonic() < _ocr_resting_until:
+    if ctx.remaining() < 15.0 or time.monotonic() < _ocr_resting_until:
+        return None
+    # The app's event stream is away for a few seconds every half minute while it reconnects.
+    # Wait that out, but never into the 15 seconds the recognition itself needs.
+    if (not await app_connected(max(0.0, min(RECONNECT_GRACE_S, ctx.remaining() - 15.0)), via=hub)
+            or ctx.remaining() < 15.0):
         return None
     try:
         result = await documents.run_attachment_child("ocr_images", name, data,
@@ -621,8 +627,9 @@ async def _recognised(ctx: _Ctx, name: str, data: bytes, *, paged: bool) -> _Rec
         except (bridge.BridgeError, ValueError) as error:
             # An older app drops the request, and a stalled one never answers: don't make every
             # picture in the next few minutes wait for it. A wait that the overall deadline cut
-            # short says nothing about the app.
-            if str(error) == "app_not_connected" or (str(error) == "recognize_timeout" and page_s >= _OCR_PAGE_S):
+            # short says nothing about the app; that goes for the wait for it to reconnect too.
+            if ((str(error) == "app_not_connected" and page_s >= RECONNECT_GRACE_S)
+                    or (str(error) == "recognize_timeout" and page_s >= _OCR_PAGE_S)):
                 _ocr_resting_until = time.monotonic() + _OCR_REST_S
             if not parts:
                 return None

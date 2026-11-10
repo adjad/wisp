@@ -268,9 +268,65 @@ def test_unavailable_receipt_is_reported_not_treated_as_empty(app):
 def test_no_connected_app_is_unavailable_immediately(monkeypatch):
     from service.assistant.hub import hub
     monkeypatch.setattr(hub, "_subs", set())
+    # An earlier test's app may have just left; this one is about an app that was never there.
+    monkeypatch.setattr(hub, "_last_unsubscribed", None)
     t0 = time.monotonic()
     result = asyncio.run(sync_status.refresh_notes(timeout_seconds=5.0))
     assert time.monotonic() - t0 < 1.0
+    assert result["status"] == "unavailable"
+
+
+def _fresh_hub(monkeypatch):
+    import sys
+    from service.assistant.hub import Hub
+    hub = Hub(store=object())
+    monkeypatch.setattr(sys.modules["service.assistant.hub"], "hub", hub)
+    return hub
+
+
+def test_a_refresh_asked_while_the_app_reconnects_waits_for_it(monkeypatch):
+    """The app's event stream is away for about 3 s of every 28; that is not "not connected"."""
+    hub = _fresh_hub(monkeypatch)
+    hub.unsubscribe(hub.subscribe())                  # the stream's routine rotation
+    asked = []
+
+    async def app_returns():
+        await asyncio.sleep(0.1)
+        queue = hub.subscribe()
+        asked.append(await queue.get())
+        notes_tools.cache_notes(raw(NEW_AMAZON), snapshot_started_at=time.time())
+
+    async def scenario():
+        task = asyncio.create_task(app_returns())
+        try:
+            return await sync_status.refresh_notes(timeout_seconds=2.0)
+        finally:
+            task.cancel()                              # still waiting only when nothing was asked
+            await asyncio.gather(task, return_exceptions=True)
+
+    result = asyncio.run(scenario())
+    assert result["status"] == "fresh" and result["reason"] == ""
+    assert asked == [{"type": "sync_assistant_sources_now", "sources": ["notes"]}]
+
+
+def test_an_app_that_does_not_come_back_is_unavailable_within_the_refresh_time(monkeypatch):
+    hub = _fresh_hub(monkeypatch)
+    hub.unsubscribe(hub.subscribe())
+    t0 = time.monotonic()
+    result = asyncio.run(sync_status.refresh_notes(timeout_seconds=0.3))
+    assert 0.25 < time.monotonic() - t0 < 1.0
+    assert result["status"] == "unavailable" and "not connected" in result["reason"]
+
+
+def test_an_app_that_left_long_ago_is_not_waited_for(monkeypatch):
+    import sys
+    hub = _fresh_hub(monkeypatch)
+    hub.unsubscribe(hub.subscribe())
+    monkeypatch.setattr(sys.modules["service.assistant.hub"], "RECONNECT_WINDOW_S", 0.0)
+    time.sleep(0.01)
+    t0 = time.monotonic()
+    result = asyncio.run(sync_status.refresh_notes(timeout_seconds=5.0))
+    assert time.monotonic() - t0 < 0.5
     assert result["status"] == "unavailable"
 
 

@@ -661,6 +661,64 @@ async def test_an_unconnected_app_rests_recognition(world, monkeypatch):
     assert ma._ocr_resting_until > 0.0
 
 
+async def test_a_wait_for_the_app_cut_short_by_the_deadline_does_not_rest_recognition(world, monkeypatch):
+    from service.assistant import outbox
+    world.app = True
+    seen = []
+
+    async def recognize_text(jpeg, timeout=20.0):
+        seen.append(timeout)
+        raise bridge.BridgeError("app_not_connected")
+    monkeypatch.setattr(bridge, "recognize_text", recognize_text, raising=False)
+    # Under 13 s left: the page gets less than the reconnect wait, so a miss says nothing about the app.
+    ctx = ma._Ctx(deadline=ma.time.monotonic() + 15.5, gmail_source=None, gmail_accounts=[], passes=None)
+
+    async def slow_child(job, name, data, *, timeout):
+        ctx.deadline -= 4.0                 # preparing the pages used up four seconds
+        return world.ocr
+    monkeypatch.setattr(documents, "run_attachment_child", slow_child)
+    assert await ma._recognised(ctx, "a.png", PNG, paged=False) is None
+    assert seen and seen[0] < outbox.RECONNECT_GRACE_S and ma._ocr_resting_until == 0.0
+
+
+def _gap_hub(monkeypatch):
+    """A real hub the app just left (its routine stream rotation), in place of the shared one."""
+    import sys
+    from service.assistant.hub import Hub
+    gap = Hub(store=object())
+    gap.unsubscribe(gap.subscribe())
+    monkeypatch.setattr(sys.modules["service.assistant.hub"], "hub", gap)
+    return gap
+
+
+async def test_recognition_asked_while_the_app_reconnects_waits_for_it(world, monkeypatch):
+    import asyncio
+    gap = _gap_hub(monkeypatch)                     # world.app stays False: nobody is subscribed
+
+    async def reconnect():
+        await asyncio.sleep(0.1)
+        gap.subscribe()
+        world.app = True
+    task = asyncio.create_task(reconnect())
+    ctx = ma._Ctx(deadline=ma.time.monotonic() + 60.0, gmail_source=None, gmail_accounts=[], passes=None)
+    found = await ma._recognised(ctx, "receipt.png", PNG, paged=False)
+    await task
+    assert found is not None and "1280.50" in found.text
+    assert [c[1] for c in world.kinds("child")] == ["ocr_images"] and len(world.kinds("recognise")) == 1
+
+
+async def test_the_wait_for_the_app_leaves_recognition_its_time(world, monkeypatch):
+    import asyncio
+    gap = _gap_hub(monkeypatch)
+    ctx = ma._Ctx(deadline=ma.time.monotonic() + 15.2, gmail_source=None, gmail_accounts=[], passes=None)
+    started = ma.time.monotonic()
+    assert await ma._recognised(ctx, "receipt.png", PNG, paged=False) is None
+    # Only the 0.2 s above the 15 s recognition needs was spent waiting, and nothing was prepared.
+    assert ma.time.monotonic() - started < 1.0 and world.kinds("child") == []
+    assert ma._ocr_resting_until == 0.0
+    assert gap._waiters == set()
+
+
 async def test_a_pdf_with_a_text_cover_and_scanned_pages_does_not_claim_the_whole_file(world, monkeypatch):
     from service import large_document
     monkeypatch.setattr(large_document, "page_facts", lambda text: (9, 2), raising=False)
