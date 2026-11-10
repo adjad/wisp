@@ -2021,11 +2021,12 @@ def _today_card(now: float) -> str:
     upcoming.sort(key=lambda item: item["when_ts"])
     if upcoming:
         nxt = upcoming[0]
-        clock = ("all day" if nxt.get("all_day")
-                 else _hm(datetime.fromtimestamp(nxt["when_ts"])))
         title = (_reminder_title(nxt, 60) if _is_reminder(nxt)
                  else _clean(nxt["title"], 60))
-        lines.append(f"Next: {title} at {clock}.")
+        # A date-only reminder sits at the end of its day, so it is often the
+        # next item; "at all day" is not a time.
+        lines.append(f"Next: {title} (all day)." if nxt.get("all_day") else
+                     f"Next: {title} at {_hm(datetime.fromtimestamp(nxt['when_ts']))}.")
     overdue = [item for item in reminders if item["when_ts"] < now - 300]
     if overdue:
         lines.append(f"{len(overdue)} reminder{'s' if len(overdue) != 1 else ''} already past due.")
