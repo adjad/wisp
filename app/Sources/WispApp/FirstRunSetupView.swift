@@ -799,15 +799,34 @@ final class FirstRunPermissions: ObservableObject {
         state == .allowed || state == .notAllowed || state == .notOnThisMac
     }
 
-    /// What a row says about itself, next to its button.
-    static func label(_ item: Item, _ state: State) -> String {
+    /// What a row says about itself, next to its button. `calendarAddOnly` as in isAddOnly.
+    static func label(_ item: Item, _ state: State, calendarAddOnly: Bool? = nil) -> String {
         switch state {
         case .checking: return ""
         case .notAsked: return "Not set"
         case .allowed: return "Allowed"
-        case .notAllowed: return settingsThroughRequest(item) ? "Needs System Settings" : "Denied"
+        case .notAllowed:
+            if isAddOnly(item, state, calendarAddOnly: calendarAddOnly) { return "Add only" }
+            return settingsThroughRequest(item) ? "Needs System Settings" : "Denied"
         case .notOnThisMac: return "Not needed"
         }
+    }
+
+    /// Calendar set to "Add Events Only" for Wisp in System Settings. Reads
+    /// macOS's answer; never asks. Reminders has no such setting.
+    nonisolated static func calendarAddOnly() -> Bool {
+        EKEventStore.authorizationStatus(for: .event) == .writeOnly
+    }
+
+    /// The Calendar row, not allowed because Wisp may only add events. It stays
+    /// not allowed (Day and Brief can't read events with it) and its button still
+    /// opens System Settings, but Wisp is already listed and switched on there,
+    /// so "Denied" and "switch Wisp on" would send the person looking for a
+    /// switch that isn't off: the row says to choose Full Access instead. The
+    /// copy rules take macOS's answer as `calendarAddOnly` so they stay pure;
+    /// nil reads it from this Mac, and only for this one row.
+    nonisolated static func isAddOnly(_ item: Item, _ state: State, calendarAddOnly: Bool?) -> Bool {
+        item == .calendar && state == .notAllowed && (calendarAddOnly ?? Self.calendarAddOnly())
     }
 
     /// The Full Disk Access row's promise, before System Settings opens.
@@ -1021,10 +1040,15 @@ final class FirstRunPermissions: ObservableObject {
     }
 
     /// The Calendar or Reminders row's sentence: what it is for, or, once macOS
-    /// has turned it down or never answered, what to do next.
-    static func eventKitDetail(_ item: Item, base: String, state: State, unanswered: Bool) -> String {
+    /// has turned it down or never answered, what to do next. `calendarAddOnly`
+    /// as in isAddOnly.
+    static func eventKitDetail(_ item: Item, base: String, state: State, unanswered: Bool,
+                               calendarAddOnly: Bool? = nil) -> String {
         let page = item == .reminders ? "Reminders" : "Calendars"
         switch state {
+        case .notAllowed where isAddOnly(item, state, calendarAddOnly: calendarAddOnly):
+            return "Wisp can only add events, not read your calendar. Click Open System Settings, then click "
+                + "Options next to Wisp under Privacy & Security > Calendars and choose Full Access."
         case .notAllowed:
             return "Wisp is off in System Settings. Click Open System Settings, then switch Wisp on under "
                 + "Privacy & Security > \(page)."

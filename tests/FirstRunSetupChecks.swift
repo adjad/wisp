@@ -240,9 +240,49 @@ struct FirstRunSetupChecks {
         // Permission rows: their state in a word, and Contacts only once it helps.
         check(FirstRunPermissions.label(.calendar, .notAsked) == "Not set"
               && FirstRunPermissions.label(.calendar, .allowed) == "Allowed"
-              && FirstRunPermissions.label(.calendar, .notAllowed) == "Denied"
+              && FirstRunPermissions.label(.calendar, .notAllowed, calendarAddOnly: false) == "Denied"
               && FirstRunPermissions.label(.fullDiskAccess, .notAllowed) == "Needs System Settings",
               "Not set, Allowed, Denied, Needs System Settings")
+        // Calendar set to Add Events Only: Wisp is already on in System Settings, so
+        // neither "Denied" nor "switch Wisp on" is true. Still not allowed, still Settings.
+        check(FirstRunPermissions.isAddOnly(.calendar, .notAllowed, calendarAddOnly: true)
+              && !FirstRunPermissions.isAddOnly(.calendar, .notAllowed, calendarAddOnly: false)
+              && !FirstRunPermissions.isAddOnly(.reminders, .notAllowed, calendarAddOnly: true)
+              && !FirstRunPermissions.isAddOnly(.calendar, .notAsked, calendarAddOnly: true)
+              && !FirstRunPermissions.isAddOnly(.calendar, .allowed, calendarAddOnly: true),
+              "Add-only is the Calendar row, not allowed, with macOS saying write-only; nothing else")
+        check(FirstRunPermissions.label(.calendar, .notAllowed, calendarAddOnly: true) == "Add only"
+              && FirstRunPermissions.label(.reminders, .notAllowed, calendarAddOnly: true) == "Denied"
+              && FirstRunPermissions.label(.calendar, .allowed, calendarAddOnly: true) == "Allowed"
+              && FirstRunPermissions.label(.calendar, .notAsked, calendarAddOnly: true) == "Not set",
+              "Add-only Calendar reads Add only, never Denied; Reminders and the other states are unchanged")
+        let addOnlyDetail = FirstRunPermissions.eventKitDetail(.calendar, base: "", state: .notAllowed, unanswered: false,
+                                                               calendarAddOnly: true)
+        check(addOnlyDetail.contains("only add events") && addOnlyDetail.contains("Options")
+              && addOnlyDetail.contains("Full Access") && addOnlyDetail.contains("Privacy & Security > Calendars")
+              && addOnlyDetail.contains("Open System Settings")
+              && !addOnlyDetail.contains("Wisp is off") && !addOnlyDetail.contains("switch Wisp on"),
+              "Setup's Calendar row says to choose Full Access under Options, not to switch Wisp on")
+        check(FirstRunPermissions.eventKitDetail(.reminders, base: "", state: .notAllowed, unanswered: false,
+                                                 calendarAddOnly: true)
+              == FirstRunPermissions.eventKitDetail(.reminders, base: "", state: .notAllowed, unanswered: false,
+                                                    calendarAddOnly: false)
+              && FirstRunPermissions.eventKitDetail(.calendar, base: "Your day.", state: .allowed, unanswered: false,
+                                                    calendarAddOnly: true) == "Your day.",
+              "Reminders has no add-only setting, and an allowed Calendar keeps its purpose")
+        let addOnlyNext = NotchPermissionPage.next(.calendar, .notAllowed, calendarAddOnly: true)
+        check(addOnlyNext == NotchPermissionPage.calendarAddOnlyNote && addOnlyNext.contains("Options")
+              && addOnlyNext.contains("Full Access") && !addOnlyNext.contains("switch on Wisp"),
+              "The notch's page says the same")
+        check(NotchPermissionPage.next(.calendar, .notAllowed, calendarAddOnly: false).contains("switch on Wisp")
+              && NotchPermissionPage.next(.reminders, .notAllowed, calendarAddOnly: true).contains("switch on Wisp")
+              && NotchPermissionPage.next(.calendar, .allowed, calendarAddOnly: true)
+                  == NotchPermissionPage.next(.calendar, .allowed, calendarAddOnly: false),
+              "A Calendar that is really off, Reminders, and an allowed Calendar read as before")
+        check(NotchPermissionPage.action(.calendar, .notAllowed) == .openSettings
+              && FirstRunPermissions.eventKitClick(.writeOnly) == .openSettings
+              && FirstRunPermissions.isDecided(.notAllowed),
+              "Add-only is still not allowed, and its button still opens System Settings")
         check([.allowed, .notAllowed, .notOnThisMac].allSatisfy(FirstRunPermissions.isDecided)
               && ![.notAsked, .checking].contains(where: FirstRunPermissions.isDecided), "Decided means macOS has an answer")
         check(!FirstRunPermissions.contactsUseful(messagesReadable: false) && FirstRunPermissions.contactsUseful(messagesReadable: true),
@@ -273,7 +313,8 @@ struct FirstRunSetupChecks {
         let denied = FirstRunPermissions.eventKitDetail(.reminders, base: remindersBase, state: .notAllowed, unanswered: false)
         let silent = FirstRunPermissions.eventKitDetail(.reminders, base: remindersBase, state: .notAsked, unanswered: true)
         check(denied.contains("Privacy & Security > Reminders") && denied.contains("Open System Settings")
-              && FirstRunPermissions.eventKitDetail(.calendar, base: "", state: .notAllowed, unanswered: false)
+              && FirstRunPermissions.eventKitDetail(.calendar, base: "", state: .notAllowed, unanswered: false,
+                                                    calendarAddOnly: false)
                   .contains("Privacy & Security > Calendars")
               && silent.contains("didn't show its question") && silent.contains("Quit and reopen Wisp")
               && FirstRunPermissions.eventKitDetail(.reminders, base: remindersBase, state: .notAsked, unanswered: false) == remindersBase
@@ -322,7 +363,10 @@ struct FirstRunSetupChecks {
                   && NotchPermissionPage.order(focus: item).count == FirstRunPermissions.Item.allCases.count,
                   "\(item.rawValue) leads a page that still lists each once")
             for state in [FirstRunPermissions.State.notAsked, .notAllowed, .allowed, .notOnThisMac] {
-                check(!NotchPermissionPage.next(item, state).isEmpty, "\(item.rawValue) says what happens next")
+                for addOnly in [false, true] {
+                    check(!NotchPermissionPage.next(item, state, calendarAddOnly: addOnly).isEmpty,
+                          "\(item.rawValue) says what happens next")
+                }
             }
         }
         check(NotchPermissionPage.action(.fullDiskAccess, .notAsked) == .openSettings
@@ -359,7 +403,8 @@ struct FirstRunSetupChecks {
               "Leaving System Settings brings the panel back only for a new yes")
         check(NotchPermissionPage.next(.fullDiskAccess, .notAllowed).contains(NotchPermissionPage.relaunchNote)
               && NotchPermissionPage.next(.screenRecording, .notAsked).contains(NotchPermissionPage.relaunchNote)
-              && !NotchPermissionPage.next(.calendar, .notAllowed).contains(NotchPermissionPage.relaunchNote),
+              && !NotchPermissionPage.next(.calendar, .notAllowed, calendarAddOnly: false).contains(NotchPermissionPage.relaunchNote)
+              && !NotchPermissionPage.next(.calendar, .notAllowed, calendarAddOnly: true).contains(NotchPermissionPage.relaunchNote),
               "Only the permissions that can quit Wisp warn about it")
         check(NotchPermissionPage.next(.mail, .notAsked, waiting: true) == FirstRunPermissions.automationWaitingNote
               && NotchPermissionPage.next(.mail, .notAsked, reset: true) == FirstRunPermissions.automationResetNote

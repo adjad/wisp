@@ -212,3 +212,43 @@ def test_the_voice_card_and_ready_notice_teach_only_keys_wisp_holds():
     seen = _body(app, "private func readyLineSeen()")
     assert "guard let line = model.transientNotice, ReadyNotice.isNotchLine(line) else { return }" in seen
     assert "model.showTransientNotice(line, duration: ReadyNotice.seenFor, info: true)" in seen
+
+
+def test_calendar_set_to_add_events_only_is_not_called_denied():
+    """l04-known-issues#5: with Add Events Only, Wisp is already listed and on in
+    System Settings > Calendars, so "Denied" and "switch Wisp on" pointed at a switch
+    that isn't off. The row stays not allowed (Wisp can't read events) and its button
+    still opens System Settings; only its words change, and only for Calendar."""
+    setup = _read("FirstRunSetupView.swift")
+    live = _body(setup, "nonisolated static func calendarAddOnly() -> Bool")
+    assert "EKEventStore.authorizationStatus(for: .event) == .writeOnly" in live
+    assert ".reminder" not in live and "request" not in live      # Calendar only; reads, never asks
+    rule = _body(setup, "nonisolated static func isAddOnly(_ item: Item, _ state: State, calendarAddOnly: Bool?) -> Bool")
+    assert "item == .calendar && state == .notAllowed && (calendarAddOnly ?? Self.calendarAddOnly())" in rule
+
+    label = _body(setup, "static func label(_ item: Item, _ state: State, calendarAddOnly: Bool? = nil) -> String")
+    denied = label[label.index("case .notAllowed:"):label.index("case .notOnThisMac:")]
+    assert denied.index('if isAddOnly(item, state, calendarAddOnly: calendarAddOnly) { return "Add only" }') \
+        < denied.index('"Denied"')
+    detail = _body(setup, "static func eventKitDetail(_ item: Item, base: String, state: State, unanswered: Bool,")
+    add_only = detail[detail.index("case .notAllowed where isAddOnly(item, state, calendarAddOnly: calendarAddOnly):"):]
+    add_only, off = add_only.split("case .notAllowed:", 1)
+    assert "choose Full Access" in add_only and "Options next to Wisp" in add_only and "switch Wisp on" not in add_only
+    assert "switch Wisp on under" in off                          # a Calendar that is really off reads as before
+
+    page = _read("NotchPermissionPage.swift")
+    nxt = _body(page, "static func next(_ item: Item, _ state: State, waiting: Bool = false, reset: Bool = false,")
+    off = nxt[nxt.index("case .notAllowed:"):]
+    assert off.index("if FirstRunPermissions.isAddOnly(item, state, calendarAddOnly: calendarAddOnly) "
+                     "{ return calendarAddOnlyNote }") < off.index("switch on Wisp")
+    note = page[page.index("static let calendarAddOnlyNote = "):page.index("/// Full Disk Access and Screen Recording, on the page")]
+    assert "only add events" in note and "Options next to Wisp" in note and "Full Access" in note
+
+    # Still not allowed, and still System Settings: no state, button or request changed.
+    state = _body(setup, "private static func eventKitState(_ entity: EKEntityType) -> State")
+    assert "case .fullAccess: return .allowed" in state and "default: return .notAllowed" in state
+    assert "writeOnly" not in state
+    click = _body(setup, "static func eventKitClick(_ status: EKAuthorizationStatus) -> EventKitClick")
+    assert "default: return .openSettings" in click
+    assert "case .notAllowed: return .openSettings" in _body(
+        page, "static func action(_ item: Item, _ state: State, waiting: Bool = false, contactsWait: Bool = false) -> Action?")
