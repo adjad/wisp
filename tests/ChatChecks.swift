@@ -101,6 +101,44 @@ struct ChatChecks {
         denied.decision = "confirm"
         check(ChatToolRow(id: "w", name: "send_email", decision: "confirm").detail == "waiting for you", "confirm detail")
 
+        // A reply that ends with a call still out: the row and the heading stop saying it is running.
+        var cut = ChatMessage(role: .assistant, phase: .waiting)
+        _ = ChatTurnReducer.apply(ev("routed", ["model": "m", "role": "agent", "needs_tools": true]), to: &cut, now: t0)
+        _ = ChatTurnReducer.apply(ev("tool_call", ["id": "c1", "name": "summarize_emails", "decision": "allow"]), to: &cut, now: t0)
+        _ = ChatTurnReducer.apply(ev("tool_result", ["id": "c1", "result": "4 messages"]), to: &cut, now: t0)
+        check(cut.traceTitle == "Used 1 tool", "a live reply whose calls are all back has used them")
+        _ = ChatTurnReducer.apply(ev("tool_call", ["id": "c2", "name": "view_emails", "decision": "allow"]), to: &cut, now: t0)
+        _ = ChatTurnReducer.apply(ev("tool_call", ["id": "c3", "name": "delete_file", "decision": "deny"]), to: &cut, now: t0)
+        _ = ChatTurnReducer.apply(ev("tool_call", ["id": "c4", "name": "send_email", "decision": "confirm"]), to: &cut, now: t0)
+        check(cut.traceTitle == "Working with 4 tools…", "a live reply with a call out is working: \(cut.traceTitle)")
+        check(cut.tools.map(\.detail) == ["4 messages", "running", "blocked", "waiting for you"], "live rows: \(cut.tools.map(\.detail))")
+        check(ChatTurnReducer.apply(ev("error", ["message": "The model stopped responding."]), to: &cut, now: t1) == .failed, "the reply fails mid-tool")
+        check(cut.traceTitle == "Used 4 tools", "a failed reply is not still working: \(cut.traceTitle)")
+        check(cut.tools.map(\.detail) == ["4 messages", "stopped", "blocked", "stopped"], "open rows say stopped: \(cut.tools.map(\.detail))")
+        check(cut.tools.map(\.interrupted) == [false, true, false, true] && cut.tools.map(\.finished) == [true, false, false, false],
+              "an interrupted call is never marked finished, and a finished or blocked one is left alone")
+        var halted = ChatMessage(role: .assistant, phase: .working)
+        _ = ChatTurnReducer.apply(ev("tool_call", ["id": "p1", "name": "view_emails", "decision": "allow", "test_mode": true]), to: &halted, now: t0)
+        check(halted.traceTitle == "Planning 1 tool…", "a live dry run is planning")
+        halted.interruptOpenTools(); halted.phase = .done
+        check(halted.traceTitle == "Planned 1 tool · dry run" && halted.tools[0].detail == "dry run · not executed",
+              "a stopped dry run keeps its own wording")
+
+        // A reply stopped before its first word says so; one that merely ended empty does not.
+        var blank = ChatMessage(role: .assistant, phase: .done)
+        check(!blank.showsStopped, "an empty finished reply is not called stopped")
+        blank.stoppedByUser = true
+        check(blank.showsStopped, "a reply stopped with nothing to show says Stopped")
+        blank.text = "partial"
+        check(!blank.showsStopped, "a stopped reply with text keeps the text alone")
+        var stoppedWithTool = ChatMessage(role: .assistant, phase: .done)
+        stoppedWithTool.stoppedByUser = true
+        stoppedWithTool.tools = [ChatToolRow(id: "t", name: "view_emails", decision: "allow")]
+        check(!stoppedWithTool.showsStopped, "a stopped reply with a tool row is not blank")
+        var stoppedUser = ChatMessage(role: .user, text: "", phase: .done)
+        stoppedUser.stoppedByUser = true
+        check(!stoppedUser.showsStopped, "only a reply can be stopped")
+
         // Confirmation cards.
         var c = ChatMessage(role: .assistant, phase: .working)
         _ = ChatTurnReducer.apply(ev("confirm", ["id": "a1", "request_id": "r1", "tool": "run_shell", "reason": "Run a command", "grantable": true, "scope_hint": "~/Downloads", "preview": "ls"]), to: &c, now: t0)

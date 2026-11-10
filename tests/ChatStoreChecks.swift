@@ -584,6 +584,46 @@ struct ChatStoreChecks {
                   "once the service answers, the exchange stays and the sidebar is Ready again")
         }
 
+        // Stop, or an error, with a call still out: the reply no longer says it is working.
+        do {
+            let backend = ScriptedBackend()
+            backend.script = { _ in [
+                ev("routed", ["model": "m", "role": "agent", "needs_tools": true]),
+                ev("tool_call", ["id": "c1", "name": "summarize_emails", "decision": "allow"]),
+            ] }
+            let store = ChatStore(backend: backend)
+            store.send("summarize my mail")
+            await settle()
+            let chat = store.selected!
+            check(chat.busy && chat.messages.last?.traceTitle == "Working with 1 tool…"
+                    && chat.messages.last?.tools.first?.detail == "running", "the reply is mid-tool")
+            store.stop(chat)
+            let stopped = chat.messages.last!
+            check(!chat.busy && stopped.phase == .done && stopped.traceTitle == "Used 1 tool", "Stop ends the heading: \(stopped.traceTitle)")
+            check(stopped.tools[0].detail == "stopped" && !stopped.tools[0].finished, "the open row says stopped, not running")
+            check(!stopped.showsStopped, "a stopped reply with a tool row is not blank")
+            // Stop before anything arrived.
+            backend.script = { _ in [] }
+            store.send("and my calendar?")
+            await settle()
+            check(chat.busy && chat.messages.last?.showsStopped == false, "a waiting reply is not stopped")
+            store.stop(chat)
+            check(!chat.busy && chat.messages.last?.text.isEmpty == true && chat.messages.last?.showsStopped == true,
+                  "a reply stopped before its first word says Stopped")
+            // The service fails mid-tool.
+            backend.script = { _ in [
+                ev("routed", ["model": "m", "role": "agent", "needs_tools": true]),
+                ev("tool_call", ["id": "c2", "name": "view_emails", "decision": "allow"]),
+                ev("error", ["message": "Out of memory"]),
+            ] }
+            store.send("once more")
+            await settle()
+            let failed = chat.messages.last!
+            check(failed.isError && !chat.busy && failed.traceTitle == "Used 1 tool" && failed.tools[0].detail == "stopped",
+                  "a failed reply's open row says stopped: \(failed.tools.map(\.detail))")
+            check(!failed.showsStopped, "an error is not a Stop")
+        }
+
         // A real failure keeps the exchange and shows the error.
         do {
             let backend = ScriptedBackend()

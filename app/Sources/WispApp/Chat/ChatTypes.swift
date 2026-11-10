@@ -94,6 +94,9 @@ struct ChatToolRow: Identifiable, Equatable {
         set { resultPreview = Self.preview(newValue) }
     }
     var finished = false
+    /// The reply ended (Stop, or an error) before this call came back. Not
+    /// `finished`: there is no result to show.
+    var interrupted = false
     var isTestPlan = false
     private(set) var corpusSourceEvidence: ChatCorpusSourceEvidence?
 
@@ -133,6 +136,7 @@ struct ChatToolRow: Identifiable, Equatable {
     var detail: String {
         if decision == "deny" { return "blocked" }
         if isTestPlan { return "dry run · not executed" }
+        if !finished && interrupted { return "stopped" }
         if !finished { return decision == "confirm" ? "waiting for you" : "running" }
         let flat = result.split(whereSeparator: { $0.isNewline }).first.map(String.init) ?? ""
         return flat.count > 60 ? String(flat.prefix(60)) + "…" : flat
@@ -285,12 +289,40 @@ struct ChatMessage: Identifiable, Equatable {
     /// kinds on its tool_result's `needs_access` (AskAccess), for the reply's
     /// Allow button. Never set on a corpus reply.
     var needsAccess: [String] = []
+    /// The user pressed Stop on this reply.
+    var stoppedByUser = false
 
     init(id: UUID = UUID(), role: Role, text: String = "", phase: Phase = .done) {
         self.id = id; self.role = role; self.text = text; self.phase = phase
     }
 
     var isLive: Bool { phase == .waiting || phase == .working || phase == .streaming }
+
+    /// The reply ended (Stop, or an error) with calls still out: their rows
+    /// stop saying "running". A blocked call keeps saying so.
+    mutating func interruptOpenTools() {
+        for index in tools.indices where !tools[index].finished && tools[index].decision != "deny" {
+            tools[index].interrupted = true
+        }
+    }
+
+    /// The tool trace's heading: "Working with…" only while the reply is live.
+    var traceTitle: String {
+        let n = tools.count
+        let running = isLive && tools.contains { !$0.finished && $0.decision != "deny" }
+        if tools.contains(where: \.isTestPlan) {
+            return running ? "Planning \(n) tool\(n == 1 ? "" : "s")…" : "Planned \(n) tool\(n == 1 ? "" : "s") · dry run"
+        }
+        if running { return "Working with \(n) tool\(n == 1 ? "" : "s")…" }
+        return "Used \(n) tool\(n == 1 ? "" : "s")"
+    }
+
+    /// A reply the user stopped before anything arrived: the row says
+    /// "Stopped" rather than sitting blank.
+    var showsStopped: Bool {
+        role == .assistant && stoppedByUser && phase == .done && text.isEmpty && tools.isEmpty
+            && approval == nil && draft == nil && corpusEvaluation == nil
+    }
 }
 
 // MARK: - The reducer
@@ -389,6 +421,7 @@ enum ChatTurnReducer {
             msg.text = ev.str("message").isEmpty ? "Something went wrong." : ev.str("message")
             msg.errorDetail = ev.str("detail")
             msg.isError = true
+            msg.interruptOpenTools()
             msg.phase = .failed
             meta.finishedAt = now
             return .failed

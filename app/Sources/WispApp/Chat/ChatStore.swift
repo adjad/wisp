@@ -595,6 +595,8 @@ final class ChatStore: ObservableObject {
             if conversation.messages[i].approval?.state == .pending {
                 resolve(conversation, messageID: conversation.messages[i].id, approved: false, scope: "once")
             }
+            conversation.messages[i].interruptOpenTools()
+            conversation.messages[i].stoppedByUser = true
             conversation.messages[i].phase = .done
             conversation.messages[i].meta?.finishedAt = Date()
         }

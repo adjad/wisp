@@ -626,6 +626,9 @@ struct ChatMessageRow: View {
                 if message.isLive && message.text.isEmpty && message.tools.isEmpty && message.approval == nil && message.draft == nil {
                     ChatThinkingRow(label: message.status.isEmpty ? "Thinking…" : message.status)
                 }
+                if message.showsStopped {
+                    Text("Stopped").font(.wisp(.footnote, on: .window)).foregroundStyle(ChatTheme.text3)
+                }
                 if !message.tools.isEmpty { ChatTraceView(message: message) }
                 if !message.reasoning.isEmpty { ChatReasoningView(text: message.reasoning) }
                 if !message.text.isEmpty {
@@ -807,15 +810,7 @@ struct ChatTraceView: View {
     @State private var expanded = false
 
     private var isOpen: Bool { expanded || message.isLive }
-    private var title: String {
-        let n = message.tools.count
-        let running = message.tools.contains { !$0.finished && $0.decision != "deny" }
-        if message.tools.contains(where: \.isTestPlan) {
-            return running ? "Planning \(n) tool\(n == 1 ? "" : "s")…" : "Planned \(n) tool\(n == 1 ? "" : "s") · dry run"
-        }
-        if running { return "Working with \(n) tool\(n == 1 ? "" : "s")…" }
-        return "Used \(n) tool\(n == 1 ? "" : "s")"
-    }
+    private var title: String { message.traceTitle }
 
     var body: some View {
         VStack(spacing: 0) {
