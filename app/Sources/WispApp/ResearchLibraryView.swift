@@ -26,7 +26,7 @@ struct ResearchLibraryView: View {
                     .textFieldStyle(.roundedBorder)
                 Button(action: model.refresh) {
                     Image(systemName: "arrow.clockwise")
-                }.help("Refresh saved research").disabled(model.loading)
+                }.help("Refresh saved research").accessibilityLabel("Refresh saved research").disabled(model.loading)
             }
             HStack {
                 HStack(spacing: 4) {

@@ -236,6 +236,7 @@ struct NudgeCard: View {
                 }
                 .buttonStyle(.plain).foregroundStyle(Theme.textMuted)
                 .help("Dismiss")
+                .accessibilityLabel("Dismiss")
             }
             if !nudge.body.isEmpty {
                 Text(nudge.body).font(.wisp(size: 12)).foregroundStyle(Theme.textSecondary)
