@@ -905,8 +905,10 @@ struct ChatApprovalCard: View {
                 .padding(12)
             }
             if approval.state == .pending {
-                if approval.grantable && !approval.scopeHint.isEmpty {
-                    Text("Always allow applies to \(approval.tool) on \(approval.scopeHint)")
+                // Said whenever the button is offered, so a rule is never wider
+                // than the card let on.
+                if approval.grantable {
+                    Text(alwaysAllowLine)
                         .font(.wisp(.footnote, on: .window)).foregroundStyle(ChatTheme.text2).padding(.horizontal, 14).padding(.top, approval.preview.isEmpty ? 12 : 0)
                 }
                 HStack(spacing: 8) {
@@ -924,6 +926,14 @@ struct ChatApprovalCard: View {
         // One named group for VoiceOver: what is asked, then its buttons.
         .accessibilityElement(children: .contain)
         .accessibilityLabel(approval.state == .pending ? "Wisp needs your OK" : "Wisp asked for your OK")
+    }
+
+    /// What "Always allow" would cover: the folder or site when the rule is
+    /// limited to one, and plainly every action of that tool when it is not.
+    private var alwaysAllowLine: String {
+        approval.scopeHint.isEmpty
+            ? "Always allow applies to every \(approval.tool) action"
+            : "Always allow applies to \(approval.tool) on \(approval.scopeHint)"
     }
 
     private var border: Color { approval.state == .pending ? ChatTheme.amberLine : ChatTheme.line }

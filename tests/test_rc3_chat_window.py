@@ -86,3 +86,18 @@ def test_what_is_typed_survives_a_rebuilt_composer():
     assert "let composerDraft = ChatComposerDraft()" in _body(store, "final class ChatConversation: ObservableObject")
     # The rebuilds this has to survive are still there, unchanged.
     assert ".id(textSize)" in views and ".id(conversation.id)" in views
+
+
+def test_the_card_says_what_always_allow_covers_whenever_it_is_offered():
+    card = _body(_read("Chat/ChatViews.swift"), "struct ChatApprovalCard: View")
+    # A rule with no folder or site covers every action of the tool, and the card says so.
+    assert '"Always allow applies to every \\(approval.tool) action"' in card
+    assert '"Always allow applies to \\(approval.tool) on \\(approval.scopeHint)"' in card
+    body = _body(card, "var body: some View")
+    pending = _body(body, "if approval.state == .pending")
+    line = pending[pending.index("if approval.grantable {"):pending.index("HStack(spacing: 8)")]
+    assert "Text(alwaysAllowLine)" in line and "scopeHint.isEmpty" not in line
+    # The buttons and what they send are as before: the line is the only change.
+    assert 'ChatCardButton(title: "Deny") { resolve(false, "once") }' in pending
+    assert 'if approval.grantable { ChatCardButton(title: "Always allow") { resolve(true, "always") } }' in pending
+    assert 'ChatCardButton(title: "Allow once", primary: true) { resolve(true, "once") }' in pending
