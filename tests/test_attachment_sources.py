@@ -971,3 +971,95 @@ async def test_the_childs_error_sentence_goes_through_the_same_filter_as_a_file_
     world.listen_error = ValueError("secret quoted from the file: Dear Bob, the password is hunter2")
     out = await ma.run()
     assert "hunter2" not in out and "Not read: It couldn't be listened to." in out
+
+
+# ---------------------------------------------------------------- repairs S5: a real .eml through the real child
+
+def real_eml_world(world, files, name="Fwd.eml", body="Please see the lease terms.", **extra):
+    """An attached email built with the stdlib `email` package and parsed by the REAL child (`eml`,
+    `eml_part`); `files` is [(name, mime, bytes)]. `extra` is merged into the child's `eml` answer."""
+    from email.message import EmailMessage
+    msg = EmailMessage()
+    msg["From"], msg["To"], msg["Subject"], msg["Date"] = "Dana <dana@x.com>", "me@x.com", "Lease", "Mon, 9 Nov 2026"
+    msg.set_content(body)
+    for file_name, mime, data in files:
+        main, _, sub = mime.partition("/")
+        msg.add_attachment(data, maintype=main, subtype=sub, filename=file_name)
+    raw = msg.as_bytes()
+    world.apple_rows = [row(name=name, rfc="f@x.com")]
+    world.local_files[(1, "1.2")] = raw
+    world.eml[name] = {**attachment_child.eml(name, raw), **extra}
+    for index in range(len(files)):
+        world.parts[(name, index)] = attachment_child.eml_part(name, raw, index)
+    return raw
+
+
+async def test_an_inspect_only_inner_file_is_counted_as_inspected_not_read(world):
+    real_eml_world(world, [("a.txt", "text/plain", b"alpha inner words"), ("setup.exe", "application/octet-stream", MZ)])
+    out = await ma.run()
+    assert "Read 1 of its 2 files; 1 only inspected." in out and "Read 2 of its 2" not in out
+    assert "Inspected only. Wisp never opens, unpacks or runs programs" in out
+    assert "alpha inner words" in out
+    assert "Read the whole file." not in outer_coverage(out)
+
+
+async def test_the_inner_files_header_does_not_claim_they_were_left_unkept(world):
+    real_eml_world(world, [("a.txt", "text/plain", b"alpha inner words")])
+    out = await ma.run()
+    assert "  Files inside it that Wisp read (none was saved as a file or run):" in out
+    assert "in memory only" not in out
+    assert "Read 1 of its 1 file." in out and "only inspected" not in out
+
+
+@pytest.mark.parametrize("extra", [{"walk_cut": True}, {"more_files": 2}, {"more_unknown": True}])
+async def test_a_background_kept_email_is_stored_as_partial_when_the_child_dropped_anything(world, extra):
+    import json
+    real_eml_world(world, [("a.txt", "text/plain", b"alpha inner words")], **extra)
+    emails, _ = await ma.find()
+    assert await ma.index_one(emails[0], emails[0].files[0], deadline=ma.time.monotonic() + 60) == "kept"
+    stored = attachment_store.get(attachment_store.digest(world.local_files[(1, "1.2")]))
+    assert json.loads(stored.note)["partial"] is True
+
+
+async def test_a_background_kept_email_with_nothing_dropped_is_not_partial_and_says_its_files_were_not_read(world):
+    import json
+    real_eml_world(world, [("a.txt", "text/plain", b"alpha inner words")])
+    emails, _ = await ma.find()
+    assert await ma.index_one(emails[0], emails[0].files[0], deadline=ma.time.monotonic() + 60) == "kept"
+    stored = attachment_store.get(attachment_store.digest(world.local_files[(1, "1.2")]))
+    meta = json.loads(stored.note)
+    assert meta["partial"] is False
+    assert "the files inside it were not read" in meta["cover"] and "read in memory" not in meta["cover"]
+
+
+async def test_an_email_whose_files_may_not_all_be_seen_never_prints_an_exact_total(world):
+    real_eml_world(world, [("a.txt", "text/plain", b"alpha inner words")], more_unknown=True)
+    out = await ma.run()
+    assert "There may be more files inside that Wisp couldn't see." in out
+    assert "Read 1 of at least 1 file." in out and "Read 1 of its 1" not in out
+    assert "Files in this email (at least 1):" in out
+    assert "Read the whole file." not in outer_coverage(out) and "Only part of it was read." in out
+
+
+async def test_a_messages_retry_gets_the_search_budget_for_both_searches_together(world, monkeypatch):
+    import asyncio
+    contacts(monkeypatch, dana_lee=["+15551230000"])
+    monkeypatch.setattr(ma, "_MESSAGES_SEARCH_S", 1.0, raising=False)
+    calls = []
+
+    async def index(terms, handles, since, until, limit=200, timeout=10.0):
+        calls.append(list(handles))
+        if handles:
+            await asyncio.sleep(0.4)
+            return [], False
+        await asyncio.sleep(6)                  # the retry hangs
+        return [message_row("11")], False
+    monkeypatch.setattr(bridge, "read_message_attachment_index", index)
+    began = ma.time.monotonic()
+    out = await ma.run(query="dana", source="messages", list_only=True)
+    assert ma.time.monotonic() - began < 3
+    assert len(calls) == 2 and "took too long" in out
+
+
+def test_the_search_budget_for_messages_is_twelve_seconds():
+    assert ma._MESSAGES_SEARCH_S == 12.0
