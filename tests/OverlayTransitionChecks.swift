@@ -3,6 +3,8 @@ import SwiftUI
 
 // Intercept every request in this test process; no request reaches a service.
 final class MotionFixtureProtocol: URLProtocol {
+    /// What POST /unload_all answers, so a failed unload can be checked.
+    static var unloadStatus = 200
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
@@ -11,7 +13,8 @@ final class MotionFixtureProtocol: URLProtocol {
         let settingMode = request.url?.path == "/mode" && request.httpMethod == "POST"
         let body = Data((settingMode ? #"{"full_access":true,"read_only":false}"#
                                      : #"{"text":"Synthetic daily summary","session_id":"fixture"}"#).utf8)
-        let response = HTTPURLResponse(url: request.url!, statusCode: 200,
+        let status = request.url?.path == "/unload_all" ? MotionFixtureProtocol.unloadStatus : 200
+        let response = HTTPURLResponse(url: request.url!, statusCode: status,
                                        httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
         let finish = { [weak self] in
             guard let self else { return }
@@ -93,6 +96,49 @@ struct OverlayTransitionChecks {
             }
         }
         print("PASS: lifecycle, stale completions, capture gating, and 64 request sequences")
+    }
+
+    /// An approval card is announced to VoiceOver with its own sentence and
+    /// exactly the buttons it shows.
+    static func approvalAnnouncementChecks() {
+        let once = OverlayModel.approvalAnnouncement(reason: "Send this email to pat@example.com", grantable: false)
+        check(once == "Wisp needs your approval: Send this email to pat@example.com. Choices: Deny, Allow once.",
+              "A card without Always allow names two choices")
+        check(!once.contains("Always allow"), "A hidden button is never announced")
+        let always = OverlayModel.approvalAnnouncement(reason: "Run a shell command in\n  ~/Projects/demo.\n", grantable: true)
+        check(always == "Wisp needs your approval: Run a shell command in ~/Projects/demo. Choices: Deny, Always allow, Allow once.",
+              "A grantable card names all three, in the card's order, on one line")
+        check(OverlayModel.approvalAnnouncement(reason: "Delete 3 files?", grantable: false)
+              == "Wisp needs your approval: Delete 3 files? Choices: Deny, Allow once.", "A question keeps its mark")
+        check(OverlayModel.approvalAnnouncement(reason: " \n", grantable: false)
+              == "Wisp needs your approval. Choices: Deny, Allow once.", "A card with no sentence is still announced")
+        print("PASS: approval cards are announced with the choices they show")
+    }
+
+    /// A card with Always allow always says what the rule would cover.
+    static func alwaysAllowLineChecks() {
+        check(OverlayModel.alwaysAllowLine(tool: "write_file", scopeHint: "~/Projects/demo")
+              == "Always allow applies to write_file on ~/Projects/demo", "A scoped rule names its folder")
+        check(OverlayModel.alwaysAllowLine(tool: "web_fetch", scopeHint: "example.com")
+              == "Always allow applies to web_fetch on example.com", "Or its site")
+        check(OverlayModel.alwaysAllowLine(tool: "move_path", scopeHint: "")
+              == "Always allow applies to every move_path action", "A rule with no limit says it covers every action")
+        check(OverlayModel.alwaysAllowLine(tool: "create_note", scopeHint: " \n")
+              == "Always allow applies to every create_note action", "A blank hint is no limit")
+        print("PASS: Always allow says what it covers, with or without a limit")
+    }
+
+    /// A heartbeat is about 1.5 s from the agent loop and 8 s of silence from
+    /// plain chat; the stall line and the working label count with the same two.
+    @MainActor
+    static func heartbeatSecondsChecks() {
+        check(OverlayModel.loopHeartbeatSeconds == 1.5 && OverlayModel.silenceHeartbeatSeconds == 8,
+              "The two heartbeat paces are the backend's")
+        check(OverlayModel.heartbeatSeconds(6, fromLoop: true) == 9, "Six loop heartbeats are 9 s, not 48")
+        check(OverlayModel.heartbeatSeconds(1, fromLoop: true) == 1, "A part second rounds down")
+        check(OverlayModel.heartbeatSeconds(2, fromLoop: false) == 16, "Two silent waits are 16 s")
+        check(OverlayModel.heartbeatSeconds(0, fromLoop: false) == 0, "No heartbeat, no seconds")
+        print("PASS: heartbeats count seconds at their sender's pace")
     }
 
     @MainActor
@@ -184,6 +230,44 @@ struct OverlayTransitionChecks {
         check(mask.bounds.size == panel.frame.size, "Compact mask fits after close")
         check(mask.animationKeys()?.isEmpty != false, "No residual animation at rest")
 
+        // A display change (a resolution switch, a monitor plugged in) while an
+        // open or close is in flight cancels the animation but must still end
+        // the step that started it, once, or the notch can never move again.
+        compact = false
+        var machine = OverlayTransition()
+        machine.request(.chat)
+        let cutOpen = machine.next()!
+        var cutOpens = 0
+        panel.dropOpen { cutOpens += 1; machine.finish(cutOpen) }
+        check(panel.isRevealing && cutOpens == 0, "The open is in flight")
+        panel.applyDisplayChange()
+        check(cutOpens == 1 && !panel.isRevealing, "A display change finishes the open it interrupts")
+        check(machine.active == nil && machine.settled == .chat, "The interrupted open's step is settled")
+        check(mask.bounds.size == panel.frame.size && mask.animationKeys()?.isEmpty != false,
+              "The interrupted open is refit and fully shown")
+        machine.request(.bar)
+        let cutClose = machine.next()
+        check(cutClose?.to == .bar, "The notch can still close after a display change")
+        var cutCloses = 0
+        panel.rollUp {
+            cutCloses += 1
+            compact = true
+            if let cutClose { machine.finish(cutClose) }
+        }
+        check(panel.isRevealing && cutCloses == 0, "The close is in flight")
+        panel.applyDisplayChange()
+        check(cutCloses == 1 && !panel.isRevealing, "A display change finishes the close it interrupts")
+        panel.settleToBar()
+        check(machine.active == nil && machine.settled == .bar, "The interrupted close's step is settled")
+        check(mask.bounds.size == panel.frame.size, "Compact mask fits after an interrupted close")
+        // The cancelled animations' own callbacks land later and add nothing.
+        try? await Task.sleep(for: .milliseconds(450))
+        check(cutOpens == 1 && cutCloses == 1, "An interrupted reveal completes exactly once")
+        panel.applyDisplayChange()
+        check(cutOpens == 1 && cutCloses == 1, "A display change at rest completes nothing")
+        machine.request(.chat)
+        check(machine.next()?.to == .chat, "The notch can open again after a display change")
+
         panel.reduceMotion = { true }
         compact = false
         var reducedOpened = false
@@ -220,7 +304,117 @@ struct OverlayTransitionChecks {
         print("PASS: a cold-launch start failure shows the down card; a running service ignores stale failures")
     }
 
+    /// Ask's own forget clears the debug log's memory only when the tool says it
+    /// removed something (the strings are service/tools/memory_tools.py's).
+    static func forgetResultChecks() {
+        func removed(_ tool: String, _ result: String, isInternal: Bool = false) -> Bool {
+            ForgetToolResult.removedSomething(tool: tool, result: result, isInternal: isInternal)
+        }
+        check(removed("forget", "Forgot 1 matching memory record(s), including correction history."),
+              "A forget that removed a memory")
+        check(removed("forget", "Forgot 2 matching memory record(s), including correction history."
+                      + " Also withdrew 1 notice(s) waiting for quiet hours to end."), "With a held notice too")
+        check(removed("forget", "No exact matching memories were forgotten."
+                      + " Also withdrew 1 notice(s) waiting for quiet hours to end."), "Or only a held notice")
+        check(!removed("forget", "No exact matching memories were forgotten. Use recall to identify the statement to forget."),
+              "A forget that matched nothing leaves the log alone")
+        check(!removed("forget", "User denied forget."), "So does a denied one")
+        check(!removed("forget", "Forgot 1 matching memory record(s), including correction history.", isInternal: true),
+              "And a note to the model about its own mis-call")
+        check(!removed("forget", ""), "And a call with no result yet")
+        check(!removed("recall", "Forgot 1 matching memory record(s), including correction history.")
+              && !removed("remember", "Saved memory 4: Forgot my keys once"), "Only the forget tool counts")
+        print("PASS: only a forget that removed something clears the debug log's memory")
+    }
+
+    /// Try again is offered only where sending the same line again asks the same
+    /// question, and never takes over what is already in the box.
+    @MainActor
+    static func tryAgainChecks() {
+        let model = OverlayModel(loadDebugMode: { false }, saveDebugMode: { _ in })
+        func failed() -> OverlayModel.Turn { OverlayModel.Turn(role: "assistant", text: "Something went wrong.", isError: true) }
+        var error = failed()
+        model.turns = [OverlayModel.Turn(role: "user", text: "What's the weather?"), error]
+        check(model.offersTryAgain(error), "A plain question that failed offers Try again")
+        var ran = failed(); ran.activity = ["read_mail — ok"]
+        model.turns = [OverlayModel.Turn(role: "user", text: "What's the weather?"), ran]
+        check(!model.offersTryAgain(ran), "Not after a tool ran")
+        model.turns = [OverlayModel.Turn(role: "user", text: "What's the weather?"), error,
+                       OverlayModel.Turn(role: "user", text: "next"), OverlayModel.Turn(role: "assistant", text: "ok")]
+        check(!model.offersTryAgain(error), "Only under the last reply")
+
+        // A question sent with an attachment keeps only its marker.
+        for marker in QueuedPrompt.historyMarkers {
+            error = failed()
+            model.turns = [OverlayModel.Turn(role: "user", text: "Explain this \(marker)"), error]
+            check(!model.offersTryAgain(error), "No Try again after a \(marker) question")
+            model.tryAgain(error)
+            check(model.turns.count == 2 && model.input.isEmpty && model.transientNotice == nil,
+                  "Nor is the \(marker) line ever sent again as text")
+        }
+
+        // Something already typed is kept, and the failed exchange stays.
+        error = failed()
+        model.turns = [OverlayModel.Turn(role: "user", text: "What's the weather?"), error]
+        model.input = "a new question"
+        model.tryAgain(error)
+        check(model.input == "a new question" && model.turns.count == 2 && model.turns[1].id == error.id,
+              "Try again leaves a typed draft alone")
+        check(model.transientNotice == "Send or clear what's in the box first, then try again.", "And says why nothing was sent")
+        model.input = ""
+        model.transientNotice = nil
+        print("PASS: Try again never resends an attachment's marker as text or replaces a typed draft")
+    }
+
     #if WISP_MOTION_APP_DELEGATE_CHECKS
+    /// "Reading document…" is for an empty chip. An attachment already there keeps
+    /// its own label through a second read, so one that fails leaves it as it was.
+    @MainActor
+    static func attachmentLabelChecks() async {
+        let model = OverlayModel(loadDebugMode: { false }, saveDebugMode: { _ in })
+        let missing = URL(fileURLWithPath: "/nonexistent-wisp-fixture/notes.txt")
+        model.loadAttachment(url: missing)
+        check(model.attachedLabel == "Reading document…", "An empty chip says a document is being read")
+        await waitUntil { model.attachedLabel.isEmpty }
+        check(!model.hasAttachment && model.transientNotice == DocumentAttachment.unreadableMessage,
+              "A read that fails clears the chip and says why")
+
+        await model.loadAttachment(name: "fixture.jpg") {
+            MediaAttachment.Pending.image(jpeg: Data([0xFF, 0xD8, 0xFF, 0xD9]), source: .file)
+        }.value
+        check(model.hasAttachment && model.attachedLabel == "Image", "A picture is attached")
+        model.transientNotice = nil
+        model.loadAttachment(url: missing)
+        check(model.attachedLabel == "Image", "A second read leaves the first attachment's label")
+        await waitUntil { model.transientNotice != nil }
+        try? await Task.sleep(for: .milliseconds(100))
+        check(model.hasAttachment && model.attachedLabel == "Image" && model.attachedImageName == "fixture.jpg",
+              "A second read that fails leaves the first attachment as it was")
+        model.removeAttachment()
+        check(!model.hasAttachment && model.attachedLabel.isEmpty, "Removing it clears the chip")
+        print("PASS: a failed second attachment leaves the first one's chip unchanged")
+    }
+
+    /// Quick settings' Unload says "unloaded" only when the service answered that it
+    /// was done; a failed unload says so, and the button comes back either way.
+    @MainActor
+    static func unloadNoticeChecks() async {
+        let model = OverlayModel(loadDebugMode: { false }, saveDebugMode: { _ in })
+        MotionFixtureProtocol.unloadStatus = 500
+        model.freeUpMemory()
+        check(model.freeingMemory, "Unload is under way")
+        await waitUntil { !model.freeingMemory }
+        check(model.transientNotice == "Couldn't unload the models. Try again in a moment." && !model.transientNoticeIsInfo,
+              "A failed unload is never reported as done")
+        MotionFixtureProtocol.unloadStatus = 200
+        model.freeUpMemory()
+        await waitUntil { !model.freeingMemory }
+        check(model.transientNotice == "Models unloaded. Wisp reloads them on the next ask." && model.transientNoticeIsInfo,
+              "An unload the service confirmed says so")
+        model.transientNotice = nil
+        print("PASS: Unload reports success only when the service confirmed it")
+    }
+
     /// Export Chat Debug Log… covers every chat since Wisp opened: New chat and opening
     /// another chat archive the one left, whole; reopening it continues it with its
     /// detail; the export lists each chat and keeps the open one's top-level fields.
@@ -350,7 +544,14 @@ struct OverlayTransitionChecks {
 
     static func main() async {
         lifecycleChecks()
-        await MainActor.run { coldStartFailureChecks() }
+        approvalAnnouncementChecks()
+        alwaysAllowLineChecks()
+        forgetResultChecks()
+        await MainActor.run {
+            heartbeatSecondsChecks()
+            coldStartFailureChecks()
+            tryAgainChecks()
+        }
         #if WISP_MOTION_APP_DELEGATE_CHECKS
         precondition(URLProtocol.registerClass(MotionFixtureProtocol.self))
         await AppDelegate.checkDismissReopenInput()
@@ -364,6 +565,8 @@ struct OverlayTransitionChecks {
         await AppDelegate.checkSetupCardHoldsAsk()
         await AppDelegate.checkInlineReportHoldsOpen()
         await AppDelegate.checkReportSaveHoldsUntilAnswered()
+        await attachmentLabelChecks()
+        await unloadNoticeChecks()
         await chatArchiveChecks()
         await AppDelegate.checkMenuExportsDebugLog()
         #endif

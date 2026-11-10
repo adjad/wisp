@@ -106,6 +106,18 @@ final class ChatConversation: ObservableObject, Identifiable {
     var latestAssistant: ChatMessage? { messages.last(where: { $0.role == .assistant }) }
 }
 
+/// Whether a finished `forget` call removed something, read from the tool's own
+/// result and never from the model's wording. The strings are the tool's
+/// (service/tools/memory_tools.py `forget`): "Forgot N matching memory
+/// record(s)…", or "… Also withdrew N notice(s)…" when only a held notice went.
+/// Keep the two in step. A forget that matched nothing, was denied or was
+/// rejected removed nothing.
+enum ForgetToolResult {
+    static func removedSomething(tool: String, result: String, isInternal: Bool) -> Bool {
+        tool == "forget" && !isInternal && (result.hasPrefix("Forgot ") || result.contains("Also withdrew "))
+    }
+}
+
 @MainActor
 final class ChatStore: ObservableObject {
     @Published private(set) var conversations: [ChatConversation] = []
@@ -623,6 +635,12 @@ final class ChatStore: ObservableObject {
             for kind in AskAccess.kinds(event.payload["needs_access"]) where !message.needsAccess.contains(kind) {
                 message.needsAccess.append(kind)
             }
+        }
+        // Ask's own forget removed something: the notch's debug-log memory of every
+        // chat goes too, as Memory › Forget does. The fact may be in any of them.
+        if event.type == "tool_result", let row = message.tools.last(where: { $0.id == event.str("id") }),
+           ForgetToolResult.removedSomething(tool: row.name, result: event.str("result"), isInternal: event.bool("internal")) {
+            NotificationCenter.default.post(name: .wispForgetChatDebugArchive, object: nil)
         }
         // Corpus replies are text and read evidence, never actionable drafts.
         if message.corpusEvaluation != nil { message.draft = nil }

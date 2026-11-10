@@ -678,11 +678,15 @@ final class WispClient {
         return (http.statusCode == 200 && (obj["ok"] as? Bool ?? false), result)
     }
 
-    // Unload all resident models from oMLX to free memory/power.
-    func unloadAll() async {
+    // Unload all resident models from oMLX to free memory/power. True only when
+    // the service answered that it did: an unload that failed (the engine busy,
+    // the service not answering) must never be reported as done.
+    @discardableResult
+    func unloadAll() async -> Bool {
         var req = URLRequest(url: Self.baseURL.appendingPathComponent("unload_all"))
         req.httpMethod = "POST"
-        _ = try? await URLSession.shared.data(for: req)
+        guard let (_, response) = try? await URLSession.shared.data(for: req) else { return false }
+        return (response as? HTTPURLResponse)?.statusCode == 200
     }
 
     // Unload the resident agent model — keeps the small always-on
