@@ -1155,3 +1155,35 @@ def test_the_real_recall_returns_the_exact_notice(monkeypatch):
     monkeypatch.setattr(memory_tools, "retrieve", lambda *a, **k: {"facts": [], "passages": []})
     assert asyncio.run(memory_tools.recall("zebra")) == memory_tools.RECALL_NOTHING_FOUND
     assert "zebra" not in memory_tools.RECALL_NOTHING_FOUND
+
+
+@pytest.mark.parametrize("model_led_route,offered", [(True, False), (False, True)])
+def test_a_shell_card_offers_always_allow_only_where_a_grant_is_honoured(
+        synthetic, model_led_route, offered):
+    # b09-safety#6: on a model-led turn every run_shell that is not a validated
+    # read is confirmed after decide() (policy.opaque_outbound_decision), so a
+    # stored "Always allow git" never lifted the next `git status` card. That
+    # card offers no "Always allow"; the legacy route, where the grant works, still does.
+    effects, _ = synthetic
+    approval = Approval(False)
+    script = ([[discover("automation", "run_shell")]] if model_led_route else []) + [
+        [call("run_shell", cmd="git status")], "Synthetic reply."]
+    run(script, prompt="run git status", approval=approval,
+        model_led_discovery=model_led_route, tools=[] if model_led_route else ["run_shell"],
+        **_owners())
+    assert [a["tool"] for a in approval.calls] == ["run_shell"]
+    assert (approval.calls[0].get("grantable", True) is not False) is offered
+    assert "run_shell" not in [n for n, _ in effects]
+
+
+def test_a_model_led_card_a_grant_can_lift_keeps_always_allow(synthetic):
+    # Only the overridden cards lose the button: an ordinary file write on a
+    # model-led turn is decided by decide(), where a stored grant is honoured.
+    effects, _ = synthetic
+    approval = Approval(False)
+    run([[discover("files", "write_file")],
+         [call("write_file", path="/tmp/notes/a.txt", content="x")], "Synthetic reply."],
+        prompt="save x to /tmp/notes/a.txt", approval=approval, **_owners())
+    assert [a["tool"] for a in approval.calls] == ["write_file"]
+    assert approval.calls[0].get("grantable", True) is not False
+    assert not effects

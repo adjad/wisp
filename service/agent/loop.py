@@ -2305,6 +2305,29 @@ async def run_agent(
                 return problem
         return dec
 
+    def card_offers_no_always(tool, args):
+        """Whether tool_policy would show this card again whatever grant is stored.
+
+        A model-led turn confirms three kinds of call after decide() has
+        answered, so a standing "Always allow" never lifts them: web egress
+        once private data was read this turn, egress to a host the user did not
+        type when the turn started private, and every opaque outbound action
+        (run_shell unless it is a validated read). The card then offers no
+        "Always allow": tapping it changed nothing, and the same card came back
+        on the next call. Legacy routing is unchanged.
+        """
+        if not model_led_discovery:
+            return False
+        if in_turn_private_web(tool, args) or start_private_egress(tool, args):
+            return True
+        from service.safety.policy import (
+            Decision, OPAQUE_ACTION_CATEGORIES, opaque_outbound_decision)
+        # The question a grant would have to survive: decide() says ALLOW, and
+        # the opaque rule above turns it back into a card.
+        return opaque_outbound_decision(
+            tool.name, tool.category, args, Decision(Tier.ALLOW, ""),
+            categories=OPAQUE_ACTION_CATEGORIES, reason="").tier is not Tier.ALLOW
+
     # Set once a tool runs whose result carries outside text (a file, page, mail...).
     # A picture's reading is outside text from the start.
     untrusted_read_in_turn = [bool(picture_reading)]
@@ -3456,6 +3479,8 @@ async def run_agent(
             _action = {"id": _cid, "tool": _name, "args": _args,
                        "reason": _dec.reason,
                        "fingerprint": _action_fingerprint(_name, _args)}
+            if card_offers_no_always(_tool, _args):
+                _action["grantable"] = False
             # Router-direct bulk reminder calls bypass the model-driven block
             # that normally builds confirmation previews. Preserve the same
             # safety contract here: the card must show the exact reminder set
@@ -5483,6 +5508,8 @@ async def run_agent(
                     action = {"id": cid, "tool": name, "args": args,
                               "reason": dec.reason,
                               "fingerprint": _action_fingerprint(name, args)}
+                    if card_offers_no_always(tool, args):
+                        action["grantable"] = False
                     # Installing a self-authored tool is the one confirm where the
                     # args don't describe what's actually at stake — `{"name": "x"}`
                     # says nothing about the code about to be written. Attach the

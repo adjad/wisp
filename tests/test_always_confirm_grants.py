@@ -569,3 +569,30 @@ def test_every_tool_name_policy_names_is_registered(module):
     # MCP and skill tools register at run time under these prefixes.
     stale = sorted(n for n in names if n not in REGISTRY and not n.startswith(("mcp_", "skill_")))
     assert not stale, f"{module.__name__} names tools that are not registered: {stale}"
+
+
+@pytest.mark.parametrize("tool,args", [
+    ("open_app", {"name": "Terminal"}),
+    ("open_app", {"name": "Shortcuts"}),
+    ("open_app", {"name": "Safari", "target": "sms:+15550100"}),
+    ("write_file", {"path": "~/.netrc", "content": "machine example.invalid"}),
+    ("read_file", {"path": "~/.ssh/id_ed25519"}),
+    ("read_file", {"path": "~/.config/gh/hosts.yml"}),
+])
+def test_a_card_decide_always_shows_offers_no_always_allow(tool, args):
+    # b09-safety#6: decide() asks for these whatever is stored, so "Always allow"
+    # could never be honoured. For open_app it stored a tool-wide rule that
+    # silently covered every other app instead.
+    assert REGISTRY[tool]
+    assert not grants.is_grantable(tool, args)
+    assert grants.grant(tool, args).get("ok") is False
+    assert grants.check(tool, {"name": "Notes"} if tool == "open_app" else args) is None
+    assert policy.decide(REGISTRY[tool].category, args, tool=tool).tier is policy.Tier.CONFIRM
+
+
+def test_ordinary_app_and_file_cards_keep_always_allow():
+    assert grants.is_grantable("open_app", {"name": "Notes"})
+    assert grants.is_grantable("write_file", {"path": "/tmp/notes/a.txt", "content": "x"})
+    assert grants.is_grantable("read_file", {"path": "/tmp/notes/a.txt"})
+    # The bare tool-wide grant (no call) is judged as before.
+    assert grants.is_grantable("open_app", {})
