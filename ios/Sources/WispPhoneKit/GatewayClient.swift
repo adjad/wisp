@@ -81,6 +81,8 @@ public enum GatewayError: Error, Equatable, LocalizedError {
     case backendDown
     case http(Int, String)
     case badResponse
+    /// The Mac has no pending action for the answer: it was already resolved or timed out.
+    case requestEnded
 
     public var errorDescription: String? {
         switch self {
@@ -96,6 +98,8 @@ public enum GatewayError: Error, Equatable, LocalizedError {
             detail.isEmpty ? "Your Mac answered with an error (\(code))." : detail
         case .badResponse:
             "Your Mac sent a response the app couldn't read."
+        case .requestEnded:
+            "That request already ended."
         }
     }
 }
@@ -180,7 +184,11 @@ public actor GatewayClient {
         var body: [String: Any] = ["session_id": request.sessionId, "action_id": request.id,
                                    "approved": approved, "scope": scope.rawValue]
         if !request.requestId.isEmpty { body["request_id"] = request.requestId }
-        _ = try await send(path: "phone/v1/agent/approve", method: "POST", body: body, timeout: 15)
+        let (data, _) = try await send(path: "phone/v1/agent/approve", method: "POST", body: body, timeout: 15)
+        // The Mac answers 200 {"ok": false} when nothing is waiting on this id any more.
+        guard let reply = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let ok = reply["ok"] as? Bool else { throw GatewayError.badResponse }
+        if !ok { throw GatewayError.requestEnded }
     }
 
     /// A request for one model file, against a base proved by a ping made just now, never the
