@@ -290,6 +290,7 @@ ADDITIONAL_FULL_TESTS = {
     # rc3 fix batch: one file per fixed area (pure Python, stub models, scratch stores, or source
     # contracts that read the Swift and service text; nothing live).
     "tests/test_rc3_app_lifecycle.py",
+    "tests/test_rc3_audit_repairs.py",
     "tests/test_rc3_backend_launch.py",
     "tests/test_rc3_brief_cards.py",
     "tests/test_rc3_cache_fixture_scripts.py",

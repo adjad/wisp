@@ -222,11 +222,18 @@ def scope_for(tool: str, args: dict) -> str:
         if tool == "move_path":
             # The folder things are moved into, as for write_file: a grant on
             # one move used to cover every move anywhere. A path ending in "/"
-            # is that folder; otherwise its parent. Not expanded, so a spelling
-            # that differs only asks again.
+            # or naming an existing folder is that folder, the rule move_path
+            # itself uses; otherwise its parent. Stored as typed, not expanded,
+            # so a spelling that differs only asks again.
             dest = str(args.get("destination", ""))
             p = Path(dest)
-            return str(p) if dest.endswith("/") or not p.name else str(p.parent)
+            into = dest.endswith("/") or not p.name
+            if not into:
+                try:
+                    into = p.expanduser().is_dir()
+                except Exception:  # noqa: BLE001 - unreadable: the parent, never tool-wide
+                    into = False
+            return str(p) if into else str(p.parent)
         if tool == "run_shell":
             # First word only — the program being run. The full command line
             # never repeats verbatim, so anything more specific would make the

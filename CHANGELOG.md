@@ -75,6 +75,7 @@ All notable changes to Wisp are documented here.
   - **"Don’t use my memory" works with a curly apostrophe.** The same sentence typed with smart quotes, dictated or pasted was ignored, so remembered facts were still used. It is now honored however the apostrophe is typed.
   - **How-to questions that mention your calendar, mail or messages get a straight answer.** "How do I back up my messages?" or "Why won't my email sync?" could end in "I haven't checked a current personal source for that yet". Wisp now answers them as how-to questions, and still reads the source when you ask what is in it.
 - **Safety and confirmation cards: the local API, keys, wording and scheduled sends.**
+  - An Always allow on a move into an existing folder now covers only that folder, not every folder beside it (`grants.scope_for`, the rule `move_path` itself uses).
   - **A web page can no longer read your chats through a DNS trick.** Wisp now refuses any request that does not name this Mac's own address, whether or not it looks like it came from a browser. Before, a page that re-pointed its own name at your Mac could read chats, remembered facts and the action log in Safari or Firefox.
   - **A link or file name with "risk-", "task-" or "ask-" in it is no longer mistaken for an API key.** Wisp used to answer "That looks like an API key" or cut the link short before reading it. Real keys are still removed before anything is stored or sent to a model.
   - **Wisp asks before opening Terminal or Shortcuts however the app is named.** Naming the app by its full path used to skip the card under Full access. Warp, Ghostty, kitty, Alacritty, WezTerm and Hyper now ask too.
@@ -243,6 +244,7 @@ All notable changes to Wisp are documented here.
   - **Wisp no longer stutters while it reads Calendar.** The two-minute Calendar read now runs in the background, so the panel, hover and streaming text stay smooth for people with busy calendars.
   - **A meeting with no title shows on Day as (untitled).** It used to be dropped, so its time read as free and tasks could be planned on top of it. Dated reminders with no title are kept the same way.
 - **Brief and proactive suggestions.**
+  - A Brief reply that can't be sent from Wisp (offered to copy or open in Gmail) no longer keeps the panel from tucking away (`BriefReplyModel.holdsPanelOpen`).
   - **A reply you send from an iCloud, Outlook or Exchange account now clears its suggestion.** Wisp reads Mail's Sent list and matches your reply by subject and recipient, so the reply card and its to-do go away instead of lingering for days.
   - **The Brief no longer loses its model-written ranking on busy days.** The ranking now gets room to finish, and if it still fails the earlier day summary stays instead of going blank.
 - **Habit learning from events.**

@@ -228,11 +228,13 @@ final class BriefReplyModel: ObservableObject {
     }
     /// Whether tucking the panel away now would hide work in progress: a draft
     /// being written, text that hasn't been sent, or a send with no answer yet.
-    /// False once the reply is sent or its outcome is unknown.
+    /// False once the reply is sent or its outcome is unknown, and for a draft
+    /// that can't be sent from here (offered to copy or open elsewhere): the
+    /// text is kept either way, and nothing is waiting on the panel.
     var holdsPanelOpen: Bool {
         switch phase {
         case .drafting, .sending: return true
-        case .ready: return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .ready: return canSend && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         case .sent, .unknown: return false
         }
     }
