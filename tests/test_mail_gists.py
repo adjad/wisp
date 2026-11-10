@@ -484,6 +484,10 @@ def test_auditor_notes_on_299_broadcast_is_narrow_and_the_summary_is_grounded(is
                                                       "hi@mayachen.com", "contact@mayachen.com"))
     assert not is_broadcast(person("maya@corp.example", "<abc@email.amazonses.com>")), "relays carry one-to-one mail"
     assert is_broadcast(person("x@mail.shop.example")) and is_broadcast(person("hello@tech-week.com"))
+    # A school's own mailbox is a person; its campaign mailboxes and a company's mail. subdomain stay bulk.
+    assert not any(is_broadcast(person(a)) for a in ("jsmith@mail.ox.ac.uk", "sam@go.byu.edu", "dee@mail.unsw.edu.au",
+                                                      "prof@mail.fresnostate.edu", "ann@e.northeastern.edu"))
+    assert is_broadcast(person("events@mail.fresnostate.edu")) and is_broadcast(person("kim@email.company.com"))
     lines = ["- From John Morada: Canceled: Office Hours — We'll meet Monday instead."]
     assert G.summary_ok("John Morada canceled office hours and will meet Monday instead.", lines)
     assert not G.summary_ok("John Morada canceled office hours; Priya will cover.", lines), "a name the mail lacks"
