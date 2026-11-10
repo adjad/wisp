@@ -742,6 +742,45 @@ _ASK_DONE_CLAIM = re.compile(
     r"\b(?:i(?:'|’)ve|i\s+have|i|it(?:'|’)s|has\s+been|have\s+been)\s+(?:just\s+|now\s+)?"
     r"(?:sent|added|created|scheduled|set|saved|deleted|removed|moved|cancel+ed|texted|emailed|"
     r"messaged|replied|forwarded|booked|updated|completed|marked)\b|^\s*(?:done|all\s+set|sent)\b", re.I)
+# A reply sentence that says what happened to a reminder made this turn, as
+# opposed to one that reports a reminder a read returned ("You have a reminder
+# to pay rent at 9.", "- Reminder: get the report done").
+_REMINDER_CLAIM = re.compile(
+    # "I've set a reminder…", "I'll remind you…", "I also added it to your reminders."
+    r"\bi(?:'ll|'ve|\s+will|\s+have)?\s+(?:(?:also|just|now|already)\s+)?"
+    r"(?:remind\b|(?:set|created|added|scheduled|saved|made|put)\b[^.!?]*\bremind)"
+    # "Reminder set for 8 PM.", "Your reminder is set.", "The reminder to pack is now set."
+    r"|\breminders?\s+(?:(?:is|was|are|has\s+been|have\s+been)\s+)?(?:now\s+|all\s+)?"
+    r"(?:set|created|added|scheduled|saved)\b"
+    r"|\breminders?\b[^.!?]{1,60}?\b(?:is|are|has\s+been|have\s+been)\s+(?:now\s+|all\s+)?"
+    r"(?:set|created|added|scheduled|saved)\b"
+    # "Set a reminder for 8 PM.", "…and added the reminder."
+    r"|\b(?:set|created|added|scheduled|saved)\s+(?:up\s+)?(?:a|an|the|your|that|this|another)\s+"
+    r"(?:\w+\s+)?reminders?\b"
+    # "You'll be reminded at 8.", "You'll get a reminder…", "It's in Apple Reminders."
+    r"|\byou(?:'ll|\s+will)\s+(?:be\s+reminded|(?:get|receive|see)\s+(?:a|the|your|that)\s+reminder)"
+    r"|\bapple\s+reminders\b", re.I)
+
+
+def _answer_beside_reminder(text: str) -> str:
+    """The part of a reply that answers the question asked alongside a reminder
+    ("What's on tomorrow? Also remind me to pack."). Sentences about what
+    happened to the reminder are dropped: only the tool's receipt says that."""
+    kept: list[str] = []
+    for line in (text or "").splitlines():
+        if not line.strip():
+            if kept and kept[-1]:
+                kept.append("")
+            continue
+        indent = line[:len(line) - len(line.lstrip())]
+        rest = " ".join(
+            sentence for sentence in re.split(r"(?<=[.!?])\s+", line.strip())
+            if not _REMINDER_CLAIM.search(sentence.replace("\u2019", "'")))
+        if re.search(r"\w", rest):
+            kept.append(indent + rest)
+    return "\n".join(kept).strip()
+
+
 # Offered on a web-only personal re-prompt when the head start held none.
 _ASK_OWN_SOURCE_READS = ("view_emails", "search_reminders", "search_notes", "view_messages")
 _ASK_GUARD_MESSAGE = (
@@ -3126,7 +3165,9 @@ async def run_agent(
             receipts.append("I couldn't complete every requested step.")
         return "\n".join(receipts)
 
-    def _verified_final(text: str) -> str:
+    def _verified_final(text: str, *, narration: bool = False) -> str:
+        """`narration`: `text` is the model's own answer (or its summary of the
+        results), not a fallback built from the tool results."""
         uncertain = [outcome for name, outcome in tool_outcomes
                      if name in {"send_email", "send_message", "forward_email", "reply_to_email"}
                      and outcome.status == "unknown"]
@@ -3214,6 +3255,16 @@ async def run_agent(
                     receipts.append(f"Required source result ({name}): " + _user_facing_failure(outcome.text))
             if _unmet_group() is not None:
                 receipts.append("I couldn't complete every requested step.")
+            elif (narration and not required_reads
+                  and all(outcome.status == "succeeded" for _, outcome in actions)
+                  and any(outcome.effect == "read" and outcome.status in {"succeeded", "no_match"}
+                          for _, outcome in tool_outcomes)
+                  and (beside := _answer_beside_reminder(text))):
+                # "What's on my calendar tomorrow? Also remind me to pack." read
+                # the calendar too, and the receipt alone dropped that answer.
+                # The receipt stays first, and nothing the model says about the
+                # reminder itself is kept.
+                receipts.append(beside)
             return "\n\n".join(receipts)
         # Priority evidence is bounded even when narration sounds exhaustive.
         # Keep selected/unavailable/excluded sources visible on the successful
@@ -4618,6 +4669,8 @@ async def run_agent(
                 await emit({"type": "text", "text": text})
                 await emit({"type": "done"})
                 return text
+            # The model's own words; any fallback below replaces `text` only.
+            narrated = text
             if unmet is not None:
                 if content_streamed:
                     await emit({"type": "clear_answer"})
@@ -4645,7 +4698,8 @@ async def run_agent(
             if ask_quality and not text.strip() and last_tool_result:
                 # Model-only Ask: one short tool-free summarization, then a
                 # compact readable view; never the raw results themselves.
-                text = ((await _ask_summarize()) if clean_results else "") or _ask_results_text()
+                narrated = (await _ask_summarize()) if clean_results else ""
+                text = narrated or _ask_results_text()
                 if not text:
                     text = _ASK_NOTHING_MESSAGE
             if not text.strip() and last_tool_result:
@@ -4707,7 +4761,7 @@ async def run_agent(
                     await emit({"type": "clear_answer"})
                 text = ASK_CLAIM_NOT_DONE
             # Publish once, after checking receipts and obligations.
-            verified = _verified_final(text)
+            verified = _verified_final(text, narration=bool(text.strip()) and text == narrated)
             if verified != text:
                 if content_streamed:
                     await emit({"type": "clear_answer"})

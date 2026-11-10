@@ -924,6 +924,67 @@ def test_reminder_that_says_my_email_answers_with_its_receipt(synthetic):
     assert answer == receipt      # a reminder-only turn answers with the tool's own receipt
 
 
+# --- a question and a reminder in one request -------------------------------------
+
+_PACK = "Reminder set: \u201cPack my laptop\u201d \u2014 today 8:00 PM in Apple Reminders and Wisp."
+_SCHEDULE = "Tomorrow you have the Workshop at 14:00."
+
+
+def _read_and_remind(synthetic, final, *, receipt=_PACK, prompt=(
+        "What's on my calendar tomorrow? Also remind me to pack my laptop at 8pm.")):
+    effects, _ = synthetic
+    _action_tool(synthetic, "add_reminder", "assistant_tools", "assistant_write", receipt,
+                 ("title", "when_iso"))
+    script = [[call("get_upcoming", days=2)],
+              [call("add_reminder", title="Pack my laptop", when_iso="2036-09-29T20:00")],
+              *(final if isinstance(final, list) else [final])]
+    _, _, answer = ask(script, prompt=prompt, approval=Approval(allowed=True),
+                       model_led_preload=["add_reminder", "get_upcoming"], **_OWNERS)
+    assert len(executed(effects, "get_upcoming")) == 1 and len(executed(effects, "add_reminder")) == 1
+    return answer
+
+
+def test_question_asked_with_a_reminder_keeps_its_answer_after_the_receipt(synthetic):
+    answer = _read_and_remind(
+        synthetic, _SCHEDULE + "\n\nI\u2019ve also set a reminder to pack your laptop at 8 PM.")
+    assert answer == _PACK + "\n\n" + _SCHEDULE      # the receipt first, then the answer
+
+
+def test_reply_cannot_say_more_about_the_reminder_than_its_receipt(synthetic):
+    local_only = "Reminder set: \u201cPack my laptop\u201d \u2014 today 8:00 PM in Wisp only; Apple Reminders did not answer."
+    answer = _read_and_remind(synthetic, (
+        "Your reminder is set and it is in Apple Reminders now.\n\n- Workshop at 14:00\n"
+        "- Reminder: get the report done\n\nYou'll be reminded at 8 PM."), receipt=local_only)
+    assert answer == local_only + "\n\n- Workshop at 14:00\n- Reminder: get the report done"
+
+
+def test_reply_that_only_talks_about_the_reminder_is_still_just_the_receipt(synthetic):
+    answer = _read_and_remind(synthetic, "I\u2019ve set a reminder for 8 PM tonight, before the Workshop.",
+                              prompt="Remind me to pack my laptop the evening before the workshop")
+    assert answer == _PACK
+
+
+def test_empty_reply_after_a_read_and_a_reminder_still_answers_the_question(synthetic):
+    # No words from the model after the tools: the one summary step is its answer.
+    answer = _read_and_remind(synthetic, ["", _SCHEDULE])
+    assert answer == _PACK + "\n\n" + _SCHEDULE
+
+
+@pytest.mark.parametrize("sentence", [
+    "I've set a reminder for 8 PM.", "I\u2019ll remind you at 8 PM.", "Reminder set for 8 PM.",
+    "The reminder to pack your laptop is now set.", "Done, and set your laptop reminder.",
+    "You'll get a reminder at 8 PM.", "I also added it to your reminders.", "It is in Apple Reminders."])
+def test_sentences_about_the_new_reminder_are_dropped(sentence):
+    assert loop._answer_beside_reminder(f"Workshop at 14:00. {sentence}") == "Workshop at 14:00."
+
+
+@pytest.mark.parametrize("line", [
+    "You have a reminder to pay rent at 9 AM and the Workshop at 14:00.",
+    "- Reminder: get the report done", "Nothing is on your calendar tomorrow."])
+def test_lines_a_read_returned_are_kept(line):
+    assert loop._answer_beside_reminder(line) == line
+
+
 def test_open_my_calendar_keeps_its_reply(synthetic):
     effects, _ = synthetic
     _action_tool(synthetic, "open_app", "apps", "app_control", "Opened Calendar.", ("name",))
