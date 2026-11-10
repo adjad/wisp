@@ -328,18 +328,20 @@ def resolve_alert_datetime(text: str, *, now: datetime | None = None) -> datetim
     from service.tools.timeranges import BadWhen, resolve_when
 
     candidates: list[str] = []
+    day_part = None  # where a part-of-day word said with a day sits
     if m := re.search(
             rf"\b(?P<day>today|tomorrow|tonight|{_WEEKDAY})\b"
-            rf"(?:\s+(?P<word>{_TIME_WORD}))?"
+            rf"(?:\s+(?:in\s+the\s+)?(?P<word>{_TIME_WORD}))?"
             r"(?:\s+(?:at\s+)?(?P<named>noon|midnight)\b"
             r"|\s+at\s+(?P<clock>\d{1,2}(?::\d{2})?\s*(?:am|pm)?))?",
             lowered, re.I):
         phrase = m.group("day")
-        if m.group("word"):
-            phrase += " " + m.group("word")
+        if word := m.group("word"):
+            day_part = m.span("word")
+            phrase += " " + word
         # "tomorrow noon" and "tomorrow at noon" are the same time.
         if named := m.group("named"):
-            phrase += (" at " if m.group("word") else " ") + named
+            phrase += (" at " if word else " ") + named
         elif m.group("clock"):
             phrase += " at " + m.group("clock")
         candidates.append(phrase)
@@ -354,8 +356,11 @@ def resolve_alert_datetime(text: str, *, now: datetime | None = None) -> datetim
     if clock:
         candidates.append(clock.group(0))
 
-    # Standalone/"this" part of day means its next sensible occurrence.
-    if m := re.search(rf"\b(?:(this|next|later)\s+)?({_TIME_WORD})\b", lowered, re.I):
+    # Standalone/"this" part of day means its next sensible occurrence. Said
+    # with a day ("friday evening", "tomorrow in the evening") it is that
+    # day's, which the day phrase above already carries.
+    if (m := re.search(rf"\b(?:(this|next|later)\s+)?({_TIME_WORD})\b", lowered, re.I)
+            ) and m.span(2) != day_part:
         modifier, word = m.group(1), m.group(2)
         day = now.replace(hour=STANDARD_PART_OF_DAY_HOURS[word], minute=0,
                           second=0, microsecond=0)
