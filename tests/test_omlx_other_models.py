@@ -489,6 +489,29 @@ def test_bundled_still_unloads_while_requests_are_counted_elsewhere(monkeypatch)
     assert M._state.not_ours == set()
 
 
+def test_bundled_never_unloads_the_embedder_mid_request_or_right_after(monkeypatch):
+    # A turn evicted the embedder long ago and left an old clock. A search now
+    # reloads it: the timer must not abort that request, nor unload it just after.
+    c = FakeClient(loaded={EMBED}, bundled=True)
+    idle._last_used[EMBED] = time.monotonic() - 25 * MIN
+    with idle.own_request(EMBED):
+        idle._last_used[EMBED] = time.monotonic() - 25 * MIN   # a long embed ages past the cutoff
+        passes(c, 1, monkeypatch)
+        assert c.unloads == []
+    passes(c, 1, monkeypatch)
+    assert c.unloads == []
+    assert time.monotonic() - idle.last_used(EMBED) < 5
+
+
+def test_bundled_still_unloads_the_embedder_once_it_is_really_idle(monkeypatch):
+    c = FakeClient(loaded={EMBED}, bundled=True)
+    with idle.own_request(EMBED):
+        pass
+    idle._last_used[EMBED] = time.monotonic() - 25 * MIN
+    passes(c, 1, monkeypatch)
+    assert c.unloads == [EMBED]
+
+
 # --- the notch's X ---------------------------------------------------------------------
 
 def hold(c, model=GEMMA, wall=WALL):

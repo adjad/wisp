@@ -85,13 +85,18 @@ def forget(model: str) -> None:
 
 @contextlib.contextmanager
 def own_load(model: str):
-    """Wisp is asking the engine to load `model`, which stamps its last_access."""
+    """Wisp is asking the engine to load `model`, which stamps its last_access.
+
+    It also counts as use for the idle timer, so an embedding or rerank keeps its
+    model from looking idle (a turn evicting the model leaves an old clock)."""
     _own_access[model] = time.time()
+    _last_used[model] = time.monotonic()
     _own_loads[model] = _own_loads.get(model, 0) + 1
     try:
         yield
     finally:
         _own_access[model] = time.time()
+        _last_used[model] = time.monotonic()
         remaining = _own_loads.get(model, 0) - 1
         if remaining > 0:
             _own_loads[model] = remaining
