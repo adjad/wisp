@@ -129,6 +129,7 @@ enum SearchModelChecks {
         await explicitRetryCanRecover()
         await unreadablePageKeepsExplanation()
         await emptyGlobalFailureExplainsNoAnswer()
+        await everyLiteralMatchKeepsItsRow()
         print("SearchModel: \(checks) regression checks passed (synthetic transport only)")
     }
 
@@ -344,6 +345,47 @@ enum SearchModelChecks {
         check(model.rows.isEmpty && !model.errorText.isEmpty, "empty failed answer has explanation")
         check(!model.errorText.contains("matches are still available"), "empty failure does not promise matches")
         check(!model.busy && !model.answering, "empty failed answer finishes")
+        model.reset()
+    }
+
+    static func hit(_ match: String, _ start: Int, _ end: Int) -> [String: Any] {
+        ["match": match, "start": start, "end": end]
+    }
+
+    // Reads rows only: moving the selection would navigate the source app.
+    static func everyLiteralMatchKeepsItsRow() async {
+        let (model, client) = fixture()
+        let request = await start(model, client, query: "amber")
+        // Three real matches a few characters apart, as in a list of names.
+        let literal: [[String: Any]] = [hit("amber", 100, 105), hit("amber", 118, 123),
+                                        hit("amber", 123, 128)]
+        client.emit(request, "literal", ["results": literal])
+        await settle()
+        check(model.rows.map(\.start) == [100, 118, 123], "close literal matches each keep a row")
+
+        // A passage around matches already shown is the same hit; one elsewhere is new.
+        let lexical: [[String: Any]] = [hit("amber stone", 96, 140), hit("resin", 400, 460)]
+        client.emit(request, "lexical", ["results": lexical])
+        await settle()
+        check(model.rows.map(\.start) == [100, 118, 123, 400],
+              "a passage overlapping a literal match is merged into it")
+
+        let semantic: [[String: Any]] = [hit("fossil resin", 402, 470), hit("tree sap", 430, 500),
+                                         hit("jewellery", 900, 960), hit("beads", 960, 1000)]
+        client.emit(request, "semantic", ["results": semantic])
+        await settle()
+        check(model.rows.map(\.start) == [100, 118, 123, 400, 900, 960],
+              "passages overlapping one already shown are merged, the rest are kept")
+        check(model.rows.map(\.kind) == ["literal", "literal", "literal", "lexical", "semantic", "semantic"],
+              "literal rows stay first, then lexical, then semantic")
+
+        // Rows follow the tiers as they stand: nothing stays hidden by a row that left.
+        client.emit(request, "lexical", ["results": [[String: Any]]()])
+        await settle()
+        check(model.rows.map(\.start) == [100, 118, 123, 402, 900, 960],
+              "with the lexical row gone the passage it hid shows, after the literal rows")
+        client.finish(request)
+        await settle()
         model.reset()
     }
 }

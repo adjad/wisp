@@ -71,19 +71,23 @@ final class SearchModel: ObservableObject {
 
     /// Merged, de-duplicated rows in the order the user navigates them.
     /// Literal hits pin to the top always — that's the ⌘F floor: if a literal
-    /// match exists, it is never buried under a semantic guess.
+    /// match exists, it is never buried under a semantic guess. Every literal
+    /// hit is its own match, so all of them stay, however close two are.
     var rows: [Result] {
-        var seen = Set<Int>()
-        var out: [Result] = []
-        for r in literal + lexical + semantic {
-            // Spans that start within a few chars of one already shown are the
-            // same hit found by two tiers; keep the first (strongest) one.
-            let bucket = r.start / 24
-            if seen.contains(bucket) { continue }
-            seen.insert(bucket)
+        var out = literal
+        for r in lexical + semantic {
+            // A passage that overlaps a row already shown is the same hit
+            // found by another tier; keep the first (strongest) one.
+            if out.contains(where: { Self.sameHit(r, $0) }) { continue }
             out.append(r)
         }
         return out
+    }
+
+    /// Whether two spans are one hit: they overlap, or they start within a few
+    /// characters of each other.
+    static func sameHit(_ a: Result, _ b: Result) -> Bool {
+        abs(a.start - b.start) < 4 || (a.start < b.end && b.start < a.end)
     }
 
     var pageSourceLabel: String { page.source.label }
