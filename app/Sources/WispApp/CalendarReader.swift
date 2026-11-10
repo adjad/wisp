@@ -124,7 +124,8 @@ final class CalendarReader {
 
         let payload: [[String: Any]] = kept.compactMap { ev in
             guard let sd = ev.startDate else { return nil }
-            let title = ev.title ?? "(untitled)"
+            // An event with no title reads back as "", which the service would not keep.
+            let title = RemindersWriter.syncedTitle(ev.title)
             let base = CalendarEventPolicy.classify(title)
             let kind = (!ev.isAllDay && base == "event") ? "meeting" : base
             // NOTE: EventKit gives every occurrence of a RECURRING event the

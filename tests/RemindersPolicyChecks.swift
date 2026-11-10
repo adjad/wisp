@@ -101,6 +101,12 @@ enum WispClient { static let baseURL = URL(string: "http://offline.fixture/")! }
         precondition(RemindersWriter.undatedEntry(id: "x", title: "  padded  ", list: "L",
                                                   created: nil)["title"] as? String == "padded",
                      "the undated entry carries the normalised title")
+        // A dated reminder keeps its own title, and one with none is synced as "(untitled)".
+        precondition(RemindersWriter.syncedTitle("") == "(untitled)" && RemindersWriter.syncedTitle(nil) == "(untitled)"
+                     && RemindersWriter.syncedTitle(" \u{85}\u{A0} ") == "(untitled)",
+                     "a dated reminder with no title is still synced")
+        precondition(RemindersWriter.syncedTitle("  Buy milk \n") == "  Buy milk \n",
+                     "a dated reminder's own title is sent as it is")
         // An exact target: null means undated, and only a delete may use it; 0, NaN and
         // negative times are invalid rather than stand-ins for null.
         typealias T = RemindersWriter.ExactTarget

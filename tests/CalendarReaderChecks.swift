@@ -8,6 +8,7 @@ import Foundation
 @main struct CalendarReaderChecks {
     static func main() {
         classifyChecks()
+        titleChecks()
         includeChecks()
         accessChecks()
         paceChecks()
@@ -40,6 +41,22 @@ import Foundation
         // An exam word wins over an assignment word, as before.
         check(P.classify("Exam prep homework") == "exam", "exam beats assignment")
         check(P.classify("Final project") == "exam", "an exam word beats an assignment word, as before")
+    }
+
+    // An event or dated reminder with no title is synced as "(untitled)", never with
+    // an empty title, which the service does not keep. A real title is sent unchanged.
+    static func titleChecks() {
+        let blanks: [String?] = [nil, "", " ", " \n\t ", "\u{A0}\u{3000}", "\u{1C}\u{85}"]
+        for blank in blanks {
+            check(RemindersWriter.syncedTitle(blank) == "(untitled)",
+                  "a blank title syncs as (untitled): \(String(describing: blank))")
+        }
+        for real in ["Standup", "  Padded title ", "1:1", "\u{2615}\u{FE0F}", "(untitled)", "CS 101 Exam"] {
+            check(RemindersWriter.syncedTitle(real) == real, "a real title is unchanged: \(real)")
+        }
+        typealias P = CalendarEventPolicy
+        check(P.classify(RemindersWriter.syncedTitle("")) == "event", "an untitled event is an ordinary event")
+        check(P.classify(RemindersWriter.syncedTitle("CS 101 Exam")) == "exam", "a titled event keeps its kind")
     }
 
     // Declined and cancelled events are not on the day.
