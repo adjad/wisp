@@ -33,10 +33,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect
 import json
 import re
 import time
 from dataclasses import dataclass, field
+from typing import NamedTuple
 from datetime import datetime
 from pathlib import PurePath
 
@@ -63,6 +65,7 @@ _MAX_NOTE = 200
 _OCR_MIN_CHARS = 40                 # fewer recognised characters than this: not a picture of text
 _OCR_MIN_CONFIDENCE = 0.3
 _OCR_PAGE_S = 20.0
+_OCR_SURE_CONFIDENCE = 0.8             # at or above this on every page, the words are called exact
 _OCR_REST_S = 300.0                 # after the app fails to answer, pictures go straight to the model this long
 _ocr_resting_until = 0.0
 _STRUCTURED_NAMES = frozenset({"ics", "vcf"})
@@ -296,6 +299,7 @@ class _Reading:
     warnings: list[str] = field(default_factory=list)
     risk_level: str = ""        # "high", "caution" or ""
     risk: list[str] = field(default_factory=list)
+    partial: bool = False       # some of the file was not read, so "Read the whole file." must not be said
 
 
 @dataclass
@@ -442,23 +446,48 @@ def _file_problem(error: BaseException) -> str:
 
 # --- remembered readings ---------------------------------------------------------------
 
-def _locator(f: _File) -> str:
-    """A stable name for this file in its mailbox, so a follow-up finds the saved reading
-    without fetching the bytes again. '' when there is nothing stable to go by."""
-    if f.has_local:
-        return f"apple:{f.rowid}:{f.attachment_id}"[:300]
-    if f.gmail_account and f.gmail_message:
+def _gmail_locator(f: _File) -> str:
+    """A stable name for a Gmail file: Gmail message ids and their attachments never change, and
+    the name and size are part of it. '' for anything else."""
+    if f.has_gmail:
         return f"gmail:{f.gmail_account}:{f.gmail_message}:{f.nth}:{f.size}:{f.name}"[:300]
     return ""
+
+
+def _locator(f: _File) -> str:
+    """Where to look a saved reading up before fetching. Only a Gmail-only file has one: Apple
+    Mail's row ids can be renumbered by a rebuild, so a file saved on this Mac is always fetched
+    (instantly) and recognised by its bytes."""
+    if f.has_local and f.on_disk:
+        return ""
+    return _gmail_locator(f)
 
 
 def _meta_of(reading: _Reading) -> str:
     """What the inspection said, kept beside the text. Every field is Wisp's own wording."""
     return json.dumps({"type": reading.type_text, "warnings": reading.warnings, "risk_level": reading.risk_level,
-                       "risk": reading.risk, "cover": reading.note})
+                       "risk": reading.risk, "cover": reading.note,
+                       "partial": reading.partial})
+
+
+def _apply_cover(reading: _Reading, note: str) -> None:
+    """The saved cover note only: how the text was got. The type and the risk always come from
+    inspecting the bytes in hand."""
+    try:
+        meta = json.loads(note) if note else {}
+    except ValueError:
+        meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    cover = meta.get("cover")
+    cover = _pretty(cover, 300) if isinstance(cover, str) else ""
+    reading.note = cover + " " if cover else ""
+    reading.partial = meta.get("partial") is True
 
 
 def _apply_meta(reading: _Reading, note: str) -> None:
+    """A Gmail-locator recall has no bytes to inspect: the saved type and risk are used. The locator
+    holds the name, so it is the same file under the same name."""
     try:
         meta = json.loads(note) if note else {}
     except ValueError:
@@ -470,9 +499,7 @@ def _apply_meta(reading: _Reading, note: str) -> None:
     reading.warnings = _strs(meta.get("warnings"), 6, _MAX_NOTE)
     reading.risk = _strs(meta.get("risk"), 5, _MAX_NOTE)
     reading.risk_level = meta.get("risk_level") if meta.get("risk_level") in ("high", "caution") else ""
-    cover = meta.get("cover")
-    cover = _pretty(cover, 300) if isinstance(cover, str) else ""
-    reading.note = cover + " " if cover else ""
+    _apply_cover(reading, note)
 
 
 async def _recall(locator: str = "", digest: str = ""):
@@ -490,7 +517,9 @@ async def _recall(locator: str = "", digest: str = ""):
 
 async def _keep(f: _File, digest: str, *, kind: str, text: str, cut: bool, how: str, reading: _Reading) -> None:
     from service import attachment_store
-    locator, account, meta = _locator(f), f.read_account, _meta_of(reading)
+    account, meta = f.read_account, _meta_of(reading)
+    # Only bytes that really came from this Gmail file may be filed under its Gmail locator.
+    locator = _gmail_locator(f) if account and account == f.gmail_account else ""
 
     def save():
         if attachment_store.put(digest, kind=kind, text=text, cut=cut, note=meta, how=how, account=account) \
@@ -516,20 +545,36 @@ async def _shape(ctx: _Ctx, reading: _Reading, text: str, cut: bool, name: str, 
 
 
 async def _settle(ctx: _Ctx, reading: _Reading, f: _File, digest: str, text: str, cut: bool, name: str, kind: str,
-                  budget: int, *, how: str = "text", description: str = "") -> _Reading:
-    """Keep freshly read text for follow-ups, then shape it for this answer."""
-    if str(text or "").strip() and digest:
+                  budget: int, *, how: str = "text", description: str = "", keep: bool = True) -> _Reading:
+    """Keep freshly read text for follow-ups (unless it is a partial reading that a retry could
+    improve), then shape it for this answer."""
+    if keep and str(text or "").strip() and digest:
         await _keep(f, digest, kind=kind, text=text, cut=cut, how=how, reading=reading)
     return await _shape(ctx, reading, text, cut, name, kind, budget, description)
 
 
 # --- on-device text recognition ----------------------------------------------------------
 
-async def _recognised(ctx: _Ctx, name: str, data: bytes, *, paged: bool) -> tuple[str, int, int, str] | None:
-    """(text, pages with text, pages in the file, first image) from the app's text recognition.
+class _Recognised(NamedTuple):
+    text: str
+    read: int               # pages with recognised text
+    total: int              # pages in the file
+    image: str              # the first prepared picture
+    confidence: float       # the lowest page confidence that was accepted
+    complete: bool          # every prepared page was tried (none skipped for a failure or for time)
+
+
+def _exactness(confidence: float) -> str:
+    """Wisp's own words for how sure the recognition was."""
+    return "exactly on this Mac" if confidence >= _OCR_SURE_CONFIDENCE else "on this Mac; some words may be wrong"
+
+
+async def _recognised(ctx: _Ctx, name: str, data: bytes, *, paged: bool) -> _Recognised | None:
+    """The app's text recognition of a picture or the pages of a scan.
 
     None means "read it the old way": the app isn't there, the picture isn't text, or anything
-    went wrong. Only JPEGs the child re-encoded from decoded pixels go to the app."""
+    went wrong. Only JPEGs the child re-encoded from decoded pixels go to the app. A scanned PDF's
+    text is `[Pages: total]` then a `[Page n]` block per page that had words."""
     from service import documents
     from service.assistant.hub import hub
     global _ocr_resting_until
@@ -551,29 +596,34 @@ async def _recognised(ctx: _Ctx, name: str, data: bytes, *, paged: bool) -> tupl
         numbers = list(range(1, len(images) + 1))
     total = result.get("pages")
     total = total if type(total) is int and total >= len(images) else len(images)
-    parts: list[tuple[int, str]] = []
+    parts: list[tuple[int, str, float]] = []
+    attempted = 0
     for number, url in zip(numbers, images):
         if ctx.remaining() < 10.0:
             break
+        page_s = max(1.0, min(_OCR_PAGE_S, ctx.remaining() - 5.0))
         try:
             jpeg = base64.b64decode(url.split(",", 1)[1], validate=True)
-            text, confidence = await bridge.recognize_text(
-                jpeg, timeout=max(1.0, min(_OCR_PAGE_S, ctx.remaining() - 5.0)))
+            text, confidence = await bridge.recognize_text(jpeg, timeout=page_s)
         except (bridge.BridgeError, ValueError) as error:
-            if str(error) in ("recognize_timeout", "app_not_connected"):
-                # An older app drops the request, and a stalled one never answers: don't make
-                # every picture in the next few minutes wait for it.
+            # An older app drops the request, and a stalled one never answers: don't make every
+            # picture in the next few minutes wait for it. A wait that the overall deadline cut
+            # short says nothing about the app.
+            if str(error) == "app_not_connected" or (str(error) == "recognize_timeout" and page_s >= _OCR_PAGE_S):
                 _ocr_resting_until = time.monotonic() + _OCR_REST_S
             if not parts:
                 return None
             break
+        attempted += 1
         text = _UNPRINTABLE.sub(" ", str(text or "")).strip()
         if text and confidence >= _OCR_MIN_CONFIDENCE:
-            parts.append((number, text))
-    if sum(len(re.sub(r"\s", "", text)) for _n, text in parts) < _OCR_MIN_CHARS:
+            parts.append((number, text, float(confidence)))
+    if sum(len(re.sub(r"\s", "", text)) for _n, text, _c in parts) < _OCR_MIN_CHARS:
         return None
-    joined = "\n\n".join(f"[Page {n}]\n{text}" for n, text in parts) if paged else parts[0][1]
-    return joined, len(parts), total, images[0]
+    joined = (f"[Pages: {total}]\n" + "\n\n".join(f"[Page {n}]\n{text}" for n, text, _c in parts)
+              if paged else parts[0][1])
+    return _Recognised(joined, len(parts), total, images[0], min(c for _n, _t, c in parts),
+                       attempted == len(images))
 
 
 async def _describe(ctx: _Ctx, image: str) -> str:
@@ -667,8 +717,11 @@ async def _read_file(ctx: _Ctx, email: _Email, f: _File, budget: int) -> _Readin
     try:
         if ctx.remaining() < 2.0:
             raise _Unreadable("There wasn't time left to read it.")
-        stored = await _recall(locator=_locator(f))
+        locator = _locator(f)
+        stored = await _recall(locator=locator) if locator else None
         if stored is not None:
+            # A Gmail file seen before, under the same name: nothing to fetch. (Apple Mail's files
+            # are never found by a row id, which a rebuild of Mail's index can hand to another file.)
             _apply_meta(reading, stored.note)
             reading.where = _SAVED
             return await _shape(ctx, reading, stored.text, stored.cut, name, stored.kind, budget)
@@ -677,13 +730,6 @@ async def _read_file(ctx: _Ctx, email: _Email, f: _File, budget: int) -> _Readin
         if not data:
             raise _Unreadable("The file is empty.")
         digest = attachment_store.digest(data)
-        stored = await _recall(digest=digest)
-        if stored is not None:
-            # The same bytes arrived in another email: no second read, and this copy is remembered too.
-            _apply_meta(reading, stored.note)
-            await _keep(f, digest, kind=stored.kind, text=stored.text, cut=stored.cut, how=stored.how,
-                        reading=reading)
-            return await _shape(ctx, reading, stored.text, stored.cut, name, stored.kind, budget)
         info = await documents.run_attachment_child("inspect", name, data,
                                                     timeout=max(1.0, min(30.0, ctx.remaining())))
         info = info if isinstance(info, dict) else {}
@@ -699,6 +745,19 @@ async def _read_file(ctx: _Ctx, email: _Email, f: _File, budget: int) -> _Readin
             reading.text, _ = _inspect_text(info)
             reading.note = "Inspected only. Wisp never opens, unpacks or runs programs, scripts or archives."
             return reading
+        stored = await _recall(digest=digest)
+        if stored is not None:
+            # The same bytes read before (this file again, or another email's copy): no second read.
+            # The type and the risk are this file's own, from the inspection above; only the text,
+            # how it was got and how much of it there is come from the saved reading.
+            _apply_cover(reading, stored.note)
+            if stored.text.strip() and ENCRYPTED_PDF_REASON in reading.risk:
+                reading.risk = [reason for reason in reading.risk if reason != ENCRYPTED_PDF_REASON]
+                reading.risk_level = reading.risk_level if reading.risk else ""
+            if _gmail_locator(f) and f.read_account == f.gmail_account:
+                await _keep(f, digest, kind=stored.kind, text=stored.text, cut=stored.cut, how=stored.how,
+                            reading=reading)
+            return await _shape(ctx, reading, stored.text, stored.cut, name, stored.kind, budget)
         if suffix in _STRUCTURED_NAMES and family not in ("program", "archive", "zip", "image", "video"):
             try:
                 result = await documents.run_attachment_child("structured", name, data,
@@ -723,10 +782,9 @@ async def _read_file(ctx: _Ctx, email: _Email, f: _File, budget: int) -> _Readin
         if _is_picture(name, f.mime) or (family == "image" and suffix not in _DOCUMENT_NAMES):
             recognised = await _recognised(ctx, name, data, paged=False)
             if recognised:
-                words, _read, _total, image = recognised
-                description = await _describe(ctx, image)
-                reading.note = "Its text was recognised exactly on this Mac. "
-                return await _settle(ctx, reading, f, digest, words, False, name, "ocr", budget,
+                description = await _describe(ctx, recognised.image)
+                reading.note = f"Its text was recognised {_exactness(recognised.confidence)}. "
+                return await _settle(ctx, reading, f, digest, recognised.text, False, name, "ocr", budget,
                                      how="recognized", description=description)
             result = await documents.run_attachment_child("tiles", name, data,
                                                           timeout=max(1.0, min(45.0, ctx.remaining())))
@@ -760,11 +818,16 @@ async def _read_file(ctx: _Ctx, email: _Email, f: _File, budget: int) -> _Readin
             if not text.strip() and suffix == "pdf":
                 recognised = await _recognised(ctx, name, data, paged=True)
                 if recognised:
-                    words, read, total, _image = recognised
-                    reading.note = (f"A scanned PDF: its text was recognised on this Mac, from {read} of its "
-                                    f"{total} page{'' if total == 1 else 's'}. ")
-                    return await _settle(ctx, reading, f, digest, words, read < total, name, "pdf", budget,
-                                         how="recognized")
+                    read, total = recognised.read, recognised.total
+                    exact = _exactness(recognised.confidence)
+                    reading.note = (f"A scanned PDF: its text was recognised {exact.split(';')[0]}, from {read} of its "
+                                    f"{total} page{'' if total == 1 else 's'}"
+                                    + ("; some words may be wrong" if ";" in exact else "") + ". ")
+                    reading.partial = read < total
+                    if not recognised.complete:
+                        reading.note += "Recognition stopped early, so Wisp will try the rest next time. "
+                    return await _settle(ctx, reading, f, digest, recognised.text, read < total, name, "pdf",
+                                         budget, how="recognized", keep=recognised.complete)
                 result = await documents.run_attachment_child("pdf_pages", name, data,
                                                               timeout=max(1.0, min(45.0, ctx.remaining())))
                 images = [u for u in (result or {}).get("images") or [] if isinstance(u, str)]
@@ -779,6 +842,12 @@ async def _read_file(ctx: _Ctx, email: _Email, f: _File, budget: int) -> _Readin
                                 f"page{'' if len(images) == 1 else 's'} of {(result or {}).get('pages', '?')}.")
                 return reading
             kind = _MACRO_MAP.get(suffix, suffix)
+            if suffix == "pdf" and text.strip():
+                declared, with_text = _page_facts(large_document, text)
+                if declared and 0 < with_text < declared:
+                    reading.partial = True
+                    reading.note = (f"{with_text} of its {declared} pages have text Wisp could read; "
+                                    "the rest look like pictures. ")
             return await _settle(ctx, reading, f, digest, text, cut, name, kind, budget)
         raise _Unreadable("Wisp can't read this kind of file."
                           + (f" Its bytes say it is {reading.type_text}." if reading.type_text else ""))
@@ -801,6 +870,31 @@ async def _read_file(ctx: _Ctx, email: _Email, f: _File, budget: int) -> _Readin
     return reading
 
 
+def _select(large_document, text: str, kind: str, pages, sheet, cut):
+    """`large_document.select`, told whether the extraction was cut short when it can be told."""
+    select = large_document.select
+    try:
+        takes_cut = "cut" in inspect.signature(select).parameters
+    except (TypeError, ValueError):
+        takes_cut = False
+    if takes_cut:
+        return select(text, kind, pages=pages, sheet=sheet, cut=bool(cut))
+    return select(text, kind, pages=pages, sheet=sheet)
+
+
+def _page_facts(large_document, text: str) -> tuple[int | None, int]:
+    """(pages the PDF declares, pages that have text), (None, 0) when that can't be told."""
+    facts = getattr(large_document, "page_facts", None)
+    if facts is None:
+        return None, 0
+    try:
+        declared, with_text = facts(text)
+    except Exception:  # noqa: BLE001 — a nicety; without it the reading is simply not annotated
+        return None, 0
+    return (declared if type(declared) is int and declared > 0 else None,
+            with_text if type(with_text) is int and with_text >= 0 else 0)
+
+
 async def _finish_text(ctx: _Ctx, reading: _Reading, text: str, cut: bool, name: str, kind: str, budget: int,
                        large_document) -> _Reading:
     from service import documents
@@ -810,7 +904,7 @@ async def _finish_text(ctx: _Ctx, reading: _Reading, text: str, cut: bool, name:
         return reading
     part = False
     if ctx.pages or ctx.sheet:
-        chosen = large_document.select(text, kind, pages=ctx.pages, sheet=ctx.sheet)
+        chosen = _select(large_document, text, kind, ctx.pages, ctx.sheet, cut)
         names = _strs(getattr(chosen, "available", None), 20, 60)
         if chosen.problem and not str(chosen.text or "").strip():
             if not names:
@@ -833,8 +927,8 @@ async def _finish_text(ctx: _Ctx, reading: _Reading, text: str, cut: bool, name:
                                               budget=budget, chat=chat, passes=ctx.passes,
                                               extraction_cut=bool(cut))
     reading.text = condensed.text
-    reading.note += condensed.note or (("All of that part is shown." if part else "Read the whole file.")
-                                       if condensed.complete else "")
+    whole = "" if reading.partial and not part else ("All of that part is shown." if part else "Read the whole file.")
+    reading.note += condensed.note or (whole if condensed.complete else "")
     return reading
 
 

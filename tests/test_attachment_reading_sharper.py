@@ -11,7 +11,7 @@ import pytest
 from service import attachment_child, attachment_store, documents, mail_attachments as ma, vision
 from service.assistant.hub import hub
 from service.mail_memory import bridge
-from tests.test_mail_attachments import MZ, PDF, PNG, World, gmsg, row
+from tests.test_mail_attachments import DAY, MZ, NOW, PDF, PNG, World, gmsg, row
 
 JPEG_URL = "data:image/jpeg;base64," + base64.b64encode(b"\xff\xd8\xff\xe0" + b"0" * 32).decode()
 FENCE_END = "<<<end untrusted email attachment>>>"
@@ -72,7 +72,7 @@ def inside_fence(out: str, needle: str) -> bool:
 
 # ---------------------------------------------------------------- saved readings
 
-async def test_a_follow_up_uses_the_saved_reading_without_fetching_or_reading_again(world):
+async def test_a_follow_up_uses_the_saved_text_without_reading_again(world):
     world.apple_rows = [row(name="contract.pdf", rfc="c@x.com")]
     world.local_files[(1, "1.2")] = PDF
     world.texts["contract.pdf"] = "The notice period is ninety days."
@@ -80,8 +80,10 @@ async def test_a_follow_up_uses_the_saved_reading_without_fetching_or_reading_ag
     assert "ninety days" in first and "read from Mail's saved copy" in first
     world.calls.clear()
     second = await ma.run(question="who signs it")
-    assert "ninety days" in second and "read from Wisp's saved reading" in second
-    assert world.kinds("local") == [] and world.kinds("extract") == [] and world.kinds("child") == []
+    # The file is on this Mac, so it is fetched (instant) and recognised by its bytes: never by row id.
+    assert "ninety days" in second and "read from Mail's saved copy" in second
+    assert len(world.kinds("local")) == 1 and world.kinds("extract") == []
+    assert [c[1] for c in world.kinds("child")] == ["inspect"]
 
 
 async def test_the_same_file_in_another_email_is_not_read_twice(world):
@@ -102,7 +104,7 @@ async def test_a_saved_reading_keeps_its_risk_line(world):
     first = await ma.run()
     second = await ma.run()
     assert "Take care:" in first and "Take care:" in second and "macro" in second.lower()
-    assert "read from Wisp's saved reading" in second
+    assert len(world.kinds("extract")) == 1
 
 
 async def test_forgetting_the_account_means_the_file_is_read_again(world):
@@ -143,6 +145,30 @@ async def test_nothing_is_saved_for_a_listing_or_a_program(world):
     assert attachment_store.locate("apple:1:1.2") is None
 
 
+async def test_apple_mail_files_are_never_found_by_row_id(world):
+    world.apple_rows = [row(name="contract.pdf", rfc="c@x.com")]
+    world.local_files[(1, "1.2")] = PDF
+    world.texts["contract.pdf"] = "The notice period is ninety days."
+    await ma.run()
+    assert attachment_store.locate("apple:1:1.2") is None
+    assert ma._locator(ma._File("contract.pdf", rowid=1, attachment_id="1.2", on_disk=True)) == ""
+
+
+async def test_a_renumbered_mail_row_does_not_serve_the_old_file(world):
+    # The reviewer's scenario: Mail's index is rebuilt and (812, "2") now holds a different file.
+    world.apple_rows = [row(812, "invoice.pdf", rfc="i@x.com", attachment_id="2")]
+    world.local_files[(812, "2")] = PDF + b" one"
+    world.texts["invoice.pdf"] = "Invoice 4471 total 1280.50 for Acme."
+    assert "Invoice 4471" in await ma.run()
+    world.apple_rows = [row(812, "lease.pdf", rfc="l@x.com", attachment_id="2", subject="Lease")]
+    world.local_files[(812, "2")] = PDF + b" two"
+    world.texts["lease.pdf"] = "Lease for 12 Elm Street, rent 2100."
+    world.calls.clear()
+    out = await ma.run()
+    assert "rent 2100" in out and "Invoice 4471" not in out
+    assert len(world.kinds("extract")) == 1
+
+
 # ---------------------------------------------------------------- a chosen part
 
 async def test_pages_narrows_the_reading_and_says_which(world):
@@ -168,7 +194,7 @@ async def test_pages_work_on_a_saved_reading_too(world):
     world.texts["contract.pdf"] = PAGED
     await ma.run()
     out = await ma.run(pages="3")
-    assert "charlie" in out and "bravo" not in out and "read from Wisp's saved reading" in out
+    assert "charlie" in out and "bravo" not in out and len(world.kinds("extract")) == 1
 
 
 async def test_an_unknown_sheet_lists_the_sheets_inside_the_fence(world):
@@ -217,7 +243,8 @@ async def test_recognised_picture_text_is_saved_for_follow_ups(world):
     world.calls.clear()
     out = await ma.run(question="when is it due")
     assert "2026-11-30" in out and "Text in the picture:" in out
-    assert world.kinds("recognise") == [] and world.kinds("vision") == [] and world.kinds("local") == []
+    assert world.kinds("recognise") == [] and world.kinds("vision") == []
+    assert "ocr_images" not in [c[1] for c in world.kinds("child")]
 
 
 async def test_a_photo_with_no_text_is_read_by_the_model_as_before(world):
@@ -437,6 +464,198 @@ async def test_risk_words_come_only_from_wisp(world, monkeypatch):
     out = await ma.run()
     line = next(line for line in out.splitlines() if "Take care:" in line)
     assert "‮" not in line and "\x07" not in line and len(line) < 260
+
+
+async def test_a_gmail_only_follow_up_needs_no_fetch(world):
+    world.gmail["me@gmail.com"] = [gmsg(files=(("notes.txt", 500),))]
+    world.gmail_bytes["g-notes.txt"] = b"remember the milk"
+    await ma.run()
+    world.calls.clear()
+    out = await ma.run()
+    assert "remember the milk" in out and "read from Wisp's saved reading" in out
+    assert world.kinds("gbytes") == [] and world.kinds("child") == []
+
+
+async def test_the_same_bytes_under_a_risky_name_still_get_the_risk_line(world):
+    world.apple_rows = [row(1, "a.pdf", rfc="c@x.com"),
+                        row(2, "invoice.pdf.js", rfc="d@x.com", attachment_id="1.3", subject="Fwd", ts=NOW - 2 * DAY)]
+    world.local_files[(1, "1.2")] = PDF
+    world.local_files[(2, "1.3")] = PDF
+    world.texts["a.pdf"] = "The notice period is ninety days."
+    out = await ma.run()
+    assert len(world.kinds("extract")) == 1 and out.count("ninety days") == 2     # the second was recalled
+    assert out.count("Looks risky:") == 1                                        # and still got its own risk line
+
+
+async def test_a_recalled_reading_takes_the_type_and_risk_from_this_file(world, monkeypatch):
+    base = documents.run_attachment_child
+
+    async def child(job, name, data, *, timeout):
+        if job == "inspect" and name == "second.pdf":
+            return {"real_type": "a PDF", "family": "document", "warnings": ["Its name is odd."],
+                    "risk": {"level": "caution", "reasons": ["Take this one with care."]}}
+        return await base(job, name, data, timeout=timeout)
+    monkeypatch.setattr(documents, "run_attachment_child", child)
+    world.apple_rows = [row(1, "first.pdf", rfc="c@x.com"), row(2, "second.pdf", rfc="d@x.com", attachment_id="1.3")]
+    world.local_files[(1, "1.2")] = PDF
+    world.local_files[(2, "1.3")] = PDF
+    world.texts["first.pdf"] = "The notice period is ninety days."
+    out = await ma.run()
+    first, second = out.split("File: second.pdf")
+    assert "Take care:" not in first and "Take care: Take this one with care." in second
+    assert out.count("ninety days") == 2 and len(world.kinds("extract")) == 1
+
+
+async def test_a_picture_note_is_honest_about_confidence(world):
+    world.app = True
+    world.recognised = [(RECEIPT, 0.8)]
+    world.apple_rows = [row(1, "sure.png", rfc="p@x.com", size=300_000)]
+    world.local_files[(1, "1.2")] = PNG
+    assert "recognised exactly on this Mac" in await ma.run()
+    world.recognised = [(RECEIPT + " more", 0.79)]
+    world.apple_rows = [row(2, "unsure.png", rfc="q@x.com", size=300_000, attachment_id="1.3")]
+    world.local_files[(2, "1.3")] = PNG + b"2"
+    out = await ma.run()
+    assert "recognised on this Mac; some words may be wrong" in out and "exactly" not in out
+    world.calls.clear()
+    again = await ma.run()                                   # the honest wording is kept with the text
+    assert "some words may be wrong" in again and world.kinds("recognise") == []
+
+
+async def test_a_scanned_pdf_note_is_honest_about_confidence(world):
+    world.app = True
+    world.ocr = {"images": [JPEG_URL, JPEG_URL], "pages": 2, "read_pages": [1, 2]}
+    world.recognised = [("first page says the deposit is 500 dollars and it is refundable", 0.95),
+                        ("second page says the landlord signs here on the dotted line", 0.6)]
+    world.apple_rows = [row(name="scan.pdf", rfc="s@x.com")]
+    world.local_files[(1, "1.2")] = PDF
+    world.texts["scan.pdf"] = "   "
+    out = await ma.run()
+    assert "recognised on this Mac, from 2 of its 2 pages; some words may be wrong." in out
+    world.recognised = [("first page says the deposit is 500 dollars and it is refundable", 0.95),
+                        ("second page says the landlord signs here on the dotted line", 0.9)]
+    world.apple_rows = [row(2, "scan2.pdf", rfc="t@x.com", attachment_id="1.3")]
+    world.local_files[(2, "1.3")] = PDF + b"2"
+    world.texts["scan2.pdf"] = "   "
+    world.calls.clear()
+    assert "recognised exactly on this Mac, from 2 of its 2 pages." in await ma.run()
+
+
+async def test_recognised_scan_text_carries_the_page_count_first(world):
+    world.app = True
+    world.ocr = {"images": [JPEG_URL, JPEG_URL], "pages": 5, "read_pages": [2, 4]}
+    world.recognised = [("page two says the deposit is 500 dollars and it is refundable", 0.9),
+                        ("page four says the landlord signs here on the dotted line", 0.9)]
+    world.apple_rows = [row(name="scan.pdf", rfc="s@x.com")]
+    world.local_files[(1, "1.2")] = PDF
+    world.texts["scan.pdf"] = "   "
+    await ma.run()
+    stored = attachment_store.get(attachment_store.digest(PDF))
+    assert stored.text.startswith("[Pages: 5]\n[Page 2]\npage two") and "[Page 4]\npage four" in stored.text
+
+
+async def test_a_recognition_that_stopped_early_is_shown_but_not_saved(world, monkeypatch):
+    world.app = True
+    world.ocr = {"images": [JPEG_URL, JPEG_URL], "pages": 2, "read_pages": [1, 2]}
+    good = ("first page says the deposit is 500 dollars and it is refundable", 0.9)
+    calls = {"n": 0}
+
+    async def flaky(jpeg, timeout=20.0):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise bridge.BridgeError("bad_image")
+        return good
+    monkeypatch.setattr(bridge, "recognize_text", flaky, raising=False)
+    world.apple_rows = [row(name="scan.pdf", rfc="s@x.com")]
+    world.local_files[(1, "1.2")] = PDF
+    world.texts["scan.pdf"] = "   "
+    out = await ma.run()
+    assert "deposit is 500" in out and "Recognition stopped early" in out and "Read the whole file" not in out
+    assert attachment_store.get(attachment_store.digest(PDF)) is None
+    await ma.run()                                           # tried again; this time page 2 answers too
+    assert calls["n"] == 4
+
+
+async def test_pages_without_words_are_still_a_complete_recognition(world):
+    world.app = True
+    world.ocr = {"images": [JPEG_URL, JPEG_URL], "pages": 2, "read_pages": [1, 2]}
+    world.recognised = [("first page says the deposit is 500 dollars and it is refundable", 0.9), ("", 0.0)]
+    world.apple_rows = [row(name="scan.pdf", rfc="s@x.com")]
+    world.local_files[(1, "1.2")] = PDF
+    world.texts["scan.pdf"] = "   "
+    out = await ma.run()
+    assert "from 1 of its 2 pages" in out and "stopped early" not in out
+    assert attachment_store.get(attachment_store.digest(PDF)) is not None
+
+
+async def test_a_wait_cut_short_by_the_deadline_does_not_rest_recognition(world, monkeypatch):
+    world.app = True
+    seen = []
+
+    async def recognize_text(jpeg, timeout=20.0):
+        seen.append(timeout)
+        raise bridge.BridgeError("recognize_timeout")
+    monkeypatch.setattr(bridge, "recognize_text", recognize_text, raising=False)
+    ctx = ma._Ctx(deadline=ma.time.monotonic() + 22.0, gmail_source=None, gmail_accounts=[], passes=None)
+    assert await ma._recognised(ctx, "a.png", PNG, paged=False) is None
+    assert seen and seen[0] < ma._OCR_PAGE_S and ma._ocr_resting_until == 0.0
+    ctx = ma._Ctx(deadline=ma.time.monotonic() + 120.0, gmail_source=None, gmail_accounts=[], passes=None)
+    assert await ma._recognised(ctx, "a.png", PNG, paged=False) is None
+    assert seen[-1] == ma._OCR_PAGE_S and ma._ocr_resting_until > 0.0
+
+
+async def test_an_unconnected_app_rests_recognition(world, monkeypatch):
+    world.app = True
+
+    async def recognize_text(jpeg, timeout=20.0):
+        raise bridge.BridgeError("app_not_connected")
+    monkeypatch.setattr(bridge, "recognize_text", recognize_text, raising=False)
+    ctx = ma._Ctx(deadline=ma.time.monotonic() + 22.0, gmail_source=None, gmail_accounts=[], passes=None)
+    assert await ma._recognised(ctx, "a.png", PNG, paged=False) is None
+    assert ma._ocr_resting_until > 0.0
+
+
+async def test_a_pdf_with_a_text_cover_and_scanned_pages_does_not_claim_the_whole_file(world, monkeypatch):
+    from service import large_document
+    monkeypatch.setattr(large_document, "page_facts", lambda text: (9, 2), raising=False)
+    world.apple_rows = [row(name="contract.pdf", rfc="c@x.com")]
+    world.local_files[(1, "1.2")] = PDF
+    world.texts["contract.pdf"] = "[Pages: 9]\n[Page 1]\ncover words here\n\n[Page 2]\nmore cover words"
+    out = await ma.run()
+    assert "2 of its 9 pages have text Wisp could read; the rest look like pictures." in out
+    assert "Read the whole file" not in out
+    world.calls.clear()
+    again = await ma.run()                                   # recalled with the same honest cover
+    assert "2 of its 9 pages have text" in again and "Read the whole file" not in again
+    assert world.kinds("extract") == []
+
+
+async def test_a_pdf_whose_pages_all_have_text_is_still_the_whole_file(world, monkeypatch):
+    from service import large_document
+    monkeypatch.setattr(large_document, "page_facts", lambda text: (2, 2), raising=False)
+    world.apple_rows = [row(name="contract.pdf", rfc="c@x.com")]
+    world.local_files[(1, "1.2")] = PDF
+    world.texts["contract.pdf"] = "[Pages: 2]\n[Page 1]\nalpha\n\n[Page 2]\nbravo"
+    out = await ma.run()
+    assert "Read the whole file." in out and "pictures" not in out
+
+
+async def test_select_is_told_the_extraction_was_cut_when_it_can_be(world, monkeypatch):
+    from service import large_document
+    seen = {}
+
+    def select(text, kind, *, pages=None, sheet=None, cut=False):
+        seen["cut"] = cut
+        return large_document.Selection(text)
+    monkeypatch.setattr(large_document, "select", select)
+
+    async def extract(name, data, *, timeout=45.0, large=False):
+        return PAGED, True
+    monkeypatch.setattr(documents, "extract_async", extract)
+    world.apple_rows = [row(name="contract.pdf", rfc="c@x.com")]
+    world.local_files[(1, "1.2")] = PDF
+    await ma.run(pages="2")
+    assert seen["cut"] is True
 
 
 # ---------------------------------------------------------------- erasing
