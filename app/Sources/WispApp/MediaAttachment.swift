@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
@@ -14,6 +15,8 @@ import UniformTypeIdentifiers
 //    never upscaled, and always re-encoded as JPEG (so EXIF location is dropped).
 //    Screen captures and attached pictures use `detailJPEG` instead: up to 4096 px,
 //    stepping down to 2600 then 1568 until at most 6 MB; the backend cuts those up.
+//  - A picture with see-through areas is laid on white before it becomes a JPEG,
+//    which has no transparency: otherwise those areas turn black.
 //  - A clip is sampled frames + audio, never motion; the UI says so.
 
 enum MediaAttachment {
@@ -102,10 +105,36 @@ enum MediaAttachment {
     }
 
     private static func jpegData(_ image: CGImage, quality: Double) -> Data? {
+        let image = flattenedOntoWhite(image)
         let out = NSMutableData()
         guard let dest = CGImageDestinationCreateWithData(out, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
         CGImageDestinationAddImage(dest, image, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
         return CGImageDestinationFinalize(dest) ? out as Data : nil
+    }
+
+    /// JPEG has no alpha channel, so see-through pixels would encode as black and
+    /// dark text or line art on them would vanish. A picture with an alpha channel
+    /// is drawn onto white at the same size; an opaque one is returned untouched.
+    static func flattenedOntoWhite(_ image: CGImage) -> CGImage {
+        switch image.alphaInfo {
+        case .first, .last, .premultipliedFirst, .premultipliedLast: break
+        default: return image   // no alpha channel to flatten
+        }
+        let rect = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+        // The picture's own RGB space keeps its colors; device RGB is the fallback.
+        var spaces: [CGColorSpace] = []
+        if let own = image.colorSpace, own.model == .rgb, own.supportsOutput { spaces.append(own) }
+        spaces.append(CGColorSpaceCreateDeviceRGB())
+        for space in spaces {
+            guard let ctx = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
+                                      bytesPerRow: 0, space: space,
+                                      bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { continue }
+            ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+            ctx.fill(rect)
+            ctx.draw(image, in: rect)
+            if let flat = ctx.makeImage() { return flat }
+        }
+        return image
     }
 
     static func dataURL(jpeg: Data) -> String {

@@ -94,6 +94,9 @@ struct ChatToolRow: Identifiable, Equatable {
         set { resultPreview = Self.preview(newValue) }
     }
     var finished = false
+    /// The reply ended (Stop, or an error) before this call came back. Not
+    /// `finished`: there is no result to show.
+    var interrupted = false
     var isTestPlan = false
     private(set) var corpusSourceEvidence: ChatCorpusSourceEvidence?
 
@@ -133,6 +136,7 @@ struct ChatToolRow: Identifiable, Equatable {
     var detail: String {
         if decision == "deny" { return "blocked" }
         if isTestPlan { return "dry run · not executed" }
+        if !finished && interrupted { return "stopped" }
         if !finished { return decision == "confirm" ? "waiting for you" : "running" }
         let flat = result.split(whereSeparator: { $0.isNewline }).first.map(String.init) ?? ""
         return flat.count > 60 ? String(flat.prefix(60)) + "…" : flat
@@ -216,6 +220,17 @@ enum ChatCloudUse {
         let superModel = object["super_model_enabled"] as? Bool ?? false
         return enabled && (!roles.isEmpty || superModel)
     }
+
+    /// The Details panel's "Ran on" line. The flag is about this launch, not
+    /// one answer, so with a cloud provider on it names both and never claims
+    /// either; it says "This Mac" alone only on a confirmed local launch.
+    static func ranOn(_ cloudInUse: Bool?) -> String {
+        switch cloudInUse {
+        case .some(false): return "This Mac"
+        case .some(true): return "This Mac or your cloud provider"
+        case .none: return "—"
+        }
+    }
 }
 
 // MARK: - Metadata
@@ -285,12 +300,40 @@ struct ChatMessage: Identifiable, Equatable {
     /// kinds on its tool_result's `needs_access` (AskAccess), for the reply's
     /// Allow button. Never set on a corpus reply.
     var needsAccess: [String] = []
+    /// The user pressed Stop on this reply.
+    var stoppedByUser = false
 
     init(id: UUID = UUID(), role: Role, text: String = "", phase: Phase = .done) {
         self.id = id; self.role = role; self.text = text; self.phase = phase
     }
 
     var isLive: Bool { phase == .waiting || phase == .working || phase == .streaming }
+
+    /// The reply ended (Stop, or an error) with calls still out: their rows
+    /// stop saying "running". A blocked call keeps saying so.
+    mutating func interruptOpenTools() {
+        for index in tools.indices where !tools[index].finished && tools[index].decision != "deny" {
+            tools[index].interrupted = true
+        }
+    }
+
+    /// The tool trace's heading: "Working with…" only while the reply is live.
+    var traceTitle: String {
+        let n = tools.count
+        let running = isLive && tools.contains { !$0.finished && $0.decision != "deny" }
+        if tools.contains(where: \.isTestPlan) {
+            return running ? "Planning \(n) tool\(n == 1 ? "" : "s")…" : "Planned \(n) tool\(n == 1 ? "" : "s") · dry run"
+        }
+        if running { return "Working with \(n) tool\(n == 1 ? "" : "s")…" }
+        return "Used \(n) tool\(n == 1 ? "" : "s")"
+    }
+
+    /// A reply the user stopped before anything arrived: the row says
+    /// "Stopped" rather than sitting blank.
+    var showsStopped: Bool {
+        role == .assistant && stoppedByUser && phase == .done && text.isEmpty && tools.isEmpty
+            && approval == nil && draft == nil && corpusEvaluation == nil
+    }
 }
 
 // MARK: - The reducer
@@ -389,6 +432,7 @@ enum ChatTurnReducer {
             msg.text = ev.str("message").isEmpty ? "Something went wrong." : ev.str("message")
             msg.errorDetail = ev.str("detail")
             msg.isError = true
+            msg.interruptOpenTools()
             msg.phase = .failed
             meta.finishedAt = now
             return .failed
@@ -408,6 +452,48 @@ enum ChatTurnReducer {
         let elapsed = now.timeIntervalSince(start)
         guard elapsed > 0.3 else { return 0 }
         return Int(Double(chars) / 4.0 / elapsed)
+    }
+}
+
+/// What the Chat window says when a prompt didn't go through and went back to
+/// the composer: why (when the service never ran it) and how to send it again.
+/// The notch says the same for the same event (AgentSend.notice).
+enum ChatSendNotice {
+    static func text(message: String, unsent: Bool) -> String {
+        let why = unsent && !message.isEmpty ? message : "Wisp didn't answer."
+        return why + " Your message is back in the box. Press Return to send it again."
+    }
+}
+
+// MARK: - VoiceOver
+
+/// What VoiceOver is told about a reply in the Chat window. Focus stays in the
+/// composer while an answer, an error or a card is added above it, so without
+/// a line each would arrive silently. The notch says the same for its own
+/// answers (OverlayModel.answered). Streamed text is never announced: only the
+/// end of a reply, and a card that is waiting.
+enum ChatAnnouncement {
+    /// A reply that has just ended. `plain` turns its Markdown into words to
+    /// speak. nil for a corpus case, and when there is nothing to say.
+    static func reply(_ message: ChatMessage, plain: (String) -> String) -> String? {
+        guard message.role == .assistant, message.corpusEvaluation == nil else { return nil }
+        var spoken = plain(message.text).trimmingCharacters(in: .whitespacesAndNewlines)
+        if message.isError {
+            return "Wisp couldn't answer: " + (spoken.isEmpty ? "Something went wrong." : spoken)
+        }
+        if let draft = message.draft, !draft.sent, !draft.discarded {
+            spoken += (spoken.isEmpty ? "" : " ") + "There is a message draft, not sent yet."
+        }
+        return spoken.isEmpty ? nil : "Wisp: " + spoken
+    }
+
+    /// A card that is waiting for a yes. nil once it is answered, and for a
+    /// corpus case, whose cards are declined without being offered.
+    static func approval(_ message: ChatMessage) -> String? {
+        guard message.role == .assistant, message.corpusEvaluation == nil,
+              let approval = message.approval, approval.state == .pending else { return nil }
+        let reason = approval.reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        return reason.isEmpty ? "Wisp needs your OK to go on." : "Wisp needs your OK: " + reason
     }
 }
 

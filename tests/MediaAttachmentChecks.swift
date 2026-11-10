@@ -32,6 +32,89 @@ struct MediaAttachmentChecks {
         return (w, h)
     }
 
+    /// A black block in the middle of a canvas that is otherwise see-through (or,
+    /// with `inkAlpha` below 1, a see-through block), like a diagram or signature
+    /// exported with a transparent background. Symmetric, so row order never matters.
+    static func transparentArt(width: Int = 400, height: Int = 200, inkAlpha: CGFloat = 1) -> CGImage {
+        let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                            space: CGColorSpaceCreateDeviceRGB(),
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        ctx.clear(CGRect(x: 0, y: 0, width: width, height: height))
+        ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: inkAlpha))
+        ctx.fill(CGRect(x: width / 4, y: height / 4, width: width / 2, height: height / 2))
+        return ctx.makeImage()!
+    }
+
+    static func encode(_ image: CGImage, as type: UTType) -> Data {
+        let out = NSMutableData()
+        let dest = CGImageDestinationCreateWithData(out, type.identifier as CFString, 1, nil)!
+        CGImageDestinationAddImage(dest, image, nil)
+        precondition(CGImageDestinationFinalize(dest))
+        return out as Data
+    }
+
+    /// The decoded color at (x, y), 0-255 per channel.
+    static func rgb(of data: Data, x: Int, y: Int) -> (r: Int, g: Int, b: Int)? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
+              x >= 0, y >= 0, x < image.width, y < image.height,
+              let ctx = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
+                                  bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return nil }
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        guard let base = ctx.data else { return nil }
+        let p = base.assumingMemoryBound(to: UInt8.self) + (y * ctx.bytesPerRow + x * 4)
+        return (Int(p[0]), Int(p[1]), Int(p[2]))
+    }
+
+    /// A picture with a transparent background keeps its dark art readable: JPEG has
+    /// no transparency, so the see-through part must come out white, never black.
+    static func transparencyChecks() {
+        let art = transparentArt()
+        check(art.alphaInfo == .premultipliedLast, "the fixture has an alpha channel")
+        let png = encode(art, as: .png)
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("wisp-alpha-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("diagram.png")
+        try? png.write(to: file)
+        let routes: [(String, Data?)] = [
+            ("downscaleJPEG(Data)", MediaAttachment.downscaleJPEG(png)),
+            ("downscaleJPEG(CGImage)", MediaAttachment.downscaleJPEG(art)),
+            ("downscaleJPEG(contentsOf:)", MediaAttachment.downscaleJPEG(contentsOf: file)),
+            ("detailJPEG(Data)", MediaAttachment.detailJPEG(png)),
+            ("detailJPEG(CGImage)", MediaAttachment.detailJPEG(art)),
+            ("detailJPEG(contentsOf:)", MediaAttachment.detailJPEG(contentsOf: file)),
+        ]
+        for (name, out) in routes {
+            guard let out, let corner = rgb(of: out, x: 8, y: 8), let far = rgb(of: out, x: 391, y: 191),
+                  let middle = rgb(of: out, x: 200, y: 100) else {
+                check(false, "\(name): the transparent picture must encode and decode")
+                continue
+            }
+            check(size(of: out) ?? (0, 0) == (400, 200), "\(name): flattening keeps the size")
+            check(min(corner.r, corner.g, corner.b) > 240 && min(far.r, far.g, far.b) > 240,
+                  "\(name): see-through pixels come out white, not black: \(corner) \(far)")
+            check(max(middle.r, middle.g, middle.b) < 40, "\(name): the dark art stays dark: \(middle)")
+        }
+
+        // Half see-through ink over white is grey, as it looks on a white page.
+        let wash = MediaAttachment.detailJPEG(transparentArt(inkAlpha: 0.5)).flatMap { rgb(of: $0, x: 200, y: 100) }
+        check(wash.map { $0.r > 100 && $0.r < 160 && abs($0.r - $0.g) < 12 && abs($0.r - $0.b) < 12 } == true,
+              "half see-through black blends with white: \(String(describing: wash))")
+
+        // The flatten itself: an opaque result at the same size, and no re-render for a picture already opaque.
+        let flat = MediaAttachment.flattenedOntoWhite(art)
+        check(flat.alphaInfo == .noneSkipLast && flat.width == art.width && flat.height == art.height,
+              "a flattened picture is opaque and the same size")
+        check(MediaAttachment.flattenedOntoWhite(flat) === flat, "an opaque picture is passed through untouched")
+        let opaque = CGContext(data: nil, width: 40, height: 20, bitsPerComponent: 8, bytesPerRow: 0,
+                               space: CGColorSpaceCreateDeviceRGB(),
+                               bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue)!.makeImage()!
+        check(MediaAttachment.flattenedOntoWhite(opaque) === opaque, "a picture with no alpha channel is not re-rendered")
+    }
+
     /// Large screens: the detail JPEG keeps up to 4096 px and steps down to fit 6 MB.
     static func detailChecks() {
         check(MediaAttachment.maxDetailSide == 4096, "detail side is 4096")
@@ -169,6 +252,7 @@ struct MediaAttachmentChecks {
             check(false, "could not build the URL check image")
         }
         detailChecks()
+        transparencyChecks()
         print("MediaAttachmentChecks passed")
     }
 }

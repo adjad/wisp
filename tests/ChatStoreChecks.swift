@@ -9,6 +9,7 @@ final class ScriptedBackend: ChatBackend {
     var chats: [ChatSummary]? = []
     /// The next this-many list requests fail, like a service that is still starting.
     var listFailures = 0
+    var listCalls = 0
     var history: [String: [ChatMessage]] = [:]
     var script: (String) -> [ChatEvent] = { _ in [] }
     var approvals: [(actionId: String, approved: Bool, scope: String, requestId: String, session: String)] = []
@@ -46,6 +47,7 @@ final class ScriptedBackend: ChatBackend {
     }
 
     func listChats() async -> [ChatSummary]? {
+        listCalls += 1
         if listFailures > 0 { listFailures -= 1; return nil }
         return chats
     }
@@ -94,6 +96,12 @@ final class ScriptedBackend: ChatBackend {
     func sendDraft(to: String, text: String) async -> (ok: Bool, result: String) { draftSends += 1; return (true, "Sent") }
     func fullAccess() async -> Bool? { fullAccessValue }
     func setFullAccess(_ on: Bool) async -> Bool? { fullAccessValue = on; return on }
+}
+
+/// What the store asked VoiceOver to say.
+@MainActor
+final class SpokenLines {
+    var lines: [String] = []
 }
 
 @main
@@ -555,6 +563,73 @@ struct ChatStoreChecks {
             check(chat.messages.isEmpty, "the failed exchange is removed")
             check(chat.restoredInput == "hello there", "the prompt is restored")
             check(!chat.busy, "dropped request frees the chat")
+            check(chat.notice == "Wisp didn't answer. Your message is back in the box. Press Return to send it again.",
+                  "a stream that dropped says so, without claiming the message was never taken: \(chat.notice ?? "nil")")
+            check(backend.listCalls == 1 && store.reachable, "a drop re-reads the service, which is still up")
+        }
+
+        // A message the service never took says why, and the sidebar learns the service is down.
+        do {
+            let backend = ScriptedBackend()
+            backend.script = { _ in [ev("error", ["message": "Wisp isn't running right now.", "dropped": true, "unsent": true])] }
+            backend.chats = nil
+            let store = ChatStore(backend: backend)
+            check(store.reachable && backend.listCalls == 0, "nothing has asked the service yet")
+            store.send("hello there")
+            await settle()
+            let chat = store.selected!
+            check(chat.messages.isEmpty && chat.restoredInput == "hello there" && !chat.busy,
+                  "the unsent exchange is taken back and the prompt restored")
+            check(chat.notice == "Wisp isn't running right now. Your message is back in the box. Press Return to send it again.",
+                  "the reason is shown, not swallowed: \(chat.notice ?? "nil")")
+            check(backend.listCalls >= 1 && !store.reachable, "the sidebar stops saying Ready while the service is down")
+            backend.chats = []
+            backend.script = { _ in [ev("delta", ["text": "Hi."]), ev("done")] }
+            store.send("hello there")
+            check(chat.notice == nil, "the notice clears on the next send")
+            await settle()
+            check(chat.messages.count == 2 && chat.notice == nil && store.reachable,
+                  "once the service answers, the exchange stays and the sidebar is Ready again")
+        }
+
+        // Stop, or an error, with a call still out: the reply no longer says it is working.
+        do {
+            let backend = ScriptedBackend()
+            backend.script = { _ in [
+                ev("routed", ["model": "m", "role": "agent", "needs_tools": true]),
+                ev("tool_call", ["id": "c1", "name": "summarize_emails", "decision": "allow"]),
+            ] }
+            let store = ChatStore(backend: backend)
+            store.send("summarize my mail")
+            await settle()
+            let chat = store.selected!
+            check(chat.busy && chat.messages.last?.traceTitle == "Working with 1 tool…"
+                    && chat.messages.last?.tools.first?.detail == "running", "the reply is mid-tool")
+            store.stop(chat)
+            let stopped = chat.messages.last!
+            check(!chat.busy && stopped.phase == .done && stopped.traceTitle == "Used 1 tool", "Stop ends the heading: \(stopped.traceTitle)")
+            check(stopped.tools[0].detail == "stopped" && !stopped.tools[0].finished, "the open row says stopped, not running")
+            check(!stopped.showsStopped, "a stopped reply with a tool row is not blank")
+            // Stop before anything arrived.
+            backend.script = { _ in [] }
+            store.send("and my calendar?")
+            await settle()
+            check(chat.busy && chat.messages.last?.showsStopped == false, "a waiting reply is not stopped")
+            store.stop(chat)
+            check(!chat.busy && chat.messages.last?.text.isEmpty == true && chat.messages.last?.showsStopped == true,
+                  "a reply stopped before its first word says Stopped")
+            // The service fails mid-tool.
+            backend.script = { _ in [
+                ev("routed", ["model": "m", "role": "agent", "needs_tools": true]),
+                ev("tool_call", ["id": "c2", "name": "view_emails", "decision": "allow"]),
+                ev("error", ["message": "Out of memory"]),
+            ] }
+            store.send("once more")
+            await settle()
+            let failed = chat.messages.last!
+            check(failed.isError && !chat.busy && failed.traceTitle == "Used 1 tool" && failed.tools[0].detail == "stopped",
+                  "a failed reply's open row says stopped: \(failed.tools.map(\.detail))")
+            check(!failed.showsStopped, "an error is not a Stop")
         }
 
         // Ask's own forget that removed something clears the notch's debug-log memory
@@ -657,6 +732,62 @@ struct ChatStoreChecks {
             check(backend.approvals.count == 1 && backend.approvals[0].approved == false, "stop denies the open card")
         }
 
+        // VoiceOver hears the end of a reply, an error, a message that came back and
+        // a waiting card, each once; never the words as they stream, a Stop, or a corpus case.
+        do {
+            let backend = ScriptedBackend()
+            backend.script = { _ in [
+                ev("session", ["id": "s-voice"]), ev("routed", ["model": "m", "role": "general"]),
+                ev("delta", ["text": "You have "]), ev("delta", ["text": "**4** "]), ev("delta", ["text": "messages."]),
+                ev("done"),
+            ] }
+            let store = ChatStore(backend: backend)
+            let heard = SpokenLines()
+            store.announce = { heard.lines.append($0) }
+            store.spokenText = { $0.replacingOccurrences(of: "**", with: "") }
+            store.send("anything new?")
+            await settle()
+            let chat = store.selected!
+            check(heard.lines == ["Wisp: You have 4 messages."], "a finished answer is announced once, as words: \(heard.lines)")
+            check(!chat.hasPendingApproval, "a chat with no card is not marked as waiting")
+            heard.lines = []
+            backend.script = { _ in [ev("routed", ["model": "m", "role": "general"]), ev("error", ["message": "Out of memory"])] }
+            store.send("and again")
+            await settle()
+            check(heard.lines == ["Wisp couldn't answer: Out of memory"], "an error is announced as one: \(heard.lines)")
+            heard.lines = []
+            backend.script = { _ in [ev("error", ["message": "Wisp isn't running right now.", "dropped": true, "unsent": true])] }
+            store.send("once more")
+            await settle()
+            check(heard.lines == ["Wisp isn't running right now. Your message is back in the box. Press Return to send it again."],
+                  "a message that came back is announced with its note: \(heard.lines)")
+            heard.lines = []
+            backend.script = { _ in [
+                ev("routed", ["model": "m", "role": "agent", "needs_tools": true]),
+                ev("confirm", ["id": "a1", "request_id": "r1", "tool": "move_path", "reason": "Move 3 files to Archive", "grantable": true]),
+            ] }
+            store.send("tidy my desktop")
+            await settle()
+            check(heard.lines == ["Wisp needs your OK: Move 3 files to Archive"], "a waiting card is announced: \(heard.lines)")
+            check(chat.hasPendingApproval, "the sidebar can mark a chat whose card is waiting")
+            store.resolve(chat, messageID: chat.messages.last!.id, approved: false, scope: "once")
+            check(!chat.hasPendingApproval && chat.busy, "an answered card is no longer waiting")
+            store.stop(chat)
+            await settle()
+            check(heard.lines.count == 1, "answering a card or pressing Stop announces nothing more: \(heard.lines)")
+            heard.lines = []
+            let data = Data(#"{"id":"LIVE-001","split":"live","mode":"live","category":"messages","difficulty":"basic","target":"Example Person","token":"t1","conversation":[{"role":"user","content":"Read my recent messages with Example Person."}],"setup":"local","expected":{"tools":["view_messages"],"behavior":["Verify the source quote."]},"risk":"read_only"}"#.utf8)
+            backend.liveCases = [try! JSONDecoder().decode(AssistantTaskCorpusCase.self, from: data)]
+            backend.script = { _ in [
+                ev("confirm", ["id": "blocked", "tool": "send_message", "request_id": "request", "reason": "Send it"]),
+                ev("text", ["text": "A graded answer."]), ev("done"),
+            ] }
+            store.submit("/corpus smoke")
+            await settle(500)
+            check(store.selected?.messages.contains { $0.corpusEvaluation?.completed == true } == true, "the corpus case ran")
+            check(heard.lines.isEmpty, "a corpus case and its declined card are never announced: \(heard.lines)")
+        }
+
         // Drafts are sent only on request and only once.
         do {
             let backend = ScriptedBackend()
@@ -742,6 +873,46 @@ struct ChatStoreChecks {
             backend.chats = nil
             await store.refresh()
             check(!store.reachable, "an unreachable service is flagged")
+        }
+
+        // What is typed but not sent stays with its chat while the reader looks at
+        // another one, and an unsent new chat that holds words can be reached again.
+        do {
+            let backend = ScriptedBackend()
+            let now = Date()
+            backend.chats = [
+                ChatSummary(id: "a", title: "Alpha trip", preview: "pack light", lastUsed: now, turnCount: 2),
+                ChatSummary(id: "b", title: "Beta lease", preview: "sixty days", lastUsed: now.addingTimeInterval(-600), turnCount: 2),
+            ]
+            let store = ChatStore(backend: backend)
+            await store.refresh()
+            let alpha = store.conversations.first { $0.sessionId == "a" }!
+            let beta = store.conversations.first { $0.sessionId == "b" }!
+            check(alpha.composerDraft.isEmpty && store.welcomeDraft.isEmpty, "a composer starts empty")
+            store.select(alpha)
+            alpha.composerDraft.text = "half a question about the trip"
+            store.select(beta)
+            check(beta.composerDraft.isEmpty, "another chat has its own box")
+            beta.composerDraft.text = "   "
+            check(beta.composerDraft.isEmpty, "spaces alone are not a draft")
+            store.select(alpha)
+            check(alpha.composerDraft.text == "half a question about the trip", "the words are still there on the way back")
+            check(store.welcomeDraft.isEmpty, "a chat's draft is not the no-chat composer's")
+            let fresh = store.newChat()
+            check(fresh !== alpha && fresh.composerDraft.isEmpty, "a new chat starts with an empty box")
+            fresh.composerDraft.text = "a long new question"
+            store.select(alpha)
+            check(!store.sections.flatMap(\.items).contains { $0 === fresh }, "an unsent chat leaves the sidebar when the reader steps away")
+            check(store.newChat() === fresh && store.selected === fresh, "New chat goes back to the unsent chat that still holds words")
+            fresh.composerDraft.image = (name: "photo.png", dataURL: "data:image/png;base64,AAAA")
+            fresh.composerDraft.restoredText = "a long new question"
+            fresh.composerDraft.clear()
+            check(fresh.composerDraft.isEmpty && fresh.composerDraft.image == nil && fresh.composerDraft.restoredText == nil,
+                  "sending empties the box")
+            store.select(alpha)
+            let another = store.newChat()
+            check(another !== fresh && store.selected === another, "an unsent chat with nothing typed is not brought back")
+            await settle()
         }
 
         // Deltas that arrive faster than the UI folds them are not lost.
