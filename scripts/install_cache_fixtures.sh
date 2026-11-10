@@ -5,6 +5,9 @@
 # into place. Run scripts/restore_cache_backup.sh afterwards to put your real
 # data back.
 #
+# Running this again before a restore keeps the first backup: it never backs
+# up the fixtures themselves, so the restore still returns your real data.
+#
 # Heads up: if the real Wisp.app is running (or you start it after this), its
 # Swift readers will re-sync and silently overwrite these fixtures on their
 # own cadence — messages/mail headers ~5min, mail history ~30min, notes ~24h
@@ -16,6 +19,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FIXTURES="$ROOT/test_fixtures/cache"
 CACHE="$HOME/.moe/cache"
 BACKUP="$HOME/.moe/cache_backup_$(date +%Y%m%d_%H%M%S)"
+# Present while the fixtures are installed; its first line is the backup that
+# holds the real cache (empty when there was nothing real to back up).
+MARKER="$CACHE/.wisp_fixtures_installed"
 
 if [ ! -d "$FIXTURES" ] || [ -z "$(ls -A "$FIXTURES" 2>/dev/null)" ]; then
   echo "no fixtures found — run: .venv/bin/python scripts/wisp_testdata.py build-cache" >&2
@@ -23,16 +29,35 @@ if [ ! -d "$FIXTURES" ] || [ -z "$(ls -A "$FIXTURES" 2>/dev/null)" ]; then
 fi
 
 mkdir -p "$CACHE"
-if [ -n "$(ls -A "$CACHE" 2>/dev/null)" ]; then
-  mkdir -p "$BACKUP"
-  cp -p "$CACHE"/*.txt "$BACKUP"/ 2>/dev/null || true
-  echo "✓ backed up your real cache to $BACKUP"
+KEPT=""
+if [ -f "$MARKER" ]; then
+  IFS= read -r KEPT < "$MARKER" || true
+fi
+
+if [ -n "$KEPT" ] && [ -d "$KEPT" ]; then
+  BACKUP="$KEPT"
+  echo "(fixtures are already installed; keeping your real cache backup at $BACKUP)"
 else
-  echo "(no existing cache content to back up)"
+  # Real content is any cache file that is not a byte-for-byte fixture copy.
+  REAL=()
+  for file in "$CACHE"/*.txt; do
+    [ -f "$file" ] || continue
+    cmp -s "$file" "$FIXTURES/${file##*/}" 2>/dev/null || REAL+=("$file")
+  done
+  if [ "${#REAL[@]}" -gt 0 ]; then
+    # No `|| true`: a failed backup stops here, before anything is overwritten.
+    mkdir -p "$BACKUP"
+    cp -p "${REAL[@]}" "$BACKUP"/
+    echo "✓ backed up your real cache to $BACKUP"
+  else
+    BACKUP=""
+    echo "(no real cache content to back up)"
+  fi
 fi
 
 cp -p "$FIXTURES"/*.txt "$CACHE"/
 chmod 600 "$CACHE"/*.txt
+printf '%s\n' "$BACKUP" > "$MARKER"
 echo "✓ installed synthetic Messages/Mail/Notes fixtures into $CACHE"
 echo ""
 echo "Restart the Wisp backend (or the whole app) for it to pick these up."
