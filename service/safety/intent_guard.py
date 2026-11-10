@@ -43,20 +43,25 @@ _DELETE_VERBS = re.compile(
     r"\b(?:delete|remove|cancel|clear|erase|trash|forget|drop|wipe|purge|kill|stop|end|scrap|"
     r"empty|unsubscribe|call\s+off|get\s+rid\s+of|clean\s+(?:up|out)|turn\s+off|"
     r"take\s+(?:\S+\s+){1,5}off\s+(?:of\s+)?(?:my|the|our))\b", re.I)
-# Ways to call off a send that is waiting. Accepted for cancel_scheduled_send
-# only (the user sees and approves the exact item every time): these words do
-# not ask for an event, reminder, file or memory to be removed.
-_UNSEND_WORDS = re.compile(r"\b(?:(?:don['’]?t|do\s+not)\s+send|unsend|hold\s+off)\b", re.I)
+# Ways to call off a send that is waiting: "don't send that text", "hold off
+# on that email". Accepted for cancel_scheduled_send only (the user sees and
+# approves the exact item every time): these words do not ask for an event,
+# reminder, file or memory to be removed. "draft it but don't send it" is
+# about the draft, so "it" does not count.
+_UNSEND_WORDS = re.compile(
+    r"\b(?:(?:(?:don['’]?t|do\s+not)\s+send|hold\s+off\s+on)\s+(?:that|the|those|my)|unsend)\b", re.I)
+# "transfer report.pdf to Documents" is a move; the site transfer.sh is not.
 _MOVE_VERBS = re.compile(
     r"\b(?:move|moved|rename|reschedule|push|shift|bump|postpone|delay|bring\s+forward|organi[sz]e|"
     r"reorgani[sz]e|sort|tidy|clean\s+up|file|put|dump|relocate|separate|group|archive|change|switch|"
-    r"make\s+(?:it|that)|missed|transfer)\b", re.I)
+    r"make\s+(?:it|that)|missed|transfer(?![.-]\w))\b", re.I)
 # More ways to ask for a calendar event to change. Accepted for update_event
-# only, which always shows its card: "update", "set the…" and "instead" are too
-# loose to let a file move run on (move_path can run with no card).
+# only, which always shows its card: "update" and "set the…" are too loose to
+# let a file move run on (move_path can run with no card). "update" is the
+# verb, not the noun in "my portfolio update for today".
 _EVENT_CHANGE = re.compile(
-    r"\b(?:update|edit|extend|shorten|lengthen|adjust|modify|instead|(?:set|make)\s+(?:the|my)|"
-    r"needs?\s+to\s+be|got\s+pushed)\b", re.I)
+    r"\b(?:update(?!\s+(?:for|on|from|about|of)\b)(?=\s+\S)|edit|extend|shorten|lengthen|adjust|modify|"
+    r"(?:set|make)\s+(?:the|my)|needs?\s+to\s+be|got\s+pushed)\b", re.I)
 _WRITE_VERBS = re.compile(
     r"\b(?:add|create|make|set|remind|nudge|book|pencil|block|put|save|remember|note|jot|write|draft|"
     r"update|change|fix|correct|mark|check\s+(?:it|that|this)?\s*off|complete|done|finish|open|launch|start|"
@@ -88,21 +93,24 @@ _OPEN_QUESTION = re.compile(
     r"^\W*(?:(?:and|so|ok(?:ay)?|sure|got\s+it|great|alright)[,.!\s]+)*(?:(?:at|for|on|to|by|until)\s+)?"
     r"(?:what|when|which|who|whom|where|how\s+(?:long|many|much|often|early|late|soon))\b", re.I)
 _IMMEDIATE = re.compile(r"\b(?:now|right\s+now|right\s+away|immediately|asap|straight\s+away)\b", re.I)
-# A later time for a send, in digits or words: "at 6pm", "at five", "in two
-# hours", "in half an hour", "friday saying…", "next week". A bare day that
-# may only be the message's subject is not one ("text Sam the weather for
-# tomorrow", "email me my schedule for next week").
+# A later time for a send. Spelled-out times ("at five", "in two hours", "in
+# half an hour") and "friday", "tomorrow" or "next week" on their own count
+# only when the message or the send verb comes right after ("in two hours
+# that I landed", "friday saying happy birthday", "next week about the
+# offsite"): at the end of the request they are part of the message ("text mom
+# I'll be there in ten minutes", "text Sam the weather for tomorrow").
 _HOURS = r"one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve"
 _SEND_TIME = re.compile(
     r"\b(?:later|tonight|this\s+(?:evening|afternoon))\b"
     r"|\bat\s+\d|\b\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)\b|\bnoon\b|\bmidnight\b"
-    r"|\bat\s+(?:" + _HOURS + r")\b(?!\s+(?:of|point|time)\b)"
     r"|\b(?:tomorrow|tmrw|tmrow|tomorow|mon|tues?|wed(?:nes)?|thu(?:rs)?|fri|sat(?:ur)?|sun)(?:day)?\s+"
     r"(?:morning|afternoon|evening|night|at|saying|to\s+say)\b"
-    r"|\bin\s+(?:an?|\d+|a\s+few|a\s+couple(?:\s+of)?|half\s+an|" + _HOURS +
-    r"|fifteen|twenty|thirty|forty[\s-]?five|ninety)\s+(?:min(?:ute)?s?|hours?)\b"
-    r"|\b(?:on|next|this)\s+(?:mon|tue|wed|thu|fri|sat|sun)"
-    r"|(?<!\bfor\s)(?<!\babout\s)(?<!\bof\s)\bnext\s+week\b",
+    r"|\bin\s+(?:an?|\d+|a\s+few)\s+(?:min(?:ute)?s?|hours?)\b|\b(?:on|next|this)\s+(?:mon|tue|wed|thu|fri|sat|sun)"
+    r"|\b(?:at\s+(?:" + _HOURS + r")(?:\s+(?:o['’]?clock|thirty|fifteen|forty[\s-]?five))?(?:\s*(?:am|pm))?"
+    r"|in\s+(?:a\s+couple(?:\s+of)?|half\s+an|" + _HOURS + r"|fifteen|twenty|thirty|forty[\s-]?five|ninety)"
+    r"\s+(?:min(?:ute)?s?|hours?))(?:\s+(?:today|tomorrow))?"
+    r"\s+(?:that|saying|to\s+say|te+x+t|e-?mail|message|send|tell)\b"
+    r"|(?<!\bfor\s)(?<!\babout\s)(?<!\bof\s)(?<!\band\s)\bnext\s+week\s+(?:about|saying|to\s+say)\b",
     re.I)
 _SCHEDULE_ASK = re.compile(
     r"\b(?:schedule|scedule|shedule)\s+(?:a|an|the|this|that|my|it|me)?\s*(?:text|e-?mail|message|send|it|this)\b"
@@ -182,8 +190,9 @@ def _answers_own_question(prompt: str, last_assistant: str) -> bool:
     """The user is replying to the assistant, not asking something new: a bare
     assent to its closing offer ("Should I set a reminder?" -> "ok do"), or a
     short "how about 6pm" to its closing open question ("What time?"). The
-    reply has to END with that question, and "did you send it?" never counts.
-    Only the read-only-question stop is lifted; every other stop still runs."""
+    assistant's reply has to END with that question, and "did you send it?"
+    never counts. Only the read-only-question stop is lifted; every other
+    stop still runs."""
     if not last_assistant or _STATUS_QUESTION.match(prompt or ""):
         return False
     from service.router.model_led import answers_offer, continuation_send_exemption
