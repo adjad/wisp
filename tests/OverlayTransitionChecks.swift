@@ -95,6 +95,23 @@ struct OverlayTransitionChecks {
         print("PASS: lifecycle, stale completions, capture gating, and 64 request sequences")
     }
 
+    /// An approval card is announced to VoiceOver with its own sentence and
+    /// exactly the buttons it shows.
+    static func approvalAnnouncementChecks() {
+        let once = OverlayModel.approvalAnnouncement(reason: "Send this email to pat@example.com", grantable: false)
+        check(once == "Wisp needs your approval: Send this email to pat@example.com. Choices: Deny, Allow once.",
+              "A card without Always allow names two choices")
+        check(!once.contains("Always allow"), "A hidden button is never announced")
+        let always = OverlayModel.approvalAnnouncement(reason: "Run a shell command in\n  ~/Projects/demo.\n", grantable: true)
+        check(always == "Wisp needs your approval: Run a shell command in ~/Projects/demo. Choices: Deny, Always allow, Allow once.",
+              "A grantable card names all three, in the card's order, on one line")
+        check(OverlayModel.approvalAnnouncement(reason: "Delete 3 files?", grantable: false)
+              == "Wisp needs your approval: Delete 3 files? Choices: Deny, Allow once.", "A question keeps its mark")
+        check(OverlayModel.approvalAnnouncement(reason: " \n", grantable: false)
+              == "Wisp needs your approval. Choices: Deny, Allow once.", "A card with no sentence is still announced")
+        print("PASS: approval cards are announced with the choices they show")
+    }
+
     @MainActor
     static func waitUntil(_ condition: () -> Bool) async {
         for _ in 0..<100 {
@@ -388,6 +405,7 @@ struct OverlayTransitionChecks {
 
     static func main() async {
         lifecycleChecks()
+        approvalAnnouncementChecks()
         await MainActor.run { coldStartFailureChecks() }
         #if WISP_MOTION_APP_DELEGATE_CHECKS
         precondition(URLProtocol.registerClass(MotionFixtureProtocol.self))

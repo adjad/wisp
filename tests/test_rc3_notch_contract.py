@@ -60,3 +60,56 @@ def test_only_a_display_change_runs_a_cancelled_completion():
     hide = region(panel, "override func orderOut(_ sender: Any?) {", "\n    }\n")
     assert "cancelReveal()" in hide and "completion" not in hide
     assert panel.count(".completion()") == 1
+
+
+# --- VoiceOver hears approval cards and notices (OverlayModel) ---------------
+
+
+def _announcements(source: str) -> str:
+    return region(source, "private func announceForVoiceOver(", "\n    }\n")
+
+
+def test_one_helper_announces_and_only_while_voiceover_is_on():
+    model = swift("OverlayModel.swift")
+    helper = _announcements(model)
+    guard = helper.index("guard NSWorkspace.shared.isVoiceOverEnabled else { return }")
+    # The line is an autoclosure built after the guard, so nothing is composed
+    # or posted with VoiceOver off.
+    assert "_ line: @autoclosure () -> String" in helper
+    assert guard < helper.index("line()") < helper.index("NSAccessibility.post(")
+    assert model.count(".announcementRequested") == 1
+
+
+def test_an_approval_card_is_announced_when_it_appears():
+    model = swift("OverlayModel.swift")
+    confirm = region(model, 'case "confirm":', "case \"message_draft\":")
+    shown = confirm.index("pending = card")
+    said = confirm.index(
+        "announceForVoiceOver(Self.approvalAnnouncement(reason: card.reason, grantable: card.grantable))")
+    assert shown < said
+    # The announcement adds nothing to the card's own flow: answering it is
+    # still the card's buttons and resolve().
+    assert "resolve(" not in confirm and "approve(" not in confirm
+
+
+def test_the_announcement_names_only_the_buttons_the_card_shows():
+    model = swift("OverlayModel.swift")
+    builder = region(model, "nonisolated static func approvalAnnouncement(", "\n    }\n")
+    assert '(grantable ? " Choices: Deny, Always allow, Allow once." : " Choices: Deny, Allow once.")' in builder
+    # The preview can be a long script; it stays on the card.
+    assert "preview" not in builder.replace("/// ", "")
+    # The card shows "Always allow" under the same condition.
+    view = swift("OverlayView.swift")
+    card = region(view, "private func confirmCard(_ p: OverlayModel.Pending) -> some View {", "\n    }\n")
+    assert 'if p.grantable {\n                    Button("Always allow")' in card
+    assert 'Button("Deny")' in card and 'Button("Allow once")' in card
+
+
+def test_a_notice_is_announced_once():
+    model = swift("OverlayModel.swift")
+    notice = region(model, "func showTransientNotice(", "\n    }\n")
+    # Before the new line is stored, so a line shown again to change how long
+    # it stays (the ready line) is not said twice.
+    said = notice.index("if transientNotice != message {")
+    assert "announceForVoiceOver(message, priority: info ? .medium : .high)" in notice
+    assert said < notice.index("transientNotice = message")

@@ -797,12 +797,34 @@ final class OverlayModel: ObservableObject {
         }
         if !isError, VoiceReplyMode.current.speaks(askedByVoice: byVoice) {
             speaker.speak(text)
-        } else if NSWorkspace.shared.isVoiceOverEnabled {
-            let spoken = SpokenText.plain(text)
-            let line = (isError ? "Wisp couldn't answer: " : "Wisp: ") + spoken
-            NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
-                                 userInfo: [.announcement: line, .priority: NSAccessibilityPriorityLevel.high.rawValue])
+        } else {
+            announceForVoiceOver((isError ? "Wisp couldn't answer: " : "Wisp: ") + SpokenText.plain(text))
         }
+    }
+
+    /// Says a line to VoiceOver, for what appears without focus moving: the
+    /// panel never activates Wisp, so a reply, an approval card or a notice
+    /// would otherwise arrive silently. The line is only built, and only said,
+    /// while VoiceOver is on.
+    private func announceForVoiceOver(_ line: @autoclosure () -> String,
+                                      priority: NSAccessibilityPriorityLevel = .high) {
+        guard NSWorkspace.shared.isVoiceOverEnabled else { return }
+        let text = line()
+        guard !text.isEmpty else { return }
+        NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                             userInfo: [.announcement: text, .priority: priority.rawValue])
+    }
+
+    /// What VoiceOver hears when an approval card appears: the card's own
+    /// sentence, then the buttons it shows, in their order. "Always allow" is
+    /// named only when the card has that button. The preview stays on the card;
+    /// it can be a long script.
+    nonisolated static func approvalAnnouncement(reason: String, grantable: Bool) -> String {
+        var why = reason.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        while let last = why.last, ".:;,".contains(last) { why.removeLast() }
+        if let last = why.last, !"?!".contains(last) { why += "." }
+        let ask = why.isEmpty ? "Wisp needs your approval." : "Wisp needs your approval: \(why)"
+        return ask + (grantable ? " Choices: Deny, Always allow, Allow once." : " Choices: Deny, Allow once.")
     }
 
     func submit() {
@@ -1942,16 +1964,19 @@ final class OverlayModel: ObservableObject {
             streamStart = nil; streamChars = 0; tokPerSec = 0
             turnFirstTokenAt = nil
         case "confirm":
-            pending = Pending(sessionId: sessionId, actionId: ev.str("id"),
-                              requestId: ev.str("request_id"),
-                              tool: ev.str("tool"), reason: ev.str("reason"),
-                              // Older backends don't send `grantable`; default
-                              // to hiding the button rather than showing one
-                              // whose answer wouldn't be recorded.
-                              grantable: ev.payload["grantable"] as? Bool ?? false,
-                              scopeHint: ev.str("scope_hint"),
-                              preview: ev.str("preview"))
+            let card = Pending(sessionId: sessionId, actionId: ev.str("id"),
+                               requestId: ev.str("request_id"),
+                               tool: ev.str("tool"), reason: ev.str("reason"),
+                               // Older backends don't send `grantable`; default
+                               // to hiding the button rather than showing one
+                               // whose answer wouldn't be recorded.
+                               grantable: ev.payload["grantable"] as? Bool ?? false,
+                               scopeHint: ev.str("scope_hint"),
+                               preview: ev.str("preview"))
+            pending = card
             phase = .confirming
+            // Focus never moves to the card, so VoiceOver is told it is waiting.
+            announceForVoiceOver(Self.approvalAnnouncement(reason: card.reason, grantable: card.grantable))
         case "message_draft":
             messageDraft = MessageDraft(to: ev.str("to"), text: ev.str("text"))
             phase = .streaming
@@ -2270,6 +2295,12 @@ final class OverlayModel: ObservableObject {
     /// drawn quietly; otherwise a problem, drawn in the error color.
     func showTransientNotice(_ message: String, duration: TimeInterval = 4, info: Bool = false) {
         transientNoticeTask?.cancel()
+        // The line appears without focus moving, so VoiceOver is told. One
+        // already showing (shown again only to change how long it stays) is
+        // not said twice.
+        if transientNotice != message {
+            announceForVoiceOver(message, priority: info ? .medium : .high)
+        }
         transientNoticeIsInfo = info
         transientNotice = message
         transientNoticeTask = Task { [weak self] in
