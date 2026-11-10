@@ -136,6 +136,45 @@ def test_each_common_format_gives_its_text():
     assert X("data.csv", b"a,b\n1,2\n").startswith("a,b")
 
 
+def deck_with_a_table_and_groups(first_cell: str = "Plan") -> bytes:
+    from pptx import Presentation
+    from pptx.util import Inches
+    deck = Presentation()
+    slide = deck.slides.add_slide(deck.slide_layouts[5])
+    slide.shapes.title.text = "Pricing"
+    table = slide.shapes.add_table(3, 2, Inches(1), Inches(2), Inches(6), Inches(2)).table
+    for r, row in enumerate([(first_cell, "Cost"), ("Pro", "49 dollars\nper seat"), ("", "")]):
+        for c, value in enumerate(row):
+            table.cell(r, c).text = value
+    group = slide.shapes.add_group_shape()
+    group.shapes.add_textbox(Inches(1), Inches(5), Inches(3), Inches(1)).text_frame.text = "Prices hold until June"
+    inner = group.shapes.add_group_shape()
+    for _ in range(40):                                    # groups inside groups, far past any real deck
+        inner = inner.shapes.add_group_shape()
+    inner.shapes.add_textbox(Inches(1), Inches(6), Inches(3), Inches(1)).text_frame.text = "Ask Dana Reyes for a quote"
+    # python-pptx can't add a table to a group, so one made on the slide is moved into it.
+    frame = slide.shapes.add_table(1, 2, Inches(1), Inches(6.5), Inches(4), Inches(0.5))
+    frame.table.cell(0, 1).text = "Setup fee"
+    group._element.append(frame._element)
+    slide.shapes.add_textbox(Inches(5), Inches(5), Inches(3), Inches(1)).text_frame.text = "Last box"
+    out = io.BytesIO()
+    deck.save(out)
+    return out.getvalue()
+
+
+def test_a_deck_gives_its_tables_and_the_text_inside_groups_in_slide_order():
+    assert X("Pricing.pptx", deck_with_a_table_and_groups()) == (
+        "[Slide 1]\nPricing\nPlan | Cost\nPro | 49 dollars per seat\n"
+        "Prices hold until June\nAsk Dana Reyes for a quote\nSetup fee\nLast box")
+
+
+def test_a_marker_in_a_slide_table_or_group_is_defused_in_large_mode():
+    data = deck_with_a_table_and_groups("[Slide 9]")
+    text, _ = E.extract_text("Pricing.pptx", data, True)
+    assert "\n[ Slide 9] | Cost\n" in text and text.count("[Slide ") == 1 and text.startswith("[Slide 1]\n")
+    assert "\n[Slide 9] | Cost\n" in X("Pricing.pptx", data)
+
+
 def test_html_is_read_without_any_subprocess():
     html = (b"<html><head><style>p{}</style><script>steal()</script></head>"
             b"<body><h1>Agenda</h1><p>Budget &amp; review</p></body></html>")

@@ -343,14 +343,43 @@ def _xlsx(data: bytes, limit: int | None = None, markers: bool = False) -> tuple
     return out.joined(), False
 
 
+def _slide_lines(shapes) -> list[str]:
+    """The text on a slide, in the order its shapes are stored: text boxes and placeholders, the
+    rows of each table (cells joined with " | "), and whatever is inside a group, however deeply
+    groups are nested. Charts, pictures and diagrams carry no text this reads.
+
+    Walked with a list of open groups, not by recursion, so a deck made of groups inside groups
+    can't exhaust the stack.
+    """
+    from pptx.shapes.group import GroupShape
+    lines: list[str] = []
+    open_groups = [iter(shapes)]
+    while open_groups:
+        for shape in open_groups[-1]:
+            if isinstance(shape, GroupShape):
+                open_groups.append(iter(shape.shapes))
+                break
+            if shape.has_text_frame:
+                if shape.text_frame.text.strip():
+                    lines.append(shape.text_frame.text)
+            elif getattr(shape, "has_table", False):
+                for row in shape.table.rows:
+                    cells = [" ".join(cell.text.split()) for cell in row.cells]
+                    cells = [cell for cell in cells if cell]
+                    if cells:
+                        lines.append(" | ".join(cells))
+        else:
+            open_groups.pop()
+    return lines
+
+
 def _pptx(data: bytes, limit: int | None = None, markers: bool = False) -> tuple[str, bool]:
     from pptx import Presentation
     deck = Presentation(io.BytesIO(data))
     out = _Text(limit)
     try:
         for i, slide in enumerate(deck.slides, 1):
-            lines = [shape.text_frame.text for shape in slide.shapes
-                     if shape.has_text_frame and shape.text_frame.text.strip()]
+            lines = _slide_lines(slide.shapes)
             if slide.has_notes_slide:
                 notes = (slide.notes_slide.notes_text_frame.text or "").strip()
                 if notes:
