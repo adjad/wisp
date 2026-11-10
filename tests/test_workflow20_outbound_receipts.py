@@ -40,6 +40,11 @@ def isolated_effects(monkeypatch):
     assert not outbox._pending and not outbox._pending_waiters
 
 
+NATIVE_REFUSAL = "SYNTHETIC-NATIVE-TEXT Automation access isn't granted"
+REFUSAL_NEAR_MISSES = ["refusal_text_only", "refusal_other_code", "refusal_not_text",
+                       "refusal_with_status", "refusal_truthy_ok"]
+
+
 class Sink:
     """Records acceptance before dropping, corrupting, or returning a receipt."""
     has_subscribers = True
@@ -70,6 +75,15 @@ class Sink:
             "conflicting_not_attempted": {"ok": True, "status": "not_attempted", "dispatch_started": False},
             "malformed": None,
             "reply_mismatch": {"ok": True, "accepted": True, "reply": {**ENVELOPE, "subject": "Wrong"}},
+            # What the app posts when macOS refuses the Apple Event (-1743).
+            "automation_denied": {"ok": False, "error": NATIVE_REFUSAL, "refusal": "automation_denied"},
+            # Near misses: only the exact fixed code, alone, is proof.
+            "refusal_text_only": {"ok": False, "error": "automation_denied: " + NATIVE_REFUSAL},
+            "refusal_other_code": {"ok": False, "error": NATIVE_REFUSAL, "refusal": "script_build"},
+            "refusal_not_text": {"ok": False, "error": NATIVE_REFUSAL, "refusal": ["automation_denied"]},
+            "refusal_with_status": {"ok": False, "status": "unknown", "error": NATIVE_REFUSAL,
+                                    "refusal": "automation_denied"},
+            "refusal_truthy_ok": {"ok": 0, "error": NATIVE_REFUSAL, "refusal": "automation_denied"},
         }[self.mode]
         assert outbox.complete(event["action_id"], result)
         return event
@@ -95,7 +109,7 @@ def assert_uncertain(text):
 @pytest.mark.parametrize("operation", OPERATIONS)
 @pytest.mark.parametrize("mode", ["timeout", "publish_exception", "generic_false", "explicit_unknown",
                                   "forged_preflight", "truthy_ok", "malformed", "conflicting_unknown",
-                                  "conflicting_failed", "conflicting_not_attempted"])
+                                  "conflicting_failed", "conflicting_not_attempted", *REFUSAL_NEAR_MISSES])
 def test_bridge_post_dispatch_is_unknown_with_original_identity(monkeypatch, operation, mode):
     sink, request = bridge(monkeypatch, mode)
     result = asyncio.run(request(operation, {"synthetic": True}))
@@ -107,7 +121,8 @@ def test_bridge_post_dispatch_is_unknown_with_original_identity(monkeypatch, ope
 
 
 @pytest.mark.parametrize("operation", OPERATIONS)
-@pytest.mark.parametrize("mode", ["timeout", "publish_exception", "generic_false", "explicit_unknown", "malformed"])
+@pytest.mark.parametrize("mode", ["timeout", "publish_exception", "generic_false", "explicit_unknown", "malformed",
+                                  *REFUSAL_NEAR_MISSES])
 def test_actual_wrappers_registry_preserve_unknown(monkeypatch, operation, mode):
     sink, _ = bridge(monkeypatch, mode)
     result = asyncio.run(R.run_tool(R.get_tool(operation), ARGS[operation]))
@@ -136,6 +151,66 @@ def test_no_subscriber_wrapper_stays_failed_without_uncertainty(monkeypatch, ope
     # Proof that nothing went out, so it can't lock the chat; never "unknown".
     assert type(result) is R._NotSentResult and "not sent" in result.lower()
     assert sink.effects == []
+
+
+def sending_app(operation):
+    return "Messages" if operation == "send_message" else "Mail"
+
+
+@pytest.mark.parametrize("operation", OPERATIONS)
+def test_bridge_automation_refusal_is_proven_not_attempted(monkeypatch, operation):
+    sink, request = bridge(monkeypatch, "automation_denied")
+    result = asyncio.run(request(operation, {"synthetic": True}))
+    assert result.get("ok") is False and result.get("status") == "not_attempted"
+    assert result.get("dispatch_started") is False
+    assert result.get("action_id") == sink.effects[0]["action_id"] and len(sink.effects) == 1
+    # The guidance is the host's own; nothing of the native text is passed on.
+    assert set(result) == {"ok", "status", "dispatch_started", "action_id", "error"}
+    assert "SYNTHETIC-NATIVE-TEXT" not in result["error"]
+    assert f"control {sending_app(operation)}," in result["error"] and "nothing was sent" in result["error"]
+    assert "Privacy & Security > Automation" in result["error"]
+    assert outbox.complete(result["action_id"], {"ok": True}) is False
+
+
+@pytest.mark.parametrize("operation", OPERATIONS)
+def test_automation_refusal_wrapper_says_not_sent_and_how_to_fix_it(monkeypatch, operation):
+    from service.tools import access_needed
+    sink, _ = bridge(monkeypatch, "automation_denied")
+    with access_needed.noting() as needs:
+        result = asyncio.run(R.run_tool(R.get_tool(operation), ARGS[operation]))
+    assert R.classify_tool_outcome(operation, result).status == "failed"
+    # Proof that nothing went out: it cannot lock the chat, and a retry after
+    # the person allows access is a fresh send.
+    assert type(result) is R._NotSentResult and R.not_sent_receipt(R.get_tool(operation), result)
+    assert "not sent" in result.lower() and "unknown" not in result.lower()
+    assert f"Turn on {sending_app(operation)} for Wisp in System Settings > Privacy & Security > Automation" in result
+    assert "SYNTHETIC-NATIVE-TEXT" not in result
+    assert len(sink.effects) == 1
+    # Ask shows its own fix button for Mail; there is none for Messages yet.
+    assert needs == ([] if operation == "send_message" else [{"source": "email", "kind": "mail_automation"}])
+
+
+@pytest.mark.parametrize("channel", ["email", "message"])
+def test_scheduler_automation_refusal_fails_once_with_the_fix(monkeypatch, tmp_path, channel):
+    from service.assistant import scheduler, outbound_queue as Q
+    sink, fast_request = bridge(monkeypatch, "automation_denied")
+    monkeypatch.setattr(outbox, "request", fast_request)
+    monkeypatch.setattr(scheduler, "hub", sink)
+    queue = Q.OutboundQueue(tmp_path / "outbound.db")
+    monkeypatch.setattr(Q, "outbound_queue", queue)
+    sid = queue.add(channel=channel, recipient="recipient@example.invalid", body="Synthetic body.",
+                    subject="Fixture", when_ts=time.time() - 1, display="Synthetic recipient")
+    try:
+        asyncio.run(scheduler._fire_scheduled_sends())
+        assert queue.get(sid)["status"] == "failed" and len(sink.effects) == 1
+        results = [e for e, _ in sink.notices if e["type"] == "scheduled_send_result"]
+        assert len(results) == 1 and results[0]["ok"] is False
+        assert "Privacy & Security > Automation" in results[0]["error"]
+        assert not any(e["type"] == "scheduled_send_unknown" for e, _ in sink.notices)
+        asyncio.run(scheduler._fire_scheduled_sends())
+        assert len(sink.effects) == 1 and queue.due() == []     # never sent again by itself
+    finally:
+        queue._db.close()
 
 
 @pytest.mark.parametrize("operation", OPERATIONS)
