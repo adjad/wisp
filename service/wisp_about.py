@@ -722,8 +722,8 @@ _HOWTO = (
      "and click **Allow** next to what you want. Screen Recording and Accessibility are under "
      "**More Access…** next to it."),
     (r"problem|bug|broken|wrong|report|feedback",
-     "**Something wrong?** Type **/report**, or choose **Report a Problem…** from the menu "
-     "bar icon."),
+     "**Something wrong?** Type **/report**, or right-click the menu bar icon and choose "
+     "**Report a Problem…**."),
     (r"log ?in|sign ?in|login|signin|password",
      "**Signing in**: Wisp has no account of its own, so there's nothing to sign in to. "
      "To read a Google account's Gmail and Calendar, connect it in **Settings → Google**."),
@@ -732,11 +732,11 @@ _HOWTO = (
      "choose **Disconnect & erase** in **Settings → Google**. That also removes the mail, "
      "events and to-dos Wisp kept from it."),
     (r"update (?:wisp|the app|this app|you)|upgrade|new version|latest version",
-     "**Updating Wisp**: Wisp doesn't update itself. To move to a new version, quit Wisp from "
-     "the menu bar icon, then replace the Wisp app in your Applications folder with the new one."),
+     "**Updating Wisp**: Wisp doesn't update itself. To move to a new version, quit Wisp (right-click "
+     "the menu bar icon, then choose Quit Wisp), then replace the Wisp app in your Applications folder with the new one."),
     (r"quit|close|stop|turn off",
-     "**Close or quit**: × closes the panel and Wisp stays in the menu bar. To quit, choose "
-     "**Quit Wisp** from the menu bar icon."),
+     "**Close or quit**: × closes the panel and Wisp stays in the menu bar. To quit, right-click "
+     "the menu bar icon and choose **Quit Wisp**."),
 )
 
 _GENERIC_HOWTO = re.compile(
