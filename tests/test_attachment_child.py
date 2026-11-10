@@ -1379,7 +1379,9 @@ def test_a_long_list_of_files_is_cut_at_fifty_and_counted():
     raw = build_mail("x", files=[(f"f{n}.bin", "application/octet-stream", b"x" * n) for n in range(60)])
     result = A.eml("m.eml", raw)
     assert len(result["files"]) == 50 and result["more_files"] == 10 and result["files"][49]["index"] == 49
-    assert A.eml_part("m.eml", raw, 55)["name"] == "f55.bin"
+    assert A.eml_part("m.eml", raw, 49)["name"] == "f49.bin"
+    with pytest.raises(ValueError, match="isn't in the email"):
+        A.eml_part("m.eml", raw, 55)                 # never listed, so never fetched
 
 
 def test_a_very_long_body_is_cut_and_says_so():
@@ -1533,3 +1535,370 @@ def test_an_archive_holding_a_script_is_a_caution_and_plain_documents_stay_clean
     assert result["risk"] == {"level": "caution", "reasons": ["It holds a program or script."]}
     plain = A.inspect("docs.zip", zipped({"a.pdf": b"%PDF", "b/c.txt": b"hi", "d.docx": b"PK"}))
     assert plain["risk"] == {"level": "", "reasons": []} and plain["holds_bundle"] is False
+
+
+# ------------------------------------------------------- attached emails: nothing dropped silently
+
+def nested_mail(depth: int, leaf: bytes = b"%PDF-1") -> bytes:
+    """A message whose files sit at the bottom of `depth` multiparts."""
+    inner = (b"Content-Type: application/pdf\r\nContent-Disposition: attachment; filename=deep.pdf\r\n"
+             b"Content-Transfer-Encoding: 7bit\r\n\r\n" + leaf + b"\r\n")
+    for level in range(depth):
+        boundary = f"B{level}".encode()
+        inner = (b"Content-Type: multipart/mixed; boundary=" + boundary + b"\r\n\r\n--" + boundary + b"\r\n"
+                 + inner + b"\r\n--" + boundary + b"--\r\n")
+    return b"From: a@example.com\r\nTo: b@example.com\r\nSubject: nested\r\nMIME-Version: 1.0\r\n" + inner
+
+
+@CHILD
+def test_an_html_body_over_the_cap_says_it_was_cut():
+    # Markup past the 2 MB read limit hides the closing words: little text survives, yet text was dropped.
+    html = "<html><body><p>start</p>" + "<span></span>" * 200_000 + "<p>the-real-ending</p></body></html>"
+    result = read_eml(build_mail(None, html=html), timeout=90)
+    assert result["body"] == "start" and result["body_cut"] is True
+
+
+@CHILD
+def test_a_plain_body_cut_at_the_byte_cap_says_so_even_when_little_text_survives():
+    # Invisible characters are removed from the body, so 800 KB of them leave almost nothing:
+    # the real words after them were still dropped.
+    body = "start " + "‎" * 300_000 + " the-real-ending"
+    result = read_eml(build_mail(body))
+    assert result["body"].startswith("start") and "the-real-ending" not in result["body"]
+    assert len(result["body"]) <= 200_000 and result["body_cut"] is True
+
+
+@CHILD
+def test_a_body_that_fits_is_not_cut():
+    result = read_eml(build_mail("short and complete"))
+    assert result["body_cut"] is False and result["walk_cut"] is False
+
+
+@CHILD
+def test_multiparts_nested_deeper_than_the_limit_say_the_walk_stopped():
+    result = read_eml(nested_mail(12))
+    assert result["walk_cut"] is True and result["files"] == [] and result["more_files"] >= 1
+    shallow = read_eml(nested_mail(A.MAX_EML_DEPTH))
+    assert shallow["walk_cut"] is False and [f["name"] for f in shallow["files"]] == ["deep.pdf"]
+
+
+@CHILD
+def test_parts_past_the_part_cap_are_reported_not_silently_dropped():
+    message = EmailMessage()
+    message["From"], message["To"], message["Subject"] = "a@example.com", "b@example.com", "many"
+    message.set_content("main body")
+    for number in range(A.MAX_EML_PARTS + 20):
+        message.add_attachment(f"note {number}", subtype="plain", disposition="inline")
+    for number in range(5):
+        message.add_attachment(b"%PDF-1", maintype="application", subtype="pdf", filename=f"late{number}.pdf")
+    result = read_eml(message.as_bytes(), timeout=90)
+    assert result["walk_cut"] is True
+    assert result["files"] == [] and result["more_files"] >= 1        # a lower bound: the late files were never read
+
+
+@CHILD
+def test_an_html_body_with_a_nul_is_still_turned_into_text():
+    message = EmailMessage()
+    message["From"], message["To"], message["Subject"] = "a@example.com", "b@example.com", "nul"
+    message.set_content("<html><body>\x00<p>Hello\x00 there\x01 friend</p></body></html>", subtype="html",
+                        cte="8bit")
+    result = read_eml(message.as_bytes())
+    assert "Hello" in result["body"] and "friend" in result["body"] and "\x00" not in result["body"]
+
+
+def test_when_the_html_reader_still_raises_a_crude_text_is_used_and_the_body_is_marked_cut(monkeypatch):
+    import service.document_extract as extract
+
+    def refuse(_data):
+        raise ValueError("no")
+    monkeypatch.setattr(extract, "_html", refuse)
+    text, fell_back = A._html_text("<style>p{}</style><p>Tea &amp; <b>cake</b></p>\x00<script>x()</script>")
+    assert text == "Tea & cake" and fell_back is True
+
+
+@CHILD
+def test_eml_part_cannot_fetch_a_file_the_list_did_not_show():
+    files = [(f"f{number}.bin", "application/octet-stream", bytes([number]) * 4) for number in range(60)]
+    raw = build_mail("many files", files=files)
+    listed = read_eml(raw, timeout=90)
+    assert len(listed["files"]) == A.MAX_EML_FILES and listed["more_files"] == 10
+    last = read_part(raw, A.MAX_EML_FILES - 1, timeout=90)
+    assert last["name"] == "f49.bin"
+    with pytest.raises(ValueError, match=r"^That file isn't in the email\.$"):
+        read_part(raw, A.MAX_EML_FILES, timeout=90)
+    with pytest.raises(ValueError, match=r"^That file isn't in the email\.$"):
+        read_part(raw, 59, timeout=90)
+
+
+_BOMB_BASE = b"From: a@example.com\r\nTo: b@example.com\r\nSubject: bomb\r\nMIME-Version: 1.0\r\n"
+_FIVE_MB = 5 * 1024 * 1024
+
+
+def _bomb_mail(kind: str) -> bytes:
+    if kind == "semicolons":
+        header = b"Content-Disposition: attachment; " + b";" * _FIVE_MB
+    elif kind == "pairs":
+        header = b"Content-Disposition: attachment; " + b"a=b;" * (_FIVE_MB // 4)
+    elif kind == "rfc2231":
+        header = b"Content-Disposition: attachment;\r\n " + \
+                 b";\r\n ".join(b"filename*%d*=aaaaaaaa" % number for number in range(_FIVE_MB // 30))
+    elif kind == "boundary":
+        return _BOMB_BASE + b"Content-Type: multipart/mixed; boundary=" + b"x" * _FIVE_MB + b"\r\n\r\nbody\r\n"
+    else:
+        header = b"\r\n".join(b"X-Filler-%d: v" % number for number in range(100_000))
+    return _BOMB_BASE + header + b"\r\nContent-Type: text/plain\r\n\r\nhello\r\n"
+
+
+@CHILD
+@pytest.mark.parametrize("kind", ["semicolons", "pairs", "rfc2231", "boundary", "lines"])
+def test_a_header_bomb_is_read_in_seconds_and_marked(kind):
+    data = _bomb_mail(kind)
+    started = time.monotonic()
+    result = read_eml(data, timeout=60)
+    assert time.monotonic() - started < 3.0
+    assert result["subject"] == "bomb"
+    if kind != "lines":
+        assert result["walk_cut"] is True and result["files"] == []
+
+
+@CHILD
+def test_a_header_bomb_on_an_inner_part_is_neutralised_too():
+    inner = b"Content-Type: application/pdf\r\nContent-Disposition: attachment; " + b";" * _FIVE_MB + \
+            b"\r\n\r\n%PDF-1\r\n"
+    data = (_BOMB_BASE + b"Content-Type: multipart/mixed; boundary=BB\r\n\r\n--BB\r\nContent-Type: text/plain\r\n\r\n"
+            b"words\r\n--BB\r\n" + inner + b"--BB--\r\n")
+    started = time.monotonic()
+    result = read_eml(data, timeout=60)
+    assert time.monotonic() - started < 3.0
+    assert result["body"] == "words" and result["walk_cut"] is True
+    assert len(result["files"]) == 1 and result["files"][0]["mime"] == "application/pdf"
+
+
+def test_an_ordinary_long_header_is_left_alone():
+    name = "n" * 5000 + ".pdf"
+    raw = build_mail("x", files=[(name, "application/pdf", b"%PDF-1")])
+    result = A.eml("m.eml", raw)
+    assert result["walk_cut"] is False and result["files"][0]["name"].startswith("nnnn")
+
+
+# ------------------------------------------------------------------ audio: what may reach the decoder
+
+@pytest.mark.parametrize("brand", [b"isom", b"mp42", b"qt  ", b"avc1"])
+def test_a_video_renamed_to_a_recording_never_reaches_the_decoder(brand, monkeypatch):
+    def forbidden(*_args):
+        raise AssertionError("afconvert must not see these bytes")
+    monkeypatch.setattr(A, "_convert_to_wav", forbidden)
+    video = b"\x00\x00\x00\x18ftyp" + brand + b"\x00\x00\x00\x00" + b"junk" * 100
+    for name in ("clip.m4a", "clip.mp3", "clip", "clip.wav"):
+        with pytest.raises(ValueError, match=r"^That recording couldn't be read\.$"):
+            A.audio(name, video, "/nonexistent")
+
+
+@pytest.mark.parametrize("data", [b"%PDF-1.4 text", b"PK\x03\x04rest", b"\x89PNG\r\n\x1a\nrest", b"#!/bin/sh\necho\n",
+                                  b"Rar!\x1a\x07\x00", b"From: a@example.com\nTo: b@example.com\n\nhi"])
+def test_other_kinds_named_as_recordings_are_refused_before_the_decoder(data, monkeypatch):
+    monkeypatch.setattr(A, "_convert_to_wav", lambda *_a: (_ for _ in ()).throw(AssertionError("decoder reached")))
+    with pytest.raises(ValueError, match=r"^That recording couldn't be read\.$"):
+        A.audio("voice memo.m4a", data, "/nonexistent")
+
+
+def test_unrecognised_bytes_reach_the_decoder_only_under_an_audio_name(monkeypatch):
+    reached = []
+
+    def stop(data, workdir):
+        reached.append(True)
+        raise ValueError(A.AUDIO_UNREADABLE)
+    monkeypatch.setattr(A, "_convert_to_wav", stop)
+    for name in ("note.txt", "note", "note.pdf", "note.html"):
+        with pytest.raises(ValueError):
+            A.audio(name, b"unknown bytes here", "/nonexistent")
+    assert reached == []
+    for name in ("memo.m4a", "memo.flac", "MEMO.OPUS", "memo.mp3"):
+        with pytest.raises(ValueError):
+            A.audio(name, b"unknown bytes here", "/nonexistent")
+    assert len(reached) == 4
+
+
+@CHILD
+def test_a_video_renamed_m4a_is_refused_by_the_real_child():
+    video = b"\x00\x00\x00\x18ftypisom\x00\x00\x00\x00" + b"junk" * 200
+    with pytest.raises(ValueError, match=r"^That recording couldn't be read\.$"):
+        hear("holiday.m4a", video)
+
+
+# ------------------------------------------------------------------ audio: windows, tails and the WAV layout
+
+def riff(chunks: list[tuple[bytes, bytes, int | None]]) -> bytes:
+    """A RIFF/WAVE file of (id, body, declared size or None for the true size) chunks, each padded to even."""
+    out = b"RIFF\x00\x00\x00\x00WAVE"
+    for chunk_id, body, declared in chunks:
+        out += chunk_id + struct.pack("<I", len(body) if declared is None else declared) + body
+        out += b"\x00" * (len(body) & 1)
+    return out
+
+
+FMT16K = struct.pack("<HHIIHH", 1, 1, 16000, 32000, 2, 16)
+
+
+def layout_of(tmp_path, data: bytes, cut=False):
+    path = tmp_path / "output.wav"
+    path.write_bytes(data)
+    return A._wav_layout(path, cut)
+
+
+def test_the_data_chunk_is_found_by_walking_chunks_not_by_searching(tmp_path):
+    samples = b"\x01\x00" * 100
+    trap = riff([(b"fmt ", FMT16K, None), (b"LIST", b"INFOdata\x04\x00\x00\x00zzzz", None), (b"data", samples, None)])
+    offset, frames = layout_of(tmp_path, trap)
+    assert frames == 100 and trap[offset:offset + 2] == b"\x01\x00"
+    padded = riff([(b"FLLR", b"x" * 31, None), (b"fmt ", FMT16K, None), (b"JUNK", b"j" * 7, None),
+                   (b"data", samples, None)])
+    offset, frames = layout_of(tmp_path, padded)
+    assert frames == 100 and padded[offset:offset + 2] == b"\x01\x00"
+
+
+@pytest.mark.parametrize("declared", [0, 0xFFFFFFFF, 10_000_000])
+def test_a_streamed_or_wrong_data_size_uses_the_file_size(tmp_path, declared):
+    data = riff([(b"fmt ", FMT16K, None), (b"data", b"\x02\x00" * 250, declared)])
+    assert layout_of(tmp_path, data)[1] == 250
+
+
+def test_a_stopped_converter_uses_the_file_size_whatever_the_header_says(tmp_path):
+    data = riff([(b"fmt ", FMT16K, None), (b"data", b"\x02\x00" * 250, 20)])
+    assert layout_of(tmp_path, data, cut=False)[1] == 10
+    assert layout_of(tmp_path, data, cut=True)[1] == 250
+
+
+def test_a_wav_that_is_not_16k_mono_16bit_or_has_no_data_is_unreadable(tmp_path):
+    stereo = struct.pack("<HHIIHH", 1, 2, 16000, 64000, 4, 16)
+    for bad in (riff([(b"fmt ", stereo, None), (b"data", b"\x00\x00" * 10, None)]),
+                riff([(b"data", b"\x00\x00" * 10, None)]),
+                riff([(b"fmt ", FMT16K, None)]),
+                b"RIFF\x00\x00\x00\x00WAVE",
+                b"not a riff file at all"):
+        with pytest.raises(ValueError):
+            layout_of(tmp_path, bad)
+
+
+def test_the_chunk_walk_is_bounded(tmp_path):
+    many = [(b"JUNK", b"", None)] * (A._WAV_MAX_CHUNKS + 5)
+    data = riff([(b"fmt ", FMT16K, None)] + many + [(b"data", b"\x00\x00" * 10, None)])
+    with pytest.raises(ValueError):
+        layout_of(tmp_path, data)
+
+
+def loud(seconds: float, quiet=()):
+    import array
+    samples = array.array("h", [3000] * int(seconds * 16000))
+    for start, end in quiet:
+        for index in range(int(start * 16000), min(len(samples), int(end * 16000))):
+            samples[index] = 0
+    return samples
+
+
+def test_exactly_one_window_length_is_one_window_and_just_over_is_two():
+    ranges, left = A._plan_windows(loud(29.5))
+    assert ranges == [(0, 29.5 * 16000)] and left == 0
+    ranges, left = A._plan_windows(loud(29.6, quiet=[(27.0, 27.5)]))
+    assert len(ranges) == 2 and left == 0 and ranges[-1][1] == len(loud(29.6))
+    assert 27.0 * 16000 <= ranges[0][1] <= 27.5 * 16000
+
+
+def test_all_silent_audio_is_still_cut_and_covered():
+    silent = loud(70.0, quiet=[(0, 70)])
+    ranges, left = A._plan_windows(silent)
+    assert left == 0 and ranges[0][0] == 0 and ranges[-1][1] == len(silent)
+    assert all(end - start <= 29.5 * 16000 for start, end in ranges) and len(ranges) == 3
+    assert all(a[1] == b[0] for a, b in zip(ranges, ranges[1:]))
+
+
+def test_a_cut_search_larger_than_the_audio_left_does_not_fail():
+    samples = loud(1.0)
+    cut = A._quietest_cut(samples, 0, 5 * 16000)
+    assert isinstance(cut, int) and 0 <= cut <= 5 * 16000
+    assert A._quietest_cut(loud(0.05), 0, 2 * 16000) >= 0
+
+
+def test_a_tail_too_short_to_hold_a_word_is_dropped_and_reported_when_it_cannot_be_folded():
+    # The quietest stretch ends near the end of the first window, so the 0.19 s that follows is under the
+    # minimum, and 29.35 + 0.19 would be over the window length.
+    samples = loud(29.54, quiet=[(29.25, 29.5)])
+    ranges, left = A._plan_windows(samples)
+    assert len(ranges) == 1 and ranges[0][1] < len(samples)
+    assert left == len(samples) - ranges[0][1] and 0 < left < 0.2 * 16000
+
+
+def test_a_tail_never_fits_a_full_window_because_windows_are_only_cut_when_more_than_one_remains():
+    # The fold rule is kept for safety; with the cut rule it cannot apply, and this pins that down: the last
+    # window plus its tail always exceeds the window length.
+    for total in (29.51, 29.54, 29.55, 59.04, 59.05):
+        samples = loud(total, quiet=[(total - 0.29, total - 0.04)])
+        ranges, left = A._plan_windows(samples)
+        assert sum(e - s for s, e in ranges) + left == len(samples)
+        assert all(e - s <= 29.5 * 16000 for s, e in ranges) and left < 0.2 * 16000
+
+
+def pcm_wav(seconds: float, *, width=2, channels=1, rate=16000) -> bytes:
+    out = io.BytesIO()
+    with wave.open(out, "wb") as wav:
+        wav.setnchannels(channels)
+        wav.setsampwidth(width)
+        wav.setframerate(rate)
+        frames = int(seconds * rate)
+        if width == 1:
+            body = bytes(128 + int(60 * math.sin(i / 7)) for i in range(frames))
+        elif width == 3:
+            body = b"".join(int(2_000_000 * math.sin(i / 7)).to_bytes(3, "little", signed=True)
+                            for i in range(frames))
+        else:
+            body = b"".join(struct.pack("<h", int(8000 * math.sin(i / 7))) for i in range(frames))
+        wav.writeframes(body * channels if channels == 1 else
+                        b"".join(body[i * width:(i + 1) * width] * channels for i in range(frames)))
+    return out.getvalue()
+
+
+@CHILD
+@AFCONVERT
+def test_exactly_29_5_seconds_is_one_window_and_29_6_is_covered():
+    one = hear("memo.wav", wav_file(29.5))
+    assert len(one["windows"]) == 1 and one["stopped_early"] is False and one["dropped_tail"] == 0
+    assert assert_window(one["windows"][0]) == pytest.approx(29.5, abs=0.01)
+    two = hear("memo.wav", wav_file(29.6))
+    lengths = [assert_window(w) for w in two["windows"]]
+    assert two["stopped_early"] is False and two["dropped_tail"] < 0.2
+    assert sum(lengths) + two["dropped_tail"] == pytest.approx(two["seconds"], abs=0.02)
+    assert two["heard"] == pytest.approx(sum(lengths), abs=0.01)
+
+
+@CHILD
+@AFCONVERT
+def test_a_tail_that_cannot_be_folded_is_reported_and_heard_is_honest():
+    result = hear("memo.wav", wav_file(29.54, quiet=[(29.25, 29.5)]))
+    lengths = [assert_window(w) for w in result["windows"]]
+    assert 0 < result["dropped_tail"] < 0.2 and result["stopped_early"] is False
+    assert result["heard"] == pytest.approx(sum(lengths), abs=0.01)
+    assert result["heard"] + result["dropped_tail"] == pytest.approx(result["seconds"], abs=0.02)
+
+
+@CHILD
+@AFCONVERT
+def test_all_silent_audio_is_heard_in_windows():
+    out = io.BytesIO()
+    with wave.open(out, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16000)
+        wav.writeframes(b"\x00\x00" * (16000 * 40))
+    result = hear("silence.wav", out.getvalue())
+    lengths = [assert_window(w) for w in result["windows"]]
+    assert sum(lengths) == pytest.approx(40.0, abs=0.05) and result["stopped_early"] is False
+
+
+@CHILD
+@AFCONVERT
+@pytest.mark.parametrize("width,channels,rate", [(1, 1, 8000), (3, 1, 44100), (2, 2, 44100), (3, 2, 48000)])
+def test_other_sample_sizes_and_channel_counts_are_converted(width, channels, rate):
+    result = hear("memo.wav", pcm_wav(3.0, width=width, channels=channels, rate=rate))
+    assert result["seconds"] == pytest.approx(3.0, abs=0.1) and len(result["windows"]) == 1
+    assert result["stopped_early"] is False
+    assert_window(result["windows"][0])

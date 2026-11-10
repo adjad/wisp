@@ -1005,8 +1005,12 @@ AUDIO_MIN_SECONDS = 0.2
 AUDIO_MAX_CONVERTED_BYTES = 3600 * AUDIO_RATE * 2 + 4096
 AUDIO_UNREADABLE = "That recording couldn't be read."
 AUDIO_EMPTY = "That recording is empty."
-# Whatever these are, they are not sound: never handed to the system's audio decoders.
-_NOT_AUDIO_FAMILIES = frozenset({"program", "script", "archive", "zip", "document", "image", "email"})
+# Bytes are handed to the system's audio decoders only when they say they are sound (family "audio"), or say
+# nothing at all and the NAME is an audio one. Video, pictures, documents, archives, programs, scripts and
+# email are refused whatever they are called.
+_AUDIO_SUFFIXES = frozenset({"m4a", "m4b", "mp3", "wav", "wave", "aif", "aiff", "aifc", "caf", "ogg", "oga",
+                             "opus", "aac", "amr", "flac", "wma", "3ga", "mp2", "au", "snd"})
+_WAV_MAX_CHUNKS = 64
 
 
 def _convert_to_wav(data: bytes, workdir: str) -> tuple[Path, bool]:
@@ -1080,32 +1084,86 @@ def _quietest_cut(samples, low: int, high: int) -> int:
     return start + blocks_per_stretch * block // 2
 
 
+def _wav_layout(path: Path, cut: bool) -> tuple[int, int]:
+    """(byte offset of the samples, number of frames) of a 16 kHz mono 16-bit WAV, found by walking its RIFF
+    chunks (id, little-endian size, padded to an even length) rather than searching for the word "data", which
+    can sit inside another chunk. At most _WAV_MAX_CHUNKS chunks are walked. A data size of 0 or 0xFFFFFFFF
+    (written by a converter that streams), one larger than the file, or any size when the converter was
+    stopped, is replaced by what the file really holds."""
+    import struct
+    size = path.stat().st_size
+    with open(path, "rb") as stream:
+        head = stream.read(12)
+        if len(head) < 12 or head[:4] != b"RIFF" or head[8:12] != b"WAVE":
+            raise ValueError(AUDIO_UNREADABLE)
+        position = 12
+        fmt = None
+        for _ in range(_WAV_MAX_CHUNKS):
+            stream.seek(position)
+            header = stream.read(8)
+            if len(header) < 8:
+                break
+            chunk_id, chunk_size = header[:4], struct.unpack("<I", header[4:])[0]
+            if chunk_id == b"fmt ":
+                body = stream.read(16)
+                if len(body) < 16:
+                    break
+                tag, channels, rate, _, _, bits = struct.unpack("<HHIIHH", body)
+                fmt = (tag, channels, rate, bits)
+            elif chunk_id == b"data":
+                if fmt is None or fmt[0] not in (1, 0xFFFE) or fmt[1:] != (1, AUDIO_RATE, 16):
+                    raise ValueError(AUDIO_UNREADABLE)
+                offset = position + 8
+                available = max(0, size - offset)
+                if cut or chunk_size in (0, 0xFFFFFFFF) or chunk_size > available:
+                    return offset, available // 2
+                return offset, chunk_size // 2
+            position += 8 + chunk_size + (chunk_size & 1)
+            if position >= size:
+                break
+    raise ValueError(AUDIO_UNREADABLE)
+
+
+def _plan_windows(samples) -> tuple[list[tuple[int, int]], int]:
+    """([(start, end) of each window], samples left over). Windows are at most AUDIO_WINDOW_SECONDS long, cut at
+    the quietest stretch near their end. What is left after the last cut is shorter than AUDIO_MIN_SECONDS (too
+    short to hold a word): it is folded into the last window when that keeps it within the window length,
+    otherwise it is left over and the caller reports it."""
+    longest = int(AUDIO_WINDOW_SECONDS * AUDIO_RATE)
+    region = int(AUDIO_CUT_REGION_SECONDS * AUDIO_RATE)
+    minimum = int(AUDIO_MIN_SECONDS * AUDIO_RATE)
+    ranges: list[tuple[int, int]] = []
+    position, limit = 0, len(samples)
+    while limit - position >= minimum:
+        if limit - position <= longest:
+            end = limit
+        else:
+            end = _quietest_cut(samples, position + longest - region, position + longest)
+            end = min(limit, max(position + 1, end))
+        ranges.append((position, end))
+        position = end
+    left = limit - position
+    if left and ranges and ranges[-1][1] - ranges[-1][0] + left <= longest:
+        ranges[-1] = (ranges[-1][0], limit)
+        left = 0
+    return ranges, left
+
+
 def audio(name: str, data: bytes, workdir: str = "") -> dict:
-    """{seconds, heard, windows: [base64 WAV], stopped_early} for a recording, at most the first 600 s."""
+    """{seconds, heard, windows: [base64 WAV], stopped_early, dropped_tail} for a recording, at most the first
+    600 s. `dropped_tail` is the seconds (under 0.2) at the very end that fit no window."""
     import array
-    import wave
-    if _signature(data)[1] in _NOT_AUDIO_FAMILIES:
+    family = _signature(data)[1]
+    if family != "audio" and not (family == "" and _suffix(name) in _AUDIO_SUFFIXES):
         raise ValueError(AUDIO_UNREADABLE)
     target, cut = _convert_to_wav(data, workdir)
     keep_limit = int(AUDIO_MAX_SECONDS * AUDIO_RATE)
     try:
-        if cut:
-            # The converter was stopped, so the header's length was never filled in: read the sound itself.
-            with open(target, "rb") as stream:
-                at = stream.read(4096).find(b"data")
-                if at < 0:
-                    raise ValueError(AUDIO_UNREADABLE)
-                offset = at + 8
-                stream.seek(offset)
-                raw = stream.read(keep_limit * 2)
-            total_frames = max(0, (target.stat().st_size - offset) // 2)
-        else:
-            with wave.open(str(target), "rb") as wav:
-                if wav.getnchannels() != 1 or wav.getsampwidth() != 2 or wav.getframerate() != AUDIO_RATE:
-                    raise ValueError(AUDIO_UNREADABLE)
-                total_frames = wav.getnframes()
-                raw = wav.readframes(min(total_frames, keep_limit))
-    except (wave.Error, EOFError, OSError):
+        offset, total_frames = _wav_layout(target, cut)
+        with open(target, "rb") as stream:
+            stream.seek(offset)
+            raw = stream.read(min(total_frames, keep_limit) * 2)
+    except OSError:
         raise ValueError(AUDIO_UNREADABLE) from None
     keep = min(total_frames, keep_limit)
     samples = array.array("h")
@@ -1115,24 +1173,14 @@ def audio(name: str, data: bytes, workdir: str = "") -> dict:
     seconds = total_frames / AUDIO_RATE
     if seconds < AUDIO_MIN_SECONDS:
         raise ValueError(AUDIO_EMPTY)
-    longest = int(AUDIO_WINDOW_SECONDS * AUDIO_RATE)
-    region = int(AUDIO_CUT_REGION_SECONDS * AUDIO_RATE)
-    minimum = int(AUDIO_MIN_SECONDS * AUDIO_RATE)
-    windows: list[str] = []
-    covered = 0
-    position = 0
-    limit = len(samples)
-    while limit - position >= minimum:
-        if limit - position <= longest:
-            end = limit
-        else:
-            end = _quietest_cut(samples, position + longest - region, position + longest)
-        windows.append(base64.b64encode(_wav_bytes(samples[position:end])).decode("ascii"))
-        covered += end - position
-        position = end
-    heard = covered / AUDIO_RATE
+    ranges, left = _plan_windows(samples)
+    windows = [base64.b64encode(_wav_bytes(samples[start:end])).decode("ascii") for start, end in ranges]
+    heard = sum(end - start for start, end in ranges) / AUDIO_RATE
+    dropped = left / AUDIO_RATE
     return {"seconds": round(seconds, 2), "heard": round(heard, 4), "windows": windows,
-            "stopped_early": bool(cut or total_frames > keep or seconds - heard > 0.5)}
+            "dropped_tail": round(dropped, 4),
+            "stopped_early": bool(cut or total_frames > keep or dropped >= AUDIO_MIN_SECONDS
+                                  or seconds - heard - dropped > 0.5)}
 
 
 # --- attached emails ------------------------------------------------------------------
@@ -1146,6 +1194,8 @@ MAX_EML_FILES = 50
 MAX_EML_BODY = 200_000
 MAX_EML_HEADER = 300
 MAX_EML_PART_BYTES = 24 * 1024 * 1024
+# A header longer than this is not parsed: its value is treated as empty.
+MAX_EML_HEADER_BYTES = 64 * 1024
 # An HTML body is read for its text only from this much of it.
 _EML_HTML_BYTES = 2 * 1024 * 1024
 _MIME_TYPE = re.compile(r"[a-z0-9][a-z0-9!#$&^_.+-]{0,60}/[a-z0-9][a-z0-9!#$&^_.+-]{0,60}")
@@ -1169,23 +1219,63 @@ def _headers_of(message, name: str) -> str:
     return _decoded_header(", ".join(str(v) for v in values[:4]))
 
 
-def _eml_parts(root) -> list:
+def _defuse_headers(part) -> bool:
+    """Blank every header value longer than MAX_EML_HEADER_BYTES on this part, before anything parses it.
+
+    The stdlib reads a header's parameters lazily (get_filename, get_content_type) and a multi-megabyte
+    Content-Disposition of semicolons takes it many seconds. A blanked header means "no name, no parameters".
+    True when something was blanked.
+    """
+    headers = getattr(part, "_headers", None)
+    if not isinstance(headers, list):
+        return False
+    blanked = False
+    for index, item in enumerate(headers):
+        try:
+            key, value = item
+        except (TypeError, ValueError):
+            continue
+        text = value if isinstance(value, str) else str(value)
+        if len(text) > MAX_EML_HEADER_BYTES:
+            # A Content-* header is the one the stdlib parses for parameters: it becomes empty. Any other
+            # (a 5 MB Subject) is only displayed, cut to 300 characters later, so keeping its start costs nothing.
+            blanked_value = "" if str(key).lower().startswith("content-") else text[:MAX_EML_HEADER_BYTES]
+            headers[index] = (key, blanked_value)
+            blanked = True
+    return blanked
+
+
+class _Walk:
+    """What the walk over the parts gave up on."""
+    def __init__(self) -> None:
+        self.cut = False           # stopped early for depth, part count or an oversized header
+        self.unseen = False        # parts that were never looked at may have been files
+
+
+def _eml_parts(root, walk: "_Walk | None" = None) -> list:
     """The parts of the message in a fixed order (depth first, as written), at most MAX_EML_PARTS of them,
-    not descending past MAX_EML_DEPTH and never into an attached message."""
+    not descending past MAX_EML_DEPTH and never into an attached message. `walk` records what was left out."""
+    walk = walk if walk is not None else _Walk()
     found: list = []
     stack = [(root, 0)]
     while stack and len(found) < MAX_EML_PARTS:
         part, depth = stack.pop()
+        if _defuse_headers(part):
+            walk.cut = True
         if part.get_content_maintype() == "message":
             found.append(part)
             continue
         if part.is_multipart():
+            children = part.get_payload()
             if depth < MAX_EML_DEPTH:
-                children = part.get_payload()
                 if isinstance(children, list):
                     stack.extend((child, depth + 1) for child in reversed(children))
+            elif isinstance(children, list) and children:
+                walk.cut = walk.unseen = True
             continue
         found.append(part)
+    if stack:
+        walk.cut = walk.unseen = True
     return found
 
 
@@ -1226,16 +1316,39 @@ def _is_attachment_like(part) -> bool:
     return str(part.get("content-disposition", "")).strip().lower().startswith("attachment")
 
 
-def _text_of(part, limit_bytes: int) -> str:
+def _text_and_cut(part, limit_bytes: int) -> tuple[str, bool]:
+    """(the part's text decoded from at most `limit_bytes` of it, whether bytes were left out)."""
     payload = part.get_payload(decode=True)
     if not isinstance(payload, (bytes, bytearray)):
-        return ""
+        return "", False
+    cut = len(payload) > limit_bytes
     payload = bytes(payload[:limit_bytes])
     charset = (part.get_content_charset() or "utf-8")
     try:
-        return payload.decode(charset, "replace")
+        return payload.decode(charset, "replace"), cut
     except (LookupError, ValueError):
-        return payload.decode("utf-8", "replace")
+        return payload.decode("utf-8", "replace"), cut
+
+
+def _text_of(part, limit_bytes: int) -> str:
+    return _text_and_cut(part, limit_bytes)[0]
+
+
+_CONTROLS = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_TAGS = re.compile(r"<(?:script|style)\b.*?(?:</(?:script|style)\s*>|\Z)|<[^>]*>", re.I | re.S)
+
+
+def _html_text(raw: str) -> tuple[str, bool]:
+    """(the readable text of an HTML body, whether the fallback had to be used). Control characters,
+    NULs above all, are removed first because the document reader refuses a body with a NUL near its start."""
+    from service.document_extract import _html
+    clean = _CONTROLS.sub("", raw)
+    try:
+        return _html(clean.encode("utf-8")), False
+    except Exception:  # noqa: BLE001 — whatever the helper dislikes, the person still gets the words
+        import html as html_module
+        crude = html_module.unescape(_TAGS.sub(" ", clean))
+        return "\n".join(line for line in (" ".join(l.split()) for l in crude.splitlines()) if line), True
 
 
 def _part_bytes(part) -> bytes:
@@ -1265,9 +1378,9 @@ def _parse_eml(data: bytes):
     return root
 
 
-def _eml_layout(root) -> tuple[object | None, list]:
+def _eml_layout(root, walk: "_Walk | None" = None) -> tuple[object | None, list]:
     """(the part that is the body, the parts that are files), both in message order."""
-    parts = _eml_parts(root)
+    parts = _eml_parts(root, walk)
     plain = html = None
     for part in parts:
         mime = _mime_of(part)
@@ -1301,21 +1414,23 @@ def _file_name(part, number: int) -> str:
 
 def eml(name: str, data: bytes) -> dict:
     """An attached email read in memory: headers, body text and the list of files inside. Nothing is written
-    anywhere, nothing in it is followed, and a damaged message is a plain sentence."""
+    anywhere, nothing in it is followed, and a damaged message is a plain sentence.
+
+    `body_cut` is true when any of the chosen body was dropped at any stage; `walk_cut` when the walk over the
+    parts stopped early (too deep, too many parts, or a header too large to parse)."""
     try:
         root = _parse_eml(data)
-        body, files = _eml_layout(root)
+        walk = _Walk()
+        body, files = _eml_layout(root, walk)
         text, cut = "", False
         if body is not None:
             if _mime_of(body) == "text/html":
-                from service.document_extract import _html
-                raw = _text_of(body, _EML_HTML_BYTES)
-                try:
-                    text = _html(raw.encode("utf-8"))
-                except ValueError:
-                    text = ""
+                raw, cut = _text_and_cut(body, _EML_HTML_BYTES)
+                text, fell_back = _html_text(raw)
+                cut = cut or fell_back
             else:
-                text = _text_of(body, MAX_EML_BODY * 4 + 4096).replace("\r\n", "\n").replace("\r", "\n")
+                text, cut = _text_and_cut(body, MAX_EML_BODY * 4 + 4096)
+                text = text.replace("\r\n", "\n").replace("\r", "\n")
             text = _BODY_JUNK.sub("", text).strip()
             if len(text) > MAX_EML_BODY:
                 text, cut = text[:MAX_EML_BODY], True
@@ -1323,9 +1438,14 @@ def eml(name: str, data: bytes) -> dict:
         for index, part in enumerate(files[:MAX_EML_FILES]):
             listed.append({"index": index, "name": _file_name(part, index), "mime": _mime_of(part),
                            "size": len(_part_bytes(part))})
+        more = max(0, len(files) - MAX_EML_FILES)
+        if walk.unseen:
+            # Parts past the cap were never examined, so this is a lower bound: at least one of them
+            # may be a file, and that is all that can be said without reading them.
+            more = max(more, 1)
         return {"from": _headers_of(root, "from"), "to": _headers_of(root, "to"), "cc": _headers_of(root, "cc"),
                 "subject": _headers_of(root, "subject"), "date": _decoded_header(root.get("date", ""), 100),
-                "body": text, "body_cut": cut, "files": listed, "more_files": max(0, len(files) - MAX_EML_FILES)}
+                "body": text, "body_cut": cut, "walk_cut": walk.cut, "files": listed, "more_files": more}
     except MemoryError:
         raise ValueError("That email is too large for Wisp to read.") from None
     except ValueError:
@@ -1335,13 +1455,14 @@ def eml(name: str, data: bytes) -> dict:
 
 
 def eml_part(name: str, data: bytes, index: int | None) -> dict:
-    """One file from inside an attached email, by the index `eml` listed it under: {name, mime, size, data_b64}."""
-    if index is None or index < 0:
+    """One file from inside an attached email, by the index `eml` listed it under: {name, mime, size, data_b64}.
+    Only the first MAX_EML_FILES are listed, so only those can be fetched."""
+    if index is None or index < 0 or index >= MAX_EML_FILES:
         raise ValueError(EML_NO_SUCH_PART)
     try:
         root = _parse_eml(data)
         _, files = _eml_layout(root)
-        if index >= len(files):
+        if index >= min(len(files), MAX_EML_FILES):
             raise ValueError(EML_NO_SUCH_PART)
         part = files[index]
         content = _part_bytes(part)

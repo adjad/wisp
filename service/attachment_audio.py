@@ -8,8 +8,9 @@ IMPORTANT: the transcript is attacker-controlled text. A voice memo can say "ign
 instructions". This module does not fence it; the caller must put it inside
 `untrusted.fence(...)` before it reaches any model or the person.
 
-Nothing from the audio or the transcript is logged or printed here, and the audio is never
-recorded for debugging (voice.transcribe_wav omits it).
+This module logs and prints nothing. The audio itself is never recorded for debugging
+(voice._ask_model replaces it with an "omitted" marker). With Debug Mode on, the model's reply, which
+is the transcript text, is recorded like any other model reply; outside a Debug Mode capture nothing is.
 """
 from __future__ import annotations
 
@@ -91,7 +92,9 @@ async def listen(name: str, data: bytes, *, client, model: str, deadline: float)
         heard = min(heard, total)
     else:
         total = heard
-    complete = done == len(decoded) and not bool(info.get("stopped_early"))
+    # A tail under 0.2 s that fit no window (dropped_tail) cannot hold a word and does not make it incomplete.
+    complete = (done == len(decoded) and not bool(info.get("stopped_early"))
+                and _seconds(info.get("dropped_tail")) < 0.2)
     return Heard(text, heard, total, complete)
 
 
