@@ -210,6 +210,22 @@ def test_how_much_wording(heard, expected):
     assert A.how_much(heard) == expected
 
 
+def test_a_dropped_tail_under_the_minimum_does_not_make_it_incomplete(child, model):
+    child.reply = {**child.reply, "dropped_tail": 0.19}
+    assert listen().complete is True
+
+
+def test_a_dropped_tail_of_a_word_or_more_is_not_complete(child, model):
+    child.reply = {**child.reply, "dropped_tail": 0.5, "stopped_early": False}
+    assert listen().complete is False
+
+
+def test_the_docstring_says_what_debug_mode_records():
+    doc = A.__doc__
+    assert "Debug Mode" in doc and "transcript" in doc and "never recorded" in doc
+    assert "nothing from the audio or the transcript" not in doc.lower()
+
+
 def test_all_is_never_claimed_unless_complete():
     for total in (5, 90, 700):
         assert "all" not in A.how_much(A.Heard("", total - 3, total, False)).lower().split()
