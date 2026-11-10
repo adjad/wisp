@@ -461,9 +461,38 @@ def test_open_app_that_can_start_a_send_always_asks(args, full_access):
     assert policy.decide("app_control", args, tool="open_app").tier is policy.Tier.CONFIRM
 
 
+# `open -a` takes a bundle path as readily as a name, so the app is judged by
+# its own name however the call spells it.
+@pytest.mark.parametrize("name", [
+    "/System/Applications/Utilities/Terminal.app", "Terminal.app/", "Utilities/Terminal",
+    "TERMINAL.APP", " terminal ", '"Terminal"', "Terminal.app/.",
+    "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+    "/Applications/iTerm.app", "iTerm2", "/System/Applications/Shortcuts.app", "shortcuts.app/",
+    "com.apple.Terminal", "com.googlecode.iterm2",
+    "Ghostty", "/Applications/kitty.app", "Warp", "Alacritty.app", "WezTerm", "Hyper",
+])
+def test_open_app_asks_for_terminal_or_shortcuts_however_the_app_is_named(name, full_access):
+    for args in ({"name": name, "target": "~/x.sh"}, {"name": name}):
+        decision = policy.decide("app_control", args, tool="open_app")
+        assert decision.tier is policy.Tier.CONFIRM, args
+        assert "runs what it is given" in decision.reason
+
+
+def test_view_only_still_refuses_terminal_named_by_path(monkeypatch):
+    monkeypatch.setattr(policy, "_FULL_ACCESS", False)
+    monkeypatch.setattr(policy, "_READ_ONLY", True)
+    monkeypatch.setattr(grants, "check", lambda *args: None)
+    args = {"name": "/System/Applications/Utilities/Terminal.app", "target": "~/x.sh"}
+    assert policy.decide("app_control", args, tool="open_app").tier is policy.Tier.DENY
+
+
 @pytest.mark.parametrize("args", [
     {"name": "Spotify"}, {"name": "Safari", "target": "https://example.com"},
     {"name": "Preview", "target": "~/Documents/a.pdf"}, {"name": "Finder", "target": "file:///Users/me"},
+    {"name": "Notes"}, {"name": "/Applications/Safari.app", "target": "~/Documents/a.pdf"},
+    {"name": "/System/Applications/Notes.app/"}, {"name": "/Applications/Utilities/Activity Monitor.app"},
+    {"name": "Terminal Notifier"}, {"name": "/Applications/Terminal Notifier.app", "target": "~/Documents/a.pdf"},
+    {"name": "Shortcuts Guide"}, {"name": "Hyperlinks"},
 ])
 def test_ordinary_app_opens_still_run(args, full_access):
     assert policy.decide("app_control", args, tool="open_app").tier is policy.Tier.ALLOW
