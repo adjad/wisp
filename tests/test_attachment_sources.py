@@ -1028,8 +1028,17 @@ async def test_a_background_kept_email_with_nothing_dropped_is_not_partial_and_s
     assert await ma.index_one(emails[0], emails[0].files[0], deadline=ma.time.monotonic() + 60) == "kept"
     stored = attachment_store.get(attachment_store.digest(world.local_files[(1, "1.2")]))
     meta = json.loads(stored.note)
-    assert meta["partial"] is False
+    assert meta["partial"] is True              # a listed file was never read on this path
     assert "the files inside it were not read" in meta["cover"] and "read in memory" not in meta["cover"]
+
+
+async def test_a_background_kept_email_with_no_files_inside_is_not_partial(world):
+    import json
+    real_eml_world(world, [])
+    emails, _ = await ma.find()
+    assert await ma.index_one(emails[0], emails[0].files[0], deadline=ma.time.monotonic() + 60) == "kept"
+    stored = attachment_store.get(attachment_store.digest(world.local_files[(1, "1.2")]))
+    assert json.loads(stored.note)["partial"] is False
 
 
 async def test_an_email_whose_files_may_not_all_be_seen_never_prints_an_exact_total(world):
@@ -1044,7 +1053,7 @@ async def test_an_email_whose_files_may_not_all_be_seen_never_prints_an_exact_to
 async def test_a_messages_retry_gets_the_search_budget_for_both_searches_together(world, monkeypatch):
     import asyncio
     contacts(monkeypatch, dana_lee=["+15551230000"])
-    monkeypatch.setattr(ma, "_MESSAGES_SEARCH_S", 1.0, raising=False)
+    monkeypatch.setattr(ma, "_MESSAGES_SEARCH_S", 2.0, raising=False)
     calls = []
 
     async def index(terms, handles, since, until, limit=200, timeout=10.0):
@@ -1057,8 +1066,24 @@ async def test_a_messages_retry_gets_the_search_budget_for_both_searches_togethe
     monkeypatch.setattr(bridge, "read_message_attachment_index", index)
     began = ma.time.monotonic()
     out = await ma.run(query="dana", source="messages", list_only=True)
-    assert ma.time.monotonic() - began < 3
+    spent = ma.time.monotonic() - began
+    assert 1.8 < spent < 2.4                    # the second pass got exactly what remained, no more
     assert len(calls) == 2 and "took too long" in out
+
+
+async def test_a_messages_retry_is_skipped_when_under_a_second_remains(world, monkeypatch):
+    import asyncio
+    contacts(monkeypatch, dana_lee=["+15551230000"])
+    monkeypatch.setattr(ma, "_MESSAGES_SEARCH_S", 1.0, raising=False)
+    calls = []
+
+    async def index(terms, handles, since, until, limit=200, timeout=10.0):
+        calls.append(list(handles))
+        await asyncio.sleep(0.4)
+        return [], False
+    monkeypatch.setattr(bridge, "read_message_attachment_index", index)
+    await ma.run(query="dana", source="messages", list_only=True)
+    assert len(calls) == 1                      # 0.6 s left: no second pass
 
 
 def test_the_search_budget_for_messages_is_twelve_seconds():

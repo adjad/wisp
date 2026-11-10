@@ -725,28 +725,21 @@ def _forget_stubs(monkeypatch):
 
 
 async def test_a_read_that_would_land_during_forget_mail_memory_stores_nothing(w, monkeypatch):
-    api = _forget_stubs(monkeypatch)
-    dig = attachment_store.digest(b"late bytes")
-    entered = asyncio.Event()
-    release = asyncio.Event()
+    """The real index_one, store and child: the erase runs after the epoch was read and before the keep."""
+    monkeypatch.setattr(ma, "index_one", REAL_INDEX_ONE)
+    trip_models(monkeypatch)
+    ai.set_enabled(True)
+    pdf = pdf_with_text("The zeppelin hangar lease ends on 2027-03-31 and the rent is 2100 dollars.")
+    w.rows = [mrow(1, "hangar.pdf", size=len(pdf), attachment_id="1.2")]
 
-    async def late(email, f, *, deadline):
-        entered.set()
-        await release.wait()
-        attachment_store.put(dig, kind="pdf", text="private words", cut=False, account="acct")
-        return "kept"
-
-    monkeypatch.setattr(ma, "index_one", late)
-    w.rows = [mrow(1)]
-    ai.schedule_tick()
-    task = ai._task
-    await asyncio.wait_for(entered.wait(), 5)
-    out = await api.forget_facts(api.Nothing())
-    release.set()
-    await asyncio.sleep(0.2)
-    assert task.done()
-    assert attachment_store.get(dig) is None and attachment_store.count() == 0
-    assert out["attachment_reading"] == "off" and out["attachment_text"] == "erased" and out["complete"] is True
+    async def read(rowid, attachment_id, timeout=45.0):
+        attachment_store.forget_all()          # "Forget mail memory" lands while the bytes are being fetched
+        return pdf, "hangar.pdf", ""
+    monkeypatch.setattr(bridge, "read_attachment", read)
+    assert await w.tick() is True
+    assert attachment_store.search("zeppelin") == [] and attachment_store.count() == 0
+    assert attachment_store.get(attachment_store.digest(pdf)) is None
+    assert ai.status()["kept"] == 0
 
 
 async def test_forget_mail_memory_turns_the_reader_off_then_stops_it_then_erases(w, monkeypatch):
