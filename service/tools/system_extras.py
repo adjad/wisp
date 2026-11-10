@@ -51,7 +51,7 @@ def _osa(script: str, timeout: int = _TIMEOUT) -> subprocess.CompletedProcess:
 @register(
     "screen_capture",
     "Take a screenshot and save it to a file. Use `region='window'` to let the "
-    "user click the window to capture, or 'selection' to let the user drag a region.",
+    "user click a window, or 'selection' to let them drag a region.",
     {
         "type": "object",
         "properties": {
