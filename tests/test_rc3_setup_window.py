@@ -152,3 +152,28 @@ def test_a_download_frozen_before_the_window_opened_is_still_timed():
     notch = _read("NotchSetupDownload.swift")
     assert ".onAppear { observe(brain) }" in notch
 
+
+
+def test_my_installed_omlx_is_greyed_out_when_there_is_none_to_run():
+    """a03-setup-onboarding#4: the service saves external-omlx whether or not an
+    oMLX exists, and after the restart Wisp has no engine. The menu item is offered
+    only with an oMLX app, an oMLX already answering, or to someone already on it."""
+    view = _read("EngineSettingsView.swift")
+    rule = _body(view, "nonisolated static func externalChoiceOffered(installed: Bool, externalRunning: Bool, "
+                       "onExternal: Bool) -> Bool")
+    assert "installed || externalRunning || onExternal" in rule
+    # The other engine's own probe, never `running` (the built-in engine's state while on it).
+    helper = _body(view, "private func externalOffered(_ engine: EngineSettingsResponse) -> Bool")
+    assert "installed: engine.externalOmlxInstalled" in helper
+    assert "externalRunning: engine.externalEngineRunning" in helper
+    assert "onExternal: engine.mode == .externalOmlx" in helper
+    body = _body(view[view.index("struct EngineSettingsView: View"):], "var body: some View")
+    item = body[body.index("Button(Self.externalChoiceTitle(offered: externalOffered(engine)))"):body.index("Divider()")]
+    assert "selectedMode.wrappedValue = .externalOmlx" in item and ".disabled(!externalOffered(engine))" in item
+    assert '"My installed oMLX (not found)"' in _body(
+        view, "nonisolated static func externalChoiceTitle(offered: Bool) -> String")
+    # A stale menu can't save it either, and the built-in engine's own gate is as it was.
+    save = _body(view, "func setMode(_ mode: EngineMode) async")
+    assert "mode != .externalOmlx || EngineSettingsView.externalChoiceOffered(" in save
+    assert "mode != .bundled || engine.bundledAvailable" in save
+    assert ".disabled(!engine.bundledAvailable)" in body

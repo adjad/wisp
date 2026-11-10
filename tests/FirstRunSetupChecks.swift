@@ -1198,5 +1198,18 @@ struct FirstRunSetupChecks {
               "Calendar, Reminders and the Full Disk Access readers re-post on reconnect")
         check(!AppDelegate.resyncedWhenReachable.contains(where: \.isExtra),
               "Nothing that only sends or looks at the screen")
+
+        // Settings › Change engine: "My installed oMLX" only when there is one to run.
+        check(!EngineSettingsView.externalChoiceOffered(installed: false, externalRunning: false, onExternal: false),
+              "No oMLX app and none answering: the choice would leave Wisp without an engine after a restart")
+        check(EngineSettingsView.externalChoiceOffered(installed: true, externalRunning: false, onExternal: false),
+              "oMLX is installed: it can be chosen")
+        check(EngineSettingsView.externalChoiceOffered(installed: false, externalRunning: true, onExternal: false),
+              "An oMLX kept somewhere else but answering can be chosen")
+        check(EngineSettingsView.externalChoiceOffered(installed: false, externalRunning: false, onExternal: true),
+              "Already on it: the choice is never taken away")
+        check(EngineSettingsView.externalChoiceTitle(offered: true) == "My installed oMLX"
+              && EngineSettingsView.externalChoiceTitle(offered: false).contains("not found"),
+              "Greyed out, the item says why")
     }
 }
