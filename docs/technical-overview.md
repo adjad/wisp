@@ -150,8 +150,7 @@ marked validation pending. The guide ranks memory fit separately from test statu
 
 | Memory | Recommended | Download | Notes |
 | --- | --- | --- | --- |
-| 24 GB or more | `gemma-4-E4B-it-oQ4e-mtp` | 5.5 GB from Hugging Face | The default. `Ling-3.0-tiny-oQ6e` (6.6 GB) is the best-quality alternative. |
-| 16 GB | `gemma-4-E4B-it-oQ4e-mtp` | 5.5 GB | Leaves room for your other apps; close heavy ones. `Ling-3.0-tiny-oQ4e` (4.6 GB) is the smaller alternative. Tool selection measured 10/10 at 4, 5 and 6 bits (on a 24 GB Mac; not yet re-measured on 16 GB hardware). |
+| 16 GB or more | `gemma-4-E4B-it-oQ4e-mtp` | 5.5 GB from Hugging Face | The default. On 24 GB or more, `Ling-3.0-tiny-oQ6e` (6.6 GB) is the best-quality alternative; on 16 GB, `Ling-3.0-tiny-oQ4e` (4.6 GB) is the smaller one. Tool selection measured 10/10 at 4, 5 and 6 bits (on a 24 GB Mac; not yet re-measured on 16 GB hardware). |
 | Under 16 GB | not supported for this release | | Wisp may still offer the default. Expect it to be tight. |
 
 Sizes are the published files' sizes on Hugging Face
