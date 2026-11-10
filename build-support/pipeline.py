@@ -68,8 +68,12 @@ def metadata(allow_dirty=False, build_number=None, preview=False) -> dict:
         raise BuildError("Build number must fit Apple's 4.2.2 digit CFBundleVersion format.")
     commit = git("rev-parse", "HEAD")
     ref = os.environ.get("GITHUB_REF", "")
-    if ref.startswith("refs/tags/") and ref != "refs/tags/v" + version:
-        raise BuildError("Release tag must exactly match v + toolchain.json version.")
+    # A tag build is the version itself or one of its pre-releases (v0.5.0-dev8, v0.5.0-rc3,
+    # v0.5.0-rc2-beta2). Publishing stays final-only: release.py still demands the exact tag.
+    if ref.startswith("refs/tags/") and not re.fullmatch(
+            r"refs/tags/v" + re.escape(version) + r"(?:-(?:dev|rc)\d+(?:-beta\d+)?)?", ref):
+        raise BuildError("Release tag must be v + toolchain.json version, "
+                         "optionally followed by -devN, -rcN or -rcN-betaN.")
     return {"version": version, "build_number": number, "commit": commit,
             "source_epoch": int(git("show", "-s", "--format=%ct", "HEAD")),
             "dirty": dirty, "preview": bool(preview), "architecture": CONFIG["architecture"],
@@ -1497,6 +1501,10 @@ def main():
             meta = metadata(args.allow_dirty, args.build_number, preview) if packaging else None
             # Read (and drop from the environment) before any test or build step runs.
             google_client = google_oauth_client(args.google_oauth_client) if packaging else None
+            if packaging and google_client is None:
+                print("WARNING: no Google OAuth client was given (--google-oauth-client or "
+                      f"${GOOGLE_OAUTH_CLIENT_ENV}), so this build has no built-in Google sign-in. "
+                      "Do not publish it.", file=sys.stderr)
             # Fetched and verified before any test runs, so a bad pin fails fast.
             uv_archive = None
             if packaging and not args.no_uv:

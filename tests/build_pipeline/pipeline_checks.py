@@ -2081,6 +2081,38 @@ print('external venv readable; private home and writes denied')
         self.assertTrue(p.plist(dict(meta, dirty=False))["WispPreviewBuild"])
         self.assertFalse(p.plist(dict(meta, dirty=False, preview=False))["WispPreviewBuild"])
 
+    def test_tag_builds_accept_pre_release_tags_but_publishing_stays_final_only(self):
+        version = p.CONFIG["version"]
+        major, minor, fix = version.split(".")
+        other = f"{major}.{minor}.{int(fix) + 1}"
+        def git(*args):
+            if args[:1] == ("status",):
+                return ""
+            if args == ("rev-parse", "--is-shallow-repository"):
+                return "false"
+            return "1700000000" if args[0] == "show" else "7" if args[0] == "rev-list" else "b" * 40
+        def build(ref):
+            with patch.object(p, "git", side_effect=git), patch.dict(os.environ, {"GITHUB_REF": ref}):
+                return p.metadata(False, None)
+        for ref in ("refs/heads/main", "refs/pull/7/merge", f"refs/tags/v{version}", f"refs/tags/v{version}-rc3",
+                    f"refs/tags/v{version}-dev8", f"refs/tags/v{version}-rc2-beta2", f"refs/tags/v{version}-rc1-beta1"):
+            with self.subTest(ref=ref):
+                self.assertEqual(build(ref)["version"], version)
+        for ref in (f"refs/tags/v{other}", f"refs/tags/v{other}-rc1", f"refs/tags/v{version}-foo",
+                    f"refs/tags/v{version}-rc", f"refs/tags/v{version}-rc3-extra", f"refs/tags/v{version}-beta1",
+                    f"refs/tags/v{version}rc3", f"refs/tags/{version}-rc3", f"refs/tags/v{version}-rc3\n",
+                    "refs/tags/v" + version.replace(".", "x") + "-rc3", f"refs/tags/v{version}.1", "refs/tags/nightly"):
+            with self.subTest(ref=ref), self.assertRaisesRegex(p.BuildError, "Release tag must be"):
+                build(ref)
+        # Both publishing paths still take only the final tag.
+        args = Namespace(allow_dirty=False, test_python=None, offline=False, output=self.root)
+        dispatch = {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "workflow_dispatch",
+                    "GITHUB_REF": f"refs/tags/v{version}-rc3"}
+        with self.assertRaisesRegex(p.BuildError, "exact version tag"):
+            release.preflight(args, dict(dispatch, WISP_RELEASE_APPROVED="true"))
+        with self.assertRaisesRegex(p.BuildError, "exact version tag"):
+            release.ad_hoc_preflight(args, dict(dispatch, WISP_AD_HOC_RELEASE_APPROVED="true"))
+
     def run_preview(self, *flags, uv=None):
         """main() for a preview build with every stage faked; returns (exit code, stages, uv fetch mock)."""
         meta = dict(self.meta, preview=True, tracked_source_sha256="0" * 64)
@@ -2139,6 +2171,21 @@ print('external venv readable; private home and writes denied')
         self.assertEqual(code, 0)
         uv_fetch.assert_not_called()
         self.assertIn(("assemble", None), stages)
+
+    def test_packaging_without_a_google_client_warns_on_stderr(self):
+        import io
+        from contextlib import redirect_stderr
+        client = self.root / "client.json"
+        client.write_text(json.dumps(self.FAKE_GOOGLE_CLIENT))
+        for flags, warned in (((), True), (("--google-oauth-client", str(client)), False)):
+            err = io.StringIO()
+            with self.subTest(flags=flags), redirect_stderr(err), patch.dict(os.environ):
+                os.environ.pop(p.GOOGLE_OAUTH_CLIENT_ENV, None)
+                code, stages, _, _ = self.run_preview(*flags)
+                self.assertEqual(code, 0)
+                self.assertIn("finalize", stages)
+                self.assertEqual("no built-in Google sign-in" in err.getvalue(), warned)
+                self.assertNotIn(self.FAKE_GOOGLE_CLIENT["client_secret"], err.getvalue())
 
 
 
