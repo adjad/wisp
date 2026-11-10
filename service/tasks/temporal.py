@@ -118,15 +118,16 @@ def resolve_named_time(text: str, *, now: datetime | None = None) -> tuple[datet
     phrases: list[tuple[str, str]] = []
     if match := re.search(
             rf"\b(?P<day>{day})\b(?:\s+(?P<word>{timeword}))?"
-            rf"(?:\s+at\s+(?P<clock>{clock}))?\b", value, re.I):
+            rf"(?:\s+at\s+(?P<clock>{clock})|\s+(?P<named>noon|midnight))?\b", value, re.I):
         phrase = match.group("day")
         defaulted = ""
         if match.group("word"):
             phrase += " " + match.group("word")
             defaulted = match.group("word")
-        if match.group("clock"):
-            phrase += (" " if match.group("clock") in {"noon", "midnight"} else " at ")
-            phrase += match.group("clock")
+        # "tomorrow noon" and "tomorrow at noon" are the same time.
+        if said := (match.group("clock") or match.group("named")):
+            phrase += (" " if said in {"noon", "midnight"} and not match.group("word") else " at ")
+            phrase += said
             defaulted = ""
         elif not match.group("word") and match.group("day") != "tonight":
             defaulted = "morning"

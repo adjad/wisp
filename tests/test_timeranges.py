@@ -309,9 +309,11 @@ def test_part_of_day_decides_a_bare_hour() -> None:
             ("tuesday at 12", datetime(2026, 11, 10, 12, 0)),
             ("tomorrow morning at 12", datetime(2026, 11, 11, 12, 0)),
             ("tomorrow evening at 12", datetime(2026, 11, 11, 12, 0)),
-            # At night, 12 stays 00:00 of the named day, as "<day> midnight" does.
-            ("tomorrow night at 12", datetime(2026, 11, 11, 0, 0)),
-            ("tomorrow midnight", datetime(2026, 11, 11, 0, 0)),
+            # At night, 12 is the midnight that ends that night.
+            ("tomorrow night at 12", datetime(2026, 11, 12, 0, 0)),
+            ("tonight at 12", datetime(2026, 11, 11, 0, 0)),
+            ("tonight at 12:30", datetime(2026, 11, 11, 0, 30)),
+            ("tonight at 12pm", datetime(2026, 11, 10, 12, 0)),
             # No part-of-day word: the old reading stands.
             ("monday at 6", datetime(2026, 11, 16, 18, 0)),
             ("tomorrow at 9", datetime(2026, 11, 11, 9, 0)),
@@ -324,6 +326,44 @@ def test_part_of_day_decides_a_bare_hour() -> None:
             ("tonight", datetime(2026, 11, 10, 20, 0))):
         got = resolve_when(phrase, now=PART_NOW)[0]
         check(f"{phrase!r} -> {expected:%a %H:%M}", got == expected, f"got {got}")
+
+
+def test_noon_and_midnight_are_clock_times() -> None:
+    print("\nnoon and midnight work as clock times, with or without 'at'")
+    for phrase, expected in (
+            ("tomorrow at noon", datetime(2026, 11, 11, 12, 0)),
+            ("tomorrow noon", datetime(2026, 11, 11, 12, 0)),
+            ("monday at noon", datetime(2026, 11, 16, 12, 0)),
+            ("friday at midday", datetime(2026, 11, 13, 12, 0)),
+            ("today at noon", datetime(2026, 11, 10, 12, 0)),
+            # With only a day, midnight is 00:00 of that day, in either spelling.
+            ("tomorrow at midnight", datetime(2026, 11, 11, 0, 0)),
+            ("tomorrow midnight", datetime(2026, 11, 11, 0, 0)),
+            ("friday at midnight", datetime(2026, 11, 13, 0, 0)),
+            # With a night, it is the midnight that ends it, in every spelling.
+            ("tonight at midnight", datetime(2026, 11, 11, 0, 0)),
+            ("tonight midnight", datetime(2026, 11, 11, 0, 0)),
+            ("friday night at midnight", datetime(2026, 11, 14, 0, 0)),
+            # On their own: the next one.
+            ("noon", datetime(2026, 11, 10, 12, 0)),
+            ("at noon", datetime(2026, 11, 10, 12, 0)),
+            ("midday", datetime(2026, 11, 10, 12, 0)),
+            ("midnight", datetime(2026, 11, 11, 0, 0)),
+            ("at midnight", datetime(2026, 11, 11, 0, 0))):
+        got = resolve_when(phrase, now=PART_NOW)[0]
+        check(f"{phrase!r} -> {expected:%a %b %-d %H:%M}", got == expected, f"got {got}")
+    after_noon = datetime(2026, 11, 10, 14, 0)
+    check("'noon' after noon -> tomorrow's",
+          resolve_when("noon", now=after_noon)[0] == datetime(2026, 11, 11, 12, 0))
+    # Tuesday afternoon: this Tuesday's noon has passed, so it is next week's.
+    check("'tuesday at noon' said after noon on a Tuesday -> next Tuesday",
+          resolve_when("tuesday at noon", now=after_noon)[0] == datetime(2026, 11, 17, 12, 0))
+    for bad in ("tomorrow at noonish", "tomorrow at lunch", "noon o'clock"):
+        try:
+            resolve_when(bad, now=PART_NOW)
+            check(f"{bad!r} rejected", False, "it was accepted")
+        except BadWhen:
+            check(f"{bad!r} rejected", True)
 
 
 def test_iso_fallback_and_bad_input() -> None:
@@ -354,6 +394,7 @@ if __name__ == "__main__":
     test_clock_times()
     test_day_words()
     test_part_of_day_decides_a_bare_hour()
+    test_noon_and_midnight_are_clock_times()
     test_iso_fallback_and_bad_input()
     print(f"\n{PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)

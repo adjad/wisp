@@ -331,14 +331,17 @@ def resolve_alert_datetime(text: str, *, now: datetime | None = None) -> datetim
     if m := re.search(
             rf"\b(?P<day>today|tomorrow|tonight|{_WEEKDAY})\b"
             rf"(?:\s+(?P<word>{_TIME_WORD}))?"
-            r"(?:\s+at\s+(?P<clock>\d{1,2}(?::\d{2})?\s*(?:am|pm)?|noon|midnight))?",
+            r"(?:\s+(?:at\s+)?(?P<named>noon|midnight)\b"
+            r"|\s+at\s+(?P<clock>\d{1,2}(?::\d{2})?\s*(?:am|pm)?))?",
             lowered, re.I):
         phrase = m.group("day")
         if m.group("word"):
             phrase += " " + m.group("word")
-        if m.group("clock"):
-            phrase += ((" " if m.group("clock") in {"noon", "midnight"} else " at ")
-                       + m.group("clock"))
+        # "tomorrow noon" and "tomorrow at noon" are the same time.
+        if named := m.group("named"):
+            phrase += (" at " if m.group("word") else " ") + named
+        elif m.group("clock"):
+            phrase += " at " + m.group("clock")
         candidates.append(phrase)
     if m := re.search(
             r"\b(?P<clock>\d{1,2}(?::\d{2})?\s*(?:am|pm))\s+"
