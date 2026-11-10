@@ -143,3 +143,163 @@ def test_acknowledging_is_idempotent_and_never_resurrects_a_send():
         assert queue.due() == []
     finally:
         temp.cleanup()
+
+
+class _App:
+    """Stands in for the app's event subscription and its native send."""
+
+    def __init__(self, connected: bool):
+        self.has_subscribers = connected
+        self.sent: list[dict] = []
+        self.drop_on_send = False
+
+    async def request(self, operation, payload):
+        if self.drop_on_send:
+            # The subscription went away between the scheduler's check and the
+            # send; the host proves nothing was dispatched.
+            self.has_subscribers = False
+        if not self.has_subscribers:
+            return {"ok": False, "status": "not_attempted", "dispatch_started": False,
+                    "error": "Wisp app is not connected; nothing was sent"}
+        self.sent.append({"type": operation, **payload})
+        return {"ok": True, "status": "succeeded", "dispatch_started": True}
+
+
+def _tick(monkeypatch, queue, app, hub_events):
+    """One real scheduler sweep, with the app's connection under test control."""
+    from service.assistant import outbox
+    monkeypatch.setattr(outbox, "hub", app)
+    monkeypatch.setattr(outbox, "request", app.request)
+    _sweep(queue, hub_events)
+
+
+def test_a_send_due_before_the_app_connects_waits_and_then_goes_once(monkeypatch):
+    """Wisp was closed at send time and opened inside the late window.
+
+    The first scheduler tick runs before the app has subscribed. The send must
+    stay pending, with no failure notice, and go out once the app is there.
+    """
+    temp, queue = _queue()
+    try:
+        sid = _queued(queue, when_ts=time.time() - 5 * 60)
+        app, events = _App(connected=False), []
+
+        _tick(monkeypatch, queue, app, events)
+        assert queue.get(sid)["status"] == "pending"
+        assert queue.get(sid)["fired_at"] is None
+        assert app.sent == [] and events == []
+
+        app.has_subscribers = True
+        _tick(monkeypatch, queue, app, events)
+        assert queue.get(sid)["status"] == "sent"
+        assert [e["text"] for e in app.sent] == ["I am on my way"]
+        assert [(e["type"], e["ok"]) for e in events] == [("scheduled_send_result", True)]
+
+        # Later ticks never send it again.
+        events.clear()
+        _tick(monkeypatch, queue, app, events)
+        assert len(app.sent) == 1 and events == []
+    finally:
+        temp.cleanup()
+
+
+def test_a_send_more_than_thirty_minutes_late_is_missed_not_sent(monkeypatch):
+    temp, queue = _queue()
+    try:
+        sid = _queued(queue, when_ts=time.time() - 31 * 60)
+        for connected in (False, True):
+            app, events = _App(connected=connected), []
+            _tick(monkeypatch, queue, app, events)
+            assert queue.get(sid)["status"] == "missed"
+            assert app.sent == []
+            # Told once, on the tick that retired it.
+            assert [e["type"] for e in events] == (
+                [] if connected else ["scheduled_send_missed"])
+    finally:
+        temp.cleanup()
+
+
+def test_a_send_that_waited_for_the_app_past_the_window_is_missed(monkeypatch):
+    temp, queue = _queue()
+    try:
+        sid = _queued(queue, when_ts=time.time() - 29 * 60)
+        app, events = _App(connected=False), []
+        _tick(monkeypatch, queue, app, events)
+        assert queue.get(sid)["status"] == "pending" and events == []
+
+        # Still nobody two minutes on: now it is too late to send.
+        queue._db.execute("UPDATE scheduled_sends SET when_ts = when_ts - 120")
+        queue._db.commit()
+        app.has_subscribers = True
+        _tick(monkeypatch, queue, app, events)
+        assert queue.get(sid)["status"] == "missed" and app.sent == []
+        assert [e["type"] for e in events] == ["scheduled_send_missed"]
+    finally:
+        temp.cleanup()
+
+
+def test_the_app_dropping_at_send_time_puts_the_send_back_not_failed(monkeypatch):
+    temp, queue = _queue()
+    try:
+        first = _queued(queue, when_ts=time.time() - 60)
+        second = _queued(queue, when_ts=time.time() - 30)
+        app, events = _App(connected=True), []
+        app.drop_on_send = True
+
+        _tick(monkeypatch, queue, app, events)
+        # Neither was dispatched, neither is failed, and nobody was told.
+        assert queue.get(first)["status"] == "pending"
+        assert queue.get(second)["status"] == "pending"
+        assert app.sent == [] and events == []
+
+        app.drop_on_send, app.has_subscribers = False, True
+        _tick(monkeypatch, queue, app, events)
+        assert queue.get(first)["status"] == "sent"
+        assert queue.get(second)["status"] == "sent"
+        assert len(app.sent) == 2
+    finally:
+        temp.cleanup()
+
+
+def test_a_send_refused_before_dispatch_while_connected_still_fails(monkeypatch):
+    """Putting a row back is only for a missing app, not for every refusal."""
+    temp, queue = _queue()
+    try:
+        sid = _queued(queue, when_ts=time.time() - 5)
+        app, events = _App(connected=True), []
+
+        async def refused(operation, payload):
+            return {"ok": False, "status": "not_attempted", "dispatch_started": False,
+                    "error": "Invalid outbound action payload; nothing was sent"}
+        app.request = refused
+
+        _tick(monkeypatch, queue, app, events)
+        row = queue.get(sid)
+        assert row["status"] == "failed"
+        assert row["error"] == "Invalid outbound action payload; nothing was sent"
+        assert [(e["type"], e["ok"]) for e in events] == [("scheduled_send_result", False)]
+        assert queue.due() == []
+    finally:
+        temp.cleanup()
+
+
+def test_release_only_returns_a_claimed_row():
+    temp, queue = _queue()
+    try:
+        sid = _queued(queue, when_ts=time.time() - 5)
+        assert queue.release(sid) is False          # pending: nothing to release
+        assert queue.claim(sid) is True
+        assert queue.release(sid) is True
+        assert [row["id"] for row in queue.due()] == [sid]
+
+        # Anything that may have gone out, or that the user stopped, stays put.
+        for status in ("sent", "unknown", "failed", "missed", "cancelled"):
+            queue.claim(sid)
+            queue.mark(sid, status)
+            assert queue.release(sid) is False
+            assert queue.get(sid)["status"] == status
+            assert queue.due() == []
+            queue._db.execute("UPDATE scheduled_sends SET status='pending' WHERE id=?", (sid,))
+            queue._db.commit()
+    finally:
+        temp.cleanup()

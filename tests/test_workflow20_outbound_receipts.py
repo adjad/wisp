@@ -349,6 +349,7 @@ def test_scheduler_contradictory_ack_is_unknown(monkeypatch, tmp_path, channel, 
         sink.effects.append({"type": operation, **payload})
         return {"ok": True, "status": status, "dispatch_started": False}
     monkeypatch.setattr(outbox, "request", conflicting_request)
+    monkeypatch.setattr(outbox, "hub", sink)   # the app is connected; only its receipt is wrong
     monkeypatch.setattr(scheduler, "hub", sink)
     queue = Q.OutboundQueue(tmp_path / "outbound.db")
     monkeypatch.setattr(Q, "outbound_queue", queue)
@@ -394,8 +395,17 @@ def test_scheduler_cleanup_and_proven_preflight_failure(monkeypatch, tmp_path, i
                 asyncio.run(scheduler._fire_scheduled_sends())
             assert queue.get(sid)["status"] == "unknown"
         else:
+            # Nothing is listening yet (the first tick after a launch): the
+            # send is not claimed, not failed and not announced. It waits.
             asyncio.run(scheduler._fire_scheduled_sends())
-            assert queue.get(sid)["status"] == "failed" and sink.effects == []
+            assert queue.get(sid)["status"] == "pending"
+            assert sink.effects == [] and sink.notices == []
+            assert [row["id"] for row in queue.due()] == [sid]
+            # The app subscribes: the next tick sends it, exactly once.
+            sink.has_subscribers, sink.mode = True, "success"
+            asyncio.run(scheduler._fire_scheduled_sends())
+            assert queue.get(sid)["status"] == "sent" and len(sink.effects) == 1
+            assert [(e["type"], e["ok"]) for e, _ in sink.notices] == [("scheduled_send_result", True)]
         count = len(sink.effects)
         sink.publish = original_publish
         sink.notices.clear()
@@ -404,5 +414,7 @@ def test_scheduler_cleanup_and_proven_preflight_failure(monkeypatch, tmp_path, i
         if interrupt != "no_subscriber":
             assert queue.get(sid)["status"] == "unknown"
             assert [e["notice_id"] for e, _ in sink.notices] == [sid]
+        else:
+            assert queue.get(sid)["status"] == "sent" and sink.notices == []
     finally:
         queue._db.close()

@@ -328,7 +328,7 @@ async def _fire_scheduled_sends() -> None:
     only acceptable when it goes out roughly when promised.
     """
     from service.assistant.outbound_queue import outbound_queue
-    from service.assistant.outbox import request as app_request
+    from service.assistant.outbox import app_connected, request as app_request
 
     for row in outbound_queue.sweep_stale():
         # Tell the user rather than silently dropping it. A queued message that
@@ -357,7 +357,15 @@ async def _fire_scheduled_sends() -> None:
         }, dedupe_key="scheduled_unknown:" + row["id"],
            target={"type": "scheduled_unknown", "id": row["id"]})
 
-    for row in outbound_queue.due():
+    rows = outbound_queue.due()
+    # The first tick after a launch runs before the app has subscribed. A send
+    # that came due while Wisp was closed is still wanted for up to 30 minutes
+    # (outbound_queue._STALE_AFTER_S), so leave it pending, unclaimed, and try
+    # again next tick. sweep_stale above retires it as missed if the app never
+    # comes. app_connected allows for the app's routine reconnect.
+    if rows and not await app_connected():
+        return
+    for row in rows:
         if not outbound_queue.claim(row["id"]):
             continue
         if row["channel"] == "email":
@@ -369,8 +377,16 @@ async def _fire_scheduled_sends() -> None:
             res = await app_request("send_message",
                                     {"to": row["recipient"], "text": row["body"]})
         ok = res.get("ok") is True and ("status" not in res or res["status"] == "succeeded")
-        if not ok and not (res.get("ok") is False and res.get("status") == "not_attempted"
-                           and res.get("dispatch_started") is False):
+        # Only the host can say this: the send never reached publication.
+        not_started = (res.get("ok") is False and res.get("status") == "not_attempted"
+                       and res.get("dispatch_started") is False)
+        if not_started and not await app_connected(0):
+            # The app dropped between the check above and this send. Nothing
+            # was dispatched, so the row goes back to pending for the next
+            # tick. The rest of this pass would only meet the same absence.
+            outbound_queue.release(row["id"])
+            break
+        if not ok and not not_started:
             # The claim already left the pending queue. A lost/generic native
             # receipt must never invite another send or a definite failed UI.
             outbound_queue.mark(row["id"], "unknown", "Sending was not confirmed; check the sending app before retrying")
