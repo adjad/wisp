@@ -251,6 +251,28 @@ def find_contacts(name: str) -> list[dict]:
     return out
 
 
+def contact_name_for_handle(handle: str) -> str:
+    """The saved contact one literal number or address belongs to, or "".
+
+    For naming a send's recipient on its card and receipt. A handle saved
+    exactly as given wins over the last-10-digits match, so two cards that
+    hold the same number in different formats can't trade names.
+    """
+    h = (handle or "").strip()
+    key = _norm_handle(h)
+    if not h or not key:
+        return ""
+    shown = _contacts.get(key, "")
+    for name, handles in _name_handles.items():
+        if h in handles:
+            # The name as it is saved when the two maps agree, else the same
+            # title-cased form find_contacts reports.
+            if shown.strip().lower() == name:
+                return shown.strip()
+            return name.title() if name.islower() else name
+    return shown.strip()
+
+
 # Digits-only projection of the message cache, for "has this number actually
 # been texted?" checks. Memoized on the cache's identity — stripping every
 # non-digit out of the full history is far too expensive to redo per handle

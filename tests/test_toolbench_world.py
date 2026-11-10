@@ -65,7 +65,9 @@ def test_outbound_receipts_are_classified_as_success(fk):
     assert fk["draft_email"](to="dad@example.com", subject="s", body="b").startswith("Draft opened in Mail")
     assert status("draft_email", fk["draft_email"](to="Dad", subject="s", body="b")) == "succeeded"
     assert status("forward_email", fk["forward_email"](message_id="m-1002", to="acct@example.com")) == "succeeded"
-    assert fk["forward_email"](message_id="m-1002", to="Dad").startswith("Forwarded to dad@example.com")
+    assert fk["forward_email"](message_id="m-1002", to="Dad") == "Forwarded to Dad (dad@example.com)."
+    # A literal handle is named by the contact it belongs to, as the real tools do.
+    assert fk["send_message"](to="+1 555-555-0101", text="hi") == "Message sent to Mom (+1 555-555-0101)."
     sched = fk["schedule_send"](channel="message", to="Mom", when="tomorrow at 9am", body="hi")
     assert sched.startswith("Scheduled: text to Mom (+1 555-555-0101)") and status("schedule_send", sched) == "succeeded"
     mail = fk["schedule_send"](channel="email", to="Dad", when="in 2 hours", body="hi", subject="s")
