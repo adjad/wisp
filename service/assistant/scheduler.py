@@ -219,9 +219,7 @@ async def run() -> None:
         # baseline on first use, then publishes only terminal transitions or a
         # one-time stalled alert; ordinary progress commentary stays quiet.
         try:
-            from service.codex_monitor import codex_monitor
-            for event in codex_monitor.poll_events():
-                await hub.publish(event)
+            await _poll_codex()
         except Exception:  # noqa: BLE001 — Codex may not be installed/open yet
             pass
         # Proactive attention: notice a commitment in a text that is not on the calendar.
@@ -285,6 +283,18 @@ async def run() -> None:
         except Exception:  # noqa: BLE001 — never break the scheduler loop
             pass
         await asyncio.sleep(TICK_S)
+
+
+async def _poll_codex() -> None:
+    """One Codex poll. The read runs on a worker thread: it opens Codex's own
+    SQLite files, which can be large and can make a statement wait up to two
+    seconds on Codex's lock, and none of that may hold up streaming answers or
+    approvals. Awaited by the loop, so only one poll runs at a time (its load,
+    compare and save of the checkpoint is not re-entrant); what it found is
+    published back here on the event loop."""
+    from service.codex_monitor import codex_monitor
+    for event in await asyncio.to_thread(codex_monitor.poll_events):
+        await hub.publish(event)
 
 
 async def _checkin_tick(now: float | None = None) -> None:

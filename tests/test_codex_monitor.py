@@ -283,3 +283,60 @@ def test_reader_closes_connections_on_success_and_error(tmp_path: Path, monkeypa
     for connection in connections:
         with pytest.raises(sqlite3.ProgrammingError, match="closed"):
             connection.execute("SELECT 1")
+
+
+async def test_the_scheduler_polls_off_the_event_loop_and_publishes_on_it(monkeypatch):
+    """The poll reads Codex's own databases, so it must not run on the loop that
+    streams answers; the alerts it finds are still published from that loop."""
+    import threading
+    from service import codex_monitor as monitor_module
+    from service.assistant import scheduler
+
+    loop_thread = threading.current_thread()
+    found = [{"type": "codex_task_update", "kind": "completed", "thread_id": "fixture-1",
+              "title": "Fixture task", "status": "completed", "latest_update": "Done."},
+             {"type": "codex_task_update", "kind": "stalled", "thread_id": "fixture-2",
+              "title": "Other fixture", "status": "inProgress", "latest_update": ""}]
+    polled, published = [], []
+
+    def poll():
+        polled.append(threading.current_thread())
+        return list(found)
+
+    async def publish(event, **kwargs):
+        published.append((event, threading.current_thread(), kwargs))
+        return event
+
+    monkeypatch.setattr(monitor_module.codex_monitor, "poll_events", poll)
+    monkeypatch.setattr(scheduler.hub, "publish", publish)
+    await scheduler._poll_codex()
+    assert len(polled) == 1 and polled[0] is not loop_thread
+    assert published == [(found[0], loop_thread, {}), (found[1], loop_thread, {})]
+
+
+async def test_a_missing_codex_install_reaches_the_loop_guard_and_publishes_nothing(monkeypatch):
+    from service import codex_monitor as monitor_module
+    from service.assistant import scheduler
+
+    published = []
+
+    def poll():
+        raise CodexMonitorUnavailable("Codex is not installed")
+
+    async def publish(event, **kwargs):
+        published.append(event)
+
+    monkeypatch.setattr(monitor_module.codex_monitor, "poll_events", poll)
+    monkeypatch.setattr(scheduler.hub, "publish", publish)
+    with pytest.raises(CodexMonitorUnavailable):
+        await scheduler._poll_codex()
+    assert published == []
+
+
+def test_the_scheduler_loop_only_polls_codex_through_the_worker_thread():
+    import inspect
+    from service.assistant import scheduler
+
+    loop = inspect.getsource(scheduler.run)
+    assert "await _poll_codex()" in loop and "poll_events" not in loop
+    assert "asyncio.to_thread(codex_monitor.poll_events)" in inspect.getsource(scheduler._poll_codex)
