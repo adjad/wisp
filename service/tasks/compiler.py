@@ -304,7 +304,15 @@ _SOURCE_BACKED = re.compile(
     r"reminders?|notes?|what'?s\s+on|my\s+day)\b", re.I)
 _POLITE = (r"(?:(?:hey|hi|ok|okay|please|can\s+you|could\s+you|would\s+you|"
            r"i\s+need\s+you\s+to|go\s+ahead\s+and)[,\s]+)*")
-_WHO = r"[A-Za-z0-9'’.\-+@_]+(?:\s+[A-Za-z0-9'’.\-+@_]+){0,2}"
+# No recipient word is a time: "text mom tomorrow at 7pm" is to mom, tomorrow,
+# not to a contact called "mom tomorrow". A name such as "Sunday" is the price.
+_WHO_NOT_TIME = (
+    r"(?!(?:today|tomorrow|tommorow|tommorrow|tmrw|tmrow|tonight|tonite|next|this|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b"
+    r"|(?:at|on|by)\s+(?:\d|noon\b|midnight\b))"
+)
+_WHO = (rf"{_WHO_NOT_TIME}[A-Za-z0-9'’.\-+@_]+"
+        rf"(?:\s+{_WHO_NOT_TIME}[A-Za-z0-9'’.\-+@_]+){{0,2}}")
 # A phone number as people type it ("+1 650 555 0134", "(650) 555-0134") is ONE
 # recipient. Without this the name pattern took "+1" as the recipient and the rest
 # of the number became the body of the message.
@@ -315,11 +323,15 @@ _WHEN_PHRASE = (
     r"in\s+(?:\d+|an?|one|two|three|four|five|six|seven|eight|nine|ten|"
     r"fifteen|twenty|thirty|forty|sixty)\s*"
     r"(?:minutes?|mins?|hours?|hrs?|days?|weeks?)|"
-    r"(?:at|on|by)?\s*(?:this|next|tomorrow|tonight|later\s+today)?\s*"
+    # "at 7pm tomorrow", "7pm on friday": a clock, then its day.
+    r"(?:(?:at|by)\s+)?(?:\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?|noon|midnight)\s+(?:on\s+)?"
+    r"(?:today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|"
+    r"(?:at|on|by)?\s*(?:this|next|tomorrow|tonight|later\s+today)?\s*(?:(?:at|by)\s+)?"
     r"(?:\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?|noon|midnight|"
     r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
     r"morning|afternoon|evening|night)"
-    r"(?:\s+at\s+(?:\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?|noon|midnight))?")
+    r"(?:\s+at\s+(?:\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?|noon|midnight))?|"
+    r"today|tomorrow|tonight")
 # The ordinary email-send compiler must not consume reply/forward requests.
 # Explicit email replies have their own source-resolution path below.
 _REPLY_INTENT = re.compile(
@@ -640,7 +652,8 @@ def _outbound_plan(match: re.Match, text: str, *, channel: str,
         },
     )
     from service.tasks.outbound_language import mark_body_ambiguity
-    mark_body_ambiguity(plan, groups.get("body") or "", scheduled=bool(when_text))
+    mark_body_ambiguity(plan, groups.get("body") or "", scheduled=bool(when_text),
+                        leading=match.re is _MESSAGE_SEND_BARE)
     plan.recompute_status()
     return plan
 
