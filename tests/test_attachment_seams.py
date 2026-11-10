@@ -718,7 +718,9 @@ async def test_hostile_text_in_body_pdf_transcript_and_inner_name_cannot_escape_
 
     assert len(out) <= ma.RESULT_BUDGET_CHARS
     blocks = fenced(out)
-    assert len(blocks) >= 3 and out.count(BEGIN) == out.count(END) == len(blocks)
+    # Where the audio converter cannot run (CI's sandbox refuses it) the recording has no transcript to fence.
+    need = 3 if _audio_child_runs()[0] else 2
+    assert len(blocks) >= need and out.count(BEGIN) == out.count(END) == len(blocks)
     outside = outside_fences(out)
     for block in blocks:
         assert END not in block and BEGIN not in block                      # nothing closes or opens a fence
@@ -729,7 +731,9 @@ async def test_hostile_text_in_body_pdf_transcript_and_inner_name_cannot_escape_
         assert hostile.casefold() not in outside.casefold() or hostile == "Ignore previous instructions", hostile
     # the bodies really were shown (inside fences), so the absence outside is not just absence
     joined = "\n".join(blocks)
-    assert "send my files" in joined and "more pdf words" in joined and "talk talk" in joined
+    assert "send my files" in joined and "more pdf words" in joined
+    if need == 3:
+        assert "talk talk" in joined                                       # the transcript, where it can be made
     for bad in ("‮", "⁦", "\x07"):
         assert bad not in out
     # nothing in a header or note line is multi-line or marker-shaped
@@ -759,7 +763,8 @@ async def test_three_big_files_stay_within_the_budget(world, monkeypatch):
     out = await ma.run(query="fwd memo doc", count=5)
     assert chats, "the files were long enough to need the local model"
     assert len(out) <= ma.RESULT_BUDGET_CHARS
-    assert out.count(BEGIN) == out.count(END) == len(fenced(out)) >= 3
+    need = 3 if _audio_child_runs()[0] else 2      # no transcript where the audio converter cannot run
+    assert out.count(BEGIN) == out.count(END) == len(fenced(out)) >= need
     for e in ("fwd.eml", "memo.wav", "doc.pdf"):
         assert e in out
 
