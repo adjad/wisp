@@ -1025,8 +1025,33 @@ def encode_with_afconvert(wav: bytes, tmp_path, fmt: str, codec: str) -> bytes |
     return target.read_bytes()
 
 
-AFCONVERT = pytest.mark.skipif(not (os.path.exists("/usr/bin/afconvert") and _child_can_start()),
-                               reason="needs macOS's afconvert and a child process")
+_AFCONVERT_WHY: list = []
+
+
+def _afconvert_probe() -> str:
+    """"" when the audio job really works here (afconvert is run once on a tiny WAV through the same child
+    path the tests use), else a plain reason. The CI sandbox refuses to exec /usr/bin/afconvert."""
+    if _AFCONVERT_WHY:
+        return _AFCONVERT_WHY[0]
+    why = ""
+    if not os.path.exists("/usr/bin/afconvert"):
+        why = "needs macOS's afconvert"
+    elif not _child_can_start():
+        why = "needs a child process"
+    else:
+        try:
+            probe = run(D.run_attachment_child("audio", "probe.wav", wav_file(0.2), timeout=60))
+            if not isinstance(probe, dict) or "seconds" not in probe:
+                why = "afconvert did not give a reading of a tiny WAV here"
+        except (OSError, PermissionError) as error:
+            why = f"afconvert cannot be run here ({type(error).__name__})"
+        except Exception as error:  # noqa: BLE001 - a refused exec, a non-zero exit, "couldn't be read"
+            why = f"afconvert cannot read a tiny WAV here ({type(error).__name__}: {str(error)[:60]})"
+    _AFCONVERT_WHY.append(why)
+    return why
+
+
+AFCONVERT = pytest.mark.skipif(bool(_afconvert_probe()), reason=_afconvert_probe() or "afconvert works")
 M4A_HEAD = b"\x00\x00\x00\x1cftypM4A " + b"\x00" * 40
 
 
@@ -1448,3 +1473,63 @@ def test_the_eml_jobs_get_no_work_directory_and_part_is_the_last_argument():
         read_eml(raw)
         read_part(raw, 0)
     assert captured[0] == ["eml", "forwarded.eml"] and captured[1] == ["eml_part", "forwarded.eml", "", "0"]
+
+
+# ================================================== invisible characters, more risky kinds, archives of programs
+
+INVISIBLES = ["\u200b", "\u2060", "\u00ad", "\U000E0041", "\ufe0f", "\u180e", "\u3164", "\u200d", "\u034f"]
+
+
+@pytest.mark.parametrize("invisible", INVISIBLES)
+@pytest.mark.parametrize("suffix", ["command", "app", "sh", "scpt", "workflow", "jar", "exe", "terminal"])
+def test_an_invisible_character_inside_a_risky_suffix_is_still_high(suffix, invisible):
+    name = f"Invoice.{suffix[:1]}{invisible}{suffix[1:]}"
+    result = A.inspect(name, b"hello")
+    assert result["risk"]["level"] == "high", name
+    assert A._suffix(name) == suffix
+
+
+@pytest.mark.parametrize("invisible", INVISIBLES)
+def test_an_invisible_character_in_a_harmless_name_is_a_caution_with_a_reason(invisible):
+    risk = A.inspect(f"Rep{invisible}ort.pdf", pdf_bytes())["risk"]
+    assert risk["level"] == "caution" and any("hidden characters" in r for r in risk["reasons"])
+    assert any("hidden characters" in w for w in A.inspect(f"Rep{invisible}ort.pdf", pdf_bytes())["warnings"])
+
+
+def test_a_hidden_character_between_the_dots_does_not_hide_a_tucked_program_type():
+    assert A.inspect("invoice.exe\u200b.pdf", b"hello")["risk"]["level"] == "high"
+    assert A.inspect("run.exe\u00a0", b"hello")["risk"]["level"] == "high"
+
+
+@pytest.mark.parametrize("name", ["a.fileloc", "a.mobileconfig", "a.shortcut", "a.wflow", "a.saver", "a.prefpane",
+                                  "a.qlgenerator", "a.mdimporter", "a.action", "a.osax", "a.dylib", "a.terminal",
+                                  "a.command", "a.tool", "a.scptd", "a.applescript", "a.jnlp", "a.url", "a.webloc",
+                                  "a.inetloc", "a.sh", "a.zsh", "a.js"])
+def test_more_kinds_that_run_or_open_something_are_high(name):
+    assert risk_of(name)["level"] == "high"
+
+
+@pytest.mark.parametrize("name", ["a.py", "a.pl", "a.rb", "a.bash"])
+def test_a_script_is_at_least_a_caution(name):
+    risk = risk_of(name, b"print('hi')\n")
+    assert risk["level"] in ("caution", "high") and any("script" in r for r in risk["reasons"])
+    assert A.inspect(name, b"print('hi')\n").get("family") == ""        # reading is unchanged
+
+
+@pytest.mark.parametrize("entry", ["Tool.app/Contents/Info.plist", "x/Setup.pkg/Contents/a", "Thing.bundle/a",
+                                   "F.framework/Versions/A/F", "k.kext/Contents/x", "p.plugin/x",
+                                   "P.prefPane/Contents/x", "s.saver/x", "w.workflow/Contents/document.wflow2",
+                                   "a.action/x", "Tool.app/"])
+def test_an_archive_holding_a_bundle_is_a_caution(entry):
+    result = A.inspect("stuff.zip", zipped({"readme.txt": b"hi", entry: b"x"}))
+    assert result["risk"]["level"] in ("caution", "high")
+    assert result["holds_bundle"] is True
+    if result["risk"]["level"] == "caution":
+        assert result["risk"]["reasons"] == ["It holds an app."]
+
+
+def test_an_archive_holding_a_script_is_a_caution_and_plain_documents_stay_clean():
+    result = A.inspect("stuff.zip", zipped({"notes/run.py": b"print(1)"}))
+    assert result["risk"] == {"level": "caution", "reasons": ["It holds a program or script."]}
+    plain = A.inspect("docs.zip", zipped({"a.pdf": b"%PDF", "b/c.txt": b"hi", "d.docx": b"PK"}))
+    assert plain["risk"] == {"level": "", "reasons": []} and plain["holds_bundle"] is False

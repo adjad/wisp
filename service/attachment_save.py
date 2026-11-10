@@ -36,6 +36,7 @@ import os
 import secrets
 import subprocess
 import sys
+import threading
 import time
 import unicodedata
 from pathlib import Path
@@ -48,6 +49,11 @@ _GONE = "That file isn't there any more, so nothing was saved."
 _FOLDER_RULE = "Wisp only saves into a folder in your home folder, like Downloads or Documents."
 _NO_MARK = "Wisp couldn't mark the file as downloaded, so it didn't save it."
 _NOT_WRITTEN = "Wisp couldn't write the file, so nothing was saved."
+_UNCHECKED = "Wisp couldn't check the file, so it didn't save it."
+_AMBIGUOUS = "More than one file looks like the one you confirmed, so nothing was saved."
+_CARD_MAX = 200
+_CARD_FOLDER_MAX = 90
+_LEVELS = frozenset({"", "low", "none", "ok", "caution", "high"})
 _QUARANTINE = b"com.apple.quarantine"
 _MAX_CHARS = 120
 _MAX_BYTES = 200                    # a file name is limited to 255 bytes; room for " (99)"
@@ -161,13 +167,32 @@ def _spell_out(folder: str | None) -> str | None:
     return os.path.join(_home(), _HOME_FOLDERS[first], *[w for w in words[1:] if w])
 
 
+def _true_case(path: str) -> str:
+    """The folder spelled as it is on disk (`~/downloads` -> `.../Downloads`), when it is the same directory."""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError:
+        return path
+    try:
+        found = _fd_path(fd)
+        if found and found != path and found.casefold() == path.casefold():
+            mine, there = os.fstat(fd), os.stat(found)
+            if (mine.st_dev, mine.st_ino) == (there.st_dev, there.st_ino):
+                return found
+        return path
+    except OSError:
+        return path
+    finally:
+        os.close(fd)
+
+
 def check_folder(folder: str | None) -> tuple[str, str]:
     """(the real absolute folder, "") when Wisp may save there, else ("", a plain reason)."""
     try:
         spelled = _spell_out(folder)
         if spelled is None:
             return "", _FOLDER_RULE
-        real = os.path.realpath(spelled)
+        real = _true_case(os.path.realpath(spelled))
         home = _home()
         if not real.casefold().startswith(home.casefold() + os.sep):
             return "", _FOLDER_RULE
@@ -226,23 +251,73 @@ def _menu(pairs: list) -> str:
     return "Which file? " + "; ".join(items)
 
 
+def _fit(text: str, room: int) -> str:
+    """`text` cut to `room` characters, with an ellipsis where it was cut."""
+    if len(text) <= room:
+        return text
+    return text[:room - 1].rstrip() + "…" if room >= 1 else ""
+
+
+def _fit_name(name: str, room: int) -> str:
+    """A file name cut to `room` characters: the stem is cut, the real last extension stays."""
+    if len(name) <= room:
+        return name
+    stem, ext = os.path.splitext(name)
+    if not stem or len(ext) > _MAX_EXT or room < len(ext) + 2:
+        return _fit(name, room)
+    return stem[:room - len(ext) - 1].rstrip() + "…" + ext
+
+
+def _fit_folder(relative: str) -> str:
+    """The destination whole when it is short; otherwise its first and last parts with … between."""
+    if len(relative) <= _CARD_FOLDER_MAX:
+        return relative
+    parts = relative.split("/")
+    head, tail = parts[0], []
+    for part in reversed(parts[1:]):
+        if len("/".join([head, "…", part, *tail])) > _CARD_FOLDER_MAX:
+            break
+        tail.insert(0, part)
+    if tail:
+        return "/".join([head, "…", *tail])
+    return "…" + parts[-1][-(_CARD_FOLDER_MAX - 1):]
+
+
 def _card(email, f, save_name: str, folder: str) -> str:
+    """One line, at most 200 characters, always ending in the whole destination. The file name, sender and
+    subject (or chat) are cut one by one, the longest first; the name keeps its real extension."""
     ext = _extension(save_name)
     kind = ext.upper() if 0 < len(ext) <= 6 and ext.isalnum() else "file"
     detail = f"{kind}, {mail_attachments._size_text(int(f.size))}" if f.size and f.size > 0 else kind
-    where = _show(_relative(folder), 60)
-    who = _who(email)
-    name = _show(save_name, 80)
-    if email.source == "messages":
-        own = f"{who}'s message" if who else "a message"
-        if email.from_me:
-            own = "your message"
-        chat = _show(email.chat, 50)
-        origin = own + (f" in {chat}" if chat else "")
-    else:
-        subject = _show(email.subject, 50)
-        origin = (f"{who}'s email" if who else "an email") + (f" “{subject}”" if subject else "")
-    return f"Save “{name}” ({detail}) from {origin} to {where}"[:200]
+    where = _fit_folder(_show(_relative(folder), 400))
+    parts = {"name": _show(save_name, 400), "who": _who(email)}
+    messages = email.source == "messages"
+    parts["more"] = _show(email.chat if messages else email.subject, 100)
+    real_ext = os.path.splitext(parts["name"])[1]
+    keep = len(real_ext) + 2 if 0 < len(real_ext) <= _MAX_EXT else 8
+
+    def render(size: dict) -> str:
+        name = _fit_name(parts["name"], size["name"])
+        who = _fit(parts["who"], size["who"])
+        more = _fit(parts["more"], size["more"])
+        if messages:
+            own = "your message" if email.from_me else (f"{who}'s message" if who else "a message")
+            origin = own + (f" in {more}" if more else "")
+        else:
+            origin = (f"{who}'s email" if who else "an email") + (f" “{more}”" if more else "")
+        return f"Save “{name}” ({detail}) from {origin} to {where}"
+
+    size = {k: len(v) for k, v in parts.items()}
+    for floors in ({"name": min(size["name"], keep + 4), "who": min(size["who"], 6), "more": min(size["more"], 6)},
+                   {"name": min(size["name"], keep), "who": min(size["who"], 1), "more": min(size["more"], 1)}):
+        while len(render(size)) > _CARD_MAX:
+            room = [k for k in size if size[k] > floors[k]]
+            if not room:
+                break
+            size[max(room, key=lambda k: size[k])] -= 1
+        if len(render(size)) <= _CARD_MAX:
+            break
+    return render(size)
 
 
 async def prepare(query=None, name=None, start=None, end=None, account=None,
@@ -293,29 +368,60 @@ async def prepare(query=None, name=None, start=None, end=None, account=None,
 
 # --- save ----------------------------------------------------------------------------
 
+def _strong(frozen: dict) -> bool:
+    """True when the frozen file has an identity that survives a re-index: a Message-ID, a Gmail message
+    or a Messages id. Apple Mail's own row number and part id do not count."""
+    return bool(frozen["rfc"] or frozen["gmail_message"] or frozen["message_id"])
+
+
+def _differs(frozen_value, now) -> bool:
+    """Both sides name an id and they are not the same id."""
+    return bool(frozen_value) and bool(now) and str(now)[:600] != frozen_value
+
+
+def _same_basics(frozen: dict, email, f) -> bool:
+    return (email.source == frozen["source"] and f.name.casefold() == frozen["name"].casefold()
+            and int(f.nth or 1) == frozen["nth"] and int(f.size or 0) == frozen["size"])
+
+
 def _same(frozen: dict, email, f) -> bool:
-    if email.source != frozen["source"] or abs(float(email.ts or 0) - frozen["ts"]) > 1.0:
+    """The file the person confirmed. With a stable identity (a Message-ID, a Gmail message or a Messages id)
+    every id that both sides have must agree. Apple Mail's row number and part id can be renumbered by an index
+    rebuild, so they are compared only when there is no Message-ID match to stand on; a rebuilt index with the
+    same Message-ID is the same file. Without any stable identity this is only the basics plus the time to the
+    second, sender and subject; `_locate` then insists on exactly one such file."""
+    if not _same_basics(frozen, email, f) or abs(float(email.ts or 0) - frozen["ts"]) > 1.0:
         return False
-    if f.name.casefold() != frozen["name"].casefold() or int(f.nth or 1) != frozen["nth"]:
-        return False
-    if int(f.size or 0) != frozen["size"]:
-        return False
-    if frozen["source"] == "messages" and f.message_id != frozen["message_id"]:
-        return False
+    if not _strong(frozen):
+        return (int(float(email.ts or 0)) == int(frozen["ts"])
+                and str(email.sender or "")[:300] == frozen["sender"]
+                and str(email.subject or "")[:300] == frozen["subject"])
+    for key in ("gmail_account", "gmail_message", "message_id"):
+        if _differs(frozen[key], getattr(f, key)):
+            return False
     if frozen["rfc"] and email.rfc:
         return email.rfc[:300] == frozen["rfc"]
+    for key in ("rowid", "attachment_id", "gmail_attachment"):
+        now = getattr(f, key)
+        if key == "rowid":
+            if frozen[key] and now and int(now) != frozen[key]:
+                return False
+        elif _differs(frozen[key], now):
+            return False
     return str(email.sender or "")[:300] == frozen["sender"] and str(email.subject or "")[:300] == frozen["subject"]
 
 
 async def _locate(frozen: dict):
+    """(email, file, ambiguous). `ambiguous` when the file has no stable identity and two look the same."""
     emails, _notes = await mail_attachments.find(
         name=frozen["name"], start=frozen["ts"] - _WINDOW_S, end=frozen["ts"] + _WINDOW_S,
         source=frozen["source"], count=10, most=10)
-    for email in emails or []:
-        for f in email.files:
-            if _same(frozen, email, f):
-                return email, f
-    return None, None
+    found = [(email, f) for email in emails or [] for f in email.files if _same(frozen, email, f)]
+    if not found:
+        return None, None, False
+    if not _strong(frozen) and len(found) > 1:
+        return None, None, True
+    return found[0][0], found[0][1], False
 
 
 def _set_quarantine(fd: int, value: bytes) -> bool:
@@ -357,7 +463,17 @@ def _remove(dirfd: int, name: str, fd: int) -> None:
         pass
 
 
-def _write(folder: str, save_name: str, data: bytes) -> str:
+class _Job:
+    """Shared between the write thread and the task that waits for it, so a cancel cannot leave a file."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.abandoned = False
+        self.final = ""
+        self.ident: tuple | None = None
+
+
+def _write(folder: str, save_name: str, data: bytes, job: _Job | None = None) -> str:
     """Create the file in the verified `folder` and return its final name. Raises _Stop(plain reason)."""
     real, why = check_folder(folder)
     if not real or real != folder:
@@ -368,7 +484,7 @@ def _write(folder: str, save_name: str, data: bytes) -> str:
         raise _Stop(_NOT_WRITTEN)
     try:
         opened = _fd_path(dirfd)
-        if opened and opened != real:
+        if not opened or opened != real:
             raise _Stop(_FOLDER_RULE)
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
         for n in range(1, _MAX_COPIES + 1):
@@ -396,6 +512,12 @@ def _write(folder: str, save_name: str, data: bytes) -> str:
                 os.fchmod(fd, 0o644)
             except OSError:
                 raise _Stop(_NOT_WRITTEN)
+            if job is not None:
+                with job.lock:
+                    if job.abandoned:
+                        raise _Stop(_NOT_WRITTEN)
+                    made = os.fstat(fd)
+                    job.final, job.ident = candidate, (made.st_dev, made.st_ino)
         except BaseException:
             _remove(dirfd, candidate, fd)
             raise
@@ -404,6 +526,38 @@ def _write(folder: str, save_name: str, data: bytes) -> str:
         return candidate
     finally:
         os.close(dirfd)
+
+
+def _discard(folder: str, name: str, ident) -> None:
+    """Remove the file this save created, if the name still points at it."""
+    try:
+        dirfd = os.open(folder, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | os.O_NOFOLLOW)
+    except OSError:
+        return
+    try:
+        there = os.stat(name, dir_fd=dirfd, follow_symlinks=False)
+        if ident is None or (there.st_dev, there.st_ino) == tuple(ident):
+            os.unlink(name, dir_fd=dirfd)
+    except OSError:
+        pass
+    finally:
+        os.close(dirfd)
+
+
+async def _write_safely(real: str, save_name: str, data: bytes) -> tuple[str, tuple | None]:
+    """_write in a thread that a cancel cannot interrupt: a cancelled save removes the file once it exists."""
+    job = _Job()
+    task = asyncio.ensure_future(asyncio.to_thread(_write, real, save_name, data, job))
+    try:
+        final = await asyncio.shield(task)
+    except asyncio.CancelledError:
+        with job.lock:
+            job.abandoned = True
+            final, ident = job.final, job.ident
+        if final:
+            _discard(real, final, ident)
+        raise
+    return final, job.ident
 
 
 def _quarantine(fd: int) -> bool:
@@ -424,6 +578,19 @@ def _stopped(reason: str) -> dict:
     return {"ok": False, "wrote": False, "reason": reason}
 
 
+def _verdict(info):
+    """(level, reasons) from the child's answer, or None when it is not a clear answer."""
+    risk = info.get("risk") if isinstance(info, dict) else None
+    if not isinstance(risk, dict):
+        return None
+    level = risk.get("level")
+    if not isinstance(level, str) or level not in _LEVELS:
+        return None
+    reasons = risk.get("reasons")
+    reasons = [r for r in reasons if isinstance(r, str) and r.strip()] if isinstance(reasons, list) else []
+    return ("caution" if level == "caution" else "high" if level == "high" else "", reasons)
+
+
 def _sentence(text) -> str:
     cleaned = mail_attachments._pretty(str(text or ""), 300)
     return cleaned if not cleaned or cleaned[-1] in ".!?" else cleaned + "."
@@ -437,7 +604,9 @@ async def save(frozen: dict) -> dict:
         real, why = check_folder(frozen["folder"])
         if not real or real != frozen["folder"] or clean_name(frozen["name"]) != frozen["save_name"]:
             return _stopped(why or _NOT_YOURS)
-        email, f = await _locate(frozen)
+        email, f, ambiguous = await _locate(frozen)
+        if ambiguous:
+            return _stopped(_AMBIGUOUS)
         if f is None:
             return _stopped(_GONE)
         try:
@@ -446,28 +615,36 @@ async def save(frozen: dict) -> dict:
             return _stopped(_sentence(error) or "Wisp couldn't read that file, so nothing was saved.")
         if not data:
             return _stopped("The file is empty, so nothing was saved.")
-        try:
-            info = await documents.run_attachment_child("inspect", frozen["name"], data, timeout=_INSPECT_S)
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001
-            return _stopped("Wisp couldn't check the file, so it didn't save it.")
-        risk = info.get("risk") if isinstance(info, dict) else None
-        level = str(risk.get("level") or "") if isinstance(risk, dict) else ""
-        reasons = [r for r in (risk.get("reasons") or []) if isinstance(r, str) and r.strip()] \
-            if isinstance(risk, dict) and isinstance(risk.get("reasons"), list) else []
+        names = [frozen["save_name"]] + ([frozen["name"]] if frozen["name"] != frozen["save_name"] else [])
+        verdicts = []
+        for each in names:      # the name that will be written, and the name the sender gave
+            try:
+                info = await documents.run_attachment_child("inspect", each, data, timeout=_INSPECT_S)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                return _stopped(_UNCHECKED)
+            verdict = _verdict(info)
+            if verdict is None:
+                return _stopped(_UNCHECKED)
+            verdicts.append(verdict)
+        level = "high" if any(v[0] == "high" for v in verdicts) else "caution" if any(
+            v[0] == "caution" for v in verdicts) else ""
+        reasons = [r for v in verdicts if v[0] == level for r in v[1]]
         first = _sentence(reasons[0]) if reasons else ""
         if level == "high":
             where = "message in Messages" if frozen["source"] == "messages" else "email in Mail"
             return _stopped(f"Wisp didn't save it: {first or 'it looks unsafe.'} Open the {where} if you still want it.")
-        if level != "caution" and level not in ("", "low", "none", "ok"):
-            return _stopped("Wisp couldn't check the file, so it didn't save it.")
         try:
-            final = await asyncio.to_thread(_write, real, frozen["save_name"], data)
+            final, ident = await _write_safely(real, frozen["save_name"], data)
         except _Stop as stop:
             return _stopped(str(stop))
         path = os.path.join(real, final)
-        shown = await asyncio.to_thread(_open_in_finder, path)
+        try:
+            shown = await asyncio.to_thread(_open_in_finder, path)
+        except asyncio.CancelledError:
+            _discard(real, final, ident)        # cancelled before the person was told: leave nothing behind
+            raise
         text = f"Saved “{_show(final, 130)}” to {_relative(real)}."
         if shown:
             text += " Shown in Finder."

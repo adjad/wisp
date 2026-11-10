@@ -492,9 +492,13 @@ async def test_quarantine_attribute_is_on_the_saved_file(world, home, tmp_path):
     assert abs(int(stamp, 16) - time.time()) < 120
     if sys.platform == "darwin":
         import subprocess
-        out = subprocess.run(["/usr/bin/xattr", "-p", "com.apple.quarantine", got["path"]], capture_output=True,
-                             text=True, timeout=10)
-        assert out.stdout.strip() == value.decode()
+        try:        # an optional cross-check: the CI sandbox refuses to exec /usr/bin/xattr
+            out = subprocess.run(["/usr/bin/xattr", "-p", "com.apple.quarantine", got["path"]],
+                                 capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            return
+        if out.returncode == 0:
+            assert out.stdout.strip() == value.decode()
 
 
 async def test_no_quarantine_means_no_file(world, home, monkeypatch):
@@ -576,3 +580,284 @@ async def test_save_does_not_mutate_frozen(world, home):
     before = copy.deepcopy(frozen)
     await sv.save(frozen)
     assert frozen == before
+
+
+# =========================================================================================
+# The review's fixes: invisible characters, the card's destination, identity, fail closed, cancel
+# =========================================================================================
+
+import asyncio
+import threading
+import unicodedata
+
+INVISIBLES = ["\u200b", "\u2060", "\u00ad", "\U000E0041", "\ufe0f", "\u180e", "\u3164", "\u200d"]
+
+
+@pytest.mark.parametrize("invisible", INVISIBLES)
+@pytest.mark.parametrize("suffix", ["command", "app", "sh", "scpt", "workflow", "terminal", "jar", "exe"])
+async def test_an_invisible_character_cannot_hide_a_risky_suffix_from_the_save(world, home, suffix, invisible):
+    name = f"Invoice.{suffix[:1]}{invisible}{suffix[1:]}"
+    world.bytes = b"hello, a plain body"
+    world.add(name)
+    got = await sv.prepare()
+    assert got["ok"] is True
+    if unicodedata.category(invisible) in sv._DROPPED:       # some (variation selectors, fillers) stay in the name
+        assert got["frozen"]["save_name"] == f"Invoice.{suffix}"
+    done = await sv.save(got["frozen"])
+    assert done["ok"] is False and done["wrote"] is False and done["reason"].startswith("Wisp didn't save it")
+    assert list_dir(home / "Downloads") == [] and world.finder == []
+
+
+async def test_a_harmless_name_with_an_invisible_character_is_saved_with_a_caution(world, home):
+    world.add("Rep\u200bort.pdf")
+    got = await sv.save((await sv.prepare())["frozen"])
+    assert got["ok"] is True and "Take care: " in got["text"] and "hidden characters" in got["text"]
+    assert list_dir(home / "Downloads") == ["Report.pdf"]
+
+
+async def test_save_inspects_the_name_it_writes_and_the_name_it_was_given(world, home, monkeypatch):
+    seen = []
+
+    def verdict_for(high_name):
+        async def inspect(job, name, data, *, timeout, part=None):
+            seen.append(name)
+            return {"risk": {"level": "high" if name == high_name else "", "reasons": ["It runs."]}}
+        return inspect
+
+    world.add("Invoice.comm\u200band")
+    frozen = (await sv.prepare())["frozen"]
+    for high_name in ("Invoice.command", "Invoice.comm\u200band"):     # the written name / the raw name
+        seen.clear()
+        monkeypatch.setattr(documents, "run_attachment_child", verdict_for(high_name))
+        got = await sv.save(frozen)
+        assert got["ok"] is False and got["reason"].startswith("Wisp didn't save it: It runs.")
+        assert set(seen) == {"Invoice.command", "Invoice.comm\u200band"}
+    assert list_dir(home / "Downloads") == []
+
+
+async def test_a_caution_from_either_name_is_shown(world, home, monkeypatch):
+    async def inspect(job, name, data, *, timeout, part=None):
+        return {"risk": {"level": "caution" if "\u200b" in name else "", "reasons": ["Its name has odd characters"]}}
+
+    monkeypatch.setattr(documents, "run_attachment_child", inspect)
+    world.add("a\u200bb.pdf")
+    got = await sv.save((await sv.prepare())["frozen"])
+    assert got["ok"] is True and got["text"].endswith("Take care: Its name has odd characters.")
+
+
+# --- the card -------------------------------------------------------------------------------
+
+async def test_the_card_keeps_the_whole_destination_and_the_extension_whatever_is_long(world, home):
+    deep = home / "Documents" / ("d" * 40) / ("e" * 40) / ("f" * 40) / "Taxes 2026"
+    deep.mkdir(parents=True)
+    relative = "Documents/" + "/".join(["d" * 40, "e" * 40, "f" * 40, "Taxes 2026"])
+    world.add("N" * 300 + ".pdf", sender="S" * 300 + " <s@x.test>", subject="U" * 300)
+    got = await sv.prepare(folder=relative)
+    card = got["card"]
+    assert len(card) <= 200
+    assert card.endswith("to " + sv._fit_folder(relative)) and card.endswith("Taxes 2026")
+    assert ".pdf” (PDF" in card and "…" in card
+    assert card.count("“") == 2 and card.count("”") == 2
+
+
+async def test_a_short_enough_deep_folder_is_whole(world, home):
+    deep = home / "Documents" / ("a" * 30) / ("b" * 30)
+    deep.mkdir(parents=True)
+    relative = "Documents/" + "a" * 30 + "/" + "b" * 30
+    world.add("N" * 300 + ".pdf", sender="S" * 300, subject="U" * 300)
+    card = (await sv.prepare(folder=relative))["card"]
+    assert len(card) <= 200 and card.endswith("to " + relative)
+
+
+async def test_a_very_long_single_folder_name_still_ends_the_card(world, home):
+    (home / "Documents" / ("z" * 200)).mkdir()
+    world.add("x.pdf", sender="S" * 300, subject="U" * 300)
+    card = (await sv.prepare(folder="Documents/" + "z" * 200))["card"]
+    assert len(card) <= 200 and card.endswith("z" * 40) and "…" in card.split(" to ")[-1]
+
+
+@pytest.mark.parametrize("length", [1, 5, 40, 90, 150, 300])
+async def test_card_budget_holds_at_every_length(world, home, length):
+    (home / "Documents" / "Taxes").mkdir(exist_ok=True)
+    world.add("n" * length + ".pdf", sender="s" * length, subject="u" * length)
+    card = (await sv.prepare(folder="Documents/Taxes"))["card"]
+    assert len(card) <= 200 and card.endswith("to Documents/Taxes") and ".pdf”" in card
+
+
+async def test_a_texted_file_card_keeps_the_destination_too(world, home):
+    email = ma._Email("m", NOW - 60, sender="S" * 300, subject="x", source="messages", chat="C" * 300)
+    email.files.append(ma._File("p" * 300 + ".heic", 1_500_000, message_id="55", source="messages", on_disk=True))
+    world.emails.append(email)
+    card = (await sv.prepare(source="messages"))["card"]
+    assert len(card) <= 200 and card.endswith("to Downloads") and ".heic”" in card
+
+
+def test_fit_name_cuts_the_stem_and_keeps_the_extension():
+    assert sv._fit_name("abcdefghij.pdf", 8).endswith(".pdf") and len(sv._fit_name("abcdefghij.pdf", 8)) <= 8
+    assert sv._fit_name("short.pdf", 20) == "short.pdf"
+
+
+# --- identity between the card and the save -------------------------------------------------
+
+async def test_a_renumbered_apple_mail_row_with_the_same_message_id_is_the_same_file(world, home):
+    frozen = await frozen_of(world)
+    world.emails[0].files[0].rowid = 9999
+    world.emails[0].files[0].attachment_id = "renumbered"
+    assert (await sv.save(frozen))["ok"] is True
+
+
+async def test_a_changed_gmail_or_messages_id_is_not_the_same_file(world, home):
+    email = world.add("g.pdf")
+    email.files[0].gmail_account, email.files[0].gmail_message = "me@x.test", "m-1"
+    email.files[0].gmail_attachment = "att-1"
+    frozen = (await sv.prepare())["frozen"]
+    assert frozen["gmail_message"] == "m-1"
+    email.files[0].gmail_message = "m-2"
+    assert (await sv.save(frozen))["reason"] == sv._GONE
+    email.files[0].gmail_message = "m-1"
+    email.files[0].gmail_account = "other@x.test"
+    assert (await sv.save(frozen))["reason"] == sv._GONE
+    assert list_dir(home / "Downloads") == [] and world.fetches == 0
+
+
+async def test_without_a_message_id_a_changed_row_number_is_not_the_same_file(world, home):
+    email = world.add("g.pdf", rfc="")
+    email.files[0].gmail_account, email.files[0].gmail_message = "me@x.test", "m-1"
+    email.files[0].gmail_attachment = "att-1"
+    frozen = (await sv.prepare())["frozen"]
+    email.files[0].rowid = 5          # Gmail identity is stable, but there is no Message-ID to excuse a new row
+    assert (await sv.save(frozen))["reason"] == sv._GONE
+
+
+async def test_messages_id_must_match(world, home):
+    email = ma._Email("m", NOW - 60, sender="Sam", subject="Family", source="messages", chat="Family")
+    email.files.append(ma._File("photo.heic", 1_500, message_id="55", source="messages", on_disk=True))
+    world.emails.append(email)
+    frozen = (await sv.prepare(source="messages"))["frozen"]
+    email.files[0].message_id = "56"
+    assert (await sv.save(frozen))["reason"] == sv._GONE
+
+
+async def test_no_identity_and_a_look_alike_arrives_so_nothing_is_saved(world, home):
+    world.add("x.pdf", rfc="", ts=1_700_000_000.2)
+    frozen = (await sv.prepare())["frozen"]
+    assert (frozen["rfc"], frozen["gmail_message"], frozen["message_id"]) == ("", "", "")
+    twin = world.add("x.pdf", rfc="", ts=1_700_000_000.9)       # same second, sender, subject, name, size
+    twin.files[0].rowid = 100
+    got = await sv.save(frozen)
+    assert got == {"ok": False, "wrote": False,
+                   "reason": "More than one file looks like the one you confirmed, so nothing was saved."}
+    assert world.fetches == 0 and list_dir(home / "Downloads") == []
+
+
+async def test_no_identity_a_look_alike_in_another_second_is_not_a_twin(world, home):
+    world.add("x.pdf", rfc="", ts=1_700_000_000.2)
+    frozen = (await sv.prepare())["frozen"]
+    world.add("x.pdf", rfc="", ts=1_700_000_001.1)
+    assert (await sv.save(frozen))["ok"] is True
+
+
+async def test_no_identity_another_sender_or_subject_is_not_a_twin(world, home):
+    world.add("x.pdf", rfc="", ts=1_700_000_000.2)
+    frozen = (await sv.prepare())["frozen"]
+    world.add("x.pdf", rfc="", ts=1_700_000_000.4, sender="Someone Else <e@x.test>")
+    world.add("x.pdf", rfc="", ts=1_700_000_000.5, subject="Different")
+    assert (await sv.save(frozen))["ok"] is True
+
+
+async def test_with_a_message_id_a_look_alike_without_one_does_not_confuse_the_save(world, home):
+    frozen = await frozen_of(world)
+    world.add("invoice.pdf", rfc="<other@x.test>")
+    assert (await sv.save(frozen))["ok"] is True
+
+
+# --- fail closed ----------------------------------------------------------------------------
+
+@pytest.mark.parametrize("answer", [{}, {"warnings": []}, {"risk": None}, {"risk": "high"}, {"risk": {}},
+                                    {"risk": {"level": "weird", "reasons": []}}, {"risk": {"level": 3}}, None, "x"])
+async def test_an_answer_without_a_clear_risk_is_refused(world, home, monkeypatch, answer):
+    frozen = await frozen_of(world)
+
+    async def inspect(job, name, data, *, timeout, part=None):
+        return answer
+
+    monkeypatch.setattr(documents, "run_attachment_child", inspect)
+    assert await sv.save(frozen) == {"ok": False, "wrote": False,
+                                     "reason": "Wisp couldn't check the file, so it didn't save it."}
+    assert list_dir(home / "Downloads") == []
+
+
+async def test_a_folder_whose_real_path_cannot_be_read_back_is_refused(world, home, monkeypatch):
+    frozen = await frozen_of(world)
+    monkeypatch.setattr(sv, "_fd_path", lambda fd: "")
+    got = await sv.save(frozen)
+    assert got["ok"] is False and got["wrote"] is False and list_dir(home / "Downloads") == []
+
+
+async def test_a_cancel_during_the_write_leaves_no_file(world, home, monkeypatch):
+    frozen = await frozen_of(world)
+    started, release = threading.Event(), threading.Event()
+    real = sv._quarantine
+
+    def slow(fd):
+        started.set()
+        release.wait(10)
+        return real(fd)
+
+    monkeypatch.setattr(sv, "_quarantine", slow)
+    task = asyncio.ensure_future(sv.save(frozen))
+    for _ in range(500):
+        if started.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert started.is_set() and list_dir(home / "Downloads") != []        # the file exists mid-write
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    for _ in range(500):
+        if list_dir(home / "Downloads") == []:
+            break
+        await asyncio.sleep(0.01)
+    assert list_dir(home / "Downloads") == []
+
+
+async def test_a_cancel_after_the_write_but_before_the_report_removes_the_file(world, home, monkeypatch):
+    frozen = await frozen_of(world)
+    started, release = threading.Event(), threading.Event()
+
+    def reveal(path):
+        started.set()
+        release.wait(10)
+        return True
+
+    monkeypatch.setattr(sv, "_open_in_finder", reveal)
+    task = asyncio.ensure_future(sv.save(frozen))
+    for _ in range(500):
+        if started.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert started.is_set() and list_dir(home / "Downloads") == ["invoice.pdf"]
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    release.set()
+    assert list_dir(home / "Downloads") == []
+
+
+async def test_a_folder_typed_in_another_letter_case_is_the_same_folder(world, home):
+    if not (home / "downloads").exists():
+        pytest.skip("this volume is case-sensitive")
+    real, why = sv.check_folder(str(home / "downloads"))
+    assert (real, why) == (str(home / "Downloads"), "")
+    world.add("x.pdf")
+    got = await sv.prepare(folder=str(home / "downloads"))
+    assert got["ok"] is True and got["frozen"]["folder"] == str(home / "Downloads")
+    done = await sv.save(got["frozen"])
+    assert done["ok"] is True and list_dir(home / "Downloads") == ["x.pdf"]
+
+
+def test_a_different_folder_is_still_refused(home):
+    (home / "Documents" / "Downloads2").mkdir()
+    assert sv.check_folder(str(home / "downloads2"))[0] == ""
+    assert sv.check_folder(str(home / "Library" / "downloads"))[0] == ""
