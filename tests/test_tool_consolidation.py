@@ -245,3 +245,67 @@ def test_delete_timeout_does_not_stop_the_appearance_change(monkeypatch):
     monkeypatch.setattr(X, "_run", boom)
     monkeypatch.setattr(X, "_osa", lambda s: _fake_proc(0))
     assert X.appearance_mode("light") == "Appearance set to light."
+
+
+# ---- bluetooth / airdrop must not claim a change they cannot confirm ------
+def _bt_json(state):
+    import json
+    ctrl = {"controller_state": state} if state else {}
+    return json.dumps({"SPBluetoothDataType": [{"controller_properties": ctrl}]})
+
+
+def _fake_bluetooth(monkeypatch, states):
+    """defaults write succeeds, killall fails, system_profiler walks `states`."""
+    from service.tools import system_extras as X
+    calls, seq = [], list(states)
+    monkeypatch.setattr(X.time, "sleep", lambda s: None)
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        if argv[0] == "killall":
+            return _fake_proc(1, stderr="Operation not permitted")
+        if argv[0] == "system_profiler":
+            return _fake_proc(0, stdout=_bt_json(seq.pop(0) if len(seq) > 1 else seq[0]))
+        return _fake_proc(0)
+    monkeypatch.setattr(X, "_run", fake_run)
+    return calls
+
+
+def test_bluetooth_off_that_changes_nothing_is_not_reported_as_done(monkeypatch):
+    _fake_bluetooth(monkeypatch, ["attrib_on"])
+    out = REGISTRY["toggle_setting"].func(setting="bluetooth", on=False)
+    assert out.startswith("(") and "Bluetooth turned" not in out
+    assert "Control Center" in out
+
+
+def test_bluetooth_unreadable_state_is_not_reported_as_done(monkeypatch):
+    _fake_bluetooth(monkeypatch, [""])
+    out = REGISTRY["toggle_setting"].func(setting="bluetooth", on=False)
+    assert "Bluetooth turned" not in out
+
+
+@pytest.mark.parametrize("on, state", [(False, "attrib_off"), (True, "attrib_on")])
+def test_bluetooth_change_that_reads_back_reports_success(monkeypatch, on, state):
+    _fake_bluetooth(monkeypatch, [state])
+    out = REGISTRY["toggle_setting"].func(setting="bluetooth", on=on)
+    assert out == f"Bluetooth turned {'on' if on else 'off'}."
+
+
+def test_bluetooth_that_lags_one_read_is_confirmed_on_the_second(monkeypatch):
+    _fake_bluetooth(monkeypatch, ["attrib_on", "attrib_off"])
+    assert REGISTRY["toggle_setting"].func(setting="bluetooth", on=False) == "Bluetooth turned off."
+
+
+@pytest.mark.parametrize("on, stored, ok", [
+    (False, "1", True), (False, "0", False), (True, "0", True), (True, "1", False)])
+def test_airdrop_reports_only_what_the_preference_shows(monkeypatch, on, stored, ok):
+    from service.tools import system_extras as X
+
+    def fake_run(argv, **kw):
+        if argv[:2] == ["defaults", "read"]:
+            return _fake_proc(0, stdout=stored + "\n")
+        return _fake_proc(0)
+    monkeypatch.setattr(X, "_run", fake_run)
+    out = REGISTRY["toggle_setting"].func(setting="airdrop", on=on)
+    assert out.startswith("AirDrop ") == ok
+    assert out.startswith("(") != ok
