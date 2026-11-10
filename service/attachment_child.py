@@ -138,10 +138,14 @@ _RISKY_SUFFIXES = frozenset({
     "xip", "csh", "ksh", "tcsh", "fish", "chm", "xll", "xlam", "ppam", "one", "appx", "msix", "vhdx",
     "scf", "library-ms", "settingcontent-ms",
 })
-# Risky endings that are also everyday words. As a file's LAST part they are risky like the rest; in the
-# middle of a dotted name ("phase.one.pdf", "go.fish.pdf") they are just words, so they don't count as a
-# program type tucked inside the name.
-_WORDLIKE_SUFFIXES = frozenset({"one", "fish"})
+# Risky endings that are also everyday words or parts of a web address. As a file's LAST part they are
+# risky like the rest; in the middle of a dotted name ("amazon.com.pdf", "phase.one.pdf", "go.fish.pdf")
+# they are just words, so they don't count as a program type tucked inside the name. Endings that are
+# only ever program types (exe, scr, bat, jar, app, dmg, pkg, vbs, ...) still count there.
+_WORDLIKE_SUFFIXES = frozenset({
+    "one", "fish", "com", "so", "tool", "action", "command", "terminal", "img", "desktop", "url", "shortcut",
+    "saver", "workflow", "bin", "iso",
+})
 # Archives Wisp never lists or unpacks. Saved, they carry a caution, since an app could be inside.
 _ARCHIVE_SUFFIXES = frozenset({"rar", "7z", "tar", "tgz", "gz", "bz2", "tbz", "tbz2", "xz", "txz", "cab", "zst",
                                "lz", "lzma", "z", "arj"})

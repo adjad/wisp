@@ -2047,7 +2047,8 @@ def test_more_unknown_is_separate_from_the_exact_count_of_listed_files_over_the_
     assert result["more_unknown"] is False
 
 
-@pytest.mark.parametrize("name", ["phase.one.pdf", "go.fish.pdf", "Chapter.One.Draft.docx"])
+@pytest.mark.parametrize("name", ["phase.one.pdf", "go.fish.pdf", "Chapter.One.Draft.docx", "amazon.com.pdf",
+                                  "www.example.com.pdf", "Q3.so.far.pdf", "call.to.action.docx"])
 def test_an_everyday_word_inside_a_name_is_not_a_tucked_program_type(name):
     """`.one` and `.fish` are risky as a file's ending, but in the middle of a name they are words."""
     result = A.inspect(name, b"%PDF-1.4\n" + b"x" * 200)
@@ -2055,7 +2056,8 @@ def test_an_everyday_word_inside_a_name_is_not_a_tucked_program_type(name):
     assert "tucked inside" not in reasons
 
 
-@pytest.mark.parametrize("name", ["notes.one", "setup.fish", "report.exe.pdf"])
+@pytest.mark.parametrize("name", ["notes.one", "setup.fish", "report.exe.pdf", "run.command", "evil.com",
+                                  "invoice.scr.pdf", "photo.app.jpg"])
 def test_those_words_still_count_at_the_end_and_real_program_types_still_count_inside(name):
     result = A.inspect(name, b"plain text body\n" * 20)
     assert (result.get("risk") or {}).get("level") == "high"
