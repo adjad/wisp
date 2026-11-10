@@ -57,7 +57,8 @@ def test_the_tool_is_registered_as_an_email_read():
     tool = REGISTRY[TOOL]
     assert tool.category == "email_read"
     props = tool.parameters["properties"]
-    assert set(props) == {"query", "name", "period", "day", "count", "account", "question", "list_only"}
+    assert set(props) == {"query", "name", "period", "day", "count", "account", "question", "list_only",
+                          "pages", "sheet"}
     for needed in ("pictures", "spreadsheets", "PDFs", "SEVERAL emails", "never run",
                    "Apple Mail", "Gmail", "question", "list_only", "view_emails"):
         assert needed in tool.description, needed
