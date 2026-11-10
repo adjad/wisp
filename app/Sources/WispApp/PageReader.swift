@@ -218,30 +218,35 @@ enum PageReader {
     private static func ocrFrontWindow(pid: pid_t) async -> String? {
         guard let image = captureWindow(pid: pid) else { return nil }
         return await withCheckedContinuation { (cont: CheckedContinuation<String?, Never>) in
-            let request = VNRecognizeTextRequest { req, _ in
-                guard let obs = req.results as? [VNRecognizedTextObservation] else {
-                    cont.resume(returning: nil); return
-                }
-                // Vision returns observations in no particular order; sort into
-                // reading order (top-to-bottom, then left-to-right) or the
-                // chunker will interleave unrelated columns.
-                let lines = obs
-                    .sorted { a, b in
-                        let dy = abs(a.boundingBox.midY - b.boundingBox.midY)
-                        if dy > 0.01 { return a.boundingBox.midY > b.boundingBox.midY }
-                        return a.boundingBox.minX < b.boundingBox.minX
-                    }
-                    .compactMap { $0.topCandidates(1).first?.string }
-                cont.resume(returning: lines.joined(separator: "\n"))
-            }
-            request.recognitionLevel = .accurate
-            request.usesLanguageCorrection = true
-            let handler = VNImageRequestHandler(cgImage: image, options: [:])
             DispatchQueue.global(qos: .userInitiated).async {
-                do { try handler.perform([request]) }
-                catch { cont.resume(returning: nil) }
+                // The only resume. A second one crashes the app, so the
+                // request gets no completion handler: Vision can report one
+                // failure both to a handler and by throwing from perform.
+                cont.resume(returning: recognizeText(in: image))
             }
         }
+    }
+
+    /// The image's text in reading order, or nil when Vision fails. Runs on
+    /// the caller's queue.
+    nonisolated private static func recognizeText(in image: CGImage) -> String? {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        let handler = VNImageRequestHandler(cgImage: image, options: [:])
+        do { try handler.perform([request]) } catch { return nil }
+        guard let obs = request.results else { return nil }
+        // Vision returns observations in no particular order; sort into
+        // reading order (top-to-bottom, then left-to-right) or the
+        // chunker will interleave unrelated columns.
+        let lines = obs
+            .sorted { a, b in
+                let dy = abs(a.boundingBox.midY - b.boundingBox.midY)
+                if dy > 0.01 { return a.boundingBox.midY > b.boundingBox.midY }
+                return a.boundingBox.minX < b.boundingBox.minX
+            }
+            .compactMap { $0.topCandidates(1).first?.string }
+        return lines.joined(separator: "\n")
     }
 
     private static func captureWindow(pid: pid_t) -> CGImage? {
