@@ -151,7 +151,7 @@ marked validation pending. The guide ranks memory fit separately from test statu
 | Memory | Recommended | Download | Notes |
 | --- | --- | --- | --- |
 | 16 GB or more | `gemma-4-E4B-it-oQ4e-mtp` | 5.5 GB from Hugging Face | The default. On 24 GB or more, `Ling-3.0-tiny-oQ6e` (6.6 GB) is the best-quality alternative; on 16 GB, `Ling-3.0-tiny-oQ4e` (4.6 GB) is the smaller one. Tool selection measured 10/10 at 4, 5 and 6 bits (on a 24 GB Mac; not yet re-measured on 16 GB hardware). |
-| Under 16 GB | not supported for this release | | Wisp may still offer the default. Expect it to be tight. |
+| Under 16 GB | not supported for this release | | Setup doesn't offer a model. If you already run a smaller model in another app, such as Ollama or LM Studio, you can connect it in the detailed setup. |
 
 Sizes are the published files' sizes on Hugging Face
 (`mlx-works/Ling-3.0-tiny-oQ6e`, `mlx-works/Ling-3.0-tiny-oQ4e`). For Smart Search, also
