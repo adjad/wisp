@@ -626,21 +626,36 @@ QUIET_MARGIN_DAYS = 14
 
 def _forget_gone_accounts(st, rows: list[dict], now: float) -> dict | None:
     """Forget what was learned from a Mail account that has left Mail
-    (profile_facts.forget_accounts). An account counts as gone only when it
+    (profile_facts.forget_accounts) and the text read from its attachments
+    (attachment_store.forget_account). An account counts as gone only when it
     should still be in the window (it had mail in the last WINDOW_DAYS -
     QUIET_MARGIN_DAYS days, so a quiet account never counts) and it is missing
     from GONE_RUNS complete index reads spanning GONE_SPAN_S or more: a re-import
-    after a macOS update or a mailbox rebuild doesn't erase anything."""
+    after a macOS update or a mailbox rebuild doesn't erase anything.
+
+    The accounts looked at are those with fact candidates and those that own
+    attachment text. Not every indexed account (`account_newest`): a gone
+    account's message rows stay, so it would be forgotten again every two days."""
+    from service import attachment_store
     seen = {r.get("account", "") for r in rows}
     try:
         missing = json.loads(st.meta("accounts_missing") or "{}")
     except ValueError:
         missing = {}
     newest = st.account_newest()
+    # The attachment store keeps its labels trimmed and lower-cased; Mail's index
+    # doesn't. Match on that form, then carry on with the index's own spelling.
+    fold = attachment_store.account_key
+    spelled = {fold(a): a for a in newest if a}
+    here = {fold(a) for a in seen}
+    with_text = {spelled.get(a, a) for a in attachment_store.accounts() if a not in here}
     still, gone = {}, set()
-    for account in st.candidate_accounts() - seen - {""}:
+    for account in (st.candidate_accounts() - seen - {""}) | with_text:
         if now - newest.get(account, 0) > (WINDOW_DAYS - QUIET_MARGIN_DAYS) * 86400:
-            continue                               # quiet, not gone: it would fall out of the window anyway
+            # Quiet, not gone: it would fall out of the window anyway. This is also what
+            # keeps a reading owned by a Gmail address (never in Mail's index, so its
+            # newest is 0) from ever counting as a Mail account that left.
+            continue
         first, runs = (missing.get(account) or [now, 0])[:2]
         runs += 1
         if runs >= GONE_RUNS and now - first >= GONE_SPAN_S:
@@ -651,7 +666,6 @@ def _forget_gone_accounts(st, rows: list[dict], now: float) -> dict | None:
     if not gone:
         return None
     from service.memory.facts import store as facts
-    from service import attachment_store
     for account in gone:      # an account that left Mail takes the text read from its attachments with it
         attachment_store.forget_account(account)
     return profile_facts.forget_accounts(st, facts, gone)

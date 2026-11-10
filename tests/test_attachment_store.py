@@ -356,6 +356,32 @@ def test_shared_known_owners_keep_text_until_both_go():
     assert store.get(D1) is None
 
 
+def test_accounts_lists_known_owners_and_locator_accounts():
+    assert store.accounts() == set()
+    put(D1, account="One@X.com")
+    put(D2, account="")                                  # the unknown owner is never listed
+    put(D3, account="two@x.com")
+    store.remember("loc", D2, account=" Three@X.com ")
+    assert store.accounts() == {"one@x.com", "two@x.com", "three@x.com"}
+    assert store.account_key(" One@X.com ") == "one@x.com" and store.account_key(None) == ""
+    assert store.get(D1) is not None and store.get(D3) is not None   # listing erased nothing
+    assert store.forget_account("ONE@x.com") == 1
+    assert store.accounts() == {"two@x.com", "three@x.com"}          # a forgotten account is gone from it
+    assert store.forget_account("three@x.com") == 0
+    assert store.accounts() == {"two@x.com"}
+
+
+def test_accounts_is_empty_when_the_store_is_unusable(home):
+    (home / "cache").mkdir()
+    _db(home).write_bytes(b"this is not a sqlite database" * 200)
+    assert store.accounts() == set()
+    _db(home).unlink()
+    target = home / "elsewhere.db"
+    target.write_bytes(b"")
+    os.symlink(target, _db(home))
+    assert store.accounts() == set() and target.read_bytes() == b""
+
+
 def test_only_unknown_owner_untouched_by_forget_account(monkeypatch):
     t = _clock(monkeypatch)
     put(D1, account="")

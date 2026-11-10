@@ -705,6 +705,73 @@ def test_a_quiet_or_briefly_missing_account_is_not_forgotten(world):
     assert _active(fs) == ["I work at Acme"]
 
 
+def _indexed(st, account, key, ts):
+    st.upsert_index([{"rowid": abs(hash(key)) % 10**6, "account": account, "box": "inbox", "ts": ts, "sent_ts": ts,
+                      "message_id": key, "conversation_id": 1, "subject": "Hi", "sender": "s@x.example",
+                      "sender_name": "S", "bulk": False, "category": -1, "rfc_message_id": key}],
+                    lambda r: 1, now=ts)
+
+
+def test_an_account_that_left_mail_takes_its_attachment_text_with_no_facts_learned(world, monkeypatch, tmp_path):
+    # Only accounts with fact candidates were ever checked, so with the fact pass off
+    # (or nothing learned from that account) the text read from its attachments stayed.
+    import json
+    from service import attachment_store
+    monkeypatch.setenv("WISP_HOME", str(tmp_path / "home"))
+    st, fs = world
+    monkeypatch.setattr(facts_mod, "store", fs)
+    # Mail's own account ids, spelled as Mail spells them; the attachment store lower-cases its labels.
+    work, home, quiet = "WORK-1A2B", "HOME-3C4D", "QUIET-5E6F"
+    _indexed(st, work, "<w@x>", NOW - DAY)
+    _indexed(st, home, "<h@x>", NOW - DAY)
+    _indexed(st, quiet, "<q@x>", NOW - 80 * DAY)
+    texts = {work: "a" * 64, home: "b" * 64, quiet: "c" * 64, "sam@example.com": "d" * 64}
+    for owner, digest in texts.items():
+        assert attachment_store.put(digest, kind="pdf", text=f"text read for {owner}", cut=False, account=owner)
+    assert attachment_store.remember("gmail:sam@example.com:m1:0:9:a.pdf", texts["sam@example.com"],
+                                     account="sam@example.com")
+    assert st.candidate_accounts() == set()                       # nothing was learned from any of them
+    kept = lambda owner: attachment_store.get(texts[owner]) is not None  # noqa: E731
+
+    rows = [{"account": home}]                                    # complete index reads without the work account
+    assert runner._forget_gone_accounts(st, rows, NOW) is None
+    assert runner._forget_gone_accounts(st, rows, NOW + 6 * 3600) is None
+    assert kept(work)                                             # twice in a day is not gone yet
+    assert set(json.loads(st.meta("accounts_missing"))) == {work}
+    got = runner._forget_gone_accounts(st, rows, NOW + 2 * DAY)   # three reads over two days
+    assert got == {"forgotten": 0, "evidence_removed": 0, "candidates_cleared": 0}
+    assert not kept(work)
+    # Still in Mail (whatever the case), quiet rather than gone, or owned by a Gmail
+    # address that Mail's index never lists: all of these keep their text.
+    assert kept(home) and kept(quiet) and kept("sam@example.com")
+    assert attachment_store.locate("gmail:sam@example.com:m1:0:9:a.pdf") == texts["sam@example.com"]
+    # And it ends there: the account's message rows stay, but it is not forgotten again.
+    before = profile_facts.generation(st)
+    for later in (3, 4, 5, 6):
+        assert runner._forget_gone_accounts(st, rows, NOW + later * DAY) is None
+    assert profile_facts.generation(st) == before and json.loads(st.meta("accounts_missing")) == {}
+    assert kept(home) and kept(quiet) and kept("sam@example.com")
+
+
+def test_attachment_text_stays_when_its_account_comes_back(world, monkeypatch, tmp_path):
+    from service import attachment_store
+    monkeypatch.setenv("WISP_HOME", str(tmp_path / "home"))
+    st, fs = world
+    monkeypatch.setattr(facts_mod, "store", fs)
+    _indexed(st, "WORK-1A2B", "<w@x>", NOW - DAY)
+    assert attachment_store.put("a" * 64, kind="pdf", text="quarterly plan", cut=False, account="WORK-1A2B")
+    away, back = [{"account": "HOME-3C4D"}], [{"account": "HOME-3C4D"}, {"account": "WORK-1A2B"}]
+    assert runner._forget_gone_accounts(st, away, NOW) is None
+    assert runner._forget_gone_accounts(st, away, NOW + DAY) is None
+    assert runner._forget_gone_accounts(st, back, NOW + 2 * DAY) is None     # a rebuild: it is back
+    assert runner._forget_gone_accounts(st, away, NOW + 2 * DAY + 1) is None
+    assert runner._forget_gone_accounts(st, away, NOW + 3 * DAY) is None     # the count started over
+    assert attachment_store.get("a" * 64).text == "quarterly plan"
+    # An unusable attachment store never fails the index read; candidates are still checked.
+    monkeypatch.setattr(attachment_store, "_connect", lambda: None)
+    assert runner._forget_gone_accounts(st, away, NOW + 3 * DAY + 1) is None
+
+
 # --- mail facts stay local --------------------------------------------------------------
 
 def test_mail_only_facts_follow_the_profile_rule(world):
