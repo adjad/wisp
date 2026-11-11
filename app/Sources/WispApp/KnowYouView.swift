@@ -318,7 +318,7 @@ struct KnowYouView: View {
                 ScrollView(.vertical, showsIndicators: false) { goalsField }
                     .frame(maxHeight: 230)
             case .tone: toneField
-            case .hours: UserHoursEditor(hours: $model.hours)
+            case .hours: UserHoursEditor(hours: $model.hours, scalesText: !inWindow)
             case .done: summary
             }
         }

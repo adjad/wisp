@@ -23,6 +23,8 @@ from service import idle, main
 def isolated(monkeypatch):
     main.SESSIONS.clear()
     monkeypatch.setattr(main, "client", AsyncMock(), raising=False)
+    # The rolling-summary fold is resident-only: the fake engine holds its model.
+    main.client.loaded_models.return_value = [main.role_target("fast").model]
     monkeypatch.setattr(main, "ensure_omlx", AsyncMock())
     monkeypatch.setattr(main, "maybe_summarize", AsyncMock())
     def forbidden(*args, **kwargs):

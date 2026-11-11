@@ -14,7 +14,14 @@ import threading
 import time
 import uuid
 
-CLOCK_DOMAIN = "darwin-clock_gettime-CLOCK_MONOTONIC-ns-v1"
+# Awake time, not sleep-inclusive time. Darwin's CLOCK_MONOTONIC keeps counting
+# while the Mac sleeps; the enforcer's poll loop waits on asyncio's clock
+# (time.monotonic, mach_absolute_time == CLOCK_UPTIME_RAW), which pauses. On the
+# monotonic clock every proof read hours old right after wake, and each load was
+# refused as "stale" until the next poll ran, up to 30 s of awake time later.
+# On the uptime clock evidence ages only while the loop could have run, so a
+# loop that really stops still goes stale within the same bound.
+CLOCK_DOMAIN = "darwin-clock_gettime-CLOCK_UPTIME_RAW-ns-v2"
 _CREATION_LOCK = threading.RLock()
 _TIERS = {"safe", "balanced", "aggressive", "custom"}
 _SOURCES = {"host_statistics64", "available_memory", "static_fallback", "custom", "disabled", "unknown"}
@@ -33,7 +40,7 @@ class GuardCapacityChanged(GuardEvidenceUnavailable):
 
 
 def _now_ns():
-    return time.clock_gettime_ns(time.CLOCK_MONOTONIC)
+    return time.clock_gettime_ns(time.CLOCK_UPTIME_RAW)
 
 
 def _pid():
@@ -41,7 +48,7 @@ def _pid():
 
 
 def _clock_supported():
-    return sys.platform == "darwin" and hasattr(time, "CLOCK_MONOTONIC")
+    return sys.platform == "darwin" and hasattr(time, "CLOCK_UPTIME_RAW")
 
 
 def _uint(value):

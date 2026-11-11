@@ -48,7 +48,7 @@ struct SearchView: View {
                     .foregroundStyle(Theme.textSecondary)
                 TextField("Ask about this page…", text: $model.query)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 16, weight: .regular))
+                    .font(.wisp(size: 16, weight: .regular))
                     .foregroundStyle(Theme.textPrimary)
                     .focused($focused)
                     .onChange(of: model.query) { _, _ in model.queryChanged() }
@@ -57,28 +57,28 @@ struct SearchView: View {
                 }
                 if !model.rows.isEmpty {
                     Text("\(model.selection + 1)/\(model.rows.count)")
-                        .font(.system(size: 11, design: .monospaced))
+                        .font(.wisp(size: 11, design: .monospaced))
                         .foregroundStyle(Theme.textMuted)
                 }
             }
             HStack(spacing: 6) {
                 Text(model.status)
-                    .font(.system(size: 10))
+                    .font(.wisp(size: 10))
                     .foregroundStyle(Theme.textMuted)
                 if model.semanticOff {
                     Text("· semantic search unavailable")
-                        .font(.system(size: 10))
+                        .font(.wisp(size: 10))
                         .foregroundStyle(Theme.textMuted)
                 }
                 if !model.indexingStatus.isEmpty {
                     Text("· \(model.indexingStatus)")
-                        .font(.system(size: 10))
+                        .font(.wisp(size: 10))
                         .foregroundStyle(Theme.textMuted)
                 }
                 Spacer()
                 if model.elapsedMs > 0 {
                     Text("\(model.elapsedMs)ms")
-                        .font(.system(size: 10, design: .monospaced))
+                        .font(.wisp(size: 10, design: .monospaced))
                         .foregroundStyle(Theme.textMuted)
                 }
             }
@@ -124,7 +124,7 @@ struct SearchView: View {
             Text(model.upgradingModel.isEmpty
                  ? "Reading the passages…"
                  : "Loading a stronger model for this…")
-                .font(.system(size: 12))
+                .font(.wisp(size: 12))
                 .foregroundStyle(Theme.textSecondary)
         }
         .padding(.vertical, 10).padding(.horizontal, 12)
@@ -138,7 +138,7 @@ struct SearchView: View {
                 .foregroundStyle(Theme.textMuted)
                 .accessibilityHidden(true)
             Text(model.errorText)
-                .font(.system(size: 12))
+                .font(.wisp(size: 12))
                 .foregroundStyle(Theme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
@@ -158,14 +158,14 @@ struct SearchView: View {
             if model.answerScope == "global" {
                 HStack(spacing: 5) {
                     Image(systemName: "doc.text.magnifyingglass")
-                        .font(.system(size: 9))
+                        .font(.wisp(size: 9))
                     Text("Overview · read across the document")
-                        .font(.system(size: 9, weight: .medium))
+                        .font(.wisp(size: 9, weight: .medium))
                 }
                 .foregroundStyle(Theme.textMuted)
             }
             Text(model.answer)
-                .font(.system(size: 13))
+                .font(.wisp(size: 13))
                 .foregroundStyle(Theme.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
@@ -176,7 +176,7 @@ struct SearchView: View {
                         model.reveal(citation: c)
                     } label: {
                         Text("[\(c.n)]")
-                            .font(.system(size: 10, design: .monospaced))
+                            .font(.wisp(size: 10, design: .monospaced))
                             .padding(.horizontal, 7).padding(.vertical, 3)
                             .background(Capsule().fill(
                                 model.expandedCitation == c.n
@@ -189,7 +189,7 @@ struct SearchView: View {
                 Spacer()
                 Button { model.copyAnswer() } label: {
                     Image(systemName: "doc.on.doc")
-                        .font(.system(size: 10))
+                        .font(.wisp(size: 10))
                         .foregroundStyle(Theme.textMuted)
                 }
                 .buttonStyle(.plain)
@@ -220,20 +220,20 @@ struct SearchView: View {
     private func citationSource(_ c: SearchModel.Citation) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(c.preview)
-                .font(.system(size: 11))
+                .font(.wisp(size: 11))
                 .foregroundStyle(Theme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
             HStack(spacing: 8) {
                 if !model.canNavigate {
                     Text("can't scroll this app — copy to find it there")
-                        .font(.system(size: 9))
+                        .font(.wisp(size: 9))
                         .foregroundStyle(Theme.textMuted)
                 }
                 Spacer()
                 Button { model.copyCitation(c) } label: {
                     Text("Copy quote")
-                        .font(.system(size: 10))
+                        .font(.wisp(size: 10))
                         .foregroundStyle(Theme.textMuted)
                 }
                 .buttonStyle(.plain)
@@ -252,14 +252,14 @@ struct SearchView: View {
                 Text(model.canWiden
                      ? "No direct answer in the matching passages."
                      : "Couldn't answer that from this document.")
-                    .font(.system(size: 12))
+                    .font(.wisp(size: 12))
                     .foregroundStyle(Theme.textSecondary)
                 Spacer()
             }
             if model.canWiden {
                 Button { model.searchWholeDocument() } label: {
                     Text("Read the whole document")
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.wisp(size: 11, weight: .medium))
                         .foregroundStyle(Theme.textPrimary)
                         .padding(.horizontal, 10).padding(.vertical, 5)
                         .background(Capsule().fill(Theme.chipFill))
@@ -276,7 +276,7 @@ struct SearchView: View {
     private func notice(_ text: String, symbol: String) -> some View {
         HStack(spacing: 8) {
             Image(systemName: symbol).foregroundStyle(Theme.textMuted)
-            Text(text).font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+            Text(text).font(.wisp(size: 12)).foregroundStyle(Theme.textSecondary)
             Spacer()
         }
         .padding(.vertical, 10).padding(.horizontal, 12)
@@ -287,18 +287,18 @@ struct SearchView: View {
     private var permissionPrompt: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Wisp can't read this window yet")
-                .font(.system(size: 13, weight: .medium))
+                .font(.wisp(size: 13, weight: .medium))
                 .foregroundStyle(Theme.textPrimary)
             Text("Grant Accessibility to search text inside other apps. Without it, "
                  + "Wisp can only read what's visible on screen.")
-                .font(.system(size: 11))
+                .font(.wisp(size: 11))
                 .foregroundStyle(Theme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             Button("Open Accessibility Settings…") {
                 Permissions.requestAccessibility()
             }
             .buttonStyle(.plain)
-            .font(.system(size: 11, weight: .medium))
+            .font(.wisp(size: 11, weight: .medium))
             .foregroundStyle(Theme.textPrimary)
             .padding(.horizontal, 10).padding(.vertical, 5)
             .background(Capsule().fill(Theme.chipFill))
@@ -325,19 +325,19 @@ struct SearchView: View {
     private func row(_ r: SearchModel.Result, selected: Bool) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: icon(for: r.kind))
-                .font(.system(size: 9))
+                .font(.wisp(size: 9))
                 .foregroundStyle(Theme.textMuted)
-                .frame(width: 12)
+                .frame(width: 12 * Theme.textScale)
                 .padding(.top, 2)
             (Text(r.prefix).foregroundColor(Theme.textMuted)
              + Text(r.match).foregroundColor(Theme.textPrimary).bold()
              + Text(r.suffix).foregroundColor(Theme.textMuted))
-                .font(.system(size: 11))
+                .font(.wisp(size: 11))
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 4)
             Text("\(r.line)")
-                .font(.system(size: 9, design: .monospaced))
+                .font(.wisp(size: 9, design: .monospaced))
                 .foregroundStyle(Theme.textMuted)
         }
         .padding(.vertical, 6).padding(.horizontal, 9)

@@ -753,7 +753,10 @@ def test_the_model_can_never_supply_the_bound_number():
     tool = REAL_TOOLS["send_message"]
     call = {"to": "Ian", "text": "Hi", "resolved_to": PHONE}
     assert "unexpected argument" in (_validate_args(tool, call) or "")
-    assert _validate_args(tool, call, host_bound=True) is None
+    # At dispatch a plain value is still refused: only the host's own binding counts.
+    assert "unexpected argument" in (_validate_args(tool, call, host_bound=True) or "")
+    hosted = {**call, "resolved_to": registry.host_bound_arg(PHONE)}
+    assert _validate_args(tool, hosted, host_bound=True) is None
     assert "resolved_to" not in tool.parameters["properties"]
     # No other tool gains it.
     assert "unexpected argument" in (

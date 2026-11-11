@@ -451,8 +451,30 @@ def revoke(tool: str, scope: str | None = None) -> bool:
     return True
 
 
+# What Settings shows for an allow rule that is kept on disk but no longer
+# covers anything (see _allow_covers), instead of "Always allow · every action".
+INERT_MOVE_RULE = "No longer used · Wisp asks again for moves"
+
+
+def _inert_allow_summary(tool: str, rule: dict) -> str:
+    """The Settings line for an allow rule `check` never honours, else ""."""
+    if tool == "move_path" and rule.get("scope", "") == "":
+        return INERT_MOVE_RULE
+    return ""
+
+
 def all_grants() -> dict:
-    return json.loads(json.dumps(_CACHE))
+    """Every stored rule, for GET /permissions. An allow rule that no longer
+    covers anything carries a `summary` the Settings list shows in place of
+    what the rule says it covers, so it never reads as "every action"."""
+    listed = json.loads(json.dumps(_CACHE))
+    for tool, entry in listed.items():
+        if not isinstance(entry, dict):
+            continue
+        for rule in entry.get("allow", []) or []:
+            if isinstance(rule, dict) and (note := _inert_allow_summary(tool, rule)):
+                rule["summary"] = note
+    return listed
 
 
 def never_grantable() -> list[str]:

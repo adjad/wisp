@@ -177,6 +177,9 @@ def run_shell(cmd: str) -> str:
         decision = decide("shell", {"cmd": cmd}, tool="run_shell")
         if decision.tier is Tier.DENY:
             return f"(error: blocked by safety policy: {decision.reason})"
+        targets = getattr(decision, "delete_targets", None)
+        if targets is not None:
+            return _run_plain_delete(cmd, targets)
         if decision.shell_argv is not None:
             p = subprocess.run(
                 decision.shell_argv, shell=False, capture_output=True, text=True,
@@ -194,6 +197,36 @@ def run_shell(cmd: str) -> str:
         return "(command timed out after 120s)"
     except Exception as e:  # noqa: BLE001
         return f"(error running command: {e})"
+
+
+def _run_plain_delete(cmd: str, judged) -> str:
+    """One plain delete of absolute paths (policy.plain_delete_targets).
+
+    `judged` is what run_shell's own decide() found a moment earlier, not
+    what the card the person approved showed: the approval flow hands
+    run_shell only `cmd`, so the card's paths are not available here. Each
+    path is resolved and checked again immediately before the delete, and
+    the delete is refused if any path now leads somewhere else than in
+    `judged` (a link swapped in between) or no longer passes the checks. It
+    then runs the decoded words as a fixed argv with no shell, so quoting
+    cannot be read two ways. What remains: the moments between this last
+    check and rm opening each path; and a change between the card and
+    run_shell's decide() that still passes every check (a link moved from one
+    ordinary folder to another) is deleted without a new card."""
+    from service.router.model_led import BuiltinCompletion
+    from service.safety.policy import plain_delete_argv
+    again = plain_delete_argv({"cmd": cmd})
+    if again is None or again[1] != tuple(judged):
+        return ("(error: not run: a path in this delete changed after it was checked, or now "
+                "resolves to a folder Wisp does not delete, so nothing was deleted. Check the "
+                "paths and ask again if it should still be deleted.)")
+    argv, _ = again
+    p = subprocess.run(list(argv), shell=False, capture_output=True, text=True, timeout=120,
+                       cwd=str(Path.home()), stdin=subprocess.DEVNULL,
+                       env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"})
+    out = (p.stdout or "") + (("\n[stderr]\n" + p.stderr) if p.stderr else "")
+    return BuiltinCompletion(_clip(out.strip() or f"(exit {p.returncode}, no output)"),
+                             tool_name="run_shell", completion_code=p.returncode, phase="mutation")
 
 
 def _run_private_shell_read(cmd: str) -> str:
