@@ -147,7 +147,7 @@ All notable changes to Wisp are documented here.
   - **Wisp stays responsive when a fetched feed is a huge pile of nested XML.** Feeds are read in the background with a fixed amount of work. Ordinary RSS and Atom feeds read the same as before.
   - **Web addresses are fetched exactly as given.** Parameters such as ref and source are no longer dropped, so a link to a GitHub branch now fetches that branch. Search result links with encoded characters now open the right page.
 - **Timers, alarms and time phrases.**
-  - **Timers, alarms and sleep timers now go off.** Wisp used to say a timer was set and then never ring it. They now ring on time, including after the Mac wakes from sleep, and a daily alarm comes back the next day.
+  - **Timers, alarms and sleep timers now go off.** Wisp used to say a timer was set and then never ring it. They now ring on time, and a daily alarm comes back the next day. One the Mac slept through rings on wake only if it is less than 5 minutes late (1 minute for a sleep timer).
   - **Timers and alarms survive a restart.** Ones that are still due are picked up again when Wisp starts. Ones that passed more than a few minutes ago are cleared quietly instead of all ringing at once.
   - **Timers understand lengths said in words.** "Five minutes", "an hour and a half" and "half an hour" now set a timer instead of Wisp asking how long.
   - **You can mark a reminder done after its time has passed.** Saying "I took my medication" an hour late used to answer that nothing matched. Now it marks the reminder done. If several reminders match, Wisp asks which one and names the day of each.
