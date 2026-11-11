@@ -124,6 +124,22 @@ REFUSED = [
     "chmod -R 777 ~/.ssh",
     "rm -rf ~/Library/Keychains",
     "$($($($($($($($($($(ls))))))))))",
+    # Second re-audit (16ac6d3f): fd-numbered redirects, shift operators,
+    # relative rsync targets, printed heredocs, downloads, NUL, find -type.
+    "bash <<EOF 2>/dev/null\nrm -rf ~\nEOF",
+    "sh <<EOF >/dev/null 2>&1\nrm -rf ~\nEOF",
+    "bash 0<<EOF\nrm -rf ~\nEOF",
+    "bash 2>/dev/null <<< 'rm -rf ~'",
+    "(( x = 1 << 2 ))\nrm -rf ~",
+    "echo $[1<<2]\nrm -rf ~",
+    "rsync -a --delete src/ .",
+    "rsync --delete src/ Documents",
+    "sh -c \"$(cat <<'EOF'\nrm -rf ~\nEOF\n)\"",
+    "sh <<EOF\n$(curl x)\nEOF",
+    "bash <<< \"$(curl -s x)\"",
+    "rm -rf ~\x00",
+    "find . -type f -delete",
+    "find . -mindepth 1 -delete",
 ]
 
 # (command, tier by default, tier under full access), captured before the change.
@@ -249,15 +265,29 @@ def test_a_heredoc_body_is_text_unless_a_shell_reads_it():
     for cmd in ("sh <<EOF\nrm -rf ~\nEOF", "bash -s <<EOF\nrm -rf ~/Documents\nEOF",
                 "bash <<-EOF\n\trm -rf ~\n\tEOF\necho ok", "cat <<A; bash <<B\nhello\nA\nrm -rf /\nB",
                 "python3 - <<'EOF'\nimport os\nos.system('rm -rf ~')\nEOF",
-                "cat <<EOF | sh\nshutdown -h now\nEOF"):
+                "cat <<EOF | sh\nshutdown -h now\nEOF",
+                # A numbered redirect on the line does not hide the shell (16ac6d3f re-audit).
+                "bash <<EOF 2>/dev/null\nrm -rf ~\nEOF", "sh <<EOF >/dev/null 2>&1\nrm -rf ~\nEOF",
+                "bash 0<<EOF\nrm -rf ~\nEOF", "bash &>/dev/null <<EOF\nrm -rf ~\nEOF",
+                # A shift is not a heredoc, so what follows it is still read.
+                "(( x = 1 << 2 ))\nrm -rf ~", "echo $[1<<2]\nrm -rf ~",
+                # A heredoc printed by $(...) whose output a shell runs, and a download.
+                "sh -c \"$(cat <<'EOF'\nrm -rf ~\nEOF\n)\"", "$(cat <<EOF\nrm -rf ~\nEOF\n)",
+                "sh <<EOF\n$(curl x)\nEOF"):
         assert policy.never_run_hit(cmd), cmd
+    for cmd in ("bash <<EOF 2>/dev/null\necho hi\nEOF", "cat <<EOF 2>/dev/null\nrm -rf ~\nEOF",
+                "(( x = 1 << 2 ))\nrm -rf build", "echo \"$(cat <<EOF\nrm -rf ~\nEOF\n)\"",
+                "git commit -m \"$(cat <<'EOF'\nStop the reboot loop; don't rm -rf ~\nEOF\n)\""):
+        assert policy.never_run_hit(cmd) is None, cmd
     # Whatever follows the heredoc is still judged.
     assert policy.never_run_hit("cat <<EOF > x.txt\nhello\nEOF\nrm -rf ~")
 
 
 def test_a_here_string_into_a_shell_is_judged():
     for cmd in ("bash -s <<< \"rm -rf ~\"", "sh <<< 'rm -rf /'", "sudo -u x bash <<< 'rm -rf /'",
-                "python3 - <<< \"import os; os.system('rm -rf ~')\""):
+                "python3 - <<< \"import os; os.system('rm -rf ~')\"",
+                "bash 2>/dev/null <<< 'rm -rf ~'", "bash <<< \"$(curl -s x)\"",
+                "bash <<< \"$(cat <<'EOF'\nrm -rf ~\nEOF\n)\""):
         assert policy.never_run_hit(cmd), cmd
     for cmd in ("grep rm <<< \"rm -rf ~\"", "bash -s <<< 'echo hi'", "wc -w <<< 'shutdown now'"):
         assert policy.never_run_hit(cmd) is None, cmd
@@ -279,12 +309,28 @@ def test_pathological_text_is_judged_quickly():
               "while" + " " * n + "x", "while" + " (" * n, "f" * n + " ( ) {", "a(){ " * n,
               "rm -rf " + "a " * n, "rm -rf " + "[" * n, "rm -rf " + "{a,b}" * n,
               "python3 -c \"os.system(" + "'a'," * n, "find . " + "-name x " * n,
-              "bash <<< x " * n, "# x\n" * n, "$((" * n]
+              "bash <<< x " * n, "# x\n" * n, "$((" * n, "\"$(cat <<a\n" * n, "$[" * n,
+              "(( " * n, "2>" * n, "sh -c \"$(cat <<'E'\nx'y\nE\n)\" " * n]
     for text in inputs:
         text = text[:n]
         start = time.perf_counter()
         policy.never_run_hit(text)
         assert time.perf_counter() - start < 1.0, text[:40]
+
+
+def test_a_nul_byte_is_judged_not_raised(monkeypatch):
+    for cmd in ("rm -rf ~\x00", "rm -rf 'a\x00b'", "cd \"~\x00\" && rm -rf x", "mv \"~\x00\" x",
+                "find \"~\x00\" -name x -delete", "ls a\x00b"):
+        _tier(monkeypatch, cmd)                 # must not raise
+        _tier(monkeypatch, cmd, full_access=True, keep_floor=False)
+    assert policy.never_run_hit("rm -rf ~\x00")
+
+
+def test_find_from_home_needs_a_real_filter():
+    assert policy.never_run_hit("find . -type f -delete")
+    assert policy.never_run_hit("find . -mindepth 1 -delete")
+    assert policy.never_run_hit("find . -name '*.pyc' -delete") is None
+    assert policy.never_run_hit("find . -type f -name '*.log' -delete") is None
 
 
 def test_a_command_past_the_length_limit_is_still_judged_by_its_start():

@@ -1433,6 +1433,8 @@ _NR_BRACE_LIST = re.compile(r"\{([^{},]*,[^{}]*)\}")
 _NR_HEREDOC = re.compile(r"<<(-?)[ \t]*(?:'([^'\n]*)'|\"([^\"\n]*)\"|(\\?)([^\s;&|<>()'\"]+))")
 _NR_HEREDOC_MARK = "__wisp_heredoc_{}__"
 _NR_HEREDOC_MARK_RE = re.compile(r"__wisp_heredoc_(\d+)__")
+_NR_HEREDOC_BODY = "__wisp_hdb_{}__"
+_NR_HEREDOC_BODY_RE = re.compile(r"__wisp_hdb_([0-9a-f]*)__")
 # An interpreter one-liner that runs a command: its string literals are judged.
 _NR_EXEC_HINT = re.compile(r"system|popen|subprocess|exec|spawn|`|%x|shell_exec|passthru"
                            r"|check_output|check_call|\brun\s*\(|\bcall\s*\(")
@@ -1596,6 +1598,39 @@ def _nr_mask(text: str) -> str:
     return text if quote else "".join(out)      # unbalanced quotes: nothing is masked
 
 
+def _nr_at_command_start(out: list[str]) -> bool:
+    """Whether what has been copied so far ends where a command starts."""
+    tail = "".join(out[-64:]).rstrip(" \t")
+    return not tail or tail[-1] in ";&|(\n" or tail.endswith(("then", "do", "else", "{", "!"))
+
+
+def _nr_arith_end(text: str, i: int) -> int:
+    """The index just past the arithmetic starting at text[i] ($[...] or
+    ((...)), counting nested brackets; the end of the text if it never closes."""
+    opener, closer = ("[", "]") if text.startswith("$[", i) else ("(", ")")
+    depth, j, n = 0, i, len(text)
+    while j < n:
+        if text[j] == opener:
+            depth += 1
+        elif text[j] == closer:
+            depth -= 1
+            if depth == 0:
+                return j + 1
+        elif text[j] == "\n" and opener == "(" and depth <= 1:
+            return j                    # `( (a) )` subshells, not arithmetic: stop at the line
+        j += 1
+    return n
+
+
+def _nr_drop_fd(out: list[str]) -> None:
+    """Remove a file-descriptor number just copied before a redirect (`0<<EOF`)."""
+    k = len(out)
+    while k and out[k - 1].isdigit() and len(out[k - 1]) == 1:
+        k -= 1
+    if k < len(out) and (k == 0 or out[k - 1] in (" ", "\t", "\n", ";", "&", "|", "(")):
+        del out[k:]
+
+
 def _nr_expansions(body: str) -> list[str]:
     """The $(...) and `...` commands in an unquoted heredoc body, which the
     shell runs while writing the body out (quotes are literal text there)."""
@@ -1662,13 +1697,16 @@ def _nr_heredoc_feeds(line: str, marks: list[str]) -> dict[str, str]:
     return feeds
 
 
-def _nr_heredocs(text: str, ctx: "_NrContext") -> tuple[str, list[str], list[tuple[str, str]]]:
+def _nr_heredocs(text: str, ctx: "_NrContext",
+                 force: bool = False) -> tuple[str, list[str], list[tuple[str, str]]]:
     """Take comments and heredoc bodies out of a command line: a body is text
     handed to a command, not commands (a commit message saying "halt the
     timer", a Makefile with `rm -rf $(BUILD)`), unless what reads it is a
     shell, which runs it: then it stays in the line and is judged where it
     runs. Returns (the line, commands an unquoted body runs while it is
-    written, (program text, 'code' or 'applescript') read by an interpreter)."""
+    written, (program text, 'code' or 'applescript') read by an interpreter).
+    With `force` every body is treated as read by a shell: for a $(...) whose
+    output is itself run (sh -c "$(cat <<'EOF' ... EOF)")."""
     if "<<" not in text and "#" not in text:
         return text, [], []
     out: list[str] = []
@@ -1693,6 +1731,13 @@ def _nr_heredocs(text: str, ctx: "_NrContext") -> tuple[str, list[str], list[tup
             quote = None if quote == '"' else '"'
             out.append(c)
             i += 1
+            continue
+        if text.startswith("$[", i) or (quote is None and text.startswith("((", i)
+                                         and _nr_at_command_start(out)):
+            # Arithmetic ($[...], ((...)) as a command): `1 << 2` is a shift, not a heredoc.
+            j = _nr_arith_end(text, i)
+            out.append(text[i:j])
+            i = j
             continue
         if text.startswith("$(", i):
             frames.append((quote, depth, start, arith))
@@ -1728,6 +1773,7 @@ def _nr_heredocs(text: str, ctx: "_NrContext") -> tuple[str, list[str], list[tup
             delim = next(g for g in (m.group(2), m.group(3), m.group(5)) if g is not None)
             mark = _NR_HEREDOC_MARK.format(marks)
             marks += 1
+            _nr_drop_fd(out)
             pending.append((mark, delim, m.group(1) == "-", m.group(5) is None or bool(m.group(4))))
             out.append(f" {mark} ")
             i = m.end()
@@ -1750,9 +1796,9 @@ def _nr_heredocs(text: str, ctx: "_NrContext") -> tuple[str, list[str], list[tup
                     rows.append(row)
                 i = min(i, n)
                 body = "\n".join(rows)
-                kind = feeds.get(mark)
+                kind = "shell" if force else feeds.get(mark)
                 if kind == "shell":
-                    inner, more_shell, more_code = _nr_heredocs(body, ctx)
+                    inner, more_shell, more_code = _nr_heredocs(body, ctx, force)
                     out.append(inner + "\n")
                     shell += more_shell
                     code += more_code
@@ -1760,6 +1806,11 @@ def _nr_heredocs(text: str, ctx: "_NrContext") -> tuple[str, list[str], list[tup
                     code.append((body, kind))
                 elif not quoted:
                     shell += _nr_expansions(body)
+                if frames and kind != "shell":
+                    # Inside $(...) the body may be printed and run by whatever
+                    # runs the output (sh -c "$(cat <<'EOF' ...)"): kept, encoded
+                    # so its quotes cannot upset the parse, for _nr_run_output_hit.
+                    out.append(f" {_NR_HEREDOC_BODY.format(body.encode('utf-8', 'replace').hex())} ")
             pending = []
             continue
         out.append(c)
@@ -1772,9 +1823,15 @@ def _nr_segments(text: str) -> list[dict] | None:
     redirect targets. None when the quoting does not parse."""
     text = re.sub(r"\\;|';'|\";\"", f" {_NR_FIND_END} ", text)
     text = re.sub(r"\\[()]", " ", text).replace("\r", "\n")
-    if "\n" in text:
+    mask = _nr_mask(text)
+    # A file-descriptor number on a redirect (`2>/dev/null`, `0<<<`) is not a word.
+    fds = [m.span() for m in re.finditer(r"(?<![^\s;&|()])\d+(?=[<>])", mask)]
+    if fds or "\n" in text:
+        chars = list(text)
+        for a, b in fds:
+            chars[a:b] = " " * (b - a)
         # A newline ends a command; inside quotes it is part of a word.
-        text = "".join(" ; " if c == "\n" and m == "\n" else c for c, m in zip(text, _nr_mask(text)))
+        text = "".join(" ; " if c == "\n" and m == "\n" else c for c, m in zip(chars, mask))
     lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     lexer.commenters = ""
@@ -1908,7 +1965,7 @@ def _nr_target(word: str, cwd) -> tuple[str, str | None]:
     wildcard is in, as below), ("abs", path), ("rel", path below home) or
     ("unknown", the relative path) in a folder only known at run time."""
     w = re.sub(r"^\$(?:HOME|\{HOME\})(?=/|$)", "~", word)
-    if "$" in w or "`" in w:
+    if "$" in w or "`" in w or "\0" in w:          # a NUL cannot name a real path
         return "dynamic", None
     if re.search(r"[*?\[]", w) or any("," in b or ".." in b for b in _NR_BRACES.findall(w)):
         base = re.split(r"[*?\[{]", w, maxsplit=1)[0]
@@ -1933,7 +1990,7 @@ def _nr_full(kind: str, path: str | None) -> str | None:
     if kind == "abs":
         return path
     if kind == "rel" and path and not path.startswith(".."):
-        return f"{_nr_home()}/{path}"
+        return _nr_home() if path == "." else f"{_nr_home()}/{path}"
     return None
 
 
@@ -2135,9 +2192,8 @@ def _nr_find(args: list[str], ctx: _NrContext, admin: bool) -> str | None:
             runs.append(rest[i + 1:j])
             i = j
         i += 1
-    filtered = any(w.startswith("-") and w not in ("-delete", "-depth", "-d", "-print", "-print0")
-                   and not w.startswith(("-exec", "-ok")) for w in rest)
-    # A filter that picks files by name, age, size or owner, not just by type.
+    # A filter that picks files by name, age, size or owner (-type or
+    # -mindepth alone still matches everything of that kind).
     named = any(w in ("-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename", "-regex",
                       "-iregex", "-mtime", "-mmin", "-atime", "-amin", "-ctime", "-cmin", "-size",
                       "-empty", "-user", "-group", "-perm", "-links", "-inum", "-samefile")
@@ -2148,7 +2204,7 @@ def _nr_find(args: list[str], ctx: _NrContext, admin: bool) -> str | None:
         if deletes:
             if admin:
                 return "deletes files as an administrator"
-            if (problem := _nr_find_root(root, ctx.cwd, filtered, named)):
+            if (problem := _nr_find_root(root, ctx.cwd, named)):
                 return f"deletes files found under {problem}"
         for run in runs:
             if run and _nr_prog(run[0]) in deleters:
@@ -2162,9 +2218,10 @@ def _nr_find(args: list[str], ctx: _NrContext, admin: bool) -> str | None:
     return None
 
 
-def _nr_find_root(root: str, cwd, filtered: bool, named: bool) -> str | None:
+def _nr_find_root(root: str, cwd, named: bool) -> str | None:
     """Why a find that deletes is too broad for this root, or None for a card.
-    A plain folder of the working folder keeps its card; `.` needs a filter.
+    A plain folder of the working folder keeps its card; `.` needs a name,
+    age or size filter (`find . -type f -delete` empties home).
     Elsewhere a name, age or size filter is needed and the root must not be a
     top folder, home, one of home's main folders, or a protected folder.
     `find ~ -name '*.txt' -delete` stays refused: home is a top folder."""
@@ -2175,13 +2232,13 @@ def _nr_find_root(root: str, cwd, filtered: bool, named: bool) -> str | None:
         return f"everything a wildcard matches ({root})"
     if kind == "unknown":
         parts = [p for p in path.split("/") if p not in ("", ".")]
-        if ".." in parts or (not parts and not filtered):
+        if ".." in parts or (not parts and not named):
             return f"the working folder or a folder above it, which is only known while it runs ({root})"
         if parts and parts[0].casefold() in (_NR_HOME_NAMES | _NR_TOP_NAMES):
             return f"a folder named like one of your main folders ({root})"
         return None
     if kind == "rel":
-        if path == "." and filtered:
+        if path == "." and named:
             return None
         problem = _nr_rel_problem(path)
         if problem is None:
@@ -2230,6 +2287,28 @@ def _nr_code_hit(code: str, ctx: _NrContext) -> str | None:
     return None
 
 
+def _nr_run_output_hit(text: str, ctx: _NrContext) -> str | None:
+    """For text whose $(...) output is itself run as commands (sh -c "$(...)",
+    bash <<< "$(...)", a $(...) in command position): a download or decode
+    there runs fetched code, and a heredoc the body prints (`cat <<'EOF'`)
+    is judged as the commands it becomes."""
+    for n in _NR_SUBST_RE.findall(text):
+        if int(n) >= len(ctx.inner):
+            continue
+        body = ctx.inner[int(n)]
+        if _NR_FETCH.search(body):
+            return _FETCHED_CODE
+        for encoded in _NR_HEREDOC_BODY_RE.findall(body):
+            printed = bytes.fromhex(encoded).decode("utf-8", "replace")
+            if (hit := _nr_judge_text(printed, ctx.child())):
+                return hit
+        if "<<" in body:
+            printed, _, _ = _nr_heredocs(body, ctx, force=True)
+            if (hit := _nr_judge_text(printed, ctx.child())):
+                return hit
+    return None
+
+
 def _nr_reads_stdin(name: str, args: list[str]) -> bool:
     """True when an interpreter takes its program from stdin."""
     for a in args:
@@ -2255,8 +2334,9 @@ def _nr_judge_words(words: list[str], ctx: _NrContext) -> str | None:
     name = _nr_prog(first)
     low = [a.lower() for a in args]
     if "$" in first or "`" in first:
-        # A program name only known at run time: judged as if it were rm.
-        return _nr_rm(args, ctx, admin, unknown_name=True)
+        # A program name only known at run time: what a $(...) prints is run,
+        # so a download or a heredoc it prints is judged; otherwise as if it were rm.
+        return _nr_run_output_hit(first, ctx) or _nr_rm(args, ctx, admin, unknown_name=True)
     if name in ("cd", "pushd", "popd"):
         # Later relative paths are judged in the folder this leads to. Below
         # home that is a path below home; a folder only known at run time
@@ -2295,7 +2375,7 @@ def _nr_judge_words(words: list[str], ctx: _NrContext) -> str | None:
         if code and _NR_FORK_CODE.search(code):
             return _FORK_BOMB
         if code is not None and name in _NR_SHELLS:
-            return _nr_judge_text(code, ctx.child())
+            return _nr_run_output_hit(code, ctx) or _nr_judge_text(code, ctx.child())
         if code:
             return _nr_code_hit(code, ctx)
         return None
@@ -2507,7 +2587,8 @@ def _nr_judge_text(text: str, ctx: _NrContext) -> str | None:
             # A here-string is the program when a shell reads its program from stdin.
             kind = _nr_stdin_program(seg["words"])
             for body in seg["here"] if kind else ():
-                if (hit := (_nr_judge_text(body, ctx.child()) if kind == "shell"
+                if (hit := (_nr_run_output_hit(body, ctx) or _nr_judge_text(body, ctx.child())
+                            if kind == "shell"
                             else _nr_code_hit(body, ctx) if kind == "code"
                             else next((h for b in _DO_SHELL_SCRIPT.findall(body)
                                        if (h := _nr_judge_text(re.sub(r"\\(.)", r"\1", b), ctx.child()))),
@@ -2535,6 +2616,8 @@ def never_run_hit(text: str) -> str | None:
         return _TOO_SLOW
     except RecursionError:
         return _TOO_DEEP
+    except (ValueError, OSError):          # e.g. a NUL a path lookup rejects: fail closed
+        return _TOO_SLOW
 
 
 def never_run_decision(args: dict) -> Decision | None:
