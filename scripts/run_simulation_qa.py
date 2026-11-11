@@ -104,6 +104,9 @@ PROFILE_TESTS = {
         # Meeting notes: windows to transcript to notes, text only on disk, fenced transcript,
         # a reminder only on the person's press (stub client, tmp_path as the home folder).
         "tests/test_meetings.py",
+        # Your writing style: rows from sent mail, a child trains and drafts, drafts only, erased by
+        # forget (a /bin/sh stand-in for the MLX Python, fake Mail bridge, tmp_path as the home folder).
+        "tests/test_personal_style.py",
         # Image/video input: one dedicated vision call (stub client, synthetic media).
         "tests/test_vision.py",
         # Pictures that lead to actions: the reading as untrusted data, every effect

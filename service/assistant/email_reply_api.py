@@ -190,6 +190,15 @@ async def _model_reply(system: str, material: str) -> str | None:
     model = role_to_model("fast")
     idle.begin_foreground()
     try:
+        # Your writing style (service/personal_style.py): when the person trained an
+        # adapter on their own sent mail and switched it on, it writes this draft. Text
+        # only, into the same editable field; any failure falls through to the usual model.
+        from service import personal_style
+        if personal_style.ready():
+            styled = await personal_style.write(system, material, max_tokens=_DRAFT_TOKENS)
+            if styled:
+                return styled
+
         async def call() -> dict:
             client = _c()
             await client.ensure_only(model)
