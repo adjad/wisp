@@ -144,9 +144,23 @@ enum NotchPermissionPage {
         case .notAllowed:
             if FirstRunPermissions.isAddOnly(item, state, calendarAddOnly: calendarAddOnly) { return calendarAddOnlyNote }
             let page = "Wisp is off in System Settings. In the page that opens, switch on Wisp."
+            if canStartOver(item, state) { return page + " " + startOverNote }
             return item == .fullDiskAccess || item == .screenRecording ? page + " " + relaunchNote : page
         }
     }
+
+    /// Screen Recording and Accessibility, once asked and still not there: System
+    /// Settings may already show Wisp switched on, saved for an older copy of Wisp
+    /// (Permissions.startOver), and then there is no switch left to flip.
+    static func canStartOver(_ item: Item, _ state: State) -> Bool {
+        state == .notAllowed && (item == .screenRecording || item == .accessibility)
+    }
+
+    static let startOverTitle = "Start over"
+    static let startOverNote = "If Wisp is already switched on there, macOS saved that for an older copy of Wisp. "
+        + "Press Start over, then Allow, and macOS asks again for this copy."
+    static let startOverFailed = "macOS didn't forget the old answer. In System Settings, remove Wisp from the list "
+        + "with the minus button, then add it again."
 
     /// Calendar set to Add Events Only: Wisp is already on in that page, so there is
     /// no switch to flip. The button is still Open System Settings.
@@ -287,6 +301,22 @@ final class NotchPermissionPageModel: ObservableObject {
             }
             self?.answered(wait)
         }
+    }
+
+    /// Start over for Screen Recording or Accessibility: forget macOS's saved answer,
+    /// so the row goes back to Allow and macOS asks again for this copy of Wisp.
+    @Published private(set) var startOverFailed: Item?
+
+    func startOver(_ item: Item) {
+        let extra: Permissions.Extra
+        switch item {
+        case .screenRecording: extra = .screenRecording
+        case .accessibility: extra = .accessibility
+        default: return
+        }
+        rowChoice = .chosen(item)
+        startOverFailed = Permissions.startOver(extra) ? nil : item
+        Task { [access] in await access.refresh() }
     }
 
     /// The click, before anything is asked: the page now stays through the close.

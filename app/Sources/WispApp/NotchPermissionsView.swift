@@ -164,6 +164,12 @@ struct NotchPermissionsView: View {
             Text(NotchPermissionPage.purpose(item))
             let next = self.next(item)
             if !next.isEmpty { Text(next) }
+            if NotchPermissionPage.canStartOver(item, access.state(item)) {
+                if page.startOverFailed == item { Text(NotchPermissionPage.startOverFailed).foregroundStyle(Theme.warn) }
+                NotchSettingsChrome.pill(NotchPermissionPage.startOverTitle, primary: false) { page.startOver(item) }
+                    .padding(.top, 4)
+                    .accessibilityLabel("Start over for \(NotchPermissionPage.title(item))")
+            }
         }
         .font(.wisp(.footnote)).foregroundStyle(Theme.textMuted)
         .fixedSize(horizontal: false, vertical: true)

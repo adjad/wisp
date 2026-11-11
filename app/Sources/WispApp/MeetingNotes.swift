@@ -1,5 +1,7 @@
 import AVFoundation
 import AppKit
+import CoreMedia
+import ScreenCaptureKit
 import SwiftUI
 
 // Meeting notes: Wisp listens to a meeting through the microphone, the Ask model
@@ -11,7 +13,14 @@ import SwiftUI
 // and sent to Wisp's own service on this Mac; a window lives in memory until it
 // is sent and is never written to disk. Only the text is kept.
 //
-// This file never asks macOS for the microphone. That question belongs to the
+// The other side of a call: with Screen Recording already allowed, the sound this
+// Mac plays (Zoom, Meet, FaceTime, a browser) is captured too and mixed into the
+// same windows, so a call on headphones is heard. Only sound is taken: the stream's
+// picture is 2 x 2 pixels at one frame a second and is thrown away. macOS shows its
+// own screen-recording indicator while it runs. Without Screen Recording the
+// meeting is the microphone only, and the tab says so.
+//
+// This file never asks macOS for the microphone or for Screen Recording. That question belongs to the
 // mic button in Ask (VoiceInput.start); a meeting starts only once it is allowed.
 
 struct MeetingAction: Equatable, Identifiable {
@@ -126,6 +135,8 @@ final class MeetingRecorder: @unchecked Sendable {
     private let engine = AVAudioEngine()
     private let lock = NSLock()
     private var pcm = Data()
+    /// The Mac's own sound (the other side of a call), waiting to be mixed into the next window.
+    private var call = Data()
     private var converter: AVAudioConverter?
     private var running = false
     private var observer: NSObjectProtocol?
@@ -178,6 +189,38 @@ final class MeetingRecorder: @unchecked Sendable {
         }
     }
 
+    /// The Mac's own sound as 16 kHz mono 16-bit PCM (CallAudioCapture). Kept to two
+    /// windows at most, so a stalled microphone can't make it grow.
+    func addCallAudio(_ samples: Data) {
+        lock.withLock {
+            guard running else { return }
+            call.append(samples)
+            let extra = call.count - Self.windowBytes * 2
+            if extra > 0 { call = Data(call.dropFirst(extra - extra % 2)) }
+        }
+    }
+
+    /// `window` of microphone samples with the call's sound added, sample by sample.
+    /// The call's samples are the most recent ones, so they line up with the window's end.
+    /// Pure; sums are clamped, never wrapped.
+    static func mix(_ window: Data, call: Data) -> Data {
+        let take = min(window.count, call.count) & ~1
+        guard take > 0 else { return window }
+        var out = window
+        let offset = window.count - take
+        out.withUnsafeMutableBytes { (mic: UnsafeMutableRawBufferPointer) in
+            call.suffix(take).withUnsafeBytes { (other: UnsafeRawBufferPointer) in
+                for index in stride(from: 0, to: take, by: 2) {
+                    let a = Int32(mic.loadUnaligned(fromByteOffset: offset + index, as: Int16.self))
+                    let b = Int32(other.loadUnaligned(fromByteOffset: index, as: Int16.self))
+                    let sum = Int16(max(-32768, min(32767, a + b)))
+                    mic.storeBytes(of: sum, toByteOffset: offset + index, as: Int16.self)
+                }
+            }
+        }
+        return out
+    }
+
     /// Stops the microphone; what was left over as a last window, nil when too short to hold a word.
     @discardableResult
     func stop() -> Data? {
@@ -193,8 +236,9 @@ final class MeetingRecorder: @unchecked Sendable {
         if let observer { NotificationCenter.default.removeObserver(observer) }
         observer = nil
         let tail = lock.withLock { () -> Data in
-            let taken = pcm
+            let taken = Self.mix(pcm, call: call)
             pcm = Data()
+            call = Data()
             onWindow = { _ in }
             onLevel = { _ in }
             onFailure = { _ in }
@@ -225,14 +269,99 @@ final class MeetingRecorder: @unchecked Sendable {
                                            count: count * 2))
             var window: Data?
             if pcm.count >= Self.windowBytes {
-                window = pcm.prefix(Self.windowBytes)
+                window = Self.mix(Data(pcm.prefix(Self.windowBytes)), call: call)
                 pcm = Data(pcm.dropFirst(Self.windowBytes))
+                call = Data()
             }
             return (window, onWindow, onLevel)
         }
         guard let (window, sendWindow, sendLevel) = step else { return }
         sendLevel(VoiceEndpointer.meter(level))
         if let window { sendWindow(WAVFile.encode(pcm: window)) }
+    }
+}
+
+/// The sound this Mac plays, as 16 kHz mono 16-bit PCM, for the other side of a call.
+/// Runs only when Screen Recording is already allowed; it never asks for it.
+final class CallAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
+    struct Failure: Error {}
+
+    /// Screen Recording is on for Wisp, so the Mac's sound can be captured without a question.
+    static var allowed: Bool { CGPreflightScreenCaptureAccess() }
+
+    var onSamples: (Data) -> Void = { _ in }
+    var onStopped: () -> Void = {}
+
+    private var stream: SCStream?
+    private let queue = DispatchQueue(label: "com.wisp.meeting.call-audio")
+
+    func start() async throws {
+        guard Self.allowed else { throw Failure() }
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        guard let display = content.displays.first else { throw Failure() }
+        let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
+        let configuration = SCStreamConfiguration()
+        configuration.capturesAudio = true
+        configuration.excludesCurrentProcessAudio = true     // not Wisp reading an answer aloud
+        configuration.sampleRate = WAVFile.sampleRate
+        configuration.channelCount = 1
+        // The picture is not wanted: as small and as rare as the API allows, and dropped on arrival.
+        configuration.width = 2
+        configuration.height = 2
+        configuration.minimumFrameInterval = CMTime(value: 1, timescale: 1)
+        configuration.showsCursor = false
+        let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
+        try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: queue)
+        try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
+        try await stream.startCapture()
+        self.stream = stream
+    }
+
+    func stop() {
+        guard let stream else { return }
+        self.stream = nil
+        onSamples = { _ in }
+        onStopped = {}
+        stream.stopCapture { _ in }
+    }
+
+    func stream(_ stream: SCStream, didStopWithError error: Error) {
+        queue.async { [weak self] in
+            guard let self, self.stream != nil else { return }
+            self.stream = nil
+            self.onStopped()
+        }
+    }
+
+    func stream(_ stream: SCStream, didOutputSampleBuffer buffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        guard type == .audio, buffer.isValid, let samples = Self.pcm16(buffer) else { return }
+        onSamples(samples)
+    }
+
+    /// One audio buffer as 16-bit PCM, or nil when it isn't the 16 kHz float sound that was asked for.
+    static func pcm16(_ buffer: CMSampleBuffer) -> Data? {
+        guard let format = CMSampleBufferGetFormatDescription(buffer),
+              let description = CMAudioFormatDescriptionGetStreamBasicDescription(format)?.pointee,
+              description.mFormatID == kAudioFormatLinearPCM,
+              description.mFormatFlags & kAudioFormatFlagIsFloat != 0,
+              description.mBitsPerChannel == 32,
+              Int(description.mSampleRate) == WAVFile.sampleRate else { return nil }
+        var out: Data?
+        try? buffer.withAudioBufferList { list, _ in
+            guard let first = list.first, let base = first.mData else { return }
+            // Non-interleaved: the first buffer is the first channel. Interleaved stereo steps by channel.
+            let interleaved = description.mFormatFlags & kAudioFormatFlagIsNonInterleaved == 0
+            let step = interleaved ? max(1, Int(description.mChannelsPerFrame)) : 1
+            let floats = UnsafeBufferPointer(start: base.assumingMemoryBound(to: Float32.self),
+                                             count: Int(first.mDataByteSize) / MemoryLayout<Float32>.size)
+            var data = Data(capacity: floats.count / step * 2)
+            for index in stride(from: 0, to: floats.count, by: step) {
+                var sample = Int16(max(-1, min(1, floats[index])) * 32767)
+                withUnsafeBytes(of: &sample) { data.append(contentsOf: $0) }
+            }
+            out = data
+        }
+        return out
     }
 }
 
@@ -253,7 +382,10 @@ final class MeetingModel: ObservableObject {
     @Published private(set) var current: Meeting?
     @Published private(set) var past: [Meeting] = []
     @Published private(set) var busyAction: Int?
+    /// The meeting being recorded also hears the sound this Mac plays (a call on headphones).
+    @Published private(set) var hearsCall = false
 
+    private var callAudio: CallAudioCapture?
     private var recorder: MeetingRecorder?
     private var meetingID: String?
     private var nextWindow = 0
@@ -315,6 +447,7 @@ final class MeetingModel: ObservableObject {
             return
         }
         self.recorder = recorder
+        startCallAudio(into: recorder)
         startedAt = Date()
         clock = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -322,6 +455,34 @@ final class MeetingModel: ObservableObject {
                 self.elapsed = Int(Date().timeIntervalSince(self.startedAt))
             }
         }
+    }
+
+    /// The other side of a call, when Screen Recording is already on. A failure here
+    /// never stops the meeting: it carries on with the microphone, and the tab says so.
+    private func startCallAudio(into recorder: MeetingRecorder) {
+        hearsCall = false
+        guard CallAudioCapture.allowed else { return }
+        let capture = CallAudioCapture()
+        capture.onSamples = { [weak recorder] samples in recorder?.addCallAudio(samples) }
+        capture.onStopped = { [weak self] in
+            Task { @MainActor in self?.hearsCall = false; self?.callAudio = nil }
+        }
+        callAudio = capture
+        Task { [weak self] in
+            do {
+                try await capture.start()
+                guard let self else { capture.stop(); return }
+                if self.phase == .recording && self.callAudio === capture { self.hearsCall = true } else { capture.stop() }
+            } catch {
+                if self?.callAudio === capture { self?.callAudio = nil }
+            }
+        }
+    }
+
+    private func stopCallAudio() {
+        callAudio?.stop()
+        callAudio = nil
+        hearsCall = false
     }
 
     /// Windows are sent one at a time, in order; the notes wait for the last one.
@@ -348,6 +509,7 @@ final class MeetingModel: ObservableObject {
         guard phase == .recording, let id = meetingID else { return }
         clock?.invalidate(); clock = nil
         level = 0
+        stopCallAudio()
         if let tail = recorder?.stop() { enqueue(tail) }
         recorder = nil
         phase = .writing
@@ -459,7 +621,10 @@ struct NotchMeetingView: View {
     private var home: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Meeting notes").font(.wisp(.headline, weight: .semibold)).foregroundStyle(Theme.textPrimary)
-            Text("Wisp listens through the microphone and writes the words down on this Mac. "
+            Text("Wisp listens through the microphone" + (CallAudioCapture.allowed
+                    ? " and to the sound this Mac plays, so a call on headphones is heard too. It"
+                    : ". To hear the other side of a call on headphones, turn on Screen Recording for Wisp first. It")
+                 + " writes the words down on this Mac. "
                  + "When you stop, it writes a summary, the decisions, the action items and a follow-up. "
                  + "No audio is kept and nothing leaves your Mac.")
                 .font(.wisp(.body)).foregroundStyle(Theme.textSecondary)
@@ -501,6 +666,9 @@ struct NotchMeetingView: View {
                 .font(.wisp(.reading, design: .serif))
                 .foregroundStyle(model.heardSoFar.isEmpty ? Theme.textMuted : Theme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
+            Text(model.hearsCall ? "Hearing the microphone and this Mac's sound."
+                                 : "Hearing the microphone only.")
+                .font(.wisp(.caption)).foregroundStyle(Theme.textMuted)
             if model.missed >= 1 {
                 Text("Missed about \(Meeting.span(model.missed)) while Wisp was busy.")
                     .font(.wisp(.caption)).foregroundStyle(Theme.warn)
