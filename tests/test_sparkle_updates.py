@@ -320,3 +320,12 @@ def test_background_checks_are_vetoed_while_automatic_checks_are_off():
     body = _swift_function(source, "func updater(_ updater: SPUUpdater, mayPerform updateCheck: SPUUpdateCheck) throws")
     assert "updateCheck == .updatesInBackground && !updater.automaticallyChecksForUpdates" in body
     assert "throw " in body
+
+
+def test_staging_checks_the_framework_before_info_plist_exists():
+    # stage() runs before assemble writes Info.plist; only a finished bundle needs it.
+    source = (ROOT / "build-support/sparkle.py").read_text()
+    stage = source[source.index("def stage("):source.index("def framework_version(")]
+    assert "validate_framework(bundle, record, config)" in stage and "check_info_plist" not in stage
+    validate = source[source.index("def validate("):source.index("def validate_framework(")]
+    assert "check_info_plist(bundle)" in validate

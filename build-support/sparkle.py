@@ -122,7 +122,7 @@ def stage(bundle: Path, products: Path, config: dict) -> dict:
               "artifact_sha256": pinned.group(1)}
     if record["version"] != updates["sparkle_version"]:
         raise SparkleError(f"Bundled Sparkle {record['version']} is not the pinned {updates['sparkle_version']}")
-    validate(bundle, record, config)
+    validate_framework(bundle, record, config)     # Info.plist is written after staging
     return record
 
 
@@ -135,6 +135,13 @@ def framework_version(bundle: Path) -> str | None:
 
 
 def validate(bundle: Path, record: dict | None, config: dict) -> None:
+    """A finished bundle: the pinned framework, and the private Info.plist update defaults."""
+    validate_framework(bundle, record, config)
+    if record is not None:
+        check_info_plist(bundle)
+
+
+def validate_framework(bundle: Path, record: dict | None, config: dict) -> None:
     """The bundle ships exactly the pinned framework, without the removed parts."""
     if record is None:
         if (bundle / FRAMEWORK).exists():
@@ -153,7 +160,6 @@ def validate(bundle: Path, record: dict | None, config: dict) -> None:
     version = framework_version(bundle)
     if version != settings(config)["sparkle_version"] or version != record.get("version"):
         raise SparkleError("Bundled Sparkle version differs from toolchain.json")
-    check_info_plist(bundle)
 
 
 # Info.plist values a Sparkle-bearing bundle must carry, whatever else changes.
