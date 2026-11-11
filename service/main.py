@@ -97,7 +97,7 @@ from service.setup.engines import detect_external_engines
 from service.setup.hardware import current_hardware
 from service.memory import store, build_messages, maybe_summarize
 from service.memory.prompt_blocks import memory_block, now_line
-from service.memory.context import default_history_budget
+from service.memory.context import default_history_budget, require_resident
 from service.router import route
 from service.router.router import RouteDecision, routing_guard_contract, rule_route
 from service.agent.planner import enabled_from_env as planner_enabled_from_env
@@ -3351,8 +3351,9 @@ async def agent(body: dict[str, Any]):
                 summary_target = role_target("fast")
 
                 async def prepare_local_summary() -> None:
+                    # Resident-only: never ensure_only, which evicts other models.
                     await ensure_omlx()
-                    await client.ensure_only(summary_target.model)
+                    await require_resident(client, summary_target.model)
 
                 # Not awaited: the app closes the stream at `done`, which cancelled an
                 # awaited fold on every turn. The module-level client, never this turn's.

@@ -349,6 +349,25 @@ def _fold_input(turns: list[dict]) -> tuple[list[str], int]:
     return lines, folded
 
 
+class FoldModelNotResident(RuntimeError):
+    """The fold's model isn't in memory, so the fold stands down."""
+
+
+async def require_resident(client: OMLXClient, model: str) -> None:
+    """The fold is background upkeep: resident-only, like every other background call.
+
+    It runs on `model` only if the engine already holds it, and never loads or
+    unloads anything. It used `ensure_only(model)`, which on Wisp's engine unloads
+    every resident model outside the keep-warm set and then loads `model`: on a
+    roster whose turn model differs from the summary model, the fold after each
+    turn swapped the turn's model out. Standing down counts as a fold failure, so
+    a chat whose summary model is never resident still gets the condensed-notes
+    fallback after _MAX_FOLD_FAILURES folds.
+    """
+    if model not in set(await client.loaded_models()):
+        raise FoldModelNotResident(model)
+
+
 async def maybe_summarize(client: OMLXClient, sid: str, model: str, prepare=None) -> None:
     """Fold turns that fell out of the live window into the rolling summary.
 
