@@ -349,6 +349,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_rc2_sends_own_address.py",
     "tests/test_rc2_sessions_old_text.py",
     "tests/test_rc2_text_size_contract.py",
+    "tests/test_rc2_ask_web_possessive_egress.py",
+    "tests/test_rc2_policy_audit_repairs.py",
     # rc1 Brief and Day honesty: no all-clear for an unread source, per-source blocked reasons.
     "tests/test_first_day_honesty.py",
     # rc1 reminders: expiry and supersede, the first-launch auto-action hold, the day-one Daily Summary.
