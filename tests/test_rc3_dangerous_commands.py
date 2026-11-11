@@ -192,6 +192,14 @@ REFUSED = [
     "rm -rf ~/.kube/config",
     "rm -rf ~/Dropbox/x",
     "cd ~/.claude && rm -rf projects",
+    # Second re-audit: a container with the disk or home mounted, more system names.
+    "docker run -v /:/host img rm -rf /host/tmp/x",
+    "podman run --mount type=bind,source=$HOME,target=/h img sh -c 'rm -rf /h/x'",
+    "rm -rf /.vol/1/2",
+    "rm -rf /Network/Servers/x",
+    "cd /home && rm -rf u",
+    "rm -rf /Volumes/Backup/Backups.backupdb/old",
+    "trap 'rm -rf \"$tmpdir\"' EXIT",
 ]
 
 # (command, tier by default, tier under full access), captured before the change.
@@ -287,14 +295,27 @@ ORDINARY = [
     ("rm -rf ~/.cache/pip", "CONFIRM", "CONFIRM"),
     ("rm -rf /Users/Shared/x", "CONFIRM", "CONFIRM"),
     ("cd /tmp && rm -rf build-xyz", "CONFIRM", "CONFIRM"),
-    # An rm the check now parses behind a launcher or trap keeps the card it judged.
-    ("xcrun rm -rf /tmp/x", "CONFIRM", "CONFIRM"),
-    ("trap 'rm -rf /tmp/x' EXIT", "CONFIRM", "CONFIRM"),
+    # Many options, or the flag after the path, keep the card.
+    ("rm -v -v -v -v -v -v -v -v -v -rf /tmp/x", "CONFIRM", "CONFIRM"),
+    ("rm /tmp/x -rf", "CONFIRM", "CONFIRM"),
 ]
 
 # Recursive deletes the owner decided get a card: never ALLOW, in any mode.
-CARDED_DELETES = [cmd for cmd, _, _ in ORDINARY if cmd.startswith(("rm -r", "cd ", "xcrun", "trap"))
-                  and " rm -r" in f" {cmd}"]
+CARDED_DELETES = [cmd for cmd, _, _ in ORDINARY if cmd.startswith(("rm -r", "cd ")) and " rm -r" in f" {cmd}"]
+
+# Second re-audit of #509: commands where the floor's broad entry must stay in
+# force (DENY by default and under full access, as before the change): a
+# hidden dangerous rm next to an ordinary one, and an rm run somewhere else.
+FLOOR_HOLDS = [
+    "rm -v -v -v -v -v -v -v -v -v -rf dist; x=\"rm -rf /etc\"; $x",
+    "rm build -rf; tmux new -d \"rm -rf /Users/u/Documents\"",
+    "rm -rf /tmp/x; alias k='rm -rf /Users/u'; k",
+    "rm -rf /tmp/x # rm -rf /tmp/x",
+    "xcrun rm -rf /tmp/x",
+    "ssh host rm -rf /tmp/x",
+    "docker run --rm img rm -rf /tmp/x",
+    "trap 'rm -rf /tmp/x' EXIT",
+]
 
 
 def _tier(monkeypatch, cmd, *, full_access=False, keep_floor=True, granted=None):
@@ -437,6 +458,8 @@ EQUIVALENT = [
     ("~/Pictures/old", "Photos.photoslibrary"), ("~/Projects/app/build", "Thing.app"),
     ("~/Applications", "Thing.app"), ("~", ".kube"), ("~/.kube", "config"), ("~/.kube/cache", "x"),
     ("~", "Dropbox"), ("~/Dropbox", "x"), ("~/Dropbox/proj", "build"), ("/Users/Shared", "x"),
+    ("/home", "u"), ("/Network", "x"), ("/.vol", "1"), ("/Volumes/B/Backups.backupdb", "old"),
+    ("/System/Volumes/Data", "tmp"), ("/System/Volumes/Data/Users", "u"),
 ]
 
 
@@ -482,6 +505,45 @@ def test_the_broad_floor_entry_holds_unless_every_rm_was_judged(monkeypatch):
     assert _tier(monkeypatch, "rm -rf /tmp/build-xyz").tier is Tier.CONFIRM
 
 
+@pytest.mark.parametrize("cmd", FLOOR_HOLDS)
+def test_the_floor_holds_for_an_rm_the_check_did_not_accept_here(monkeypatch, cmd):
+    assert policy.never_run_hit(cmd) is None, cmd       # not refused outright ...
+    assert _tier(monkeypatch, cmd).tier is Tier.DENY    # ... but the floor still refuses it
+    assert _tier(monkeypatch, cmd, full_access=True).tier is Tier.DENY
+
+
+def _judged(cmd):
+    return policy._nr_analyse(cmd)[1].judged
+
+
+def test_the_floor_skip_matches_each_path_it_sees():
+    skip = policy._floor_skips_broad_rm
+    # An ordinary direct rm alone: skipped.
+    cmd = "rm -rf /tmp/a"
+    assert skip({"cmd": cmd}, _judged(cmd))
+    # Plus a floor match for another path the check did not judge: kept.
+    cmd = "rm -rf /tmp/a; tmux new -d 'x'; rm -rf /etc"
+    assert not skip({"cmd": cmd}, {"/tmp/a": 1})
+    # The same path twice with one judged: kept.
+    assert not skip({"cmd": "rm -rf /tmp/a; rm -rf /tmp/a"}, {"/tmp/a": 1})
+    assert skip({"cmd": "rm -rf /tmp/a; rm -rf /tmp/a"}, _judged("rm -rf /tmp/a; rm -rf /tmp/a"))
+    # Only behind a launcher: nothing judged here, kept.
+    cmd = "ssh host rm -rf /tmp/a"
+    assert _judged(cmd) == {} and not skip({"cmd": cmd}, _judged(cmd))
+    # A quoted or escaped path at a floor match: kept.
+    assert not skip({"cmd": "rm -rf /tmp/a\"; x"}, {"/tmp/a": 5, '/tmp/a"': 5})
+
+
+def test_a_long_run_of_words_is_judged_quickly():
+    import time
+    n = policy.SHELL_TEXT_LIMIT
+    for text in (("x -r " + "rm " * n)[:n], ("xcrun " + "rm " * n)[:n], ("x " + "rm a " * n)[:n],
+                 ("docker run -v /:/h " + "rm " * n)[:n]):
+        start = time.perf_counter()
+        policy.never_run_hit(text)
+        assert time.perf_counter() - start < 0.5, text[:30]
+
+
 def test_text_that_names_a_dangerous_command_is_not_refused_by_the_never_run_check():
     # A commit message, a search pattern or printed text is not the command it names.
     for cmd in ("git commit -m 'rm -rf /etc'", "git log --grep 'rm -rf ~'", "grep -r 'rm -rf /' .",
@@ -491,13 +553,14 @@ def test_text_that_names_a_dangerous_command_is_not_refused_by_the_never_run_che
 
 
 def test_a_volume_that_links_to_the_startup_disk_is_the_startup_disk(monkeypatch):
-    links = {"Macintosh HD": "/", "Ext": "/Volumes/Ext-real"}
+    links = {"Macintosh HD": "/", "Ext": "/Volumes/Ext-real", "Data": "/System/Volumes/Data"}
     monkeypatch.setattr(policy, "_nr_volume_link", lambda name: links.get(name))
     home = policy._nr_home()
     for cmd in ("rm -rf '/Volumes/Macintosh HD/System'", "rm -rf '/Volumes/Macintosh HD/usr/bin'",
                 f"rm -rf '/Volumes/Macintosh HD{home}/Documents'",
                 f"rm -rf '/Volumes/Macintosh HD{home}/.ssh'",
-                "cd '/Volumes/Macintosh HD' && rm -rf Users"):
+                "cd '/Volumes/Macintosh HD' && rm -rf Users",
+                f"rm -rf /Volumes/Data{home}/Documents", "cd /Volumes/Data && rm -rf usr"):
         assert policy.never_run_hit(cmd), cmd
     for cmd in ("rm -rf /Volumes/Ext/proj/build", "rm -rf /Volumes/Other/proj/build",
                 f"rm -rf '/Volumes/Macintosh HD{home}/Projects/app/build'"):
