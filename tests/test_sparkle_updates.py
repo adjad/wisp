@@ -211,3 +211,82 @@ def test_absolute_rpaths_go_only_when_frameworks_resolve_inside(tmp_path):
     assert not pipeline.resolves_in_bundle(bundle, main, dep, rpaths[:2])   # only absolute paths
     assert not pipeline.resolves_in_bundle(bundle, main, "/opt/lib/x.dylib", rpaths)
     assert not pipeline.resolves_in_bundle(bundle, main, "@rpath/../../../../etc/hosts", rpaths)
+
+
+def test_non_canonical_point_is_rejected(tmp_path):
+    # y = P - 1 with the sign bit set: x is 0, so a set sign bit has no valid point.
+    # Unreduced, it decoded to x = P, the non-canonical encoding of (0, -1).
+    encoded = ((sparkle._P - 1) | (1 << 255)).to_bytes(32, "little")
+    assert sparkle._decompress(encoded) is None
+    assert sparkle._decompress((sparkle._P - 1).to_bytes(32, "little")) is not None   # (0, -1) itself
+    empty = tmp_path / "empty"
+    empty.write_bytes(b"")
+    assert not sparkle.verify_file(B64(encoded), B64(SIGNATURE), empty)
+
+
+def test_sparkle_bundle_needs_a_record_and_the_private_plist(tmp_path):
+    bundle = tmp_path / "Wisp.app"
+    (bundle / sparkle.FRAMEWORK).mkdir(parents=True)
+    with pytest.raises(sparkle.SparkleError, match="does not declare"):
+        sparkle.validate(bundle, None, pipeline.CONFIG)
+    import plistlib
+    info = bundle / "Contents/Info.plist"
+    info.write_bytes(plistlib.dumps(sparkle.info_plist(pipeline.CONFIG)))
+    sparkle.check_info_plist(bundle)
+    for key, value in sparkle.PRIVATE_DEFAULTS.items():
+        keys = sparkle.info_plist(pipeline.CONFIG)
+        keys[key] = not value
+        info.write_bytes(plistlib.dumps(keys))
+        with pytest.raises(sparkle.SparkleError, match=key):
+            sparkle.check_info_plist(bundle)
+    keys = sparkle.info_plist(pipeline.CONFIG)
+    del keys["SURequireSignedFeed"]
+    info.write_bytes(plistlib.dumps(keys))
+    with pytest.raises(sparkle.SparkleError, match="SURequireSignedFeed"):
+        sparkle.check_info_plist(bundle)
+
+
+def test_structure_validation_runs_sparkle_without_a_record():
+    source = (ROOT / "build-support/pipeline.py").read_text()
+    assert 'sparkle.validate(bundle, meta.get("sparkle"), CONFIG)' in source
+    assert 'if "sparkle" in meta' not in source
+
+
+class _Result:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+
+def test_existing_tag_must_point_at_the_candidate(monkeypatch):
+    commit, other = "a" * 40, "b" * 40
+    refs = {
+        "absent": _Result(1, '{"message":"Not Found","status":"404"}', "gh: Not Found (HTTP 404)"),
+        "same": _Result(0, json.dumps({"object": {"type": "commit", "sha": commit}})),
+        "moved": _Result(0, json.dumps({"object": {"type": "commit", "sha": other}})),
+        "annotated": _Result(0, json.dumps({"object": {"type": "tag", "sha": "c" * 40}})),
+        "broken": _Result(1, "", "gh: Server Error (HTTP 500)"),
+    }
+
+    def fake_gh(env, path, *rest, check=True, **kwargs):
+        if "/git/tags/" in path:
+            return _Result(0, json.dumps({"object": {"type": "commit", "sha": other}}))
+        return refs[path.rsplit("/", 1)[1]]
+    monkeypatch.setattr(update_release, "_gh", fake_gh)
+    update_release.check_tag_target({}, "o/r", "absent", commit)
+    update_release.check_tag_target({}, "o/r", "same", commit)
+    for tag in ("moved", "annotated"):
+        with pytest.raises(pipeline.BuildError, match="already exists"):
+            update_release.check_tag_target({}, "o/r", tag, commit)
+    with pytest.raises(pipeline.BuildError, match="Could not read tag"):
+        update_release.check_tag_target({}, "o/r", "broken", commit)
+
+
+def test_release_creation_checks_the_tag_first():
+    source = (ROOT / "build-support/update_release.py").read_text()
+    assert source.index("check_tag_target(env, repository, tag") < source.index('"gh", "release", "create"')
+
+
+def test_workflow_label_check_rejects_multiline_labels():
+    workflow = (ROOT / ".github/workflows/wisp-build.yml").read_text()
+    step = workflow.split("- name: Require the update signing key", 1)[1].split("- uses:", 1)[0]
+    assert '[[ "$UPDATE_LABEL" =~ ^' in step and "grep" not in step

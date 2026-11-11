@@ -153,6 +153,24 @@ def validate(bundle: Path, record: dict | None, config: dict) -> None:
     version = framework_version(bundle)
     if version != settings(config)["sparkle_version"] or version != record.get("version"):
         raise SparkleError("Bundled Sparkle version differs from toolchain.json")
+    check_info_plist(bundle)
+
+
+# Info.plist values a Sparkle-bearing bundle must carry, whatever else changes.
+PRIVATE_DEFAULTS = {"SUEnableAutomaticChecks": False, "SUAutomaticallyUpdate": False,
+                    "SUEnableSystemProfiling": False, "SURequireSignedFeed": True,
+                    "SUVerifyUpdateBeforeExtraction": True}
+
+
+def check_info_plist(bundle: Path) -> None:
+    """No automatic checks, installs or profile; signed feed; verify before extraction."""
+    try:
+        info = plistlib.loads((bundle / "Contents/Info.plist").read_bytes())
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        raise SparkleError("Bundle Info.plist is unreadable") from None
+    wrong = sorted(key for key, value in PRIVATE_DEFAULTS.items() if info.get(key) is not value)
+    if wrong:
+        raise SparkleError("Info.plist update settings are not the private defaults: " + ", ".join(wrong))
 
 
 def check_linkage(load_commands: str, dylibs: str) -> None:
@@ -197,7 +215,7 @@ def _equal(a, b):
 def _recover_x(y, sign):
     if y >= _P:
         return None
-    x2 = (y * y - 1) * pow(_D * y * y + 1, _P - 2, _P)
+    x2 = (y * y - 1) * pow(_D * y * y + 1, _P - 2, _P) % _P
     if x2 == 0:
         return None if sign else 0
     x = pow(x2, (_P + 3) // 8, _P)

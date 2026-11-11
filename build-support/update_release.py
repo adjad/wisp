@@ -265,6 +265,27 @@ def _existing_release_matches(release: dict, name: str, sha256: str, size: int) 
             and assets[0].get("digest") in (None, "sha256:" + sha256))
 
 
+def tag_commit(env, repository: str, tag: str) -> str | None:
+    """The commit refs/tags/<tag> points at (peeling an annotated tag), or None if absent."""
+    result = _gh(env, f"repos/{repository}/git/ref/tags/{quote(tag, safe='')}", check=False)
+    if result.returncode:
+        if '"status":"404"' in result.stdout.replace(" ", "") or "Not Found" in (result.stdout + result.stderr):
+            return None
+        raise BuildError(f"Could not read tag {tag}")
+    target = json.loads(result.stdout)["object"]
+    while target["type"] == "tag":
+        target = json.loads(_gh(env, f"repos/{repository}/git/tags/{target['sha']}").stdout)["object"]
+    if target["type"] != "commit":
+        raise BuildError(f"Tag {tag} does not point at a commit")
+    return target["sha"]
+
+
+def check_tag_target(env, repository: str, tag: str, commit: str) -> None:
+    found = tag_commit(env, repository, tag)
+    if found is not None and found != commit:
+        raise BuildError(f"Tag {tag} already exists at {found[:12]}, not {commit[:12]}; refusing to publish")
+
+
 def release_update(runner, args):
     """CI: publish the verified candidate as release v<label> and add it to the appcast."""
     env_in = os.environ
@@ -303,6 +324,8 @@ def release_update(runner, args):
         if existing and not _existing_release_matches(existing, zip_path.name, result["sha256"], size):
             raise BuildError(f"Release {tag} already exists with other assets; refusing to modify it")
         if not existing:
+            # gh reuses an existing tag and ignores --target: it must be absent or this commit.
+            check_tag_target(env, repository, tag, meta["commit"])
             download = f"https://github.com/{repository}/releases/download/{quote(tag, safe='')}/{quote(zip_path.name, safe='')}"
             notes = release_page_notes(label) or f"Wisp {label} (build {meta['build_number']})\n"
             body = (f"**[Download Wisp for Mac (Apple silicon)]({download})**\n\n" + FIRST_LAUNCH_NOTE

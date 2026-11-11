@@ -151,8 +151,13 @@ final class SoftwareUpdater: NSObject, ObservableObject {
         defaults.set(on, forKey: SoftwareUpdate.includeBetasKey)
         includesBetas = on
         #if canImport(Sparkle)
-        // A channel change re-reads the feed on the next check, not from a cache.
-        controller?.updater.resetUpdateCycleAfterShortDelay()
+        // Sparkle reads the allowed channels at each check, so the next check uses the new
+        // choice. Resetting the cycle after a channel change fires a background check at
+        // once (SPUUpdater.m resetUpdateCycle), even with automatic checks off, so only
+        // reset when the person has turned automatic checks on.
+        if let updater = controller?.updater, updater.automaticallyChecksForUpdates {
+            updater.resetUpdateCycleAfterShortDelay()
+        }
         #endif
     }
 }
@@ -200,7 +205,7 @@ struct SoftwareUpdateSettings: View {
                             .font(.system(size: 14, weight: .medium))
                         Text(updater.isAvailable
                              ? "Wisp contacts its update feed on GitHub only when you check, or on a schedule "
-                               + "if you turn that on. It sends no information about you or your Mac. "
+                               + "if you turn that on. It sends nothing beyond the request itself (GitHub sees your IP address and app version). "
                                + "Every update is signed and checked before it installs."
                              : SoftwareUpdate.unavailableNote)
                             .font(.caption)

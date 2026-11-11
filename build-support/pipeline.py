@@ -799,11 +799,10 @@ def validate_structure(bundle: Path, meta: dict):
         if not os.access(bundle / name, os.X_OK):
             raise BuildError(f"Bundle program is not executable: {name}")
     validate_google_oauth_client(bundle, meta)
-    if "sparkle" in meta:            # metadata from before in-app updates has no record
-        try:
-            sparkle.validate(bundle, meta["sparkle"], CONFIG)
-        except sparkle.SparkleError as exc:
-            raise BuildError(str(exc)) from None
+    try:                             # no record: Sparkle.framework must be absent
+        sparkle.validate(bundle, meta.get("sparkle"), CONFIG)
+    except sparkle.SparkleError as exc:
+        raise BuildError(str(exc)) from None
     if "uv" in meta:                 # metadata from before bundled uv has no record
         try:
             uv_tool.validate(bundle, meta["uv"])

@@ -11,10 +11,11 @@ in the menu bar menu installs the next one.
   `SUAutomaticallyUpdate` and `SUEnableSystemProfiling` to NO. Settings › General ›
   Updates has **Check for updates automatically** (off by default) and **Include beta
   versions**. Starting Sparkle at launch reads only local state.
-- **Nothing about the person is sent.** No system profile, no feed parameters (the
+- **Nothing beyond the request itself is sent.** No system profile, no feed parameters (the
   delegate returns none even if Sparkle would ask). A check is one GET of the feed with
   Sparkle's `Wisp/<build> Sparkle/2.10.1` user agent; an accepted update is one download
-  from GitHub Releases.
+  from GitHub Releases. GitHub still sees what any request carries: your IP address and
+  that user agent, so your app version.
 - **Signed end to end.** Every archive carries an EdDSA signature checked against the
   `SUPublicEDKey` compiled into the running app, before extraction
   (`SUVerifyUpdateBeforeExtraction`). The feed itself is signed (`SURequireSignedFeed`),
@@ -190,6 +191,18 @@ re-signs only the outer app. It checks that the designated requirement is
 `identifier "com.wisp.assistant" and certificate leaf = H"<pinned sha1>"` and that
 nothing nested changed, then signs that archive for Sparkle. A missing secret or a
 different certificate stops the job before anything is published.
+
+Two caveats of self-signed mode:
+
+- **The published ZIP is not the verified candidate's ZIP.** Re-signing changes the outer
+  app, so the archive is rebuilt and its SHA-256 differs from the one in the candidate's
+  checksums and provenance. What is published is the archive that was EdDSA-signed and
+  checked against the app's key; the candidate's own evidence covers the bundle before
+  re-signing (nested code is checked to be unchanged).
+- **The .p12 and keychain passwords pass through command-line arguments** (`security
+  import -P`, `security create-keychain -p`) on the ephemeral CI runner. Other processes on
+  that runner could read them while the job runs; nothing else shares a GitHub-hosted
+  runner, and the keychain is deleted when the step ends.
 
 ## Local end-to-end test
 
