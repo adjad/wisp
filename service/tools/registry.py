@@ -580,7 +580,18 @@ def _arg_hint(tool: Tool) -> str:
     return ", ".join(parts) or "(no arguments)"
 
 
-def _validate_args(tool: Tool, args: dict) -> str | None:
+# Arguments the HOST adds to a call after the model wrote it, which are not in
+# the tool's schema and are never offered to the model. `send_message.
+# resolved_to` is the one number a text's card was settled on (action_tools.
+# prepare_send_recipient sets it, and drops any value the call arrived with).
+# Accepted only at dispatch (`host_bound=True`): every check of a call as the
+# model wrote it still refuses them, so the model can never supply one.
+HOST_BOUND_ARGS: dict[str, frozenset[str]] = {
+    "send_message": frozenset({"resolved_to"}),
+}
+
+
+def _validate_args(tool: Tool, args: dict, *, host_bound: bool = False) -> str | None:
     """Checks `args` against the tool's REGISTERED schema before dispatch,
     instead of only finding out from a TypeError once `tool.func(**args)` has
     already been called. Every tool today takes named kwargs with no **kwargs
@@ -594,7 +605,8 @@ def _validate_args(tool: Tool, args: dict) -> str | None:
     if not isinstance(args, dict):
         return f"(error calling {tool.name}: arguments must be a JSON object.)"
     props = tool.parameters.get("properties", {})
-    unknown = [k for k in args if k not in props]
+    host = HOST_BOUND_ARGS.get(tool.name, frozenset()) if host_bound else frozenset()
+    unknown = [k for k in args if k not in props and k not in host]
     missing = [r for r in tool.parameters.get("required", []) if r not in args]
     def invalid(value, schema, path):
         kind = schema.get('type')
@@ -739,7 +751,7 @@ async def run_tool(tool: Tool, args: dict, *, private_shell_read_only: bool = Fa
     if args:
         args = {k: v for k, v in args.items() if k}
     # Reject a bad call BEFORE it ever reaches tool.func — see _validate_args.
-    if (err := _validate_args(tool, args)) is not None:
+    if (err := _validate_args(tool, args, host_bound=True)) is not None:
         return err
     try:
         # A SYNC tool runs on a worker thread, not on the event loop.
