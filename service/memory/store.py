@@ -42,6 +42,7 @@ thread scheduler and may never reproduce identically twice.
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
 import threading
 import time
@@ -53,6 +54,7 @@ from pathlib import Path
 from service.paths import MOE_DIR, private_sqlite_file
 
 DB_PATH = MOE_DIR / "sessions.db"
+_log = logging.getLogger(__name__)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -108,9 +110,16 @@ CORPUS_TITLE = "Corpus · "
 _CORPUS_TITLE_SQL = f"title LIKE '{CORPUS_TITLE}%'"
 
 
+# session_store_meta row: this file has been rebuilt once with secure_delete on,
+# so chats deleted by earlier builds are gone from its free pages and its index.
+OLD_TEXT_CLEARED = "old_text_cleared"
+_FTS = "memory_turn_fts"
+
+
 class SessionStore:
     def __init__(self, path: Path = DB_PATH) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
+        new_file = not path.exists() or path.stat().st_size == 0
         private_sqlite_file(path)
         self._db = sqlite3.connect(str(path), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
@@ -163,8 +172,130 @@ class SessionStore:
             self._db.execute("ALTER TABLE turns ADD COLUMN display_content TEXT")
         if "display_kind" not in turn_columns:
             self._db.execute("ALTER TABLE turns ADD COLUMN display_kind TEXT")
+        try:
+            self._db.execute("CREATE TABLE IF NOT EXISTS session_store_meta "
+                             "(name TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            if new_file:
+                # Made by this build: nothing an earlier build deleted is in it.
+                self._db.execute("INSERT OR IGNORE INTO session_store_meta VALUES (?, '1')",
+                                 (OLD_TEXT_CLEARED,))
+        except sqlite3.OperationalError as e:
+            if "readonly" not in str(e).lower():
+                raise
         self._db.commit()
         self._lock = threading.Lock()
+
+    # --- one-time rebuild ---------------------------------------------------
+    def old_text_cleared(self) -> bool:
+        with self._lock:
+            try:
+                return self._db.execute("SELECT 1 FROM session_store_meta WHERE name=?",
+                                        (OLD_TEXT_CLEARED,)).fetchone() is not None
+            except sqlite3.Error:
+                return False
+
+    def clear_old_text(self) -> bool:
+        """Once per database, rebuild the chat search index and the file.
+
+        secure_delete only covers what this store removes from now on. Chats an
+        earlier build deleted still sit in free pages, in the unused space of
+        live pages and in old search-index segments (FTS5 without its
+        secure-delete option only records that a row is gone). This drops
+        index rows whose turn no longer exists, rewrites the index from the
+        live turns, then VACUUMs. Mirrors the assistant.db and facts.db
+        rebuilds (service/assistant/store.py, service/memory/facts.py).
+
+        Blocking: startup runs it in a worker thread, never awaiting it inline.
+        It holds the store lock, so a chat saved meanwhile waits for it instead
+        of failing. Each step is one SQLite transaction: an interruption rolls
+        back to the intact file and the next start tries again. A file that is
+        locked by another process, read-only or damaged is left alone and the
+        reason logged. Never raises. True once the file has been cleared.
+        """
+        try:
+            if self.old_text_cleared():
+                return True
+            with self._lock:
+                return self._clear_old_text_locked()
+        except Exception as exc:  # noqa: BLE001 — never blocks or breaks startup
+            _log.warning("session store: deleted chats not cleared yet: %s", type(exc).__name__)
+            return False
+
+    def _clear_old_text_locked(self) -> bool:
+        db = self._db
+        db.execute("PRAGMA busy_timeout=250")
+        try:
+            check = db.execute("PRAGMA quick_check").fetchone()
+            if not check or check[0] != "ok":
+                _log.warning("session store: deleted chats not cleared: the file failed its check")
+                return False
+            self._drop_orphans()
+            fts = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+                             (_FTS,)).fetchone()
+            if fts is not None:
+                self._rebuild_index(fts[0])
+            db.execute("VACUUM")
+            if fts is not None and not self._index_matches_turns():
+                # VACUUM may renumber the implicit rowids the index is keyed by.
+                self._rebuild_index(fts[0])
+            if str(db.execute("PRAGMA journal_mode").fetchone()[0]).lower() == "wal":
+                # VACUUM's copy of the old pages sits in the log until checkpointed.
+                db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            with db:
+                db.execute("INSERT OR IGNORE INTO session_store_meta VALUES (?, '1')",
+                           (OLD_TEXT_CLEARED,))
+            return True
+        except sqlite3.Error as exc:
+            if db.in_transaction:
+                db.rollback()
+            _log.warning("session store: deleted chats not cleared yet: %s", exc)
+            return False
+        finally:
+            db.execute("PRAGMA busy_timeout=5000")   # sqlite3.connect's own default
+
+    def _drop_orphans(self) -> None:
+        """Remove what is left of chats whose session row is gone.
+
+        Every chat starts with create_session (an unknown id gets a new
+        session), and delete_session removes its rows with it, so a turn,
+        workflow or memory job without a session is a deleted chat's remnant
+        (a turn saved while its chat was being deleted, or an older build's
+        partial delete). It is not listed or openable, so no live chat is lost.
+        """
+        db = self._db
+        with db:
+            db.execute("DELETE FROM workflow_events WHERE workflow_id IN (SELECT id FROM workflows "
+                       "WHERE session_id NOT IN (SELECT id FROM sessions))")
+            db.execute("DELETE FROM workflows WHERE session_id NOT IN (SELECT id FROM sessions)")
+            # The turns delete trigger also drops their index rows and memory jobs.
+            db.execute("DELETE FROM turns WHERE session_id NOT IN (SELECT id FROM sessions)")
+            db.execute("DELETE FROM memory_jobs WHERE session_id NOT IN (SELECT id FROM sessions)")
+
+    def _rebuild_index(self, create_sql: str) -> None:
+        """Replace the chat search index with one built from the live turns.
+
+        Dropping it frees every old segment, including the words of chats
+        deleted before this build (zeroed: secure_delete is on). The
+        memory_turn_* triggers refer to the index by name and keep working.
+        """
+        from service.memory.facts import secure_delete_fts
+        db = self._db
+        with db:
+            # Explicit: sqlite3 opens no transaction before DDL on its own, and
+            # the drop and the refill must commit, or roll back, together.
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(f"DROP TABLE {_FTS}")
+            db.execute(create_sql)
+            db.execute(f"INSERT INTO {_FTS}(rowid,text,session_id,turn_idx,created_at,role) "
+                       "SELECT rowid,content,session_id,idx,created_at,role FROM turns")
+            secure_delete_fts(db, _FTS)
+
+    def _index_matches_turns(self) -> bool:
+        row = self._db.execute(
+            f"SELECT (SELECT COUNT(*) FROM {_FTS} f LEFT JOIN turns t ON t.rowid=f.rowid "
+            " WHERE t.rowid IS NULL OR t.session_id IS NOT f.session_id OR t.idx IS NOT f.turn_idx), "
+            f"(SELECT COUNT(*) FROM turns) - (SELECT COUNT(*) FROM {_FTS})").fetchone()
+        return row[0] == 0 and row[1] == 0
 
     # --- sessions ---------------------------------------------------------
     def create_session(self) -> str:

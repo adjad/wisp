@@ -505,6 +505,7 @@ async def lifespan(app: FastAPI):
     # started_tasks, which is exactly the set the quarantine watcher supervises.
     async def _prune_attachment_store() -> None:
         try:
+            await asyncio.to_thread(store.clear_old_text)   # once: chats deleted by earlier builds
             from service import attachment_store
             await asyncio.to_thread(attachment_store.prune_if_due)
         except asyncio.CancelledError:
