@@ -1704,7 +1704,7 @@ class _NrTooSlow(Exception):
 
 class _NrContext:
     """Where a command line is when a simple command runs."""
-    __slots__ = ("cwd", "fed", "depth", "inner", "deadline", "parens", "unknown")
+    __slots__ = ("cwd", "fed", "depth", "inner", "deadline", "parens", "unknown", "shadowed")
 
     def __init__(self, cwd, depth=0, inner=None, deadline=None, unknown=None):
         # ("rel", path below home) or ("abs", path outside home), or None when
@@ -1722,10 +1722,15 @@ class _NrContext:
         # command's output somewhere other than its command word (see
         # _nr_resolve_program). The call then gets a card, not a refusal.
         self.unknown = unknown if unknown is not None else []
+        # The line defines a function or alias named like a command whose
+        # output is otherwise known (`echo(){ ...; }`), or switches a builtin
+        # off: no output is known then (see _nr_shell_program).
+        self.shadowed = False
 
     def child(self) -> "_NrContext":
         kid = _NrContext(self.cwd, self.depth + 1, self.inner, self.deadline, self.unknown)
         kid.parens = self.parens
+        kid.shadowed = self.shadowed
         return kid
 
     def tick(self) -> None:
@@ -2087,6 +2092,10 @@ _NR_OPERATOR_CHARS = "();<>|&"
 _NR_OPERATOR_HOLD = {c: chr(0xF2A0 + k) for k, c in enumerate(_NR_OPERATOR_CHARS)}
 _NR_OPERATOR_GONE = chr(0xF2AF)                 # stands where the escaping backslash was
 _NR_OPERATOR_BACK = {ord(v): k for k, v in _NR_OPERATOR_HOLD.items()} | {ord(_NR_OPERATOR_GONE): None}
+# A stand-in already in the text is an ordinary character to the shell. Left
+# in, it would come back as an operator character inside a word, and a word
+# that is itself a program (sh -c, eval) would then be split on it.
+_NR_OPERATOR_STRAY = re.compile("[\uf2a0-\uf2af]")
 
 
 def _nr_keep_quoted_operators(text: str, mask: str) -> str:
@@ -2110,7 +2119,10 @@ def _nr_keep_quoted_operators(text: str, mask: str) -> str:
 def _nr_segments(text: str) -> list[dict] | None:
     """Simple commands: the operator before each, its words and its output
     redirect targets. None when the quoting does not parse."""
-    text = re.sub(r"\\;|';'|\";\"", f" {_NR_FIND_END} ", text).replace("\r", "\n")
+    text = _NR_OPERATOR_STRAY.sub("_", text)
+    # find's `-exec ... ;` terminator: an escaped or quoted `;` that is a word
+    # of its own. Inside a longer word (`'a';'b'`) the `;` is a real separator.
+    text = re.sub(r"(?<!\S)(?:\\;|';'|\";\")(?!\S)", f" {_NR_FIND_END} ", text).replace("\r", "\n")
     mask = _nr_mask(text)
     text = _nr_keep_quoted_operators(text, mask)
     # A file-descriptor number on a redirect (`2>/dev/null`, `0<<<`) is not a word.
@@ -2470,8 +2482,9 @@ def _nr_find(args: list[str], ctx: _NrContext, admin: bool) -> str | None:
     while rest and rest[0] in ("-H", "-L", "-P", "-E", "-X", "-d", "-s", "-x"):
         rest.pop(0)
     roots = []
-    while rest and not rest[0].startswith("-") and rest[0] not in ("(", "!", _NR_FIND_END):
-        roots.append(rest.pop(0))
+    while rest and not rest[0].startswith("-") and rest[0] not in ("(", "!"):
+        word = rest.pop(0)
+        roots.append(";" if word == _NR_FIND_END else word)     # find reads a leading `;` as a path
     runs: list[list[str]] = []
     i = 0
     while i < len(rest):
@@ -2632,8 +2645,12 @@ def _nr_code_hit(code: str, ctx: _NrContext) -> str | None:
         if len(items) > 1:
             texts.append(" ".join(shlex.quote(re.sub(r"\\(.)", r"\1", t)) for t in items))
     for text in texts:
-        if (hit := _nr_judge_text(re.sub(r"\\(.)", r"\1", text) if "\\" in text else text, ctx.child())):
-            return hit
+        # JS, Perl and Ruby drop the backslash of an unknown escape and Python
+        # keeps it, so a literal with one is judged both ways.
+        readings = [text, re.sub(r"\\(.)", r"\1", text)] if "\\" in text else [text]
+        for reading in readings:
+            if (hit := _nr_judge_text(reading, ctx.child())):
+                return hit
     return None
 
 
@@ -2675,9 +2692,15 @@ _NR_FIXED_OUTPUT = re.compile(r"\s*(?:date|whoami|uname(?:\s+-[amnoprsv]+)*)\s*"
 # card. Its output is pasted into the program before the shell reads it, like
 # any other, so the card says Wisp cannot see what runs.
 _NR_PLACE_OUTPUT = re.compile(
-    r"\s*(?:pwd(?:\s+-[LP])?|git\s+rev-parse(?:\s+--[a-z][a-z-]*)+|mktemp(?:\s+-d)?"
+    r"\s*(?:pwd(?:\s+-[LP])?|git\s+rev-parse(?:\s+--(?:show-toplevel|show-cdup|git-dir))+|mktemp(?:\s+-d)?"
     r"|brew\s+--prefix(?:\s+[A-Za-z0-9@._+-]+)?|xcode-select\s+(?:-p|--print-path)"
     r"|nproc|sysctl\s+-n\s+hw\.[a-z_.]+|id\s+-u[n]?)\s*")
+
+
+_NR_KNOWN_NAMES = r"(?:echo|date|whoami|uname|pwd|git|mktemp|brew|xcode-select|nproc|sysctl|id)"
+_NR_SHADOWS = re.compile(
+    rf"\b{_NR_KNOWN_NAMES}\s*\(\s*\)|\bfunction\s+{_NR_KNOWN_NAMES}\b"
+    rf"|\balias\b[^;|&\n]*\b{_NR_KNOWN_NAMES}=|\benable\b|\bunset\s+-f\b|\bbuiltin\b")
 
 
 def _nr_literal_output(body: str) -> str | None:
@@ -2778,6 +2801,9 @@ def _nr_shell_program(code: str, ctx: _NrContext) -> str | None:
         n = int(m.group(1))
         body = ctx.inner[n] if n < len(ctx.inner) else ""
         if _NR_PRINTS_HEREDOC.fullmatch(body):
+            return m.group()
+        if ctx.shadowed:                        # `echo(){ ... }` earlier in the line
+            opaque.append(m.group())
             return m.group()
         if (printed := _nr_literal_output(body)) is not None:
             return printed
@@ -3331,6 +3357,7 @@ def _nr_check(text: str) -> tuple[str | None, bool]:
     if not isinstance(text, str) or not text.strip():
         return None, False
     ctx = _NrContext(("rel", "."))
+    ctx.shadowed = bool(_NR_SHADOWS.search(text[:SHELL_TEXT_LIMIT]))
     try:
         return _nr_judge_text(text[:SHELL_TEXT_LIMIT], ctx), bool(ctx.unknown)
     except _NrTooSlow:

@@ -161,3 +161,68 @@ def test_long_runs_of_quoted_operators_are_judged_quickly():
         start = time.thread_time()
         policy.never_run_hit(text[:n])
         assert time.thread_time() - start < 1.0, text[:40]
+
+
+# --- 4. the stand-in characters, a `;` between quoted words, a redefined echo ---
+
+STAND_INS = [chr(0xF2A0 + k) for k in range(16)]
+
+
+@pytest.mark.parametrize("mark", STAND_INS)
+def test_a_stand_in_character_in_the_input_is_never_an_operator(monkeypatch, mark):
+    # The shell reads it as an ordinary character, so the words after it still count.
+    for base in SIMPLE_REFUSED:
+        plain = _with(base, mark)
+        for cmd in (plain, f'sh -c "{plain}"', f'eval "{plain}"', f'bash <<< "{plain}"'):
+            assert policy.never_run_hit(cmd), repr(cmd)
+            for full_access, keep_floor in MODES:
+                assert _tier(monkeypatch, cmd, full_access, keep_floor) is Tier.DENY, repr(cmd)
+
+
+def test_a_stand_in_character_stays_inside_its_word():
+    words = policy._nr_segments(f"printf a{STAND_INS[0]}b {STAND_INS[5]} c")[0]["words"]
+    assert words == ["printf", "a_b", "_", "c"]
+
+
+def test_a_semicolon_between_two_quoted_words_still_ends_the_command(monkeypatch):
+    assert [s["words"] for s in policy._nr_segments("echo 'a';'b' c")] == [["echo", "a"], ["b", "c"]]
+    for base in SIMPLE_REFUSED:
+        first, rest = base.split(" ", 1)
+        cmd = f"echo 'a';'{first}' {rest}"
+        assert policy.never_run_hit(cmd), cmd
+        for full_access, keep_floor in MODES:
+            assert _tier(monkeypatch, cmd, full_access, keep_floor) is Tier.DENY, cmd
+
+
+def test_a_quoted_semicolon_word_is_a_find_root_not_the_end_of_the_roots(monkeypatch):
+    for cmd in ("find ';' ~ -delete", "find \; / -delete", "find \";\" ~ -type f -delete"):
+        assert policy.never_run_hit(cmd), cmd
+        for full_access, keep_floor in MODES:
+            assert _tier(monkeypatch, cmd, full_access, keep_floor) is Tier.DENY, cmd
+    # The -exec terminator still works in every spelling.
+    for cmd in ("cd proj && find . -name '*.o' -exec rm {} \;", "cd proj && find . -name '*.o' -exec rm {} ';'"):
+        assert policy.never_run_hit(cmd) is None, cmd
+
+
+@pytest.mark.parametrize("cmd", [
+    "echo(){ printf x; }; bash -c \"$(echo hi)\"", "function echo { printf x; }; bash <<< \"$(echo hi)\"",
+    "echo () { printf x; } && sh -c \"$(echo ls)\"", "alias echo='printf x'; zsh -c \"$(echo hi)\"",
+    "enable -n echo; bash -c \"$(echo hi)\"", "date(){ printf x; }; bash -c \"$(date)\"",
+    "pwd(){ printf x; }; bash -c \"cd $(pwd) && make\"",
+])
+def test_a_redefined_command_has_no_known_output(monkeypatch, cmd):
+    assert policy.never_run_hit(cmd), cmd
+    for full_access, keep_floor in MODES:
+        assert _tier(monkeypatch, cmd, full_access, keep_floor) is Tier.DENY, cmd
+
+
+def test_python_code_with_an_escaped_operator_is_judged_as_python_reads_it(monkeypatch):
+    for esc in ("\\(", "\\)", "\\|", "\\&"):
+        cmd = f"python3 -c \"import os; os.system('rm -rf {esc} ~')\""
+        assert policy.never_run_hit(cmd), cmd
+
+
+def test_git_rev_parse_is_a_place_only_with_its_path_flags(monkeypatch):
+    assert policy.never_run_hit("sh -c \"make -C $(git rev-parse --show-toplevel)\"") is None
+    for flag in ("--sq-quote", "--parseopt", "--local-env-vars", "--abbrev-ref"):
+        assert policy.never_run_hit(f"sh -c \"x $(git rev-parse {flag})\""), flag
