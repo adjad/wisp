@@ -140,7 +140,6 @@ SUBST_CARDED = [
     "bash -c \"cd $(pwd) && make\"",
     "bash -c \"$(date)\"",                           # output no text can choose
     "echo \"$(date)\" | sh",
-    "bash <<< \"echo $(cat notes.txt)\"",
     "zsh -c \"ls $(brew --prefix)/bin\"",
 ]
 # The output can become a command.
@@ -150,6 +149,7 @@ SUBST_STILL_REFUSED = [
     "bash <<< \"$(cat f)\"",
     "bash -c \"p=$(printf x); \\$p\"",
     "bash -c \"eval $(cat f)\"",
+    "bash <<< \"echo $(cat notes.txt)\"",          # a file's text is pasted into the program
     "bash -c \"sh -c '$(cat f)'\"",
     "bash -c \"python3 -c $(cat f)\"",
     "bash -c \"sh $(cat f)\"",

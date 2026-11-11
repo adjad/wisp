@@ -1714,8 +1714,9 @@ class _NrContext:
         self.depth = depth
         self.inner = inner if inner is not None else []
         self.deadline = deadline if deadline is not None else time.thread_time() + _NR_BUDGET
-        # The text being judged had an escaped or quoted parenthesis, which
-        # _nr_segments drops, so a find expression's grouping is unknown.
+        # The text being judged had an escaped or quoted parenthesis. They
+        # reach a find expression as plain words and its grouping is not
+        # worked out, so only the cautious filter rule applies.
         self.parens = False
         # Shared by every child: set when a shell's program text holds a
         # command's output somewhere other than its command word (see
@@ -2077,12 +2078,41 @@ def _nr_heredocs(text: str, ctx: "_NrContext",
     return _NR_HEREDOC_MARK_RE.sub(" ", "".join(out)), shell, code
 
 
+# An operator character that is quoted or backslash-escaped is part of a word.
+# The lexer would hand a wholly quoted `'('`, `")"`, `'|'` or `'&'` back as a
+# bare token that reads as the operator, which ended the command there and hid
+# the words after it from the check. Each one is carried through the lexer as a
+# private-use character and put back in the word it belongs to.
+_NR_OPERATOR_CHARS = "();<>|&"
+_NR_OPERATOR_HOLD = {c: chr(0xF2A0 + k) for k, c in enumerate(_NR_OPERATOR_CHARS)}
+_NR_OPERATOR_GONE = chr(0xF2AF)                 # stands where the escaping backslash was
+_NR_OPERATOR_BACK = {ord(v): k for k, v in _NR_OPERATOR_HOLD.items()} | {ord(_NR_OPERATOR_GONE): None}
+
+
+def _nr_keep_quoted_operators(text: str, mask: str) -> str:
+    """`text`, same length, with each quoted or escaped operator character
+    swapped for its stand-in (`mask` is _nr_mask(text))."""
+    if not any(c in text for c in _NR_OPERATOR_CHARS):
+        return text
+    chars, n, i = list(text), len(text), 0
+    while i < n:
+        c = text[i]
+        if c == "\\" and mask[i] == "\\" and i + 1 < n and text[i + 1] in _NR_OPERATOR_HOLD:
+            chars[i], chars[i + 1] = _NR_OPERATOR_GONE, _NR_OPERATOR_HOLD[text[i + 1]]
+            i += 2
+            continue
+        if c in _NR_OPERATOR_HOLD and mask[i] != c:
+            chars[i] = _NR_OPERATOR_HOLD[c]
+        i += 1
+    return "".join(chars)
+
+
 def _nr_segments(text: str) -> list[dict] | None:
     """Simple commands: the operator before each, its words and its output
     redirect targets. None when the quoting does not parse."""
-    text = re.sub(r"\\;|';'|\";\"", f" {_NR_FIND_END} ", text)
-    text = re.sub(r"\\[()]", " ", text).replace("\r", "\n")
+    text = re.sub(r"\\;|';'|\";\"", f" {_NR_FIND_END} ", text).replace("\r", "\n")
     mask = _nr_mask(text)
+    text = _nr_keep_quoted_operators(text, mask)
     # A file-descriptor number on a redirect (`2>/dev/null`, `0<<<`) is not a word.
     fds = [m.span() for m in re.finditer(r"(?<![^\s;&|()])\d+(?=[<>])", mask)]
     if fds or "\n" in text:
@@ -2109,6 +2139,7 @@ def _nr_segments(text: str) -> list[dict] | None:
                         segments.append(current)
                     current = {"op": token, "words": [], "out": [], "here": []}
                 continue
+            token = token.translate(_NR_OPERATOR_BACK)
             if redirect == "here":
                 current["here"].append(token)
             elif redirect is not None and redirect != "in":
@@ -2492,8 +2523,9 @@ def _nr_find_named(expr: list[str], parens: bool = True) -> bool:
     else, so it is no filter: `-name '*.pyc' -not -path './keep/*'` is
     filtered, `-not -name x` alone is not.
 
-    Escaped parentheses are gone by now, so when the text had any (`parens`),
-    the grouping is unknown: then only a filter that comes before every
+    Escaped or quoted parentheses arrive as plain words and are not worked
+    out, so when the text had any (`parens`) the grouping is unknown: then
+    only a filter that comes before every
     negation of its alternative counts (`! \\( -name a -name b \\)` has none).
     Without parentheses a negation covers the one test right after it."""
     branch: list[str] = []
@@ -2638,17 +2670,30 @@ _NR_LITERAL_ECHO = re.compile(r"[ \tA-Za-z0-9._+@/=:,%-]*")
 # A $(...) whose output no text in the command can choose (`$(date)`,
 # `$(whoami)`, `$(uname -s)`); not `date +FORMAT`, `pwd` or `hostname`.
 _NR_FIXED_OUTPUT = re.compile(r"\s*(?:date|whoami|uname(?:\s+-[amnoprsv]+)*)\s*")
+# A $(...) that prints a path or a count the machine picks, not the command's
+# own text: the only unknown output a shell program may hold and still get a
+# card. Its output is pasted into the program before the shell reads it, like
+# any other, so the card says Wisp cannot see what runs.
+_NR_PLACE_OUTPUT = re.compile(
+    r"\s*(?:pwd(?:\s+-[LP])?|git\s+rev-parse(?:\s+--[a-z][a-z-]*)+|mktemp(?:\s+-d)?"
+    r"|brew\s+--prefix(?:\s+[A-Za-z0-9@._+-]+)?|xcode-select\s+(?:-p|--print-path)"
+    r"|nproc|sysctl\s+-n\s+hw\.[a-z_.]+|id\s+-u[n]?)\s*")
 
 
 def _nr_literal_output(body: str) -> str | None:
-    """What a $(...) body prints when it is `echo [-n] <plain words>`, else None."""
+    """What a $(...) body prints when it is `echo <plain words>`, else None.
+
+    A first word starting with `-` may be an option (`-e` makes echo read
+    escapes, and /bin/sh prints `-n` where bash drops it) and zsh expands a
+    leading `=word` to a path, so an echo with either prints something this
+    text does not show: its output is unknown."""
     if not _NR_LITERAL_ECHO.fullmatch(body):
         return None
     words = body.split()
-    if words[:1] != ["echo"]:
+    if (words[:1] != ["echo"] or words[1:2] and words[1][0] == "-"
+            or any(w[0] == "=" for w in words[1:])):
         return None
-    words = words[1:]
-    return " ".join(words[1:] if words[:1] == ["-n"] else words)
+    return " ".join(words[1:])
 
 
 def _nr_command_word_from(text: str, marks: list[str], depth: int = 0) -> bool:
@@ -2717,13 +2762,14 @@ def _nr_shell_program(code: str, ctx: _NrContext) -> str | None:
     A $(...) or `...` from the outer line runs before the shell reads CODE,
     so its output is part of the program. One whose output is known
     (`$(echo ls)`) is put in and judged with the rest; one that prints a
-    heredoc was judged as that heredoc. Any other output is unknown: when it
-    can become a command (see _nr_command_word_from: sh -c "$(printf ...)",
-    `echo "$(cat f)" | sh`, bash <<< "$(x)") the whole program is unknown and
-    the call is refused; anywhere else (sh -c "make -C $(git rev-parse
-    --show-toplevel)", bash -c "echo $(date)") the call is noted in
-    ctx.unknown and gets a card, since what runs is known and only an
-    argument is not."""
+    heredoc was judged as that heredoc. Any other output is unknown, and it
+    is pasted into the program before the shell parses it: a `;` or a newline
+    in it starts a command wherever it sits, so "only an argument" is not a
+    promise. The call is refused unless every unknown output is a fixed one
+    (`$(date)`) or a place the machine picks (_NR_PLACE_OUTPUT: `$(pwd)`,
+    `$(git rev-parse --show-toplevel)`) that is not in a command position
+    (see _nr_command_word_from). Those are noted in ctx.unknown and the call
+    gets a card in every mode, which says Wisp cannot see what will run."""
     if (hit := _nr_run_output_hit(code, ctx)):
         return hit
     unknown: list[str] = []
@@ -2738,10 +2784,13 @@ def _nr_shell_program(code: str, ctx: _NrContext) -> str | None:
         ctx.unknown.append(m.group())
         if not _NR_FIXED_OUTPUT.fullmatch(body):
             unknown.append(m.group())
+            if not _NR_PLACE_OUTPUT.fullmatch(body):
+                opaque.append(m.group())
         return m.group()
 
+    opaque: list[str] = []
     resolved = _NR_SUBST_RE.sub(put, code)
-    if unknown and _nr_command_word_from(resolved, unknown):
+    if opaque or (unknown and _nr_command_word_from(resolved, unknown)):
         return _UNRESOLVED_PROGRAM
     return _nr_judge_text(resolved, ctx.child())
 
