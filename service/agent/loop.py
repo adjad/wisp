@@ -38,7 +38,7 @@ _EFFECT_TOOLS = frozenset({
     "add_calendar_event", "update_event", "commit_private_meeting",
     "complete_reminder", "cancel_event", "clear_past_reminders", "clear_reminders",
     "cancel_scheduled_send", "toggle_setting",
-    "write_file", "move_path",
+    "write_file", "move_path", "save_email_attachment",
     "save_knowledge", "edit_knowledge", "delete_knowledge",
 })
 _TERMINAL_OUTBOUND_DENIALS = frozenset({
@@ -115,7 +115,7 @@ _EFFECT_TARGET_ARGS = {
 }
 # Optimistic-concurrency tokens: they change after every write, so they never
 # make a second call a different action.
-_EFFECT_VOLATILE_ARGS = frozenset({"expected_revision", "expected_id", "expected_reply"})
+_EFFECT_VOLATILE_ARGS = frozenset({"expected_revision", "expected_id", "expected_reply", "prepared"})
 
 
 def _effect_duplicate_key(tool: str, args: dict) -> str:
@@ -1613,12 +1613,26 @@ def mark_attachment_turn(tool_name: str, args: dict) -> None:
     (every change, send or lookup asks first, with no Always allow). Called in
     the turn's own task right before the tool runs: a ContextVar set inside the
     tool would not outlive its call. Listing names only reads no content."""
-    if tool_name != "read_email_attachments":
+    if tool_name not in ("read_email_attachments", "read_message_attachments"):
         return
     if isinstance(args, dict) and args.get("list_only") is True:
-        return
+        # A listing reads no content, but `inside` returns snippets of file text
+        # and `across` reads and extracts many files, whatever `list_only` says.
+        from service.tools.email_attachments import _inside
+        if not _inside(args.get("inside")) and args.get("across") is not True:
+            return
     from service.safety.policy import mark_picture_turn
     mark_picture_turn()
+
+
+async def settle_save_card(tier, name: str, args: dict) -> tuple[dict, str | None]:
+    """Settle ONE attachment before its card: (args to show, None), or (args, the
+    typed not-done result when no file can be settled, so no card is shown).
+    Every path that can raise a confirmation card calls this beside it."""
+    if tier is Tier.CONFIRM and name == "save_email_attachment":
+        from service.tools.attachment_actions import prepare_save_args
+        return await prepare_save_args(args)
+    return args, None
 
 
 # How each source is introduced when several are merged into a fallback answer.
@@ -1633,6 +1647,7 @@ _SOURCE_LABELS = {
     "summarize_emails": "From your email",
     "view_emails": "From your email",
     "read_email_attachments": "From your email attachments",
+    "read_message_attachments": "From your Messages files",
     "summarize_messages": "From your messages",
     "view_messages": "From your messages",
     "lookup_contact": "From your contacts",
@@ -2076,7 +2091,19 @@ async def run_agent(
                    and getattr(client, "managed", False))
 
     def _sys(offered: set[str]) -> str:
-        return build_system(offered, planner=planner)
+        # Settings › Human-sounding replies shapes only the message the model
+        # writes for the user to send, so it rides only while a send/draft
+        # schema is really offered (stubs are excluded by every caller), and
+        # never Wisp's own answer on any other turn (owner decision 2026-11-10).
+        try:
+            from service.skills import COMPOSE_TOOLS, compose_style_block
+            # skills_allowed: the same boundary as every other skill text
+            # (test mode, literal envelopes, cloud synthesis, remote profiles).
+            style = (compose_style_block()
+                     if skills_allowed and offered & COMPOSE_TOOLS else "")
+        except Exception:  # noqa: BLE001 — a style must never fail the turn
+            style = ""
+        return build_system(offered, planner=planner) + style
 
     # Monotonic negative authority. main supplies actual pre-trimming session
     # provenance; other callers conservatively retain assistant/tool/system
@@ -3469,6 +3496,9 @@ async def run_agent(
         await emit({"type": "tool_call", "id": _cid, "name": _name, "args": _args,
                     "decision": _dec.tier.value, "reason": _dec.reason,
                     **({"test_mode": True} if test_mode else {})})
+        _save_stopped = None
+        if not test_mode:
+            _args, _save_stopped = await settle_save_card(_dec.tier, _name, _args)
         if test_mode:
             # Same contract as the loop's own dry run: report what WOULD happen,
             # execute nothing (see _TEST_MODE_STUB / the endpoint docstring).
@@ -3476,6 +3506,11 @@ async def run_agent(
         elif _dec.tier is Tier.DENY:
             _result = f"BLOCKED by safety policy: {_dec.reason}"
             audit("deny", tool=_name, args=_args, reason=_dec.reason)
+        elif _save_stopped:
+            # No file could be settled: the typed not-done is the result and no
+            # card is shown.
+            _result = _save_stopped
+            audit("save_preflight", tool=_name, args=_args, reason=str(_save_stopped))
         elif _dec.tier is Tier.CONFIRM:
             # A system_write or network_active direct call is CONFIRM tier, so
             # a direct call is NOT a way around the card.
@@ -5457,6 +5492,9 @@ async def run_agent(
                 if dec.tier is Tier.CONFIRM:
                     from service.tools.action_tools import prepare_send_recipient
                     args, _no_recipient = prepare_send_recipient(tool, args)
+                # Settle ONE attachment before its card: a file that cannot be
+                # settled is the tool result, with no card to approve.
+                args, _save_stopped = await settle_save_card(dec.tier, name, args)
 
                 if dec.tier is Tier.DENY:
                     result = f"BLOCKED by safety policy: {dec.reason}"
@@ -5465,6 +5503,9 @@ async def run_agent(
                 elif _no_recipient:
                     result = _no_recipient
                     audit("recipient_preflight", tool=name, args=args, reason=str(_no_recipient))
+                elif _save_stopped:
+                    result = _save_stopped
+                    audit("save_preflight", tool=name, args=args, reason=str(_save_stopped))
                 # A draft with an unfilled "[Your Name]" slot, or a body cut off
                 # mid-sentence, must never REACH the confirmation card: the card
                 # is where the user's judgement is asked for, and these checks

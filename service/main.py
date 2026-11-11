@@ -586,6 +586,8 @@ from service.mail_memory.api import router as mail_memory_router
 app.include_router(mail_memory_router)
 from service.power_api import router as power_router
 app.include_router(power_router)
+from service.attachment_api import router as attachment_router
+app.include_router(attachment_router)
 from service.memory_saver_api import native_only, router as memory_saver_router
 app.include_router(memory_saver_router)
 from service.corpus import router as corpus_router
@@ -1709,8 +1711,10 @@ def _tool_turn_messages(sid: str, user_msg: dict[str, Any], *, max_tokens: int,
 def _plain_chat_skill_blocks(prompt: str, active_skill: str, *, role: str,
                              literal_envelope: bool) -> str:
     """The skill text a tool-free chat reply gets: the active conversational
-    workflow's body, then every always-on style skill (the humanizer behind
-    Settings › Human-sounding replies). Neither rides a literal envelope (the
+    workflow's body, then every always-on chat style skill. Not the humanizer
+    behind Settings › Human-sounding replies: that one shapes only messages
+    written for the user to send (skills.compose_style_block), never Wisp's own
+    answer. Neither rides a literal envelope (the
     prompt is quoted text to transform, not a request), and the style skills
     skip "coding", whose prose rules (no dashes) would bleed into code."""
     from service.skills import always_skills_block, selected_skill_block
@@ -3198,7 +3202,8 @@ async def agent(body: dict[str, Any]):
                 # tool-using turn but not in a conversational one, which reads
                 # as Wisp randomly forgetting.
                 #
-                # always_skills_block() (e.g. the humanizer style skill) is
+                # always_skills_block() (chat style skills; the humanizer is
+                # a compose style and is excluded, see compose_style_block) is
                 # deliberately added ONLY here, never in run_agent's prompt —
                 # the tool-calling agent loop is already fragile about
                 # instruction competition (see run_agent's force_first_tool/

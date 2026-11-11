@@ -69,7 +69,10 @@ _NEVER_GRANTABLE = {"send_email", "send_message", "create_tool",
                     # agreement to the next (policy._ALWAYS_CONFIRM_CONTACTS).
                     # Its category already refuses an allow; named here too so
                     # the refusal holds before the registry has loaded the tool.
-                    "manage_contacts"}
+                    "manage_contacts",
+                    # Saves a file somebody else sent onto this Mac: each one is
+                    # confirmed on a card naming that file (policy.ALWAYS_CONFIRM_FILE_TOOLS).
+                    "save_email_attachment"}
 
 # Tools that absorbed several single-purpose tools in the 100-tool
 # consolidation: (argument that selects the behaviour, its default, the
@@ -301,6 +304,12 @@ def _allow_covers(tool: str, rule: dict, scope: str) -> bool:
         return True
     if stored != "":
         return False
+    if tool == "move_path":
+        # Owner decision 2026-11-10: a move rule saved before rc3 scoped them to
+        # the destination folder is tool-wide and covered every move anywhere.
+        # It no longer matches, so Wisp asks again and the card saves a folder
+        # rule. The old rule stays on disk and in Settings, where it is removed.
+        return False
     if tool not in _MERGED_SCOPES or rule.get("all_behaviours"):
         return True
     return scope in _MERGED_SCOPES[tool][2]
@@ -391,6 +400,11 @@ def grant(tool: str, args: dict | None = None, *, decision: str = "allow",
     if decision == "allow" and not is_grantable(tool, args):
         return {"ok": False, "error": f"{tool} always asks — it can't be pre-approved"}
     scope = scope_for(tool, args or {}) if scoped else ""
+    if not scoped and decision == "allow" and tool == "move_path" and (args or {}).get("destination"):
+        # A tool-wide move allow no longer covers any move (_allow_covers), so
+        # widening one with a destination saves that folder instead of a rule
+        # that would leave the person asked every time.
+        scope = scope_for(tool, args)
     if scoped and scope == "" and tool in _MERGED_SCOPES:
         # No behaviour named (a malformed call): a scoped answer has nothing
         # to attach to, and storing "" would silently widen it to every one.

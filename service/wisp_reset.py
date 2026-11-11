@@ -962,7 +962,7 @@ def _cancel_requests() -> None:
 # Each scheduler child that starts its own task, and the global that holds it.
 _CHILD_TASKS = (("service.assistant.mail_gists", "_task"), ("service.assistant.attention_runner", "_task"),
                 ("service.assistant.day_plan_email", "_schedule_task"), ("service.proactive.cycle", "_task"),
-                ("service.mail_memory.runner", "_task"))
+                ("service.mail_memory.runner", "_task"), ("service.attachment_index", "_task"))
 
 
 def _child_tasks() -> list:

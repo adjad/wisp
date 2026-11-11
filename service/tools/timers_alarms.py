@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import re
 import subprocess
@@ -50,6 +51,8 @@ _clock = time
 from service.paths import MOE_DIR, private_write_bytes
 from service.tools.registry import not_done, register
 
+_log = logging.getLogger(__name__)
+
 _STORE = MOE_DIR / "cache" / "timers.json"
 
 # id -> {kind, label, deadline, created, repeat}
@@ -62,8 +65,10 @@ _KINDS = frozenset({"timer", "alarm", "sleep"})
 # on the monotonic clock, which stands still while the Mac is asleep, so one
 # long sleep would ring an overnight alarm late by however long the lid was shut.
 _POLL_SECONDS = 30.0
-# At startup, a timer or alarm that came due this recently still rings once
-# (Wisp was restarting); anything older is dropped without a sound.
+# A timer or alarm that came due this recently still rings once (Wisp was
+# restarting, or the Mac took a short nap or a slow wake); anything older is
+# dropped without a sound, at startup and on wake alike (owner decision
+# 2026-11-10: an alarm the Mac slept through for hours does not ring on wake).
 _LATE_GRACE = 300.0
 # A sleep timer is stricter: pausing playback minutes late would stop something
 # the user has started since.
@@ -240,6 +245,14 @@ def _next_daily(deadline: float, now: float) -> float:
     return nxt.timestamp()
 
 
+def _too_late(kind: str, late: float) -> bool:
+    """Whether a ring this many seconds past its deadline is dropped, not rung.
+
+    One rule for startup (`rearm_all`) and for waking from sleep (`_fire`).
+    """
+    return late > (_SLEEP_LATE_GRACE if kind == "sleep" else _LATE_GRACE)
+
+
 async def _fire(tid: str) -> None:
     entry = _TIMERS.get(tid)
     if not entry:
@@ -263,13 +276,19 @@ async def _fire(tid: str) -> None:
         _arm(tid)
     else:
         _save()
+    # The Mac slept through it: hours late, a ring is noise about nothing, so it
+    # is dropped the same silent way `rearm_all` drops it at startup. The
+    # bookkeeping above has already removed a one-shot entry from the store and
+    # put a daily alarm back in for its next time, so returning here is the drop.
+    if _too_late(kind, now - deadline):
+        # No label: only what kind it was and how late, for a debug log.
+        _log.info("dropped a late %s ring (%d s past its time)", kind, int(now - deadline))
+        return
     label = entry.get("label") or ("Alarm" if kind == "alarm" else "Timer")
     # osascript blocks for up to ten seconds a call; never on the event loop.
     if kind == "alarm":
         await asyncio.to_thread(_notify, label, "Alarm")
     elif kind == "sleep":
-        if now - deadline > _SLEEP_LATE_GRACE:   # the Mac slept through it
-            return
         await asyncio.to_thread(_pause_media)
         await asyncio.to_thread(_notify, label, "Sleep timer — playback paused")
     else:
@@ -320,8 +339,7 @@ def rearm_all() -> None:
         task = _TASKS.get(tid)
         if task is not None and not task.done():
             continue
-        late = now - deadline
-        if late > (_SLEEP_LATE_GRACE if kind == "sleep" else _LATE_GRACE):
+        if _too_late(kind, now - deadline):
             if not (kind == "alarm" and entry.get("repeat")):
                 del _TIMERS[tid]
                 changed = True

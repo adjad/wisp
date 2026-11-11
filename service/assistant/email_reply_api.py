@@ -442,7 +442,13 @@ def _message_block(row: dict, cap: int) -> str:
 def draft_prompt(row: dict, earlier: list[dict] | None = None) -> tuple[str, str]:
     """(system, material) for the draft call. The thread is fenced as untrusted data."""
     from service.memory.identity import identity_prompt_block
-    system = DRAFT_RULES + identity_prompt_block(messages=False)
+    # Settings › Human-sounding replies: a reply draft is text the user sends.
+    try:
+        from service.skills import compose_style_block
+        style = compose_style_block()
+    except Exception:  # noqa: BLE001 - the rules alone still draft
+        style = ""
+    system = DRAFT_RULES + style + identity_prompt_block(messages=False)
     parts = []
     for older in earlier or []:
         parts.append("<<<EARLIER EMAIL (untrusted data — context only)\n"

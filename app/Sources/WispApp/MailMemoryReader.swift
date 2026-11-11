@@ -11,18 +11,25 @@ import SQLite3
 /// IMPORTANT rules:
 /// - Read-only. The Envelope Index is opened SQLITE_OPEN_READONLY; .emlx files
 ///   are only read. Mail.app is never scripted or launched from here.
-/// - Six requests only: `index` (metadata for a window of days, no bodies),
+/// - Eight requests only: `index` (metadata for a window of days, no bodies),
 ///   `body` (one message's raw RFC 822 bytes, capped; the backend parses MIME),
 ///   `sent` (the user's own sent mail for a few weeks: when, to whom, subject; no
 ///   bodies), which answers Ask's "what did I send" (view_emails mailbox='sent'),
 ///   `attachments` (one metadata row per attachment, filtered by terms, dates and RFC
 ///   Message-IDs, with whether Mail saved the file; never the bytes) and `attachment`
 ///   (one saved file's bytes, at most `maxAttachmentBytes`), and `recognize` (text in one
-///   JPEG the backend itself re-encoded, read by Apple Vision on this Mac; nothing else is decoded).
+///   JPEG the backend itself re-encoded, read by Apple Vision on this Mac; nothing else is decoded),
+///   `message_attachments` (one metadata row per file texted in Messages, filtered by terms, handles
+///   and dates; never the bytes) and `message_attachment` (one such file's bytes, at most
+///   `maxAttachmentBytes`). The Messages database is chat.db, opened SQLITE_OPEN_READONLY.
 /// - Attachments are only read from `<Mail version>/.../Attachments/<rowid>/<id>/<name>`,
 ///   next to the `Messages` folder: a regular file (no symlink anywhere on the path)
 ///   inside the Mail version folder. Trash, junk/spam and drafts are never listed or
 ///   read, and a file is never opened, run or unpacked here: only its bytes are returned.
+/// - A Messages file is only read from inside the real `~/Library/Messages/Attachments`: the path
+///   comes from chat.db's own row (a request never carries one), must be a regular file with no
+///   symlink anywhere below that folder, and hidden, sticker, link-preview and tapback rows are
+///   never listed or read. A file is never opened, run or unpacked here: only its bytes are returned.
 /// - Every POST answers one request: nothing is ever sent unasked.
 final class MailMemoryReader {
     static let maxDays = 200
@@ -35,11 +42,15 @@ final class MailMemoryReader {
     static let maxAttachmentTerms = 5
     static let maxAttachmentRFCIDs = 40
     static let maxAttachmentRows = 400
+    static let maxMessageHandles = 10
     static let maxRecognizeBytes = 4_194_304
     /// Base64 of `maxRecognizeBytes` bytes: 4 characters per 3 bytes, rounded up.
     static let maxRecognizeBase64 = (maxRecognizeBytes + 2) / 3 * 4
 
     private let mailRoot: String
+    private let messagesDB: String
+    private let messagesAttachmentsRoot: String
+    private let maxMessageFileBytes: Int
     private let rebuildInterval: TimeInterval
     private let work = DispatchQueue(label: "wisp.mail-memory", qos: .utility)
     /// Text recognition has its own serial queue: a 40-page scan is 40 requests of up to a
@@ -52,8 +63,15 @@ final class MailMemoryReader {
     /// `send` delivers each reply; the app passes `MailMemoryReader.poster(to:)`.
     init(mailRoot: String = (NSHomeDirectory() as NSString).appendingPathComponent("Library/Mail"),
          rebuildInterval: TimeInterval = 30,
+         messagesDB: String = (NSHomeDirectory() as NSString).appendingPathComponent("Library/Messages/chat.db"),
+         messagesAttachmentsRoot: String = (NSHomeDirectory() as NSString)
+             .appendingPathComponent("Library/Messages/Attachments"),
+         maxMessageFileBytes: Int = MailMemoryReader.maxAttachmentBytes,
          send: @escaping ([String: Any]) -> Void) {
         self.mailRoot = mailRoot
+        self.messagesDB = messagesDB
+        self.messagesAttachmentsRoot = messagesAttachmentsRoot
+        self.maxMessageFileBytes = maxMessageFileBytes
         self.rebuildInterval = rebuildInterval
         self.send = send
     }
@@ -94,6 +112,7 @@ final class MailMemoryReader {
         let days: Int
         let rowid: Int64
         var terms: [String] = []
+        var handles: [String] = []
         var since: Double = 0
         var until: Double = 0
         var rfcIDs: [String] = []
@@ -102,6 +121,12 @@ final class MailMemoryReader {
         var imageB64: String = ""
         /// Seconds the backend will wait for a `recognize` reply (0 = not stated).
         var wait: Double = 0
+    }
+
+    /// True for a JSON `true`/`false`, which Foundation would otherwise read as the number 1 or 0.
+    static func isBoolean(_ value: Any?) -> Bool {
+        guard let number = value as? NSNumber else { return false }
+        return CFGetTypeID(number) == CFBooleanGetTypeID()
     }
 
     /// True when the backend has already given up: more than `wait` seconds passed between
@@ -115,7 +140,11 @@ final class MailMemoryReader {
     /// {type, request_id, kind: "attachments", terms, since, until, rfc_ids, limit} or
     /// {type, request_id, kind: "attachment", rowid, attachment_id} or
     /// {type, request_id, kind: "recognize", image_b64[, wait: 1...60 seconds]} (an oversize or non-JPEG image is
-    /// still a well-formed request: it is answered `too_large` / `bad_image`, never dropped).
+    /// still a well-formed request: it is answered `too_large` / `bad_image`, never dropped),
+    /// {type, request_id, kind: "message_attachments", terms (at most 5) and handles (at most 10), each 1...100
+    /// characters with no control characters, since, until, limit 1...400; none of the three numbers may be a
+    /// JSON boolean} or
+    /// {type, request_id, kind: "message_attachment", attachment_id (1 to 18 digits)}.
     static func request(_ payload: [String: Any]) -> Request? {
         guard payload["type"] as? String == "mail_memory_read",
               let id = payload["request_id"] as? String,
@@ -143,6 +172,26 @@ final class MailMemoryReader {
                   let limit = payload["limit"] as? Int, (1...maxAttachmentRows).contains(limit) else { return nil }
             return Request(id: id, kind: kind, days: 0, rowid: 0, terms: terms, since: since, until: until,
                            rfcIDs: rfcIDs, limit: limit)
+        }
+        if kind == "message_attachments" {
+            guard keys == ["type", "request_id", "kind", "terms", "handles", "since", "until", "limit"],
+                  let terms = payload["terms"] as? [String], terms.count <= maxAttachmentTerms,
+                  terms.allSatisfy(isValidHandle),
+                  let handles = payload["handles"] as? [String], handles.count <= maxMessageHandles,
+                  handles.allSatisfy(isValidHandle),
+                  !isBoolean(payload["since"]), !isBoolean(payload["until"]), !isBoolean(payload["limit"]),
+                  let since = (payload["since"] as? NSNumber)?.doubleValue, since.isFinite, since >= 0,
+                  let until = (payload["until"] as? NSNumber)?.doubleValue, until.isFinite, until >= 0,
+                  let limit = payload["limit"] as? Int, (1...maxAttachmentRows).contains(limit) else { return nil }
+            return Request(id: id, kind: kind, days: 0, rowid: 0, terms: terms, handles: handles,
+                           since: since, until: until, limit: limit)
+        }
+        if kind == "message_attachment" {
+            guard keys == ["type", "request_id", "kind", "attachment_id"],
+                  let attachmentID = payload["attachment_id"] as? String,
+                  (1...18).contains(attachmentID.utf8.count),
+                  attachmentID.utf8.allSatisfy({ (0x30...0x39).contains($0) }) else { return nil }
+            return Request(id: id, kind: kind, days: 0, rowid: 0, attachmentID: attachmentID)
         }
         if kind == "attachment" {
             guard keys == ["type", "request_id", "kind", "rowid", "attachment_id"],
@@ -176,6 +225,8 @@ final class MailMemoryReader {
     }
 
     private func answer(_ request: Request) -> [String: Any] {
+        if request.kind == "message_attachments" { return answerMessageAttachments(request) }
+        if request.kind == "message_attachment" { return answerMessageAttachment(request) }
         if request.kind == "attachments" { return answerAttachments(request) }
         if request.kind == "attachment" { return answerAttachment(request) }
         if request.kind == "recognize" { return MailMemoryReader.answerRecognize(request.imageB64) }
@@ -868,6 +919,306 @@ final class MailMemoryReader {
         guard (try? handle.seek(toOffset: start)) != nil,
               let data = try? handle.read(upToCount: wanted), !data.isEmpty else { return nil }
         return (data, count > maxBodyBytes)
+    }
+
+    // MARK: - Messages attachments (kinds `message_attachments` and `message_attachment`)
+
+    /// Why a Messages read failed. The raw value is the `error` the backend sees.
+    enum MessagesFailure: String, Error {
+        case noDatabase = "no_messages_db"
+        case unreadable
+        case unsupportedSchema = "unsupported_schema"
+    }
+
+    /// One file texted in Messages, as chat.db describes it. `filename` is chat.db's own path
+    /// text; it never leaves this class.
+    struct MessageAttachment {
+        let id: Int64
+        let ts: Double
+        let chat: String
+        let sender: String
+        let fromMe: Bool
+        let name: String
+        let mime: String
+        let size: Int64
+        let filename: String
+    }
+
+    private static let appleEpochOffset: Double = 978_307_200
+
+    /// A handle filter value: 1...100 characters, no control characters.
+    static func isValidHandle(_ value: String) -> Bool {
+        guard (1...100).contains(value.count) else { return false }
+        return !value.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
+    }
+
+    /// Unix seconds as Apple-epoch nanoseconds (what `message.date` holds), clamped so an absurd
+    /// request can't trap.
+    static func appleNanoseconds(_ unix: Double) -> Int64 {
+        let ns = (unix - appleEpochOffset) * 1_000_000_000
+        if ns >= 9.2e18 { return Int64.max }
+        if ns <= -9.2e18 { return Int64.min }
+        return Int64(ns)
+    }
+
+    /// A chat's label, built like `MessagesReader.label` (that file can't be linked into the
+    /// standalone regression build, so the small function is copied): a named group is
+    /// `Group "name"`, an unnamed one lists its members, a 1:1 chat is the other handle.
+    static func messageChatLabel(chatName: String?, chatIdentifier: String?,
+                                 members: [String], fallback: String) -> String {
+        let named = (chatName?.isEmpty == false) ? chatName! : ""
+        let isGroup = members.count > 1
+        if !named.isEmpty { return isGroup ? "Group \"\(named)\"" : named }
+        if isGroup {
+            let shown = members.sorted().prefix(4).joined(separator: ", ")
+            let more = members.count > 4 ? ", +\(members.count - 4) more" : ""
+            return "Group of \(members.count) (\(shown)\(more))"
+        }
+        if let only = members.first, !only.isEmpty { return only }
+        if let ci = chatIdentifier, !ci.isEmpty, !ci.hasPrefix("chat") { return ci }
+        return fallback
+    }
+
+    /// The file chat.db names for an attachment, or nil. `filename` comes from the database only.
+    /// A leading `~/Library/Messages/Attachments/` is placed on the real `root`; any other `~/`
+    /// expands to the home folder. The result must lie textually inside `realpath(root)`, be a
+    /// regular file (`lstat`), and equal its own `realpath`, so no symlink exists anywhere below the
+    /// root. Returns the path and its size.
+    static func messageAttachmentFile(filename: String, root: String) -> (path: String, size: Int, dev: dev_t, ino: ino_t)? {
+        guard !filename.isEmpty, !filename.contains("\0"), let realRoot = realPath(root), realRoot != "/" else { return nil }
+        var path = filename
+        let conventional = "~/Library/Messages/Attachments/"
+        if path.hasPrefix(conventional) {
+            path = realRoot + "/" + String(path.dropFirst(conventional.count))
+        } else if path.hasPrefix("~/") {
+            path = NSHomeDirectory() + String(path.dropFirst(1))
+        }
+        guard path.hasPrefix(realRoot + "/") else { return nil }
+        var info = stat()
+        guard lstat(path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG,
+              let resolved = realPath(path), resolved == path else { return nil }
+        return (path, Int(info.st_size), info.st_dev, info.st_ino)
+    }
+
+    /// True for a SQLite result that means the file can't be opened or isn't a readable database:
+    /// cannot open, authorisation denied, permission denied, not a database. With no Full Disk Access,
+    /// macOS makes the open itself fail, so the backend must see `no_messages_db`, not `unreadable`.
+    static func isAccessProblem(_ code: Int32) -> Bool {
+        [SQLITE_CANTOPEN, SQLITE_AUTH, SQLITE_PERM, SQLITE_NOTADB].contains(code & 0xFF)
+    }
+
+    private static func openMessages(_ path: String) throws -> OpaquePointer? {
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+            sqlite3_close(db)
+            throw MessagesFailure.noDatabase
+        }
+        sqlite3_busy_timeout(db, 2000)
+        var probe: OpaquePointer?
+        var result = sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM sqlite_master", -1, &probe, nil)
+        if result == SQLITE_OK { result = sqlite3_step(probe) }
+        sqlite3_finalize(probe)
+        guard result == SQLITE_ROW else {
+            sqlite3_close(db)
+            throw isAccessProblem(result) ? MessagesFailure.noDatabase : MessagesFailure.unreadable
+        }
+        return db
+    }
+
+    /// One row per attachment of a real message, newest first, at most `limit` (`capped` says there
+    /// were more). Left out: link previews (`.pluginpayloadattachment`), stickers, hidden
+    /// attachments, tapback rows, rows without a file name. Every term must be in the chat's name,
+    /// the chat's identifier (a 1:1 chat's is the other person's handle; an opaque `chat...` one is not
+    /// searched), the sender's handle, or the file's name. Other members' handles are not searched, so
+    /// a term naming one person never returns files other people sent in a group; a non-empty
+    /// `handles` also requires a sender (never the user) whose handle equals one of them. `since`
+    /// and `until` are unix seconds on the message date (0 = no bound, bounds exclusive). `only`
+    /// limits the read to one attachment ROWID with the same filters.
+    static func messageAttachmentRows(dbPath: String, terms: [String], handles: [String], since: Double,
+                                      until: Double, limit: Int, only: Int64? = nil) throws -> ([MessageAttachment], Bool) {
+        let db = try openMessages(dbPath)
+        defer { sqlite3_close(db) }
+        guard exists(db, table: "attachment", column: "filename"),
+              exists(db, table: "message_attachment_join", column: "message_id"),
+              exists(db, table: "message_attachment_join", column: "attachment_id"),
+              exists(db, table: "message", column: "date"),
+              exists(db, table: "message", column: "handle_id"),
+              exists(db, table: "message", column: "is_from_me"),
+              exists(db, table: "handle", column: "id") else { throw MessagesFailure.unsupportedSchema }
+        let hasTransfer = exists(db, table: "attachment", column: "transfer_name")
+        let transfer = hasTransfer ? "IFNULL(a.transfer_name, '')" : "''"
+        let nameExpr = hasTransfer ? "IFNULL(NULLIF(a.transfer_name, ''), a.filename)" : "a.filename"
+        let mime = exists(db, table: "attachment", column: "mime_type") ? "IFNULL(a.mime_type, '')" : "''"
+        let total = exists(db, table: "attachment", column: "total_bytes") ? "IFNULL(a.total_bytes, 0)" : "0"
+        var clauses = ["IFNULL(a.filename, '') != ''",
+                       "LOWER(IFNULL(a.filename, '')) NOT LIKE '%.pluginpayloadattachment'"]
+        if hasTransfer { clauses.append("LOWER(IFNULL(a.transfer_name, '')) NOT LIKE '%.pluginpayloadattachment'") }
+        if exists(db, table: "attachment", column: "is_sticker") { clauses.append("IFNULL(a.is_sticker, 0) = 0") }
+        if exists(db, table: "attachment", column: "hide_attachment") { clauses.append("IFNULL(a.hide_attachment, 0) = 0") }
+        if exists(db, table: "message", column: "associated_message_type") {
+            clauses.append("IFNULL(m.associated_message_type, 0) = 0")
+        }
+        // Messages keeps deleted messages for 30 days and links them here; a deleted file is neither listed nor read.
+        if exists(db, table: "chat_recoverable_message_join", column: "message_id") {
+            clauses.append("NOT EXISTS (SELECT 1 FROM chat_recoverable_message_join r WHERE r.message_id = m.ROWID)")
+        }
+        let hasChat = exists(db, table: "chat_message_join", column: "message_id")
+            && exists(db, table: "chat_message_join", column: "chat_id") && exists(db, table: "chat")
+        let displayName = hasChat && exists(db, table: "chat", column: "display_name") ? "IFNULL(c.display_name, '')" : "''"
+        let identifier = hasChat && exists(db, table: "chat", column: "chat_identifier") ? "IFNULL(c.chat_identifier, '')" : "''"
+        let hasMembers = hasChat && exists(db, table: "chat_handle_join", column: "chat_id")
+            && exists(db, table: "chat_handle_join", column: "handle_id")
+        let chatJoin = hasChat
+            ? "LEFT JOIN chat_message_join cmj ON cmj.message_id = m.ROWID LEFT JOIN chat c ON c.ROWID = cmj.chat_id" : ""
+        let chatID = hasChat ? "IFNULL(MIN(c.ROWID), 0)" : "0"
+        // The sender is the other person; a message the user sent has none.
+        let sender = "CASE WHEN IFNULL(m.is_from_me, 0) != 0 THEN '' ELSE IFNULL(h.id, '') END"
+        var binds: [Bind] = []
+        for term in terms where !term.isEmpty {
+            var fields = ["\(sender) LIKE ? ESCAPE '\\'", "\(nameExpr) LIKE ? ESCAPE '\\'"]
+            if hasChat {
+                fields.append("\(displayName) LIKE ? ESCAPE '\\'")
+                fields.append("CASE WHEN \(identifier) LIKE 'chat%' THEN '' ELSE \(identifier) END LIKE ? ESCAPE '\\'")
+            }
+            clauses.append("(" + fields.joined(separator: " OR ") + ")")
+            for _ in fields { binds.append(.text(likePattern(term))) }
+        }
+        let wanted = handles.filter { !$0.isEmpty }
+        if !handles.isEmpty {
+            guard !wanted.isEmpty else { return ([], false) }
+            clauses.append("(IFNULL(m.is_from_me, 0) = 0 AND ("
+                           + wanted.map { _ in "h.id = ? COLLATE NOCASE" }.joined(separator: " OR ") + "))")
+            for handle in wanted { binds.append(.text(handle)) }
+        }
+        if since > 0 { clauses.append("m.date > ?"); binds.append(.int(appleNanoseconds(since))) }
+        if until > 0 { clauses.append("m.date < ?"); binds.append(.int(appleNanoseconds(until))) }
+        if let only { clauses.append("a.ROWID = ?"); binds.append(.int(only)) }
+        binds.append(.int(Int64(limit + 1)))
+        let sql = """
+        SELECT a.ROWID, IFNULL(m.date, 0), IFNULL(m.is_from_me, 0), \(sender), \(displayName), \(identifier),
+               \(chatID), IFNULL(a.filename, ''), \(transfer), \(mime), \(total)
+        FROM attachment a
+        JOIN message_attachment_join maj ON maj.attachment_id = a.ROWID
+        JOIN message m ON m.ROWID = maj.message_id
+        LEFT JOIN handle h ON h.ROWID = m.handle_id
+        \(chatJoin)
+        WHERE \(clauses.joined(separator: " AND "))
+        GROUP BY a.ROWID
+        ORDER BY m.date DESC, a.ROWID ASC
+        LIMIT ?
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            sqlite3_finalize(stmt)
+            throw MessagesFailure.unreadable
+        }
+        defer { sqlite3_finalize(stmt) }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        for (i, bind) in binds.enumerated() {
+            let slot = Int32(i + 1)
+            switch bind {
+            case .text(let value): sqlite3_bind_text(stmt, slot, value, -1, transient)
+            case .double(let value): sqlite3_bind_double(stmt, slot, value)
+            case .int(let value): sqlite3_bind_int64(stmt, slot, value)
+            }
+        }
+        var people: OpaquePointer?
+        if hasMembers {
+            let memberSQL = "SELECT h.id FROM chat_handle_join chj JOIN handle h ON h.ROWID = chj.handle_id WHERE chj.chat_id = ?"
+            if sqlite3_prepare_v2(db, memberSQL, -1, &people, nil) != SQLITE_OK {
+                sqlite3_finalize(people)
+                people = nil
+            }
+        }
+        defer { sqlite3_finalize(people) }
+        var members: [Int64: [String]] = [:]
+        func membersOf(_ chat: Int64) -> [String] {
+            guard chat != 0, let people else { return [] }
+            if let known = members[chat] { return known }
+            sqlite3_reset(people)
+            sqlite3_bind_int64(people, 1, chat)
+            var out: [String] = []
+            while sqlite3_step(people) == SQLITE_ROW { out.append(text(people, 0)) }
+            members[chat] = out
+            return out
+        }
+        var rows: [MessageAttachment] = []
+        var step = sqlite3_step(stmt)
+        while step == SQLITE_ROW {
+            defer { step = sqlite3_step(stmt) }
+            if rows.count == limit { return (rows, true) }
+            let dateNs = sqlite3_column_int64(stmt, 1)
+            let fromMe = sqlite3_column_int(stmt, 2) != 0
+            let from = text(stmt, 3)
+            let filename = text(stmt, 7)
+            let transferName = text(stmt, 8)
+            let name = transferName.isEmpty ? (filename as NSString).lastPathComponent : transferName
+            let label = messageChatLabel(chatName: text(stmt, 4), chatIdentifier: text(stmt, 5),
+                                         members: membersOf(sqlite3_column_int64(stmt, 6)),
+                                         fallback: fromMe ? "Me" : (from.isEmpty ? "Messages" : from))
+            rows.append(MessageAttachment(
+                id: sqlite3_column_int64(stmt, 0),
+                ts: dateNs > 0 ? Double(dateNs) / 1_000_000_000 + appleEpochOffset : 0,
+                chat: String(label.prefix(120)), sender: String(from.prefix(200)), fromMe: fromMe, name: String(name.prefix(255)),
+                mime: text(stmt, 9), size: max(0, sqlite3_column_int64(stmt, 10)), filename: filename))
+        }
+        guard step == SQLITE_DONE else { throw MessagesFailure.unreadable }
+        return (rows, false)
+    }
+
+    private func answerMessageAttachments(_ request: Request) -> [String: Any] {
+        do {
+            let (found, capped) = try MailMemoryReader.messageAttachmentRows(
+                dbPath: messagesDB, terms: request.terms, handles: request.handles, since: request.since,
+                until: request.until, limit: request.limit)
+            let rows: [[String: Any]] = found.map { row in
+                let onDisk = MailMemoryReader.messageAttachmentFile(filename: row.filename,
+                                                                    root: messagesAttachmentsRoot) != nil
+                return ["id": String(row.id), "ts": row.ts, "chat": row.chat, "sender": row.sender,
+                        "from_me": row.fromMe, "name": row.name, "mime": row.mime, "size": Int(row.size),
+                        "on_disk": onDisk]
+            }
+            return ["ok": true, "rows": rows, "capped": capped]
+        } catch let failure as MessagesFailure {
+            return ["ok": false, "error": failure.rawValue]
+        } catch {
+            return ["ok": false, "error": MessagesFailure.unreadable.rawValue]
+        }
+    }
+
+    private func answerMessageAttachment(_ request: Request) -> [String: Any] {
+        guard let id = Int64(request.attachmentID), id > 0 else { return ["ok": false, "error": "not_found"] }
+        // Same filters as the listing: a hidden, sticker, preview or tapback row is not found.
+        let row: MessageAttachment?
+        do {
+            row = try MailMemoryReader.messageAttachmentRows(
+                dbPath: messagesDB, terms: [], handles: [], since: 0, until: 0, limit: 1, only: id).0.first
+        } catch let failure as MessagesFailure {
+            return ["ok": false, "error": failure.rawValue]
+        } catch {
+            return ["ok": false, "error": MessagesFailure.unreadable.rawValue]
+        }
+        guard let row else { return ["ok": false, "error": "not_found"] }
+        guard let found = MailMemoryReader.messageAttachmentFile(filename: row.filename, root: messagesAttachmentsRoot) else {
+            return ["ok": false, "error": "not_on_disk"]
+        }
+        let cap = maxMessageFileBytes
+        guard found.size <= cap else { return ["ok": false, "error": "too_large"] }
+        // No symlink at the end, and the opened file is checked again (it may have changed since lstat).
+        let fd = open(found.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard fd >= 0 else { return ["ok": false, "error": "unreadable"] }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { return ["ok": false, "error": "not_on_disk"] }
+        // The file opened must be the one lstat and realpath checked, not one swapped in since.
+        guard info.st_dev == found.dev, info.st_ino == found.ino else { return ["ok": false, "error": "unreadable"] }
+        guard Int(info.st_size) <= cap else { return ["ok": false, "error": "too_large"] }
+        // read(upToCount:) returns nil at end of file, so an empty file is answered here.
+        if info.st_size == 0 { return ["ok": true, "name": row.name, "size": 0, "data_b64": ""] }
+        guard let data = try? handle.read(upToCount: cap + 1) else { return ["ok": false, "error": "unreadable"] }
+        guard data.count <= cap else { return ["ok": false, "error": "too_large"] }
+        return ["ok": true, "name": row.name, "size": data.count, "data_b64": data.base64EncodedString()]
     }
 
     // MARK: - Transport

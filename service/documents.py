@@ -229,19 +229,25 @@ async def run_child(code: str, argv: list[str], data: bytes, *, timeout: float, 
     return result
 
 
-async def run_attachment_child(job: str, name: str, data: bytes, *, timeout: float) -> dict:
-    """service/attachment_child.py's `job` (inspect, tiles, pdf_pages, ocr_images, structured) on `data`, in a child.
+async def run_attachment_child(job: str, name: str, data: bytes, *, timeout: float, part: int | None = None) -> dict:
+    """service/attachment_child.py's `job` (inspect, tiles, pdf_pages, ocr_images, structured, audio, eml, eml_part)
+    on `data`, in a child.
 
-    `tiles` and `ocr_images` may need macOS's sips, which reads a file, so they get a private 0700 directory as
-    argv[3]; the directory is removed afterwards whether or not the child survived.
+    `tiles`, `ocr_images` and `audio` may need a macOS tool (sips, afconvert), which reads a file, so they get a
+    private 0700 directory as argv[3]; the directory is removed afterwards whether or not the child survived.
+    `part` (the file number `eml` listed) is the last argv item, after an empty directory slot when there is none.
     """
     argv = [job, PurePath(name or "").name[:200]]
     workdir = None
     try:
-        if job in ("tiles", "ocr_images"):
+        if job in ("tiles", "ocr_images", "audio"):
             workdir = tempfile.mkdtemp(prefix="wisp-picture-")
             os.chmod(workdir, 0o700)
             argv.append(workdir)
+        if part is not None:
+            if workdir is None:
+                argv.append("")
+            argv.append(str(int(part)))
         return await run_child(_ATTACHMENT_CHILD, argv, data, timeout=timeout)
     finally:
         if workdir:
