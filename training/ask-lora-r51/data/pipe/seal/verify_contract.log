@@ -1,0 +1,11 @@
+Traceback (most recent call last):
+  File "/Users/adijain/Desktop/MOE_Project/.claude/worktrees/ask-lora-brev-2caec5/training/ask-lora-r5/mi355x/verify_contract.py", line 169, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "/Users/adijain/Desktop/MOE_Project/.claude/worktrees/ask-lora-brev-2caec5/training/ask-lora-r5/mi355x/verify_contract.py", line 145, in main
+    good, bad = write_contrast_cases(gold)
+                ~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/Users/adijain/Desktop/MOE_Project/.claude/worktrees/ask-lora-brev-2caec5/training/ask-lora-r5/mi355x/verify_contract.py", line 72, in write_contrast_cases
+    return f"It says {facts[0]}.", {"fact_left_out": "Yes, there's something on that.", "invented_action": f"It says {facts[0]}. I've added a reminder for it."}
+                      ~~~~~^^^
+IndexError: list index out of range

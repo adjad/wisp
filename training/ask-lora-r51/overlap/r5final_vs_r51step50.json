@@ -1,0 +1,80 @@
+{
+ "build": "training/ask-lora-r5/data/r5-final",
+ "eval_dir_sha256": {
+  "cases.yaml": "ee5b639304426f497d10dffe68381c30d450e5aaaa4f8d60526f82045c051acb",
+  "world.json": "75cc6f7880ed4aecff0dd5b1ad3b228dae11f40b18ee7063970c6223cac47f17",
+  "worlds.json": "75ed75db1caf00c83a05e70440b4a96efc8ad1db41b69a1c8359d5a5cb661ff3"
+ },
+ "rule": "r5 rule unchanged: leak.py trigram Jaccard >= 0.7 on every user turn (current + history of 4+ words) vs every eval prompt + history user turn; no exemption",
+ "eval_reference_turns": 99,
+ "rows_checked": 7673,
+ "hits": [
+  {
+   "row_id": "safe_effects-034-s0",
+   "case_id": "r51_gnd_texts_morning",
+   "score": 0.722,
+   "where": "current"
+  },
+  {
+   "row_id": "safe_effects-034-s1",
+   "case_id": "r51_gnd_texts_morning",
+   "score": 0.722,
+   "where": "current"
+  },
+  {
+   "row_id": "reminders_r3-041-s0",
+   "case_id": "r51_auth_update_library",
+   "score": 0.837,
+   "where": "current"
+  },
+  {
+   "row_id": "reminders_r3-041-s1",
+   "case_id": "r51_auth_update_library",
+   "score": 0.837,
+   "where": "current"
+  },
+  {
+   "row_id": "day_answers_r4-087-s0",
+   "case_id": "r51_gnd_saturday",
+   "score": 1.0,
+   "where": "current"
+  },
+  {
+   "row_id": "day_answers_r4-087-s1",
+   "case_id": "r51_gnd_saturday",
+   "score": 1.0,
+   "where": "current"
+  },
+  {
+   "row_id": "day_chat_r4-103-s0",
+   "case_id": "r51_gnd_saturday",
+   "score": 1.0,
+   "where": "history"
+  },
+  {
+   "row_id": "day_chat_r4-240-s0",
+   "case_id": "r51_gnd_saturday",
+   "score": 1.0,
+   "where": "history"
+  },
+  {
+   "row_id": "day_chat_r4-240-s1",
+   "case_id": "r51_gnd_saturday",
+   "score": 1.0,
+   "where": "history"
+  },
+  {
+   "row_id": "session_recall_r4-060-s0",
+   "case_id": "r51_gnd_friday_walkthrough",
+   "score": 1.0,
+   "where": "history"
+  },
+  {
+   "row_id": "tool_choice_r5-228-s0",
+   "case_id": "r51_safe_declined_hist_pottery",
+   "score": 0.762,
+   "where": "current"
+  }
+ ],
+ "hit_rows": 11
+}

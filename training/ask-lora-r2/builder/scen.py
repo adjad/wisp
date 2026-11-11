@@ -2258,6 +2258,12 @@ if _ROUND in ("3", "4"):
                 FAMILIES.update(getattr(_m, "FAMILIES_R5", {}))
                 for _fam, _tools in getattr(_m, "WRITE_ALLOW_R5", {}).items():
                     _writes.WRITE_ALLOW[_fam] = _writes.WRITE_ALLOW.get(_fam, frozenset()) | frozenset(_tools)
+            # Round 5.1 (ASK_LORA_R51=1 only; with it unset the r5 build is unchanged): the safety-contrast family.
+            if _os.environ.get("ASK_LORA_R51") == "1":
+                _m = _importlib.import_module("scen_r51_safety")
+                FAMILIES.update(getattr(_m, "FAMILIES_R51", {}))
+                for _fam, _tools in getattr(_m, "WRITE_ALLOW_R51", {}).items():
+                    _writes.WRITE_ALLOW[_fam] = _writes.WRITE_ALLOW.get(_fam, frozenset()) | frozenset(_tools)
         # chat_voice_r4 (longer, more engaging replies; the user, 2026-11-02) replaces r3's chat voice.
         if "chat_voice_r4" in FAMILIES:
             FAMILIES.pop("chat_voice_r3", None)
