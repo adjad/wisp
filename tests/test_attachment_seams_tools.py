@@ -771,7 +771,10 @@ async def test_a_read_in_a_turn_also_confirms_a_following_save(world, fakehome, 
 def background(world, monkeypatch):
     """The real tick with only its gate inputs controlled: power, the app being connected, the clock."""
     from service.mail_memory import runner
-    clock = [time.time()]
+    # Local noon, not the real time: the ticks below move this clock forward, and from a late-evening start that
+    # crossed local midnight and began the reader's per-day count again.
+    today = time.localtime()
+    clock = [time.mktime((today.tm_year, today.tm_mon, today.tm_mday, 12, 0, 0, 0, 0, -1))]
     monkeypatch.setattr(attachment_index, "_clock", lambda: clock[0])
     monkeypatch.setattr(attachment_index, "_mono", lambda: clock[0])      # the "not due yet" gap is on this clock
     monkeypatch.setattr(attachment_index, "_last_prune", None)

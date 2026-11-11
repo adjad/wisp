@@ -22,7 +22,19 @@ from service.assistant.hub import hub
 from service.mail_memory import bridge, runner
 from tests.test_documents import pdf_with_text
 
-NOW = time.time()
+def noon_today() -> float:
+    """Local noon of the current day: the start of every test clock here.
+
+    The tests move their clock forward by up to an hour or two and expect the reader's per-day count to hold.
+    Started from the real time late in the evening, that step crossed local midnight and the count began again
+    (seen in CI, where the runner's day ends at 00:00 UTC). Noon leaves twelve hours on both sides and stays
+    within half a day of the real clock, which the store and the reader still read for themselves.
+    """
+    t = time.localtime()
+    return time.mktime((t.tm_year, t.tm_mon, t.tm_mday, 12, 0, 0, 0, 0, -1))
+
+
+NOW = noon_today()
 DAY = 86400.0
 SECRET = "ZQXSECRETNAME"
 
