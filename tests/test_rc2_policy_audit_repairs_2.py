@@ -226,3 +226,28 @@ def test_git_rev_parse_is_a_place_only_with_its_path_flags(monkeypatch):
     assert policy.never_run_hit("sh -c \"make -C $(git rev-parse --show-toplevel)\"") is None
     for flag in ("--sq-quote", "--parseopt", "--local-env-vars", "--abbrev-ref"):
         assert policy.never_run_hit(f"sh -c \"x $(git rev-parse {flag})\""), flag
+
+
+# --- 5. a quoted `;` and the every-mode delete card, placeholder names, `enable` ---
+
+def test_a_find_delete_with_a_quoted_semicolon_word_keeps_its_card_in_every_mode(monkeypatch):
+    for cmd in ("cd proj && find ';' build -delete", "cd proj && find build ';' -delete",
+                "cd proj && find \\; build -type f -delete", "cd proj && find build \";\" -exec rm {} +"):
+        assert policy.is_destructive_shell(cmd), cmd
+        for full_access, keep_floor in MODES:
+            assert _tier(monkeypatch, cmd, full_access, keep_floor) is not Tier.ALLOW, (cmd, full_access, keep_floor)
+
+
+def test_a_file_named_like_a_placeholder_is_not_a_judged_heredoc(monkeypatch):
+    for cmd in ("sh -c \"$(cat __wisp_hdb_6c73__)\"", "bash <<< \"$(cat __wisp_hdb_00__)\""):
+        assert policy.never_run_hit(cmd), cmd
+    assert policy.never_run_hit("find __wisp_find_end__ ~ -delete")
+
+
+@pytest.mark.parametrize("cmd", [
+    "corepack enable && sh -c \"cd $(pwd) && make\"", "sh -c \"make -j$(nproc)\" # enable parallel",
+    "builtin cd x && bash -c \"make -C $(git rev-parse --show-toplevel)\"",
+])
+def test_the_words_enable_and_builtin_alone_change_nothing(monkeypatch, cmd):
+    assert policy.never_run_hit(cmd) is None, cmd
+    assert _tier(monkeypatch, cmd, True, True) is Tier.CONFIRM, cmd

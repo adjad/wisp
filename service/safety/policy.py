@@ -856,7 +856,16 @@ _DESTRUCTIVE_SHELL = [
 def is_destructive_shell(cmd: str) -> str | None:
     """The destructive pattern `cmd` matches, or None. Public so the agent
     loop's confirmation card can explain WHICH rule fired."""
-    return _any(_rules("destructive_shell", _DESTRUCTIVE_SHELL), cmd)
+    rules = _rules("destructive_shell", _DESTRUCTIVE_SHELL)
+    if (hit := _any(rules, cmd)):
+        return hit
+    # The patterns stop at a `;`. One that is quoted or escaped is a word, not
+    # the end of the command (`find ';' build -delete`), so it is read through.
+    plain = _QUOTED_SEMICOLON.sub(" _ ", cmd) if isinstance(cmd, str) else cmd
+    return _any(rules, plain) if plain != cmd else None
+
+
+_QUOTED_SEMICOLON = re.compile(r"\\;|';'|\";\"")
 
 # Outbound actions performed as the user and seen by other people (mail, texts)
 # or that write to a remote service. Confirmed on every call regardless of
@@ -2700,7 +2709,7 @@ _NR_PLACE_OUTPUT = re.compile(
 _NR_KNOWN_NAMES = r"(?:echo|date|whoami|uname|pwd|git|mktemp|brew|xcode-select|nproc|sysctl|id)"
 _NR_SHADOWS = re.compile(
     rf"\b{_NR_KNOWN_NAMES}\s*\(\s*\)|\bfunction\s+{_NR_KNOWN_NAMES}\b"
-    rf"|\balias\b[^;|&\n]*\b{_NR_KNOWN_NAMES}=|\benable\b|\bunset\s+-f\b|\bbuiltin\b")
+    rf"|\balias\b[^;|&\n]*\b{_NR_KNOWN_NAMES}=|\benable\s+-[a-z]*n|\bunset\s+-f\b")
 
 
 def _nr_literal_output(body: str) -> str | None:
@@ -3356,6 +3365,9 @@ def _nr_check(text: str) -> tuple[str | None, bool]:
     cannot know, as an argument only: see _nr_shell_program)."""
     if not isinstance(text, str) or not text.strip():
         return None, False
+    # Wisp's own placeholder words are made while judging. One already in the
+    # text (a file named like a judged heredoc body) must not pass for one.
+    text = text.replace("__wisp_", "__wisp-")
     ctx = _NrContext(("rel", "."))
     ctx.shadowed = bool(_NR_SHADOWS.search(text[:SHELL_TEXT_LIMIT]))
     try:
