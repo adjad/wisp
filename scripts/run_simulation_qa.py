@@ -101,6 +101,9 @@ PROFILE_TESTS = {
         "tests/test_email_search_ranking.py",
         # Voice input: the clip reaches only a local model with an audio encoder (stub client).
         "tests/test_voice_transcribe.py",
+        # Meeting notes: windows to transcript to notes, text only on disk, fenced transcript,
+        # a reminder only on the person's press (stub client, tmp_path as the home folder).
+        "tests/test_meetings.py",
         # Image/video input: one dedicated vision call (stub client, synthetic media).
         "tests/test_vision.py",
         # Pictures that lead to actions: the reading as untrusted data, every effect

@@ -1195,6 +1195,7 @@ final class OverlayModel: ObservableObject {
             else { showTransientNotice("Wisp is still answering. Open the window when it finishes.") }
         case .brief, .day: WispRouter.shared.open(.today(focus: .plan))
         case .research: WispRouter.shared.open(.research)
+        case .meet: WispRouter.shared.open(.today(focus: .plan))
         }
     }
 

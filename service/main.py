@@ -588,6 +588,8 @@ from service.power_api import router as power_router
 app.include_router(power_router)
 from service.attachment_api import router as attachment_router
 app.include_router(attachment_router)
+from service.meetings_api import router as meetings_router
+app.include_router(meetings_router)
 from service.memory_saver_api import native_only, router as memory_saver_router
 app.include_router(memory_saver_router)
 from service.corpus import router as corpus_router
