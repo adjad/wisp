@@ -164,6 +164,34 @@ REFUSED = [
     "sudo rm -rf /tmp/x",
     "find ~/Downloads -name '*.dmg' -mtime +30 -delete",
     "find ~/Desktop -name 'Screenshot*' -delete",
+    # PR #509 audit, hole 1: an rm behind a launcher, a trap or printf into a shell.
+    "xcrun rm -rf /etc",
+    "launchctl asuser 501 rm -rf ~/Documents",
+    "ssh host rm -rf ~",
+    "trap 'rm -rf ~' EXIT",
+    "printf '%s' 'rm -rf ~/Documents' | bash",
+    # Hole 2: other names for the same folder.
+    "rm -rf /var/db/x",
+    "rm -rf /var/root/x",
+    "rm -rf /private/var/log/x",
+    "cd /var && rm -rf db/x",
+    # Coordinator tightening (both spellings, every mode).
+    "rm -rf /Users/u/Projects/x",
+    "cd /Users/u/Projects && rm -rf x",
+    "rm -rf /Library/Application\\ Support/x",
+    "cd /Library/Caches && rm -rf x",
+    "rm -rf /Applications/Utilities",
+    "rm -rf /Applications/Thing.app/Contents/x",
+    "rm -rf ~/Applications/Thing.app",
+    "rm -rf /usr/local/bin",
+    "rm -rf /opt/homebrew/lib",
+    "rm -rf ~/Library/Application\\ Support/SomeApp",
+    "cd ~/Library/Developer && rm -rf Xcode",
+    "rm -rf ~/Pictures/old/Photos.photoslibrary",
+    "rm -rf ~/Projects/disk.sparsebundle/bands",
+    "rm -rf ~/.kube/config",
+    "rm -rf ~/Dropbox/x",
+    "cd ~/.claude && rm -rf projects",
 ]
 
 # (command, tier by default, tier under full access), captured before the change.
@@ -250,7 +278,23 @@ ORDINARY = [
     ("rm -rf /tmp/build-*", "CONFIRM", "CONFIRM"),
     ("cd ~ && rm -rf somefolder", "CONFIRM", "CONFIRM"),
     ("cd /usr/local/lib && rm -rf foo", "CONFIRM", "CONFIRM"),
+    # PR #509 audit: the folders the tightening leaves a card.
+    ("rm -rf ~/Library/Logs/com.example.app", "CONFIRM", "CONFIRM"),
+    ("rm -rf ~/Library/Developer/Xcode/DerivedData", "CONFIRM", "CONFIRM"),
+    ("rm -rf /opt/homebrew/Cellar/x", "CONFIRM", "CONFIRM"),
+    ("rm -rf ~/Projects/app/build/Thing.app", "CONFIRM", "CONFIRM"),
+    ("rm -rf ~/.kube/cache/x", "CONFIRM", "CONFIRM"),
+    ("rm -rf ~/.cache/pip", "CONFIRM", "CONFIRM"),
+    ("rm -rf /Users/Shared/x", "CONFIRM", "CONFIRM"),
+    ("cd /tmp && rm -rf build-xyz", "CONFIRM", "CONFIRM"),
+    # An rm the check now parses behind a launcher or trap keeps the card it judged.
+    ("xcrun rm -rf /tmp/x", "CONFIRM", "CONFIRM"),
+    ("trap 'rm -rf /tmp/x' EXIT", "CONFIRM", "CONFIRM"),
 ]
+
+# Recursive deletes the owner decided get a card: never ALLOW, in any mode.
+CARDED_DELETES = [cmd for cmd, _, _ in ORDINARY if cmd.startswith(("rm -r", "cd ", "xcrun", "trap"))
+                  and " rm -r" in f" {cmd}"]
 
 
 def _tier(monkeypatch, cmd, *, full_access=False, keep_floor=True, granted=None):
@@ -384,6 +428,15 @@ EQUIVALENT = [
     ("/Library", "Foo"), ("/usr", "bin"), ("/usr/local/lib", "foo"), ("/Applications", "Thing.app"),
     ("/tmp", "build-xyz"), ("/tmp", "*"), ("/tmp", "build-*"), ("/private/tmp", "x"),
     ("/Volumes", "X"), ("/Volumes/Ext/proj", "build"), ("$HOME/Projects/app", "build"),
+    # PR #509 audit: other names for a folder, and the tightened folders.
+    ("/var", "db"), ("/var/db", "x"), ("/etc", "x"), ("/tmp", "x"), ("/Users/u/Projects", "x"),
+    ("/Library/Caches", "x"), ("/Applications/Utilities", "x"), ("/Applications/Thing.app", "Contents"),
+    ("/usr/local", "bin"), ("/opt/homebrew", "lib"), ("/opt/homebrew/Cellar", "x"),
+    ("~/Library/Caches/com.example.app", "x"), ("~/Library/Preferences", "x"),
+    ("~/Library/Developer/Xcode", "DerivedData"), ("~/Library/Developer", "Xcode"),
+    ("~/Pictures/old", "Photos.photoslibrary"), ("~/Projects/app/build", "Thing.app"),
+    ("~/Applications", "Thing.app"), ("~", ".kube"), ("~/.kube", "config"), ("~/.kube/cache", "x"),
+    ("~", "Dropbox"), ("~/Dropbox", "x"), ("~/Dropbox/proj", "build"), ("/Users/Shared", "x"),
 ]
 
 
@@ -402,15 +455,53 @@ def test_a_refused_absolute_delete_names_the_real_folder():
         assert "absolute path" not in policy.never_run_hit(cmd)
 
 
-def test_the_floor_refuses_only_the_root_and_a_config_can_still_list_the_old_pattern(monkeypatch):
-    assert policy._any(policy._SHELL_DENY, "rm -rf /tmp/build-xyz") is None
-    for cmd in ("rm -rf /", "rm -r /", "rm -rf /*", "rm -rf / ; ls"):
-        assert policy._any(policy._SHELL_DENY, cmd), cmd
-    # A policy file that still lists the old pattern keeps it: it only adds refusals.
+@pytest.mark.parametrize("cmd", CARDED_DELETES)
+def test_a_carded_recursive_delete_is_never_allowed_without_a_card(monkeypatch, cmd):
+    for full_access, keep_floor in ((False, True), (True, True), (True, False)):
+        for granted in (None, "allow"):
+            decision = _tier(monkeypatch, cmd, full_access=full_access,
+                             keep_floor=keep_floor, granted=granted)
+            assert decision.tier is Tier.CONFIRM, (cmd, full_access, keep_floor, granted)
+
+
+def test_the_broad_floor_entry_holds_unless_every_rm_was_judged(monkeypatch):
+    # The broad entry is back (PR #509 audit, hole 1) ...
+    assert policy._any(policy._SHELL_DENY, "rm -rf /tmp/build-xyz") == policy._SHELL_BROAD_RM
+    # ... and skipped only when the never-run check judged each recursive rm itself.
+    assert _tier(monkeypatch, "rm -rf /tmp/build-xyz").tier is Tier.CONFIRM
+    assert _tier(monkeypatch, "rm -rf /tmp/a; rm -rf /tmp/b").tier is Tier.CONFIRM
+    # An rm it cannot parse (a quoted string handed to a program) keeps the floor.
+    for cmd in ("parallel ::: 'rm -rf /tmp/x'", "rm -rf /tmp/a; parallel ::: 'rm -rf /tmp/b'",
+                "make -f /dev/stdin <<< 'x:; rm -rf /tmp/x'"):
+        assert _tier(monkeypatch, cmd).tier is Tier.DENY, cmd
+        assert _tier(monkeypatch, cmd, full_access=True).tier is Tier.DENY, cmd
+    # A policy file that lists the pattern itself keeps it: it only adds refusals.
     monkeypatch.setattr(policy, "_CFG", {"shell_deny": [r"\brm\s+-rf?\s+/"]})
     assert _tier(monkeypatch, "rm -rf /tmp/build-xyz").tier is Tier.DENY
     monkeypatch.setattr(policy, "_CFG", {})
     assert _tier(monkeypatch, "rm -rf /tmp/build-xyz").tier is Tier.CONFIRM
+
+
+def test_text_that_names_a_dangerous_command_is_not_refused_by_the_never_run_check():
+    # A commit message, a search pattern or printed text is not the command it names.
+    for cmd in ("git commit -m 'rm -rf /etc'", "git log --grep 'rm -rf ~'", "grep -r 'rm -rf /' .",
+                "echo rm -rf /etc", "rg 'rm -rf ~' docs", "man rm", "say rm -rf ~",
+                "cat <<'EOF' > notes.md\nrm -rf /etc\nEOF"):
+        assert policy.never_run_hit(cmd) is None, cmd
+
+
+def test_a_volume_that_links_to_the_startup_disk_is_the_startup_disk(monkeypatch):
+    links = {"Macintosh HD": "/", "Ext": "/Volumes/Ext-real"}
+    monkeypatch.setattr(policy, "_nr_volume_link", lambda name: links.get(name))
+    home = policy._nr_home()
+    for cmd in ("rm -rf '/Volumes/Macintosh HD/System'", "rm -rf '/Volumes/Macintosh HD/usr/bin'",
+                f"rm -rf '/Volumes/Macintosh HD{home}/Documents'",
+                f"rm -rf '/Volumes/Macintosh HD{home}/.ssh'",
+                "cd '/Volumes/Macintosh HD' && rm -rf Users"):
+        assert policy.never_run_hit(cmd), cmd
+    for cmd in ("rm -rf /Volumes/Ext/proj/build", "rm -rf /Volumes/Other/proj/build",
+                f"rm -rf '/Volumes/Macintosh HD{home}/Projects/app/build'"):
+        assert policy.never_run_hit(cmd) is None, cmd
 
 
 def test_a_command_past_the_length_limit_is_still_judged_by_its_start():

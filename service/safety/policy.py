@@ -172,13 +172,16 @@ def read_only_shell_argv(cmd: str) -> tuple[str, ...] | None:
 
 
 # shell commands that are never allowed
+_SHELL_BROAD_RM = r"\brm\s+-rf?\s+/"
 _SHELL_DENY = [
     r"\brm\s+(-[a-zA-Z]*\s+)*(-rf|-fr|-r\s+-f|-f\s+-r)\b.*\s+(/|~|\$HOME)\s*$",
-    # Only `/` itself (and `/*`, `/.`): the never-run check (never_run_hit) is
-    # the judge of every other recursive delete, and since the owner decision
-    # of 2026-11-10 a delete inside an ordinary folder (`rm -rf /tmp/build`)
-    # gets a card. Was r"\brm\s+-rf?\s+/", which refused every absolute path.
-    r"\brm\s+-rf?\s+/(?:\*|\.\.?)?(?=$|[\s;&|)])",
+    # Every recursive delete of an absolute path. Since the owner decision of
+    # 2026-11-10 a delete inside an ordinary folder (`rm -rf /tmp/build`) gets
+    # a card: _decide skips this one entry when the never-run check parsed and
+    # judged every recursive rm in the text (see _floor_skips_broad_rm), so an
+    # rm it cannot see (inside a quoted string, behind a wrapper it does not
+    # parse) is still refused here.
+    _SHELL_BROAD_RM,
     r"\bsudo\b", r"\bsu\b\s", r"\bdoas\b",
     r"\bmkfs\b", r"\bdd\b\s+if=", r"\bfdisk\b", r"\bdiskutil\s+(erase|reformat)",
     r"curl[^|]*\|\s*(sudo\s+)?(sh|bash|zsh)", r"wget[^|]*\|\s*(sh|bash|zsh)",
@@ -1303,7 +1306,8 @@ def _save_folder_problem(folder) -> str | None:
     return None
 
 
-def _hard_deny(category: str, args: dict, tool: str | None = None) -> Decision | None:
+def _hard_deny(category: str, args: dict, tool: str | None = None, *,
+               skip_broad_rm: bool = False) -> Decision | None:
     """The unconditional safety floor: rules nothing can override — not
     full_access, not a standing grant, not the user clicking "always allow".
 
@@ -1313,8 +1317,12 @@ def _hard_deny(category: str, args: dict, tool: str | None = None) -> Decision |
     """
     if category == "shell":
         # run_applescript's `do shell script` bodies and quote-stripped text too.
+        rules = _rules("shell_deny", _SHELL_DENY)
+        if skip_broad_rm and rules is _SHELL_DENY:
+            # Only the default list: a policy file that lists the pattern keeps it.
+            rules = [p for p in rules if p != _SHELL_BROAD_RM]
         for cmd in shell_forms(args):
-            if (hit := _any(_rules("shell_deny", _SHELL_DENY), cmd)):
+            if (hit := _any(rules, cmd)):
                 return Decision(Tier.DENY, "Wisp won't run this command (it matches a blocked "
                                 f"pattern: {hit}). {NEVER_RUN_TAIL}")
     if tool in ALWAYS_CONFIRM_FILE_TOOLS and (problem := _save_folder_problem(args.get("folder"))):
@@ -1367,6 +1375,11 @@ def _hard_deny(category: str, args: dict, tool: str | None = None) -> Decision |
 # follows sh/bash/zsh -c, eval, su -c, env -S, osascript's `do shell script`
 # and find -exec into the command they run. `cd` is followed, so
 # `cd / && rm -rf usr` is a delete of /usr.
+# A recursive rm after a first word it does not know (xcrun, ssh host,
+# launchctl asuser 501 ...), a `trap '...'` body and `printf ... | sh` are
+# judged too; echo, printf, grep, git commit/log and the like are text.
+# /tmp, /var and /etc are judged as /private/..., and a /Volumes entry that
+# links to / as / (_nr_aliases).
 #
 # What stays a card (the 2026-08-16 design still holds for these): a recursive
 # delete of a plain relative path below an ordinary folder of the working
@@ -1421,7 +1434,17 @@ _NR_GNU = frozenset({"rm", "find", "chmod", "chown", "chgrp", "dd", "truncate", 
 _NR_TOP_NAMES = frozenset(p.rsplit("/", 1)[-1] for p in _NR_ROOTS if p != "/")
 # macOS's own folders: a relative delete after `cd` into one is refused.
 _NR_SYSTEM = ("/system", "/bin", "/sbin", "/usr", "/etc", "/private/etc", "/private/var/db",
+              "/var/db", "/var/root", "/private/var/root", "/var/log", "/private/var/log",
               "/library/launchdaemons", "/library/launchagents", "/library/keychains")
+# More folders directly in home that are refused like its main folders (the
+# folder and what sits directly in it; deeper keeps its card): credentials and
+# app state, and roots that sync to the cloud.
+_NR_HOME_MAIN_EXTRA = frozenset({".kube", ".docker", ".claude", ".codex", ".password-store",
+                                 ".local", ".git", "dropbox", "onedrive", "google drive",
+                                 "icloud drive"})
+# Packages that hold a whole library: refused at or inside one, anywhere.
+_NR_LIBRARY_BUNDLES = (".photoslibrary", ".musiclibrary", ".imovielibrary", ".fcpbundle",
+                       ".sparsebundle")
 # Every regex in this section is linear: no quantified group whose body can
 # match the same text two ways, so a 16,000-character line cannot stall the
 # event loop. _NR_BUDGET is the backstop: a check that has used this much
@@ -1456,11 +1479,21 @@ class _NrTooSlow(Exception):
     """The never-run check used up _NR_BUDGET."""
 
 
+class _NrStats:
+    """What one never-run check saw: how many recursive rm commands it parsed
+    and judged, and the heredoc bodies it read as plain text."""
+    __slots__ = ("rm", "bodies")
+
+    def __init__(self):
+        self.rm = 0
+        self.bodies: set[str] = set()
+
+
 class _NrContext:
     """Where a command line is when a simple command runs."""
-    __slots__ = ("cwd", "fed", "depth", "inner", "deadline")
+    __slots__ = ("cwd", "fed", "depth", "inner", "deadline", "stats")
 
-    def __init__(self, cwd, depth=0, inner=None, deadline=None):
+    def __init__(self, cwd, depth=0, inner=None, deadline=None, stats=None):
         # ("rel", path below home) or ("abs", path outside home), or None when
         # the folder is only known while the command runs.
         self.cwd = cwd
@@ -1468,9 +1501,10 @@ class _NrContext:
         self.depth = depth
         self.inner = inner if inner is not None else []
         self.deadline = deadline if deadline is not None else time.thread_time() + _NR_BUDGET
+        self.stats = stats if stats is not None else _NrStats()
 
     def child(self) -> "_NrContext":
-        return _NrContext(self.cwd, self.depth + 1, self.inner, self.deadline)
+        return _NrContext(self.cwd, self.depth + 1, self.inner, self.deadline, self.stats)
 
     def tick(self) -> None:
         if time.thread_time() > self.deadline:
@@ -1808,8 +1842,11 @@ def _nr_heredocs(text: str, ctx: "_NrContext",
                     code += more_code
                 elif kind:
                     code.append((body, kind))
-                elif not quoted:
-                    shell += _nr_expansions(body)
+                else:
+                    if not frames and not force:
+                        ctx.stats.bodies.add(body)      # plain text (see _floor_skips_broad_rm)
+                    if not quoted:
+                        shell += _nr_expansions(body)
                 if frames and kind != "shell":
                     # Inside $(...) the body may be printed and run by whatever
                     # runs the output (sh -c "$(cat <<'EOF' ...)"): kept, encoded
@@ -2016,7 +2053,7 @@ def _nr_rel_problem(rel: str) -> str | None:
     if rel == ".." or rel.startswith("../"):
         return "a path outside the working folder"
     parts = rel.split("/")
-    if parts[0].casefold() in _NR_HOME_NAMES:
+    if parts[0].casefold() in _NR_HOME_NAMES or parts[0].casefold() in _NR_HOME_MAIN_EXTRA:
         if len(parts) == 1:
             return "one of your main folders"
         if len(parts) == 2:
@@ -2045,8 +2082,10 @@ def _nr_rm(args: list[str], ctx: _NrContext, admin: bool, unknown_name: bool = F
     what = "recursively deletes" if recursive else "deletes"
     for op in _nr_expand_braces(operands):
         kind, path = _nr_target(op, ctx.cwd)
-        if (hit := _nr_protected_hit(_nr_full(kind, path))):
-            return f"deletes {hit} ({op})"
+        full = _nr_full(kind, path)
+        for name in _nr_aliases(full) if full else [None]:
+            if (hit := _nr_protected_hit(name)):
+                return f"deletes {hit} ({op})"
         if not recursive:
             continue
         w = re.sub(r"^\$(?:HOME|\{HOME\})(?=/|$)", "~", op)
@@ -2060,6 +2099,8 @@ def _nr_rm(args: list[str], ctx: _NrContext, admin: bool, unknown_name: bool = F
             continue
         if (problem := _nr_rel_delete(w, ctx.cwd)):
             return f"{what} {problem}"
+    if recursive and not unknown_name:
+        ctx.stats.rm += 1           # judged and accepted (see _floor_skips_broad_rm)
     return None
 
 
@@ -2122,9 +2163,9 @@ def _nr_rel_delete(word: str, cwd) -> str | None:
         folder = head.rstrip("/") or "."
         bare = not re.sub(r"\[[^\]]*\]|[*?.]", "", pattern)
         homeish = bare or any(fnmatch.fnmatchcase(name, pattern.casefold()[:200])
-                              for name in _NR_HOME_NAMES)
+                              for name in _NR_HOME_NAMES | _NR_HOME_MAIN_EXTRA)
     else:
-        folder, bare, homeish = word, False, False
+        folder, bare, homeish, pattern = word, False, False, None
     parts = [p for p in folder.split("/") if p not in ("", ".")]
     up = ".." in parts
     if cwd is None:
@@ -2146,12 +2187,14 @@ def _nr_rel_delete(word: str, cwd) -> str | None:
         # a bare `*`, `.*` or `./*`, or a pattern that can match a main folder
         # (`D*`), is refused.
         if wild and target == ".":
-            return f"everything in your home folder ({_nr_show(cwd, word)})" if homeish else None
-        if (problem := _nr_rel_problem(target)):
+            if homeish:
+                return f"everything in your home folder ({_nr_show(cwd, word)})"
+        elif (problem := _nr_rel_problem(target)):
             if target == ".":
                 problem = "your whole home folder"
             return f"{'everything in ' if wild else ''}{problem} ({shown})"
-        return None
+        full = _nr_home() if target == "." else f"{_nr_home()}/{target}"
+        return _nr_folder_rules(full, pattern, shown)
     base = cwd[1]
     if _nr_system_like(base):
         return f"{'everything in ' if wild else ''}{shown}, inside {base}, one of the Mac's top or system folders"
@@ -2165,6 +2208,39 @@ def _nr_rel_delete(word: str, cwd) -> str | None:
         return problem
     if _nr_system_like(shown):
         return f"{shown}, one of the Mac's top or system folders"
+    return _nr_folder_rules(shown, pattern, shown)
+
+
+def _nr_folder_rules(full: str, pattern: str | None, shown: str) -> str | None:
+    """The per-folder rules for a recursive delete of the absolute path
+    `full` (with `pattern`, a wildcard name inside it), or None for a card.
+    Both spellings, `rm -rf <path>` and `cd <parent> && rm -rf <name>`, end
+    here, so they agree."""
+    comps = [c.casefold() for c in full.split("/") if c]
+    names = comps + ([pattern.casefold()] if pattern else [])
+    home = [c.casefold() for c in _nr_home().split("/") if c]
+    for k, c in enumerate(names):
+        literal = k < len(comps)
+        if any((c.endswith(b) if literal else b in c) for b in _NR_LIBRARY_BUNDLES):
+            return f"{shown}, a photo, music, video or disk-image library"
+        if (c.endswith(".app") if literal else ".app" in c) and (
+                names[:1] in (["applications"], ["system"])
+                or names[:len(home) + 1] == home + ["applications"]):
+            return f"{shown}, an application"
+    if names[:1] == ["users"] and len(names) > 1 and names[1] != "shared" and (
+            len(home) < 2 or home[0] != "users" or names[1] != home[1]):
+        return f"{shown}, inside another user's home folder"
+    if names[:1] == ["library"]:
+        return f"{shown}, inside the Mac's Library folder"
+    if names[:1] == ["applications"] and len(names) <= 2:
+        return f"{shown}, the Applications folder or an app in it"
+    if names[:2] in (["usr", "local"], ["opt", "homebrew"]) and len(names) <= 3:
+        return f"{shown}, a folder of installed tools or one directly inside it"
+    if names[:len(home) + 1] == home + ["library"]:
+        rest = names[len(home) + 1:]
+        if not ((rest[:1] in (["caches"], ["logs"]) and len(rest) >= 2)
+                or (rest[:1] == ["developer"] and len(rest) >= 3)):
+            return f"{shown}, inside your Library folder (only Caches, Logs and Developer builds get a card)"
     return None
 
 
@@ -2199,9 +2275,23 @@ def _nr_abs_delete(word: str) -> str | None:
     wild = re.search(r"[*?\[]", full)
     if wild:
         cut = full.rfind("/", 0, wild.start())
-        parent, name = os.path.normpath(full[:cut + 1] or "/"), full[cut + 1:]
+        full = os.path.normpath(full[:cut + 1] or "/").rstrip("/") + "/" + full[cut + 1:]
     else:
         full = os.path.normpath(full)
+    # Another name for the same folder (/tmp is /private/tmp, a /Volumes entry
+    # that links to /) is judged too; either refusing refuses.
+    for name in _nr_aliases(full):
+        if (problem := _nr_abs_delete_one(word, name)):
+            return problem
+    return None
+
+
+def _nr_abs_delete_one(word: str, full: str) -> str | None:
+    wild = re.search(r"[*?\[]", full)
+    if wild:
+        cut = full.rfind("/", 0, wild.start())
+        parent, name = os.path.normpath(full[:cut + 1] or "/"), full[cut + 1:]
+    else:
         parent, name = os.path.dirname(full), os.path.basename(full) or "."
     parent = parent.replace("//", "/") or "/"
     if not wild and _nr_place(full)[0] == "rel" and _nr_place(full)[1] == ".":
@@ -2209,6 +2299,39 @@ def _nr_abs_delete(word: str) -> str | None:
     if not wild and full.rstrip("/") in ("", "/"):
         return "the whole disk (/)"
     return _nr_rel_delete(name, _nr_place(parent))
+
+
+def _nr_volume_link(name: str) -> str | None:
+    """Where /Volumes/<name> links to, or None. Only the directory entry is
+    read (never the volume itself). A module hook so tests can replace it."""
+    try:
+        return os.readlink(f"/Volumes/{name}")
+    except (OSError, ValueError):
+        return None
+
+
+def _nr_aliases(path: str) -> list[str]:
+    """`path` and the other names macOS gives the same folder, with no look at
+    the disk beyond _nr_volume_link: /Volumes/<name> linking to / is /, and
+    /var, /etc and /tmp are /private/var, /private/etc and /private/tmp. The
+    last entry is the most resolved spelling."""
+    out = [path]
+    for _ in range(4):
+        m = re.match(r"/volumes/([^/]+)(?:/(.*))?$", path, re.IGNORECASE | re.DOTALL)
+        if not m or "*" in m.group(1) or "?" in m.group(1):
+            break
+        target = _nr_volume_link(m.group(1))
+        if not target or target.strip("/"):
+            break
+        path = "/" + (m.group(2) or "")
+        path = path.rstrip("/") or "/"
+        out.append(path)
+    low = path.casefold()
+    for short in ("/var", "/etc", "/tmp"):
+        if low == short or low.startswith(short + "/"):
+            out.append("/private" + path)
+            break
+    return list(dict.fromkeys(out))
 
 
 def _nr_mode_narrows(mode: str) -> bool:
@@ -2382,6 +2505,46 @@ def _nr_judge_words(words: list[str], ctx: _NrContext) -> str | None:
         return _nr_judge_text(via_shell, ctx.child())
     if not words:
         return None
+    if (hit := _nr_judge_command(words, ctx, admin)):
+        return hit
+    if (inner := _nr_wrapped_rm(words)):
+        return _nr_judge_words((["sudo"] if admin else []) + inner, ctx.child())
+    return None
+
+
+# Commands whose words are text, not a command they run: a commit message or
+# a search pattern that names a dangerous command is not that command.
+_NR_INERT = frozenset({"echo", "printf", "grep", "egrep", "fgrep", "rg", "ag", "cat", "less",
+                       "man", "say"})
+_NR_INERT_GIT = frozenset({"commit", "log", "grep", "tag"})
+# Names _nr_judge_command reads by their own rules.
+_NR_OWN_RULES = frozenset({"rm", "unlink", "srm", "find", "cd", "pushd", "popd", "eval", "source",
+                           ".", "trap"}) | _NR_INTERPRETERS
+
+
+def _nr_wrapped_rm(words: list[str]) -> list[str] | None:
+    """`launcher ... rm -r PATH` behind a first word the check does not
+    know (xcrun, ssh host, docker run img, launchctl asuser 501 ...): the rm
+    and what follows it, judged as the command it runs. None for text
+    commands (echo, grep, git commit ...) and when no recursive rm follows."""
+    name = _nr_prog(words[0])
+    if (name in _NR_INERT or name in _NR_OWN_RULES or re.fullmatch(r"python[\d.]*", name)
+            or (name == "git" and any(w.lower() in _NR_INERT_GIT for w in words[1:2]))):
+        return None
+    for k in range(1, len(words)):
+        if _nr_prog(words[k]) == "rm" and any(_nr_recursive_flag(a) for a in words[k + 1:]):
+            return words[k:]
+    return None
+
+
+def _nr_recursive_flag(arg: str) -> bool:
+    if arg.startswith("--") and len(arg) > 2:
+        return "recursive".startswith(arg[2:].split("=", 1)[0].lower())
+    return arg.startswith("-") and len(arg) > 1 and "r" in arg[1:].lower()
+
+
+def _nr_judge_command(words: list[str], ctx: _NrContext, admin: bool) -> str | None:
+    """Why one unwrapped simple command is never run, or None."""
     first, args = words[0], words[1:]
     name = _nr_prog(first)
     low = [a.lower() for a in args]
@@ -2398,9 +2561,15 @@ def _nr_judge_words(words: list[str], ctx: _NrContext) -> str | None:
             ctx.cwd = None
             return None
         kind, path = _nr_target(dest, ctx.cwd)
-        ctx.cwd = (_nr_place(path) if kind == "abs"
+        ctx.cwd = (_nr_place(_nr_aliases(path)[-1]) if kind == "abs"
                    else ("rel", path) if kind == "rel" and not (path == ".." or path.startswith("../"))
                    else None)
+        return None
+    if name == "trap":
+        # trap 'CMD' SIGNAL: CMD runs when the signal (or EXIT) comes.
+        rest = args[1:] if args[:1] == ["--"] else args
+        if rest and rest[0] != "-" and not rest[0].startswith("-"):
+            return _nr_judge_text(rest[0], ctx.child())
         return None
     if name in ("rm", "unlink"):
         return _nr_rm(args, ctx, admin)
@@ -2559,6 +2728,19 @@ def _nr_writes_nothing(words: list[str]) -> bool:
             or (name == "printf" and args in ([""], ["%s", ""])))
 
 
+def _nr_printf(args: list[str]) -> str:
+    """Roughly what `printf FORMAT ARGS...` prints: %s and %b take the next
+    argument (the format is reused while arguments remain), \\n is a newline."""
+    fmt, rest = args[0], list(args[1:])
+    out = []
+    for _ in range(64):
+        out.append(re.sub(r"%[sb]", lambda m: rest.pop(0) if rest else "", fmt))
+        if not rest or not re.search(r"%[sb]", fmt):
+            break
+    text = "".join(out)
+    return text.replace("\\n", "\n").replace("\\t", "\t").replace("%%", "%")
+
+
 def _nr_pipeline(stages: list[list[str]], ctx: _NrContext) -> str | None:
     """Downloaded or decoded text piped into a shell or interpreter, and
     `echo "..." | sh`, whose text is judged as the command it is."""
@@ -2575,6 +2757,8 @@ def _nr_pipeline(stages: list[list[str]], ctx: _NrContext) -> str | None:
     if stages[0] and _nr_prog(stages[0][0]) in ("echo", "printf"):
         last, _, _ = _nr_unwrap(list(stages[-1]), _NrContext(ctx.cwd, ctx.depth, ctx.inner))
         if last and _nr_prog(last[0]) in _NR_SHELLS and _nr_reads_stdin(_nr_prog(last[0]), last[1:]):
+            if _nr_prog(stages[0][0]) == "printf" and len(stages[0]) > 1:
+                return _nr_judge_text(_nr_printf(stages[0][1:]), ctx.child())
             return _nr_judge_text(" ".join(stages[0][1:]), ctx.child())
     return None
 
@@ -2660,29 +2844,75 @@ def never_run_hit(text: str) -> str | None:
     SHELL_TEXT_LIMIT characters are still judged here, so a dangerous start
     gets this refusal's wording. A check that runs past _NR_BUDGET seconds of
     CPU time (only pathological text gets near it) refuses the command."""
+    return _nr_analyse(text)[0]
+
+
+def _nr_analyse(text) -> tuple[str | None, "_NrStats"]:
+    """never_run_hit's answer, and what the check saw on the way (_NrStats)."""
+    stats = _NrStats()
     if not isinstance(text, str) or not text.strip():
-        return None
+        return None, stats
     try:
-        return _nr_judge_text(text[:SHELL_TEXT_LIMIT], _NrContext(("rel", ".")))
+        return _nr_judge_text(text[:SHELL_TEXT_LIMIT], _NrContext(("rel", "."), stats=stats)), stats
     except _NrTooSlow:
-        return _TOO_SLOW
+        return _TOO_SLOW, stats
     except RecursionError:
-        return _TOO_DEEP
+        return _TOO_DEEP, stats
     except (ValueError, OSError):          # e.g. a NUL a path lookup rejects: fail closed
-        return _TOO_SLOW
+        return _TOO_SLOW, stats
+
+
+def _never_run_texts(args: dict) -> list[str]:
+    texts = [str(args.get("cmd") or "")]
+    texts += [re.sub(r"\\(.)", r"\1", body)
+              for body in _DO_SHELL_SCRIPT.findall(str(args.get("script") or ""))]
+    return texts
+
+
+def _never_run_check(args: dict) -> tuple[Decision | None, bool]:
+    """(never_run_decision's answer, whether the floor's broad recursive-rm
+    entry may be skipped: see _floor_skips_broad_rm)."""
+    judged, bodies = 0, set()
+    for text in _never_run_texts(args):
+        hit, stats = _nr_analyse(text)
+        if hit:
+            return (Decision(Tier.DENY, f"Wisp won't run this command because it {_card_text(hit, 300)}. "
+                             f"{NEVER_RUN_TAIL}"), False)
+        judged += stats.rm
+        bodies |= stats.bodies
+    return None, _floor_skips_broad_rm(args, judged, bodies)
 
 
 def never_run_decision(args: dict) -> Decision | None:
     """The refusal for a run_shell `cmd`, or an AppleScript `do shell script`
     body, that Wisp never runs (see NEVER_RUN_TAIL)."""
-    texts = [str(args.get("cmd") or "")]
-    texts += [re.sub(r"\\(.)", r"\1", body)
-              for body in _DO_SHELL_SCRIPT.findall(str(args.get("script") or ""))]
-    for text in texts:
-        if (hit := never_run_hit(text)):
-            return Decision(Tier.DENY, f"Wisp won't run this command because it {_card_text(hit, 300)}. "
-                            f"{NEVER_RUN_TAIL}")
-    return None
+    return _never_run_check(args)[0]
+
+
+# An rm (or Homebrew's grm) with a recursive flag among its first options.
+# Every match of the floor's _SHELL_BROAD_RM is also a match of this.
+_RM_RECURSIVE_RAW = re.compile(r"\bg?rm\b(?:[\s'\"\\]+-[\w=-]{0,40}){0,8}?[\s'\"\\]+-(?:-recursive\b|[a-z]*r)",
+                               re.IGNORECASE)
+
+
+def _floor_skips_broad_rm(args: dict, judged: int, bodies: set[str]) -> bool:
+    """Whether the never-run check accounted for every recursive rm the
+    floor's broad entry can see: it parsed and judged (and accepted) as many
+    as the text holds outside plain-text heredoc bodies, in every spelling
+    the floor reads. Anything else (an rm hidden in a quoted string, behind a
+    launcher it does not parse) leaves the floor entry in force."""
+    if judged <= 0:
+        return False
+    for form in shell_forms(args):
+        seen = len(_RM_RECURSIVE_RAW.findall(form))
+        for body in bodies:
+            for spelling in _quote_forms(body):
+                if spelling in form:
+                    seen -= len(_RM_RECURSIVE_RAW.findall(spelling))
+                    break
+        if seen != judged:
+            return False
+    return True
 
 
 # A review run (the corpus runner's normal mode) uses the user's ordinary path
@@ -2996,9 +3226,13 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
                             "use Wisp's tools instead")
     # Very dangerous commands (never_run_decision): refused in every mode, even
     # with the configurable floor switched off, so nothing below can card them.
-    if category == "shell" and (never := never_run_decision(args)) is not None:
-        return never
-    if (_KEEP_FLOOR or not _FULL_ACCESS) and (floor := _hard_deny(category, args, tool)) is not None:
+    skip_broad_rm = False
+    if category == "shell":
+        never, skip_broad_rm = _never_run_check(args)
+        if never is not None:
+            return never
+    if (_KEEP_FLOOR or not _FULL_ACCESS) and (floor := _hard_deny(
+            category, args, tool, skip_broad_rm=skip_broad_rm)) is not None:
         return floor
 
     if tool == "organize_files":
