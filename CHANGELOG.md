@@ -548,6 +548,15 @@ Wisp 0.5.0 adds a first-run setup window with the built-in engine and Gemma 4 E4
 
 ### Fixed
 
+- **rc2 known issues closed.**
+  - **A delete of a path with spaces asks first.** `policy.plain_delete_paths` accepts one quoted or backslash-space path word per path, decoded by its own tokenizer and held to the same folder and real-path checks. The card names the decoded paths, shows in every mode regardless of `destructive_shell` or a saved Always allow, and `run_shell` resolves the paths again before running the decoded words as `/bin/rm` without a shell.
+  - **Text that only mentions a blocked command.** For four whole-command shapes (a `git commit` with `-m` messages or a quoted heredoc on `-F -`, an `echo` of a quoted line or a `cat` quoted heredoc into a relative notes file) the configurable floor no longer reads the quoted text. The never-run check still does.
+  - **Two shapes are now refused, not carded:** a `find` delete whose filter is negated or optional, and a shell whose program text holds an outer command substitution.
+  - **Host-only recipient.** `resolved_to` is honoured only as a `registry.HostBoundArg`, which only `prepare_send_recipient` creates. The own-address guard also judges the address a name resolves to.
+  - **Old deleted chats.** `store.clear_old_text` rebuilds `sessions.db` once in the background (orphan rows, the `memory_turn_fts` index, `VACUUM`, WAL truncate), marked in `session_store_meta`. A busy or damaged file is retried on a later start.
+  - **Public possessive questions.** `model_only.public_possessive_question` lets an anchored "<name>'s hours/menu/return policy" question reach `web_search` on a fresh turn; the query still passes `public_fact_query_problem`. `personal_event_question` offers `get_upcoming` and `search_reminders` for a bare event question on model-led turns.
+  - **Engine guard after wake.** `engine_guard/proof.py` ages its evidence with `CLOCK_UPTIME_RAW` (awake time), the clock its poll loop already used; the manifest pin and `CLOCK_DOMAIN` changed, so a staged engine must be rebuilt. The summary fold calls `require_resident` and never loads or unloads a model.
+  - **Text size and Settings.** `UserHoursView`, `ReportDraftView` and `SearchPanel` use `Font.wisp`. An inert tool-wide `move_path` rule is listed as "No longer used · Wisp asks again for moves".
 #### A fresh install
 - The built-in engine answers its first question. Its memory guard refused every model it had just loaded ("The AI engine's memory guard could not be verified"), because a background check stayed pending for the whole load. A fresh install with no oMLX.app could finish setup and still never answer.
 - Switching models right after a reply (for example, a code question that loads the coding model) is no longer refused by the same memory guard while the new model loads.
