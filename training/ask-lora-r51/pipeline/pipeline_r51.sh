@@ -90,6 +90,9 @@ cat "$D/choose/choose_r5.log" | cut -c1-240
 "$PY" choose_traces.py --partial "$D/sealed/partial.jsonl" --raw "$D/raw/*.jsonl" --out-chosen "$D/choose/traces.chosen.jsonl" --out-stats "$D/choose/traces.stats.json" > "$D/choose/choose_traces.log" 2>&1 || die "choose_traces: see $D/choose/choose_traces.log"
 cat "$D/choose/choose_traces.log" | cut -c1-400
 "$PY" "$HERE/trace_report.py" --partial "$D/sealed/partial.jsonl" --raw "$D/raw/*.jsonl" --out "$D/choose/trace_rejections.jsonl" || die "trace report"
+# safety: choose_r5 doesn't judge whether base's final fits the row's intent; unsafe chosen finals are dropped with a rule
+"$PY" "$HERE/safety_check_r51.py" --meta "$D/sealed/meta.jsonl" --chosen "$D/choose/chosen.jsonl" --drop "$D/choose/drop.ids" \
+    --out "$D/choose/safety_rejections.jsonl" | tee "$D/choose/safety_check.log" || die "safety check"
 
 # (e) finish: splice, drop with a reason per row (drop_manifest.jsonl), validator-flagged base rows dropped too
 cd "$T/ask-lora-r5/mi355x" || exit 1
