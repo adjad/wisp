@@ -399,11 +399,15 @@ struct StandingRule: Identifiable, Equatable {
     /// every action of that tool.
     let scope: String
     let allow: Bool
+    /// The service's own line for a rule it keeps but no longer honours (a
+    /// move rule saved before rc3), shown instead of what the rule covers.
+    var note: String = ""
 
     var id: String { (allow ? "allow|" : "deny|") + tool + "|" + scope }
 
     /// "Always allow · every action", or "… · only ~/Documents" for a limited rule.
     var summary: String {
+        if !note.isEmpty { return note }
         let kind = allow ? "Always allow" : "Always block"
         let covers = scope.isEmpty ? "every action" : "only " + scope
         return kind + " · " + covers
@@ -426,7 +430,8 @@ struct StandingRule: Identifiable, Equatable {
         for (tool, value) in grants {
             guard let entry = value as? [String: Any] else { continue }
             for row in entry["allow"] as? [[String: Any]] ?? [] {
-                rules.append(StandingRule(tool: tool, scope: row["scope"] as? String ?? "", allow: true))
+                rules.append(StandingRule(tool: tool, scope: row["scope"] as? String ?? "", allow: true,
+                                          note: row["summary"] as? String ?? ""))
             }
             for row in entry["deny"] as? [[String: Any]] ?? [] {
                 rules.append(StandingRule(tool: tool, scope: row["scope"] as? String ?? "", allow: false))
