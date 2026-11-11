@@ -65,7 +65,8 @@ _NOTES_SYSTEM = (
     '- "summary": two to four plain sentences on what the meeting covered\n'
     '- "decisions": a list of short sentences, one per decision; [] if none\n'
     '- "action_items": a list of objects {"task": what to do, "owner": who said they '
-    'would do it or "", "due": a date as YYYY-MM-DD only if one was said, else ""}; [] if none\n'
+    'would do it or "", "due": the date it is due as YYYY-MM-DD if a date or day was said '
+    '(work out a day such as "Thursday" from the meeting date given below), else ""}; [] if none\n'
     '- "follow_up": a short, friendly follow-up message to the attendees that recaps the '
     "decisions and action items, as plain text with no subject line\n"
     "Use only what the material says. Do not invent names, dates or decisions.")
@@ -289,8 +290,12 @@ def parse_notes(reply: str) -> dict[str, Any]:
     return notes
 
 
-async def write_notes(text: str, *, client, model: str, deadline: float) -> dict[str, Any]:
-    """Summary, decisions, action items and a follow-up for a transcript."""
+async def write_notes(text: str, *, client, model: str, deadline: float,
+                      held: date | None = None) -> dict[str, Any]:
+    """Summary, decisions, action items and a follow-up for a transcript.
+
+    `held` is the day of the meeting, so "by Thursday" can become a date."""
+    held = held or datetime.now().date()
     pieces = _chunks(text)
     if len(pieces) > 1:
         partial = []
@@ -301,8 +306,13 @@ async def write_notes(text: str, *, client, model: str, deadline: float) -> dict
                                    "meeting notes")
     else:
         material = untrusted.fence(pieces[0], MEETING_TRANSCRIPT)
-    reply = await _ask(client, model, _NOTES_SYSTEM, material, 900, deadline)
-    return parse_notes(reply)
+    system = _NOTES_SYSTEM + f"\nThe meeting was held on {held:%A, %Y-%m-%d}."
+    reply = await _ask(client, model, system, material, 900, deadline)
+    notes = parse_notes(reply)
+    for item in notes["action_items"]:          # a date before the meeting is a misreading, not a deadline
+        if item["due"] and item["due"] < held.isoformat():
+            item["due"] = ""
+    return notes
 
 
 async def finish(meeting_id: str) -> dict[str, Any]:
@@ -323,7 +333,8 @@ async def finish(meeting_id: str) -> dict[str, Any]:
         try:
             client, model = voice._resolve()
             notes = await write_notes(text, client=client, model=model,
-                                      deadline=time.monotonic() + _NOTES_TIMEOUT_S)
+                                      deadline=time.monotonic() + _NOTES_TIMEOUT_S,
+                                      held=datetime.fromtimestamp(meeting["started_at"]).date())
         except voice.VoiceUnavailable as unavailable:
             error = str(unavailable)
         except (TimeoutError, asyncio.TimeoutError):
