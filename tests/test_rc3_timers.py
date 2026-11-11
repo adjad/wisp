@@ -266,8 +266,25 @@ def _asleep_mac(monkeypatch, slept: float):
     return clock, naps
 
 
-def test_an_alarm_rings_on_wake_instead_of_hours_late(fired, monkeypatch):
+def test_an_alarm_slept_through_for_hours_does_not_ring_on_wake(fired, monkeypatch):
+    # Owner decision 2026-11-10: hours late is dropped, as at startup.
     clock, naps = _asleep_mac(monkeypatch, slept=8 * 3600)
+
+    async def go():
+        ta._TIMERS["a1"] = {"kind": "alarm", "label": "Up", "deadline": clock["now"] + 3600,
+                            "created": clock["now"]}
+        ta._arm("a1")
+        assert await _until(lambda: not ta._TIMERS)
+        await asyncio.sleep(0.05)
+    asyncio.run(go())
+    # One short nap, then the wall clock said it was long past time. Not one 3600 s sleep.
+    assert naps == [30.0] and fired == [] and ta._TIMERS == {} and ta._TASKS == {}
+    assert _saved() == {}
+
+
+def test_an_alarm_rings_on_a_short_wake_instead_of_late(fired, monkeypatch):
+    # Asleep 62 minutes across a deadline 1 hour out: 2 minutes late, inside the grace.
+    clock, naps = _asleep_mac(monkeypatch, slept=3600 + 120)
 
     async def go():
         ta._TIMERS["a1"] = {"kind": "alarm", "label": "Up", "deadline": clock["now"] + 3600,
@@ -275,7 +292,6 @@ def test_an_alarm_rings_on_wake_instead_of_hours_late(fired, monkeypatch):
         ta._arm("a1")
         assert await _until(lambda: fired)
     asyncio.run(go())
-    # One short nap, then the wall clock said it was past time. Not one 3600 s sleep.
     assert naps == [30.0] and fired == [("Up", "Alarm")] and ta._TIMERS == {}
 
 

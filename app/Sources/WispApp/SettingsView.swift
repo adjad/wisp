@@ -2337,10 +2337,10 @@ struct SettingsView: View {
                                 Text("Human-sounding replies")
                                     .font(.system(size: 14, weight: .medium))
                                 Text(loader.humanizerEnabled
-                                     ? "Plain conversational replies avoid stock AI phrasing "
-                                       + "(forced lists, chatbot sign-offs, filler). Code and "
-                                       + "tool-using replies are never affected."
-                                     : "Off. Replies use the model's default phrasing.")
+                                     ? "Emails, texts and replies Wisp writes for you to send "
+                                       + "sound like a person, not a chatbot. Wisp's own "
+                                       + "answers are not affected."
+                                     : "Off. Messages Wisp writes for you use the model's default phrasing.")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }

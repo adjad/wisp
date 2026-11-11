@@ -211,7 +211,13 @@ async def draft(item: dict, method: str, reply_fn, abort, *, allowed: set[str]) 
     material = (f"Reply to: {guard.clean(item.get('who'), 60)}\n<<<ITEM\n{raw.get('text', '')}\nITEM>>>\n"
                 f"What to answer: {guard.clean(item.get('title'), 120)}")
     try:
-        reply = await reply_fn((identity + "\n\n" + DRAFT_RULES).strip(), material, abort, DRAFT_TOKENS)
+        # Settings › Human-sounding replies: a reply draft is text the user sends.
+        from service.skills import compose_style_block
+        style = compose_style_block()
+    except Exception:  # noqa: BLE001 — the rules alone still draft
+        style = ""
+    try:
+        reply = await reply_fn((identity + "\n\n" + DRAFT_RULES + style).strip(), material, abort, DRAFT_TOKENS)
     except Exception:  # noqa: BLE001 — the template stands in
         reply = ""
     if reply is None:
