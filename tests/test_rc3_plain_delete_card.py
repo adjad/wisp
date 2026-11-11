@@ -68,6 +68,8 @@ REFUSED = [
     "rm -rf /Volumes/Ext/Backups.backupdb/mac/2026",
     "rm -rf /Volumes/Ext/x/.timemachine/y",
     "rm -rf /opt/homebrew/Cellar",
+    "rm -rf /Volumes/Recovery/a/b",
+    "rm -rf /Volumes/Preboot/a/b",
     "rm -rf /Volumes",
     "rm -rf /Users/someone-else/Projects/app/build",
     "rm -rf /Users/Shared",
@@ -228,6 +230,27 @@ def test_the_card_is_only_for_a_run_shell_command(monkeypatch, home):
             decision = _decide(monkeypatch, args, full_access=full_access,
                                keep_floor=keep_floor, granted=granted)
             assert decision.tier is Tier.DENY, (args, full_access, keep_floor, granted)
+
+
+def test_a_delete_that_is_not_recursive_is_left_as_it_was(monkeypatch, home):
+    assert policy.plain_delete_paths({"cmd": "rm -f /tmp/one.log"}) is None
+    assert policy.plain_delete_paths({"cmd": "rm -f -f /tmp/one.log"}) is None
+    assert _decide(monkeypatch, {"cmd": "rm -f /tmp/one.log"}).tier is Tier.CONFIRM
+
+
+def test_home_is_known_by_its_real_path_too(monkeypatch, tmp_path):
+    real = tmp_path / "disk" / "me"
+    (real / "Documents").mkdir(parents=True)
+    os.symlink(real, tmp_path / "me")
+    monkeypatch.setenv("HOME", str(tmp_path / "me"))
+    for cmd in (f"rm -rf {real}", f"rm -rf {real}/Documents", f"rm -rf {real}/Documents/old",
+                f"rm -rf {tmp_path}/me", "rm -rf ~/Documents/old"):
+        assert policy.plain_delete_paths({"cmd": cmd}) is None, cmd
+        for full_access, keep_floor, granted in MODES:
+            decision = _decide(monkeypatch, {"cmd": cmd}, full_access=full_access,
+                               keep_floor=keep_floor, granted=granted)
+            assert decision.tier is Tier.DENY, (cmd, full_access, keep_floor, granted)
+    assert _decide(monkeypatch, {"cmd": f"rm -rf {real}/Projects/app/build"}).tier is Tier.CONFIRM
 
 
 def test_view_only_mode_still_refuses_it(monkeypatch, home):

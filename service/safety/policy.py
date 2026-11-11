@@ -2617,7 +2617,7 @@ def _nr_judge_text(text: str, ctx: _NrContext) -> str | None:
 # Three attempts to exempt such a delete from inside the parser were beaten by
 # pairing a harmless visible rm with a hidden one (a variable, an alias, a
 # quoted string, a launcher). So nothing is exempted from inside: the WHOLE
-# command has to be `rm`, its -r/-R/-f flags, and paths written with plain
+# command has to be `rm`, its -r/-R/-f flags (one of them recursive), and paths written with plain
 # characters only, single spaces between them and nothing else. No quote,
 # variable, wildcard, chain, redirect, wrapper, newline or `--`; that text has
 # one reading in any shell. Anything else keeps the refusal it had.
@@ -2626,13 +2626,16 @@ def _nr_judge_text(text: str, ctx: _NrContext) -> str | None:
 # must sit under home below the main folders (the rule a relative delete has),
 # or under one of _PLAIN_ORDINARY, or two folders down on another disk. The call still gets the destructive-delete
 # card in every mode; no grant covers it.
-_PLAIN_DELETE = re.compile(r"rm(?: -[rRf]{1,3})+((?: ~?(?:/[A-Za-z0-9._+@-]+)+/?)+)")
+_PLAIN_DELETE = re.compile(r"rm((?: -[rRf]{1,3})+)((?: ~?(?:/[A-Za-z0-9._+@-]+)+/?)+)")
 # (folder, how many names below it a deleted path needs at least)
 _PLAIN_ORDINARY = (("/tmp", 1), ("/private/tmp", 1), ("/var/folders", 4),
                    ("/private/var/folders", 4), ("/users/shared", 1),
                    ("/usr/local", 2), ("/opt", 3))
 # Never carded wherever they sit: Time Machine's backups.
 _PLAIN_NEVER_NAMES = frozenset({"backups.backupdb", ".timemachine", ".mobilebackups"})
+# macOS's own helper volumes, when they are mounted under /Volumes.
+_PLAIN_SYSTEM_DISKS = frozenset({"recovery", "preboot", "vm", "update", "xarts", "hardware",
+                                 "isccache"})
 _PLAIN_MAX_PATHS = 16
 
 
@@ -2643,11 +2646,12 @@ def _plain_delete_problem(full: str) -> bool:
         return True
     if _PLAIN_NEVER_NAMES & set(low.split("/")):
         return True
-    home = _nr_home().casefold()
-    if low == home:
-        return True
-    if low.startswith(home + "/"):
-        return _nr_rel_problem(low[len(home) + 1:]) is not None
+    # Home under the name it is given and the name the disk has for it.
+    for home in dict.fromkeys((_nr_home().casefold(), os.path.realpath(_nr_home()).casefold())):
+        if low == home:
+            return True
+        if low.startswith(home + "/"):
+            return _nr_rel_problem(low[len(home) + 1:]) is not None
     for root, depth in _PLAIN_ORDINARY:
         if low.startswith(root + "/"):
             return len(low[len(root) + 1:].split("/")) < depth
@@ -2655,8 +2659,8 @@ def _plain_delete_problem(full: str) -> bool:
         # Another disk is read as a disk of its own: nothing at its top level,
         # none of the folders a Mac's own disk has, and a /Users/<name> on it
         # by the rule home has (it can be a second mount of this Mac's data).
-        inner = low[len("/volumes/"):].split("/")[1:]
-        if len(inner) < 2 or _nr_system_like("/" + "/".join(inner)):
+        disk, *inner = low[len("/volumes/"):].split("/")
+        if disk in _PLAIN_SYSTEM_DISKS or len(inner) < 2 or _nr_system_like("/" + "/".join(inner)):
             return True
         if inner[0] == "users":
             return len(inner) < 3 or _nr_rel_problem("/".join(inner[2:])) is not None
@@ -2673,9 +2677,9 @@ def plain_delete_paths(args: dict) -> list[str] | None:
     if not isinstance(cmd, str) or len(cmd) > 4000:
         return None
     m = _PLAIN_DELETE.fullmatch(cmd.strip(" "))
-    if m is None:
-        return None
-    operands = m.group(1).split(" ")[1:]
+    if m is None or "r" not in m.group(1).lower():
+        return None             # a delete that is not recursive never needed this
+    operands = m.group(2).split(" ")[1:]
     if len(operands) > _PLAIN_MAX_PATHS:
         return None
     paths = []
