@@ -259,7 +259,9 @@ def test_an_explicit_possessive_search_never_opens_fetch_or_request(synthetic, t
 @pytest.mark.parametrize("prompt,query", [
     ("search the web for my mom's address", "mom's address"),
     ("search the web for my landlord's reviews", "landlord's reviews"),
-    ("What are Costco's hours?", "Costco's hours"),
+    # "What are Costco's hours?" now searches its own words:
+    # tests/test_rc2_ask_web_possessive.py. A relation's hours still do not.
+    ("What are Mom's hours?", "Mom's hours"),
     ("search the web for Dana's review of me", "Dana's review"),
 ])
 def test_private_or_implicit_possessive_requests_stay_blocked_with_private_history(synthetic, prompt, query):

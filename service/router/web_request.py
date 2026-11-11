@@ -1176,6 +1176,14 @@ def _parse_request(text: str, last_user: str | None = None, *,
                     query = f"{topic}{news}" + ("" if topic_scopes else f" {previous.time_scope or 'latest'}")
             else:
                 clarification = "Which public topic should I look up?"
+    if provenance == Provenance.UNKNOWN and not (explicit or fragment or inherited or opted_out):
+        from service.model_only import public_possessive_question
+        if public_possessive_question(text):
+            # "What are Costco's hours?" names a public business fact, not a
+            # person's store (model_only.public_possessive_question). It is
+            # external but never ``allowed``: no query is bound, so a private
+            # turn may search only the user's own words (public_fact_query_problem).
+            provenance, query = Provenance.EXTERNAL, None
     if provenance == Provenance.UNKNOWN:
         if (explicit or current or fragment or last_user) and not opted_out:
             clarification = "Which public topic should I look up? Is this source public or private/local?"
