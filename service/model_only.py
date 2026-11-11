@@ -1287,14 +1287,71 @@ def _possessive_owner_is_personal(text: str) -> bool:
     return bool(m and any(w.lower() in _RELATION_OWNERS for w in m.group("owner").split()))
 
 
+# An owner that is a phone number or a street address is the user's detail,
+# never a business ("<10 digits>'s hours", "123 Main St's hours"). A brand
+# with a short number keeps working ("7-Eleven", "24 Hour Fitness").
+_STREET_TYPES = frozenset("st street ave avenue rd road blvd dr drive ln lane way ct court "
+                          "pl place hwy highway".split())
+_PHONE_GROUP = re.compile(r"\d+(?:-\d+)+")
+
+
+def _possessive_owner_is_contact_detail(owner: str) -> bool:
+    words = owner.lower().split()
+    if re.search(r"\d{4,}", owner) or any(_PHONE_GROUP.search(w) for w in words):
+        return True
+    return bool(len(words) >= 2 and words[-1] in _STREET_TYPES
+                and any(re.fullmatch(r"\d+[a-z]?", w) for w in words[:-1]))
+
+
+# Titles before a name ("Dr Patel"), dropped before the known-people check.
+_OWNER_TITLES = frozenset("the dr mr mrs ms mx miss prof".split())
+
+
+def _known_people_tokens() -> set[str] | None:
+    """Lower-cased words of the names Wisp already holds locally: the know-you
+    profile's people and the contacts already cached in memory. No model, no
+    embedder, no Contacts or AppleScript read: the contacts module is used
+    only if this process has already loaded it. None when no people data
+    exists at all. Raises on a failed read (the caller fails closed)."""
+    import sys
+    from service.memory import profile as _profile
+    names = [str(p.get("name") or "") for p in (_profile.load().get("people") or [])
+             if isinstance(p, dict)]
+    contacts = sys.modules.get("service.tools.imessage_tools")
+    if contacts is not None:
+        names.extend(contacts.contact_names())
+    tokens = {w for name in names for w in re.findall(r"[a-z0-9&-]{2,}", _ascii_text(name).lower())}
+    return tokens or None
+
+
+def _possessive_owner_is_known_person(owner: str) -> bool:
+    """Every word of the owner (titles aside) is a word of a name Wisp knows:
+    "Dana" or "Dr Patel" when Dana or a Patel is in the profile or contacts.
+    A failed lookup counts as known; no people data at all counts as unknown,
+    which leaves the words-only search rule as the only check."""
+    words = [w for w in owner.lower().split() if w not in _OWNER_TITLES]
+    if not words:
+        return True
+    try:
+        tokens = _known_people_tokens()
+    except Exception:  # noqa: BLE001 — an unreadable profile or cache fails closed
+        return True
+    return bool(tokens) and all(w in tokens for w in words)
+
+
 def public_possessive_question(prompt: str) -> bool:
     """The whole request is a public business fact owned by a name ("What are
     Costco's hours?", "Trader Joe's holiday hours on Christmas"): the same
-    ASCII, length and first-person rules as public_fact_question."""
+    ASCII, length and first-person rules as public_fact_question. The owner is
+    never a relation, a pronoun, a phone number, a street address or a person
+    Wisp knows locally."""
     text = _ascii_text(prompt).strip()
-    return bool(text.isascii() and len(text.split()) <= _FACT_MAX_WORDS
-                and _PUBLIC_POSSESSIVE.match(text) and not _FIRST_PERSON.search(text)
-                and not _possessive_owner_is_personal(text))
+    if not (text.isascii() and len(text.split()) <= _FACT_MAX_WORDS
+            and (m := _PUBLIC_POSSESSIVE.match(text)) and not _FIRST_PERSON.search(text)
+            and not _possessive_owner_is_personal(text)):
+        return False
+    owner = m.group("owner")
+    return not (_possessive_owner_is_contact_detail(owner) or _possessive_owner_is_known_person(owner))
 
 
 # Words a search for a public fact may add to the user's own: the query of a

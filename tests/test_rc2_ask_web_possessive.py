@@ -6,7 +6,8 @@ be. A name owning a business's public hours, menu or return policy is now a
 public fact: it may search, but only under the existing words-only rule
 (model_only.public_fact_query_problem). Relations, pronouns, first person,
 other heads, compounds, lookalike characters and long input keep the old block;
-web_fetch and http_request are unchanged.
+web_fetch and http_request are unchanged: the request stays private for
+egress (tests/test_rc2_ask_web_possessive_egress.py).
 """
 from __future__ import annotations
 
@@ -49,10 +50,11 @@ def test_personal_compound_or_lookalike_possessives_are_not(prompt):
 
 
 @pytest.mark.parametrize("prompt", PUBLIC)
-def test_first_message_classifies_external_but_never_allowed(prompt):
+def test_first_message_stays_private_and_is_never_allowed(prompt):
     from service.router.web_request import Provenance, classify
     request = classify(prompt)
-    assert request.provenance == Provenance.EXTERNAL and not request.private
+    # Private for every egress rule; the flag reopens only a words-only search.
+    assert request.provenance == Provenance.PRIVATE and request.private and request.public_possessive
     # No query is bound: the loop's words-only rule decides every search.
     assert request.query is None and not request.allowed and not request.explicit_unknown_owner
 
@@ -67,6 +69,10 @@ def test_routing_offers_web_search_on_the_first_message():
     from service.router.router import routing_guard_contract
     forbidden, bindings = routing_guard_contract("What are Costco's hours?", model_led=True)
     assert "web_search" not in forbidden and not bindings
+    assert {"web_fetch", "http_request"} <= forbidden
+    # The rules route has no words-only guard: no web there, as before.
+    forbidden, _ = routing_guard_contract("What are Costco's hours?")
+    assert {"web_search", "web_fetch", "http_request"} <= forbidden
     forbidden, _ = routing_guard_contract("What are Mom's hours?", model_led=True)
     assert {"web_search", "web_fetch"} <= forbidden
 
