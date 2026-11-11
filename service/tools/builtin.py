@@ -177,8 +177,9 @@ def run_shell(cmd: str) -> str:
         decision = decide("shell", {"cmd": cmd}, tool="run_shell")
         if decision.tier is Tier.DENY:
             return f"(error: blocked by safety policy: {decision.reason})"
-        if decision.delete_targets is not None:
-            return _run_plain_delete(cmd, decision.delete_targets)
+        targets = getattr(decision, "delete_targets", None)
+        if targets is not None:
+            return _run_plain_delete(cmd, targets)
         if decision.shell_argv is not None:
             p = subprocess.run(
                 decision.shell_argv, shell=False, capture_output=True, text=True,
