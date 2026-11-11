@@ -322,6 +322,7 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_rc3_notch_contract.py",
     "tests/test_rc3_page_reader.py",
     "tests/test_rc3_parent_watch.py",
+    "tests/test_rc3_plain_delete_card.py",
     "tests/test_rc3_research_elapsed.py",
     "tests/test_rc3_settings.py",
     "tests/test_rc3_setup_window.py",

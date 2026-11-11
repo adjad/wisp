@@ -171,10 +171,13 @@ def read_only_shell_argv(cmd: str) -> tuple[str, ...] | None:
     return tuple(validated)
 
 
+# The broad recursive-delete entry. plain_delete_paths() names the one command
+# shape it is skipped for.
+_SHELL_BROAD_RM = r"\brm\s+-rf?\s+/"
 # shell commands that are never allowed
 _SHELL_DENY = [
     r"\brm\s+(-[a-zA-Z]*\s+)*(-rf|-fr|-r\s+-f|-f\s+-r)\b.*\s+(/|~|\$HOME)\s*$",
-    r"\brm\s+-rf?\s+/",
+    _SHELL_BROAD_RM,
     r"\bsudo\b", r"\bsu\b\s", r"\bdoas\b",
     r"\bmkfs\b", r"\bdd\b\s+if=", r"\bfdisk\b", r"\bdiskutil\s+(erase|reformat)",
     r"curl[^|]*\|\s*(sudo\s+)?(sh|bash|zsh)", r"wget[^|]*\|\s*(sh|bash|zsh)",
@@ -1309,8 +1312,11 @@ def _hard_deny(category: str, args: dict, tool: str | None = None) -> Decision |
     """
     if category == "shell":
         # run_applescript's `do shell script` bodies and quote-stripped text too.
+        rules = _rules("shell_deny", _SHELL_DENY)
+        if plain_delete_paths(args) is not None:
+            rules = [rule for rule in rules if rule != _SHELL_BROAD_RM]
         for cmd in shell_forms(args):
-            if (hit := _any(_rules("shell_deny", _SHELL_DENY), cmd)):
+            if (hit := _any(rules, cmd)):
                 return Decision(Tier.DENY, "Wisp won't run this command (it matches a blocked "
                                 f"pattern: {hit}). {NEVER_RUN_TAIL}")
     if tool in ALWAYS_CONFIRM_FILE_TOOLS and (problem := _save_folder_problem(args.get("folder"))):
@@ -2562,8 +2568,11 @@ def _nr_judge_text(text: str, ctx: _NrContext) -> str | None:
         if (hit := _nr_judge_text(body, ctx.child())):
             return hit
     segments = _nr_segments(outer)
-    if segments is None:          # unbalanced quotes: judge it with the quotes dropped
-        segments = _nr_segments(re.sub(r"[\"']", "", outer)) or []
+    if segments is None:
+        # Unbalanced quotes: judge it with the quotes dropped. A lone backslash
+        # at the end still fails to parse, so then the backslashes go too.
+        segments = (_nr_segments(re.sub(r"[\"']", "", outer))
+                    or _nr_segments(re.sub(r"[\"'\\]", "", outer)) or [])
     pipeline: list[list[str]] = []
     for seg in segments:
         for target, append in seg["out"]:
@@ -2601,6 +2610,89 @@ def _nr_judge_text(text: str, ctx: _NrContext) -> str | None:
     return None
 
 
+# --- one plain delete of an absolute path --------------------------------------
+# Owner decision (2026-11-10, after the never-run check): a recursive delete of
+# an absolute path inside an ordinary folder gets a card instead of a refusal.
+#
+# Three attempts to exempt such a delete from inside the parser were beaten by
+# pairing a harmless visible rm with a hidden one (a variable, an alias, a
+# quoted string, a launcher). So nothing is exempted from inside: the WHOLE
+# command has to be `rm`, its -r/-R/-f flags, and paths written with plain
+# characters only, single spaces between them and nothing else. No quote,
+# variable, wildcard, chain, redirect, wrapper, newline or `--`; that text has
+# one reading in any shell. Anything else keeps the refusal it had.
+#
+# Each path, and what it resolves to on disk (a link is judged as its target),
+# must sit under home below the main folders (the rule a relative delete has),
+# or under one of _PLAIN_ORDINARY, or two folders down on another disk. The call still gets the destructive-delete
+# card in every mode; no grant covers it.
+_PLAIN_DELETE = re.compile(r"rm(?: -[rRf]{1,3})+((?: ~?(?:/[A-Za-z0-9._+@-]+)+/?)+)")
+# (folder, how many names below it a deleted path needs at least)
+_PLAIN_ORDINARY = (("/tmp", 1), ("/private/tmp", 1), ("/var/folders", 4),
+                   ("/private/var/folders", 4), ("/users/shared", 1),
+                   ("/usr/local", 2), ("/opt", 3))
+# Never carded wherever they sit: Time Machine's backups.
+_PLAIN_NEVER_NAMES = frozenset({"backups.backupdb", ".timemachine", ".mobilebackups"})
+_PLAIN_MAX_PATHS = 16
+
+
+def _plain_delete_problem(full: str) -> bool:
+    """True when an absolute path is not one a plain delete may be carded for."""
+    low = full.rstrip("/").casefold()
+    if not low.startswith("/") or _nr_protected_hit(full) or _nr_system_like(full):
+        return True
+    if _PLAIN_NEVER_NAMES & set(low.split("/")):
+        return True
+    home = _nr_home().casefold()
+    if low == home:
+        return True
+    if low.startswith(home + "/"):
+        return _nr_rel_problem(low[len(home) + 1:]) is not None
+    for root, depth in _PLAIN_ORDINARY:
+        if low.startswith(root + "/"):
+            return len(low[len(root) + 1:].split("/")) < depth
+    if low.startswith("/volumes/"):
+        # Another disk is read as a disk of its own: nothing at its top level,
+        # none of the folders a Mac's own disk has, and a /Users/<name> on it
+        # by the rule home has (it can be a second mount of this Mac's data).
+        inner = low[len("/volumes/"):].split("/")[1:]
+        if len(inner) < 2 or _nr_system_like("/" + "/".join(inner)):
+            return True
+        if inner[0] == "users":
+            return len(inner) < 3 or _nr_rel_problem("/".join(inner[2:])) is not None
+        return False
+    return True
+
+
+def plain_delete_paths(args: dict) -> list[str] | None:
+    """The paths a run_shell call deletes when the call is nothing but one
+    plain `rm` of absolute paths in ordinary folders (see above), else None."""
+    if not isinstance(args, dict) or args.get("script"):
+        return None
+    cmd = args.get("cmd")
+    if not isinstance(cmd, str) or len(cmd) > 4000:
+        return None
+    m = _PLAIN_DELETE.fullmatch(cmd.strip(" "))
+    if m is None:
+        return None
+    operands = m.group(1).split(" ")[1:]
+    if len(operands) > _PLAIN_MAX_PATHS:
+        return None
+    paths = []
+    for op in operands:
+        if any(part in (".", "..") for part in op.split("/")):
+            return None
+        full = ((_nr_home() + op[1:]) if op.startswith("~") else op).rstrip("/")
+        try:
+            real = os.path.realpath(full)
+        except (OSError, ValueError, RuntimeError):
+            return None
+        if _plain_delete_problem(full) or _plain_delete_problem(real):
+            return None
+        paths.append(full)
+    return paths
+
+
 def never_run_hit(text: str) -> str | None:
     """Why Wisp refuses to run this shell text in any mode, or None.
 
@@ -2623,6 +2715,8 @@ def never_run_hit(text: str) -> str | None:
 def never_run_decision(args: dict) -> Decision | None:
     """The refusal for a run_shell `cmd`, or an AppleScript `do shell script`
     body, that Wisp never runs (see NEVER_RUN_TAIL)."""
+    if plain_delete_paths(args) is not None:
+        return None
     texts = [str(args.get("cmd") or "")]
     texts += [re.sub(r"\\(.)", r"\1", body)
               for body in _DO_SHELL_SCRIPT.findall(str(args.get("script") or ""))]

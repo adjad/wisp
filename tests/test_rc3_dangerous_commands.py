@@ -140,6 +140,9 @@ REFUSED = [
     "rm -rf ~\x00",
     "find . -type f -delete",
     "find . -mindepth 1 -delete",
+    # A lone backslash at the end does not stop the command being read.
+    "rm -rf ~/Documents\\",
+    "rm -rf ~\\",
 ]
 
 # (command, tier by default, tier under full access), captured before the change.
