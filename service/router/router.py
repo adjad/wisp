@@ -6851,7 +6851,12 @@ def routing_guard_contract(text: str, *, model_led: bool = False) -> tuple[froze
                          if not tool.category.endswith("read"))
     web = _classify_web_request(t)
     if web.opted_out or web.private:
-        forbidden.update({"web_search", "web_fetch", "http_request"})
+        forbidden.update({"web_fetch", "http_request"})
+        if not (model_led and web.public_possessive and not web.opted_out):
+            forbidden.add("web_search")
+        # "What are Costco's hours?" stays private: on a model-led turn only
+        # web_search is open, and the agent loop admits only the user's own
+        # words (model_only.public_fact_query_problem). No query is bound.
         # Ordinary private local reads retain the builtin shell capability;
         # the managed executor imposes a host-owned read-only boundary for
         # private conversation context. Explicit source/egress exclusions win.
