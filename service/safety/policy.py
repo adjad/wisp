@@ -174,7 +174,11 @@ def read_only_shell_argv(cmd: str) -> tuple[str, ...] | None:
 # shell commands that are never allowed
 _SHELL_DENY = [
     r"\brm\s+(-[a-zA-Z]*\s+)*(-rf|-fr|-r\s+-f|-f\s+-r)\b.*\s+(/|~|\$HOME)\s*$",
-    r"\brm\s+-rf?\s+/",
+    # Only `/` itself (and `/*`, `/.`): the never-run check (never_run_hit) is
+    # the judge of every other recursive delete, and since the owner decision
+    # of 2026-11-10 a delete inside an ordinary folder (`rm -rf /tmp/build`)
+    # gets a card. Was r"\brm\s+-rf?\s+/", which refused every absolute path.
+    r"\brm\s+-rf?\s+/(?:\*|\.\.?)?(?=$|[\s;&|)])",
     r"\bsudo\b", r"\bsu\b\s", r"\bdoas\b",
     r"\bmkfs\b", r"\bdd\b\s+if=", r"\bfdisk\b", r"\bdiskutil\s+(erase|reformat)",
     r"curl[^|]*\|\s*(sudo\s+)?(sh|bash|zsh)", r"wget[^|]*\|\s*(sh|bash|zsh)",
@@ -2049,8 +2053,11 @@ def _nr_rm(args: list[str], ctx: _NrContext, admin: bool, unknown_name: bool = F
         if kind == "dynamic":
             return f"{what} a path that is only known while it runs ({op})"
         if w.startswith(("/", "~")):
-            return (f"{what} everything a wildcard matches ({op})" if kind == "glob"
-                    else f"{what} an absolute path ({op})")
+            # Owner decision 2026-11-10 ("Card for those"): an absolute or ~
+            # path is judged exactly as `cd <parent> && rm -r <name>` is.
+            if (problem := _nr_abs_delete(w)):
+                return f"{what} {problem}"
+            continue
         if (problem := _nr_rel_delete(w, ctx.cwd)):
             return f"{what} {problem}"
     return None
@@ -2139,7 +2146,7 @@ def _nr_rel_delete(word: str, cwd) -> str | None:
         # a bare `*`, `.*` or `./*`, or a pattern that can match a main folder
         # (`D*`), is refused.
         if wild and target == ".":
-            return f"everything in your home folder ({word})" if homeish else None
+            return f"everything in your home folder ({_nr_show(cwd, word)})" if homeish else None
         if (problem := _nr_rel_problem(target)):
             if target == ".":
                 problem = "your whole home folder"
@@ -2154,9 +2161,54 @@ def _nr_rel_delete(word: str, cwd) -> str | None:
         return f"the whole working folder ({base})"
     if wild and not parts and bare:
         return f"everything in {base}"
+    if (problem := _nr_user_home_problem(shown)):
+        return problem
     if _nr_system_like(shown):
         return f"{shown}, one of the Mac's top or system folders"
     return None
+
+
+def _nr_user_home_problem(path: str) -> str | None:
+    """Another account's home (/Users/<name>), its main folders and what sits
+    directly in them get the same refusal as your own (/Users/Shared aside)."""
+    m = re.fullmatch(r"/users/([^/]+)(/.*)?", path.rstrip("/").casefold())
+    if not m or m.group(1) == "shared":
+        return None
+    rest = (m.group(2) or "").strip("/")
+    if not rest:
+        return f"{path}, a user's home folder"
+    problem = _nr_rel_problem(rest)
+    if not problem:
+        return None
+    theirs = problem.replace("your", "that user's")
+    return f"{theirs}, in a user's home folder ({path})"
+
+
+def _nr_abs_delete(word: str) -> str | None:
+    """Why a recursive delete of an absolute or ~ path (wildcards allowed) is
+    too broad, or None for a card: the same answer `cd <parent> && rm -rf
+    <name>` gets from _nr_rel_delete, so the two spellings always agree."""
+    if word == "~" or word.startswith("~/"):
+        full = _nr_home() + word[1:]
+    elif word.startswith("~"):
+        full = os.path.expanduser(word)
+        if full.startswith("~"):
+            return f"a folder that could not be resolved ({word})"
+    else:
+        full = word
+    wild = re.search(r"[*?\[]", full)
+    if wild:
+        cut = full.rfind("/", 0, wild.start())
+        parent, name = os.path.normpath(full[:cut + 1] or "/"), full[cut + 1:]
+    else:
+        full = os.path.normpath(full)
+        parent, name = os.path.dirname(full), os.path.basename(full) or "."
+    parent = parent.replace("//", "/") or "/"
+    if not wild and _nr_place(full)[0] == "rel" and _nr_place(full)[1] == ".":
+        return f"your whole home folder ({word})"
+    if not wild and full.rstrip("/") in ("", "/"):
+        return "the whole disk (/)"
+    return _nr_rel_delete(name, _nr_place(parent))
 
 
 def _nr_mode_narrows(mode: str) -> bool:

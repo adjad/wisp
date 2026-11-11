@@ -140,6 +140,30 @@ REFUSED = [
     "rm -rf ~\x00",
     "find . -type f -delete",
     "find . -mindepth 1 -delete",
+    # Owner decision 2026-11-10: absolute paths judged as `cd <parent> && rm -rf <name>`;
+    # these stay refused at home, main-folder, top-folder and system levels.
+    "rm -rf ~",
+    "rm -rf ~/Documents",
+    "rm -rf ~/Library",
+    "rm -rf ~/Documents/old",
+    "rm -rf ~/Library/Caches",
+    "rm -rf ~/Documents/*",
+    "rm -rf /",
+    "rm -rf /Users",
+    "rm -rf /Users/u",
+    "rm -rf /System/Library",
+    "rm -rf /Library/Foo",
+    "rm -rf /usr/bin",
+    "rm -rf /Applications/Thing.app",
+    "rm -rf /tmp",
+    "rm -rf /tmp/*",
+    "rm -rf /Volumes/X",
+    "rm -rf $(pwd)/x",
+    "rm -rf ~/Projects/../Documents",
+    "rm -rf /tmp/../usr",
+    "sudo rm -rf /tmp/x",
+    "find ~/Downloads -name '*.dmg' -mtime +30 -delete",
+    "find ~/Desktop -name 'Screenshot*' -delete",
 ]
 
 # (command, tier by default, tier under full access), captured before the change.
@@ -210,6 +234,22 @@ ORDINARY = [
     ("chmod 700 ~/.ssh", "CONFIRM", "CONFIRM"),
     ("chmod 600 ~/.ssh/id_ed25519", "CONFIRM", "CONFIRM"),
     ("ssh-keygen -t ed25519 -f ~/.ssh/id_new -N ''", "CONFIRM", "CONFIRM"),
+    # Owner decision 2026-11-10 ("Card for those"): a recursive delete by
+    # absolute path inside an ordinary folder gets a card, never ALLOW.
+    ("rm -rf ~/Library/Caches/com.example.app", "CONFIRM", "CONFIRM"),
+    ("rm -rf /tmp/build-xyz", "CONFIRM", "CONFIRM"),
+    ("rm -rf ~/Desktop/MOE_Project/build", "CONFIRM", "CONFIRM"),
+    ("rm -rf ~/Projects/app/node_modules", "CONFIRM", "CONFIRM"),
+    ("rm -rf ~/Projects/app/{build,dist}", "CONFIRM", "CONFIRM"),
+    ("rm -rf /private/tmp/x", "CONFIRM", "CONFIRM"),
+    ("rm -rf /Volumes/Ext/proj/build", "CONFIRM", "CONFIRM"),
+    ("rm -rf /usr/local/lib/foo", "CONFIRM", "CONFIRM"),
+    ("rm -rf $HOME/Projects/app/build", "CONFIRM", "CONFIRM"),
+    ("rm -r ~/Projects/old", "CONFIRM", "CONFIRM"),
+    ("rm -rf ~/somefolder", "CONFIRM", "CONFIRM"),
+    ("rm -rf /tmp/build-*", "CONFIRM", "CONFIRM"),
+    ("cd ~ && rm -rf somefolder", "CONFIRM", "CONFIRM"),
+    ("cd /usr/local/lib && rm -rf foo", "CONFIRM", "CONFIRM"),
 ]
 
 
@@ -331,6 +371,46 @@ def test_find_from_home_needs_a_real_filter():
     assert policy.never_run_hit("find . -mindepth 1 -delete")
     assert policy.never_run_hit("find . -name '*.pyc' -delete") is None
     assert policy.never_run_hit("find . -type f -name '*.log' -delete") is None
+
+
+# (parent folder, name): `rm -rf <parent>/<name>` and `cd <parent> && rm -rf <name>`
+# must always get the same answer (owner decision 2026-11-10).
+EQUIVALENT = [
+    ("~", "Documents"), ("~", "Library"), ("~", ".ssh"), ("~", ".moe"), ("~", ".config"),
+    ("~", "somefolder"), ("~", ".cache"), ("~", "*"), ("~/Documents", "old"), ("~/Documents", "*"),
+    ("~/Library", "Caches"), ("~/Library/Caches", "com.example.app"), ("~/Desktop/MOE_Project", "build"),
+    ("~/Projects/app", "node_modules"), ("~/Projects/app", "*"), ("~/Downloads", "x"),
+    ("/", "usr"), ("/", "tmp"), ("/Users", "u"), ("/Users/u", "Documents"), ("/System", "Library"),
+    ("/Library", "Foo"), ("/usr", "bin"), ("/usr/local/lib", "foo"), ("/Applications", "Thing.app"),
+    ("/tmp", "build-xyz"), ("/tmp", "*"), ("/tmp", "build-*"), ("/private/tmp", "x"),
+    ("/Volumes", "X"), ("/Volumes/Ext/proj", "build"), ("$HOME/Projects/app", "build"),
+]
+
+
+@pytest.mark.parametrize("parent,name", EQUIVALENT)
+def test_an_absolute_delete_agrees_with_its_cd_form(parent, name):
+    by_path = policy.never_run_hit(f"rm -rf {parent.rstrip('/')}/{name}")
+    after_cd = policy.never_run_hit(f"cd {parent} && rm -rf {name}")
+    assert (by_path is None) == (after_cd is None), (parent, name, by_path, after_cd)
+
+
+def test_a_refused_absolute_delete_names_the_real_folder():
+    assert "~/Documents/old" in policy.never_run_hit("rm -rf ~/Documents/old")
+    assert "/Applications/Thing.app" in policy.never_run_hit("rm -rf /Applications/Thing.app")
+    assert "/Users/u/Documents" in policy.never_run_hit("rm -rf /Users/u/Documents")
+    for cmd in ("rm -rf ~/Documents/old", "rm -rf /usr/bin", "rm -rf ~"):
+        assert "absolute path" not in policy.never_run_hit(cmd)
+
+
+def test_the_floor_refuses_only_the_root_and_a_config_can_still_list_the_old_pattern(monkeypatch):
+    assert policy._any(policy._SHELL_DENY, "rm -rf /tmp/build-xyz") is None
+    for cmd in ("rm -rf /", "rm -r /", "rm -rf /*", "rm -rf / ; ls"):
+        assert policy._any(policy._SHELL_DENY, cmd), cmd
+    # A policy file that still lists the old pattern keeps it: it only adds refusals.
+    monkeypatch.setattr(policy, "_CFG", {"shell_deny": [r"\brm\s+-rf?\s+/"]})
+    assert _tier(monkeypatch, "rm -rf /tmp/build-xyz").tier is Tier.DENY
+    monkeypatch.setattr(policy, "_CFG", {})
+    assert _tier(monkeypatch, "rm -rf /tmp/build-xyz").tier is Tier.CONFIRM
 
 
 def test_a_command_past_the_length_limit_is_still_judged_by_its_start():
