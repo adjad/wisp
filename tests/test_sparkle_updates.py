@@ -290,3 +290,33 @@ def test_workflow_label_check_rejects_multiline_labels():
     workflow = (ROOT / ".github/workflows/wisp-build.yml").read_text()
     step = workflow.split("- name: Require the update signing key", 1)[1].split("- uses:", 1)[0]
     assert '[[ "$UPDATE_LABEL" =~ ^' in step and "grep" not in step
+
+
+def _swift_function(source: str, signature: str) -> str:
+    start = source.index(signature)
+    depth, i = 0, source.index("{", start)
+    for j in range(i, len(source)):
+        depth += {"{": 1, "}": -1}.get(source[j], 0)
+        if depth == 0:
+            return source[start:j + 1]
+    raise AssertionError(signature)
+
+
+def test_beta_toggle_resets_the_cycle_only_with_automatic_checks_on():
+    # Sparkle isn't linked in the standalone Swift contracts, so pin the source.
+    # A cycle reset after a channel change fires a background check at once.
+    source = (ROOT / "app/Sources/WispApp/SoftwareUpdate.swift").read_text()
+    body = _swift_function(source, "func setIncludesBetas(")
+    assert body.count("resetUpdateCycleAfterShortDelay()") == 1 and "resetUpdateCycle()" not in body
+    guard = "if let updater = controller?.updater, updater.automaticallyChecksForUpdates {"
+    assert guard in body
+    inner = _swift_function(body, guard)
+    assert "resetUpdateCycleAfterShortDelay()" in inner
+    assert "resetUpdateCycleAfterShortDelay()" not in body.replace(inner, "")
+
+
+def test_background_checks_are_vetoed_while_automatic_checks_are_off():
+    source = (ROOT / "app/Sources/WispApp/SoftwareUpdate.swift").read_text()
+    body = _swift_function(source, "func updater(_ updater: SPUUpdater, mayPerform updateCheck: SPUUpdateCheck) throws")
+    assert "updateCheck == .updatesInBackground && !updater.automaticallyChecksForUpdates" in body
+    assert "throw " in body

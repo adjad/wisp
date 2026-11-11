@@ -185,6 +185,18 @@ extension SoftwareUpdater: SPUUpdaterDelegate, SPUStandardUserDriverDelegate {
         SoftwareUpdate.feedParameters(sendingSystemProfile: sendingSystemProfile)
     }
 
+    /// A background check needs automatic checks on at the moment it runs. Sparkle's
+    /// cycle reset can fire one immediately after a channel change (SPUUpdater.m
+    /// resetUpdateCycle, scheduleNextUpdateCheckFiringImmediately) even after the
+    /// switch is turned off; this veto runs before any network request. Checks the
+    /// person starts are always allowed.
+    nonisolated func updater(_ updater: SPUUpdater, mayPerform updateCheck: SPUUpdateCheck) throws {
+        if updateCheck == .updatesInBackground && !updater.automaticallyChecksForUpdates {
+            throw NSError(domain: "WispSoftwareUpdate", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "Automatic update checks are off"])
+        }
+    }
+
     /// Wisp lives in the menu bar: a scheduled check's alert must not jump in
     /// front of what the person is doing. Sparkle then shows it without stealing focus.
     nonisolated var supportsGentleScheduledUpdateReminders: Bool { true }
