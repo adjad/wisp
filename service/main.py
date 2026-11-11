@@ -1978,6 +1978,11 @@ def _ask_tool_rank(prompt: str, previous: str = "") -> tuple[list[str], list[str
                                  ("search_reminders", reminders_first(prompt))):
                 if wanted and lead in REGISTRY:
                     head = [lead, *(n for n in head if n != lead)]
+        from service.model_only import public_possessive_question
+        if not writing and public_possessive_question(prompt) and "web_search" in REGISTRY:
+            # "What are Costco's hours?" ranked weather and stock tools first
+            # and left web_search a name stub: the search leads instead.
+            head = ["web_search", *(n for n in head if n != "web_search")]
         from service.model_only import reply_reads
         if lead_reads := [n for n in reply_reads(prompt) if n in REGISTRY]:
             # A reply draft reads the conversation it answers before drafting.
