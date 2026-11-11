@@ -37,6 +37,9 @@ CARDED = [
     "rm -rf /usr/local/share/thing",
     "rm -rf /var/folders/ab/cdef/T/job-1",
     "  rm -rf /tmp/build  ",
+    # A path with spaces, quoted or backslash-escaped (rc2): see test_rc2_policy_quoted_delete.py.
+    "rm -rf '/tmp/build'",
+    "rm -rf /tmp/my\\ build",
 ]
 
 REFUSED = [
@@ -109,8 +112,6 @@ REFUSED = [
     "rm -rf /tmp/build `pwd`",
     "rm -rf /tmp/build $(pwd)",
     "rm -rf /tmp/build \"/Users\"",
-    "rm -rf '/tmp/build'",
-    "rm -rf /tmp/my\\ build",
     "rm -rf /tmp/*",
     "rm -rf /tmp/build?",
     "rm -rf /tmp/{a,b}",
