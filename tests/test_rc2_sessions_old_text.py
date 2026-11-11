@@ -467,3 +467,23 @@ def test_too_little_disk_skips_the_start_before_any_costly_step(tmp_path, monkey
     finally:
         sessions._db.close()
     assert not any(marker in _file_bytes(path) for marker in _MARKERS)
+
+
+def test_a_failed_step_never_rolls_back_another_threads_save(tmp_path, monkeypatch):
+    """The steps release the lock between them, so a transaction open on the shared
+    connection when a step fails is another thread's save, not the rebuild's."""
+    path = tmp_path / 'sessions.db'
+    sid = _old_build_file(path, monkeypatch)
+    _, sessions, _ = _open(path)
+    db = sessions._db
+
+    def fails_after_another_save_began():
+        # What add_turn has done between its INSERT and its commit.
+        db.execute("INSERT INTO turns (session_id, idx, role, content, created_at) VALUES (?, 9999, 'user', 'kept turn', 0)", (sid,))
+        raise sqlite3.OperationalError('database is locked')
+
+    monkeypatch.setattr(sessions, '_rebuild_index_dropping_orphans', fails_after_another_save_began)
+    assert sessions.clear_old_text() is False
+    assert db.in_transaction
+    db.commit()
+    assert db.execute("SELECT count(*) FROM turns WHERE content='kept turn'").fetchone()[0] == 1

@@ -247,8 +247,8 @@ class SessionStore:
             with self._lock:
                 db.execute("PRAGMA busy_timeout=250")
                 db.execute("VACUUM")
-            with self._lock:
-                db.execute("PRAGMA busy_timeout=250")
+                # Same hold as the VACUUM: a turn saved in between could meet an index row
+                # whose rowid the VACUUM had just renumbered.
                 if self._has_index() and not self._index_matches_turns():
                     # VACUUM may renumber the implicit rowids the index is keyed by.
                     self._rebuild_index()
@@ -259,8 +259,9 @@ class SessionStore:
                                (OLD_TEXT_CLEARED,))
             return True
         except sqlite3.Error as exc:
-            if db.in_transaction:
-                db.rollback()
+            # No rollback here. Every step above ends its own transaction, and the lock is
+            # already released: a transaction open on this shared connection now belongs to
+            # another thread's save, and rolling it back would drop that turn without an error.
             _log.warning("session store: deleted chats not cleared yet: %s", exc)
             return False
         finally:
@@ -325,7 +326,7 @@ class SessionStore:
         create = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
                             (_FTS,)).fetchone()
         triggers = db.execute("SELECT name, sql FROM sqlite_master WHERE type='trigger' "
-                              "AND tbl_name='turns' AND sql LIKE ?", (f"%{_FTS}%",)).fetchall()
+                              "AND lower(tbl_name)='turns' AND sql LIKE ?", (f"%{_FTS}%",)).fetchall()
         with db:
             # Explicit: sqlite3 opens no transaction before DDL on its own.
             db.execute("BEGIN IMMEDIATE")
