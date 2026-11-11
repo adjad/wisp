@@ -201,14 +201,17 @@ def run_shell(cmd: str) -> str:
 def _run_plain_delete(cmd: str, judged) -> str:
     """One plain delete of absolute paths (policy.plain_delete_targets).
 
-    Each path is resolved and checked again immediately before the delete,
-    and the delete is refused if any path now leads somewhere else than when
-    it was judged (a link swapped in between). It then runs the decoded
-    words as a fixed argv with no shell, so quoting cannot be read two ways.
-    What remains: the moments between this last check and rm opening each
-    path, and a swap between the person's approval and the check that ran
-    just before this one, when both answers pass (one ordinary folder for
-    another), are not caught here."""
+    `judged` is what run_shell's own decide() found a moment earlier, not
+    what the card the person approved showed: the approval flow hands
+    run_shell only `cmd`, so the card's paths are not available here. Each
+    path is resolved and checked again immediately before the delete, and
+    the delete is refused if any path now leads somewhere else than in
+    `judged` (a link swapped in between) or no longer passes the checks. It
+    then runs the decoded words as a fixed argv with no shell, so quoting
+    cannot be read two ways. What remains: the moments between this last
+    check and rm opening each path; and a change between the card and
+    run_shell's decide() that still passes every check (a link moved from one
+    ordinary folder to another) is deleted without a new card."""
     from service.router.model_led import BuiltinCompletion
     from service.safety.policy import plain_delete_argv
     again = plain_delete_argv({"cmd": cmd})

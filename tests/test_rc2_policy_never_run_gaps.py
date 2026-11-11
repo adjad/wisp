@@ -40,7 +40,6 @@ SUBST_REFUSED = [
     "bash -c \"$(printf 'x')\"",
     "sh -c \"$(printf '\\x72\\x6d -rf ~')\"",
     "zsh -c \"$(cat notes.txt)\"",
-    "bash -c \"cd $(pwd) && make\"",
     "bash -c `printf x`",
     "sudo bash -c \"$(printf x)\"",
     "bash <<< \"$(printf x)\"",

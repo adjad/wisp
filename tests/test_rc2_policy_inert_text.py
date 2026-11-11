@@ -119,12 +119,17 @@ def test_text_that_can_run_is_still_refused(monkeypatch, cmd):
 
 
 def test_the_rest_of_the_line_is_still_read_by_the_floor(monkeypatch):
-    # The prefix steps are plain words the floor reads as before.
+    # A step that is not on the short list of harmless ones: the whole line
+    # is read as before.
     for cmd in ("sudo true && git commit -m 'x'", "killall Dock && echo 'x' >> notes.txt",
                 "nvram boot-args && cat > notes.md <<'EOF'\nx\nEOF",
                 "reboot && cat > notes.md <<'EOF'\nhi\nEOF", "xargs reboot && echo 'x' >> notes.txt"):
-        assert policy.inert_text_form(cmd) is not None, cmd
+        assert policy.inert_text_form(cmd) is None, cmd
         assert _decide(monkeypatch, cmd).tier is Tier.DENY, cmd
+    # The allowed steps are still read by the floor.
+    cmd = "git add reboot && git commit -m 'x'"
+    assert policy.inert_text_form(cmd) is not None
+    assert _decide(monkeypatch, cmd).tier is Tier.DENY
 
 
 def test_the_never_run_check_still_reads_the_original_text(monkeypatch):
