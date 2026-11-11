@@ -19,7 +19,9 @@ struct OverlayView: View {
     var onDismiss: () -> Void = {}
     @FocusState private var focused: Bool
     @State private var breathe = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    @Environment(\.reduceMotionOverride) private var reduceMotionOverride
+    private var reduceMotion: Bool { reduceMotionOverride ?? systemReduceMotion }
     // Text size (the notch's Settings > Voice) and Increase Contrast both
     // change values that child views read when they are built, so a change
     // rebuilds the panel's content once. Cheap: both are rare, deliberate.

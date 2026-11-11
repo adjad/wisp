@@ -212,6 +212,18 @@ extension EnvironmentValues {
         get { self[ThemePaletteKey.self] }
         set { self[ThemePaletteKey.self] = newValue }
     }
+
+    /// Reduce Motion for the panel's page changes when set, instead of the
+    /// system's (whose environment value is read-only). Only the native motion
+    /// checks set it, to measure both ways on one Mac.
+    var reduceMotionOverride: Bool? {
+        get { self[ReduceMotionOverrideKey.self] }
+        set { self[ReduceMotionOverrideKey.self] = newValue }
+    }
+}
+
+private struct ReduceMotionOverrideKey: EnvironmentKey {
+    static let defaultValue: Bool? = nil
 }
 
 /// A pop-up Picker keeps the title colour of the appearance it was built in, so

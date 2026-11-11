@@ -141,6 +141,106 @@ struct OverlayTransitionChecks {
         print("PASS: heartbeats count seconds at their sender's pace")
     }
 
+    /// The window that covers both the current frame and the target: the wider
+    /// and the taller of the two, hanging from the same top.
+    static func coveringChecks() {
+        let current = NSRect(x: 100, y: 500, width: 640, height: 300) // top 800
+        func same(_ a: NSRect, _ b: NSRect) -> Bool { a == b }
+        // Wider target, same height: grows both sides, same top.
+        let wider = NSRect(x: 0, y: 500, width: 840, height: 300)
+        check(same(OverlayPanel.covering(current, wider), wider), "A wider target is covered by its own frame")
+        // Narrower target, shorter: the current frame still covers it.
+        let narrowShort = NSRect(x: 150, y: 600, width: 540, height: 200)
+        check(same(OverlayPanel.covering(current, narrowShort), current), "A smaller target keeps the current frame")
+        // Taller target (same x, same top): the taller height wins.
+        let taller = NSRect(x: 100, y: 400, width: 640, height: 400)
+        check(same(OverlayPanel.covering(current, taller), taller), "A taller target is covered by its own frame")
+        // Shorter target, same width: the current height stays.
+        let shorter = NSRect(x: 100, y: 600, width: 640, height: 200)
+        check(same(OverlayPanel.covering(current, shorter), current), "A shorter target keeps the current height")
+        // Wider and shorter together: the union width at the current height.
+        let wideShort = NSRect(x: 0, y: 600, width: 840, height: 200)
+        check(same(OverlayPanel.covering(current, wideShort), NSRect(x: 0, y: 500, width: 840, height: 300)),
+              "Wider and shorter covers the wider width at the taller height")
+        // Narrower and taller together.
+        let narrowTall = NSRect(x: 150, y: 400, width: 540, height: 400)
+        check(same(OverlayPanel.covering(current, narrowTall), NSRect(x: 100, y: 400, width: 640, height: 400)),
+              "Narrower and taller keeps the width at the taller height")
+        for target in [wider, narrowShort, taller, shorter, wideShort, narrowTall] {
+            let c = OverlayPanel.covering(current, target)
+            check(c.maxY == 800 && target.maxY == 800, "The top stays put")
+            check(c.contains(current) && c.contains(target), "The result holds both frames")
+            check(OverlayPanel.covering(c, target) == c && OverlayPanel.covering(target, current) == OverlayPanel.covering(current, target),
+                  "Covering is idempotent and symmetric")
+        }
+        // Different tops: the higher top wins and the height is the taller one.
+        let lower = NSRect(x: 100, y: 450, width: 640, height: 300) // top 750
+        check(same(OverlayPanel.covering(current, lower), NSRect(x: 100, y: 500, width: 640, height: 300)),
+              "The higher top wins")
+        print("PASS: covering holds both frames from the same top")
+    }
+
+    /// Width changes: the panel's width comes from the layout, so inject one.
+    @MainActor
+    static func widthResizeChecks() async {
+        _ = NSApplication.shared
+        NSApp.setActivationPolicy(.accessory)
+        let fixture = MotionFixtureModel()
+        let panel = OverlayPanel { MotionFixtureView(model: fixture) }
+        panel.isCompact = { false }
+        panel.reduceMotion = { false }
+        let base = panel.layoutProvider()
+        var wide = base.widened(true)
+        if wide.expandedWidth == base.expandedWidth { wide.expandedWidth = base.expandedWidth + 200 }
+        var useWide = false
+        panel.layoutProvider = { useWide ? wide : base }
+        fixture.height = 320
+        panel.present()
+        var opened = 0
+        panel.dropOpen { opened += 1 }
+        await waitUntil { opened == 1 }
+        check(panel.frame.width == base.expandedWidth && panel.frame.height == 320, "Opened at the narrow width")
+        let narrowFrame = panel.frame
+        let settle = Int(OverlayPanel.shrinkSettle * 1000)
+
+        // Widen and shrink together: covering frame at once, the target after the settle.
+        useWide = true
+        fixture.height = 240
+        try? await Task.sleep(for: .milliseconds(60))
+        panel.resizeToFit()
+        let target = wide.expandedFrame(contentHeight: 240)
+        let covering = OverlayPanel.covering(narrowFrame, target)
+        check(panel.frame == covering, "A width change with a height shrink grows at once to the covering frame: \(panel.frame) vs \(covering)")
+        check(panel.frame.width == wide.expandedWidth && panel.frame.height == 320, "Covering is wide and still tall")
+        check(panel.hasPendingShrink, "The target waits for the settle")
+        let mask = panel.contentView!.layer!.mask!
+        check(mask.bounds.size == panel.frame.size, "The mask follows the covering frame")
+        try? await Task.sleep(for: .milliseconds(settle / 2))
+        check(panel.frame == covering && panel.hasPendingShrink, "Still the covering frame before the settle")
+        await waitUntil { panel.frame.height == 240 }
+        check(panel.frame == target && !panel.hasPendingShrink, "Settles to the target: \(panel.frame) vs \(target)")
+        check(mask.bounds.size == panel.frame.size, "The mask follows the target")
+
+        // Narrow back and shrink together: the covering frame keeps the wide width until the settle.
+        let wideFrame = panel.frame
+        useWide = false
+        fixture.height = 200
+        try? await Task.sleep(for: .milliseconds(60))
+        panel.resizeToFit()
+        check(panel.frame == wideFrame && panel.hasPendingShrink, "A narrowing shrink waits entirely")
+        await waitUntil { panel.frame.height == 200 }
+        check(panel.frame.width == base.expandedWidth && !panel.hasPendingShrink, "Then lands narrow")
+
+        // A pure widen (same height) applies at once with nothing pending.
+        useWide = true
+        try? await Task.sleep(for: .milliseconds(60))
+        panel.resizeToFit()
+        check(panel.frame == wide.expandedFrame(contentHeight: 200), "A pure widen applies at once")
+        check(!panel.hasPendingShrink, "A pure widen leaves nothing pending")
+        panel.orderOut(nil)
+        print("PASS: a width change with a shrink grows to the covering frame then settles; a pure widen is immediate")
+    }
+
     @MainActor
     static func waitUntil(_ condition: () -> Bool) async {
         for _ in 0..<100 {
@@ -544,6 +644,7 @@ struct OverlayTransitionChecks {
 
     static func main() async {
         lifecycleChecks()
+        coveringChecks()
         approvalAnnouncementChecks()
         alwaysAllowLineChecks()
         forgetResultChecks()
@@ -573,6 +674,7 @@ struct OverlayTransitionChecks {
         #endif
         if ProcessInfo.processInfo.environment["WISP_MOTION_NATIVE_CHECK"] == "1" {
             await nativeChecks()
+            await widthResizeChecks()
             #if WISP_MOTION_APP_DELEGATE_CHECKS
             await AppDelegate.checkDebugExportLeavesNotchLive()
             #endif
