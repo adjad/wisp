@@ -615,8 +615,11 @@ def test_always_allow_on_a_move_covers_only_that_destination_folder():
     assert tier({"source": "~/Documents/a.pdf", "destination": "~/Documents/Taxes/a.pdf"}) is policy.Tier.CONFIRM
 
 
-def test_an_old_tool_wide_move_rule_still_reads_as_tool_wide():
-    # Rules stored before the scope was added keep their meaning; the Settings
-    # list is where they are removed.
+def test_an_old_tool_wide_move_rule_no_longer_covers_a_move():
+    # Owner decision 2026-11-10: a move rule stored before the folder scope was
+    # added asks again instead of covering every move; other tools' tool-wide
+    # rules keep their meaning.
     grants._CACHE["move_path"] = {"allow": [{"scope": ""}], "deny": []}
-    assert grants.check("move_path", {"source": "/tmp/a", "destination": "/tmp/b/a"}) == "allow"
+    grants._CACHE["write_file"] = {"allow": [{"scope": ""}], "deny": []}
+    assert grants.check("move_path", {"source": "/tmp/a", "destination": "/tmp/b/a"}) is None
+    assert grants.check("write_file", {"path": "/tmp/b/a.txt"}) == "allow"

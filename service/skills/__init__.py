@@ -77,6 +77,18 @@ _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.S)
 # hits it.
 MAX_BODY_CHARS = 6000
 
+# Always-on style skills that shape only the messages Wisp writes for the user
+# to send (emails, texts, replies, forward notes, scheduled sends, reply
+# drafts), never Wisp's own answers. Owner decision 2026-11-10 (a04-settings#1).
+COMPOSE_STYLE_SKILLS = frozenset({"humanizer"})
+
+# The tools whose arguments carry a message in the user's voice. A turn whose
+# offered tools include one gets compose_style_block() (service/agent/loop.py).
+COMPOSE_TOOLS = frozenset({
+    "send_message", "send_email", "reply_to_email", "forward_email",
+    "schedule_send", "draft_message", "draft_email",
+})
+
 
 @dataclass
 class Skill:
@@ -90,11 +102,20 @@ class Skill:
     error: str = ""
     # Bypasses `matches()` entirely — injected into every eligible turn
     # instead of only on a trigger hit. See `always_skills_block()`. Such a
-    # skill is a reply style for plain chat only: it is never in the agent's
+    # skill is a reply style for plain chat only (or, for a `compose` skill,
+    # for messages written for the user to send): it is never in the agent's
     # catalog, never trigger-loaded there, and use_skill does not hand it out.
     always: bool = False
     bundled: bool = False
     conversation_workflow: bool = False
+
+    @property
+    def compose(self) -> bool:
+        """An always-on style for text Wisp writes FOR the user to send (see
+        compose_style_block), never for Wisp's own answers. Keyed by name, not
+        frontmatter, so an older or edited copy of the skill behind Settings ›
+        Human-sounding replies follows the same rule (owner decision 2026-11-10)."""
+        return self.always and self.name in COMPOSE_STYLE_SKILLS
 
     def matches(self, text: str) -> bool:
         """Whether this skill's triggers fire for `text`.
@@ -575,11 +596,34 @@ def always_skills_block() -> str:
     on the plain-chat path), and a boolean that changes behavior at a
     distance is easy to wire into the wrong place by accident.
     """
+    # A compose style (the humanizer) is not a chat style: compose_style_block.
     always_on = [s for s in _skills.values()
-                 if s.enabled and not s.error and s.always]
+                 if s.enabled and not s.error and s.always and not s.compose]
     if not always_on:
         return ""
     out = []
     for s in always_on:
         out.append(f"\n--- {s.name} ---\n{s.body}")
     return "\n".join(out)
+
+
+def compose_style_block() -> str:
+    """Every enabled compose style (Settings › Human-sounding replies), scoped
+    to the text of a message written for the user to send. Empty when off.
+
+    Callers: the reply-draft calls (assistant/email_reply_api.draft_prompt,
+    proactive/prepare.draft) append it to their system prompt; the agent loop
+    adds it only on a turn that offers a COMPOSE_TOOLS schema, where it shapes
+    the body/text argument the model writes. Wisp's own answers never get it.
+    """
+    styles = [s for s in _skills.values() if s.enabled and not s.error and s.compose]
+    if not styles:
+        return ""
+    return "".join(
+        f"\n\n--- {s.name}: style for messages you write for the user to send ---\n"
+        "Apply these rules only to the words of an email, text, reply or note "
+        "the user will send (a send or draft tool's body or text). They do not "
+        "apply to your own answer to the user. Never change words the user "
+        "dictated or quoted, and every other rule still wins.\n"
+        f"{s.body}"
+        for s in styles)

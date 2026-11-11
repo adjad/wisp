@@ -19,8 +19,15 @@ Two independent holes, both covered here:
   * a standing "always allow run_shell" would have covered every future delete,
     because grants were checked by TOOL NAME with no view of the arguments.
 
+Owner decision 2026-11-10 (b09-safety#9): a recursive delete of an absolute
+or home path, the incident command included, is now refused outright in every
+mode (tests/test_rc3_dangerous_commands.py). The card below still guards the
+shapes that remain allowed to ask: relative folders, globs, rsync --delete,
+git clean.
+
 What must keep holding:
-  * every recursive/bulk delete shape CONFIRMS, in full-access mode;
+  * the incident command is refused outright, in full-access mode;
+  * every remaining recursive/bulk delete shape CONFIRMS, in full-access mode;
   * a targeted single-file `rm` still auto-runs — gating that would make
     full_access pointless, and it is not the shape that caused this;
   * view-only mode still DENIES rather than confirming;
@@ -45,6 +52,8 @@ PASS, FAIL = 0, 0
 # The exact command from the incident.
 INCIDENT = ("rm -rf ~/Downloads/DebugLogs ~/Downloads/Logs_2026-08-08 "
             "~/Downloads/Logs_2026-08-09")
+# The same delete spelled relative to an ordinary folder: still a card.
+RELATIVE = "rm -rf old-logs/DebugLogs old-logs/Logs_2026-08-08"
 
 
 def check(name: str, cond: bool, detail: str = "") -> None:
@@ -58,11 +67,15 @@ def check(name: str, cond: bool, detail: str = "") -> None:
 
 
 def test_the_incident_command_now_confirms() -> None:
-    print("\nthe exact command that destroyed the logs now raises a card")
+    print("\nthe exact command that destroyed the logs is refused; its relative form raises a card")
     policy.set_full_access(True)
     policy.set_read_only(False)
     d = decide("shell", {"cmd": INCIDENT}, tool="run_shell")
-    check("tier is CONFIRM, not ALLOW", d.tier is Tier.CONFIRM, f"got {d.tier}")
+    check("tier is DENY, not ALLOW", d.tier is Tier.DENY, f"got {d.tier}")
+    check("the reason says Wisp won't run it", "won't run" in d.reason)
+    check("the reason points to Terminal", "Terminal" in d.reason)
+    d = decide("shell", {"cmd": RELATIVE}, tool="run_shell")
+    check("relative form is CONFIRM", d.tier is Tier.CONFIRM, f"got {d.tier}")
     check("the reason warns it cannot be undone", "cannot be undone" in d.reason)
     check("the reason says it skips the Trash", "Trash" in d.reason)
 
@@ -72,13 +85,14 @@ def test_every_destructive_shape_confirms_under_full_access() -> None:
     policy.set_full_access(True)
     policy.set_read_only(False)
     for cmd in [
-        "rm -rf ~/Downloads/DebugLogs",
-        "rm -r ~/x", "rm -R ~/x", "rm -fr ~/x", "rm -f -r ~/x",
-        "rm --recursive ~/x",
+        # Absolute and ~ spellings of these are refused outright since rc3.
+        "rm -rf old-logs/DebugLogs",
+        "rm -r x", "rm -R x", "rm -fr x", "rm -f -r x",
+        "rm --recursive x",
         "rm ~/Downloads/*.json",
         "rm ~/Downloads/wisp-debug-2026-08-??.txt",
-        "find ~/Downloads -name '*.log' -delete",
-        "find ~/Downloads -name '*.log' -exec rm {} \\;",
+        "find old-logs -name '*.log' -delete",
+        "find old-logs -name '*.log' -exec rm {} \\;",
         "rsync -a --delete ~/src/ ~/dst/",
         "git clean -fdx",
     ]:
@@ -119,7 +133,7 @@ def test_no_standing_grant_can_pre_approve_it() -> None:
     # Even with a grant somehow present for the tool, decide() must not use it.
     grants.grant("run_shell", {"cmd": "ls -la"}, decision="allow")
     try:
-        d = decide("shell", {"cmd": INCIDENT}, tool="run_shell")
+        d = decide("shell", {"cmd": RELATIVE}, tool="run_shell")
         check("a benign grant does not leak into the destructive case",
               d.tier is Tier.CONFIRM, f"got {d.tier}")
     finally:

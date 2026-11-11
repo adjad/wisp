@@ -1,6 +1,6 @@
 ---
 name: humanizer
-description: Plain conversational replies that sound like a person, not a chatbot. Turned on and off by Settings › Human-sounding replies; applied only to tool-free chat replies, never to code or tool-using turns.
+description: Messages Wisp writes for you to send (emails, texts, replies, forward notes, reply drafts) sound like a person, not a chatbot. Turned on and off by Settings › Human-sounding replies; never applied to Wisp's own answers.
 license: MIT
 metadata:
   wisp:
