@@ -42,6 +42,10 @@ class Decision:
     # Present only for implicit read-only shell admission. The executor must
     # run these validated arguments directly, never reinterpret the input.
     shell_argv: tuple[str, ...] | None = None
+    # Present only for a plain delete's card (plain_delete_targets): the
+    # (path, resolved path) pairs it was judged on, compared again by
+    # run_shell immediately before the delete runs.
+    delete_targets: tuple[tuple[str, str], ...] | None = None
 
 
 # --- built-in defaults (used if policy.yaml is absent) ---------------------
@@ -1302,6 +1306,171 @@ def _save_folder_problem(folder) -> str | None:
     return None
 
 
+# --- text the floor does not read (rc2 fix) -------------------------------------
+# _SHELL_DENY reads raw text, so a commit message or a note that only MENTIONS
+# a refused command (`git commit -m "stop the reboot loop"`) was refused too.
+# Rather than teach the floor shell quoting, a few WHOLE-command shapes whose
+# quoted text is only ever data have that text blanked before the floor reads
+# the rest:
+#   git commit [flags] -m '<text>' [-m '<text>' ...]
+#   echo [-n|-e] '<text>' >|>> <notes file>
+#   cat >|>> <notes file> <<'EOF' ... EOF        (a quoted delimiter only)
+#   git commit [flags] -F - <<'EOF' ... EOF
+# each optionally after `<plain words> && ` steps, which the floor still reads.
+# Double-quoted text may hold nothing the shell expands ($ ` \ !). A notes
+# file is a relative path ending .txt/.md/.log/.csv/..., with no dot-folder
+# and no `..`: never a script, a startup file or a launch agent. Anything else,
+# and every way of running text (sh -c, eval, xargs, a pipe, a heredoc into a
+# shell, $(...)), is read as before. The never-run check reads the original
+# text in every case.
+_INERT_WORD = re.compile(r"[A-Za-z0-9._+@/=:,%~-]+")
+_INERT_DQ = re.compile(r'[^"$`\\!]*')
+_INERT_TARGET = re.compile(r"[A-Za-z0-9_+@][A-Za-z0-9._+@/-]*\.(?:txt|md|markdown|log|csv|tsv|rst|org)",
+                           re.IGNORECASE)
+_INERT_HEREDOC = re.compile(r"<<(?:'([A-Za-z_][A-Za-z0-9_]*)'|\"([A-Za-z_][A-Za-z0-9_]*)\")")
+_INERT_LIT = "'_'"
+
+
+def _inert_tokens(line: str) -> list[tuple[str, str]] | None:
+    """('word'|'lit'|'op'|'here', text) tokens, or None for anything else."""
+    tokens, i, n = [], 0, len(line)
+    while i < n:
+        c = line[i]
+        if c in " \t":
+            i += 1
+            continue
+        if c == "'":
+            end = line.find("'", i + 1)
+            if end < 0:
+                return None
+            tokens.append(("lit", line[i:end + 1]))
+            i = end + 1
+        elif c == '"':
+            end = line.find('"', i + 1)
+            if end < 0 or not _INERT_DQ.fullmatch(line[i + 1:end]):
+                return None
+            tokens.append(("lit", line[i:end + 1]))
+            i = end + 1
+        elif line.startswith("&&", i):
+            tokens.append(("op", "&&"))
+            i += 2
+        elif line.startswith(">>", i):
+            tokens.append(("op", ">>"))
+            i += 2
+        elif line.startswith("<<", i):
+            m = _INERT_HEREDOC.match(line, i)
+            if m is None:
+                return None
+            tokens.append(("here", m.group(1) or m.group(2)))
+            i = m.end()
+        elif c == ">":
+            tokens.append(("op", ">"))
+            i += 1
+        else:
+            m = _INERT_WORD.match(line, i)
+            if m is None:
+                return None
+            tokens.append(("word", m.group()))
+            i = m.end()
+        if i < n and tokens[-1][0] in ("lit", "here") and line[i] not in " \t":
+            return None                     # nothing glued onto quoted text
+    return tokens
+
+
+def _inert_target(word: str) -> bool:
+    parts = word.split("/")
+    return (bool(_INERT_TARGET.fullmatch(word))
+            and not any(p in ("", "..") or p.startswith(".") for p in parts))
+
+
+def _inert_git_commit(words: list[tuple[str, str]], heredoc: bool) -> bool:
+    if [t for _, t in words[:2]] != ["git", "commit"] or any(k == "word" and t == "--"
+                                                             for k, t in words):
+        return False
+    rest, saw_message = words[2:], False
+    for k, (kind, text) in enumerate(rest):
+        if kind == "lit":
+            before = rest[k - 1][1] if k else ""
+            if heredoc or not (before in ("-m", "--message") or re.fullmatch(r"-[A-Za-z]*m", before)):
+                return False
+            saw_message = True
+        elif kind != "word" or not text.startswith("-") or "=" in text:
+            return False
+    if heredoc:
+        return [t for _, t in rest[-2:]] == ["-F", "-"]
+    return saw_message
+
+
+def _inert_shape(tokens: list[tuple[str, str]], heredoc: bool) -> bool:
+    """Whether the last step of a line is one of the shapes above (with a
+    'here' token when `heredoc`) and every earlier step is plain words."""
+    steps, current = [], []
+    for tok in tokens:
+        if tok == ("op", "&&"):
+            steps.append(current)
+            current = []
+        else:
+            current.append(tok)
+    steps.append(current)
+    if any(not step or any(kind != "word" for kind, _ in step) for step in steps[:-1]):
+        return False
+    last = steps[-1]
+    here = [tok for tok in last if tok[0] == "here"]
+    if len(here) != (1 if heredoc else 0):
+        return False
+    body = [tok for tok in last if tok[0] != "here"]
+    if body and body[0] == ("word", "git"):
+        return _inert_git_commit(body, heredoc)
+    if heredoc:
+        return (len(body) == 3 and body[0] == ("word", "cat") and body[1][0] == "op"
+                and body[1][1] in (">", ">>") and body[2][0] == "word" and _inert_target(body[2][1]))
+    if not body or body[0] != ("word", "echo") or len(body) not in (4, 5):
+        return False
+    if len(body) == 5 and body[1] not in (("word", "-n"), ("word", "-e")):
+        return False
+    lit, op, target = body[-3], body[-2], body[-1]
+    return (lit[0] == "lit" and op[0] == "op" and op[1] in (">", ">>")
+            and target[0] == "word" and _inert_target(target[1]))
+
+
+def inert_text_form(cmd) -> str | None:
+    """The command with its data-only quoted text blanked, when the whole
+    command is one of the shapes above, else None."""
+    if not isinstance(cmd, str) or len(cmd) > SHELL_TEXT_LIMIT:
+        return None
+    # The whole text as one line (a newline is allowed only inside quotes).
+    tokens = _inert_tokens(cmd)
+    if tokens is not None:
+        if any(kind == "here" for kind, _ in tokens) or not _inert_shape(tokens, heredoc=False):
+            return None
+        return " ".join(_INERT_LIT if kind == "lit" else text for kind, text in tokens)
+    # A heredoc: its first line is the command, then the body and the delimiter.
+    first, newline, rest = cmd.partition("\n")
+    tokens = _inert_tokens(first)
+    if not newline or tokens is None:
+        return None
+    here = [text for kind, text in tokens if kind == "here"]
+    if len(here) != 1 or any(kind == "lit" for kind, _ in tokens) or not _inert_shape(tokens, True):
+        return None
+    lines = rest.split("\n")
+    try:
+        end = lines.index(here[0])
+    except ValueError:
+        return None
+    if any(line for line in lines[end + 1:]):
+        return None                         # nothing may follow the heredoc
+    shown = " ".join(f"<<'{text}'" if kind == "here" else text for kind, text in tokens)
+    return f"{shown}\n_\n{here[0]}"
+
+
+def _floor_forms(args: dict) -> tuple[str, ...]:
+    """What the floor reads: shell_forms, with a data-only shape's quoted
+    text blanked (see inert_text_form)."""
+    if not args.get("script") and (inert := inert_text_form(args.get("cmd"))) is not None:
+        return shell_forms({"cmd": inert})
+    return shell_forms(args)
+
+
 def _hard_deny(category: str, args: dict, tool: str | None = None) -> Decision | None:
     """The unconditional safety floor: rules nothing can override — not
     full_access, not a standing grant, not the user clicking "always allow".
@@ -1315,7 +1484,7 @@ def _hard_deny(category: str, args: dict, tool: str | None = None) -> Decision |
         rules = _rules("shell_deny", _SHELL_DENY)
         if plain_delete_paths(args) is not None:
             rules = [rule for rule in rules if rule != _SHELL_BROAD_RM]
-        for cmd in shell_forms(args):
+        for cmd in _floor_forms(args):
             if (hit := _any(rules, cmd)):
                 return Decision(Tier.DENY, "Wisp won't run this command (it matches a blocked "
                                 f"pattern: {hit}). {NEVER_RUN_TAIL}")
@@ -2198,12 +2367,7 @@ def _nr_find(args: list[str], ctx: _NrContext, admin: bool) -> str | None:
             runs.append(rest[i + 1:j])
             i = j
         i += 1
-    # A filter that picks files by name, age, size or owner (-type or
-    # -mindepth alone still matches everything of that kind).
-    named = any(w in ("-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename", "-regex",
-                      "-iregex", "-mtime", "-mmin", "-atime", "-amin", "-ctime", "-cmin", "-size",
-                      "-empty", "-user", "-group", "-perm", "-links", "-inum", "-samefile")
-                or w.startswith("-newer") for w in rest)
+    named = _nr_find_named(rest)
     deleters = ("rm", "srm", "unlink")
     deletes = "-delete" in rest or any(run and _nr_prog(run[0]) in deleters for run in runs)
     for root in roots or ["."]:
@@ -2222,6 +2386,39 @@ def _nr_find(args: list[str], ctx: _NrContext, admin: bool) -> str | None:
             if (hit := _nr_judge_words(words, ctx.child())):
                 return hit
     return None
+
+
+_NR_FIND_FILTERS = frozenset({"-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename",
+                              "-regex", "-iregex", "-mtime", "-mmin", "-atime", "-amin", "-ctime",
+                              "-cmin", "-size", "-empty", "-user", "-group", "-perm", "-links",
+                              "-inum", "-samefile"})
+
+
+def _nr_find_named(expr: list[str]) -> bool:
+    """Whether a find expression only matches files a filter picks by name,
+    age, size or owner (-type or -mindepth alone still matches everything of
+    that kind). A negated filter (`-not -name x`, `! -name x`) picks
+    everything else, so any negation counts as no filter; with -o / -or / `,`
+    every alternative needs a filter of its own. (Escaped parentheses are gone
+    by now, which is why a negation anywhere is enough to say no.)"""
+    branch: list[str] = []
+    branches = [branch]
+    skip = False
+    for w in expr:
+        if skip:                                # a -exec body: not a filter
+            skip = w not in (_NR_FIND_END, "+")
+            continue
+        if w in ("-exec", "-execdir", "-ok", "-okdir"):
+            skip = True
+            continue
+        if w in ("!", "-not"):
+            return False
+        if w in ("-o", "-or", ","):
+            branch = []
+            branches.append(branch)
+            continue
+        branch.append(w)
+    return all(any(w in _NR_FIND_FILTERS or w.startswith("-newer") for w in b) for b in branches)
 
 
 def _nr_find_root(root: str, cwd, named: bool) -> str | None:
@@ -2315,6 +2512,23 @@ def _nr_run_output_hit(text: str, ctx: _NrContext) -> str | None:
     return None
 
 
+_UNRESOLVED_PROGRAM = "runs a program it only learns while running, from a command's output"
+# A $(...) whose body only prints a heredoc (sh -c "$(cat <<'EOF' ... EOF)"):
+# that body was already judged as the program (see _nr_run_output_hit).
+_NR_PRINTS_HEREDOC = re.compile(r"\s*cat\s+(?:__wisp_hdb_[0-9a-f]*__\s*)+")
+
+
+def _nr_unresolved_program(code: str, ctx: _NrContext) -> str | None:
+    """A shell's program text that holds a $(...) or `...` from the outer line
+    (sh -c "$(printf ...)", bash -c "cd $(x) && y"): the command's output
+    becomes code, so Wisp cannot know what runs. Refused."""
+    for n in _NR_SUBST_RE.findall(code):
+        body = ctx.inner[int(n)] if int(n) < len(ctx.inner) else ""
+        if not _NR_PRINTS_HEREDOC.fullmatch(body):
+            return _UNRESOLVED_PROGRAM
+    return None
+
+
 def _nr_reads_stdin(name: str, args: list[str]) -> bool:
     """True when an interpreter takes its program from stdin."""
     for a in args:
@@ -2381,7 +2595,8 @@ def _nr_judge_words(words: list[str], ctx: _NrContext) -> str | None:
         if code and _NR_FORK_CODE.search(code):
             return _FORK_BOMB
         if code is not None and name in _NR_SHELLS:
-            return _nr_run_output_hit(code, ctx) or _nr_judge_text(code, ctx.child())
+            return (_nr_run_output_hit(code, ctx) or _nr_unresolved_program(code, ctx)
+                    or _nr_judge_text(code, ctx.child()))
         if code:
             return _nr_code_hit(code, ctx)
         return None
@@ -2529,7 +2744,8 @@ def _nr_pipeline(stages: list[list[str]], ctx: _NrContext) -> str | None:
     if stages[0] and _nr_prog(stages[0][0]) in ("echo", "printf"):
         last, _, _ = _nr_unwrap(list(stages[-1]), _NrContext(ctx.cwd, ctx.depth, ctx.inner))
         if last and _nr_prog(last[0]) in _NR_SHELLS and _nr_reads_stdin(_nr_prog(last[0]), last[1:]):
-            return _nr_judge_text(" ".join(stages[0][1:]), ctx.child())
+            printed = " ".join(stages[0][1:])
+            return _nr_unresolved_program(printed, ctx) or _nr_judge_text(printed, ctx.child())
     return None
 
 
@@ -2596,7 +2812,8 @@ def _nr_judge_text(text: str, ctx: _NrContext) -> str | None:
             # A here-string is the program when a shell reads its program from stdin.
             kind = _nr_stdin_program(seg["words"])
             for body in seg["here"] if kind else ():
-                if (hit := (_nr_run_output_hit(body, ctx) or _nr_judge_text(body, ctx.child())
+                if (hit := (_nr_run_output_hit(body, ctx) or _nr_unresolved_program(body, ctx)
+                            or _nr_judge_text(body, ctx.child())
                             if kind == "shell"
                             else _nr_code_hit(body, ctx) if kind == "code"
                             else next((h for b in _DO_SHELL_SCRIPT.findall(body)
@@ -2618,15 +2835,26 @@ def _nr_judge_text(text: str, ctx: _NrContext) -> str | None:
 # pairing a harmless visible rm with a hidden one (a variable, an alias, a
 # quoted string, a launcher). So nothing is exempted from inside: the WHOLE
 # command has to be `rm`, its -r/-R/-f flags (one of them recursive), and paths written with plain
-# characters only, single spaces between them and nothing else. No quote,
-# variable, wildcard, chain, redirect, wrapper, newline or `--`; that text has
+# characters only, single spaces between them and nothing else. No variable,
+# wildcard, chain, redirect, wrapper, newline or `--`, and no quoting beyond
+# the one form described below; that text has
 # one reading in any shell. Anything else keeps the refusal it had.
 #
 # Each path, and what it resolves to on disk (a link is judged as its target),
 # must sit under home below the main folders (the rule a relative delete has),
 # or under one of _PLAIN_ORDINARY, or two folders down on another disk. The call still gets the destructive-delete
 # card in every mode; no grant covers it.
-_PLAIN_DELETE = re.compile(r"rm((?: -[rRf]{1,3})+)((?: ~?(?:/[A-Za-z0-9._+@-]+)+/?)+)")
+#
+# A path may also have spaces (rc2 fix): written inside one pair of single or
+# double quotes that covers the whole path, or with backslash-space outside
+# quotes (`~/Library/Application\ Support/App/Cache`). Its own tokenizer
+# (_plain_delete_words) accepts nothing else: inside quotes only the plain
+# characters, `/` and space; no other escape; no quote that starts or ends
+# inside a word; nothing the shell would expand. The decoded path takes the
+# same checks, and run_shell runs exactly the decoded words, without a shell.
+_PLAIN_FLAG = re.compile(r"-[rRf]{1,3}")
+_PLAIN_CHAR = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._+@-")
+_PLAIN_QUOTED = re.compile(r"/[A-Za-z0-9._+@/ -]*")
 # (folder, how many names below it a deleted path needs at least)
 _PLAIN_ORDINARY = (("/tmp", 1), ("/private/tmp", 1), ("/var/folders", 4),
                    ("/private/var/folders", 4), ("/users/shared", 1),
@@ -2668,21 +2896,75 @@ def _plain_delete_problem(full: str) -> bool:
     return True
 
 
-def plain_delete_paths(args: dict) -> list[str] | None:
-    """The paths a run_shell call deletes when the call is nothing but one
-    plain `rm` of absolute paths in ordinary folders (see above), else None."""
+def _plain_delete_words(cmd: str) -> tuple[list[str], list[str]] | None:
+    """(flags, paths as written once quoting is removed) for `rm`, its flags
+    and plain absolute paths separated by single spaces, else None."""
+    s = cmd.strip(" ")
+    if not s.startswith("rm "):
+        return None
+    words: list[tuple[str, bool]] = []          # (decoded word, was quoted)
+    i, n = 3, len(s)
+    while True:
+        if i >= n or s[i] == " ":
+            return None                         # two spaces, or nothing after one
+        if s[i] in "'\"":
+            end = s.find(s[i], i + 1)
+            if end < 0 or not _PLAIN_QUOTED.fullmatch(s[i + 1:end]):
+                return None
+            words.append((s[i + 1:end], True))
+            i = end + 1
+            if i < n and s[i] != " ":
+                return None                     # no quote glued to more text
+        else:
+            out = []
+            while i < n and s[i] != " ":
+                c = s[i]
+                if c == "\\":
+                    if s[i + 1:i + 2] != " ":
+                        return None             # the only escape is backslash-space
+                    out.append(" ")
+                    i += 2
+                    continue
+                if not (c in _PLAIN_CHAR or c == "/" or (c == "~" and not out)):
+                    return None
+                out.append(c)
+                i += 1
+            words.append(("".join(out), False))
+        if i >= n:
+            break
+        i += 1                                  # the one space between words
+    flags, paths = [], []
+    for word, quoted in words:
+        if not quoted and not paths and _PLAIN_FLAG.fullmatch(word):
+            flags.append(word)
+            continue
+        if not (word.startswith("/") or (not quoted and word.startswith("~/"))):
+            return None
+        if "//" in word or "~" in word[1:]:
+            return None
+        paths.append(word)
+    if not flags or not paths or not any("r" in f.lower() for f in flags):
+        return None                             # a delete that is not recursive never needed this
+    return flags, paths
+
+
+def plain_delete_targets(args: dict) -> tuple[list[str], tuple[tuple[str, str], ...]] | None:
+    """(rm's flags, ((path, what it resolves to on disk), ...)) when a run_shell
+    call is nothing but one plain `rm` of absolute paths in ordinary folders
+    (see above), else None. run_shell compares the second part again just
+    before it runs the delete."""
     if not isinstance(args, dict) or args.get("script"):
         return None
     cmd = args.get("cmd")
     if not isinstance(cmd, str) or len(cmd) > 4000:
         return None
-    m = _PLAIN_DELETE.fullmatch(cmd.strip(" "))
-    if m is None or "r" not in m.group(1).lower():
-        return None             # a delete that is not recursive never needed this
-    operands = m.group(2).split(" ")[1:]
+    parsed = _plain_delete_words(cmd)
+    if parsed is None:
+        return None
+    flags, operands = parsed
     if len(operands) > _PLAIN_MAX_PATHS:
         return None
-    paths = []
+    targets = []
     for op in operands:
         if any(part in (".", "..") for part in op.split("/")):
             return None
@@ -2693,8 +2975,37 @@ def plain_delete_paths(args: dict) -> list[str] | None:
             return None
         if _plain_delete_problem(full) or _plain_delete_problem(real):
             return None
-        paths.append(full)
-    return paths
+        targets.append((full, real))
+    return flags, tuple(targets)
+
+
+def plain_delete_paths(args: dict) -> list[str] | None:
+    """The paths a run_shell call deletes when the call is nothing but one
+    plain `rm` of absolute paths in ordinary folders (see above), else None."""
+    found = plain_delete_targets(args)
+    return None if found is None else [full for full, _ in found[1]]
+
+
+def plain_delete_argv(args: dict) -> tuple[tuple[str, ...], tuple[tuple[str, str], ...]] | None:
+    """The fixed argv run_shell runs for a plain delete (no shell reads it),
+    and the (path, resolved path) pairs it was judged on."""
+    found = plain_delete_targets(args)
+    if found is None:
+        return None
+    flags, targets = found
+    return ("/bin/rm", *flags, "--", *(full for full, _ in targets)), targets
+
+
+def _plain_delete_card(targets: tuple[tuple[str, str], ...]) -> str:
+    """The card reason for a plain delete: every path, as the shell reads it."""
+    home = _nr_home()
+    shown = []
+    for full, real in targets:
+        name = "~" + full[len(home):] if full.startswith(home + "/") else full
+        note = "" if real.rstrip("/") == full.rstrip("/") else f" (a link to “{real}”)"
+        shown.append(f"“{name}”{note}")
+    return ("⚠ This permanently deletes " + ", ".join(shown) + " and everything inside, and "
+            "cannot be undone. It does NOT go to the Trash. Check the paths before allowing it.")
 
 
 def never_run_hit(text: str) -> str | None:
@@ -3046,6 +3357,13 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
         return never
     if (_KEEP_FLOOR or not _FULL_ACCESS) and (floor := _hard_deny(category, args, tool)) is not None:
         return floor
+    # One plain delete of absolute paths: a card in every mode, whatever the
+    # person's own destructive_shell list says, and before grants, so no saved
+    # Always allow and no access mode skips it. The card names every path.
+    if category == "shell" and (plain := plain_delete_targets(args)) is not None:
+        if read_only():
+            return Decision(Tier.DENY, "view-only mode: deleting is disabled")
+        return Decision(Tier.CONFIRM, _plain_delete_card(plain[1]), delete_targets=plain[1])
 
     if tool == "organize_files":
         if not args.get("confirm", False):
