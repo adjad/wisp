@@ -266,3 +266,204 @@ def test_a_rebuild_that_fails_midway_keeps_the_old_search_index(tmp_path, monkey
         sessions._db.close()
         facts._db.close()
     assert not any(marker in _file_bytes(path) for marker in _MARKERS)
+
+
+def _spy_connection(monkeypatch, spy_class):
+    store_module = importlib.import_module('service.memory.store')
+    connect = sqlite3.connect
+    monkeypatch.setattr(store_module.sqlite3, 'connect',
+                        lambda *a, **k: connect(*a, factory=spy_class, **k))
+
+
+def test_orphans_are_deleted_while_the_index_and_its_triggers_are_absent(tmp_path, monkeypatch):
+    """Structural: no per-row index work for rows about to disappear."""
+    path = tmp_path / 'sessions.db'
+    live = _old_build_file(path, monkeypatch)
+    seen = {}
+
+    class Watching(sqlite3.Connection):
+        def execute(self, sql, *args):
+            if sql.startswith('DELETE FROM turns WHERE session_id NOT IN'):
+                seen['index'] = super().execute(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'memory_turn_fts%'").fetchone()[0]
+                seen['triggers'] = super().execute(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' "
+                    "AND sql LIKE '%memory_turn_fts%'").fetchone()[0]
+            return super().execute(sql, *args)
+
+    with monkeypatch.context() as watch:
+        _spy_connection(watch, Watching)
+        sessions = SessionStore(path)
+    facts = FactStore(tmp_path / 'facts.db')
+    q = MemoryQueue(sessions)
+    try:
+        assert sessions.clear_old_text() is True
+        assert seen == {'index': 0, 'triggers': 0}
+        # Back afterwards: index, triggers, and a new turn is indexed by them.
+        assert sessions._db.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'memory_turn_%'"
+        ).fetchone()[0] == 3
+        sessions.add_turn(live, 'user', 'A fresh kumquatzor note.')
+        assert [r['session_id'] for r in q.search('kumquatzor', facts)] == [live]
+        assert q.search('zorvaquillen', facts) == []
+    finally:
+        sessions._db.close()
+        facts._db.close()
+
+
+def test_a_crash_during_the_orphan_step_rolls_back_the_index_and_triggers(tmp_path, monkeypatch):
+    path = tmp_path / 'sessions.db'
+    live = _old_build_file(path, monkeypatch)
+
+    class Crashing(sqlite3.Connection):
+        def execute(self, sql, *args):
+            if sql.startswith('DELETE FROM memory_jobs WHERE session_id NOT IN'):
+                raise sqlite3.OperationalError('disk I/O error')
+            return super().execute(sql, *args)
+
+    with monkeypatch.context() as broken:
+        _spy_connection(broken, Crashing)
+        sessions = SessionStore(path)
+        assert sessions.clear_old_text() is False
+    names = {r[0] for r in sessions._db.execute(
+        "SELECT name FROM sqlite_master WHERE name LIKE 'memory_turn_%'")}
+    assert {'memory_turn_fts', 'memory_turn_insert', 'memory_turn_delete',
+            'memory_turn_update'} <= names
+    assert not sessions.old_text_cleared() and not sessions._db.in_transaction
+    sessions._db.close()
+    facts, sessions, q = _open(path)
+    try:
+        assert sessions.turn_count(live) == 41
+        assert {r['session_id'] for r in q.search('quentaborix', facts)} == {live}
+        assert sessions.clear_old_text() is True
+    finally:
+        sessions._db.close()
+        facts._db.close()
+
+
+def test_a_file_without_its_index_is_repaired_on_open_and_cleared(tmp_path, monkeypatch):
+    """What a hard kill between dropping the index and re-creating it would
+    leave, were the steps not one transaction: opening repairs it anyway."""
+    path = tmp_path / 'sessions.db'
+    live = _old_build_file(path, monkeypatch)
+    raw = sqlite3.connect(str(path))
+    for trig in ('memory_turn_insert', 'memory_turn_delete', 'memory_turn_update'):
+        raw.execute(f'DROP TRIGGER {trig}')
+    raw.execute('DROP TABLE memory_turn_fts')
+    raw.commit()
+    raw.close()
+    facts, sessions, q = _open(path)
+    try:
+        assert {r['session_id'] for r in q.search('quentaborix', facts)} == {live}
+        assert sessions.clear_old_text() is True
+        assert {r['session_id'] for r in q.search('quentaborix', facts)} == {live}
+    finally:
+        sessions._db.close()
+        facts._db.close()
+    assert not any(marker in _file_bytes(path) for marker in _MARKERS)
+
+
+def test_a_chat_saved_between_steps_is_indexed_and_survives_vacuum(tmp_path, monkeypatch):
+    path = tmp_path / 'sessions.db'
+    live = _old_build_file(path, monkeypatch)
+    facts, sessions, q = _open(path)
+    real = sessions._lock
+    steps = []
+
+    class Releasing:
+        """The store lock; after each release a chat is saved, as a request
+        waiting for the lock would."""
+        busy = False
+
+        def __enter__(self):
+            real.acquire()
+            return self
+
+        def __exit__(self, *exc):
+            real.release()
+            if not Releasing.busy:
+                Releasing.busy = True
+                try:
+                    n = len(steps)
+                    steps.append(n)
+                    sessions.add_turn(live, 'user', f'Between steps {n}: marzipanquor{n}.')
+                finally:
+                    Releasing.busy = False
+
+        def acquire(self, *a, **k):
+            return real.acquire(*a, **k)
+
+        def release(self):
+            real.release()
+
+    sessions._lock = Releasing()
+    try:
+        assert sessions.clear_old_text() is True
+        done = len(steps)
+        assert done >= 4                # the lock really was released between steps
+        sessions._lock = real           # stop adding turns
+        for n in range(done):
+            assert [r['session_id'] for r in q.search(f'marzipanquor{n}', facts)] == [live], n
+        assert sessions._index_matches_turns()
+        assert sessions.turn_count(live) == 41 + done
+    finally:
+        sessions._db.close()
+        facts._db.close()
+
+
+def test_a_wal_that_cannot_be_checkpointed_leaves_no_marker(tmp_path, monkeypatch, caplog):
+    path = tmp_path / 'sessions.db'
+    live = _old_build_file(path, monkeypatch, wal=True)
+    sessions = SessionStore(path)
+    reader = sqlite3.connect(str(path))
+    reader.execute('BEGIN')
+    reader.execute('SELECT COUNT(*) FROM turns').fetchone()      # a read snapshot
+    try:
+        assert sessions.clear_old_text() is False
+        assert not sessions.old_text_cleared()
+        assert 'checkpointed' in caplog.text
+    finally:
+        reader.rollback()
+        reader.close()
+    try:
+        assert sessions.clear_old_text() is True
+        assert sessions.old_text_cleared()
+        assert sessions.turn_count(live) == 41
+        assert not any(marker in _file_bytes(path) for marker in _MARKERS)
+    finally:
+        sessions._db.close()
+    assert not any(marker in _file_bytes(path) for marker in _MARKERS)
+
+
+def test_too_little_disk_skips_the_start_before_any_costly_step(tmp_path, monkeypatch, caplog):
+    import shutil
+    path = tmp_path / 'sessions.db'
+    live = _old_build_file(path, monkeypatch)
+    seen = []
+
+    class Spy(sqlite3.Connection):
+        def execute(self, sql, *args):
+            seen.append(sql)
+            return super().execute(sql, *args)
+
+    with monkeypatch.context() as spy:
+        _spy_connection(spy, Spy)
+        sessions = SessionStore(path)
+    size = path.stat().st_size
+    seen.clear()
+    with monkeypatch.context() as full:
+        full.setattr(shutil, 'disk_usage',
+                     lambda p: shutil._ntuple_diskusage(10 * size, 9 * size, 2 * size))
+        assert sessions.clear_old_text() is False
+    assert 'MB free' in caplog.text
+    assert not sessions.old_text_cleared()
+    assert not any(s.startswith(('DELETE', 'DROP', 'VACUUM', 'PRAGMA quick_check')) for s in seen)
+    assert sessions._db.execute(
+        "SELECT COUNT(*) FROM turns WHERE session_id='vanished'").fetchone()[0] == 1
+    assert sessions.turn_count(live) == 41
+    # Space comes back: the next start does the work.
+    try:
+        assert sessions.clear_old_text() is True
+    finally:
+        sessions._db.close()
+    assert not any(marker in _file_bytes(path) for marker in _MARKERS)

@@ -184,6 +184,7 @@ class SessionStore:
                 raise
         self._db.commit()
         self._lock = threading.Lock()
+        self._clear_guard = threading.Lock()   # one clear_old_text at a time
 
     # --- one-time rebuild ---------------------------------------------------
     def old_text_cleared(self) -> bool:
@@ -200,50 +201,62 @@ class SessionStore:
         secure_delete only covers what this store removes from now on. Chats an
         earlier build deleted still sit in free pages, in the unused space of
         live pages and in old search-index segments (FTS5 without its
-        secure-delete option only records that a row is gone). This drops
-        index rows whose turn no longer exists, rewrites the index from the
+        secure-delete option only records that a row is gone). This drops the
+        index, removes turns whose chat is gone, rewrites the index from the
         live turns, then VACUUMs. Mirrors the assistant.db and facts.db
         rebuilds (service/assistant/store.py, service/memory/facts.py).
 
         Blocking: startup runs it in a worker thread, never awaiting it inline.
-        It holds the store lock, so a chat saved meanwhile waits for it instead
-        of failing. Each step is one SQLite transaction: an interruption rolls
-        back to the intact file and the next start tries again. A file that is
-        locked by another process, read-only or damaged is left alone and the
-        reason logged. Never raises. True once the file has been cleared.
+        The store lock is held one step at a time (check, orphans + index,
+        VACUUM, index check, checkpoint + marker), so a chat saved between
+        steps goes through instead of waiting for the whole rebuild; the
+        triggers are back in place whenever the lock is released, so that
+        turn is indexed normally. Each step is one SQLite transaction: an
+        interruption rolls back to the intact file and the next start tries
+        again. A file that is locked by another process, read-only, damaged,
+        short of disk space or whose WAL could not be fully checkpointed is
+        left alone, unmarked, and the reason logged. Never raises. True once
+        the file has been cleared.
         """
+        if not self._clear_guard.acquire(blocking=False):
+            return False          # another call is already rebuilding it
         try:
             if self.old_text_cleared():
                 return True
-            with self._lock:
-                return self._clear_old_text_locked()
+            return self._clear_old_text_steps()
         except Exception as exc:  # noqa: BLE001 — never blocks or breaks startup
             _log.warning("session store: deleted chats not cleared yet: %s", type(exc).__name__)
             return False
+        finally:
+            self._clear_guard.release()
 
-    def _clear_old_text_locked(self) -> bool:
+    def _clear_old_text_steps(self) -> bool:
         db = self._db
-        db.execute("PRAGMA busy_timeout=250")
         try:
-            check = db.execute("PRAGMA quick_check").fetchone()
-            if not check or check[0] != "ok":
-                _log.warning("session store: deleted chats not cleared: the file failed its check")
-                return False
-            self._drop_orphans()
-            fts = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
-                             (_FTS,)).fetchone()
-            if fts is not None:
-                self._rebuild_index(fts[0])
-            db.execute("VACUUM")
-            if fts is not None and not self._index_matches_turns():
-                # VACUUM may renumber the implicit rowids the index is keyed by.
-                self._rebuild_index(fts[0])
-            if str(db.execute("PRAGMA journal_mode").fetchone()[0]).lower() == "wal":
-                # VACUUM's copy of the old pages sits in the log until checkpointed.
-                db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            with db:
-                db.execute("INSERT OR IGNORE INTO session_store_meta VALUES (?, '1')",
-                           (OLD_TEXT_CLEARED,))
+            with self._lock:
+                db.execute("PRAGMA busy_timeout=250")
+                if not self._enough_disk_space():
+                    return False
+                check = db.execute("PRAGMA quick_check").fetchone()
+                if not check or check[0] != "ok":
+                    _log.warning("session store: deleted chats not cleared: the file failed its check")
+                    return False
+            with self._lock:
+                db.execute("PRAGMA busy_timeout=250")
+                self._rebuild_index_dropping_orphans()
+            with self._lock:
+                db.execute("PRAGMA busy_timeout=250")
+                db.execute("VACUUM")
+            with self._lock:
+                db.execute("PRAGMA busy_timeout=250")
+                if self._has_index() and not self._index_matches_turns():
+                    # VACUUM may renumber the implicit rowids the index is keyed by.
+                    self._rebuild_index()
+                if not self._checkpointed():
+                    return False
+                with db:
+                    db.execute("INSERT OR IGNORE INTO session_store_meta VALUES (?, '1')",
+                               (OLD_TEXT_CLEARED,))
             return True
         except sqlite3.Error as exc:
             if db.in_transaction:
@@ -251,27 +264,89 @@ class SessionStore:
             _log.warning("session store: deleted chats not cleared yet: %s", exc)
             return False
         finally:
-            db.execute("PRAGMA busy_timeout=5000")   # sqlite3.connect's own default
+            with self._lock:
+                db.execute("PRAGMA busy_timeout=5000")   # sqlite3.connect's own default
 
-    def _drop_orphans(self) -> None:
-        """Remove what is left of chats whose session row is gone.
+    def _enough_disk_space(self) -> bool:
+        """VACUUM writes a full copy, plus journal or log: ask for twice the
+        file and a margin before doing any of the costly steps, so a full disk
+        is refused up front instead of after every start's index rebuild."""
+        import os
+        import shutil
+        path = next((row[2] for row in self._db.execute("PRAGMA database_list")
+                     if row[1] == "main"), "")
+        if not path:
+            return True               # in-memory: nothing to copy
+        need = 2 * os.path.getsize(path) + (32 << 20)
+        free = shutil.disk_usage(os.path.dirname(os.path.abspath(path))).free
+        if free < need:
+            _log.warning("session store: deleted chats not cleared yet: %d MB free, "
+                         "%d MB needed to rebuild the file", free >> 20, need >> 20)
+            return False
+        return True
+
+    def _checkpointed(self) -> bool:
+        """VACUUM's copy of the old pages sits in the WAL until checkpointed;
+        the marker is only safe once the log is empty and in the main file."""
+        db = self._db
+        if str(db.execute("PRAGMA journal_mode").fetchone()[0]).lower() != "wal":
+            return True
+        row = db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        busy, log, done = (row[0], row[1], row[2]) if row else (1, 0, -1)
+        if busy or log != done:
+            _log.warning("session store: deleted chats not cleared yet: the log could not "
+                         "be fully checkpointed (busy=%s, %s of %s frames)", busy, done, log)
+            return False
+        return True
+
+    def _has_index(self) -> bool:
+        return self._db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                                (_FTS,)).fetchone() is not None
+
+    def _rebuild_index_dropping_orphans(self) -> None:
+        """One transaction: drop the index, remove what is left of chats whose
+        session row is gone, rebuild the index from the live turns.
 
         Every chat starts with create_session (an unknown id gets a new
         session), and delete_session removes its rows with it, so a turn,
         workflow or memory job without a session is a deleted chat's remnant
         (a turn saved while its chat was being deleted, or an older build's
         partial delete). It is not listed or openable, so no live chat is lost.
+
+        The turns delete trigger would remove each orphan's index row (and
+        secure-delete its words) one by one just before the index is dropped
+        anyway, so the index and the triggers that name it are dropped first.
+        All of it commits or none of it does (DDL is transactional): a crash
+        leaves the old index and triggers, and the lock is not released
+        until they are back, so no write can reach the turns without them.
         """
+        from service.memory.facts import secure_delete_fts
         db = self._db
+        create = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+                            (_FTS,)).fetchone()
+        triggers = db.execute("SELECT name, sql FROM sqlite_master WHERE type='trigger' "
+                              "AND tbl_name='turns' AND sql LIKE ?", (f"%{_FTS}%",)).fetchall()
         with db:
+            # Explicit: sqlite3 opens no transaction before DDL on its own.
+            db.execute("BEGIN IMMEDIATE")
+            if create is not None:
+                for name, _sql in triggers:
+                    db.execute('DROP TRIGGER "' + name.replace('"', '""') + '"')
+                db.execute(f"DROP TABLE {_FTS}")
             db.execute("DELETE FROM workflow_events WHERE workflow_id IN (SELECT id FROM workflows "
                        "WHERE session_id NOT IN (SELECT id FROM sessions))")
             db.execute("DELETE FROM workflows WHERE session_id NOT IN (SELECT id FROM sessions)")
-            # The turns delete trigger also drops their index rows and memory jobs.
             db.execute("DELETE FROM turns WHERE session_id NOT IN (SELECT id FROM sessions)")
             db.execute("DELETE FROM memory_jobs WHERE session_id NOT IN (SELECT id FROM sessions)")
+            if create is not None:
+                db.execute(create[0])
+                db.execute(f"INSERT INTO {_FTS}(rowid,text,session_id,turn_idx,created_at,role) "
+                           "SELECT rowid,content,session_id,idx,created_at,role FROM turns")
+                secure_delete_fts(db, _FTS)
+                for _name, sql in triggers:
+                    db.execute(sql)
 
-    def _rebuild_index(self, create_sql: str) -> None:
+    def _rebuild_index(self) -> None:
         """Replace the chat search index with one built from the live turns.
 
         Dropping it frees every old segment, including the words of chats
@@ -280,9 +355,10 @@ class SessionStore:
         """
         from service.memory.facts import secure_delete_fts
         db = self._db
+        create_sql = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+                                (_FTS,)).fetchone()[0]
         with db:
-            # Explicit: sqlite3 opens no transaction before DDL on its own, and
-            # the drop and the refill must commit, or roll back, together.
+            # Explicit: the drop and the refill must commit, or roll back, together.
             db.execute("BEGIN IMMEDIATE")
             db.execute(f"DROP TABLE {_FTS}")
             db.execute(create_sql)
