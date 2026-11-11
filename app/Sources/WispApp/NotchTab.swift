@@ -33,6 +33,61 @@ enum NotchTab: Int, CaseIterable, Equatable {
     var showsDay: Bool { self == .brief || self == .day }
 }
 
+/// What fills the open panel under its header. Tabs sit side by side, in strip
+/// order; quick settings is pushed over a tab and a permission page over either.
+/// The reset card and Getting to know you replace a tab in place.
+enum NotchPage: Hashable {
+    case tab(NotchTab)
+    case settings
+    case permissions
+    case reset
+    case knowYou
+
+    /// How far down the push stack: tabs and cards 0, settings 1, permissions 2.
+    var depth: Int {
+        switch self {
+        case .tab, .reset, .knowYou: return 0
+        case .settings: return 1
+        case .permissions: return 2
+        }
+    }
+
+    /// The page shown for the panel's state, most specific first, as
+    /// OverlayView.expandedPanel lays them out.
+    static func shown(tab: NotchTab, settings: Bool, permissions: Bool, reset: Bool, knowYou: Bool) -> NotchPage {
+        if reset { return .reset }
+        if knowYou { return .knowYou }
+        if permissions { return .permissions }
+        if settings { return .settings }
+        return .tab(tab)
+    }
+
+    /// How a change from one page to another slides (NotchPageMotion).
+    /// - A deeper page pushes in from the trailing edge; the page under it
+    ///   drifts a step toward the leading edge as it fades.
+    /// - Going back is the mirror: the page leaves to the trailing edge, and the
+    ///   one under it returns from a step to the leading side.
+    /// - Tabs slide a step by strip order (Research counts as Ask).
+    /// - The reset card and Getting to know you crossfade in place.
+    static func motion(from old: NotchPage, to new: NotchPage) -> NotchPageMotion {
+        guard old != new else { return .none }
+        if new.depth > old.depth { return NotchPageMotion(insertion: 3, removal: -1) }
+        if new.depth < old.depth { return NotchPageMotion(insertion: -1, removal: 3) }
+        guard case .tab(let from) = old, case .tab(let to) = new,
+              let a = NotchTab.strip.firstIndex(of: from.stripTab),
+              let b = NotchTab.strip.firstIndex(of: to.stripTab), a != b else { return .none }
+        return b > a ? NotchPageMotion(insertion: 1, removal: -1) : NotchPageMotion(insertion: -1, removal: 1)
+    }
+}
+
+/// Where an arriving page starts and a leaving page ends, in slide steps
+/// (Theme.Motion.slideStep): positive toward the trailing edge. Both fade.
+struct NotchPageMotion: Equatable {
+    var insertion: Double
+    var removal: Double
+    static let none = NotchPageMotion(insertion: 0, removal: 0)
+}
+
 /// Which tab the panel opens on. ⌥Space and the menu-bar icon always open Ask.
 /// Hovering opens the tab last used, if the panel closed within the last ten
 /// minutes; after that it is back to Ask.

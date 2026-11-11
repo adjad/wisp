@@ -344,15 +344,13 @@ struct NotchBriefView: View {
             model.onResize()
             return
         }
-        withAnimation(.easeOut(duration: Self.rowAnimation)) { open = next }
+        withAnimation(Theme.Motion.panel) { open = next }
         // Measure in this run-loop turn, before the first animated frame, and
         // again once SwiftUI has laid the change out.
         model.onResizeNow()
         model.onResize()
     }
 
-    /// The list swap. Kept under OverlayPanel.shrinkSettle.
-    static let rowAnimation: TimeInterval = 0.18
 
     // MARK: - Rows
 

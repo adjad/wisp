@@ -137,6 +137,26 @@ enum Theme {
     static let iconButtonSize: CGFloat = 24
     static let iconGlyphSize: CGFloat = 11
 
+    // MARK: - Motion
+    /// Every change inside the open panel moves the same way: a tab switch, quick
+    /// settings and the permission pages arriving and leaving, the selected tab
+    /// gliding, the panel's height following its content. One calm spring with
+    /// no bounce, so nothing overshoots. Opening and closing the panel keep their
+    /// own curves (OverlayPanel.reveal).
+    enum Motion {
+        static let panel = Animation.spring(duration: 0.3, bounce: 0)
+        /// The panel's animation, or nil with Reduce Motion: an instant swap.
+        static func panel(reduceMotion: Bool) -> Animation? { reduceMotion ? nil : panel }
+        /// How long the content takes to come to rest. A window shrink waits
+        /// this long, so it lands under content that has already settled and
+        /// never cuts off a page still animating out. Longer than the spring's
+        /// 0.3 s: at 0.4 s under 0.3 % of the move is left.
+        static let settle: TimeInterval = 0.4
+        /// One slide step, in points: a tab moves one step, a pushed page
+        /// (quick settings, a permission page) three.
+        static let slideStep: CGFloat = 12
+    }
+
     // Soft radial glow, not a glossy sphere — a bright core fading fully to
     // transparent reads as ambient light sitting on the black surface rather
     // than an opaque ball. Still strictly monochrome (no color), just diffuse

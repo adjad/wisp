@@ -227,6 +227,14 @@ final class OverlayModel: ObservableObject {
 
     func closePermissionPage() { showingPermissions = false }
 
+    /// What fills the panel under its header now. OverlayView animates every
+    /// change of it the same way (Theme.Motion), however it was made: a tab
+    /// click, ⌘1 to ⌘3, a deep link, a notification, the gear, Done or Esc.
+    var page: NotchPage {
+        NotchPage.shown(tab: tab, settings: showingQuickSettings, permissions: showingPermissions,
+                        reset: resetCard != nil, knowYou: knowYou != nil)
+    }
+
     /// Its states are read only while it can be seen. Opening the panel reads
     /// them again at once, so coming back from System Settings shows the answer.
     private func syncPermissionPoll() {

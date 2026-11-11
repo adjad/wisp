@@ -210,42 +210,61 @@ final class OverlayPanel: NSPanel {
     }
 
     /// How long a shrink waits for SwiftUI to finish animating the content
-    /// down (Brief rows close in 0.18 s) before the window follows.
-    static let shrinkSettle: TimeInterval = 0.24
+    /// down before the window follows: the panel's settle time (Theme.Motion).
+    static let shrinkSettle: TimeInterval = Theme.Motion.settle
 
     /// Fit the window to the content.
     ///
-    /// Rules:
+    /// The window is a clip, not the panel's edge: the panel's black surface,
+    /// its rounded bottom and its shadow are drawn by the SwiftUI content, which
+    /// animates its own size (Theme.Motion). The window only has to stay at
+    /// least as big as what the content is drawing, and as small as it can be
+    /// once the content is at rest. So:
     /// - Growing applies at once, before the content animates into the room,
     ///   so a growing panel is never clipped at the window's bottom edge.
-    /// - Shrinking waits `shrinkSettle`, so content still animating out (a row
-    ///   closing) is never cut off by the window snapping smaller under it. The
-    ///   area it leaves is transparent until then.
+    /// - Shrinking waits `shrinkSettle`, until the content has animated down, so
+    ///   a page still animating out is never cut off. What the content has left
+    ///   is transparent by then, so the window's last step is invisible.
+    /// - A change of width and height together (the two-column Brief, a page
+    ///   switch from it) grows at once to cover both shapes, then settles.
     /// - Calls coalesce: each one measures afresh, a newer shrink replaces a
-    ///   pending one, and a grow cancels it, so rapid toggles never stack.
-    /// - With Reduce Motion nothing animates, so a shrink applies at once.
+    ///   pending one, and a grow lands at once, so rapid switches never stack.
+    /// - With Reduce Motion nothing animates, so every change applies at once.
     func resizeToFit() {
         guard isVisible, !isRevealing, !isCompact(), let f = frame(compact: false) else { return }
-        guard differs(f) else { cancelPendingShrink(); return }
-        let shrinkingOnly = f.height < frame.height && abs(f.width - frame.width) <= 1
-            && abs(f.origin.x - frame.origin.x) <= 1
-        if shrinkingOnly && !reduceMotion() {
-            cancelPendingShrink()
-            let work = DispatchWorkItem { [weak self] in
-                guard let self else { return }
-                self.pendingShrink = nil
-                guard self.isVisible, !self.isRevealing, !self.isCompact(),
-                      let latest = self.frame(compact: false), self.differs(latest) else { return }
-                self.setFrame(latest, display: true)
-                self.fillMask()
-            }
-            pendingShrink = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + Self.shrinkSettle, execute: work)
+        cancelPendingShrink()
+        guard differs(f) else { return }
+        if reduceMotion() {
+            setFrame(f, display: true)
+            fillMask()
             return
         }
-        cancelPendingShrink()
-        setFrame(f, display: true)
-        fillMask()
+        let covering = Self.covering(frame, f)
+        if differs(covering) {
+            setFrame(covering, display: true)
+            fillMask()
+        }
+        guard differs(f) else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingShrink = nil
+            guard self.isVisible, !self.isRevealing, !self.isCompact(),
+                  let latest = self.frame(compact: false), self.differs(latest) else { return }
+            self.setFrame(latest, display: true)
+            self.fillMask()
+        }
+        pendingShrink = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.shrinkSettle, execute: work)
+    }
+
+    /// The smallest window that holds both the current frame and the target:
+    /// the panel hangs from a fixed top and is centred, so this is the wider
+    /// of the two and the taller, with the same top.
+    static func covering(_ current: NSRect, _ target: NSRect) -> NSRect {
+        let top = max(current.maxY, target.maxY)
+        let minX = min(current.minX, target.minX), maxX = max(current.maxX, target.maxX)
+        let height = max(current.height, target.height)
+        return NSRect(x: minX, y: top - height, width: maxX - minX, height: height)
     }
 
     /// Whether a shrink is waiting for the content to finish animating.
