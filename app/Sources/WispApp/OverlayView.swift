@@ -415,6 +415,11 @@ struct OverlayView: View {
                 HStack(spacing: 2) {
                     ForEach(NotchTab.strip, id: \.self) { tab in tabLabel(tab, onCapsule: true) }
                 }
+                // At its own ideal width, like the buttons under it. Offered the
+                // strip's width instead, which rounds to the pixel grid, it can
+                // come up a fraction short: then "Day" truncates to "…" and the
+                // row re-centres, shifting every dark label off its capsule.
+                .fixedSize()
                 .mask { selectionCapsule }
             }
             .allowsHitTesting(false)

@@ -393,6 +393,20 @@ enum Harness {
                 if !reduce, caught == 0 {
                     problems.append("(d) capsule snap: no sample caught it between 10% and 90% of its \(f(moved)) pt move")
                 }
+                // The dark label on the capsule must be the grey label it
+                // covers, in the same place: the strip draws it as a second
+                // row, which once laid out narrower, truncating "Day" to "…"
+                // and shifting the other labels off their capsule.
+                let inset = (b.lo + 6, b.hi - 6)
+                if let grey = labelInk(before, row: row, span: inset, onCapsule: false),
+                   let dark = labelInk(final, row: row, span: inset, onCapsule: true) {
+                    capsuleLine += ", label ink \(f(grey.0))-\(f(grey.1)) grey vs \(f(dark.0))-\(f(dark.1)) on the capsule"
+                    if abs(grey.0 - dark.0) > 1 || abs(grey.1 - dark.1) > 1 {
+                        problems.append("(e) label on the capsule spans \(f(dark.0))-\(f(dark.1)) pt, but the tab's label spans \(f(grey.0))-\(f(grey.1)) pt")
+                    }
+                } else {
+                    problems.append("(e) no label ink found under the capsule")
+                }
             }
         }
 
@@ -485,6 +499,29 @@ enum Harness {
         }
         let a = Double(bestStart) / s.scale, b = Double(bestStart + bestLen) / s.scale
         return ((a + b) / 2, a, b, Double(half) / s.scale)
+    }
+
+    /// The first and last columns (points) with label ink inside `span`, over
+    /// the 16 pt of rows below the capsule row: bright text and badge on the
+    /// dark strip, or dark text and badge on the white capsule.
+    static func labelInk(_ s: MotionSample, row: Int, span: (Double, Double), onCapsule: Bool) -> (Double, Double)? {
+        guard let p = pixels(s) else { return nil }
+        let lo = max(0, Int(span.0 * s.scale)), hi = min(p.w, Int(span.1 * s.scale))
+        let top = row + Int(1 * s.scale), bottom = min(p.h, row + Int(17 * s.scale))
+        guard lo < hi, top < bottom else { return nil }
+        var first: Int? = nil, last: Int? = nil
+        for x in lo..<hi {
+            for y in top..<bottom {
+                let v = whiteness(p, x, y)
+                if onCapsule ? v <= 165 : v >= 90 {
+                    if first == nil { first = x }
+                    last = x
+                    break
+                }
+            }
+        }
+        guard let a = first, let b = last else { return nil }
+        return (Double(a) / s.scale, Double(b + 1) / s.scale)
     }
 
     /// Frames side by side (four a row), each labelled; the window's bottom edge
