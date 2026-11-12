@@ -1,0 +1,116 @@
+{
+ "oq4e": {
+  "final_samples": 320,
+  "call_samples": 120,
+  "finals_prompts_passed": 110,
+  "finals_prompts": 160,
+  "old_drops_passed": 0,
+  "old_drops": 49,
+  "finals_pass_by_intent": {
+   "authorized_write": "17/17",
+   "clarify": "26/37",
+   "direct_send": "13/15",
+   "draft": "8/20",
+   "embedded_instruction": "3/3",
+   "leave_alone": "16/37",
+   "read_only": "13/13",
+   "refused": "6/8",
+   "reply": "8/10"
+  },
+  "final_reject_reasons": {
+   "empty": 98,
+   "tool_call": 70,
+   "write:no_question": 26,
+   "write:missing_fact": 11,
+   "write:draft_not_stated": 11,
+   "stall": 6,
+   "write:invented_action": 2,
+   "fact:weekday_date_mismatch": 2,
+   "fact:wrong_weekday": 1
+  },
+  "raw_filter_cut": 34,
+  "raw_filter_cut_by": {
+   "clarify/clarify_asks_nothing": 2,
+   "draft/draft_claims_sent": 11,
+   "leave_alone/leave_alone_claims_a_note": 13,
+   "leave_alone/leave_alone_takes_remark_as_task": 5,
+   "refused/claims_action_on_no_write_turn": 3
+  },
+  "safety_backstop_rejected": 0,
+  "final_length_cut": 0,
+  "final_mean_completion_tokens": 262.2,
+  "call_samples_matching_script": 22,
+  "call_prompts_with_a_match": 13,
+  "call_prompts": 60,
+  "call_reject_reasons": {
+   "call_mismatch": 70,
+   "thought_length": 17,
+   "text_with_call": 15,
+   "no_call": 13,
+   "call_missing_argument": 12,
+   "call_extra_argument": 2,
+   "no_thought": 2
+  },
+  "thoughts_kept": 12
+ },
+ "bf16": {
+  "final_samples": 320,
+  "call_samples": 120,
+  "finals_prompts_passed": 134,
+  "finals_prompts": 160,
+  "old_drops_passed": 24,
+  "old_drops": 49,
+  "finals_pass_by_intent": {
+   "authorized_write": "17/17",
+   "clarify": "29/37",
+   "direct_send": "13/15",
+   "draft": "13/20",
+   "embedded_instruction": "3/3",
+   "leave_alone": "28/37",
+   "read_only": "13/13",
+   "refused": "8/8",
+   "reply": "10/10"
+  },
+  "final_reject_reasons": {
+   "empty": 65,
+   "tool_call": 51,
+   "write:no_question": 21,
+   "write:missing_fact": 9,
+   "write:draft_not_stated": 4,
+   "stall": 1,
+   "leak": 1
+  },
+  "raw_filter_cut": 22,
+  "raw_filter_cut_by": {
+   "clarify/clarify_asks_nothing": 1,
+   "draft/draft_claims_sent": 4,
+   "leave_alone/leave_alone_claims_a_note": 8,
+   "leave_alone/leave_alone_takes_remark_as_task": 6,
+   "refused/claims_action_on_no_write_turn": 3
+  },
+  "safety_backstop_rejected": 0,
+  "final_length_cut": 0,
+  "final_mean_completion_tokens": 258.5,
+  "call_samples_matching_script": 27,
+  "call_prompts_with_a_match": 15,
+  "call_prompts": 60,
+  "call_reject_reasons": {
+   "call_mismatch": 69,
+   "text_with_call": 18,
+   "thought_length": 17,
+   "no_call": 12,
+   "call_missing_argument": 9,
+   "call_extra_argument": 3
+  },
+  "thoughts_kept": 14
+ },
+ "paired": {
+  "finals_both": 109,
+  "finals_only_oq4e": 1,
+  "finals_only_bf16": 25,
+  "finals_neither": 25,
+  "calls_both": 12,
+  "calls_only_oq4e": 1,
+  "calls_only_bf16": 3
+ }
+}
