@@ -89,14 +89,14 @@ struct OverlayView: View {
                 PanelScrollMemory.forgetAll()
             }
             if !isCollapsed {
-                if !model.tab.showsDay { focused = true }
+                if model.tab.hasPrompt { focused = true }
                 model.refreshRecentChats()
                 model.refreshStarters(today: todayModel)
             }
         }
         // Switching to Ask or Research (including Ask Wisp from Brief or Day) puts the cursor in the field.
         .onChange(of: model.tab) { _, tab in
-            if !tab.showsDay && !model.collapsed { focused = true }
+            if tab.hasPrompt && !model.collapsed { focused = true }
         }
     }
 
@@ -246,6 +246,8 @@ struct OverlayView: View {
             tabScroll { NotchBriefView(model: model, today: todayModel, wide: briefIsWide) }
         case .day:
             tabScroll { NotchDayView(model: model, today: todayModel) }
+        case .meet:
+            tabScroll { NotchMeetingView(model: MeetingModel.shared) }
         case .research:
             if model.showingResearch {
                 ResearchView(model: researchModel, compact: true,
@@ -482,6 +484,7 @@ struct OverlayView: View {
         case .ask: return "Open this chat in the Wisp window (⌘O)"
         case .brief, .day: return "Open the full planner in the Wisp window (⌘O)"
         case .research: return "Open the research library (⌘O)"
+        case .meet: return "Open the Wisp window (⌘O)"
         }
     }
 

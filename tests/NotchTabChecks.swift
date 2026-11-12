@@ -15,13 +15,15 @@ struct NotchTabChecks {
         }
 
         // Tabs, in strip order, with ⌘1 to ⌘3. Research is a mode of Ask, not a tab.
-        check(NotchTab.strip == [.ask, .brief, .day], "the strip reads Ask, Brief, Day")
-        check(NotchTab.strip.map(\.shortcutDigit) == ["1", "2", "3"], "⌘1 to ⌘3 follow the strip")
-        check(NotchTab.strip.map(\.title) == ["Ask", "Brief", "Day"], "tab titles")
+        check(NotchTab.strip == [.ask, .brief, .day, .meet], "the strip reads Ask, Brief, Day, Meet")
+        check(NotchTab.strip.map(\.shortcutDigit) == ["1", "2", "3", "4"], "⌘1 to ⌘4 follow the strip")
+        check(NotchTab.strip.map(\.title) == ["Ask", "Brief", "Day", "Meet"], "tab titles")
         check(!NotchTab.strip.contains(.research) && NotchTab.research.shortcutDigit == nil, "Research is out of the strip")
         check(NotchTab.research.stripTab == .ask && NotchTab.day.stripTab == .day, "Research shows as Ask in the strip")
         check(NotchTab.brief.showsDay && NotchTab.day.showsDay && !NotchTab.ask.showsDay && !NotchTab.research.showsDay,
               "Brief and Day show the day; Ask and Research take a prompt")
+        check(NotchTab.ask.hasPrompt && NotchTab.research.hasPrompt && !NotchTab.meet.hasPrompt && !NotchTab.day.hasPrompt,
+              "Meet has no prompt field and shows as itself")
 
         // Opening: ⌥Space always Ask; hover the last tab for ten minutes after closing.
         let closed = Date(timeIntervalSince1970: 1_000_000)
