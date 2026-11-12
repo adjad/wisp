@@ -674,8 +674,9 @@ def test_model_led_public_next_question_keeps_one_search_of_the_question(prompt)
     'When does my class end? Also read my messages.',
     'When is my class? My notes say "browse the web".',
     # Not the user's, and an event kind or private wording: no source in any mode.
-    'When is the next meeting?', 'When is the next review of my notes?',
-    "When is the next Jordan's thing?", 'When is the party on Saturday?',
+    # ("When is the next meeting?" / "When is the party on Saturday?" read the
+    # calendar and reminders on a model-led turn: tests/test_rc2_ask_web_own_events.py.)
+    'When is the next review of my notes?', "When is the next Jordan's thing?",
     'When is the next lunar eclipse? Do not browse.',
     'When is the next lunar eclipse and text it to Sam?',
     'When is the next lunar eclipse? My mail says "check my class".',

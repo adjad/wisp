@@ -42,6 +42,10 @@ class Decision:
     # Present only for implicit read-only shell admission. The executor must
     # run these validated arguments directly, never reinterpret the input.
     shell_argv: tuple[str, ...] | None = None
+    # Present only for a plain delete's card (plain_delete_targets): the
+    # (path, resolved path) pairs it was judged on, compared again by
+    # run_shell immediately before the delete runs.
+    delete_targets: tuple[tuple[str, str], ...] | None = None
 
 
 # --- built-in defaults (used if policy.yaml is absent) ---------------------
@@ -852,7 +856,16 @@ _DESTRUCTIVE_SHELL = [
 def is_destructive_shell(cmd: str) -> str | None:
     """The destructive pattern `cmd` matches, or None. Public so the agent
     loop's confirmation card can explain WHICH rule fired."""
-    return _any(_rules("destructive_shell", _DESTRUCTIVE_SHELL), cmd)
+    rules = _rules("destructive_shell", _DESTRUCTIVE_SHELL)
+    if (hit := _any(rules, cmd)):
+        return hit
+    # The patterns stop at a `;`. One that is quoted or escaped is a word, not
+    # the end of the command (`find ';' build -delete`), so it is read through.
+    plain = _QUOTED_SEMICOLON.sub(" _ ", cmd) if isinstance(cmd, str) else cmd
+    return _any(rules, plain) if plain != cmd else None
+
+
+_QUOTED_SEMICOLON = re.compile(r"\\;|';'|\";\"")
 
 # Outbound actions performed as the user and seen by other people (mail, texts)
 # or that write to a remote service. Confirmed on every call regardless of
@@ -1302,6 +1315,246 @@ def _save_folder_problem(folder) -> str | None:
     return None
 
 
+# --- text the floor does not read (rc2 fix) -------------------------------------
+# _SHELL_DENY reads raw text, so a commit message or a note that only MENTIONS
+# a refused command (`git commit -m "stop the reboot loop"`) was refused too.
+# Rather than teach the floor shell quoting, a few WHOLE-command shapes whose
+# quoted text is only ever data have that text blanked before the floor reads
+# the rest:
+#   git commit [flags] -m '<text>' [-m '<text>' ...]
+#   echo [-n|-e] '<text>' >|>> <notes file>
+#   cat >|>> <notes file> <<'EOF' ... EOF        (a quoted delimiter only)
+#   git commit [flags] -F - <<'EOF' ... EOF
+# each optionally after `&&` steps from a short list that writes no file,
+# makes no link and stays in the working folder (git add/status/diff/log/show
+# with plain words and no `=`, `mkdir [-p] <plain relative folder>`; before a
+# git commit also `cd <plain folder>`, since a commit writes no file the text
+# names). The floor still reads those steps. Any other step (ln, cp, mv, cd
+# before a notes file, touch, ...) and the whole line is read as before.
+# Double-quoted text may hold nothing the shell expands ($ ` \ !). A notes
+# file is a relative path ending .txt/.md/.log/.csv/..., with no dot-folder
+# and no `..`: never a script, a startup file or a launch agent. It is also
+# looked up on disk (run_shell runs in home) when the call is judged: no part
+# of it may be a link, an existing file must be one ordinary file with one
+# name (no hard link), and it must stay inside home and out of LaunchAgents,
+# LaunchDaemons, StartupItems, the keychains and Wisp's own data. A file not
+# yet there, in real folders, is fine. Anything else, and every way of running
+# text (sh -c, eval, xargs, a pipe, a heredoc into a shell, $(...)), is read
+# as before. The never-run check reads the original text in every case.
+_INERT_WORD = re.compile(r"[A-Za-z0-9._+@/=:,%~-]+")
+_INERT_DQ = re.compile(r'[^"$`\\!]*')
+_INERT_TARGET = re.compile(r"[A-Za-z0-9_+@][A-Za-z0-9._+@/-]*\.(?:txt|md|markdown|log|csv|tsv|rst|org)",
+                           re.IGNORECASE)
+_INERT_HEREDOC = re.compile(r"<<(?:'([A-Za-z_][A-Za-z0-9_]*)'|\"([A-Za-z_][A-Za-z0-9_]*)\")")
+_INERT_LIT = "'_'"
+
+
+def _inert_tokens(line: str) -> list[tuple[str, str]] | None:
+    """('word'|'lit'|'op'|'here', text) tokens, or None for anything else."""
+    tokens, i, n = [], 0, len(line)
+    while i < n:
+        c = line[i]
+        if c in " \t":
+            i += 1
+            continue
+        if c == "'":
+            end = line.find("'", i + 1)
+            if end < 0:
+                return None
+            tokens.append(("lit", line[i:end + 1]))
+            i = end + 1
+        elif c == '"':
+            end = line.find('"', i + 1)
+            if end < 0 or not _INERT_DQ.fullmatch(line[i + 1:end]):
+                return None
+            tokens.append(("lit", line[i:end + 1]))
+            i = end + 1
+        elif line.startswith("&&", i):
+            tokens.append(("op", "&&"))
+            i += 2
+        elif line.startswith(">>", i):
+            tokens.append(("op", ">>"))
+            i += 2
+        elif line.startswith("<<", i):
+            m = _INERT_HEREDOC.match(line, i)
+            if m is None:
+                return None
+            tokens.append(("here", m.group(1) or m.group(2)))
+            i = m.end()
+        elif c == ">":
+            tokens.append(("op", ">"))
+            i += 1
+        else:
+            m = _INERT_WORD.match(line, i)
+            if m is None:
+                return None
+            tokens.append(("word", m.group()))
+            i = m.end()
+        if i < n and tokens[-1][0] in ("lit", "here") and line[i] not in " \t":
+            return None                     # nothing glued onto quoted text
+    return tokens
+
+
+def _inert_target(word: str) -> bool:
+    parts = word.split("/")
+    return (bool(_INERT_TARGET.fullmatch(word))
+            and not any(p in ("", "..") or p.startswith(".") for p in parts))
+
+
+_INERT_GIT_READS = frozenset({"add", "status", "diff", "log", "show"})
+_INERT_FOLDER = re.compile(r"[A-Za-z0-9_+@][A-Za-z0-9._+@-]*(?:/[A-Za-z0-9_+@][A-Za-z0-9._+@-]*)*/?")
+_INERT_NEVER_INTO = frozenset({"launchagents", "launchdaemons", "startupitems", "keychains"})
+
+
+def _inert_plain_folder(word: str) -> bool:
+    """A relative folder of plain names: no `..`, no dot-folder, no `~`, no `-`."""
+    return bool(_INERT_FOLDER.fullmatch(word)) and ".." not in word.split("/")
+
+
+def _inert_lead_ok(step: list[tuple[str, str]], commit: bool) -> bool:
+    """Whether a step before a data shape is one that cannot write a file,
+    make a link or move the working folder (see above)."""
+    words = [text for _, text in step]
+    if words[0] == "git":
+        return (len(words) > 1 and words[1] in _INERT_GIT_READS
+                and not any("=" in w or w.startswith("--output") for w in words[2:]))
+    if words[0] == "mkdir":
+        rest = words[1:]
+        if rest[:1] == ["-p"]:
+            rest = rest[1:]
+        return bool(rest) and all(_inert_plain_folder(w) for w in rest)
+    if words[0] == "cd" and commit:
+        dest = words[1][2:] if len(words) == 2 and words[1].startswith("~/") else words[-1]
+        return len(words) == 2 and _inert_plain_folder(dest)
+    return False
+
+
+def _inert_target_safe(rel: str) -> bool:
+    """Whether the notes file `rel` (relative to home, where run_shell runs) is
+    an ordinary file or not there yet, reached through real folders only, and
+    stays inside home away from the folders _INERT_NEVER_INTO names."""
+    home = _nr_home()
+    parts = rel.split("/")
+    if any(p.casefold() in _INERT_NEVER_INTO for p in parts):
+        return False
+    try:
+        path = home
+        for k, part in enumerate(parts):
+            path = os.path.join(path, part)
+            try:
+                st = os.lstat(path)
+            except FileNotFoundError:
+                break                           # the rest is not there yet
+            if stat.S_ISLNK(st.st_mode):
+                return False
+            if k < len(parts) - 1:
+                if not stat.S_ISDIR(st.st_mode):
+                    return False
+            elif not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+                return False                    # a hard link writes another file too
+        real_home = os.path.realpath(home)
+        real = os.path.realpath(os.path.join(home, rel))
+    except (OSError, ValueError, RuntimeError):
+        return False
+    if not real.startswith(real_home.rstrip("/") + "/"):
+        return False
+    return not (_nr_protected_hit(os.path.join(home, rel)) or _nr_protected_hit(real))
+
+
+def _inert_git_commit(words: list[tuple[str, str]], heredoc: bool) -> bool:
+    if [t for _, t in words[:2]] != ["git", "commit"] or any(k == "word" and t == "--"
+                                                             for k, t in words):
+        return False
+    rest, saw_message = words[2:], False
+    for k, (kind, text) in enumerate(rest):
+        if kind == "lit":
+            before = rest[k - 1][1] if k else ""
+            if heredoc or not (before in ("-m", "--message") or re.fullmatch(r"-[A-Za-z]*m", before)):
+                return False
+            saw_message = True
+        elif kind != "word" or not text.startswith("-") or "=" in text:
+            return False
+    if heredoc:
+        return [t for _, t in rest[-2:]] == ["-F", "-"]
+    return saw_message
+
+
+def _inert_shape(tokens: list[tuple[str, str]], heredoc: bool) -> bool:
+    """Whether the last step of a line is one of the shapes above (with a
+    'here' token when `heredoc`), every earlier step is one _inert_lead_ok
+    allows, and a notes file it writes passes _inert_target_safe."""
+    steps, current = [], []
+    for tok in tokens:
+        if tok == ("op", "&&"):
+            steps.append(current)
+            current = []
+        else:
+            current.append(tok)
+    steps.append(current)
+    if any(not step or any(kind != "word" for kind, _ in step) for step in steps[:-1]):
+        return False
+    last = steps[-1]
+    here = [tok for tok in last if tok[0] == "here"]
+    if len(here) != (1 if heredoc else 0):
+        return False
+    body = [tok for tok in last if tok[0] != "here"]
+    commit = bool(body) and body[0] == ("word", "git")
+    if not all(_inert_lead_ok(step, commit) for step in steps[:-1]):
+        return False
+    if commit:
+        return _inert_git_commit(body, heredoc)
+    if heredoc:
+        if not (len(body) == 3 and body[0] == ("word", "cat") and body[1][0] == "op"
+                and body[1][1] in (">", ">>") and body[2][0] == "word" and _inert_target(body[2][1])):
+            return False
+        return _inert_target_safe(body[2][1])
+    if not body or body[0] != ("word", "echo") or len(body) not in (4, 5):
+        return False
+    if len(body) == 5 and body[1] not in (("word", "-n"), ("word", "-e")):
+        return False
+    lit, op, target = body[-3], body[-2], body[-1]
+    return (lit[0] == "lit" and op[0] == "op" and op[1] in (">", ">>")
+            and target[0] == "word" and _inert_target(target[1]) and _inert_target_safe(target[1]))
+
+
+def inert_text_form(cmd) -> str | None:
+    """The command with its data-only quoted text blanked, when the whole
+    command is one of the shapes above, else None."""
+    if not isinstance(cmd, str) or len(cmd) > SHELL_TEXT_LIMIT:
+        return None
+    # The whole text as one line (a newline is allowed only inside quotes).
+    tokens = _inert_tokens(cmd)
+    if tokens is not None:
+        if any(kind == "here" for kind, _ in tokens) or not _inert_shape(tokens, heredoc=False):
+            return None
+        return " ".join(_INERT_LIT if kind == "lit" else text for kind, text in tokens)
+    # A heredoc: its first line is the command, then the body and the delimiter.
+    first, newline, rest = cmd.partition("\n")
+    tokens = _inert_tokens(first)
+    if not newline or tokens is None:
+        return None
+    here = [text for kind, text in tokens if kind == "here"]
+    if len(here) != 1 or any(kind == "lit" for kind, _ in tokens) or not _inert_shape(tokens, True):
+        return None
+    lines = rest.split("\n")
+    try:
+        end = lines.index(here[0])
+    except ValueError:
+        return None
+    if any(line for line in lines[end + 1:]):
+        return None                         # nothing may follow the heredoc
+    shown = " ".join(f"<<'{text}'" if kind == "here" else text for kind, text in tokens)
+    return f"{shown}\n_\n{here[0]}"
+
+
+def _floor_forms(args: dict) -> tuple[str, ...]:
+    """What the floor reads: shell_forms, with a data-only shape's quoted
+    text blanked (see inert_text_form)."""
+    if not args.get("script") and (inert := inert_text_form(args.get("cmd"))) is not None:
+        return shell_forms({"cmd": inert})
+    return shell_forms(args)
+
+
 def _hard_deny(category: str, args: dict, tool: str | None = None) -> Decision | None:
     """The unconditional safety floor: rules nothing can override — not
     full_access, not a standing grant, not the user clicking "always allow".
@@ -1315,7 +1568,7 @@ def _hard_deny(category: str, args: dict, tool: str | None = None) -> Decision |
         rules = _rules("shell_deny", _SHELL_DENY)
         if plain_delete_paths(args) is not None:
             rules = [rule for rule in rules if rule != _SHELL_BROAD_RM]
-        for cmd in shell_forms(args):
+        for cmd in _floor_forms(args):
             if (hit := _any(rules, cmd)):
                 return Decision(Tier.DENY, "Wisp won't run this command (it matches a blocked "
                                 f"pattern: {hit}). {NEVER_RUN_TAIL}")
@@ -1460,9 +1713,9 @@ class _NrTooSlow(Exception):
 
 class _NrContext:
     """Where a command line is when a simple command runs."""
-    __slots__ = ("cwd", "fed", "depth", "inner", "deadline")
+    __slots__ = ("cwd", "fed", "depth", "inner", "deadline", "parens", "unknown", "shadowed")
 
-    def __init__(self, cwd, depth=0, inner=None, deadline=None):
+    def __init__(self, cwd, depth=0, inner=None, deadline=None, unknown=None):
         # ("rel", path below home) or ("abs", path outside home), or None when
         # the folder is only known while the command runs.
         self.cwd = cwd
@@ -1470,9 +1723,24 @@ class _NrContext:
         self.depth = depth
         self.inner = inner if inner is not None else []
         self.deadline = deadline if deadline is not None else time.thread_time() + _NR_BUDGET
+        # The text being judged had an escaped or quoted parenthesis. They
+        # reach a find expression as plain words and its grouping is not
+        # worked out, so only the cautious filter rule applies.
+        self.parens = False
+        # Shared by every child: set when a shell's program text holds a
+        # command's output somewhere other than its command word (see
+        # _nr_resolve_program). The call then gets a card, not a refusal.
+        self.unknown = unknown if unknown is not None else []
+        # The line defines a function or alias named like a command whose
+        # output is otherwise known (`echo(){ ...; }`), or switches a builtin
+        # off: no output is known then (see _nr_shell_program).
+        self.shadowed = False
 
     def child(self) -> "_NrContext":
-        return _NrContext(self.cwd, self.depth + 1, self.inner, self.deadline)
+        kid = _NrContext(self.cwd, self.depth + 1, self.inner, self.deadline, self.unknown)
+        kid.parens = self.parens
+        kid.shadowed = self.shadowed
+        return kid
 
     def tick(self) -> None:
         if time.thread_time() > self.deadline:
@@ -1824,12 +2092,48 @@ def _nr_heredocs(text: str, ctx: "_NrContext",
     return _NR_HEREDOC_MARK_RE.sub(" ", "".join(out)), shell, code
 
 
+# An operator character that is quoted or backslash-escaped is part of a word.
+# The lexer would hand a wholly quoted `'('`, `")"`, `'|'` or `'&'` back as a
+# bare token that reads as the operator, which ended the command there and hid
+# the words after it from the check. Each one is carried through the lexer as a
+# private-use character and put back in the word it belongs to.
+_NR_OPERATOR_CHARS = "();<>|&"
+_NR_OPERATOR_HOLD = {c: chr(0xF2A0 + k) for k, c in enumerate(_NR_OPERATOR_CHARS)}
+_NR_OPERATOR_GONE = chr(0xF2AF)                 # stands where the escaping backslash was
+_NR_OPERATOR_BACK = {ord(v): k for k, v in _NR_OPERATOR_HOLD.items()} | {ord(_NR_OPERATOR_GONE): None}
+# A stand-in already in the text is an ordinary character to the shell. Left
+# in, it would come back as an operator character inside a word, and a word
+# that is itself a program (sh -c, eval) would then be split on it.
+_NR_OPERATOR_STRAY = re.compile("[\uf2a0-\uf2af]")
+
+
+def _nr_keep_quoted_operators(text: str, mask: str) -> str:
+    """`text`, same length, with each quoted or escaped operator character
+    swapped for its stand-in (`mask` is _nr_mask(text))."""
+    if not any(c in text for c in _NR_OPERATOR_CHARS):
+        return text
+    chars, n, i = list(text), len(text), 0
+    while i < n:
+        c = text[i]
+        if c == "\\" and mask[i] == "\\" and i + 1 < n and text[i + 1] in _NR_OPERATOR_HOLD:
+            chars[i], chars[i + 1] = _NR_OPERATOR_GONE, _NR_OPERATOR_HOLD[text[i + 1]]
+            i += 2
+            continue
+        if c in _NR_OPERATOR_HOLD and mask[i] != c:
+            chars[i] = _NR_OPERATOR_HOLD[c]
+        i += 1
+    return "".join(chars)
+
+
 def _nr_segments(text: str) -> list[dict] | None:
     """Simple commands: the operator before each, its words and its output
     redirect targets. None when the quoting does not parse."""
-    text = re.sub(r"\\;|';'|\";\"", f" {_NR_FIND_END} ", text)
-    text = re.sub(r"\\[()]", " ", text).replace("\r", "\n")
+    text = _NR_OPERATOR_STRAY.sub("_", text)
+    # find's `-exec ... ;` terminator: an escaped or quoted `;` that is a word
+    # of its own. Inside a longer word (`'a';'b'`) the `;` is a real separator.
+    text = re.sub(r"(?<!\S)(?:\\;|';'|\";\")(?!\S)", f" {_NR_FIND_END} ", text).replace("\r", "\n")
     mask = _nr_mask(text)
+    text = _nr_keep_quoted_operators(text, mask)
     # A file-descriptor number on a redirect (`2>/dev/null`, `0<<<`) is not a word.
     fds = [m.span() for m in re.finditer(r"(?<![^\s;&|()])\d+(?=[<>])", mask)]
     if fds or "\n" in text:
@@ -1856,6 +2160,7 @@ def _nr_segments(text: str) -> list[dict] | None:
                         segments.append(current)
                     current = {"op": token, "words": [], "out": [], "here": []}
                 continue
+            token = token.translate(_NR_OPERATOR_BACK)
             if redirect == "here":
                 current["here"].append(token)
             elif redirect is not None and redirect != "in":
@@ -2186,8 +2491,9 @@ def _nr_find(args: list[str], ctx: _NrContext, admin: bool) -> str | None:
     while rest and rest[0] in ("-H", "-L", "-P", "-E", "-X", "-d", "-s", "-x"):
         rest.pop(0)
     roots = []
-    while rest and not rest[0].startswith("-") and rest[0] not in ("(", "!", _NR_FIND_END):
-        roots.append(rest.pop(0))
+    while rest and not rest[0].startswith("-") and rest[0] not in ("(", "!"):
+        word = rest.pop(0)
+        roots.append(";" if word == _NR_FIND_END else word)     # find reads a leading `;` as a path
     runs: list[list[str]] = []
     i = 0
     while i < len(rest):
@@ -2198,12 +2504,7 @@ def _nr_find(args: list[str], ctx: _NrContext, admin: bool) -> str | None:
             runs.append(rest[i + 1:j])
             i = j
         i += 1
-    # A filter that picks files by name, age, size or owner (-type or
-    # -mindepth alone still matches everything of that kind).
-    named = any(w in ("-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename", "-regex",
-                      "-iregex", "-mtime", "-mmin", "-atime", "-amin", "-ctime", "-cmin", "-size",
-                      "-empty", "-user", "-group", "-perm", "-links", "-inum", "-samefile")
-                or w.startswith("-newer") for w in rest)
+    named = _nr_find_named(rest, ctx.parens)
     deleters = ("rm", "srm", "unlink")
     deletes = "-delete" in rest or any(run and _nr_prog(run[0]) in deleters for run in runs)
     for root in roots or ["."]:
@@ -2222,6 +2523,71 @@ def _nr_find(args: list[str], ctx: _NrContext, admin: bool) -> str | None:
             if (hit := _nr_judge_words(words, ctx.child())):
                 return hit
     return None
+
+
+_NR_FIND_FILTERS = frozenset({"-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename",
+                              "-regex", "-iregex", "-mtime", "-mmin", "-atime", "-amin", "-ctime",
+                              "-cmin", "-size", "-empty", "-user", "-group", "-perm", "-links",
+                              "-inum", "-samefile"})
+# find tests and actions that take no operand; every other one is read as
+# taking the next word, so `! -fstype -name ...` is not mistaken for a filter.
+_NR_FIND_PARENS = re.compile(r"\\[()]|'[()]'|\"[()]\"")
+_NR_FIND_NO_OPERAND = frozenset({"-empty", "-delete", "-print", "-print0", "-prune", "-true",
+                                 "-false", "-nouser", "-nogroup", "-xdev", "-mount", "-ls",
+                                 "-quit", "-follow", "-and", "-a", "-d"})
+
+
+def _nr_find_named(expr: list[str], parens: bool = True) -> bool:
+    """Whether a find expression only matches files a filter picks by name,
+    age, size or owner (-type or -mindepth alone still matches everything of
+    that kind). With -o / -or / `,` every alternative needs a filter of its
+    own, and a negated filter (`-not -name x`, `! -name x`) picks everything
+    else, so it is no filter: `-name '*.pyc' -not -path './keep/*'` is
+    filtered, `-not -name x` alone is not.
+
+    Escaped or quoted parentheses arrive as plain words and are not worked
+    out, so when the text had any (`parens`) the grouping is unknown: then
+    only a filter that comes before every
+    negation of its alternative counts (`! \\( -name a -name b \\)` has none).
+    Without parentheses a negation covers the one test right after it."""
+    branch: list[str] = []
+    branches = [branch]
+    skip = False
+    for w in expr:
+        if skip:                                # a -exec body: not a filter
+            skip = w not in (_NR_FIND_END, "+")
+            continue
+        if w in ("-exec", "-execdir", "-ok", "-okdir"):
+            skip = True
+            continue
+        if w in ("-o", "-or", ","):
+            branch = []
+            branches.append(branch)
+            continue
+        branch.append(w)
+
+    def filtered(words: list[str]) -> bool:
+        negated, k = False, 0
+        while k < len(words):
+            w = words[k]
+            k += 1
+            if w in ("!", "-not"):
+                if parens:
+                    return False                # nothing after it counts
+                negated = True
+                continue
+            if not w.startswith("-"):
+                continue                        # a stray word: no test
+            if not negated and (w in _NR_FIND_FILTERS or w.startswith("-newer")):
+                return True
+            negated = False                     # the negation covered this test
+            if w == "-depth":                   # BSD's `-depth n`, or GNU's bare -depth
+                k += 1 if k < len(words) and re.fullmatch(r"[+-]?\d+", words[k]) else 0
+            elif w not in _NR_FIND_NO_OPERAND:
+                k += 1                          # its operand, even one spelled `-name`
+        return False
+
+    return all(filtered(b) for b in branches)
 
 
 def _nr_find_root(root: str, cwd, named: bool) -> str | None:
@@ -2288,8 +2654,12 @@ def _nr_code_hit(code: str, ctx: _NrContext) -> str | None:
         if len(items) > 1:
             texts.append(" ".join(shlex.quote(re.sub(r"\\(.)", r"\1", t)) for t in items))
     for text in texts:
-        if (hit := _nr_judge_text(re.sub(r"\\(.)", r"\1", text) if "\\" in text else text, ctx.child())):
-            return hit
+        # JS, Perl and Ruby drop the backslash of an unknown escape and Python
+        # keeps it, so a literal with one is judged both ways.
+        readings = [text, re.sub(r"\\(.)", r"\1", text)] if "\\" in text else [text]
+        for reading in readings:
+            if (hit := _nr_judge_text(reading, ctx.child())):
+                return hit
     return None
 
 
@@ -2313,6 +2683,151 @@ def _nr_run_output_hit(text: str, ctx: _NrContext) -> str | None:
             if (hit := _nr_judge_text(printed, ctx.child())):
                 return hit
     return None
+
+
+_UNRESOLVED_PROGRAM = "runs a program it only learns while running, from a command's output"
+# A $(...) whose body only prints a heredoc (sh -c "$(cat <<'EOF' ... EOF)"):
+# that body was already judged as the program (see _nr_run_output_hit).
+_NR_PRINTS_HEREDOC = re.compile(r"\s*cat\s+(?:__wisp_hdb_[0-9a-f]*__\s*)+")
+
+
+# A $(...) whose output is known from its text: `echo` of plain words.
+_NR_LITERAL_ECHO = re.compile(r"[ \tA-Za-z0-9._+@/=:,%-]*")
+# A $(...) whose output no text in the command can choose (`$(date)`,
+# `$(whoami)`, `$(uname -s)`); not `date +FORMAT`, `pwd` or `hostname`.
+_NR_FIXED_OUTPUT = re.compile(r"\s*(?:date|whoami|uname(?:\s+-[amnoprsv]+)*)\s*")
+# A $(...) that prints a path or a count the machine picks, not the command's
+# own text: the only unknown output a shell program may hold and still get a
+# card. Its output is pasted into the program before the shell reads it, like
+# any other, so the card says Wisp cannot see what runs.
+_NR_PLACE_OUTPUT = re.compile(
+    r"\s*(?:pwd(?:\s+-[LP])?|git\s+rev-parse(?:\s+--(?:show-toplevel|show-cdup|git-dir))+|mktemp(?:\s+-d)?"
+    r"|brew\s+--prefix(?:\s+[A-Za-z0-9@._+-]+)?|xcode-select\s+(?:-p|--print-path)"
+    r"|nproc|sysctl\s+-n\s+hw\.[a-z_.]+|id\s+-u[n]?)\s*")
+
+
+_NR_KNOWN_NAMES = r"(?:echo|date|whoami|uname|pwd|git|mktemp|brew|xcode-select|nproc|sysctl|id)"
+_NR_SHADOWS = re.compile(
+    rf"\b{_NR_KNOWN_NAMES}\s*\(\s*\)|\bfunction\s+{_NR_KNOWN_NAMES}\b"
+    rf"|\balias\b[^;|&\n]*\b{_NR_KNOWN_NAMES}=|\benable\s+-[a-z]*n|\bunset\s+-f\b")
+
+
+def _nr_literal_output(body: str) -> str | None:
+    """What a $(...) body prints when it is `echo <plain words>`, else None.
+
+    A first word starting with `-` may be an option (`-e` makes echo read
+    escapes, and /bin/sh prints `-n` where bash drops it) and zsh expands a
+    leading `=word` to a path, so an echo with either prints something this
+    text does not show: its output is unknown."""
+    if not _NR_LITERAL_ECHO.fullmatch(body):
+        return None
+    words = body.split()
+    if (words[:1] != ["echo"] or words[1:2] and words[1][0] == "-"
+            or any(w[0] == "=" for w in words[1:])):
+        return None
+    return " ".join(words[1:])
+
+
+def _nr_command_word_from(text: str, marks: list[str], depth: int = 0) -> bool:
+    """Whether one of the placeholders `marks` (outer $(...) whose output is
+    unknown) can become a command in shell program `text`: it is or is in a
+    command word, eval/source's text, a nested shell's or an interpreter's
+    program or script, or `echo ... | sh`'s text. A program with a mark and
+    a command word only known while it runs (`p=$(x); $p`) counts too. Text
+    that does not parse, or holds a heredoc, counts."""
+    if not any(m in text for m in marks):
+        return False
+    if depth > _NR_DEPTH or "<<" in text:
+        return True
+    segments = _nr_segments(text)
+    if segments is None:
+        return True
+    scratch = _NrContext(None, deadline=0.0)
+    pipeline: list[list[str]] = []
+    for seg in [*segments, None]:
+        if seg is None or seg["op"] not in ("|", "|&"):
+            if len(pipeline) > 1 and pipeline[0] and _nr_prog(pipeline[0][0]) in ("echo", "printf"):
+                last, _, _ = _nr_unwrap(list(pipeline[-1]), scratch)
+                if (last and _nr_prog(last[0]) in _NR_SHELLS
+                        and _nr_reads_stdin(_nr_prog(last[0]), last[1:])
+                        and _nr_command_word_from(" ".join(pipeline[0][1:]), marks, depth + 1)):
+                    return True
+            if seg is None:
+                break
+            pipeline = [seg["words"]]
+        else:
+            pipeline.append(seg["words"])
+        words, _, via = _nr_unwrap(list(seg["words"]), scratch)
+        if via is not None:
+            if _nr_command_word_from(via, marks, depth + 1):
+                return True
+            continue
+        if not words:
+            continue
+        first, args = words[0], words[1:]
+        if "$" in first or "`" in first:
+            return True
+        name = _nr_prog(first)
+        marked = any(m in a for a in args for m in marks)
+        if name in ("eval", "source", ".") and (marked or any("$" in a for a in args)):
+            return True
+        if name in _NR_SHELLS:
+            code = _nr_code(args, ("-c", "--command"), cluster="c")
+            if code is not None:
+                if _nr_command_word_from(code, marks, depth + 1):
+                    return True
+            elif _nr_reads_stdin(name, args):
+                if any(_nr_command_word_from(h, marks, depth + 1) for h in seg["here"]):
+                    return True
+            elif marked:
+                return True                     # `sh $(x)`: the script's path is output
+        elif (name in _NR_INTERPRETERS or re.fullmatch(r"python[\d.]*", name)) and (
+                marked or any(m in h for h in seg["here"] for m in marks)):
+            return True
+    return False
+
+
+def _nr_shell_program(code: str, ctx: _NrContext) -> str | None:
+    """Why a shell's program text (sh -c CODE, a here-string or `echo CODE |`
+    into a shell) is never run, or None.
+
+    A $(...) or `...` from the outer line runs before the shell reads CODE,
+    so its output is part of the program. One whose output is known
+    (`$(echo ls)`) is put in and judged with the rest; one that prints a
+    heredoc was judged as that heredoc. Any other output is unknown, and it
+    is pasted into the program before the shell parses it: a `;` or a newline
+    in it starts a command wherever it sits, so "only an argument" is not a
+    promise. The call is refused unless every unknown output is a fixed one
+    (`$(date)`) or a place the machine picks (_NR_PLACE_OUTPUT: `$(pwd)`,
+    `$(git rev-parse --show-toplevel)`) that is not in a command position
+    (see _nr_command_word_from). Those are noted in ctx.unknown and the call
+    gets a card in every mode, which says Wisp cannot see what will run."""
+    if (hit := _nr_run_output_hit(code, ctx)):
+        return hit
+    unknown: list[str] = []
+
+    def put(m: re.Match) -> str:
+        n = int(m.group(1))
+        body = ctx.inner[n] if n < len(ctx.inner) else ""
+        if _NR_PRINTS_HEREDOC.fullmatch(body):
+            return m.group()
+        if ctx.shadowed:                        # `echo(){ ... }` earlier in the line
+            opaque.append(m.group())
+            return m.group()
+        if (printed := _nr_literal_output(body)) is not None:
+            return printed
+        ctx.unknown.append(m.group())
+        if not _NR_FIXED_OUTPUT.fullmatch(body):
+            unknown.append(m.group())
+            if not _NR_PLACE_OUTPUT.fullmatch(body):
+                opaque.append(m.group())
+        return m.group()
+
+    opaque: list[str] = []
+    resolved = _NR_SUBST_RE.sub(put, code)
+    if opaque or (unknown and _nr_command_word_from(resolved, unknown)):
+        return _UNRESOLVED_PROGRAM
+    return _nr_judge_text(resolved, ctx.child())
 
 
 def _nr_reads_stdin(name: str, args: list[str]) -> bool:
@@ -2381,7 +2896,7 @@ def _nr_judge_words(words: list[str], ctx: _NrContext) -> str | None:
         if code and _NR_FORK_CODE.search(code):
             return _FORK_BOMB
         if code is not None and name in _NR_SHELLS:
-            return _nr_run_output_hit(code, ctx) or _nr_judge_text(code, ctx.child())
+            return _nr_shell_program(code, ctx)
         if code:
             return _nr_code_hit(code, ctx)
         return None
@@ -2529,7 +3044,8 @@ def _nr_pipeline(stages: list[list[str]], ctx: _NrContext) -> str | None:
     if stages[0] and _nr_prog(stages[0][0]) in ("echo", "printf"):
         last, _, _ = _nr_unwrap(list(stages[-1]), _NrContext(ctx.cwd, ctx.depth, ctx.inner))
         if last and _nr_prog(last[0]) in _NR_SHELLS and _nr_reads_stdin(_nr_prog(last[0]), last[1:]):
-            return _nr_judge_text(" ".join(stages[0][1:]), ctx.child())
+            printed = " ".join(stages[0][1:])
+            return _nr_shell_program(printed, ctx)
     return None
 
 
@@ -2567,6 +3083,7 @@ def _nr_judge_text(text: str, ctx: _NrContext) -> str | None:
     for body in ctx.inner[start:]:
         if (hit := _nr_judge_text(body, ctx.child())):
             return hit
+    ctx.parens = ctx.parens or bool(_NR_FIND_PARENS.search(outer))
     segments = _nr_segments(outer)
     if segments is None:
         # Unbalanced quotes: judge it with the quotes dropped. A lone backslash
@@ -2596,7 +3113,7 @@ def _nr_judge_text(text: str, ctx: _NrContext) -> str | None:
             # A here-string is the program when a shell reads its program from stdin.
             kind = _nr_stdin_program(seg["words"])
             for body in seg["here"] if kind else ():
-                if (hit := (_nr_run_output_hit(body, ctx) or _nr_judge_text(body, ctx.child())
+                if (hit := (_nr_shell_program(body, ctx)
                             if kind == "shell"
                             else _nr_code_hit(body, ctx) if kind == "code"
                             else next((h for b in _DO_SHELL_SCRIPT.findall(body)
@@ -2618,15 +3135,26 @@ def _nr_judge_text(text: str, ctx: _NrContext) -> str | None:
 # pairing a harmless visible rm with a hidden one (a variable, an alias, a
 # quoted string, a launcher). So nothing is exempted from inside: the WHOLE
 # command has to be `rm`, its -r/-R/-f flags (one of them recursive), and paths written with plain
-# characters only, single spaces between them and nothing else. No quote,
-# variable, wildcard, chain, redirect, wrapper, newline or `--`; that text has
+# characters only, single spaces between them and nothing else. No variable,
+# wildcard, chain, redirect, wrapper, newline or `--`, and no quoting beyond
+# the one form described below; that text has
 # one reading in any shell. Anything else keeps the refusal it had.
 #
 # Each path, and what it resolves to on disk (a link is judged as its target),
 # must sit under home below the main folders (the rule a relative delete has),
 # or under one of _PLAIN_ORDINARY, or two folders down on another disk. The call still gets the destructive-delete
 # card in every mode; no grant covers it.
-_PLAIN_DELETE = re.compile(r"rm((?: -[rRf]{1,3})+)((?: ~?(?:/[A-Za-z0-9._+@-]+)+/?)+)")
+#
+# A path may also have spaces (rc2 fix): written inside one pair of single or
+# double quotes that covers the whole path, or with backslash-space outside
+# quotes (`~/Library/Application\ Support/App/Cache`). Its own tokenizer
+# (_plain_delete_words) accepts nothing else: inside quotes only the plain
+# characters, `/` and space; no other escape; no quote that starts or ends
+# inside a word; nothing the shell would expand. The decoded path takes the
+# same checks, and run_shell runs exactly the decoded words, without a shell.
+_PLAIN_FLAG = re.compile(r"-[rRf]{1,3}")
+_PLAIN_CHAR = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._+@-")
+_PLAIN_QUOTED = re.compile(r"/[A-Za-z0-9._+@/ -]*")
 # (folder, how many names below it a deleted path needs at least)
 _PLAIN_ORDINARY = (("/tmp", 1), ("/private/tmp", 1), ("/var/folders", 4),
                    ("/private/var/folders", 4), ("/users/shared", 1),
@@ -2668,23 +3196,95 @@ def _plain_delete_problem(full: str) -> bool:
     return True
 
 
-def plain_delete_paths(args: dict) -> list[str] | None:
-    """The paths a run_shell call deletes when the call is nothing but one
-    plain `rm` of absolute paths in ordinary folders (see above), else None."""
+_PLAIN_KNOWN_NAMES = (_NR_HOME_NAMES | _NR_TOP_NAMES | _PLAIN_NEVER_NAMES | _PLAIN_SYSTEM_DISKS
+                      | {"keychains", "launchagents", "launchdaemons", "volumes", "users", "shared",
+                         "folders", "local", "opt", "tmp", "var"})
+
+
+def _plain_look_alike(part: str) -> bool:
+    """A decoded path name with a space at either end, or one that is a known
+    folder's name once spaces are dropped (`Docu ments`, `Library `): refused,
+    so a card never shows a name that only looks like another."""
+    if part != part.strip():
+        return True
+    squashed = re.sub(r"\s+", "", part).casefold()
+    return squashed != part.casefold() and (
+        squashed in _PLAIN_KNOWN_NAMES or squashed == _nr_home().rsplit("/", 1)[-1].casefold())
+
+
+def _plain_delete_words(cmd: str) -> tuple[list[str], list[str]] | None:
+    """(flags, paths as written once quoting is removed) for `rm`, its flags
+    and plain absolute paths separated by single spaces, else None."""
+    s = cmd.strip(" ")
+    if not s.startswith("rm "):
+        return None
+    words: list[tuple[str, bool]] = []          # (decoded word, was quoted)
+    i, n = 3, len(s)
+    while True:
+        if i >= n or s[i] == " ":
+            return None                         # two spaces, or nothing after one
+        if s[i] in "'\"":
+            end = s.find(s[i], i + 1)
+            if end < 0 or not _PLAIN_QUOTED.fullmatch(s[i + 1:end]):
+                return None
+            words.append((s[i + 1:end], True))
+            i = end + 1
+            if i < n and s[i] != " ":
+                return None                     # no quote glued to more text
+        else:
+            out = []
+            while i < n and s[i] != " ":
+                c = s[i]
+                if c == "\\":
+                    if s[i + 1:i + 2] != " ":
+                        return None             # the only escape is backslash-space
+                    out.append(" ")
+                    i += 2
+                    continue
+                if not (c in _PLAIN_CHAR or c == "/" or (c == "~" and not out)):
+                    return None
+                out.append(c)
+                i += 1
+            words.append(("".join(out), False))
+        if i >= n:
+            break
+        i += 1                                  # the one space between words
+    flags, paths = [], []
+    for word, quoted in words:
+        if not quoted and not paths and _PLAIN_FLAG.fullmatch(word):
+            flags.append(word)
+            continue
+        if not (word.startswith("/") or (not quoted and word.startswith("~/"))):
+            return None
+        if "//" in word or "~" in word[1:]:
+            return None
+        paths.append(word)
+    if not flags or not paths or not any("r" in f.lower() for f in flags):
+        return None                             # a delete that is not recursive never needed this
+    return flags, paths
+
+
+def plain_delete_targets(args: dict) -> tuple[list[str], tuple[tuple[str, str], ...]] | None:
+    """(rm's flags, ((path, what it resolves to on disk), ...)) when a run_shell
+    call is nothing but one plain `rm` of absolute paths in ordinary folders
+    (see above), else None. run_shell compares the second part again just
+    before it runs the delete."""
     if not isinstance(args, dict) or args.get("script"):
         return None
     cmd = args.get("cmd")
     if not isinstance(cmd, str) or len(cmd) > 4000:
         return None
-    m = _PLAIN_DELETE.fullmatch(cmd.strip(" "))
-    if m is None or "r" not in m.group(1).lower():
-        return None             # a delete that is not recursive never needed this
-    operands = m.group(2).split(" ")[1:]
+    parsed = _plain_delete_words(cmd)
+    if parsed is None:
+        return None
+    flags, operands = parsed
     if len(operands) > _PLAIN_MAX_PATHS:
         return None
-    paths = []
+    targets = []
     for op in operands:
         if any(part in (".", "..") for part in op.split("/")):
+            return None
+        if any(_plain_look_alike(part) for part in op.split("/")):
             return None
         full = ((_nr_home() + op[1:]) if op.startswith("~") else op).rstrip("/")
         try:
@@ -2693,8 +3293,61 @@ def plain_delete_paths(args: dict) -> list[str] | None:
             return None
         if _plain_delete_problem(full) or _plain_delete_problem(real):
             return None
-        paths.append(full)
-    return paths
+        targets.append((full, real))
+    return flags, tuple(targets)
+
+
+def plain_delete_paths(args: dict) -> list[str] | None:
+    """The paths a run_shell call deletes when the call is nothing but one
+    plain `rm` of absolute paths in ordinary folders (see above), else None."""
+    found = plain_delete_targets(args)
+    return None if found is None else [full for full, _ in found[1]]
+
+
+def plain_delete_argv(args: dict) -> tuple[tuple[str, ...], tuple[tuple[str, str], ...]] | None:
+    """The fixed argv run_shell runs for a plain delete (no shell reads it),
+    and the (path, resolved path) pairs it was judged on."""
+    found = plain_delete_targets(args)
+    if found is None:
+        return None
+    flags, targets = found
+    return ("/bin/rm", *flags, "--", *(full for full, _ in targets)), targets
+
+
+def _plain_delete_card(targets: tuple[tuple[str, str], ...]) -> str:
+    """The card reason for a plain delete: every path, as the shell reads it.
+
+    A path that is itself a link is named as one: rm removes only the link.
+    One reached through a link the person made shows where it really is. The
+    Mac's own spellings (/tmp is /private/tmp, /var is /private/var, home
+    under another name) are not called links."""
+    home = _nr_home()
+    shown = []
+    for full, real in targets:
+        name = "~" + full[len(home):] if full.startswith(home + "/") else full
+        if os.path.islink(full):
+            shown.append(f"“{name}” (a link to “{real}”: this removes the link, not what it "
+                         "points to)")
+        elif real.rstrip("/") not in (full.rstrip("/"), _plain_system_spelling(full)):
+            shown.append(f"“{name}” (reached through a link: it is really “{real}”) and "
+                         "everything inside")
+        else:
+            shown.append(f"“{name}” and everything inside")
+    return ("⚠ This permanently deletes " + ", ".join(shown) + ". It cannot be undone and does "
+            "NOT go to the Trash. Check the paths before allowing it.")
+
+
+def _plain_system_spelling(full: str) -> str:
+    """`full` with only home, or its top folder (/tmp, /var, /etc), resolved:
+    what realpath gives when no folder the person made is a link."""
+    home = _nr_home()
+    try:
+        if full == home or full.startswith(home + "/"):
+            return os.path.realpath(home).rstrip("/") + full[len(home):]
+        top = "/" + full.split("/")[1]
+        return os.path.realpath(top).rstrip("/") + full[len(top):]
+    except (OSError, ValueError, RuntimeError):
+        return full
 
 
 def never_run_hit(text: str) -> str | None:
@@ -2704,31 +3357,57 @@ def never_run_hit(text: str) -> str | None:
     SHELL_TEXT_LIMIT characters are still judged here, so a dangerous start
     gets this refusal's wording. A check that runs past _NR_BUDGET seconds of
     CPU time (only pathological text gets near it) refuses the command."""
+    return _nr_check(text)[0]
+
+
+def _nr_check(text: str) -> tuple[str | None, bool]:
+    """(never_run_hit, whether a shell program holds a command's output Wisp
+    cannot know, as an argument only: see _nr_shell_program)."""
     if not isinstance(text, str) or not text.strip():
-        return None
+        return None, False
+    # Wisp's own placeholder words are made while judging. One already in the
+    # text (a file named like a judged heredoc body) must not pass for one.
+    text = text.replace("__wisp_", "__wisp-")
+    ctx = _NrContext(("rel", "."))
+    ctx.shadowed = bool(_NR_SHADOWS.search(text[:SHELL_TEXT_LIMIT]))
     try:
-        return _nr_judge_text(text[:SHELL_TEXT_LIMIT], _NrContext(("rel", ".")))
+        return _nr_judge_text(text[:SHELL_TEXT_LIMIT], ctx), bool(ctx.unknown)
     except _NrTooSlow:
-        return _TOO_SLOW
+        return _TOO_SLOW, False
     except RecursionError:
-        return _TOO_DEEP
+        return _TOO_DEEP, False
     except (ValueError, OSError):          # e.g. a NUL a path lookup rejects: fail closed
-        return _TOO_SLOW
+        return _TOO_SLOW, False
+
+
+UNKNOWN_OUTPUT_CARD = ("⚠ This hands a shell a program that includes another command's output, "
+                       "so Wisp cannot see exactly what it will run. Check the command before "
+                       "allowing it.")
+
+
+def _never_run(args: dict) -> tuple[Decision | None, bool]:
+    """(the refusal for a run_shell `cmd`, or an AppleScript `do shell script`
+    body, that Wisp never runs (see NEVER_RUN_TAIL), whether the `cmd` hands
+    a shell a command's unknown output as an argument)."""
+    if plain_delete_paths(args) is not None:
+        return None, False
+    texts = [str(args.get("cmd") or "")]
+    texts += [re.sub(r"\\(.)", r"\1", body)
+              for body in _DO_SHELL_SCRIPT.findall(str(args.get("script") or ""))]
+    unknown = False
+    for k, text in enumerate(texts):
+        hit, partly = _nr_check(text)
+        if hit:
+            return Decision(Tier.DENY, f"Wisp won't run this command because it {_card_text(hit, 300)}. "
+                            f"{NEVER_RUN_TAIL}"), False
+        unknown = unknown or (partly and k == 0)
+    return None, unknown
 
 
 def never_run_decision(args: dict) -> Decision | None:
     """The refusal for a run_shell `cmd`, or an AppleScript `do shell script`
     body, that Wisp never runs (see NEVER_RUN_TAIL)."""
-    if plain_delete_paths(args) is not None:
-        return None
-    texts = [str(args.get("cmd") or "")]
-    texts += [re.sub(r"\\(.)", r"\1", body)
-              for body in _DO_SHELL_SCRIPT.findall(str(args.get("script") or ""))]
-    for text in texts:
-        if (hit := never_run_hit(text)):
-            return Decision(Tier.DENY, f"Wisp won't run this command because it {_card_text(hit, 300)}. "
-                            f"{NEVER_RUN_TAIL}")
-    return None
+    return _never_run(args)[0]
 
 
 # A review run (the corpus runner's normal mode) uses the user's ordinary path
@@ -3042,10 +3721,25 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
                             "use Wisp's tools instead")
     # Very dangerous commands (never_run_decision): refused in every mode, even
     # with the configurable floor switched off, so nothing below can card them.
-    if category == "shell" and (never := never_run_decision(args)) is not None:
+    never, unknown_output = _never_run(args) if category == "shell" else (None, False)
+    if never is not None:
         return never
     if (_KEEP_FLOOR or not _FULL_ACCESS) and (floor := _hard_deny(category, args, tool)) is not None:
         return floor
+    # A shell program holding another command's output as an argument (see
+    # _nr_shell_program): unknown, not known to be dangerous, so a card in
+    # every mode, before grants, so no Always allow and no access mode skips it.
+    if unknown_output:
+        if read_only():
+            return Decision(Tier.DENY, "view-only: only read-only commands are allowed")
+        return Decision(Tier.CONFIRM, UNKNOWN_OUTPUT_CARD)
+    # One plain delete of absolute paths: a card in every mode, whatever the
+    # person's own destructive_shell list says, and before grants, so no saved
+    # Always allow and no access mode skips it. The card names every path.
+    if category == "shell" and (plain := plain_delete_targets(args)) is not None:
+        if read_only():
+            return Decision(Tier.DENY, "view-only mode: deleting is disabled")
+        return Decision(Tier.CONFIRM, _plain_delete_card(plain[1]), delete_targets=plain[1])
 
     if tool == "organize_files":
         if not args.get("confirm", False):

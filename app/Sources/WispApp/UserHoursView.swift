@@ -76,6 +76,8 @@ struct UserHoursEditor: View {
     var ink = Ink()
     /// About you adds the off switches; Getting to know you stays quick.
     var showsOptions = false
+    /// The notch follows the Text size setting; the onboarding window keeps its own sizes.
+    var scalesText = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -83,39 +85,47 @@ struct UserHoursEditor: View {
                 row("Working hours", window: $hours.working, canEndAtMidnight: true)
                 days
                 Text("When to plan your day and suggest times.")
-                    .font(.system(size: 11)).foregroundStyle(ink.muted)
+                    .font(scaled(11)).foregroundStyle(ink.muted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             VStack(alignment: .leading, spacing: 8) {
                 if hours.quietIsOff {
-                    Text("No quiet hours").font(.system(size: 12.5, weight: .medium)).foregroundStyle(ink.label)
+                    Text("No quiet hours").font(scaled(12.5, weight: .medium)).foregroundStyle(ink.label)
                 } else {
                     row("Quiet hours", window: $hours.quiet, canEndAtMidnight: false)
                 }
                 Text(hours.quietIsOff ? "Wisp may notify you at any time."
                                       : "No notifications or pop-ups, roughly while you sleep. They wait until morning. Reminders you set still go off.")
-                    .font(.system(size: 11)).foregroundStyle(ink.muted)
+                    .font(scaled(11)).foregroundStyle(ink.muted)
                     .fixedSize(horizontal: false, vertical: true)
                 if showsOptions {
                     Button(hours.quietIsOff ? "Set quiet hours" : "I don't want quiet hours") {
                         hours.quiet = hours.quietIsOff ? UserHours.defaultQuiet : UserHours.Window(start: 0, end: 0)
                     }
-                    .buttonStyle(.plain).font(.system(size: 11.5, weight: .medium)).foregroundStyle(ink.muted)
+                    .buttonStyle(.plain).font(scaled(11.5, weight: .medium)).foregroundStyle(ink.muted)
                 }
             }
             if showsOptions {
                 Toggle("Offer to move an event that's outside my working hours", isOn: $hours.offerMoves)
-                    .toggleStyle(.checkbox).font(.system(size: 12)).foregroundStyle(ink.label)
+                    .toggleStyle(.checkbox).font(scaled(12)).foregroundStyle(ink.label)
                     .help("At most one a day, only your own one-off events, and nothing moves until you confirm.")
             }
         }
     }
 
+    private var sizeScale: CGFloat { scalesText ? Theme.textScale : 1 }
+
+    private func scaled(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        scalesText ? Font.wisp(size: size, weight: weight) : Font.system(size: size, weight: weight)
+    }
+
     private func row(_ title: String, window: Binding<UserHours.Window>, canEndAtMidnight: Bool) -> some View {
         HStack(spacing: 8) {
-            Text(title).font(.system(size: 12.5, weight: .medium)).foregroundStyle(ink.label)
-                .frame(width: 104, alignment: .leading)
+            Text(title).font(scaled(12.5, weight: .medium)).foregroundStyle(ink.label)
+                .lineLimit(1).minimumScaleFactor(0.8)
+                .frame(width: 104 * sizeScale, alignment: .leading)
             time(window.start, label: "\(title) start", upTo: 1410)
-            Text("to").font(.system(size: 12)).foregroundStyle(ink.muted)
+            Text("to").font(scaled(12)).foregroundStyle(ink.muted)
             time(window.end, label: "\(title) end", upTo: canEndAtMidnight ? 1440 : 1410)
             Spacer(minLength: 0)
         }
@@ -128,7 +138,7 @@ struct UserHoursEditor: View {
             }
         } label: {
             Text(UserHours.clock(minute.wrappedValue))
-                .font(.system(size: 12, weight: .medium).monospacedDigit()).foregroundStyle(ink.label)
+                .font(scaled(12, weight: .medium).monospacedDigit()).foregroundStyle(ink.label)
                 .padding(.horizontal, 10).padding(.vertical, 5)
                 .background(Capsule().fill(ink.fill))
                 .overlay(Capsule().stroke(ink.stroke, lineWidth: 1))
@@ -145,9 +155,9 @@ struct UserHoursEditor: View {
                 Button {
                     if on { hours.workingDays.remove(entry.day) } else { hours.workingDays.insert(entry.day) }
                 } label: {
-                    Text(entry.letter).font(.system(size: 11, weight: .semibold))
+                    Text(entry.letter).font(scaled(11, weight: .semibold))
                         .foregroundStyle(on ? ink.onSelected : ink.muted)
-                        .frame(width: 24, height: 22)
+                        .frame(width: 24 * sizeScale, height: 22 * sizeScale)
                         .background(Circle().fill(on ? ink.selected : ink.fill))
                         .overlay(Circle().stroke(on ? Color.clear : ink.stroke, lineWidth: 1))
                         .contentShape(Circle())

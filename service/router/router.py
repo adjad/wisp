@@ -6820,6 +6820,16 @@ def routing_guard_contract(text: str, *, model_led: bool = False) -> tuple[froze
             # ("the next meeting", "the next review of my notes") gets no source.
             allowed.add('web_search')
             bindings['web_search'] = {'query': named.query}
+        elif (model_led and not named.supported and named.single_request
+              and not named.personal and not named.no_calendar):
+            from service.model_only import personal_event_question
+            if personal_event_question(text):
+                # "When is the next meeting?" / "When is the party on
+                # Saturday?": a bare definite event of the user's own kind.
+                # It may read the calendar and reminders and nothing else:
+                # no web, no mail, no other source.
+                allowed.update({'get_upcoming', 'search_reminders'})
+                bindings['get_upcoming'] = {'include_holidays': False}
         # This whole envelope already consumes every outside source policy.
         # Reclassifying a denied source noun as private context would erase
         # its independently authorized public lookup. Unknown envelopes have
@@ -6841,7 +6851,12 @@ def routing_guard_contract(text: str, *, model_led: bool = False) -> tuple[froze
                          if not tool.category.endswith("read"))
     web = _classify_web_request(t)
     if web.opted_out or web.private:
-        forbidden.update({"web_search", "web_fetch", "http_request"})
+        forbidden.update({"web_fetch", "http_request"})
+        if not (model_led and web.public_possessive and not web.opted_out):
+            forbidden.add("web_search")
+        # "What are Costco's hours?" stays private: on a model-led turn only
+        # web_search is open, and the agent loop admits only the user's own
+        # words (model_only.public_fact_query_problem). No query is bound.
         # Ordinary private local reads retain the builtin shell capability;
         # the managed executor imposes a host-owned read-only boundary for
         # private conversation context. Explicit source/egress exclusions win.
