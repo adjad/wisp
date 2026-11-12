@@ -1,0 +1,17 @@
+{
+ "rule": "no question of a test set in training: same or >=0.7 trigram similar, no exemption",
+ "keep_own_wording": false,
+ "index_sizes": {
+  "public": 2301,
+  "public_chat4": 152,
+  "private": 807,
+  "audit": 20
+ },
+ "rows_before": 671,
+ "rows_removed": 0,
+ "turns_removed": 0,
+ "by_family": {},
+ "kept_known_overlaps_by_family": {},
+ "removed": [],
+ "kept_known_overlaps": []
+}

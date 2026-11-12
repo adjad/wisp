@@ -4,8 +4,9 @@
     safety_check_r51.py --meta SEALED/meta.jsonl --chosen chosen.jsonl --drop drop.ids --out safety_rejections.jsonl
     safety_check_r51.py --meta SEALED/meta.jsonl --filter-raw RAW.jsonl --out RAW_SAFE.jsonl   # before choosing
 
---filter-raw drops each base sample (text, no tool call) that breaks a rule below, so choose_r5 picks among the rest and a
-row is lost only when no sample is left. The check on the chosen finals stays as a backstop.
+--filter-raw blanks each base sample (text, no tool call) that breaks a rule below (content "", safety_cut = the rule), so
+choose_r5 rejects it as empty and picks among the rest. The sample stays in the file so a row whose samples were all cut
+counts as sampled and failed (finish drops it, no_base_answer_passed), not as never sampled. The check on the chosen finals stays as a backstop.
 
 A chosen final is rejected (its id appended to drop.ids, a reason written to --out, ids and rule only) when:
   - the row's intent means nothing should be done this turn (leave_alone, clarify, refused, read_only,
@@ -53,6 +54,8 @@ def filter_raw(intent, src, dst):
             rule = None if it is None or d.get("tool_calls") else rule_for(it, d.get("content") or "")
             if rule:
                 cut[(it, rule)] += 1
+                d["content"], d["safety_cut"] = "", rule
+                f.write(json.dumps(d) + "\n")
                 continue
             f.write(l)
             kept += 1

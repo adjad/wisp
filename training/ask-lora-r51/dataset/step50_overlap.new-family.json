@@ -1,0 +1,13 @@
+{
+ "build": "~/Desktop/MOE_Project/.claude/worktrees/ask-lora-brev-2caec5/training/ask-lora-r51/data/pipe3/finished",
+ "eval_dir_sha256": {
+  "cases.yaml": "ee5b639304426f497d10dffe68381c30d450e5aaaa4f8d60526f82045c051acb",
+  "world.json": "75cc6f7880ed4aecff0dd5b1ad3b228dae11f40b18ee7063970c6223cac47f17",
+  "worlds.json": "75ed75db1caf00c83a05e70440b4a96efc8ad1db41b69a1c8359d5a5cb661ff3"
+ },
+ "rule": "r5 rule unchanged: leak.py trigram Jaccard >= 0.7 on every user turn (current + history of 4+ words) vs every eval prompt + history user turn; no exemption",
+ "eval_reference_turns": 99,
+ "rows_checked": 622,
+ "hits": [],
+ "hit_rows": 0
+}

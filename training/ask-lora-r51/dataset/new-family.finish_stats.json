@@ -1,0 +1,195 @@
+{
+ "base_traces": 58,
+ "builder_thinking_before_answers": {
+  "by_step_kind": {
+   "after_error": {
+    "think": 7,
+    "train_think": 6,
+    "valid_think": 1
+   },
+   "after_load": {
+    "no_think": 2,
+    "train_think": 0,
+    "valid_think": 0
+   },
+   "answer_first": {
+    "no_think": 118,
+    "train_think": 0,
+    "valid_think": 0
+   },
+   "narrate": {
+    "no_think": 187,
+    "think": 43,
+    "train_think": 41,
+    "valid_think": 2
+   },
+   "next_call": {
+    "think": 77,
+    "train_think": 69,
+    "valid_think": 8
+   },
+   "select": {
+    "no_think": 167,
+    "think": 70,
+    "train_think": 63,
+    "valid_think": 7
+   }
+  },
+  "extract": 43,
+  "extract_skip_reasons": {
+   "empty": 40
+  },
+  "extract_skipped": 40,
+  "no_think": 474,
+  "think": 197,
+  "think_share": 0.294,
+  "train_think": 179,
+  "valid_think": 18
+ },
+ "by_origin": {
+  "base_generated": 305,
+  "scripted": 1,
+  "scripted_call": 316
+ },
+ "by_target": {
+  "call": 314,
+  "final": 306,
+  "load": 2
+ },
+ "by_trace_origin": {
+  "base": 363,
+  "none": 143,
+  "scripted": 116
+ },
+ "chosen_answers": 305,
+ "code_dirty": true,
+ "code_dirty_files": [
+  "training/ask-lora-r51/pipeline/safety_check_r51.py",
+  "training/ask-lora-r51/pipeline/test_safety_check_r51.py"
+ ],
+ "code_dirty_sha256": "6c69e7c5f5096ccb265273dce1458f46a5be8b7b7ec37215ce256f448d1fd250",
+ "code_head": "9604bd46d71bb94a8b83a71615c30adfd6797ee1",
+ "code_source": "git",
+ "drops": {
+  "no_base_answer_passed": 49
+ },
+ "examples": 622,
+ "families": {
+  "safety_contrast_r51": {
+   "final_chars_median": 202.0,
+   "origin_base_generated": 305,
+   "origin_scripted": 1,
+   "origin_scripted_call": 316,
+   "rows": 622,
+   "target_call": 314,
+   "target_final": 306,
+   "target_load": 2,
+   "trace_base": 363,
+   "trace_none": 143,
+   "trace_scripted": 116
+  }
+ },
+ "families_n": 1,
+ "files_sha256": {
+  "all.jsonl": "8284e6a9030e40543ea70826ed6842274d6ef159eb11d151ccd88e9c04e050ce",
+  "meta.jsonl": "0698f33e65ff46ef579f983a986eb621f85222bb93e628aa5bc3217daec70b2d",
+  "partial.jsonl": "bed84851dc7a5f1e1434731e2193d7994aa33d2c11b1b91253122ef6133216d5",
+  "train.jsonl": "ffbeb76ed0159e1d8b5a6bb9ba0e7389edab0caa626c236dab9f086af8318dd0",
+  "train.meta.jsonl": "eabb575bfb9ee7a411bbba1dae7db53ee085fa0446b0c6c937487e77e25b208a",
+  "valid.jsonl": "ec7ce7556099188a1f6d3c39eba2a6d4831458ae087dd5136d949f5a1a2ec4ee",
+  "valid.meta.jsonl": "fcaaee7e6620cb5fad5d55e24d12b549010993f8c9311281b7d4b5388b5f0a4f"
+ },
+ "final_chars_median": 202.0,
+ "forced_empty_awaiting_base": 0,
+ "forced_empty_awaiting_base_by_text": {
+  "placeholder_final": 0,
+  "scripted_final": 0
+ },
+ "forced_tool_steps_awaiting_traces": 0,
+ "pin_commit": "7e442f2de513115f99e23e2fb3b5054a1cfc96d8",
+ "pin_differs_from_commit": [],
+ "pin_files": 460,
+ "pin_tree_sha256": "026e14696c70f2e94739804ea3496b7b06475e40981dad91542d93744d7645af",
+ "placeholders_left": 0,
+ "provenance": {
+  "build": {
+   "code_dirty": true,
+   "code_dirty_files": [
+    "training/ask-lora-r2/builder/scen_r51_safety.py",
+    "training/ask-lora-r2/builder/test_scen_r51_safety.py",
+    "training/ask-lora-r51/build/merge_r51.py",
+    "training/ask-lora-r51/pipeline/pipeline_r51.sh",
+    "training/ask-lora-r51/pipeline/safety_check_r51.py",
+    "training/ask-lora-r51/pipeline/test_safety_check_r51.py"
+   ],
+   "code_dirty_sha256": "f843278dadcc7bcea32c3308b11196da59dd56f826a14a2cfe9f1c0c3fc51fa1",
+   "code_head": "fba026999153f63d78d02a761c71f609348c7e79",
+   "code_source": "git",
+   "pin_commit": "7e442f2de513115f99e23e2fb3b5054a1cfc96d8",
+   "pin_differs_from_commit": [],
+   "pin_files": 460,
+   "pin_tree_sha256": "026e14696c70f2e94739804ea3496b7b06475e40981dad91542d93744d7645af",
+   "service_head": "7e442f2de513115f99e23e2fb3b5054a1cfc96d8",
+   "service_matches_pin_commit": true,
+   "service_source": "pin training/ask-lora-r5/data/pin-7e442f2d"
+  },
+  "finish": {
+   "code_dirty": true,
+   "code_dirty_files": [
+    "training/ask-lora-r51/pipeline/safety_check_r51.py",
+    "training/ask-lora-r51/pipeline/test_safety_check_r51.py"
+   ],
+   "code_dirty_sha256": "6c69e7c5f5096ccb265273dce1458f46a5be8b7b7ec37215ce256f448d1fd250",
+   "code_head": "9604bd46d71bb94a8b83a71615c30adfd6797ee1",
+   "code_source": "git"
+  },
+  "seal": {
+   "code_dirty": true,
+   "code_dirty_files": [
+    "training/ask-lora-r2/builder/scen_r51_safety.py",
+    "training/ask-lora-r2/builder/test_scen_r51_safety.py",
+    "training/ask-lora-r51/build/merge_r51.py",
+    "training/ask-lora-r51/pipeline/pipeline_r51.sh",
+    "training/ask-lora-r51/pipeline/safety_check_r51.py",
+    "training/ask-lora-r51/pipeline/test_safety_check_r51.py"
+   ],
+   "code_dirty_sha256": "f843278dadcc7bcea32c3308b11196da59dd56f826a14a2cfe9f1c0c3fc51fa1",
+   "code_head": "fba026999153f63d78d02a761c71f609348c7e79",
+   "code_source": "git"
+  }
+ },
+ "rendered_shapes": {
+  "first_no_think": 143,
+  "first_think": 179,
+  "forced_think": 300
+ },
+ "service_head": "7e442f2de513115f99e23e2fb3b5054a1cfc96d8",
+ "service_matches_pin_commit": true,
+ "service_source": "pin training/ask-lora-r5/data/pin-7e442f2d",
+ "status": "complete",
+ "tool_drop": {
+  "dropped": 0,
+  "dropped_after_choose": 0,
+  "families": {
+   "chat_direct_r4": {
+    "by_tool": {},
+    "dropped": 0,
+    "rows_left": 0
+   },
+   "chat_voice_r4": {
+    "by_tool": {},
+    "dropped": 0,
+    "rows_left": 0
+   },
+   "knowledge_direct": {
+    "by_tool": {},
+    "dropped": 0,
+    "rows_left": 0
+   }
+  }
+ },
+ "train": 549,
+ "turns": 322,
+ "unsampled_scripted_finals": 0,
+ "valid": 73
+}

@@ -32,5 +32,9 @@ def test_filter_raw_keeps_tool_calls_and_unknown_rows(tmp_path, capsys):
     raw.write_text("".join(json.dumps(r) + "\n" for r in rows))
     out = tmp_path / "safe.jsonl"
     S.filter_raw({"a": "leave_alone"}, raw, out)
-    kept = [json.loads(l) for l in open(out)]
-    assert [(r["id"], r["k"]) for r in kept] == [("a", 1), ("a", 2), ("zzz", 0)]
+    got = [json.loads(l) for l in open(out)]
+    # every sample stays (a row whose samples were all cut must read as sampled and failed); the cut one is blanked
+    assert [(r["id"], r["k"]) for r in got] == [("a", 0), ("a", 1), ("a", 2), ("zzz", 0)]
+    assert got[0]["content"] == "" and got[0]["safety_cut"] == "leave_alone_claims_a_note"
+    assert [r["content"] for r in got[1:]] == ["Okay, no rush.", "", "I've noted that."]
+    assert not any("safety_cut" in r for r in got[1:])
