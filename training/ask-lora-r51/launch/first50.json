@@ -1,0 +1,3329 @@
+{
+ "counts": {
+  "text": 7452,
+  "vision": 536,
+  "audio": 296
+ },
+ "pool_sizes": [
+  1091,
+  545
+ ],
+ "rows_per_epoch": 9088,
+ "steps_per_epoch": 1136,
+ "total_steps_2_epochs": 2272,
+ "rows_in_first_steps": 400,
+ "by_source": {
+  "r5": 298,
+  "audio": 26,
+  "vision": 49,
+  "new": 27
+ },
+ "new_by_intent": {
+  "refused": 5,
+  "clarify": 4,
+  "reply": 4,
+  "read_only": 4,
+  "authorized_write": 4,
+  "draft": 2,
+  "embedded_instruction": 2,
+  "direct_send": 2
+ },
+ "new_by_kind": {
+  "final": 13,
+  "call": 14
+ },
+ "new_groups": 22,
+ "new_groups_by_intent": {
+  "authorized_write": 4,
+  "clarify": 4,
+  "direct_send": 2,
+  "draft": 1,
+  "embedded_instruction": 2,
+  "read_only": 3,
+  "refused": 5,
+  "reply": 4
+ },
+ "r5_by_intent": {
+  "no_write_turn": 184,
+  "step_in_write_turn": 67,
+  "authorized_write": 21,
+  "direct_send": 11,
+  "draft": 7,
+  "reply": 3,
+  "clarify": 3,
+  "schedule_send": 2
+ },
+ "r5_by_family_top": {
+  "tool_choice_r5": 27,
+  "gather_then_send_r4": 25,
+  "compose_r3": 18,
+  "day_chat_r4": 16,
+  "followup_r3": 16,
+  "info_answers_r4": 14,
+  "safe_restraint": 14,
+  "lookup_answers_r4": 14,
+  "chat_voice_r4": 11,
+  "instructions_r4": 11,
+  "memory_contrast_r5": 10,
+  "day_answers_r4": 8,
+  "picture_turn_r3": 6,
+  "all_sources_r5": 6,
+  "right_source": 6
+ },
+ "new_family_share_of_text_train": 0.0735,
+ "coverage": {
+  "send_or_reply": {
+   "rows_all": 22,
+   "rows_new": 6,
+   "steps_any": [
+    2,
+    3,
+    5,
+    7,
+    9,
+    12,
+    14,
+    17,
+    20,
+    25,
+    27,
+    33,
+    34,
+    36,
+    37,
+    44,
+    45,
+    47,
+    49
+   ],
+   "steps_new": [
+    7,
+    20,
+    25,
+    27,
+    36,
+    47
+   ]
+  },
+  "draft": {
+   "rows_all": 9,
+   "rows_new": 2,
+   "steps_any": [
+    1,
+    3,
+    22,
+    25,
+    36,
+    37,
+    39,
+    47,
+    50
+   ],
+   "steps_new": [
+    3,
+    50
+   ]
+  },
+  "read_only_or_leave_alone": {
+   "rows_all": 4,
+   "rows_new": 4,
+   "steps_any": [
+    8,
+    18,
+    50
+   ],
+   "steps_new": [
+    8,
+    18,
+    50
+   ]
+  },
+  "clarify": {
+   "rows_all": 7,
+   "rows_new": 4,
+   "steps_any": [
+    2,
+    12,
+    22,
+    31,
+    40,
+    48
+   ],
+   "steps_new": [
+    2,
+    12,
+    22,
+    40
+   ]
+  },
+  "refused": {
+   "rows_all": 5,
+   "rows_new": 5,
+   "steps_any": [
+    10,
+    33,
+    35,
+    42,
+    43
+   ],
+   "steps_new": [
+    10,
+    33,
+    35,
+    42,
+    43
+   ]
+  },
+  "embedded_instruction": {
+   "rows_all": 2,
+   "rows_new": 2,
+   "steps_any": [
+    4,
+    5
+   ],
+   "steps_new": [
+    4,
+    5
+   ]
+  },
+  "authorized_write_other": {
+   "rows_all": 25,
+   "rows_new": 4,
+   "steps_any": [
+    3,
+    4,
+    6,
+    7,
+    8,
+    11,
+    12,
+    13,
+    16,
+    20,
+    21,
+    22,
+    24,
+    25,
+    26,
+    28,
+    33,
+    36,
+    38,
+    40,
+    41,
+    43,
+    44
+   ],
+   "steps_new": [
+    24,
+    28,
+    36,
+    44
+   ]
+  }
+ },
+ "steps": [
+  [
+   {
+    "id": "day_chat_r4-024-s1",
+    "src": "r5",
+    "family": "day_chat_r4",
+    "intent": "draft",
+    "kind": "call",
+    "tokens": 7208
+   },
+   {
+    "id": "chat_voice_r4-052-s0",
+    "src": "r5",
+    "family": "chat_voice_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6295
+   },
+   {
+    "id": "info_answers_r4-027-s1",
+    "src": "r5",
+    "family": "info_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6843
+   },
+   {
+    "id": "tool_choice_r5-030-s1",
+    "src": "r5",
+    "family": "tool_choice_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 8105
+   },
+   {
+    "id": "aud_no_speech_043",
+    "src": "audio",
+    "tokens": 161
+   },
+   {
+    "id": "pr_chat_ui_11",
+    "src": "vision",
+    "tokens": 653
+   },
+   {
+    "id": "tool_choice_r5-279-s1",
+    "src": "r5",
+    "family": "tool_choice_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6493
+   },
+   {
+    "id": "info_answers_r4-079-s1",
+    "src": "r5",
+    "family": "info_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6349
+   }
+  ],
+  [
+   {
+    "id": "day_chat_r4-134-s0",
+    "src": "r5",
+    "family": "day_chat_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 7667
+   },
+   {
+    "id": "day_answers_r4-006-s1",
+    "src": "r5",
+    "family": "day_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6796
+   },
+   {
+    "id": "safe_effects-016-s1",
+    "src": "r5",
+    "family": "safe_effects",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 7722
+   },
+   {
+    "id": "safety_contrast_r51-266-s0",
+    "src": "new",
+    "intent": "clarify",
+    "group": "r51-g066",
+    "kind": "final",
+    "category": "keep_vs_clear",
+    "tokens": 7093
+   },
+   {
+    "id": "pr_sign_02",
+    "src": "vision",
+    "tokens": 674
+   },
+   {
+    "id": "gather_then_send_r4-148-s0",
+    "src": "r5",
+    "family": "gather_then_send_r4",
+    "intent": "step_in_write_turn",
+    "kind": "call",
+    "tokens": 6725
+   },
+   {
+    "id": "aud_command_043",
+    "src": "audio",
+    "tokens": 170
+   },
+   {
+    "id": "tool_choice_r5-351-s1",
+    "src": "r5",
+    "family": "tool_choice_r5",
+    "intent": "direct_send",
+    "kind": "call",
+    "tokens": 7121
+   }
+  ],
+  [
+   {
+    "id": "safety_contrast_r51-061-s2",
+    "src": "new",
+    "intent": "draft",
+    "group": "r51-g013",
+    "kind": "final",
+    "category": "email",
+    "tokens": 5716
+   },
+   {
+    "id": "chat_voice_r4-163-s0",
+    "src": "r5",
+    "family": "chat_voice_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6053
+   },
+   {
+    "id": "act_dont_ask-008-s1",
+    "src": "r5",
+    "family": "act_dont_ask",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 6451
+   },
+   {
+    "id": "finish_the_write-037-s1",
+    "src": "r5",
+    "family": "finish_the_write",
+    "intent": "reply",
+    "kind": "call",
+    "tokens": 7947
+   },
+   {
+    "id": "chat_contrast_r5-090-s0",
+    "src": "r5",
+    "family": "chat_contrast_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 7867
+   },
+   {
+    "id": "safe_restraint-129-s1",
+    "src": "r5",
+    "family": "safe_restraint",
+    "intent": "authorized_write",
+    "kind": "call",
+    "tokens": 6471
+   },
+   {
+    "id": "act_dont_ask-017-s1",
+    "src": "r5",
+    "family": "act_dont_ask",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 7292
+   },
+   {
+    "id": "grounded_only-008-s0",
+    "src": "r5",
+    "family": "grounded_only",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 6853
+   }
+  ],
+  [
+   {
+    "id": "img_sign_03",
+    "src": "vision",
+    "tokens": 574
+   },
+   {
+    "id": "safety_contrast_r51-129-s1",
+    "src": "new",
+    "intent": "embedded_instruction",
+    "group": "r51-g028",
+    "kind": "final",
+    "category": "embedded",
+    "tokens": 7957
+   },
+   {
+    "id": "chat_voice_r4-229-s0",
+    "src": "r5",
+    "family": "chat_voice_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6181
+   },
+   {
+    "id": "finish_the_write-028-s1",
+    "src": "r5",
+    "family": "finish_the_write",
+    "intent": "authorized_write",
+    "kind": "call",
+    "tokens": 6627
+   },
+   {
+    "id": "mail_r3-009-s1",
+    "src": "r5",
+    "family": "mail_r3",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6742
+   },
+   {
+    "id": "day_chat_r4-064-s0",
+    "src": "r5",
+    "family": "day_chat_r4",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 6817
+   },
+   {
+    "id": "chat_voice_r4-027-s0",
+    "src": "r5",
+    "family": "chat_voice_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6731
+   },
+   {
+    "id": "img_flyer_07",
+    "src": "vision",
+    "tokens": 687
+   }
+  ],
+  [
+   {
+    "id": "img_chat_r4_04",
+    "src": "vision",
+    "tokens": 591
+   },
+   {
+    "id": "picture_turn_r3-024-s1",
+    "src": "r5",
+    "family": "picture_turn_r3",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 7308
+   },
+   {
+    "id": "finish_the_write-024-s2",
+    "src": "r5",
+    "family": "finish_the_write",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 7873
+   },
+   {
+    "id": "memory_contrast_r5-023-s0",
+    "src": "r5",
+    "family": "memory_contrast_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6432
+   },
+   {
+    "id": "ignore_embedded_instructions-007-s0",
+    "src": "r5",
+    "family": "ignore_embedded_instructions",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 6625
+   },
+   {
+    "id": "instructions_r4-103-s0",
+    "src": "r5",
+    "family": "instructions_r4",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 6735
+   },
+   {
+    "id": "safety_contrast_r51-120-s0",
+    "src": "new",
+    "intent": "embedded_instruction",
+    "group": "r51-g025",
+    "kind": "call",
+    "category": "embedded",
+    "tokens": 7698
+   },
+   {
+    "id": "compose_r3-083-s1",
+    "src": "r5",
+    "family": "compose_r3",
+    "intent": "schedule_send",
+    "kind": "call",
+    "tokens": 6656
+   }
+  ],
+  [
+   {
+    "id": "instructions_r4-082-s1",
+    "src": "r5",
+    "family": "instructions_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6534
+   },
+   {
+    "id": "gather_then_send_r4-022-s0",
+    "src": "r5",
+    "family": "gather_then_send_r4",
+    "intent": "step_in_write_turn",
+    "kind": "call",
+    "tokens": 7357
+   },
+   {
+    "id": "safe_restraint-098-s0",
+    "src": "r5",
+    "family": "safe_restraint",
+    "intent": "authorized_write",
+    "kind": "call",
+    "tokens": 6683
+   },
+   {
+    "id": "no_write_for_reads-007-s0",
+    "src": "r5",
+    "family": "no_write_for_reads",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 5923
+   },
+   {
+    "id": "compose_r3-029-s0",
+    "src": "r5",
+    "family": "compose_r3",
+    "intent": "step_in_write_turn",
+    "kind": "call",
+    "tokens": 6633
+   },
+   {
+    "id": "web_r3-000-s1",
+    "src": "r5",
+    "family": "web_r3",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 7093
+   },
+   {
+    "id": "session_recall_r4-024-s0",
+    "src": "r5",
+    "family": "session_recall_r4",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 6137
+   },
+   {
+    "id": "gather_then_send_r4-111-s2",
+    "src": "r5",
+    "family": "gather_then_send_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6794
+   }
+  ],
+  [
+   {
+    "id": "right_write_tool-030-s0",
+    "src": "r5",
+    "family": "right_write_tool",
+    "intent": "authorized_write",
+    "kind": "call",
+    "tokens": 6084
+   },
+   {
+    "id": "day_answers_r4-029-s0",
+    "src": "r5",
+    "family": "day_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 5962
+   },
+   {
+    "id": "safety_contrast_r51-054-s2",
+    "src": "new",
+    "intent": "reply",
+    "group": "r51-g012",
+    "kind": "final",
+    "category": "email",
+    "tokens": 8349
+   },
+   {
+    "id": "all_sources_r5-151-s0",
+    "src": "r5",
+    "family": "all_sources_r5",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 8269
+   },
+   {
+    "id": "chat_voice_r4-255-s0",
+    "src": "r5",
+    "family": "chat_voice_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 4152
+   },
+   {
+    "id": "tool_choice_r5-178-s0",
+    "src": "r5",
+    "family": "tool_choice_r5",
+    "intent": "schedule_send",
+    "kind": "call",
+    "tokens": 6595
+   },
+   {
+    "id": "capability_honest-029-s0",
+    "src": "r5",
+    "family": "capability_honest",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 5922
+   },
+   {
+    "id": "grounded_only-004-s1",
+    "src": "r5",
+    "family": "grounded_only",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 7311
+   }
+  ],
+  [
+   {
+    "id": "tool_choice_r5-186-s0",
+    "src": "r5",
+    "family": "tool_choice_r5",
+    "intent": "authorized_write",
+    "kind": "call",
+    "tokens": 6056
+   },
+   {
+    "id": "safety_contrast_r51-057-s1",
+    "src": "new",
+    "intent": "read_only",
+    "group": "r51-g012",
+    "kind": "final",
+    "category": "email",
+    "tokens": 8046
+   },
+   {
+    "id": "aud_injection_030",
+    "src": "audio",
+    "tokens": 281
+   },
+   {
+    "id": "textdoc_itinerary_02",
+    "src": "vision",
+    "tokens": 588
+   },
+   {
+    "id": "compose_r3-147-s1",
+    "src": "r5",
+    "family": "compose_r3",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6775
+   },
+   {
+    "id": "img_unreadable_05",
+    "src": "vision",
+    "tokens": 592
+   },
+   {
+    "id": "compose_r3-098-s2",
+    "src": "r5",
+    "family": "compose_r3",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 7286
+   },
+   {
+    "id": "write_contrast_r5-070-s0",
+    "src": "r5",
+    "family": "write_contrast_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6305
+   }
+  ],
+  [
+   {
+    "id": "tool_choice_r5-134-s1",
+    "src": "r5",
+    "family": "tool_choice_r5",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 6890
+   },
+   {
+    "id": "tool_choice_r5-355-s2",
+    "src": "r5",
+    "family": "tool_choice_r5",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 7366
+   },
+   {
+    "id": "aud_long_017",
+    "src": "audio",
+    "tokens": 894
+   },
+   {
+    "id": "aud_long_011",
+    "src": "audio",
+    "tokens": 708
+   },
+   {
+    "id": "compose_r3-001-s1",
+    "src": "r5",
+    "family": "compose_r3",
+    "intent": "direct_send",
+    "kind": "call",
+    "tokens": 7696
+   },
+   {
+    "id": "chat_direct_r4-056-s0",
+    "src": "r5",
+    "family": "chat_direct_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 4299
+   },
+   {
+    "id": "gather_then_send_r4-102-s2",
+    "src": "r5",
+    "family": "gather_then_send_r4",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 9041
+   },
+   {
+    "id": "day_chat_r4-038-s0",
+    "src": "r5",
+    "family": "day_chat_r4",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 7197
+   }
+  ],
+  [
+   {
+    "id": "safety_contrast_r51-174-s1",
+    "src": "new",
+    "intent": "refused",
+    "group": "r51-g041",
+    "kind": "call",
+    "category": "read_only_calendar",
+    "tokens": 5662
+   },
+   {
+    "id": "followup_r3-082-s1",
+    "src": "r5",
+    "family": "followup_r3",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 5850
+   },
+   {
+    "id": "instructions_r4-147-s1",
+    "src": "r5",
+    "family": "instructions_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 7262
+   },
+   {
+    "id": "mail_r3-055-s0",
+    "src": "r5",
+    "family": "mail_r3",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 8886
+   },
+   {
+    "id": "multi_source-003-s1",
+    "src": "r5",
+    "family": "multi_source",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 8725
+   },
+   {
+    "id": "day_chat_r4-170-s1",
+    "src": "r5",
+    "family": "day_chat_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 7536
+   },
+   {
+    "id": "restraint_r4-061-s0",
+    "src": "r5",
+    "family": "restraint_r4",
+    "intent": "step_in_write_turn",
+    "kind": "call",
+    "tokens": 6490
+   },
+   {
+    "id": "web_r3-031-s0",
+    "src": "r5",
+    "family": "web_r3",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 7063
+   }
+  ],
+  [
+   {
+    "id": "info_answers_r4-026-s1",
+    "src": "r5",
+    "family": "info_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 4830
+   },
+   {
+    "id": "textdoc_itinerary_00_v2",
+    "src": "vision",
+    "tokens": 592
+   },
+   {
+    "id": "memory_contrast_r5-032-s0",
+    "src": "r5",
+    "family": "memory_contrast_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6496
+   },
+   {
+    "id": "picture_turn_r5-035-s0",
+    "src": "r5",
+    "family": "picture_turn_r5",
+    "intent": "authorized_write",
+    "kind": "call",
+    "tokens": 7067
+   },
+   {
+    "id": "followup_r3-011-s1",
+    "src": "r5",
+    "family": "followup_r3",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6869
+   },
+   {
+    "id": "day_answers_r4-103-s1",
+    "src": "r5",
+    "family": "day_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 7364
+   },
+   {
+    "id": "img_invitation_01_v1",
+    "src": "vision",
+    "tokens": 678
+   },
+   {
+    "id": "capability_honest-036-s1",
+    "src": "r5",
+    "family": "capability_honest",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6718
+   }
+  ],
+  [
+   {
+    "id": "aud_numbers_048",
+    "src": "audio",
+    "tokens": 311
+   },
+   {
+    "id": "tool_choice_r5-210-s1",
+    "src": "r5",
+    "family": "tool_choice_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 5459
+   },
+   {
+    "id": "picture_turn_r3-090-s0",
+    "src": "r5",
+    "family": "picture_turn_r3",
+    "intent": "reply",
+    "kind": "call",
+    "tokens": 7928
+   },
+   {
+    "id": "followup_r3-053-s0",
+    "src": "r5",
+    "family": "followup_r3",
+    "intent": "authorized_write",
+    "kind": "call",
+    "tokens": 6191
+   },
+   {
+    "id": "finish_the_write-003-s0",
+    "src": "r5",
+    "family": "finish_the_write",
+    "intent": "step_in_write_turn",
+    "kind": "call",
+    "tokens": 7012
+   },
+   {
+    "id": "img_flyer_12_v2",
+    "src": "vision",
+    "tokens": 669
+   },
+   {
+    "id": "safety_contrast_r51-221-s1",
+    "src": "new",
+    "intent": "clarify",
+    "group": "r51-g054",
+    "kind": "final",
+    "category": "missing_channel",
+    "tokens": 6453
+   },
+   {
+    "id": "concise_gentle-020-s0",
+    "src": "r5",
+    "family": "concise_gentle",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 6641
+   }
+  ],
+  [
+   {
+    "id": "tool_choice_r5-389-s0",
+    "src": "r5",
+    "family": "tool_choice_r5",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 6496
+   },
+   {
+    "id": "gather_then_send_r4-027-s0",
+    "src": "r5",
+    "family": "gather_then_send_r4",
+    "intent": "step_in_write_turn",
+    "kind": "call",
+    "tokens": 7437
+   },
+   {
+    "id": "picture_turn_r3-005-s1",
+    "src": "r5",
+    "family": "picture_turn_r3",
+    "intent": "authorized_write",
+    "kind": "call",
+    "tokens": 8435
+   },
+   {
+    "id": "right_source-004-s1",
+    "src": "r5",
+    "family": "right_source",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 8710
+   },
+   {
+    "id": "compose_r3-069-s0",
+    "src": "r5",
+    "family": "compose_r3",
+    "intent": "step_in_write_turn",
+    "kind": "call",
+    "tokens": 8647
+   },
+   {
+    "id": "contacts_r3-016-s0",
+    "src": "r5",
+    "family": "contacts_r3",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 6471
+   },
+   {
+    "id": "followup_r3-104-s1",
+    "src": "r5",
+    "family": "followup_r3",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 7188
+   },
+   {
+    "id": "day_chat_r4-010-s0",
+    "src": "r5",
+    "family": "day_chat_r4",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 6819
+   }
+  ],
+  [
+   {
+    "id": "img_flyer_05_v1",
+    "src": "vision",
+    "tokens": 675
+   },
+   {
+    "id": "textdoc_invoice_01",
+    "src": "vision",
+    "tokens": 604
+   },
+   {
+    "id": "lookup_answers_r4-032-s1",
+    "src": "r5",
+    "family": "lookup_answers_r4",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 6536
+   },
+   {
+    "id": "all_sources_r5-103-s0",
+    "src": "r5",
+    "family": "all_sources_r5",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 6842
+   },
+   {
+    "id": "day_chat_r4-119-s0",
+    "src": "r5",
+    "family": "day_chat_r4",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 6754
+   },
+   {
+    "id": "instructions_r4-097-s0",
+    "src": "r5",
+    "family": "instructions_r4",
+    "intent": "direct_send",
+    "kind": "call",
+    "tokens": 6435
+   },
+   {
+    "id": "img_calendar_ui_06",
+    "src": "vision",
+    "tokens": 599
+   },
+   {
+    "id": "img_chart_05",
+    "src": "vision",
+    "tokens": 568
+   }
+  ],
+  [
+   {
+    "id": "aud_injection_026",
+    "src": "audio",
+    "tokens": 247
+   },
+   {
+    "id": "aud_names_020",
+    "src": "audio",
+    "tokens": 156
+   },
+   {
+    "id": "img_unreadable_01",
+    "src": "vision",
+    "tokens": 587
+   },
+   {
+    "id": "day_chat_r4-104-s1",
+    "src": "r5",
+    "family": "day_chat_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 8423
+   },
+   {
+    "id": "chat_contrast_r5-126-s0",
+    "src": "r5",
+    "family": "chat_contrast_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 7146
+   },
+   {
+    "id": "memory_contrast_r5-110-s1",
+    "src": "r5",
+    "family": "memory_contrast_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6068
+   },
+   {
+    "id": "img_chart_06",
+    "src": "vision",
+    "tokens": 606
+   },
+   {
+    "id": "gather_then_send_r4-012-s2",
+    "src": "r5",
+    "family": "gather_then_send_r4",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 6737
+   }
+  ],
+  [
+   {
+    "id": "day_answers_r4-029-s1",
+    "src": "r5",
+    "family": "day_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6724
+   },
+   {
+    "id": "followup_r3-041-s0",
+    "src": "r5",
+    "family": "followup_r3",
+    "intent": "authorized_write",
+    "kind": "call",
+    "tokens": 7191
+   },
+   {
+    "id": "gather_then_send_r4-043-s0",
+    "src": "r5",
+    "family": "gather_then_send_r4",
+    "intent": "step_in_write_turn",
+    "kind": "call",
+    "tokens": 7186
+   },
+   {
+    "id": "session_chat_r4-076-s0",
+    "src": "r5",
+    "family": "session_chat_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 7645
+   },
+   {
+    "id": "chat_voice_r4-198-s0",
+    "src": "r5",
+    "family": "chat_voice_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6166
+   },
+   {
+    "id": "gather_then_send_r4-036-s0",
+    "src": "r5",
+    "family": "gather_then_send_r4",
+    "intent": "step_in_write_turn",
+    "kind": "call",
+    "tokens": 7323
+   },
+   {
+    "id": "day_answers_r4-107-s0",
+    "src": "r5",
+    "family": "day_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 6964
+   },
+   {
+    "id": "img_receipt_03",
+    "src": "vision",
+    "tokens": 564
+   }
+  ],
+  [
+   {
+    "id": "info_answers_r4-093-s1",
+    "src": "r5",
+    "family": "info_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6937
+   },
+   {
+    "id": "safe_restraint-063-s1",
+    "src": "r5",
+    "family": "safe_restraint",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 6242
+   },
+   {
+    "id": "chat_voice_r4-132-s0",
+    "src": "r5",
+    "family": "chat_voice_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 4899
+   },
+   {
+    "id": "right_source-043-s0",
+    "src": "r5",
+    "family": "right_source",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 6324
+   },
+   {
+    "id": "followup_r3-115-s0",
+    "src": "r5",
+    "family": "followup_r3",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6392
+   },
+   {
+    "id": "doc_letter_07",
+    "src": "vision",
+    "tokens": 647
+   },
+   {
+    "id": "instructions_r4-101-s1",
+    "src": "r5",
+    "family": "instructions_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6891
+   },
+   {
+    "id": "compose_r3-041-s1",
+    "src": "r5",
+    "family": "compose_r3",
+    "intent": "direct_send",
+    "kind": "call",
+    "tokens": 7557
+   }
+  ],
+  [
+   {
+    "id": "safe_restraint-073-s0",
+    "src": "r5",
+    "family": "safe_restraint",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 6618
+   },
+   {
+    "id": "instructions_r4-016-s0",
+    "src": "r5",
+    "family": "instructions_r4",
+    "intent": "step_in_write_turn",
+    "kind": "call",
+    "tokens": 7552
+   },
+   {
+    "id": "safe_restraint-013-s2",
+    "src": "r5",
+    "family": "safe_restraint",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 8355
+   },
+   {
+    "id": "safety_contrast_r51-057-s0",
+    "src": "new",
+    "intent": "read_only",
+    "group": "r51-g012",
+    "kind": "call",
+    "category": "email",
+    "tokens": 7548
+   },
+   {
+    "id": "img_flyer_11",
+    "src": "vision",
+    "tokens": 653
+   },
+   {
+    "id": "tool_choice_r5-025-s1",
+    "src": "r5",
+    "family": "tool_choice_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 7119
+   },
+   {
+    "id": "safe_restraint-043-s1",
+    "src": "r5",
+    "family": "safe_restraint",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 7197
+   },
+   {
+    "id": "contacts_r3-006-s1",
+    "src": "r5",
+    "family": "contacts_r3",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6927
+   }
+  ],
+  [
+   {
+    "id": "reminders_r3-009-s1",
+    "src": "r5",
+    "family": "reminders_r3",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 7617
+   },
+   {
+    "id": "right_source-038-s0",
+    "src": "r5",
+    "family": "right_source",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 7532
+   },
+   {
+    "id": "all_sources_r5-038-s1",
+    "src": "r5",
+    "family": "all_sources_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6572
+   },
+   {
+    "id": "gather_then_send_r4-080-s1",
+    "src": "r5",
+    "family": "gather_then_send_r4",
+    "intent": "step_in_write_turn",
+    "kind": "call",
+    "tokens": 6093
+   },
+   {
+    "id": "aud_command_048",
+    "src": "audio",
+    "tokens": 170
+   },
+   {
+    "id": "concise_gentle-017-s0",
+    "src": "r5",
+    "family": "concise_gentle",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 8041
+   },
+   {
+    "id": "lookup_answers_r4-076-s1",
+    "src": "r5",
+    "family": "lookup_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 7105
+   },
+   {
+    "id": "knowledge_direct-060-s0",
+    "src": "r5",
+    "family": "knowledge_direct",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 3227
+   }
+  ],
+  [
+   {
+    "id": "mail_r3-004-s0",
+    "src": "r5",
+    "family": "mail_r3",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 6444
+   },
+   {
+    "id": "followup_r3-034-s0",
+    "src": "r5",
+    "family": "followup_r3",
+    "intent": "authorized_write",
+    "kind": "call",
+    "tokens": 6636
+   },
+   {
+    "id": "safety_contrast_r51-084-s1",
+    "src": "new",
+    "intent": "direct_send",
+    "group": "r51-g017",
+    "kind": "final",
+    "category": "email",
+    "tokens": 7268
+   },
+   {
+    "id": "img_chat_ui_07",
+    "src": "vision",
+    "tokens": 586
+   },
+   {
+    "id": "img_flyer_weekday_00",
+    "src": "vision",
+    "tokens": 616
+   },
+   {
+    "id": "no_write_for_reads-000-s1",
+    "src": "r5",
+    "family": "no_write_for_reads",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 7064
+   },
+   {
+    "id": "lookup_answers_r4-021-s0",
+    "src": "r5",
+    "family": "lookup_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 6088
+   },
+   {
+    "id": "gather_then_send_r4-047-s0",
+    "src": "r5",
+    "family": "gather_then_send_r4",
+    "intent": "step_in_write_turn",
+    "kind": "call",
+    "tokens": 7094
+   }
+  ],
+  [
+   {
+    "id": "pr_hand_list_02",
+    "src": "vision",
+    "tokens": 628
+   },
+   {
+    "id": "tool_choice_r5-241-s0",
+    "src": "r5",
+    "family": "tool_choice_r5",
+    "intent": "authorized_write",
+    "kind": "call",
+    "tokens": 6681
+   },
+   {
+    "id": "debug_log_r5-210-s0",
+    "src": "r5",
+    "family": "debug_log_r5",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 6681
+   },
+   {
+    "id": "instructions_r4-155-s0",
+    "src": "r5",
+    "family": "instructions_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 5853
+   },
+   {
+    "id": "tool_choice_r5-165-s0",
+    "src": "r5",
+    "family": "tool_choice_r5",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 5733
+   },
+   {
+    "id": "safe_restraint-144-s0",
+    "src": "r5",
+    "family": "safe_restraint",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6841
+   },
+   {
+    "id": "lookup_answers_r4-064-s1",
+    "src": "r5",
+    "family": "lookup_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6729
+   },
+   {
+    "id": "img_invitation_00_v1",
+    "src": "vision",
+    "tokens": 694
+   }
+  ],
+  [
+   {
+    "id": "reminders_r3-060-s0",
+    "src": "r5",
+    "family": "reminders_r3",
+    "intent": "authorized_write",
+    "kind": "call",
+    "tokens": 6737
+   },
+   {
+    "id": "info_answers_r4-017-s1",
+    "src": "r5",
+    "family": "info_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 7024
+   },
+   {
+    "id": "contacts_r3-029-s1",
+    "src": "r5",
+    "family": "contacts_r3",
+    "intent": "clarify",
+    "kind": "final",
+    "tokens": 7584
+   },
+   {
+    "id": "right_write_tool-016-s0",
+    "src": "r5",
+    "family": "right_write_tool",
+    "intent": "authorized_write",
+    "kind": "call",
+    "tokens": 7223
+   },
+   {
+    "id": "ignore_embedded_instructions-028-s1",
+    "src": "r5",
+    "family": "ignore_embedded_instructions",
+    "intent": "draft",
+    "kind": "call",
+    "tokens": 7535
+   },
+   {
+    "id": "pr_chat_ui_10",
+    "src": "vision",
+    "tokens": 695
+   },
+   {
+    "id": "tool_choice_r5-110-s1",
+    "src": "r5",
+    "family": "tool_choice_r5",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 6287
+   },
+   {
+    "id": "safety_contrast_r51-296-s0",
+    "src": "new",
+    "intent": "clarify",
+    "group": "r51-g073",
+    "kind": "final",
+    "category": "missing_location",
+    "tokens": 7575
+   }
+  ],
+  [
+   {
+    "id": "tool_choice_r5-083-s0",
+    "src": "r5",
+    "family": "tool_choice_r5",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 6337
+   },
+   {
+    "id": "safe_restraint-049-s0",
+    "src": "r5",
+    "family": "safe_restraint",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6728
+   },
+   {
+    "id": "session_recall_r4-005-s0",
+    "src": "r5",
+    "family": "session_recall_r4",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 6220
+   },
+   {
+    "id": "web_r3-015-s1",
+    "src": "r5",
+    "family": "web_r3",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 8449
+   },
+   {
+    "id": "followup_r3-095-s1",
+    "src": "r5",
+    "family": "followup_r3",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 8390
+   },
+   {
+    "id": "write_contrast_r5-051-s1",
+    "src": "r5",
+    "family": "write_contrast_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 8566
+   },
+   {
+    "id": "no_write_for_reads-020-s0",
+    "src": "r5",
+    "family": "no_write_for_reads",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 6154
+   },
+   {
+    "id": "img_settings_ui_04",
+    "src": "vision",
+    "tokens": 580
+   }
+  ],
+  [
+   {
+    "id": "act_dont_promise-027-s1",
+    "src": "r5",
+    "family": "act_dont_promise",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 8390
+   },
+   {
+    "id": "capability_honest-031-s1",
+    "src": "r5",
+    "family": "capability_honest",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 5929
+   },
+   {
+    "id": "info_answers_r4-094-s0",
+    "src": "r5",
+    "family": "info_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 6540
+   },
+   {
+    "id": "session_chat_r4-069-s0",
+    "src": "r5",
+    "family": "session_chat_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6641
+   },
+   {
+    "id": "safety_contrast_r51-262-s3",
+    "src": "new",
+    "intent": "authorized_write",
+    "group": "r51-g066",
+    "kind": "call",
+    "category": "keep_vs_clear",
+    "tokens": 6374
+   },
+   {
+    "id": "pr_unreadable_00",
+    "src": "vision",
+    "tokens": 616
+   },
+   {
+    "id": "safe_restraint-132-s1",
+    "src": "r5",
+    "family": "safe_restraint",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6796
+   },
+   {
+    "id": "debug_log_r5-157-s1",
+    "src": "r5",
+    "family": "debug_log_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 7027
+   }
+  ],
+  [
+   {
+    "id": "grounded_only-003-s1",
+    "src": "r5",
+    "family": "grounded_only",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 7955
+   },
+   {
+    "id": "instructions_r4-151-s0",
+    "src": "r5",
+    "family": "instructions_r4",
+    "intent": "authorized_write",
+    "kind": "call",
+    "tokens": 4538
+   },
+   {
+    "id": "safety_contrast_r51-010-s2",
+    "src": "new",
+    "intent": "reply",
+    "group": "r51-g003",
+    "kind": "final",
+    "category": "message",
+    "tokens": 9022
+   },
+   {
+    "id": "day_answers_r4-058-s0",
+    "src": "r5",
+    "family": "day_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 7672
+   },
+   {
+    "id": "gather_then_send_r4-091-s1",
+    "src": "r5",
+    "family": "gather_then_send_r4",
+    "intent": "draft",
+    "kind": "call",
+    "tokens": 7321
+   },
+   {
+    "id": "followup_r3-030-s0",
+    "src": "r5",
+    "family": "followup_r3",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 8076
+   },
+   {
+    "id": "no_write_for_reads-026-s1",
+    "src": "r5",
+    "family": "no_write_for_reads",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 4436
+   },
+   {
+    "id": "followup_r3-071-s0",
+    "src": "r5",
+    "family": "followup_r3",
+    "intent": "direct_send",
+    "kind": "call",
+    "tokens": 5602
+   }
+  ],
+  [
+   {
+    "id": "exact_args-026-s0",
+    "src": "r5",
+    "family": "exact_args",
+    "intent": "authorized_write",
+    "kind": "call",
+    "tokens": 6647
+   },
+   {
+    "id": "all_sources_r5-018-s1",
+    "src": "r5",
+    "family": "all_sources_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 8835
+   },
+   {
+    "id": "no_write_for_reads-005-s1",
+    "src": "r5",
+    "family": "no_write_for_reads",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6965
+   },
+   {
+    "id": "pr_schedule_table_02",
+    "src": "vision",
+    "tokens": 658
+   },
+   {
+    "id": "doc5_syllabus_02",
+    "src": "vision",
+    "tokens": 753
+   },
+   {
+    "id": "info_answers_r4-024-s0",
+    "src": "r5",
+    "family": "info_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 5499
+   },
+   {
+    "id": "followup_r3-025-s0",
+    "src": "r5",
+    "family": "followup_r3",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 5071
+   },
+   {
+    "id": "chat_voice_r4-110-s0",
+    "src": "r5",
+    "family": "chat_voice_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6991
+   }
+  ],
+  [
+   {
+    "id": "safety_contrast_r51-067-s0",
+    "src": "new",
+    "intent": "reply",
+    "group": "r51-g014",
+    "kind": "call",
+    "category": "email",
+    "tokens": 7092
+   },
+   {
+    "id": "lookup_answers_r4-123-s1",
+    "src": "r5",
+    "family": "lookup_answers_r4",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 5669
+   },
+   {
+    "id": "compose_r3-037-s2",
+    "src": "r5",
+    "family": "compose_r3",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 7482
+   },
+   {
+    "id": "lookup_answers_r4-110-s1",
+    "src": "r5",
+    "family": "lookup_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6818
+   },
+   {
+    "id": "act_dont_promise-030-s0",
+    "src": "r5",
+    "family": "act_dont_promise",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 6912
+   },
+   {
+    "id": "instructions_r4-113-s0",
+    "src": "r5",
+    "family": "instructions_r4",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 7187
+   },
+   {
+    "id": "aud_numbers_077",
+    "src": "audio",
+    "tokens": 327
+   },
+   {
+    "id": "picture_turn_r3-012-s1",
+    "src": "r5",
+    "family": "picture_turn_r3",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 7376
+   }
+  ],
+  [
+   {
+    "id": "debug_log_r5-340-s1",
+    "src": "r5",
+    "family": "debug_log_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 9419
+   },
+   {
+    "id": "gather_then_send_r4-123-s1",
+    "src": "r5",
+    "family": "gather_then_send_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6574
+   },
+   {
+    "id": "recover_from_tool_error-028-s3",
+    "src": "r5",
+    "family": "recover_from_tool_error",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 4227
+   },
+   {
+    "id": "tool_choice_r5-060-s0",
+    "src": "r5",
+    "family": "tool_choice_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 5336
+   },
+   {
+    "id": "chat_direct_r4-073-s0",
+    "src": "r5",
+    "family": "chat_direct_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6467
+   },
+   {
+    "id": "tool_choice_r5-338-s2",
+    "src": "r5",
+    "family": "tool_choice_r5",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 8067
+   },
+   {
+    "id": "session_chat_r4-012-s0",
+    "src": "r5",
+    "family": "session_chat_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 7665
+   },
+   {
+    "id": "safety_contrast_r51-176-s2",
+    "src": "new",
+    "intent": "authorized_write",
+    "group": "r51-g041",
+    "kind": "final",
+    "category": "read_only_calendar",
+    "tokens": 6087
+   }
+  ],
+  [
+   {
+    "id": "all_sources_r5-164-s0",
+    "src": "r5",
+    "family": "all_sources_r5",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 8105
+   },
+   {
+    "id": "memory_contrast_r5-005-s1",
+    "src": "r5",
+    "family": "memory_contrast_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6663
+   },
+   {
+    "id": "textdoc_confirm_00_v1",
+    "src": "vision",
+    "tokens": 606
+   },
+   {
+    "id": "compose_r3-036-s2",
+    "src": "r5",
+    "family": "compose_r3",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 7155
+   },
+   {
+    "id": "instructions_r4-081-s1",
+    "src": "r5",
+    "family": "instructions_r4",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 7343
+   },
+   {
+    "id": "concise_gentle-003-s1",
+    "src": "r5",
+    "family": "concise_gentle",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 7618
+   },
+   {
+    "id": "info_answers_r4-040-s1",
+    "src": "r5",
+    "family": "info_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 4659
+   },
+   {
+    "id": "aud_numbers_005",
+    "src": "audio",
+    "tokens": 224
+   }
+  ],
+  [
+   {
+    "id": "safe_restraint-083-s1",
+    "src": "r5",
+    "family": "safe_restraint",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 6302
+   },
+   {
+    "id": "gather_then_send_r4-065-s2",
+    "src": "r5",
+    "family": "gather_then_send_r4",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 6310
+   },
+   {
+    "id": "lookup_answers_r4-080-s1",
+    "src": "r5",
+    "family": "lookup_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 7141
+   },
+   {
+    "id": "long_email_r5-000-s0",
+    "src": "r5",
+    "family": "long_email_r5",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 7077
+   },
+   {
+    "id": "memory_contrast_r5-019-s1",
+    "src": "r5",
+    "family": "memory_contrast_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6211
+   },
+   {
+    "id": "exact_args-035-s1",
+    "src": "r5",
+    "family": "exact_args",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 6036
+   },
+   {
+    "id": "lookup_answers_r4-111-s0",
+    "src": "r5",
+    "family": "lookup_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 5123
+   },
+   {
+    "id": "img_document_07",
+    "src": "vision",
+    "tokens": 599
+   }
+  ],
+  [
+   {
+    "id": "picture_turn_r3-034-s1",
+    "src": "r5",
+    "family": "picture_turn_r3",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 7184
+   },
+   {
+    "id": "day_chat_r4-079-s1",
+    "src": "r5",
+    "family": "day_chat_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 8743
+   },
+   {
+    "id": "tool_choice_r5-322-s1",
+    "src": "r5",
+    "family": "tool_choice_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6322
+   },
+   {
+    "id": "chat_voice_r4-240-s0",
+    "src": "r5",
+    "family": "chat_voice_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 7925
+   },
+   {
+    "id": "img_unreadable_11",
+    "src": "vision",
+    "tokens": 600
+   },
+   {
+    "id": "restraint_r4-004-s0",
+    "src": "r5",
+    "family": "restraint_r4",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 7321
+   },
+   {
+    "id": "safe_restraint-103-s1",
+    "src": "r5",
+    "family": "safe_restraint",
+    "intent": "clarify",
+    "kind": "final",
+    "tokens": 6289
+   },
+   {
+    "id": "doc5_syllabus_01",
+    "src": "vision",
+    "tokens": 1003
+   }
+  ],
+  [
+   {
+    "id": "aud_numbers_023",
+    "src": "audio",
+    "tokens": 328
+   },
+   {
+    "id": "aud_long_004",
+    "src": "audio",
+    "tokens": 834
+   },
+   {
+    "id": "contacts_r3-022-s1",
+    "src": "r5",
+    "family": "contacts_r3",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6133
+   },
+   {
+    "id": "info_answers_r4-070-s0",
+    "src": "r5",
+    "family": "info_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 6512
+   },
+   {
+    "id": "restraint_r4-001-s2",
+    "src": "r5",
+    "family": "restraint_r4",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 6449
+   },
+   {
+    "id": "chat_voice_r4-276-s0",
+    "src": "r5",
+    "family": "chat_voice_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6293
+   },
+   {
+    "id": "lookup_answers_r4-114-s0",
+    "src": "r5",
+    "family": "lookup_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 7027
+   },
+   {
+    "id": "capability_honest-011-s0",
+    "src": "r5",
+    "family": "capability_honest",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 5641
+   }
+  ],
+  [
+   {
+    "id": "safety_contrast_r51-205-s1",
+    "src": "new",
+    "intent": "refused",
+    "group": "r51-g050",
+    "kind": "final",
+    "category": "nothing_matches",
+    "tokens": 6091
+   },
+   {
+    "id": "instructions_r4-039-s0",
+    "src": "r5",
+    "family": "instructions_r4",
+    "intent": "authorized_write",
+    "kind": "call",
+    "tokens": 7150
+   },
+   {
+    "id": "img_chart_03",
+    "src": "vision",
+    "tokens": 575
+   },
+   {
+    "id": "img_terminal_00",
+    "src": "vision",
+    "tokens": 577
+   },
+   {
+    "id": "compose_r3-040-s1",
+    "src": "r5",
+    "family": "compose_r3",
+    "intent": "direct_send",
+    "kind": "call",
+    "tokens": 6808
+   },
+   {
+    "id": "device_r3-058-s0",
+    "src": "r5",
+    "family": "device_r3",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 4921
+   },
+   {
+    "id": "session_recall_r4-171-s0",
+    "src": "r5",
+    "family": "session_recall_r4",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 6791
+   },
+   {
+    "id": "aud_numbers_069",
+    "src": "audio",
+    "tokens": 216
+   }
+  ],
+  [
+   {
+    "id": "lookup_answers_r4-140-s0",
+    "src": "r5",
+    "family": "lookup_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 5769
+   },
+   {
+    "id": "img_sticky_todo_00",
+    "src": "vision",
+    "tokens": 572
+   },
+   {
+    "id": "gather_then_send_r4-002-s2",
+    "src": "r5",
+    "family": "gather_then_send_r4",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 6810
+   },
+   {
+    "id": "compose_r3-133-s0",
+    "src": "r5",
+    "family": "compose_r3",
+    "intent": "direct_send",
+    "kind": "call",
+    "tokens": 7823
+   },
+   {
+    "id": "aud_numbers_051",
+    "src": "audio",
+    "tokens": 254
+   },
+   {
+    "id": "img_flyer_00",
+    "src": "vision",
+    "tokens": 691
+   },
+   {
+    "id": "session_chat_r4-081-s0",
+    "src": "r5",
+    "family": "session_chat_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6746
+   },
+   {
+    "id": "tool_choice_r5-288-s1",
+    "src": "r5",
+    "family": "tool_choice_r5",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 7108
+   }
+  ],
+  [
+   {
+    "id": "aud_long_024",
+    "src": "audio",
+    "tokens": 769
+   },
+   {
+    "id": "safety_contrast_r51-166-s1",
+    "src": "new",
+    "intent": "refused",
+    "group": "r51-g039",
+    "kind": "call",
+    "category": "read_only_calendar",
+    "tokens": 6591
+   },
+   {
+    "id": "chat_contrast_r5-040-s0",
+    "src": "r5",
+    "family": "chat_contrast_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 9217
+   },
+   {
+    "id": "compose_r3-138-s2",
+    "src": "r5",
+    "family": "compose_r3",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 7948
+   },
+   {
+    "id": "session_recall_r4-006-s1",
+    "src": "r5",
+    "family": "session_recall_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 8026
+   },
+   {
+    "id": "info_answers_r4-012-s1",
+    "src": "r5",
+    "family": "info_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 7318
+   },
+   {
+    "id": "safe_restraint-145-s2",
+    "src": "r5",
+    "family": "safe_restraint",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 6649
+   },
+   {
+    "id": "img_flyer_01",
+    "src": "vision",
+    "tokens": 574
+   }
+  ],
+  [
+   {
+    "id": "gather_then_send_r4-166-s1",
+    "src": "r5",
+    "family": "gather_then_send_r4",
+    "intent": "draft",
+    "kind": "call",
+    "tokens": 6005
+   },
+   {
+    "id": "day_chat_r4-212-s1",
+    "src": "r5",
+    "family": "day_chat_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 8194
+   },
+   {
+    "id": "safety_contrast_r51-149-s1",
+    "src": "new",
+    "intent": "authorized_write",
+    "group": "r51-g034",
+    "kind": "final",
+    "category": "reminder_vs_event",
+    "tokens": 7169
+   },
+   {
+    "id": "safety_contrast_r51-000-s0",
+    "src": "new",
+    "intent": "direct_send",
+    "group": "r51-g001",
+    "kind": "call",
+    "category": "message",
+    "tokens": 5867
+   },
+   {
+    "id": "session_chat_r4-005-s0",
+    "src": "r5",
+    "family": "session_chat_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 7741
+   },
+   {
+    "id": "followup_r3-021-s0",
+    "src": "r5",
+    "family": "followup_r3",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 7239
+   },
+   {
+    "id": "aud_numbers_022",
+    "src": "audio",
+    "tokens": 283
+   },
+   {
+    "id": "day_chat_r4-084-s1",
+    "src": "r5",
+    "family": "day_chat_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6584
+   }
+  ],
+  [
+   {
+    "id": "img_unreadable_03",
+    "src": "vision",
+    "tokens": 607
+   },
+   {
+    "id": "info_answers_r4-098-s1",
+    "src": "r5",
+    "family": "info_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 7208
+   },
+   {
+    "id": "safe_effects-013-s1",
+    "src": "r5",
+    "family": "safe_effects",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 7806
+   },
+   {
+    "id": "gather_then_send_r4-158-s1",
+    "src": "r5",
+    "family": "gather_then_send_r4",
+    "intent": "draft",
+    "kind": "call",
+    "tokens": 7911
+   },
+   {
+    "id": "device_r3-017-s2",
+    "src": "r5",
+    "family": "device_r3",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 5274
+   },
+   {
+    "id": "lookup_answers_r4-062-s0",
+    "src": "r5",
+    "family": "lookup_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 5876
+   },
+   {
+    "id": "gather_then_send_r4-068-s1",
+    "src": "r5",
+    "family": "gather_then_send_r4",
+    "intent": "direct_send",
+    "kind": "call",
+    "tokens": 6449
+   },
+   {
+    "id": "pr_label_03",
+    "src": "vision",
+    "tokens": 696
+   }
+  ],
+  [
+   {
+    "id": "tool_choice_r5-054-s1",
+    "src": "r5",
+    "family": "tool_choice_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 7703
+   },
+   {
+    "id": "exact_args-021-s0",
+    "src": "r5",
+    "family": "exact_args",
+    "intent": "authorized_write",
+    "kind": "call",
+    "tokens": 5970
+   },
+   {
+    "id": "chat_contrast_r5-112-s0",
+    "src": "r5",
+    "family": "chat_contrast_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6013
+   },
+   {
+    "id": "img_label_09",
+    "src": "vision",
+    "tokens": 578
+   },
+   {
+    "id": "followup_r3-087-s0",
+    "src": "r5",
+    "family": "followup_r3",
+    "intent": "step_in_write_turn",
+    "kind": "load",
+    "tokens": 6596
+   },
+   {
+    "id": "textdoc_invoice_02",
+    "src": "vision",
+    "tokens": 681
+   },
+   {
+    "id": "gather_then_send_r4-023-s2",
+    "src": "r5",
+    "family": "gather_then_send_r4",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 7133
+   },
+   {
+    "id": "tool_choice_r5-062-s0",
+    "src": "r5",
+    "family": "tool_choice_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6106
+   }
+  ],
+  [
+   {
+    "id": "day_answers_r4-127-s1",
+    "src": "r5",
+    "family": "day_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 8125
+   },
+   {
+    "id": "lookup_answers_r4-144-s0",
+    "src": "r5",
+    "family": "lookup_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 6088
+   },
+   {
+    "id": "session_recall_r4-013-s0",
+    "src": "r5",
+    "family": "session_recall_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 4870
+   },
+   {
+    "id": "day_chat_r4-048-s0",
+    "src": "r5",
+    "family": "day_chat_r4",
+    "intent": "step_in_write_turn",
+    "kind": "call",
+    "tokens": 7059
+   },
+   {
+    "id": "gather_then_send_r4-171-s0",
+    "src": "r5",
+    "family": "gather_then_send_r4",
+    "intent": "draft",
+    "kind": "call",
+    "tokens": 5907
+   },
+   {
+    "id": "img_chart_07",
+    "src": "vision",
+    "tokens": 576
+   },
+   {
+    "id": "chat_voice_r4-112-s0",
+    "src": "r5",
+    "family": "chat_voice_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 8575
+   },
+   {
+    "id": "aud_no_speech_012",
+    "src": "audio",
+    "tokens": 165
+   }
+  ],
+  [
+   {
+    "id": "safety_contrast_r51-208-s0",
+    "src": "new",
+    "intent": "clarify",
+    "group": "r51-g051",
+    "kind": "call",
+    "category": "missing_channel",
+    "tokens": 7120
+   },
+   {
+    "id": "reminders_r3-035-s0",
+    "src": "r5",
+    "family": "reminders_r3",
+    "intent": "authorized_write",
+    "kind": "call",
+    "tokens": 6348
+   },
+   {
+    "id": "write_contrast_r5-096-s0",
+    "src": "r5",
+    "family": "write_contrast_r5",
+    "intent": "authorized_write",
+    "kind": "call",
+    "tokens": 6768
+   },
+   {
+    "id": "tool_choice_r5-332-s1",
+    "src": "r5",
+    "family": "tool_choice_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 5926
+   },
+   {
+    "id": "img_hand_list_02",
+    "src": "vision",
+    "tokens": 605
+   },
+   {
+    "id": "img_appointment_05_v1",
+    "src": "vision",
+    "tokens": 693
+   },
+   {
+    "id": "safe_restraint-097-s1",
+    "src": "r5",
+    "family": "safe_restraint",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 6748
+   },
+   {
+    "id": "all_sources_r5-033-s0",
+    "src": "r5",
+    "family": "all_sources_r5",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 7436
+   }
+  ],
+  [
+   {
+    "id": "act_dont_promise-010-s1",
+    "src": "r5",
+    "family": "act_dont_promise",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 8253
+   },
+   {
+    "id": "device_r3-011-s1",
+    "src": "r5",
+    "family": "device_r3",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 7520
+   },
+   {
+    "id": "followup_r3-042-s0",
+    "src": "r5",
+    "family": "followup_r3",
+    "intent": "authorized_write",
+    "kind": "call",
+    "tokens": 4620
+   },
+   {
+    "id": "aud_long_030",
+    "src": "audio",
+    "tokens": 757
+   },
+   {
+    "id": "aud_command_007",
+    "src": "audio",
+    "tokens": 154
+   },
+   {
+    "id": "write_contrast_r5-002-s1",
+    "src": "r5",
+    "family": "write_contrast_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 8094
+   },
+   {
+    "id": "exact_args-007-s1",
+    "src": "r5",
+    "family": "exact_args",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 6986
+   },
+   {
+    "id": "img_notice_letter_03_v1",
+    "src": "vision",
+    "tokens": 663
+   }
+  ],
+  [
+   {
+    "id": "tool_choice_r5-290-s1",
+    "src": "r5",
+    "family": "tool_choice_r5",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 5955
+   },
+   {
+    "id": "day_chat_r4-125-s1",
+    "src": "r5",
+    "family": "day_chat_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6765
+   },
+   {
+    "id": "memory_contrast_r5-137-s0",
+    "src": "r5",
+    "family": "memory_contrast_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 3337
+   },
+   {
+    "id": "aud_injection_004",
+    "src": "audio",
+    "tokens": 253
+   },
+   {
+    "id": "day_chat_r4-162-s1",
+    "src": "r5",
+    "family": "day_chat_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 7327
+   },
+   {
+    "id": "right_source-000-s1",
+    "src": "r5",
+    "family": "right_source",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6571
+   },
+   {
+    "id": "safety_contrast_r51-259-s0",
+    "src": "new",
+    "intent": "refused",
+    "group": "r51-g065",
+    "kind": "call",
+    "category": "unknown_contact",
+    "tokens": 9149
+   },
+   {
+    "id": "gather_then_send_r4-069-s0",
+    "src": "r5",
+    "family": "gather_then_send_r4",
+    "intent": "step_in_write_turn",
+    "kind": "call",
+    "tokens": 7039
+   }
+  ],
+  [
+   {
+    "id": "gather_then_send_r4-078-s1",
+    "src": "r5",
+    "family": "gather_then_send_r4",
+    "intent": "step_in_write_turn",
+    "kind": "call",
+    "tokens": 6773
+   },
+   {
+    "id": "web_r3-065-s1",
+    "src": "r5",
+    "family": "web_r3",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 7783
+   },
+   {
+    "id": "session_chat_r4-118-s0",
+    "src": "r5",
+    "family": "session_chat_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 5883
+   },
+   {
+    "id": "info_answers_r4-031-s1",
+    "src": "r5",
+    "family": "info_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6468
+   },
+   {
+    "id": "right_source-044-s1",
+    "src": "r5",
+    "family": "right_source",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 7496
+   },
+   {
+    "id": "safety_contrast_r51-170-s0",
+    "src": "new",
+    "intent": "refused",
+    "group": "r51-g040",
+    "kind": "call",
+    "category": "read_only_calendar",
+    "tokens": 6305
+   },
+   {
+    "id": "tool_choice_r5-042-s1",
+    "src": "r5",
+    "family": "tool_choice_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6863
+   },
+   {
+    "id": "contacts_r3-052-s2",
+    "src": "r5",
+    "family": "contacts_r3",
+    "intent": "authorized_write",
+    "kind": "call",
+    "tokens": 5423
+   }
+  ],
+  [
+   {
+    "id": "long_email_r5-003-s1",
+    "src": "r5",
+    "family": "long_email_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 8546
+   },
+   {
+    "id": "tool_choice_r5-273-s1",
+    "src": "r5",
+    "family": "tool_choice_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 8928
+   },
+   {
+    "id": "aud_non_english_007",
+    "src": "audio",
+    "tokens": 157
+   },
+   {
+    "id": "tool_choice_r5-349-s1",
+    "src": "r5",
+    "family": "tool_choice_r5",
+    "intent": "direct_send",
+    "kind": "call",
+    "tokens": 7053
+   },
+   {
+    "id": "gather_then_send_r4-087-s0",
+    "src": "r5",
+    "family": "gather_then_send_r4",
+    "intent": "step_in_write_turn",
+    "kind": "call",
+    "tokens": 5647
+   },
+   {
+    "id": "act_dont_ask-003-s1",
+    "src": "r5",
+    "family": "act_dont_ask",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 6690
+   },
+   {
+    "id": "aud_command_002",
+    "src": "audio",
+    "tokens": 182
+   },
+   {
+    "id": "safety_contrast_r51-322-s1",
+    "src": "new",
+    "intent": "authorized_write",
+    "group": "r51-g080",
+    "kind": "final",
+    "category": "complete",
+    "tokens": 7751
+   }
+  ],
+  [
+   {
+    "id": "exact_args-028-s1",
+    "src": "r5",
+    "family": "exact_args",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 6962
+   },
+   {
+    "id": "right_source-023-s0",
+    "src": "r5",
+    "family": "right_source",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 7099
+   },
+   {
+    "id": "debug_log_r5-315-s1",
+    "src": "r5",
+    "family": "debug_log_r5",
+    "intent": "direct_send",
+    "kind": "call",
+    "tokens": 6550
+   },
+   {
+    "id": "restraint_r4-131-s0",
+    "src": "r5",
+    "family": "restraint_r4",
+    "intent": "step_in_write_turn",
+    "kind": "call",
+    "tokens": 6344
+   },
+   {
+    "id": "tool_choice_r5-053-s1",
+    "src": "r5",
+    "family": "tool_choice_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 7534
+   },
+   {
+    "id": "followup_r3-000-s0",
+    "src": "r5",
+    "family": "followup_r3",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 6961
+   },
+   {
+    "id": "day_chat_r4-126-s1",
+    "src": "r5",
+    "family": "day_chat_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 8711
+   },
+   {
+    "id": "memory_contrast_r5-165-s0",
+    "src": "r5",
+    "family": "memory_contrast_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6950
+   }
+  ],
+  [
+   {
+    "id": "compose_r3-034-s2",
+    "src": "r5",
+    "family": "compose_r3",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 8766
+   },
+   {
+    "id": "memory_contrast_r5-021-s0",
+    "src": "r5",
+    "family": "memory_contrast_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6247
+   },
+   {
+    "id": "web_r3-010-s0",
+    "src": "r5",
+    "family": "web_r3",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 6120
+   },
+   {
+    "id": "day_answers_r4-008-s0",
+    "src": "r5",
+    "family": "day_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 6339
+   },
+   {
+    "id": "tool_choice_r5-223-s1",
+    "src": "r5",
+    "family": "tool_choice_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6612
+   },
+   {
+    "id": "gather_then_send_r4-172-s0",
+    "src": "r5",
+    "family": "gather_then_send_r4",
+    "intent": "step_in_write_turn",
+    "kind": "call",
+    "tokens": 6435
+   },
+   {
+    "id": "info_answers_r4-002-s1",
+    "src": "r5",
+    "family": "info_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 5768
+   },
+   {
+    "id": "gather_then_send_r4-121-s1",
+    "src": "r5",
+    "family": "gather_then_send_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 8054
+   }
+  ],
+  [
+   {
+    "id": "info_answers_r4-038-s0",
+    "src": "r5",
+    "family": "info_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 5746
+   },
+   {
+    "id": "aud_names_019",
+    "src": "audio",
+    "tokens": 153
+   },
+   {
+    "id": "aud_non_english_048",
+    "src": "audio",
+    "tokens": 186
+   },
+   {
+    "id": "safety_contrast_r51-106-s1",
+    "src": "new",
+    "intent": "reply",
+    "group": "r51-g020",
+    "kind": "call",
+    "category": "email",
+    "tokens": 7448
+   },
+   {
+    "id": "day_chat_r4-081-s0",
+    "src": "r5",
+    "family": "day_chat_r4",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 7488
+   },
+   {
+    "id": "mail_r3-035-s1",
+    "src": "r5",
+    "family": "mail_r3",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 6239
+   },
+   {
+    "id": "compose_r3-064-s1",
+    "src": "r5",
+    "family": "compose_r3",
+    "intent": "draft",
+    "kind": "call",
+    "tokens": 5173
+   },
+   {
+    "id": "compose_r3-096-s1",
+    "src": "r5",
+    "family": "compose_r3",
+    "intent": "direct_send",
+    "kind": "call",
+    "tokens": 6849
+   }
+  ],
+  [
+   {
+    "id": "followup_r3-108-s0",
+    "src": "r5",
+    "family": "followup_r3",
+    "intent": "clarify",
+    "kind": "final",
+    "tokens": 5905
+   },
+   {
+    "id": "memory_contrast_r5-167-s1",
+    "src": "r5",
+    "family": "memory_contrast_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 5685
+   },
+   {
+    "id": "img_flyer_14",
+    "src": "vision",
+    "tokens": 657
+   },
+   {
+    "id": "long_email_r5-034-s0",
+    "src": "r5",
+    "family": "long_email_r5",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 7909
+   },
+   {
+    "id": "img_label_04",
+    "src": "vision",
+    "tokens": 579
+   },
+   {
+    "id": "memory_contrast_r5-037-s0",
+    "src": "r5",
+    "family": "memory_contrast_r5",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 5639
+   },
+   {
+    "id": "compose_r3-014-s0",
+    "src": "r5",
+    "family": "compose_r3",
+    "intent": "step_in_write_turn",
+    "kind": "call",
+    "tokens": 7826
+   },
+   {
+    "id": "lookup_answers_r4-153-s1",
+    "src": "r5",
+    "family": "lookup_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 7160
+   }
+  ],
+  [
+   {
+    "id": "compose_r3-005-s2",
+    "src": "r5",
+    "family": "compose_r3",
+    "intent": "step_in_write_turn",
+    "kind": "final",
+    "tokens": 7340
+   },
+   {
+    "id": "pr_sign_05",
+    "src": "vision",
+    "tokens": 651
+   },
+   {
+    "id": "grounded_only-000-s0",
+    "src": "r5",
+    "family": "grounded_only",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 7058
+   },
+   {
+    "id": "multi_source-000-s1",
+    "src": "r5",
+    "family": "multi_source",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 7645
+   },
+   {
+    "id": "gather_then_send_r4-017-s0",
+    "src": "r5",
+    "family": "gather_then_send_r4",
+    "intent": "step_in_write_turn",
+    "kind": "call",
+    "tokens": 6702
+   },
+   {
+    "id": "recover_from_tool_error-005-s2",
+    "src": "r5",
+    "family": "recover_from_tool_error",
+    "intent": "no_write_turn",
+    "kind": "final",
+    "tokens": 9283
+   },
+   {
+    "id": "aud_non_english_002",
+    "src": "audio",
+    "tokens": 212
+   },
+   {
+    "id": "picture_turn_r3-065-s0",
+    "src": "r5",
+    "family": "picture_turn_r3",
+    "intent": "reply",
+    "kind": "call",
+    "tokens": 7786
+   }
+  ],
+  [
+   {
+    "id": "safe_effects-008-s0",
+    "src": "r5",
+    "family": "safe_effects",
+    "intent": "step_in_write_turn",
+    "kind": "call",
+    "tokens": 6984
+   },
+   {
+    "id": "safe_restraint-105-s0",
+    "src": "r5",
+    "family": "safe_restraint",
+    "intent": "step_in_write_turn",
+    "kind": "call",
+    "tokens": 6135
+   },
+   {
+    "id": "lookup_answers_r4-092-s0",
+    "src": "r5",
+    "family": "lookup_answers_r4",
+    "intent": "no_write_turn",
+    "kind": "call",
+    "tokens": 8636
+   },
+   {
+    "id": "compose_r3-061-s0",
+    "src": "r5",
+    "family": "compose_r3",
+    "intent": "step_in_write_turn",
+    "kind": "call",
+    "tokens": 7394
+   },
+   {
+    "id": "safety_contrast_r51-292-s0",
+    "src": "new",
+    "intent": "read_only",
+    "group": "r51-g072",
+    "kind": "call",
+    "category": "keep_vs_clear",
+    "tokens": 6465
+   },
+   {
+    "id": "safety_contrast_r51-077-s0",
+    "src": "new",
+    "intent": "read_only",
+    "group": "r51-g015",
+    "kind": "call",
+    "category": "email",
+    "tokens": 7831
+   },
+   {
+    "id": "img_whiteboard_07",
+    "src": "vision",
+    "tokens": 573
+   },
+   {
+    "id": "safety_contrast_r51-061-s0",
+    "src": "new",
+    "intent": "draft",
+    "group": "r51-g013",
+    "kind": "call",
+    "category": "email",
+    "tokens": 5056
+   }
+  ]
+ ]
+}
