@@ -63,9 +63,9 @@ SAVE_EVERY="${SAVE_EVERY:-}"             # empty: derived in 'train' from the nu
 SNAPSHOT_STEPS="${SNAPSHOT_STEPS-50,100,200}"   # the cadence below starts near step 190, too late to see the early run
 PAUSE_AT="${PAUSE_AT:-0}"
 PAUSE_FILE="${PAUSE_FILE:-$OUT/PAUSE}"
-export GLOBAL_BATCH=8 LR=2e-4 NPROC="${NPROC:-1}"
+export GLOBAL_BATCH=8 LR="${LR:-2e-4}" NPROC="${NPROC:-1}"     # r5.1: LR from the environment wins (was forced to 2e-4)
 train_args() {                           # $1 = --save-every steps
-  echo "--epochs 2 --attn $ATTN --eval-every $EVAL_EVERY --save-every $1 --dev-text-max $DEV_TEXT_MAX \
+  echo "--epochs ${EPOCHS:-2} ${INIT_ADAPTER:+--init-adapter $INIT_ADAPTER --init-adapter-sha256 $INIT_ADAPTER_SHA256} --attn $ATTN --eval-every $EVAL_EVERY --save-every $1 --dev-text-max $DEV_TEXT_MAX \
 --vision-weight 0.12 --audio-weight 0.06 --anchor-kl 0.5 --seed $SEED --attn-parity-strict --snapshot-steps=$SNAPSHOT_STEPS --pause-at-step $PAUSE_AT --pause-file $PAUSE_FILE"
 }
 export EXTRA_TRAIN_ARGS="$(train_args "${SAVE_EVERY:-$EVAL_EVERY}")"

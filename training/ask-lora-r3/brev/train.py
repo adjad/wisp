@@ -1177,6 +1177,53 @@ def load_model(a, *, for_training: bool = True):
     return tok, model
 
 
+def init_adapter_problems(cfg: dict, a) -> list[str]:
+    """Why an adapter_config.json can't seed this run's LoRA (empty: it matches what load_model just built)."""
+    want = {"peft_type": "LORA", "r": a.rank, "lora_alpha": a.alpha, "lora_dropout": 0.05, "target_modules": TARGET_RE,
+            "bias": "none", "use_dora": False, "use_rslora": False, "modules_to_save": None}
+    bad = [f"{k}={cfg.get(k)!r} (this run: {v!r})" for k, v in want.items() if cfg.get(k) != v]
+    for k in ("rank_pattern", "alpha_pattern"):
+        if cfg.get(k):
+            bad.append(f"{k}={cfg[k]!r} (this run: none)")
+    return bad
+
+
+def load_init_adapter(model, d: Path, a) -> dict:
+    """Load another run's LoRA weights into the freshly built LoRA, in place, before the optimizer exists. Checks the
+    file hash, the config against this run's LoRA, and that the adapter's tensor set equals the model's exactly, each
+    tensor bit-identical after loading. Nothing else (optimizer, schedule, step) is read."""
+    import torch
+    from peft import get_peft_model_state_dict, set_peft_model_state_dict
+    from safetensors.torch import load_file
+    f = d / "adapter_model.safetensors"
+    got = hashlib.sha256(f.read_bytes()).hexdigest()
+    if not a.init_adapter_sha256 or got != a.init_adapter_sha256:
+        sys.exit(f"--init-adapter: {f} sha256 {got} != --init-adapter-sha256 {a.init_adapter_sha256}")
+    cfg = json.loads((d / "adapter_config.json").read_text())
+    bad = init_adapter_problems(cfg, a)
+    if bad:
+        sys.exit("--init-adapter: adapter_config.json doesn't match this run's LoRA: " + "; ".join(bad))
+    sd = load_file(str(f))
+    res = set_peft_model_state_dict(model, sd)
+    unexpected = list(getattr(res, "unexpected_keys", []) or [])
+    if unexpected:
+        sys.exit(f"--init-adapter: {len(unexpected)} adapter tensors match nothing in the model, e.g. {unexpected[:3]}")
+    now = get_peft_model_state_dict(model)
+    missing, extra = sorted(set(now) - set(sd)), sorted(set(sd) - set(now))
+    if missing or extra:
+        sys.exit(f"--init-adapter: tensor sets differ: {len(missing)} model tensors not in the adapter {missing[:3]}, "
+                 f"{len(extra)} adapter tensors not in the model {extra[:3]}")
+    diff = [k for k in sd if not torch.equal(now[k].detach().cpu(), sd[k].to(now[k].dtype))]
+    if diff:
+        sys.exit(f"--init-adapter: {len(diff)} tensors differ after loading, e.g. {diff[:3]}")
+    info = {"dir": str(d), "sha256": got, "tensors": len(sd), "params": int(sum(t.numel() for t in sd.values())),
+            "r": cfg["r"], "alpha": cfg["lora_alpha"]}
+    if is_main():
+        print(f"init adapter: {info['tensors']} tensors, {info['params']:,} params from {d} (sha256 {got[:12]}), "
+              "every model LoRA tensor loaded and bit-identical; fresh optimizer, schedule and step counter")
+    return info
+
+
 def set_train(model) -> None:
     """model.train() for the LoRA'd language model, with the frozen vision and audio towers kept in eval mode:
     their features must be exactly what inference sees (no dropout), and they hold no trainable weights."""
@@ -1661,7 +1708,15 @@ def cmd_train(a) -> int:
     if refusal:
         sys.exit(refusal)
     logf = out / "train.log.jsonl"
+    init_dir = Path(a.init_adapter) if getattr(a, "init_adapter", None) else None
+    if init_dir and a.resume and out.resolve() not in Path(a.resume).resolve().parents:
+        sys.exit(f"--resume {a.resume} is not inside --out {out}: with --init-adapter only a pause of this run resumes "
+                 "(resuming another run's step-N would restore its optimizer, schedule and step counter)")
     tok, model = load_model(a)
+    init_info = None
+    if init_dir and not a.resume:
+        init_info = load_init_adapter(model, init_dir, a)
+        log(logf, event="init_adapter", **init_info)
     train, dev_rows, counts, _ = load_all(a, tok)
     n_text, n_vis, n_aud = counts["text"], counts["vision"], counts["audio"]
     if a.require_mm:
@@ -1968,6 +2023,10 @@ def main() -> int:
     ap.add_argument("--out")
     ap.add_argument("--adapter", help="merge/sample: adapter dir (e.g. OUT/best)")
     ap.add_argument("--resume", help="train: a step-NNNNN or oom-recovery dir")
+    ap.add_argument("--init-adapter", help="train: start from this adapter's WEIGHTS only (adapter_model.safetensors + "
+                    "adapter_config.json); the optimizer, schedule and step counter start fresh at step 0. With "
+                    "--resume, only a resume dir inside --out is accepted (a pause of this run), and the init is skipped")
+    ap.add_argument("--init-adapter-sha256", help="train: required with --init-adapter; adapter_model.safetensors' sha256")
     ap.add_argument("--max-len", type=int, default=10240, help="rows longer than this are skipped (longest is ~9.5k)")
     ap.add_argument("--epochs", type=int, default=2)
     ap.add_argument("--global-batch", "--accum", dest="global_batch", type=int, default=8,
