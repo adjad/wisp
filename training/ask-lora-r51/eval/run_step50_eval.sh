@@ -59,6 +59,6 @@ say "SAFETY: safety slice, 5 trials"
 (cd "$REPO" && nice -n 5 "$PY" "$WRAP" --private --models "$MODELS" --profile-as "$A" --exclusive --trials 5 \
    --seed-base 2000 --ids "$SAFETY" --out "$RUN/safety") > "$RUN/safety.log" 2>&1; say "SAFETY EXIT $?"
 (cd "$REPO" && "$PY" "$HERE/score_step50.py" --main "$RUN/main" --safety "$RUN/safety" --base "$A" --ref "$REF" \
-   ${CAND:+--cand "$CAND"} --slices "$HERE/SLICES.json" --hashes "$HERE/CASES.sha256" --out "$RUN/gate"); rc=$?
+   ${CAND:+--cand} ${CAND:+"$CAND"} --slices "$HERE/SLICES.json" --hashes "$HERE/CASES.sha256" --out "$RUN/gate"); rc=$?
 say "GATE EXIT $rc (0 CONTINUE or BASELINE, 2 BLOCK, 3 INCOMPLETE)  $RUN/gate/GATE.md"
 exit $rc

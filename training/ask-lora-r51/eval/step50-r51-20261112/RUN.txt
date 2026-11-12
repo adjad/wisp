@@ -1,0 +1,11 @@
+adapter ckpt/step-00050 adapter_model.safetensors sha256 0cc39c790a73192e346b7f97e27950571759b8d086a50ba677cce14cfc8e0261
+merged tensor_data_sha256 a080674b3d5ad97abe1c27ba1d01853ff95c4e5623142045b9405e8655dbb718 (258 tensors, max |delta| 0.01375)
+quantized model gemma-4-E4B-it-r51-step-00050-oQ4e-mtp (oQ4 enhanced, group 64, MTP from Jundot oQ4e-mtp)
+gate run dir /Users/adijain/Desktop/r5-pilot/step50-gate-r51-20261112-031126
+
+train.log.jsonl (box) ckpt and pause events:
+{"t": 1794477473.4, "event": "init_adapter", "dir": "/home/shadeform/r51/step-01800", "sha256": "b8750d1b21ddd321f0817e626acedf0f4d33fb22a17806ce6e1199dfdb7dc6c0", "tensors": 516, "params": 34881536, "r": 16, "alpha": 16}
+{"t": 1794478035.0, "event": "eval", "step": 0, "dev_loss": 0.3295, "dev_token_acc": 0.9085, "dev_exact_rows": "58/303", "dev_loss_text": 0.3114, "dev_loss_vision": 0.3212, "dev_loss_audio": 0.3835, "dev_acc_vision": 0.9179, "dev_exact_vision": "6/89", "dev_kl_vision": 0.27958, "dev_acc_audio": 0.9298, "dev_exact_audio": "33/64", "dev_kl_audio": 0.26163, "dev_loss_read": 0.2969, "dev_kl_read": 0.22403, "best": null}
+{"t": 1794481241.5, "event": "ckpt", "step": 50, "dev_loss": 0.3658, "dev_token_acc": 0.9161, "dev_exact_rows": "36/153", "dev_loss_vision": 0.3521, "dev_loss_audio": 0.3849, "dev_acc_vision": 0.9069, "dev_exact_vision": "3/89", "dev_kl_vision": 0.26085, "dev_acc_audio": 0.929, "dev_exact_audio": "33/64", "dev_kl_audio": 0.2753, "dev_loss_read": 0.3379, "dev_kl_read": 0.19324}
+{"t": 1794481622.9, "event": "paused", "step": 50, "of": 1226, "dev_loss": 0.3432, "dev_token_acc": 0.9045, "dev_exact_rows": "56/303", "dev_loss_text": 0.3202, "dev_loss_vision": 0.3521, "dev_loss_audio": 0.3849, "dev_acc_vision": 0.9069, "dev_exact_vision": "3/89", "dev_kl_vision": 0.26085, "dev_acc_audio": 0.929, "dev_exact_audio": "33/64", "dev_kl_audio": 0.2753, "dev_loss_read": 0.3379, "dev_kl_read": 0.19324, "mm_ok": true, "best": ["step-00050", 0.3432, true]}
+{"t": 1794481622.9, "event": "paused", "step": 50, "of": 1226}
