@@ -2084,7 +2084,8 @@ def test_headers_just_under_the_content_cap_on_fifty_parts_are_read_in_time_and_
             + b";" * (A.MAX_EML_CONTENT_HEADER_BYTES - 200) + b"\r\n\r\n%PDF-1\r\n")
     data = _P_TOP + b"Content-Type: multipart/mixed; boundary=x\r\n\r\n" + part * 50 + b"--x--\r\n"
     result, seconds = _timed_eml(data)
-    assert seconds < 3.0 and result["walk_cut"] is False and len(result["files"]) == 50
+    # About 0.6 s on a Mac, but 3.6 s was seen on a loaded CI runner; an uncapped header bomb takes far longer.
+    assert seconds < 10.0 and result["walk_cut"] is False and len(result["files"]) == 50
 
 
 def test_an_ordinary_message_is_untouched_by_the_pre_scan():
