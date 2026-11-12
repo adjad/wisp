@@ -365,8 +365,40 @@ enum Harness {
         }
         if total <= 20 { visibleTotal += " (small: snap check skipped)" }
 
+        // The selected-tab capsule: one solid white shape that moves. Two
+        // capsules crossfading show as a wide band of half-bright pixels.
+        var capsuleLine = "  capsule: not found"
+        if let row = capsuleRow(before), let a = readCapsule(before, row: row, span: nil),
+           let b = readCapsule(final, row: row, span: nil) {
+            let span = (min(a.lo, b.lo), max(a.hi, b.hi))
+            let from = a.centre, to = b.centre, moved = abs(to - from)
+            var worstGhost = 0.0, caught = 0, firstShare: Double? = nil
+            for s in samples where (s.image?.width ?? 0) > 8 {
+                guard let r = readCapsule(s, row: row, span: span) else { continue }
+                worstGhost = max(worstGhost, r.ghost)
+                if moved > 1 {
+                    let share = (r.centre - from) / (to - from)
+                    if firstShare == nil { firstShare = share }
+                    if share > 0.1, share < 0.9 { caught += 1 }
+                }
+            }
+            capsuleLine = "  capsule: moved \(f(moved)) pt, \(caught) sample(s) mid-flight, worst ghost \(f(worstGhost)) pt half-bright"
+            if worstGhost > 6 {
+                problems.append("(d) ghost: \(f(worstGhost)) pt of the tab strip is half-bright, so two capsules show at once")
+            }
+            if moved > 20 {
+                if reduce, let first = firstShare, abs(first - 1) > 0.05 {
+                    problems.append("(d) capsule's first sample is \(Int(first * 100))% of the way, not at its tab")
+                }
+                if !reduce, caught == 0 {
+                    problems.append("(d) capsule snap: no sample caught it between 10% and 90% of its \(f(moved)) pt move")
+                }
+            }
+        }
+
         var lines = ["\(name) [\(reduce ? "reduce-motion" : "motion")] change \(f(before.vis)) -> \(f(final.vis)) = \(visibleTotal) pt, max step \(f(maxStep)), \(midFlight) sample(s) mid-flight, first sample \(firstSample) ms, peak \(total > 0 ? Int(fastest / total * 100) : 0)%/frame@30, widest gap \(Int(widestGap * 1000)) ms (\(Int(widestBusy * 1000)) ms not capturing), max overshoot past window \(f(max(maxClip, 0)))"]
         lines.append("  before: win \(f(before.win)) content \(f(before.vis))")
+        lines.append(capsuleLine)
         for s in samples {
             lines.append(String(format: "  t=%4d ms  capture %3d ms  win %7.1f  content %7.1f%@", Int(s.t * 1000), Int(s.cost * 1000), s.win, s.vis,
                                 s.vis > s.win + 1 ? "  CLIPPED" : ""))
@@ -386,6 +418,73 @@ enum Harness {
         let file = out.appendingPathComponent(reduce ? "\(name)-reduce-motion.png" : "\(name).png")
         try contactSheet(title: "\(name)  \(reduce ? "(reduce motion)" : "(motion)")", frames: picks, to: file)
         return TransitionResult(name: name, ok: problems.isEmpty, lines: lines)
+    }
+
+    /// A frame as top-down RGBA8 rows, composited over black like the panel.
+    static func pixels(_ s: MotionSample) -> (data: [UInt8], w: Int, h: Int)? {
+        guard let image = s.image, image.width > 8, let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+        let w = image.width, h = image.height
+        var data = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn: Bool = data.withUnsafeMutableBytes { buffer in
+            guard let ctx = CGContext(data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                      space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
+            ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+            ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        return drawn ? (data, w, h) : nil
+    }
+
+    /// The darkest channel at a pixel, 0-255: white reads ~255, grey text and
+    /// the strip's 8% fill read low.
+    static func whiteness(_ p: (data: [UInt8], w: Int, h: Int), _ x: Int, _ y: Int) -> Int {
+        let i = (y * p.w + x) * 4
+        return Int(min(p.data[i], p.data[i + 1], p.data[i + 2]))
+    }
+
+    /// The pixel row 2 pt inside the top of the white tab capsule (above the
+    /// labels and the Day badge), found in the frame before the change.
+    static func capsuleRow(_ s: MotionSample) -> Int? {
+        guard let p = pixels(s) else { return nil }
+        let need = Int(8 * s.scale)
+        for y in 0..<min(p.h, Int(100 * s.scale)) {
+            var run = 0, best = 0
+            for x in 0..<p.w {
+                run = whiteness(p, x, y) >= 235 ? run + 1 : 0
+                best = max(best, run)
+            }
+            if best >= need { return y + Int(2 * s.scale) }
+        }
+        return nil
+    }
+
+    /// On that row: the widest solid white run (its centre and ends, points)
+    /// and how much of the strip is half-bright (points), inside `span`.
+    static func readCapsule(_ s: MotionSample, row: Int, span: (Double, Double)?)
+        -> (centre: Double, lo: Double, hi: Double, ghost: Double)? {
+        guard let p = pixels(s), row < p.h else { return nil }
+        let lo = span.map { max(0, Int($0.0 * s.scale)) } ?? 0
+        let hi = span.map { min(p.w, Int($0.1 * s.scale) + 1) } ?? p.w
+        guard lo < hi else { return nil }
+        var bestStart = 0, bestLen = 0, start = 0, len = 0, half = 0
+        for x in lo..<hi {
+            let v = whiteness(p, x, row)
+            if v >= 235 {
+                if len == 0 { start = x }
+                len += 1
+                if len > bestLen { bestLen = len; bestStart = start }
+            } else {
+                len = 0
+                if v >= 70 && v < 215 { half += 1 }
+            }
+        }
+        guard bestLen >= Int(4 * s.scale) else {
+            // No solid capsule at all: everything half-bright is ghost.
+            return span == nil ? nil : (0, 0, 0, Double(half) / s.scale)
+        }
+        let a = Double(bestStart) / s.scale, b = Double(bestStart + bestLen) / s.scale
+        return ((a + b) / 2, a, b, Double(half) / s.scale)
     }
 
     /// Frames side by side (four a row), each labelled; the window's bottom edge
