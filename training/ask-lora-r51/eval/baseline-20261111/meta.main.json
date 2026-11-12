@@ -1,0 +1,219 @@
+{
+  "run": "20261111-160317",
+  "git": "8618a299",
+  "models": [
+    "gemma-4-E4B-it-oQ4e-mtp",
+    "gemma-4-E4B-it-r5-step-01800-oQ4e-mtp"
+  ],
+  "trials": 1,
+  "cases": [
+    "r51_safe_unauth_remark_vendor",
+    "r51_safe_unauth_hypo_dinner",
+    "r51_safe_unauth_dont_ladder",
+    "r51_safe_unauth_dont_text_bram",
+    "r51_safe_unauth_inject_gmail_rundown",
+    "r51_safe_unauth_inject_parcel_notice",
+    "r51_safe_unauth_inject_coop_chat",
+    "r51_safe_unauth_inject_coop_todo",
+    "r51_safe_unauth_inject_file_checklist",
+    "r51_safe_unauth_inject_file_fern",
+    "r51_safe_draft_ines_contract",
+    "r51_safe_draft_odalys_text",
+    "r51_safe_draft_calla_wine",
+    "r51_safe_draft_hollis_laundry",
+    "r51_safe_draft_tobias_undecided",
+    "r51_safe_reply_yusuf_thread",
+    "r51_safe_reply_fresh_ines",
+    "r51_safe_reply_odalys_agenda",
+    "r51_safe_refused_move_outage",
+    "r51_safe_refused_cancel_outage",
+    "r51_safe_view_remind_insurance",
+    "r51_safe_view_text_calla",
+    "r51_safe_declined_hist_shift",
+    "r51_safe_declined_hist_pottery",
+    "r51_safe_chan_email_tobias",
+    "r51_safe_chan_text_ines",
+    "r51_safe_chan_email_bram",
+    "r51_safe_chan_email_kowalczyk",
+    "r51_safe_chan_ambiguous_jo",
+    "r51_safe_keep_mileage_done",
+    "r51_safe_keep_compost_move",
+    "r51_safe_keep_overdue_only",
+    "r51_safe_keep_newsletter",
+    "r51_safe_remind_ladder_text",
+    "r51_safe_cal_repot_fern",
+    "r51_safe_remind_permit_monday",
+    "r51_safe_cal_lunch_ines",
+    "r51_safe_loc_bookclub",
+    "r51_safe_loc_meet_tobias",
+    "r51_safe_loc_ladder_address",
+    "r51_auth_text_calla_wine",
+    "r51_auth_email_odalys_figures",
+    "r51_auth_reply_hollis",
+    "r51_auth_reply_jo_slides",
+    "r51_auth_text_tobias_yes",
+    "r51_auth_remind_figures",
+    "r51_auth_remind_compost_tonight",
+    "r51_auth_event_adjuster",
+    "r51_auth_event_coffee_ines",
+    "r51_auth_note_bench",
+    "r51_auth_draft_yusuf_album",
+    "r51_auth_draft_text_kowalczyk",
+    "r51_auth_move_piano",
+    "r51_auth_cancel_pottery",
+    "r51_auth_complete_insurance",
+    "r51_auth_update_library",
+    "r51_auth_forward_hollis_calla",
+    "r51_auth_schedule_calla",
+    "r51_auth_timer_bread",
+    "r51_auth_remember_unit",
+    "r51_auth_text_odalys_deck",
+    "r51_auth_event_compost",
+    "r51_auth_remind_pharmacy_sunday",
+    "r51_auth_event_slides_block",
+    "r51_auth_text_calla_parking",
+    "r51_chat_reset_before_dentist",
+    "r51_chat_hygienist",
+    "r51_chat_polite_no",
+    "r51_chat_thanks",
+    "r51_chat_bread_rest",
+    "r51_chat_hist_one_sentence",
+    "r51_chat_hist_gate",
+    "r51_chat_hist_starter_name",
+    "r51_chat_hist_plain_tone",
+    "r51_chat_forgetful",
+    "r51_gnd_cleaning_parking",
+    "r51_gnd_friday_prep",
+    "r51_gnd_ines_invoice",
+    "r51_gnd_yusuf_ask",
+    "r51_gnd_water_shutoff",
+    "r51_gnd_storage_unit",
+    "r51_gnd_saturday",
+    "r51_gnd_texts_morning",
+    "r51_gnd_weekend_reminders",
+    "r51_gnd_calla_parking",
+    "r51_gnd_hollis_action",
+    "r51_gnd_statement_balance",
+    "r51_gnd_friday_walkthrough",
+    "r51_gnd_overdue",
+    "r51_gnd_passport"
+  ],
+  "started": 1794441798.485985,
+  "exclusive": true,
+  "today": "2026-11-12",
+  "max_steps": 8,
+  "world_seed": null,
+  "thinking": [
+    "default"
+  ],
+  "split": "private",
+  "path": "model_led",
+  "profile_as": "gemma-4-E4B-it-oQ4e-mtp",
+  "omlx_port": 8000,
+  "cleared_env": [],
+  "case_sessions": "cleared_per_case",
+  "access": {
+    "full": 88,
+    "view": 2
+  },
+  "now": "2026-11-12T09:15:00",
+  "seed_base": 1000,
+  "seeds": {
+    "1": 1001
+  },
+  "engine_settings": {
+    "gemma-4-E4B-it-oQ4e-mtp": {
+      "source": "v1/models/status",
+      "settings": {
+        "model_context_length": 131072,
+        "thinking_default": false,
+        "preserve_thinking_default": true,
+        "reasoning_efforts": null,
+        "max_context_window": 16384,
+        "max_tokens": 128000
+      },
+      "errors": [
+        "admin_api HTTP 405"
+      ]
+    },
+    "gemma-4-E4B-it-r5-step-01800-oQ4e-mtp": {
+      "source": "v1/models/status",
+      "settings": {
+        "model_context_length": 131072,
+        "thinking_default": false,
+        "preserve_thinking_default": true,
+        "reasoning_efforts": null,
+        "max_context_window": 16384,
+        "max_tokens": 128000
+      },
+      "errors": [
+        "admin_api HTTP 405"
+      ]
+    }
+  },
+  "engine_parity": {
+    "gemma-4-E4B-it-r5-step-01800-oQ4e-mtp": {}
+  },
+  "allow_engine_mismatch": false,
+  "private": true,
+  "bindings": {
+    "gemma-4-E4B-it-oQ4e-mtp": {
+      "model": "gemma-4-E4B-it-oQ4e-mtp",
+      "profile_as": null,
+      "endpoint": "http://127.0.0.1:8000",
+      "context_window": 16384,
+      "own_context_window": 16384,
+      "lists": {
+        "tool_capable": true,
+        "no_thinking_capable": true,
+        "thinking_required_after_tool": true,
+        "explicit_thinking": false
+      }
+    },
+    "gemma-4-E4B-it-r5-step-01800-oQ4e-mtp": {
+      "model": "gemma-4-E4B-it-r5-step-01800-oQ4e-mtp",
+      "profile_as": "gemma-4-E4B-it-oQ4e-mtp",
+      "endpoint": "http://127.0.0.1:8000",
+      "context_window": 16384,
+      "own_context_window": 16384,
+      "lists": {
+        "tool_capable": true,
+        "no_thinking_capable": true,
+        "thinking_required_after_tool": true,
+        "explicit_thinking": false
+      }
+    }
+  },
+  "thinking_flags": {
+    "gemma-4-E4B-it-oQ4e-mtp +default": {
+      "model_only": true,
+      "narration_thinking": true,
+      "thinking_required_after_tool": true,
+      "selection_steps_think": true,
+      "narration_after_tool_thinks": true,
+      "direct_answer_thinks": true,
+      "no_thinking_capable": true,
+      "explicit_thinking": false,
+      "tool_capable": true,
+      "env": {
+        "WISP_MODEL_ONLY_NARRATION_THINKING": null
+      },
+      "harness_override": null
+    },
+    "gemma-4-E4B-it-r5-step-01800-oQ4e-mtp +default": {
+      "model_only": true,
+      "narration_thinking": true,
+      "thinking_required_after_tool": true,
+      "selection_steps_think": true,
+      "narration_after_tool_thinks": true,
+      "direct_answer_thinks": true,
+      "no_thinking_capable": true,
+      "explicit_thinking": false,
+      "tool_capable": true,
+      "env": {
+        "WISP_MODEL_ONLY_NARRATION_THINKING": null
+      },
+      "harness_override": null
+    }
+  }
+}

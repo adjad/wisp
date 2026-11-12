@@ -1,0 +1,173 @@
+{
+  "run": "20261111-162940",
+  "git": "8618a299",
+  "models": [
+    "gemma-4-E4B-it-oQ4e-mtp",
+    "gemma-4-E4B-it-r5-step-01800-oQ4e-mtp"
+  ],
+  "trials": 5,
+  "cases": [
+    "r51_safe_unauth_remark_vendor",
+    "r51_safe_unauth_hypo_dinner",
+    "r51_safe_unauth_dont_ladder",
+    "r51_safe_unauth_dont_text_bram",
+    "r51_safe_unauth_inject_gmail_rundown",
+    "r51_safe_unauth_inject_parcel_notice",
+    "r51_safe_unauth_inject_coop_chat",
+    "r51_safe_unauth_inject_coop_todo",
+    "r51_safe_unauth_inject_file_checklist",
+    "r51_safe_unauth_inject_file_fern",
+    "r51_safe_draft_ines_contract",
+    "r51_safe_draft_odalys_text",
+    "r51_safe_draft_calla_wine",
+    "r51_safe_draft_hollis_laundry",
+    "r51_safe_draft_tobias_undecided",
+    "r51_safe_reply_yusuf_thread",
+    "r51_safe_reply_fresh_ines",
+    "r51_safe_reply_odalys_agenda",
+    "r51_safe_refused_move_outage",
+    "r51_safe_refused_cancel_outage",
+    "r51_safe_view_remind_insurance",
+    "r51_safe_view_text_calla",
+    "r51_safe_declined_hist_shift",
+    "r51_safe_declined_hist_pottery",
+    "r51_safe_chan_email_tobias",
+    "r51_safe_chan_text_ines",
+    "r51_safe_chan_email_bram",
+    "r51_safe_chan_email_kowalczyk",
+    "r51_safe_chan_ambiguous_jo",
+    "r51_safe_keep_mileage_done",
+    "r51_safe_keep_compost_move",
+    "r51_safe_keep_overdue_only",
+    "r51_safe_keep_newsletter",
+    "r51_safe_remind_ladder_text",
+    "r51_safe_cal_repot_fern",
+    "r51_safe_remind_permit_monday",
+    "r51_safe_cal_lunch_ines",
+    "r51_safe_loc_bookclub",
+    "r51_safe_loc_meet_tobias",
+    "r51_safe_loc_ladder_address"
+  ],
+  "started": 1794443381.01866,
+  "exclusive": true,
+  "today": "2026-11-12",
+  "max_steps": 8,
+  "world_seed": null,
+  "thinking": [
+    "default"
+  ],
+  "split": "private",
+  "path": "model_led",
+  "profile_as": "gemma-4-E4B-it-oQ4e-mtp",
+  "omlx_port": 8000,
+  "cleared_env": [],
+  "case_sessions": "cleared_per_case",
+  "access": {
+    "full": 38,
+    "view": 2
+  },
+  "now": "2026-11-12T09:15:00",
+  "seed_base": 2000,
+  "seeds": {
+    "1": 2001,
+    "2": 2002,
+    "3": 2003,
+    "4": 2004,
+    "5": 2005
+  },
+  "engine_settings": {
+    "gemma-4-E4B-it-oQ4e-mtp": {
+      "source": "v1/models/status",
+      "settings": {
+        "model_context_length": 131072,
+        "thinking_default": false,
+        "preserve_thinking_default": true,
+        "reasoning_efforts": null,
+        "max_context_window": 16384,
+        "max_tokens": 128000
+      },
+      "errors": [
+        "admin_api HTTP 405"
+      ]
+    },
+    "gemma-4-E4B-it-r5-step-01800-oQ4e-mtp": {
+      "source": "v1/models/status",
+      "settings": {
+        "model_context_length": 131072,
+        "thinking_default": false,
+        "preserve_thinking_default": true,
+        "reasoning_efforts": null,
+        "max_context_window": 16384,
+        "max_tokens": 128000
+      },
+      "errors": [
+        "admin_api HTTP 405"
+      ]
+    }
+  },
+  "engine_parity": {
+    "gemma-4-E4B-it-r5-step-01800-oQ4e-mtp": {}
+  },
+  "allow_engine_mismatch": false,
+  "private": true,
+  "bindings": {
+    "gemma-4-E4B-it-oQ4e-mtp": {
+      "model": "gemma-4-E4B-it-oQ4e-mtp",
+      "profile_as": null,
+      "endpoint": "http://127.0.0.1:8000",
+      "context_window": 16384,
+      "own_context_window": 16384,
+      "lists": {
+        "tool_capable": true,
+        "no_thinking_capable": true,
+        "thinking_required_after_tool": true,
+        "explicit_thinking": false
+      }
+    },
+    "gemma-4-E4B-it-r5-step-01800-oQ4e-mtp": {
+      "model": "gemma-4-E4B-it-r5-step-01800-oQ4e-mtp",
+      "profile_as": "gemma-4-E4B-it-oQ4e-mtp",
+      "endpoint": "http://127.0.0.1:8000",
+      "context_window": 16384,
+      "own_context_window": 16384,
+      "lists": {
+        "tool_capable": true,
+        "no_thinking_capable": true,
+        "thinking_required_after_tool": true,
+        "explicit_thinking": false
+      }
+    }
+  },
+  "thinking_flags": {
+    "gemma-4-E4B-it-oQ4e-mtp +default": {
+      "model_only": true,
+      "narration_thinking": true,
+      "thinking_required_after_tool": true,
+      "selection_steps_think": true,
+      "narration_after_tool_thinks": true,
+      "direct_answer_thinks": true,
+      "no_thinking_capable": true,
+      "explicit_thinking": false,
+      "tool_capable": true,
+      "env": {
+        "WISP_MODEL_ONLY_NARRATION_THINKING": null
+      },
+      "harness_override": null
+    },
+    "gemma-4-E4B-it-r5-step-01800-oQ4e-mtp +default": {
+      "model_only": true,
+      "narration_thinking": true,
+      "thinking_required_after_tool": true,
+      "selection_steps_think": true,
+      "narration_after_tool_thinks": true,
+      "direct_answer_thinks": true,
+      "no_thinking_capable": true,
+      "explicit_thinking": false,
+      "tool_capable": true,
+      "env": {
+        "WISP_MODEL_ONLY_NARRATION_THINKING": null
+      },
+      "harness_override": null
+    }
+  }
+}
