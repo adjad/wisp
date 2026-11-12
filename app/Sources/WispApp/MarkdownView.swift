@@ -16,6 +16,9 @@ struct MarkdownPalette {
     /// Multiplier for the renderer's fixed sizes (code, tables, chips), so a
     /// surface's palette can follow the Text size setting.
     var fontScale: CGFloat = 1
+    /// The typeface of running text (paragraphs and list items). Answers read in
+    /// a rounded face; code, tables and chips keep their own designs.
+    var design: Font.Design = .default
 
     /// Computed so the colors and sizes follow Increase Contrast and the
     /// Text size setting at the moment the view is built.
@@ -26,6 +29,7 @@ struct MarkdownPalette {
             codeFill: Color.white.opacity(0.06), tableFill: Color.white.opacity(0.04))
         p.fontScale = Theme.textScale
         p.bodySize = 14 * Theme.textScale
+        p.design = .rounded
         return p
     }
 
@@ -194,7 +198,7 @@ struct MarkdownView: View {
                     listView(b.listItems)
                 case .paragraph:
                     Text(inline(b.body))
-                        .font(.system(size: palette.bodySize))
+                        .font(.system(size: palette.bodySize, design: palette.design))
                         .foregroundStyle(palette.text)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -291,7 +295,7 @@ struct MarkdownView: View {
                         .font(palette.font(13)).foregroundStyle(palette.muted)
                         .frame(minWidth: 14, alignment: .trailing)
                     Text(inline(item.text))
-                        .font(.system(size: palette.bodySize))
+                        .font(.system(size: palette.bodySize, design: palette.design))
                         .foregroundStyle(palette.text)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)

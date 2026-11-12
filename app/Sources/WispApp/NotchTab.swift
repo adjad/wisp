@@ -1,16 +1,17 @@
 import Foundation
 
 /// The notch panel's tabs. Ask is the conversation; Brief is what's going on,
-/// read only; Day is the rest of today, hour by hour. Research is not in the
+/// read only; Day is the rest of today, hour by hour; Meet listens to a meeting
+/// and writes its notes. Research is not in the
 /// strip: it is a mode of Ask (`/research`, a job opened from the window, New
 /// research), reached through `.research` and left by choosing a tab.
 ///
 /// Pure logic, checked by tests/NotchTabChecks.swift without the app.
 enum NotchTab: Int, CaseIterable, Equatable {
-    case ask, brief, day, research
+    case ask, brief, day, research, meet
 
-    /// The tabs shown in the strip, in order, with ⌘1 to ⌘3.
-    static let strip: [NotchTab] = [.ask, .brief, .day]
+    /// The tabs shown in the strip, in order, with ⌘1 to ⌘4.
+    static let strip: [NotchTab] = [.ask, .brief, .day, .meet]
 
     var title: String {
         switch self {
@@ -18,19 +19,23 @@ enum NotchTab: Int, CaseIterable, Equatable {
         case .brief: return "Brief"
         case .day: return "Day"
         case .research: return "Research"
+        case .meet: return "Meet"
         }
     }
 
     /// The strip tab drawn as selected. Research is a mode of Ask.
     var stripTab: NotchTab { self == .research ? .ask : self }
 
-    /// ⌘1 to ⌘3 while the panel has focus; Research has none.
+    /// ⌘1 to ⌘4 while the panel has focus; Research has none.
     var shortcutDigit: Character? {
         Self.strip.firstIndex(of: self).map { Character(String($0 + 1)) }
     }
 
     /// Brief and Day load and show the day, not a prompt field.
     var showsDay: Bool { self == .brief || self == .day }
+
+    /// Ask and Research have the prompt field; the cursor goes there when they open.
+    var hasPrompt: Bool { self == .ask || self == .research }
 }
 
 /// What fills the open panel under its header. Tabs sit side by side, in strip
