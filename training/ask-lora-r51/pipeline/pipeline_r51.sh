@@ -97,7 +97,9 @@ cat "$D/choose/choose_traces.log" | cut -c1-400
 # (e) finish: splice, drop with a reason per row (drop_manifest.jsonl), validator-flagged base rows dropped too
 cd "$T/ask-lora-r5/mi355x" || exit 1
 INC=""; [ "${ALLOW_INCOMPLETE:-}" = "1" ] && INC="--allow-incomplete"
-env -u WISP_REPO "$PY" finish_r5.py --build "$D/sealed" --chosen "$D/choose/chosen.jsonl" --drop "$D/choose/drop.ids" --traces "$D/choose/traces.chosen.jsonl" \
+# ASK_LORA_R51=1: finish_r5 runs validate.py, which only knows this family's write tools with it set (else every
+# authorized write is a write_call problem and the row is dropped)
+env -u WISP_REPO ASK_LORA_R51=1 "$PY" finish_r5.py --build "$D/sealed" --chosen "$D/choose/chosen.jsonl" --drop "$D/choose/drop.ids" --traces "$D/choose/traces.chosen.jsonl" \
     --choose-stats "$D/choose/stats.json" --rejections "$D/choose/rejections.jsonl" --wisp-repo "$PIN" --out "$D/finished" $INC > "$D/choose/finish.log" 2>&1
 FRC=$?
 tail -1 "$D/choose/finish.log" | cut -c1-700
@@ -105,7 +107,8 @@ if [ "$FRC" -ne 0 ]; then
   [ -d "$D/finished" ] && mv "$D/finished" "$D/finished.FAILED"
   die "finish_r5 exit $FRC (partial output moved to finished.FAILED; see $D/choose/finish.log)"
 fi
-cp "$D/seal/"overlap_manifest.*.json "$D/seal/removed_turns.json" "$D/sealed/contract_verification.json" "$D/choose/traces.stats.json" "$D/choose/trace_rejections.jsonl" "$D/finished/" || exit 1
+cp "$D/seal/"overlap_manifest.*.json "$D/seal/removed_turns.json" "$D/choose/traces.stats.json" "$D/choose/trace_rejections.jsonl" "$D/finished/" || exit 1
+[ -f "$D/sealed/contract_verification.json" ] && cp "$D/sealed/contract_verification.json" "$D/finished/"   # absent when verify_contract.py failed (WARN above)
 
 # (f) validate: exit code recorded in validate.log
 cd "$T/ask-lora-r2/builder" || exit 1

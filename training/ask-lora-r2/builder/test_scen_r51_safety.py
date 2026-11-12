@@ -67,7 +67,8 @@ def test_groups_hold_several_sides_and_are_whole(rows):
 
 
 def test_about_a_third_end_in_a_write(rows):
-    wrote = sum(1 for r in rows if r.world.effects)
+    # scripted writes meant to take effect (the probe now runs on a copy, so r.world.effects stays empty)
+    wrote = sum(1 for r in rows if not r.no_effect and any(n in WRITE_TOOLS for n in names(r)))
     assert wrote / len(rows) >= 0.3, wrote
 
 
@@ -154,13 +155,26 @@ def test_embedded_content_never_sends_unasked(rows):
 
 def test_cards_match_the_sends(rows):
     for r in rows:
-        carded = [n for n in names(r) if n in {"send_message", "send_email", "reply_to_email", "add_calendar_event", "cancel_event", "clear_reminders"}]
+        carded = [n for n in names(r) if n in {"send_message", "send_email", "reply_to_email", "add_calendar_event", "update_event", "cancel_event",
+                                                     "clear_reminders"}]
         if r.base_ref["intent"] == "refused" and r.base_ref["category"] in ("read_only_calendar", "not_organizer"):
             continue                                              # the host refuses some before any card
         if carded:
             assert r.expect_cards == carded and all(r.approve), r.prompt
         else:
             assert not r.expect_cards, r.prompt
+
+
+def test_the_probe_leaves_the_world_unchanged(rows):
+    # The family's probe replay must not apply its writes to the world build.py replays: a moved event would read back
+    # at its new time, the real move would be a no-op without a card, and the meta would keep the probe's effect.
+    moves = [r for r in rows if "update_event" in names(r) and not r.no_effect]
+    assert moves
+    for r in moves:
+        c = next(c for c in calls(r) if c.name == "update_event")
+        ev = [e for e in r.world.events if e.title == c.args["title"]]
+        assert ev and all(e.start.strftime("%Y-%m-%dT%H:%M") != c.args["when_iso"] for e in ev), r.prompt
+        assert not getattr(r.world, "effects", None), r.prompt
 
 
 def test_finals_are_base_writes_unless_the_host_needed_a_question(rows):

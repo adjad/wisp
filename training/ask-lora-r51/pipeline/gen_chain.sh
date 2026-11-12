@@ -1,9 +1,11 @@
 #!/bin/zsh
 # Base generation for safety_contrast_r51 on the Mac's oMLX, queued behind the step-50 baseline.
 # Holds the heavy lock from before Wisp quits until Wisp reopens; run.sh gets a nested lock inside it.
+#   D=<pipeline OUT> (default data/pipe)   IDS=<file of meta ids> (optional: only those rows, a top-up after a rebuild)
 setopt pipefail
 W=/Users/adijain/Desktop/MOE_Project/.claude/worktrees/ask-lora-brev-2caec5
-D=$W/training/ask-lora-r51/data/pipe
+D=${D:-$W/training/ask-lora-r51/data/pipe}
+IDARG=(); [ -n "${IDS:-}" ] && IDARG=(--ids "$IDS")
 LOCK=/private/tmp/claude-$(id -u)/wisp-heavy.lock
 say() { echo "== $(date -u +%T) $*"; }
 say "waiting for the step-50 baseline to finish"
@@ -23,5 +25,5 @@ for i in $(seq 1 60); do [ "$(curl -s -m5 -o /dev/null -w '%{http_code}' http://
 say "oMLX models http $(curl -s -m5 -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/v1/models)"
 mkdir -p "$D/raw" || exit 2
 say "GEN start"
-LOCK="$LOCK/gen" bash $W/training/ask-lora-r4/distill/run.sh --partial $D/sealed/partial.jsonl --families safety_contrast_r51 --k 2 --out $D/raw/base.jsonl
+LOCK="$LOCK/gen" bash $W/training/ask-lora-r4/distill/run.sh --partial $D/sealed/partial.jsonl --families safety_contrast_r51 --k 2 --out $D/raw/base.jsonl "${IDARG[@]}"
 say "GEN EXIT $?"

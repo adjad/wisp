@@ -17,6 +17,7 @@ the tool contracts. ``seal_r5.py``-style leak checks still run on every prompt (
 """
 from __future__ import annotations
 
+import copy
 import datetime as dt
 
 import scen  # noqa: F401  (first: an import cycle otherwise)
@@ -441,7 +442,7 @@ def refused_groups(rng):
         if act == "move":
             out.append(make(g, "authorized_write", "read_only_calendar", _pick(["shift the {x} to 3pm", "reschedule the {x} for 3pm that day"], i).format(x=said),
                             now, w, [[read], [Call("update_event", title=title, when_iso=iso(start.replace(hour=15)))], one_final()],
-                            facts=[title.split()[0]], must_see=[title], topic=title))
+                            facts=[title.split()[0]], cards=["update_event"], approve=[True], must_see=[title], topic=title))
         else:
             out.append(make(g, "authorized_write", "read_only_calendar", _pick(["cancel my {x}, please", "go ahead and cancel the {x}"], i).format(x=said),
                             now, w, [[read], [Call("cancel_event", title=title)], one_final()], facts=[title.split()[0]],
@@ -468,7 +469,7 @@ def refused_groups(rng):
         _local_event(w, title, start, 45, loc, invitees=0, organizer=True)
         out.append(make(g, "authorized_write", "not_organizer", _pick(["reschedule the {x} to 1pm", "put the {x} at 1pm instead"], i).format(x=said),
                         now, w, [[read], [Call("update_event", title=title, when_iso=iso(start.replace(hour=13)))], one_final()],
-                        facts=[title.split()[0]], must_see=[title], topic=title))
+                        facts=[title.split()[0]], cards=["update_event"], approve=[True], must_see=[title], topic=title))
         now, w = world(rng)
         w.events = [e for e in w.events if key not in e.title.lower()]
         _local_event(w, title, T(now, 10, 0, days=2), 45, loc, invitees=5, organizer=False)
@@ -747,7 +748,7 @@ def extra_groups(rng):
         if act == "move":
             out.append(make(g, "authorized_write", "calendar_change", _pick(["move the {x} to 3pm", "shift the {x} to the afternoon, 3pm"], i).format(x=said), now, w,
                             [[read], [Call("update_event", title=title, when_iso=iso(start.replace(hour=15)))], one_final()],
-                            facts=[key], must_see=[title], topic=title))
+                            facts=[key], cards=["update_event"], approve=[True], must_see=[title], topic=title))
         else:
             out.append(make(g, "authorized_write", "calendar_change", _pick(["cancel the {x}", "cancel the {x}, I can't make it"], i).format(x=said), now, w,
                             [[read], [Call("cancel_event", title=title)], one_final()], facts=[key], cards=["cancel_event"], approve=[True],
@@ -873,7 +874,12 @@ def unknown_groups(rng):
 
 # ============================================================================ the family
 def _check(sc):
-    ok, why = A._check(sc)
+    # Probe on a copy of the world: A._check replays on sc.world itself, and the probe's write (an event move, a
+    # completed reminder) would otherwise already be in the world build.py replays, so the real replay finds the event
+    # "already starts then", shows no card, and the meta keeps the probe's effect.
+    probe = copy.copy(sc)
+    probe.world = copy.deepcopy(sc.world)
+    ok, why = A._check(probe)
     if not ok and getattr(sc, "no_effect", False) and why.startswith("write ") and why.endswith("had no effect"):
         ok = True      # the host or the tool refuses the write: that refusal is what the row teaches
     return ok, why
