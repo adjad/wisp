@@ -183,68 +183,58 @@ struct OverlayTransitionChecks {
         print("PASS: covering holds both frames from the same top")
     }
 
-    /// The open and close springs (NotchBox's), and the room an open holds.
-    static func springChecks() {
+    /// The paths an open and a close take (RevealMotion), built on NotchBox's springs.
+    static func revealMotionChecks() {
         let open = NotchSpring.open, close = NotchSpring.close
         check(abs(open.response - 0.5 / 1.2) < 1e-9 && open.dampingRatio == 0.7,
-              "Open is NotchBox's spring: response 0.5 at 1.2x, damping 0.7")
-        check(close.response == 0.35 && close.dampingRatio == 1, "Close is NotchBox's: response 0.35, no bounce")
-        check(abs(open.overshoot - 0.046) < 0.001, "A 0.7 damping ratio swings 4.6% past: \(open.overshoot)")
-        check(close.overshoot == 0, "The close never swings past the bar")
-        // Core Animation's terms for a mass of 1.
-        check(abs(open.stiffness - 227.4) < 0.1 && abs(open.damping - 21.11) < 0.01,
-              "Open in stiffness and damping: \(open.stiffness), \(open.damping)")
-        check(abs(close.stiffness - 322.3) < 0.1 && abs(close.damping - 35.90) < 0.01,
-              "Close in stiffness and damping: \(close.stiffness), \(close.damping)")
-
-        // A short reach keeps NotchBox's spring; a long one is damped to the limit.
-        check(NotchSpring.opening(reach: 200) == open, "A small panel opens on NotchBox's spring unchanged")
-        for reach in [300, 480, 940] as [CGFloat] {
-            let spring = NotchSpring.opening(reach: reach)
-            let swing = CGFloat(spring.overshoot) * reach
-            check(spring.response == open.response, "Capping the swing keeps the spring's pace")
-            check(spring.dampingRatio > open.dampingRatio && spring.dampingRatio < 1, "A long reach is damped more, still sprung")
-            check(abs(swing - NotchSpring.maxOvershoot) < 0.01, "A \(reach) pt reach swings \(swing) pt, the limit")
-        }
+              "Open starts from NotchBox's spring: response 0.5 at 1.2x, damping 0.7")
+        check(close.response == 0.35 && close.dampingRatio == 1, "Close starts from NotchBox's: response 0.35, no bounce")
+        check(abs(open.overshoot - 0.046) < 0.001 && close.overshoot == 0, "Left alone, NotchBox's open swings 4.6% past")
+        check(open.position(at: 0) == 0 && close.position(at: 0) == 0, "A spring starts where it is")
+        let peak = stride(from: 0.0, through: 1.0, by: 0.002).map { open.position(at: $0) }.max()!
+        check(abs(peak - (1 + open.overshoot)) < 0.001, "The spring's path peaks where its overshoot says: \(peak)")
+        check(abs(open.position(at: 2) - 1) < 1e-6 && abs(close.position(at: 2) - 1) < 1e-6, "Both come to rest on the target")
         check(open.capped(overshoot: 0).dampingRatio == 1 && open.capped(overshoot: 0.5) == open,
               "Capping at nothing removes the bounce; a generous cap changes nothing")
 
-        // Both come to rest quickly: what is left after the settle time is under the tolerance.
-        func left(_ spring: NotchSpring, at t: Double) -> Double {
-            let w = 2 * Double.pi / spring.response, z = spring.dampingRatio
-            if z >= 1 { return (1 + w * t) * exp(-w * t) }
-            let wd = w * (1 - z * z).squareRoot()
-            return abs(exp(-z * w * t) * (cos(wd * t) + z / (1 - z * z).squareRoot() * sin(wd * t)))
+        // Opening: NotchBox's pace, damped to land softly; the path ends as the shape arrives.
+        for reach in [120, 221, 480, 940] as [CGFloat] {
+            let motion = RevealMotion.opening(reach: reach)
+            let p = motion.progress
+            check(p.first == 0 && p.last == 1, "An open starts on the bar and ends exactly on the panel")
+            check(p.allSatisfy { $0 <= 1 }, "A \(reach) pt open never passes the panel")
+            for i in 1..<p.count { check(p[i] >= p[i - 1], "An open never backs up") }
+            check(motion.duration > 0.28 && motion.duration < 0.5, "An open is over in about a third of a second: \(motion.duration)")
+            let at95 = Double(p.firstIndex { $0 >= 0.95 }!) * RevealMotion.step
+            check(at95 < 0.3, "Most of an open is done well inside that: \(at95)")
+            check(CGFloat(1 - p[p.count - 2]) * reach < 1.01, "An open arrives slowly: its last step is under a point")
         }
-        for spring in [open, close, NotchSpring.opening(reach: 940)] {
-            let t = spring.settleTime(tolerance: 1.0 / 450)
-            check(t > 0.3 && t < 0.7, "A reveal settles in about half a second: \(t)")
-            for later in stride(from: t, through: t + 0.5, by: 0.004) {
-                check(left(spring, at: later) <= 1.0 / 450 + 1e-9, "Nothing visible is left after the settle time")
-            }
-        }
-        check(close.settleTime(tolerance: 1.0 / 450) < open.settleTime(tolerance: 1.0 / 450),
-              "Closing is the quicker of the two")
 
-        // The opening window: the panel plus the swing at the sides and below, same top, centred.
-        let panel = NSRect(x: 400, y: 500, width: 640, height: 300)
-        let bar = CGSize(width: 197, height: 33)
-        let room = OverlayPanel.openingFrame(panel, from: bar, spring: open)
-        check(room.maxY == panel.maxY && room.midX == panel.midX, "The opening window keeps the top and the centre")
-        check(room.width >= panel.width + CGFloat(open.overshoot) * (640 - 197)
-              && room.height >= panel.height + CGFloat(open.overshoot) * (300 - 33),
-              "The opening window holds the whole swing: \(room)")
-        check(room.width - panel.width < 2 * NotchSpring.maxOvershoot + 6 && room.height - panel.height < NotchSpring.maxOvershoot + 6,
-              "And no more room than the swing needs")
-        check(OverlayPanel.openingFrame(panel, from: bar, spring: close) == panel, "No bounce, no extra room")
-        print("PASS: NotchBox's open and close springs, the capped swing, and the room an open holds")
+        // Closing: a hold while the content fades, then into the bar and gone.
+        let closing = RevealMotion.closing()
+        let c = closing.progress
+        let held = Int((RevealMotion.closeHold / RevealMotion.step).rounded())
+        check(c.first == 0 && c.last == 1, "A close starts on the panel and ends exactly on the bar")
+        check(c.prefix(held).allSatisfy { $0 == 0 } && c[held + 3] > 0, "A close holds its shape for the fade, then moves")
+        check(c.allSatisfy { $0 <= 1 }, "A close never passes the bar")
+        for i in 1..<c.count { check(c[i] >= c[i - 1], "A close only ever shrinks") }
+        check(closing.duration > 0.25 && closing.duration < 0.4, "A close takes about a third of a second: \(closing.duration)")
+        // Still moving when it reaches the bar, so no lip is left hanging under the notch:
+        // the last 5% of the travel takes a few frames, not the 200 ms a spring aimed at the bar takes.
+        let lastTwentieth = Double(c.count - 1 - c.firstIndex { $0 >= 0.95 }!) * RevealMotion.step
+        check(lastTwentieth < 0.09, "A close crosses its last 5% in under 90 ms: \(lastTwentieth)")
+        check((1 - c[c.count - 3]) / (2 * RevealMotion.step) > 0.2, "A close arrives at the bar still moving")
+        let unaimed = close.settleTime(tolerance: 0.002) - close.settleTime(tolerance: 0.05)
+        check(unaimed > 0.15, "Aimed at the bar itself, the same spring would creep for \(unaimed) s")
+        check(closing.duration < RevealMotion.opening(reach: 221).duration, "Closing is the quicker of the two")
+        print("PASS: an open lands softly without passing the panel; a close holds, then tucks into the bar and stops")
     }
 
-    /// The reveal itself, sampled: an open lands a little past the panel and
-    /// settles back inside the room the window holds for it; a close gathers
-    /// into the bar without ever passing it.
+    /// The reveal itself, sampled on a real panel: an open stays inside its
+    /// window and lands on the panel; a close only shrinks, stops at the bar,
+    /// and keeps the bar solid until the collapsed bar has taken over.
     @MainActor
-    static func springRevealChecks() async {
+    static func revealPathChecks() async {
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.accessory)
         var compact = false
@@ -258,24 +248,18 @@ struct OverlayTransitionChecks {
         let bar = layout.barFrame.size
         panel.present()
         let mask = panel.contentView!.layer!.mask!
-        let stage = panel.contentView!.layer!
 
         var opened = false
         panel.dropOpen { opened = true }
-        let room = panel.frame
-        check(room.width > target.width && room.height > target.height && room.maxY == target.maxY
-              && abs(room.midX - target.midX) < 0.5, "An open holds room for its swing: \(room) around \(target)")
-        check(stage.backgroundColor != nil, "The surface backs the swing while the open is in flight")
-        check(mask.animation(forKey: "reveal") is CAAnimationGroup, "The reveal is one group")
+        check(panel.frame == target, "An open takes the panel's own frame, nothing more: \(panel.frame) vs \(target)")
+        check(!panel.hasBarBacking, "Nothing backs the content of an open panel")
         let parts = (mask.animation(forKey: "reveal") as? CAAnimationGroup)?.animations ?? []
-        check(parts.count == 2 && parts.allSatisfy { $0 is CASpringAnimation }, "Size and corners both ride a spring")
+        check(parts.count == 2 && parts.allSatisfy { $0 is CAKeyframeAnimation }, "Size and corners follow one sampled path")
         var widest: CGFloat = 0, tallest: CGFloat = 0, samples = 0
         while !opened {
             if let live = mask.presentation() {
                 widest = max(widest, live.bounds.width)
                 tallest = max(tallest, live.bounds.height)
-                check(live.bounds.width <= room.width + 0.5 && live.bounds.height <= room.height + 0.5,
-                      "The swing stays inside the window: \(live.bounds.size) in \(room.size)")
                 check(live.bounds.width >= bar.width - 0.5 && live.bounds.height >= bar.height - 0.5,
                       "An open never dips under the bar")
                 samples += 1
@@ -284,19 +268,18 @@ struct OverlayTransitionChecks {
             check(samples < 1000, "The open ends")
         }
         check(samples > 20, "The open was sampled through its travel: \(samples)")
-        check(widest > target.width + 2 && tallest > target.height + 2,
-              "The open lands past the panel before settling: \(widest) x \(tallest) for \(target.size)")
-        check(widest <= target.width + 2 * NotchSpring.maxOvershoot + 1 && tallest <= target.height + NotchSpring.maxOvershoot + 1,
-              "And no further than the limit: \(widest) x \(tallest)")
-        check(panel.frame == target && mask.bounds.size == target.size, "At rest the window and the mask are the panel: \(panel.frame)")
-        check(stage.backgroundColor == nil, "Nothing backs the content at rest")
+        check(widest <= target.width + 0.5 && tallest <= target.height + 0.5,
+              "An open never passes the panel: \(widest) x \(tallest) for \(target.size)")
+        check(panel.frame == target && mask.bounds.size == target.size, "At rest the window and the mask are the panel")
         check(mask.animationKeys()?.isEmpty != false, "No residual animation after the open")
 
         var closed = false
+        let closeStart = CACurrentMediaTime()
         panel.rollUp { compact = true; closed = true }
-        check(panel.frame == target, "A close needs no extra room")
-        var narrowest = target.width, shortest = target.height
-        var lastWidth = target.width
+        check(panel.hasBarBacking == layout.barIsVisible, "A close backs the bar it is heading for, when there is one to draw")
+        var narrowest = target.width, shortest = target.height, lastWidth = target.width
+        var nearBarAt: CFTimeInterval?
+        let nearBar = bar.height + 0.05 * (target.height - bar.height)
         samples = 0
         while !closed {
             if let live = mask.presentation() {
@@ -304,18 +287,35 @@ struct OverlayTransitionChecks {
                 shortest = min(shortest, live.bounds.height)
                 check(live.bounds.width <= lastWidth + 0.5, "A close only ever narrows: \(live.bounds.width) after \(lastWidth)")
                 lastWidth = live.bounds.width
+                if nearBarAt == nil, live.bounds.height <= nearBar { nearBarAt = CACurrentMediaTime() }
                 samples += 1
             }
             try? await Task.sleep(for: .milliseconds(4))
             check(samples < 1000, "The close ends")
         }
+        let closedAt = CACurrentMediaTime()
         check(samples > 20, "The close was sampled through its travel: \(samples)")
         check(narrowest >= bar.width - 0.5 && shortest >= bar.height - 0.5,
               "A close never passes the bar: \(narrowest) x \(shortest) for \(bar)")
+        check(closedAt - closeStart < 0.6, "A close is over promptly: \(closedAt - closeStart) s")
+        if let nearBarAt {
+            check(closedAt - nearBarAt < 0.15, "No lip hangs under the notch: \(closedAt - nearBarAt) s from 5% out to done")
+        }
         panel.settleToBar()
         check(mask.bounds.size == panel.frame.size && panel.frame.size == bar, "Then the bar")
+        check(panel.hasBarBacking == layout.barIsVisible, "The bar stays backed while the collapsed bar takes over")
+        try? await Task.sleep(for: .milliseconds(Int(OverlayPanel.barBackingLinger * 1000) + 150))
+        check(!panel.hasBarBacking, "The backing goes once the collapsed bar has drawn")
+
+        // A reopen straight after a close must not keep the backing under the open panel.
+        compact = false
+        panel.rollUp { compact = true }
+        opened = false
+        panel.dropOpen { opened = true }
+        check(!panel.hasBarBacking, "An open drops the backing a close turned on")
+        await waitUntil { opened }
         panel.orderOut(nil)
-        print("PASS: the open swings \(Int((widest - target.width) / 2)) pt past each side and \(Int(tallest - target.height)) pt below, then settles; the close stops at the bar")
+        print("PASS: a sampled open stays inside its window; a sampled close only shrinks, stops at the bar and keeps it solid")
     }
 
     /// Width changes: the panel's width comes from the layout, so inject one.
@@ -787,7 +787,7 @@ struct OverlayTransitionChecks {
     static func main() async {
         lifecycleChecks()
         coveringChecks()
-        springChecks()
+        revealMotionChecks()
         approvalAnnouncementChecks()
         alwaysAllowLineChecks()
         forgetResultChecks()
@@ -817,7 +817,7 @@ struct OverlayTransitionChecks {
         #endif
         if ProcessInfo.processInfo.environment["WISP_MOTION_NATIVE_CHECK"] == "1" {
             await nativeChecks()
-            await springRevealChecks()
+            await revealPathChecks()
             await widthResizeChecks()
             #if WISP_MOTION_APP_DELEGATE_CHECKS
             await AppDelegate.checkDebugExportLeavesNotchLive()

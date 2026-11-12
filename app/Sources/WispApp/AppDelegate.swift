@@ -137,10 +137,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var activityReader: ActivityReader?
     private var nativeSourceReadersStarted = false
     private static let autoCollapseDelay: TimeInterval = 2
-    /// The content's fade at the start of a close. The closing spring
-    /// (NotchSpring.close) is a quarter of the way in by the time this ends, so
-    /// the shape never carries text for most of its travel.
+    /// The content's fade at the start of a close. The shape holds still for
+    /// most of it (RevealMotion.closeHold) and has barely moved when it ends,
+    /// so the shrinking edge never carries text.
     static let closeFade: TimeInterval = 0.08
+    /// The content's fade at an open: it waits `openFadeDelay` while the shape
+    /// grows out of the notch, then fades in as the shape nears full size, so
+    /// the growing edge never wipes across live text.
+    static let openFadeDelay: TimeInterval = 0.07
+    static let openFade: TimeInterval = 0.16
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // One Wisp at a time. A second launch used to terminate the first one's
@@ -1503,13 +1508,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let panel else { finishPresentation(step); return }
             panel.makeFirstResponder(nil)
             // The content fades in the first part of the close, so the
-            // retracting shape carries only the surface (see OverlayModel.closing).
+            // retracting shape carries only the surface (see OverlayModel.contentVeiled).
             if !panel.reduceMotion() {
-                withAnimation(.easeOut(duration: Self.closeFade)) { model.closing = true }
+                withAnimation(.easeOut(duration: Self.closeFade)) { model.contentVeiled = true }
             }
             panel.rollUp { [weak self] in
                 guard let self else { return }
-                self.model.closing = false
+                self.model.contentVeiled = false
                 self.model.collapsed = true
                 DispatchQueue.main.async {
                     panel.settleToBar()
@@ -1533,9 +1538,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 createPanelIfNeeded()
                 guard let panel else { finishPresentation(step); return }
                 if !panel.isVisible { panel.present() }
-                model.closing = false
+                // The content stays behind the surface while the shape grows
+                // out of the notch, then fades in. The fade is started with
+                // the open itself, so nothing can leave the content hidden.
+                let fadesIn = !panel.reduceMotion()
+                model.contentVeiled = fadesIn
                 model.collapsed = false
                 DispatchQueue.main.async { [weak self] in
+                    if fadesIn, let self {
+                        withAnimation(.easeOut(duration: Self.openFade).delay(Self.openFadeDelay)) {
+                            self.model.contentVeiled = false
+                        }
+                    }
                     panel.dropOpen { self?.finishPresentation(step) }
                 }
             case .search:
