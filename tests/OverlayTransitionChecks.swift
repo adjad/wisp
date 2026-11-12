@@ -372,8 +372,19 @@ struct OverlayTransitionChecks {
               "A close never passes the bar: \(narrowest) x \(shortest) for \(bar)")
         // Generous: the path's own length is checked exactly above and in revealMotionChecks.
         check(closedAt - closeStart < 1.5, "A close is over promptly: \(closedAt - closeStart) s")
+        // Where the shape came to rest on the screen, against where the bar
+        // will be: the same rectangle, so nothing steps sideways at the swap.
+        let landed = mask.frame.offsetBy(dx: panel.frame.minX, dy: panel.frame.minY)
+        check(abs(landed.minX - layout.barFrame.minX) < 0.01 && abs(landed.maxX - layout.barFrame.maxX) < 0.01
+              && abs(landed.maxY - layout.barFrame.maxY) < 0.01 && abs(landed.minY - layout.barFrame.minY) < 0.01,
+              "A close lands exactly on the bar: \(landed) for \(layout.barFrame)")
+        if layout.style == .notch {
+            check(layout.barFrame.midX == layout.screenFrame.midX && target.midX == layout.screenFrame.midX,
+                  "The bar and the panel share the notch's centre: \(layout.barFrame.midX), \(target.midX), \(layout.screenFrame.midX)")
+        }
         panel.settleToBar()
         check(mask.bounds.size == panel.frame.size && panel.frame.size == bar, "Then the bar")
+        check(panel.frame == layout.barFrame, "The bar's window is where the close landed")
         check(panel.hasBarBacking == layout.barIsVisible, "The bar stays backed while the collapsed bar takes over")
         await waitUntil { !panel.hasBarBacking }
         print("PASS: the backing goes once the collapsed bar has had time to draw")

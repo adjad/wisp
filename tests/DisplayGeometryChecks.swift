@@ -67,6 +67,23 @@ struct DisplayGeometryChecks {
             }
         }
         check(l.expandedFrame(contentHeight: 4000).height <= d.frame.height - SurfaceLayout.screenMargin, "\(name): tall content clamped")
+        // On a notch the bar, the panel and the wide panel sit dead centre on
+        // the camera housing, on whole points. Half a point out, the bar had
+        // one wing wider than the other and a close stepped sideways onto it.
+        if style == .notch {
+            let centre = d.frame.midX
+            func whole(_ r: CGRect) -> Bool { r.minX == r.minX.rounded() && r.maxX == r.maxX.rounded() }
+            check(l.barFrame.midX == centre && whole(l.barFrame),
+                  "\(name): bar dead centre on the notch: \(l.barFrame) for centre \(centre)")
+            let wrap = l.notchSize.width + 2 * SurfaceLayout.wing
+            check(l.barFrame.width >= wrap && l.barFrame.width < wrap + 2,
+                  "\(name): bar wraps the notch with equal wings of 6 to 7 pt: \(l.barFrame.width) for \(wrap)")
+            for wide in [false, true] {
+                let f = l.widened(wide).expandedFrame(contentHeight: 300)
+                check(f.midX == centre && whole(f),
+                      "\(name): \(wide ? "wide " : "")panel shares the bar's centre: \(f) for centre \(centre)")
+            }
+        }
     }
 
     static func main() {
@@ -79,6 +96,10 @@ struct DisplayGeometryChecks {
         checkLayout("Air 13.6", notched(1470, 956), style: .notch)
         checkLayout("Air 15.3", notched(1710, 1107), style: .notch)
         checkLayout("Air 13.6 larger text", notched(1280, 832), style: .notch)
+        // An odd-width scaled mode, and a notch that is not a whole number of points.
+        checkLayout("MBP 14 largest text", notched(1147, 745, notch: 141), style: .notch)
+        checkLayout("MBP 16 fractional notch", notched(1728, 1117, notch: 184.5), style: .notch)
+        checkLayout("MBP 14 odd mode, even notch", notched(1147, 745, notch: 140), style: .notch)
 
         let real = SurfaceLayout.make(for: notched(1512, 982))
         tabScrollCapChecks()
@@ -102,7 +123,14 @@ struct DisplayGeometryChecks {
         check(SurfaceLayout.make(for: notched(1512, 982)).hoverDwell == HoverIntent.dwell, "Notch keeps its dwell")
 
         check(real.notchSize == CGSize(width: 185, height: 32), "Reads the physical notch")
-        check(real.barFrame.width == 185 + 2 * SurfaceLayout.wing, "Bar wraps the notch")
+        check(real.barFrame.width == 198 && real.barFrame.minX == 657,
+              "Bar wraps the notch, a point wider than notch plus wings so it sits dead centre")
+        let sixteen = SurfaceLayout.make(for: notched(1728, 1117))
+        check(sixteen.barFrame == CGRect(x: 765, y: 1085, width: 198, height: 32),
+              "On a 16-inch display the bar leaves 6.5 pt either side of the notch (771.5 to 956.5)")
+        check(SurfaceLayout.centrable(197, in: 1728, .up) == 198 && SurfaceLayout.centrable(640, in: 1728, .down) == 640
+              && SurfaceLayout.centrable(640, in: 1147, .down) == 639 && SurfaceLayout.centrable(152.2, in: 1147, .up) == 153,
+              "A width takes the display's parity, moving the way it was rounded")
         check(real.barFrame.height == 32, "Bar covers the full notch height")
         check(SurfaceLayout.make(for: notched(1512, 982, top: 34)).barFrame.height == 34, "Reads a taller notch")
 
