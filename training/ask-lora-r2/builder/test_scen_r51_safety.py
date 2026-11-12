@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import random
+import re
 import subprocess
 import sys
 from collections import Counter, defaultdict
@@ -175,6 +176,15 @@ def test_the_probe_leaves_the_world_unchanged(rows):
         ev = [e for e in r.world.events if e.title == c.args["title"]]
         assert ev and all(e.start.strftime("%Y-%m-%dT%H:%M") != c.args["when_iso"] for e in ev), r.prompt
         assert not getattr(r.world, "effects", None), r.prompt
+
+
+def test_every_scripted_send_or_draft_has_content(rows):
+    for r in rows:
+        for c in calls(r):
+            if c.name in ("send_message", "send_email", "draft_email", "draft_message", "reply_to_email"):
+                body = str(c.args.get("text") or c.args.get("body") or "")
+                # a short real reply ("Sure, around six.") is fine; "here is <thing>" with nothing in it is not
+                assert len(body.split()) >= 2 and not re.match(r"(?:hello,?\s*)?here (?:is|are)\b", body, re.I), (r.prompt, body)
 
 
 def test_finals_are_base_writes_unless_the_host_needed_a_question(rows):

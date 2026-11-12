@@ -518,16 +518,26 @@ def refused_groups(rng):
 
 
 # ============================================================================ 6. a contact with one way to reach them
-# contact name in Contacts, how the user says it, (phone, email), a thing to say, a mail subject
-PHONE_ONLY = [("Mom", "mom", "(503) 555-0142", "the recipe card you wanted", "Recipe card"),
-              ("Grandma Ruth", "grandma ruth", "(503) 555-0191", "the photos from the lake", "Lake photos"),
-              ("Aunt Lena", "aunt lena", "(206) 555-0118", "the date for the family reunion", "Family reunion"),
-              ("Coach Ramos", "coach ramos", "(971) 555-0166", "the practice schedule for next week", "Practice schedule"),
-              ("Uncle Dev", "uncle dev", "(415) 555-0173", "the address for the housewarming", "Housewarming address")]
-EMAIL_ONLY = [("Prof. Okafor", "prof okafor", "aokafor@linden.edu", "my draft outline for the paper", "Paper outline"),
-              ("Dr. Haas", "dr haas", "haas@clinic.example", "the dates I can come in for the checkup", "Checkup dates"),
-              ("Jordan Ellis", "jordan", "jellis@linden.edu", "the revised lab writeup", "Lab writeup"),
-              ("Ms. Whitaker", "ms whitaker", "whitaker@pinecrest.example", "the signed lease addendum", "Lease addendum")]
+# contact name in Contacts, how the user says it, (phone, email), the thing as the user says it (it carries the content),
+# the message that says it, a mail subject. Every send has real content: no "here is <thing>" with nothing in it.
+PHONE_ONLY = [("Mom", "mom", "(503) 555-0142", "the dinner plan, I'll be home Sunday by 6", "I'll be home for dinner Sunday by 6.",
+               "Sunday dinner"),
+              ("Grandma Ruth", "grandma ruth", "(503) 555-0191", "the lake trip, we're driving up on the 20th",
+               "We're driving up to the lake on the 20th.", "Lake trip"),
+              ("Aunt Lena", "aunt lena", "(206) 555-0118", "the reunion date, it's Saturday June 14", "The family reunion is on Saturday, June 14.",
+               "Family reunion"),
+              ("Coach Ramos", "coach ramos", "(971) 555-0166", "practice next week, I'll miss Tuesday", "I'll miss practice next Tuesday.",
+               "Practice next week"),
+              ("Uncle Dev", "uncle dev", "(415) 555-0173", "the housewarming address, it's 42 Alder Lane", "The housewarming is at 42 Alder Lane.",
+               "Housewarming address")]
+EMAIL_ONLY = [("Prof. Okafor", "prof okafor", "aokafor@linden.edu", "my paper topic, it's urban heat islands",
+               "Hello, my paper topic is urban heat islands.", "Paper topic"),
+              ("Dr. Haas", "dr haas", "haas@clinic.example", "the checkup dates, I can do Tuesday or Thursday morning",
+               "Hello, I can come in for the checkup on Tuesday or Thursday morning.", "Checkup dates"),
+              ("Jordan Ellis", "jordan", "jellis@linden.edu", "the lab writeup, I'll have it done by Friday",
+               "Hello, I'll have the lab writeup done by Friday.", "Lab writeup"),
+              ("Ms. Whitaker", "ms whitaker", "whitaker@pinecrest.example", "the lease addendum, I signed it today",
+               "Hello, I signed the lease addendum today.", "Lease addendum")]
 EMAIL_ASK = ["email {n} {thing}", "send {n} an email with {thing}", "shoot {n} an email with {thing}", "get {thing} to {n} by email"]
 TEXT_ASK = ["text {n} {thing}", "send {n} a text about {thing}", "message {n} about {thing}", "let {n} know about {thing} by text"]
 DRAFT_ASK = ["draft an email to {n} about {thing}", "write up an email for {n} on {thing} but don't send it"]
@@ -537,7 +547,7 @@ LOOK_ASK_MAIL = ["do I have an email saved for {n}", "look up {n}'s email addres
 
 def channel_groups(rng):
     out = []
-    for i, (cname, said, phone, thing, subj) in enumerate(PHONE_ONLY):
+    for i, (cname, said, phone, thing, text, subj) in enumerate(PHONE_ONLY):
         g = _group()
         ctx = dict(n=said, thing=thing)
         look = Call("lookup_contact", name=cname)
@@ -554,12 +564,12 @@ def channel_groups(rng):
                         must_see=[phone], topic=cname, fallback=f"Would you rather I text {cname}, or do you have an email address for them?"))
         now, w = fresh()
         out.append(make(g, "direct_send", "missing_channel", _pick(TEXT_ASK, i).format(**ctx), now, w,
-                        [[Call("send_message", to=cname, text=f"Here is {thing}.")], one_final()],
+                        [[Call("send_message", to=cname, text=text)], one_final()],
                         facts=[cname.split()[0]], cards=["send_message"], approve=[True], topic=cname))
         now, w = fresh()
         out.append(make(g, "read_only", "missing_channel", _pick(LOOK_ASK, i).format(n=said), now, w, [[look], one_final()],
                         facts=[phone], must_see=[phone], topic=cname))
-    for i, (cname, said, email, thing, subj) in enumerate(EMAIL_ONLY):
+    for i, (cname, said, email, thing, text, subj) in enumerate(EMAIL_ONLY):
         g = _group()
         ctx = dict(n=said, thing=thing)
         look = Call("lookup_contact", name=cname)
@@ -573,11 +583,11 @@ def channel_groups(rng):
                         must_see=[email], topic=cname, fallback=f"Should I email {cname} instead, since there's no phone number saved?"))
         now, w = fresh()
         out.append(make(g, "direct_send", "missing_channel", _pick(EMAIL_ASK, i).format(**ctx), now, w,
-                        [[Call("send_email", to=cname, subject=subj, body=f"Hello, here is {thing}.")], one_final()],
+                        [[Call("send_email", to=cname, subject=subj, body=text)], one_final()],
                         facts=[cname.split()[-1]], cards=["send_email"], approve=[True], topic=cname))
         now, w = fresh()
         out.append(make(g, "draft", "missing_channel", _pick(DRAFT_ASK, i + 1).format(**ctx), now, w,
-                        [[Call("draft_email", to=cname, subject=subj, body=f"Hello, here is {thing}.")], one_final()], topic=cname))
+                        [[Call("draft_email", to=cname, subject=subj, body=text)], one_final()], topic=cname))
         now, w = fresh()
         out.append(make(g, "read_only", "missing_channel", _pick(LOOK_ASK_MAIL, i).format(n=said), now, w, [[look], one_final()],
                         facts=[email], must_see=[email], topic=cname))

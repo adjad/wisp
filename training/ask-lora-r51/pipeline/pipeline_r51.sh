@@ -82,9 +82,14 @@ fi
 
 # (d) choose base's finals, then base's thoughts at tool steps (only where its call matches the scripted call)
 [ -e "$D/finished" ] && die "$D/finished exists"
-mkdir -p "$D/choose" || exit 1
+mkdir -p "$D/choose" "$D/raw_safe" || exit 1
+# base samples that break an intent rule (safety_check_r51.py) are cut before choosing, so the other sample can be used
+for f in "$D"/raw/*.jsonl; do
+  "$PY" "$HERE/safety_check_r51.py" --meta "$D/sealed/meta.jsonl" --filter-raw "$f" --out "$D/raw_safe/$(basename "$f")" \
+      | tee -a "$D/choose/raw_filter.log" || die "raw filter"
+done
 cd "$T/ask-lora-r5/gpu" || exit 1
-"$PY" choose_r5.py --partial "$D/sealed/partial.jsonl" --raw "$D/raw/*.jsonl" --out-chosen "$D/choose/chosen.jsonl" --out-stats "$D/choose/stats.json" \
+"$PY" choose_r5.py --partial "$D/sealed/partial.jsonl" --raw "$D/raw_safe/*.jsonl" --out-chosen "$D/choose/chosen.jsonl" --out-stats "$D/choose/stats.json" \
     --out-nopass-ids "$D/choose/nopass.ids" --out-drop-ids "$D/choose/drop.ids" --out-rejections "$D/choose/rejections.jsonl" > "$D/choose/choose_r5.log" 2>&1 || die "choose_r5: see $D/choose/choose_r5.log"
 cat "$D/choose/choose_r5.log" | cut -c1-240
 "$PY" choose_traces.py --partial "$D/sealed/partial.jsonl" --raw "$D/raw/*.jsonl" --out-chosen "$D/choose/traces.chosen.jsonl" --out-stats "$D/choose/traces.stats.json" > "$D/choose/choose_traces.log" 2>&1 || die "choose_traces: see $D/choose/choose_traces.log"

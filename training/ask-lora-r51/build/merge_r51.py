@@ -242,7 +242,7 @@ def write_lines(path, lines):
 
 
 def run(a):
-    r5, out = Path(a.r5), Path(a.out)
+    r5, out = Path(a.r5), Path(a.out).resolve()   # resolved: validate.py runs with cwd=BUILDER
     out.mkdir(parents=True, exist_ok=True)
     allr, metar = jl(r5 / "all.jsonl"), jl(r5 / "meta.jsonl")
     assert len(allr) == len(metar), "r5 all.jsonl and meta.jsonl differ in length"
@@ -318,7 +318,9 @@ def run(a):
 
     vcode = None
     if not a.no_validate:
-        env = {**os.environ, "ASK_LORA_ROUND": "4", "ASK_LORA_R5": "1", "WISP_REPO": str(Path(a.wisp_repo).resolve())}
+        # ASK_LORA_R51=1: without it validate.py doesn't know safety_contrast_r51's write tools (every write = write_call)
+        env = {**os.environ, "ASK_LORA_ROUND": "4", "ASK_LORA_R5": "1", "ASK_LORA_R51": "1",
+               "WISP_REPO": str(Path(a.wisp_repo).resolve())}
         with open(out / "validate.log", "w") as lg:
             r = subprocess.run([sys.executable, "validate.py", str(out / "all.jsonl"), str(out / "train.jsonl"),
                                 str(out / "valid.jsonl")], cwd=BUILDER, env=env, stdout=lg, stderr=subprocess.STDOUT)
