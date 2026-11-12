@@ -97,7 +97,7 @@ from service.setup.engines import detect_external_engines
 from service.setup.hardware import current_hardware
 from service.memory import store, build_messages, maybe_summarize
 from service.memory.prompt_blocks import memory_block, now_line
-from service.memory.context import default_history_budget
+from service.memory.context import default_history_budget, require_resident
 from service.router import route
 from service.router.router import RouteDecision, routing_guard_contract, rule_route
 from service.agent.planner import enabled_from_env as planner_enabled_from_env
@@ -505,6 +505,7 @@ async def lifespan(app: FastAPI):
     # started_tasks, which is exactly the set the quarantine watcher supervises.
     async def _prune_attachment_store() -> None:
         try:
+            await asyncio.to_thread(store.clear_old_text)   # once: chats deleted by earlier builds
             from service import attachment_store
             await asyncio.to_thread(attachment_store.prune_if_due)
         except asyncio.CancelledError:
@@ -1981,6 +1982,11 @@ def _ask_tool_rank(prompt: str, previous: str = "") -> tuple[list[str], list[str
                                  ("search_reminders", reminders_first(prompt))):
                 if wanted and lead in REGISTRY:
                     head = [lead, *(n for n in head if n != lead)]
+        from service.model_only import public_possessive_question
+        if not writing and public_possessive_question(prompt) and "web_search" in REGISTRY:
+            # "What are Costco's hours?" ranked weather and stock tools first
+            # and left web_search a name stub: the search leads instead.
+            head = ["web_search", *(n for n in head if n != "web_search")]
         from service.model_only import reply_reads
         if lead_reads := [n for n in reply_reads(prompt) if n in REGISTRY]:
             # A reply draft reads the conversation it answers before drafting.
@@ -3355,8 +3361,9 @@ async def agent(body: dict[str, Any]):
                 summary_target = role_target("fast")
 
                 async def prepare_local_summary() -> None:
+                    # Resident-only: never ensure_only, which evicts other models.
                     await ensure_omlx()
-                    await client.ensure_only(summary_target.model)
+                    await require_resident(client, summary_target.model)
 
                 # Not awaited: the app closes the stream at `done`, which cancelled an
                 # awaited fold on every turn. The module-level client, never this turn's.

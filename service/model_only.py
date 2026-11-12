@@ -839,7 +839,31 @@ _TASKISH = re.compile(r"\b(?:tasks?|to-?dos?|todo\s+list|pending|homework|assign
 def calendar_first(prompt: str) -> bool:
     """A personal question about a dated event ("When is my midterm?"):
     get_upcoming leads the head start."""
-    return bool(_CALENDARISH.search(prompt or "")) and asks_personal_data(prompt)
+    return ((bool(_CALENDARISH.search(prompt or "")) and asks_personal_data(prompt))
+            or personal_event_question(prompt))
+
+
+# "When is the next meeting?" / "the party on Saturday": a bare definite event
+# of the kind people put on their own calendar, with nothing else in the
+# request. It names no owner, but nobody asks the web when "the meeting" is:
+# it is the user's own event (0.5.0-rc2 known issue). The whole request must
+# be this shape; anything more keeps its existing route.
+_OWN_EVENT_KIND = (r"(?:(?:team|staff|work|office|birthday|dinner|holiday|surprise|family)\s+)?"
+                   r"(?:meeting|party|appointment|class|call|dinner|lunch|brunch|interview|"
+                   r"stand-?up|shift|practice|rehearsal|check-?up|event)")
+_OWN_EVENT_DAY = (r"(?:today|tomorrow|tonight|this\s+(?:week|weekend|morning|afternoon|evening)|next\s+week|"
+                  r"(?:(?:on|this|next)\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))")
+_OWN_EVENT = re.compile(
+    r"^(?:(?:when|what\s+time)\s+is\s+|when'?s\s+)?the\s+(?:next\s+)?" + _OWN_EVENT_KIND
+    + r"(?:\s+" + _OWN_EVENT_DAY + r")?\s*[?.!]?$", re.I)
+
+
+def personal_event_question(prompt: str) -> bool:
+    """The whole request asks after a bare definite event of the user's own
+    kind ("When is the next meeting?", "When is the party on Saturday?", "the
+    party on Saturday"): it reads the calendar and reminders, never the web."""
+    text = _ascii_text(prompt).strip()
+    return bool(text.isascii() and _OWN_EVENT.match(text))
 
 
 def reminders_first(prompt: str) -> bool:
@@ -1224,10 +1248,110 @@ def _ascii_text(text: str) -> str:
 def public_fact_question(prompt: str) -> bool:
     """The whole request is one public live fact asked plainly ("What's the
     price of bitcoin?", "convert 100 USD to euros", "who won the last World
-    Series?"), in plain ASCII, with nothing of the user's in it."""
+    Series?", "What are Costco's hours?"), in plain ASCII, with nothing of the
+    user's in it."""
     text = _ascii_text(prompt).strip()
     return bool(text.isascii() and len(text.split()) <= _FACT_MAX_WORDS
-                and _PUBLIC_FACT.match(text) and not _FIRST_PERSON.search(text))
+                and _PUBLIC_FACT.match(text) and not _FIRST_PERSON.search(text)) or public_possessive_question(text)
+
+
+# "What are Costco's hours?" got no web search on the first message of a chat
+# (0.5.0-rc2 known issue): an 's of unknown ownership reads as private, as
+# "what's Mom's number" must. A name owning a business's public hours, menu or
+# return policy is a public fact. The owner is at most four words and never a
+# relation or a pronoun; the head is only one of these public business facts
+# (never a number, address, schedule or plan).
+_PUBLIC_POSSESSIVE = re.compile(
+    r"^(?:(?:what|when)\s+(?:are|is)\s+|what'?s\s+)?(?:the\s+)?"
+    r"(?P<owner>[a-z0-9][a-z0-9&-]*(?:\s+[a-z][a-z0-9&-]*){0,3})'s\s+"
+    r"(?:(?:opening|store|holiday|business|weekend|pharmacy|regular|normal|current)\s+)?"
+    r"(?:hours|opening\s+times|menu|return\s+policy)"
+    r"(?:\s+(?:today|tomorrow|tonight|now|this\s+weekend|"
+    r"on\s+(?:mondays?|tuesdays?|wednesdays?|thursdays?|fridays?|saturdays?|sundays?|"
+    r"christmas(?:\s+eve)?|thanksgiving|easter|new\s+year'?s(?:\s+(?:day|eve))?)))?\s*[?.!]?$", re.I)
+# Owners that are people in the user's life (or not a name at all).
+_RELATION_OWNERS = frozenset("""
+mom mum mommy mummy mama ma dad daddy papa pa mother father parents grandma grandpa granny gran nana
+grandmother grandfather sister brother sis bro son daughter wife husband partner spouse boyfriend
+girlfriend fiance fiancee aunt auntie uncle cousin niece nephew friend bestie boss manager coworker
+colleague roommate neighbor neighbour kid kids baby teacher professor doctor dentist therapist nanny
+babysitter landlord tutor coach family team honey babe everyone everybody someone somebody
+nobody it that there here what who he she they his her their your its this these those
+today tomorrow tonight yesterday
+monday tuesday wednesday thursday friday saturday sunday
+""".split())
+
+
+def _possessive_owner_is_personal(text: str) -> bool:
+    m = _PUBLIC_POSSESSIVE.match(text)
+    return bool(m and any(w.lower() in _RELATION_OWNERS for w in m.group("owner").split()))
+
+
+# An owner that is a phone number or a street address is the user's detail,
+# never a business ("<10 digits>'s hours", "123 Main St's hours"). A brand
+# with a short number keeps working ("7-Eleven", "24 Hour Fitness").
+_STREET_TYPES = frozenset("st street ave avenue rd road blvd dr drive ln lane way ct court "
+                          "pl place hwy highway".split())
+_PHONE_GROUP = re.compile(r"\d+(?:-\d+)+")
+
+
+def _possessive_owner_is_contact_detail(owner: str) -> bool:
+    words = owner.lower().split()
+    if re.search(r"\d{4,}", owner) or any(_PHONE_GROUP.search(w) for w in words):
+        return True
+    return bool(len(words) >= 2 and words[-1] in _STREET_TYPES
+                and any(re.fullmatch(r"\d+[a-z]?", w) for w in words[:-1]))
+
+
+# Titles before a name ("Dr Patel"), dropped before the known-people check.
+_OWNER_TITLES = frozenset("the dr mr mrs ms mx miss prof".split())
+
+
+def _known_people_tokens() -> set[str] | None:
+    """Lower-cased words of the names Wisp already holds locally: the know-you
+    profile's people and the contacts already cached in memory. No model, no
+    embedder, no Contacts or AppleScript read: the contacts module is used
+    only if this process has already loaded it. None when no people data
+    exists at all. Raises on a failed read (the caller fails closed)."""
+    import sys
+    from service.memory import profile as _profile
+    names = [str(p.get("name") or "") for p in (_profile.load().get("people") or [])
+             if isinstance(p, dict)]
+    contacts = sys.modules.get("service.tools.imessage_tools")
+    if contacts is not None:
+        names.extend(contacts.contact_names())
+    tokens = {w for name in names for w in re.findall(r"[a-z0-9&-]{2,}", _ascii_text(name).lower())}
+    return tokens or None
+
+
+def _possessive_owner_is_known_person(owner: str) -> bool:
+    """Every word of the owner (titles aside) is a word of a name Wisp knows:
+    "Dana" or "Dr Patel" when Dana or a Patel is in the profile or contacts.
+    A failed lookup counts as known; no people data at all counts as unknown,
+    which leaves the words-only search rule as the only check."""
+    words = [w for w in owner.lower().split() if w not in _OWNER_TITLES]
+    if not words:
+        return True
+    try:
+        tokens = _known_people_tokens()
+    except Exception:  # noqa: BLE001 — an unreadable profile or cache fails closed
+        return True
+    return bool(tokens) and all(w in tokens for w in words)
+
+
+def public_possessive_question(prompt: str) -> bool:
+    """The whole request is a public business fact owned by a name ("What are
+    Costco's hours?", "Trader Joe's holiday hours on Christmas"): the same
+    ASCII, length and first-person rules as public_fact_question. The owner is
+    never a relation, a pronoun, a phone number, a street address or a person
+    Wisp knows locally."""
+    text = _ascii_text(prompt).strip()
+    if not (text.isascii() and len(text.split()) <= _FACT_MAX_WORDS
+            and (m := _PUBLIC_POSSESSIVE.match(text)) and not _FIRST_PERSON.search(text)
+            and not _possessive_owner_is_personal(text)):
+        return False
+    owner = m.group("owner")
+    return not (_possessive_owner_is_contact_detail(owner) or _possessive_owner_is_known_person(owner))
 
 
 # Words a search for a public fact may add to the user's own: the query of a

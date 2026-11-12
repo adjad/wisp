@@ -341,6 +341,23 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_rc3_ui_sweep.py",
     "tests/test_rc3_untitled_sync.py",
     "tests/test_rc3_untitled_sync_swift.py",
+    # rc2 known-issue batch: pure Python, scratch stores, fake engines and clocks, or source contracts.
+    "tests/test_rc2_ask_web_own_events.py",
+    "tests/test_rc2_ask_web_possessive.py",
+    "tests/test_rc2_engine_fold_resident.py",
+    "tests/test_rc2_engine_guard_wake.py",
+    "tests/test_rc2_grants_inert_move_rule.py",
+    "tests/test_rc2_policy_delete_recheck.py",
+    "tests/test_rc2_policy_inert_text.py",
+    "tests/test_rc2_policy_never_run_gaps.py",
+    "tests/test_rc2_policy_quoted_delete.py",
+    "tests/test_rc2_sends_host_bound.py",
+    "tests/test_rc2_sends_own_address.py",
+    "tests/test_rc2_sessions_old_text.py",
+    "tests/test_rc2_text_size_contract.py",
+    "tests/test_rc2_ask_web_possessive_egress.py",
+    "tests/test_rc2_policy_audit_repairs.py",
+    "tests/test_rc2_policy_audit_repairs_2.py",
     # rc1 Brief and Day honesty: no all-clear for an unread source, per-source blocked reasons.
     "tests/test_first_day_honesty.py",
     # rc1 reminders: expiry and supersede, the first-launch auto-action hold, the day-one Daily Summary.

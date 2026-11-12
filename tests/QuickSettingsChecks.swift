@@ -289,6 +289,13 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
     check(folderWrite.summary == "Always allow · only /Users/sam/C++ notes", "a limited rule names its folder")
     check(blockApp.summary == "Always block · every action", "a block rule is named as one")
     check(anyWrite.id != folderWrite.id, "two rules of one tool are told apart")
+    // A move rule saved before rc3 no longer covers moves: the service's own line
+    // replaces "every action", and the row still removes that one rule.
+    let oldMoveReply = #"{"grants":{"move_path":{"allow":[{"scope":"","summary":"No longer used · Wisp asks again for moves"}],"deny":[]}}}"#
+    let oldMove: [StandingRule]? = StandingRule.parse(Data(oldMoveReply.utf8))
+    check(oldMove?.first?.summary == "No longer used · Wisp asks again for moves",
+          "an inert move rule says it is no longer used, never every action")
+    check(oldMove?.first?.id == "allow|move_path|", "an inert move rule is still one removable rule")
     let service = URL(string: "http://127.0.0.1:8765")!
     let removeAny: String? = anyWrite.removeURL(base: service)?.absoluteString
     check(removeAny == "http://127.0.0.1:8765/permissions/write_file?scope=",

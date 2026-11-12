@@ -326,7 +326,8 @@ def confirm_preview(tool: str, args: dict) -> str | None:
     return None
 
 
-def _own_address_guard(to: str, tool: str, confirmed_self_send: bool = False) -> str | None:
+def _own_address_guard(to: str, tool: str, confirmed_self_send: bool = False,
+                       typed: str = "") -> str | None:
     """Corrective message when `to` is one of the USER'S OWN addresses — else None.
 
     MEASURED FAILURE (2026-08-18). Asked to "draft a message to mom with my
@@ -371,7 +372,27 @@ def _own_address_guard(to: str, tool: str, confirmed_self_send: bool = False) ->
     except Exception:  # noqa: BLE001 — no identity yet is not a failure
         return None
     if addr not in own:
-        return None
+        # Several recipients ("a@x.com, me@y.com"): any one of them that is
+        # the user's own address is caught the same as if it stood alone.
+        hit = next((r for r in _split_recipients(to) if r.strip().lower() in own), "")
+        if not hit:
+            return None
+        to = hit.strip()
+    if typed and to.lower() not in {r.lower() for r in _split_recipients(typed)}:
+        # A NAME that resolved to the user's own address: the same mistake as
+        # typing the address, reached through a contact (a "Me" card, a fact
+        # that saved the user's own address under someone else's name).
+        return _not_sent(
+            (f"(error: NOT sent — `{typed}` resolves to `{to}`, the USER'S OWN "
+             f"address, not a recipient. If this is a MISTAKE, ask the user for "
+             f"the person's real number or address. If the user's own words just "
+             f"confirmed they genuinely mean to send to THEMSELVES, call {tool} "
+             f"again with confirmed_self_send=true — that is the only thing that "
+             f"changes on the retry; the same arguments without it will be "
+             f"blocked again.)"),
+            question=(f"{typed} is saved with your own address ({to}). Who should it "
+                      f"go to, or do you mean to send it to yourself?"),
+            needs_recipient=True)
     return _not_sent(
         (f"(error: NOT sent — `{to}` is the USER'S OWN address, not a "
          f"recipient. Their email address is in your prompt for ATTRIBUTION "
@@ -655,9 +676,14 @@ def _named(handle: str, typed: str = "") -> str:
 def _bound_handle(args: dict) -> str:
     """The number a text's card was settled on (`resolved_to`), or "". Only
     used for a typed NAME, and only when it is a real handle: a literal handle
-    in `to` is where the text goes, whatever else the call carries."""
+    in `to` is where the text goes, whatever else the call carries. A plain
+    string is never a binding: only the value prepare_send_recipient set
+    (registry.HostBoundArg) is, so a model, a stored workflow step or any
+    other caller that passes `resolved_to` cannot choose the number."""
+    from service.tools.registry import is_host_bound
     to = str(args.get("to") or "").strip()
-    bound = str(args.get("resolved_to") or "").strip()
+    raw = args.get("resolved_to")
+    bound = str(raw).strip() if is_host_bound(raw) else ""
     return bound if bound and to and not _is_handle(to) and _is_handle(bound) else ""
 
 
@@ -730,13 +756,20 @@ def prepare_send_recipient(tool, args: dict) -> tuple[dict, str | None]:
     if tool == "send_message":
         # Never the model's own value: set here from the lookup, or not at all.
         args = {k: v for k, v in args.items() if k != "resolved_to"}
+        handle = ""
         if to and not _is_handle(to):
             handle, problem = _resolve_recipient(to)
             if problem:
                 return args, problem
             if handle and _is_handle(handle):
-                args["resolved_to"] = handle
-        return args, _own_address_guard(to, tool, bool(args.get("confirmed_self_send")))
+                from service.tools.registry import host_bound_arg
+                args["resolved_to"] = host_bound_arg(handle)
+        confirmed = bool(args.get("confirmed_self_send"))
+        # Judged on where the text really goes, not only on what was typed: a
+        # name that resolves to the user's own address is the same mistake.
+        return args, (_own_address_guard(to, tool, confirmed)
+                      or (_own_address_guard(handle, tool, confirmed, to)
+                          if handle else None))
     resolved: list[str] = []
     for r in _split_recipients(to):
         if _EMAIL_RE.match(r):
@@ -749,7 +782,8 @@ def prepare_send_recipient(tool, args: dict) -> tuple[dict, str | None]:
     if not resolved:
         return args, None  # the tool's own "no recipient" answer covers it
     bound = ", ".join(resolved)
-    if (problem := _own_address_guard(bound, tool, bool(args.get("confirmed_self_send")))):
+    if (problem := _own_address_guard(bound, tool, bool(args.get("confirmed_self_send")),
+                                      to)):
         return {**args, "to": bound}, problem
     # A name in cc: refused here when it has no single address, never after the
     # card was approved, and otherwise shown on the card as the address it is.
@@ -816,6 +850,10 @@ async def send_email(to: str, subject: str, body: str, cc: str = "",
             return problem
         resolved.append(handle)
     recipients = resolved
+    # A name that resolved to the user's own address is caught like the typed one.
+    if (msg := _own_address_guard(", ".join(recipients), "send_email",
+                                  confirmed_self_send, to)):
+        return msg
     copies, problem = _cc_addresses(cc)
     if problem:
         return problem
@@ -1470,6 +1508,9 @@ async def send_message(to: str, text: str, confirmed_self_send: bool = False,
             handle, problem = _resolve_recipient(to)
             if problem:
                 return problem
+        # Where the text really goes is judged too, not only the typed name.
+        if (msg := _own_address_guard(handle, "send_message", confirmed_self_send, to)):
+            return msg
         display = _named(handle, to)
         to = handle
 

@@ -20,46 +20,48 @@ struct ReportDraftCard: View {
         if let snapshot = draft.snapshot {
             VStack(alignment: .leading, spacing: 9) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(primary)
+                    Text(title).font(.wisp(size: 13, weight: .semibold)).foregroundStyle(primary)
                     Spacer(minLength: 8)
                     if let seconds = snapshot.metadata["client_duration_seconds"] as? Double {
-                        Text(String(format: "%.1f s", seconds)).font(.system(size: 11)).foregroundStyle(muted)
+                        Text(String(format: "%.1f s", seconds)).font(.wisp(size: 11)).foregroundStyle(muted)
                     }
                 }
                 TextField("What did you expect Wisp to do? (optional)", text: $draft.note, axis: .vertical)
                     .textFieldStyle(.plain).lineLimit(2...4)
-                    .font(.system(size: 12.5)).foregroundStyle(primary)
+                    .font(.wisp(size: 12.5)).foregroundStyle(primary)
                     .padding(.horizontal, 10).padding(.vertical, 7)
                     .background(RoundedRectangle(cornerRadius: 9).fill(field))
                     .overlay(RoundedRectangle(cornerRadius: 9).stroke(stroke, lineWidth: 1))
                 if snapshot.hasDetails {
                     Toggle(detailsLabel, isOn: $draft.includeDetails)
                         .toggleStyle(.switch).controlSize(.mini).tint(look == .notch ? Theme.accent : .accentColor)
-                        .font(.system(size: 12.5)).foregroundStyle(primary)
+                        .font(.wisp(size: 12.5)).foregroundStyle(primary)
                     Text("Details can include private messages, titles and model inputs. Redaction of passwords, tokens and keys is best effort and cannot catch everything. Review the preview before sharing.")
-                        .font(.system(size: 11)).foregroundStyle(muted)
+                        .font(.wisp(size: 11)).foregroundStyle(muted)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 HStack {
                     Text("PREVIEW · SAVED LOCALLY, NEVER UPLOADED")
-                        .font(.system(size: 10.5, weight: .semibold)).tracking(0.6).foregroundStyle(muted)
+                        .font(.wisp(size: 10.5, weight: .semibold)).tracking(0.6).foregroundStyle(muted)
+                        .fixedSize(horizontal: false, vertical: true)
                     Spacer()
                     Button(larger ? "Smaller" : "Larger") { larger.toggle() }
-                        .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(secondary)
+                        .buttonStyle(.plain).font(.wisp(size: 11)).foregroundStyle(secondary)
+                        .fixedSize()
                         .help("Show more of the preview")
                 }
                 ScrollView {
                     Text(verbatim: draft.preview)
-                        .font(.system(size: 10.5, design: .monospaced)).foregroundStyle(secondary)
+                        .font(.wisp(size: 10.5, design: .monospaced)).foregroundStyle(secondary)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(8)
                 }
-                .frame(height: larger ? 340 : 118)
+                .frame(height: (larger ? 340 : 118) * Theme.textScale)
                 .background(RoundedRectangle(cornerRadius: 9).fill(field))
                 .overlay(RoundedRectangle(cornerRadius: 9).stroke(stroke, lineWidth: 1))
                 HStack(spacing: 8) {
-                    Text(draft.status).font(.system(size: 11)).foregroundStyle(secondary)
+                    Text(draft.status).font(.wisp(size: 11)).foregroundStyle(secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 8)
                     chip(draft.status.hasPrefix("Saved") ? "Done" : "Cancel") { draft.close() }
@@ -85,7 +87,7 @@ struct ReportDraftCard: View {
 
     private func chip(_ title: String, primary isPrimary: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(title).font(.system(size: 12, weight: isPrimary ? .semibold : .regular))
+            Text(title).font(.wisp(size: 12, weight: isPrimary ? .semibold : .regular))
                 .foregroundStyle(isPrimary ? (look == .notch ? Color.black : Color.white) : primary)
                 .padding(.horizontal, 12).padding(.vertical, 4)
                 .background(Capsule().fill(isPrimary ? (look == .notch ? Color.white : Color.accentColor)

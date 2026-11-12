@@ -8,8 +8,9 @@ import QuartzCore
 /// height and where the content is actually drawn to (the bottom of the opaque
 /// surface in the host's bitmap), then asserts:
 ///   (a) with motion: the content is never clipped by the window;
-///   (b) with motion: no single sample moves the content bottom by more than
-///       45 % of the whole change (no snap);
+///   (b) with motion: no snap. At least one sample catches the content
+///       between 10% and 90% of the change, and samples under 50 ms apart
+///       never show it moving more than 45% of the change per 1/30 s;
 ///   (c) with motion: the window ends at the content's final height;
 ///   Reduce Motion: the change has landed (window and content) by the first
 ///       sample after it.
@@ -46,6 +47,7 @@ struct MotionSample {
     var image: CGImage?
     var scale: Double      // image pixels per point
     var imageHeight: Double
+    var cost: Double = 0   // seconds the capture itself took
 }
 
 @MainActor
@@ -147,14 +149,19 @@ final class MotionRig {
 
     // MARK: Measuring
 
-    /// The window's height and the bottom of the drawn surface, now.
-    func capture() -> MotionSample {
+    /// The window's height and the bottom of the drawn surface, now. `full`
+    /// renders the whole width for a contact sheet; otherwise only a 2 pt
+    /// column down the middle is drawn, which is quick enough to sample
+    /// every frame.
+    func capture(full: Bool = true) -> MotionSample {
         let win = Double(panel.frame.height)
         let bounds = host.bounds
         let h = min(Double(bounds.height), win + 120)
+        let x = full ? 0 : (bounds.width / 2 - 1).rounded()
+        let width = full ? bounds.width : 2
         let rect = host.isFlipped
-            ? NSRect(x: 0, y: 0, width: bounds.width, height: h)
-            : NSRect(x: 0, y: bounds.height - h, width: bounds.width, height: h)
+            ? NSRect(x: x, y: 0, width: width, height: h)
+            : NSRect(x: x, y: bounds.height - h, width: width, height: h)
         guard let rep = host.bitmapImageRepForCachingDisplay(in: rect) else {
             return MotionSample(t: 0, win: win, vis: -1, image: nil, scale: 1, imageHeight: h)
         }
@@ -282,10 +289,16 @@ enum Harness {
         let t0 = CACurrentMediaTime()
         change()
         var samples: [MotionSample] = []
+        var lastFull = -1.0
         while true {
-            try await Task.sleep(for: .milliseconds(16))
+            try await Task.sleep(for: .milliseconds(8))
             let t = CACurrentMediaTime() - t0
-            var s = rig.capture()
+            // A full frame now and then for the contact sheet; a thin column otherwise.
+            let full = t - lastFull >= 0.07
+            let c0 = CACurrentMediaTime()
+            var s = rig.capture(full: full)
+            s.cost = CACurrentMediaTime() - c0
+            if full { lastFull = t }
             s.t = t
             samples.append(s)
             if t >= 0.6 { break }
@@ -299,9 +312,38 @@ enum Harness {
         var problems: [String] = []
         var maxClip = 0.0
         for s in samples { maxClip = max(maxClip, s.vis - s.win) }
+        // A snap is the content going from where it was to where it ends with
+        // nothing in between. SwiftUI animations run on the clock, so a sample
+        // shows where the content is at that moment however late it is taken:
+        // a moving page is caught part-way (between 10% and 90% of the change);
+        // a swapped one only ever reads as before or after. That holds even
+        // though sampling is coarse: capturing re-renders the whole SwiftUI
+        // host (cacheDisplay), which takes ~100-200 ms while it animates,
+        // however narrow the strip. Where two samples do fall close together
+        // (under 50 ms), the speed between them must also stay under 45% of
+        // the change per 1/30 s; the 0.3 s spring peaks near 26%.
         var steps: [Double] = []
-        var previous = before.vis
-        for s in samples { steps.append(abs(s.vis - previous)); previous = s.vis }
+        // The gap between samples less the previous capture's own cost is time
+        // the main thread spent elsewhere: in the app, that is dropped frames.
+        var fastest = 0.0, fastestClose = 0.0, widestGap = 0.0, widestBusy = 0.0
+        var previous = before.vis, previousT = 0.0, previousCost = 0.0
+        var midFlight = 0
+        for s in samples {
+            let step = abs(s.vis - previous), dt = max(s.t - previousT, 1.0 / 120)
+            steps.append(step)
+            if step > 0.5 {
+                widestGap = max(widestGap, dt)
+                widestBusy = max(widestBusy, dt - previousCost)
+                fastest = max(fastest, step / dt / 30)
+                if dt <= 0.05 { fastestClose = max(fastestClose, step / dt / 30) }
+            }
+            if total > 0 {
+                let share = abs(s.vis - before.vis) / total
+                if share > 0.1, share < 0.9 { midFlight += 1 }
+            }
+            previous = s.vis; previousT = s.t; previousCost = s.cost
+        }
+        let firstSample = samples.first.map { Int($0.t * 1000) } ?? -1
         let maxStep = steps.max() ?? 0
         var visibleTotal = f(total)
 
@@ -313,17 +355,20 @@ enum Harness {
             if maxClip > 1 { problems.append("content clipped by \(f(maxClip)) pt") }
         } else {
             if maxClip > 1 { problems.append("(a) clipped: content passes the window by \(f(maxClip)) pt") }
-            if total > 20, maxStep > 0.45 * total {
-                problems.append("(b) snap: one step moves \(f(maxStep)) pt of a \(f(total)) pt change (\(Int(maxStep / total * 100))%)")
+            if total > 20, midFlight == 0 {
+                problems.append("(b) snap: no sample caught the content between 10% and 90% of a \(f(total)) pt change")
+            }
+            if total > 20, fastestClose > 0.45 * total {
+                problems.append("(b) snap: the content moves \(Int(fastestClose / total * 100))% of a \(f(total)) pt change per 1/30 s")
             }
             if abs(final.win - final.vis) > 2 { problems.append("(c) window \(f(final.win)) != final content \(f(final.vis))") }
         }
         if total <= 20 { visibleTotal += " (small: snap check skipped)" }
 
-        var lines = ["\(name) [\(reduce ? "reduce-motion" : "motion")] change \(f(before.vis)) -> \(f(final.vis)) = \(visibleTotal) pt, max step \(f(maxStep)), max overshoot past window \(f(max(maxClip, 0)))"]
+        var lines = ["\(name) [\(reduce ? "reduce-motion" : "motion")] change \(f(before.vis)) -> \(f(final.vis)) = \(visibleTotal) pt, max step \(f(maxStep)), \(midFlight) sample(s) mid-flight, first sample \(firstSample) ms, peak \(total > 0 ? Int(fastest / total * 100) : 0)%/frame@30, widest gap \(Int(widestGap * 1000)) ms (\(Int(widestBusy * 1000)) ms not capturing), max overshoot past window \(f(max(maxClip, 0)))"]
         lines.append("  before: win \(f(before.win)) content \(f(before.vis))")
         for s in samples {
-            lines.append(String(format: "  t=%4d ms  win %7.1f  content %7.1f%@", Int(s.t * 1000), s.win, s.vis,
+            lines.append(String(format: "  t=%4d ms  capture %3d ms  win %7.1f  content %7.1f%@", Int(s.t * 1000), Int(s.cost * 1000), s.win, s.vis,
                                 s.vis > s.win + 1 ? "  CLIPPED" : ""))
         }
         lines.append("  final: win \(f(final.win)) content \(f(final.vis))")
@@ -332,7 +377,7 @@ enum Harness {
         var picks: [(String, MotionSample)] = [("before", before)]
         var used = Set<Int>()
         for target in [20.0, 50, 90, 140, 210, 320] {
-            if let i = samples.indices.min(by: { abs(samples[$0].t * 1000 - target) < abs(samples[$1].t * 1000 - target) }),
+            if let i = samples.indices.filter({ samples[$0].image != nil && samples[$0].scale > 0 && samples[$0].image!.width > 8 }).min(by: { abs(samples[$0].t * 1000 - target) < abs(samples[$1].t * 1000 - target) }),
                used.insert(i).inserted {
                 picks.append(("\(Int(samples[i].t * 1000)) ms", samples[i]))
             }

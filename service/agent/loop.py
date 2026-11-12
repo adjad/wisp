@@ -2161,8 +2161,12 @@ async def run_agent(
                 from service.model_only import public_fact_question
                 # So may an explicit search held back only by a possessive
                 # ("search the web for Dana's tour dates"): same words-only rule.
+                # So may a public business fact owned by a name ("What are
+                # Costco's hours?"): it is classified private, so the turn
+                # starts private for egress and only this words-only search
+                # is reopened; web_fetch and http_request stay refused.
                 _lookup = classify_public_lookup(_last_user)
-                public_fact_text = (_last_user if _lookup.explicit_unknown_owner or (
+                public_fact_text = (_last_user if _lookup.explicit_unknown_owner or _lookup.public_possessive or (
                     public_fact_question(_last_user) and not _lookup.private) else None)
             except Exception:  # noqa: BLE001 — unclassifiable means no exemption
                 public_fact_text = None

@@ -164,6 +164,11 @@ class WebRequest:
     # The provenance is UNKNOWN because of a possessive whose owner could be
     # anyone ("Dana's tour dates"), not a private, local or contextual source.
     owner_unknown: bool = False
+    # The whole request is a public business fact owned by a name ("What are
+    # Costco's hours?", model_only.public_possessive_question). It stays
+    # PRIVATE for every egress rule; only a model-led turn's web_search is
+    # reopened, and only for the user's own words (agent loop, router).
+    public_possessive: bool = False
 
     @property
     def private(self) -> bool:
@@ -1176,6 +1181,17 @@ def _parse_request(text: str, last_user: str | None = None, *,
                     query = f"{topic}{news}" + ("" if topic_scopes else f" {previous.time_scope or 'latest'}")
             else:
                 clarification = "Which public topic should I look up?"
+    public_possessive = False
+    if provenance == Provenance.UNKNOWN and not (explicit or fragment or inherited or opted_out):
+        from service.model_only import public_possessive_question
+        if public_possessive_question(text):
+            # "What are Costco's hours?" names a public business fact, not a
+            # person's store (model_only.public_possessive_question). It stays
+            # PRIVATE, so web_fetch, http_request and every bound query remain
+            # refused; the flag lets a model-led turn search the user's own
+            # words only (router.routing_guard_contract, the agent loop's
+            # public_fact_query_problem). Never ``allowed``.
+            provenance, query, public_possessive = Provenance.PRIVATE, None, True
     if provenance == Provenance.UNKNOWN:
         if (explicit or current or fragment or last_user) and not opted_out:
             clarification = "Which public topic should I look up? Is this source public or private/local?"
@@ -1208,7 +1224,9 @@ def _parse_request(text: str, last_user: str | None = None, *,
                       confirmed_local_request, standalone_offer, study_clock,
                       dated_assent.group(1) if dated_assent and study_clock else None,
                       rejected_study_offer,
-                      owner_unknown=possessive_owner and provenance == Provenance.UNKNOWN)
+                      owner_unknown=possessive_owner and provenance == Provenance.UNKNOWN,
+                      public_possessive=bool(public_possessive and provenance == Provenance.PRIVATE
+                                             and not (write_intent or study_clock or rejected_study_offer)))
 
 
 def classify(text: str, last_user: str | None = None, *,
