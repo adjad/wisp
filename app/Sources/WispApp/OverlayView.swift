@@ -398,6 +398,27 @@ struct OverlayView: View {
         HStack(spacing: 2) {
             ForEach(NotchTab.strip, id: \.self) { tab in tabButton(tab) }
         }
+        // One white capsule for the whole strip, over the grey labels, with
+        // the same labels in black shown only where the capsule is. The capsule
+        // never leaves the view tree: it takes the selected tab's frame (each
+        // tab is a source), so a switch slides one solid shape, and each label
+        // is dark exactly where white is under it, every frame.
+        // Before: a capsule inside the selected tab behind an `if`, so a switch
+        // removed one capsule and inserted another and SwiftUI faded the pair
+        // while both travelled (two half-white capsules), and each label's
+        // colour faded on its own clock (dark text on the dark strip before
+        // the capsule reached it).
+        .overlay {
+            ZStack {
+                selectionCapsule
+                HStack(spacing: 2) {
+                    ForEach(NotchTab.strip, id: \.self) { tab in tabLabel(tab, onCapsule: true) }
+                }
+                .mask { selectionCapsule }
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
         .padding(2)
         .background(Capsule().fill(Theme.chipFill))
         .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
@@ -406,26 +427,33 @@ struct OverlayView: View {
         .accessibilityLabel("Wisp tabs")
     }
 
+    /// The strip's white capsule, wherever the selected tab is.
+    private var selectionCapsule: some View {
+        Capsule().fill(Color.white)
+            .matchedGeometryEffect(id: model.tab.stripTab, in: tabSelection, isSource: false)
+            .animation(Theme.Motion.panel(reduceMotion: reduceMotion), value: model.tab.stripTab)
+    }
+
+    /// A tab's title and Day's count: grey on the strip, black on the capsule.
+    private func tabLabel(_ tab: NotchTab, onCapsule: Bool) -> some View {
+        let count = tab == .day ? todayCount : 0
+        return HStack(spacing: 5) {
+            Text(tab.title).font(.wisp(.footnote, weight: .medium))
+            if count > 0 { countBadge(count, selected: onCapsule) }
+        }
+        .foregroundStyle(onCapsule ? Color.black : Theme.textSecondary)
+        .padding(.horizontal, 10).padding(.vertical, 4)
+    }
+
     private func tabButton(_ tab: NotchTab) -> some View {
         let selected = model.tab.stripTab == tab
         let count = tab == .day ? todayCount : 0
         let shortcut = tab.title + (tab.shortcutDigit.map { " (⌘" + String($0) + ")" } ?? "")
         return Button { model.leaveKnowYou(); model.closePermissionPage(); model.tab = tab } label: {
-            HStack(spacing: 5) {
-                Text(tab.title).font(.wisp(.footnote, weight: .medium))
-                if count > 0 { countBadge(count, selected: selected) }
-            }
-            .foregroundStyle(selected ? Color.black : Theme.textSecondary)
-            .padding(.horizontal, 10).padding(.vertical, 4)
-            // One white capsule for the strip, which glides to the chosen tab
-            // on the panel's spring (expandedPanel animates every page change).
-            .background {
-                if selected {
-                    Capsule().fill(Color.white)
-                        .matchedGeometryEffect(id: "selectedTab", in: tabSelection)
-                }
-            }
-            .contentShape(Capsule())
+            tabLabel(tab, onCapsule: false)
+                // Where the strip's white capsule sits when this tab is chosen.
+                .matchedGeometryEffect(id: tab, in: tabSelection)
+                .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .help(shortcut)
@@ -439,10 +467,8 @@ struct OverlayView: View {
             .foregroundStyle(selected ? Color.white : Color.black)
             .padding(.horizontal, 5).padding(.vertical, 1)
             .background(Capsule().fill(selected ? Color.black : Color.white.opacity(0.85)))
-            // Its colours swap at once rather than blend: halfway through a
-            // blend, grey text sits on a grey pill. Either way round it reads,
-            // over the white capsule or the dark strip.
-            .transaction { $0.animation = nil }
+            // Never recoloured: the strip draws one copy for the dark strip and
+            // one for the capsule, and the capsule's mask decides which shows.
     }
 
     private var windowControls: some View {
