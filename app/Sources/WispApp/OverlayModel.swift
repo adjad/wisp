@@ -354,10 +354,12 @@ final class OverlayModel: ObservableObject {
             liveChatForgotten = true
         }
     }
-    /// True while the panel retracts into the bar: the content fades out at
-    /// the start of the close so the shrinking shape never slices live text.
-    /// Cleared when the bar takes over or the panel opens again.
-    @Published var closing = false
+    /// True while the panel's content is hidden behind its surface: at the
+    /// start of a close it fades out, so the shrinking shape never slices live
+    /// text, and at the start of an open it stays out until the shape has
+    /// grown, then fades in. Cleared when the bar takes over or the open is
+    /// under way.
+    @Published var contentVeiled = false
 
     @Published var collapsed = false {
         didSet {

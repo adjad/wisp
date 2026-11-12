@@ -168,9 +168,10 @@ struct OverlayView: View {
         .background(GeometryReader { geo in
             Color.clear.onChange(of: geo.size.height) { model.onResize() }
         })
-        // Closing: the content fades before the shape retracts; the surface
-        // below stays, so the panel still reads as the notch drawing back in.
-        .opacity(model.closing ? 0 : 1)
+        // The content fades before the shape retracts and after it has grown;
+        // the surface below stays, so the panel still reads as the notch
+        // drawing back in and out.
+        .opacity(model.contentVeiled ? 0 : 1)
         // Must match the width OverlayPanel sizes its window to — both widen
         // SurfaceLayout.expandedWidth from the same state (AppDelegate's layout
         // provider asks NotchBriefView.showsWide), so they cannot disagree.
