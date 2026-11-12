@@ -36,6 +36,8 @@ case " $* " in
   echo '{}' > "$out/adapter_config.json"
   ;;
 *)
+  printf '%s\n' "$@" > "$STYLE_STUB_SEEN.argv"; env > "$STYLE_STUB_SEEN.env"; pwd > "$STYLE_STUB_SEEN.cwd"
+  [ -n "$STYLE_STUB_SLEEP" ] && sleep "$STYLE_STUB_SLEEP"
   cat > "$STYLE_STUB_SEEN"
   printf '%s' "$STYLE_STUB_REPLY"
   ;;
@@ -56,7 +58,8 @@ def home(tmp_path, monkeypatch):
     stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setenv("WISP_MLX_PYTHON", str(stub))
     monkeypatch.setenv("STYLE_STUB_SEEN", str(tmp_path / "seen.json"))
-    monkeypatch.setenv("STYLE_STUB_REPLY", json.dumps({"text": " hey sam, friday works. "}))
+    monkeypatch.setenv("STYLE_STUB_REPLY", json.dumps({"text": " hey sam, friday works. ", "finish": "stop"}))
+    monkeypatch.setattr(P, "memory_gb", lambda: 32)
     model_dir = tmp_path / "model"
     model_dir.mkdir()
     for name in ("config.json", "model-00001-of-00002.safetensors", "model-mtp.safetensors", ".cache"):
@@ -125,7 +128,7 @@ def test_a_draft_is_text_in_text_out_and_any_failure_falls_back(home, monkeypatc
     seen = json.loads((home / "seen.json").read_text())
     assert [m["role"] for m in seen["messages"]] == ["system", "user"] and "tools" not in seen
     assert seen["adapter"].endswith("personal_style/adapter") and seen["max_tokens"] == 320
-    for reply in ("not json", json.dumps({"error": "RuntimeError"}), json.dumps({"text": "  "})):
+    for reply in ("not json", json.dumps({"error": "RuntimeError"}), json.dumps({"text": "  ", "finish": "stop"})):
         monkeypatch.setenv("STYLE_STUB_REPLY", reply)
         assert asyncio.run(P.write("sys", "material")) is None
 
@@ -227,3 +230,135 @@ def test_writes_are_the_apps_own(home):
 
 def test_steps_follow_the_amount_of_mail():
     assert P.steps_for(12) == 60 and P.steps_for(50) == 200 and P.steps_for(300) == 400
+
+
+# --- review repairs: memory, crash cleanup, the locked-down Python, cut-off drafts ---------
+
+def test_a_mac_with_less_than_24_gb_neither_learns_nor_drafts_in_style(home, monkeypatch):
+    train(20)
+    assert P.ready()
+    monkeypatch.setattr(P, "memory_gb", lambda: 16)
+    state = P.status()
+    assert state["enough_memory"] is False and state["memory_needed_gb"] == 24 and state["trained"]
+    assert not P.ready() and asyncio.run(P.write("s", "m")) is None      # drafts use the usual model
+
+    async def go():
+        with pytest.raises(P.StyleError, match="24 GB"):
+            P.start_training(rows(20))
+    asyncio.run(go())
+    assert P._task is None or P._task.done()
+    monkeypatch.setattr(P, "memory_gb", lambda: 0)                        # unreadable counts as too little
+    assert P.enough_memory() is False
+    monkeypatch.setattr(P, "memory_gb", lambda: 24)
+    assert P.enough_memory() and P.ready()
+
+
+def test_startup_ends_an_orphaned_trainer_and_deletes_the_mail_text(home):
+    import subprocess
+    folder = home / "home" / "personal_style"
+    (folder / "data").mkdir(parents=True)
+    (folder / "data" / "train.jsonl").write_text("the person's mail")
+    (folder / "adapter.new").mkdir()
+    orphan = subprocess.Popen(["/bin/sh", "-c", "kill -STOP $$; sleep 60"])     # paused, as a trainer can be
+    bystander = subprocess.Popen(["/bin/sh", "-c", "sleep 60"])
+    try:
+        P._record_child(orphan.pid)
+        assert json.loads((folder / "trainer.json").read_text())["started"]
+        assert P.recover() is True
+        assert orphan.wait(timeout=10) == -9
+        assert not (folder / "data").exists() and not (folder / "adapter.new").exists()
+        assert not (folder / "trainer.json").exists()
+        # A pid that now belongs to something else (its start time differs) is left alone.
+        (folder / "trainer.json").write_text(json.dumps({"pid": bystander.pid, "started": [1, 2]}))
+        assert P.recover() is False and bystander.poll() is None
+        assert P.recover() is False                                              # nothing left: a no-op
+    finally:
+        for child in (orphan, bystander):
+            if child.poll() is None:
+                child.kill()
+            child.wait()
+
+
+def test_a_finished_run_leaves_no_pid_record(home):
+    train(20)
+    assert not (home / "home" / "personal_style" / "trainer.json").exists()
+
+
+def test_the_child_runs_isolated_with_a_minimal_environment(home, monkeypatch):
+    monkeypatch.setenv("WISP_SECRET_TOKEN", "do-not-pass")
+    monkeypatch.setenv("PYTHONPATH", "/somewhere/else")
+    train(20)
+    assert asyncio.run(P.write("sys", "material")) == "hey sam, friday works."
+    seen = home / "seen.json"
+    argv = (home / "seen.json.argv").read_text().splitlines()
+    assert argv[0] == "-I" and argv[1].endswith("personal_style_worker.py")
+    env = (home / "seen.json.env").read_text()
+    assert "do-not-pass" not in env and "PYTHONPATH" not in env and "HF_HUB_OFFLINE=1" in env
+    assert (home / "seen.json.cwd").read_text().strip().endswith("personal_style")   # never service/
+    # oMLX's own tree gets -S too, and its one site-packages folder by name.
+    assert P._command(("/py", "/site"), script=seen)[:3] == ["/py", "-I", "-S"]
+    assert P._command(("/py", "/site"), module_args=["lora"])[-2:] == ["/site", "lora"]
+    assert P._child_env().keys() <= {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "HF_HUB_OFFLINE",
+                                     "TRANSFORMERS_OFFLINE", "STYLE_STUB_SEEN", "STYLE_STUB_REPLY"}
+
+
+def test_the_override_is_ignored_by_a_release_build(home, monkeypatch):
+    monkeypatch.setattr(P, "_override_allowed", lambda: False)
+    monkeypatch.setattr(P, "_OMLX_PYTHON_ROOT", home / "no-omlx")
+    assert P.mlx_python() is None and P.status()["available"] is False
+    assert not any(k.startswith("STYLE_STUB_") for k in P._child_env())
+
+
+def test_a_tree_someone_else_can_write_or_that_links_out_is_refused(home, monkeypatch):
+    monkeypatch.setattr(P, "_override_allowed", lambda: False)
+    root = home / "omlx-python"
+    site = root / "framework-mlx-base" / "lib" / "python3.11" / "site-packages"
+    (site / "mlx_lm").mkdir(parents=True)
+    (site / "sitecustomize.py").write_text("raise SystemExit('start-up code must never run')")
+    exe = root / "cpython-3.11" / "bin" / "python3"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    monkeypatch.setattr(P, "_OMLX_PYTHON_ROOT", root)
+    P._tree_checked.clear()
+    found = P.mlx_python()
+    assert found == (str(exe.resolve()), str(site.resolve()))
+    assert P._command(found, module_args=["lora"])[1:3] == ["-I", "-S"]     # so sitecustomize cannot run
+    (site / "mlx_lm" / "planted.py").write_text("x")
+    (site / "mlx_lm" / "planted.py").chmod(0o666)
+    P._tree_checked.clear()
+    assert P.mlx_python() is None                                            # writable by everyone
+    (site / "mlx_lm" / "planted.py").unlink()
+    outside = home / "elsewhere-python"
+    outside.write_text("#!/bin/sh\n")
+    exe.unlink()
+    exe.symlink_to(outside)
+    P._tree_checked.clear()
+    assert P.mlx_python() is None                                            # the interpreter leaves the tree
+
+
+def test_a_cut_off_or_slow_styled_draft_is_not_used(home, monkeypatch):
+    import service.assistant.email_reply_api as E
+    usual = []
+
+    class Client:
+        async def ensure_only(self, model):
+            pass
+
+        async def chat(self, model, messages, **kwargs):
+            usual.append(messages)
+            return {"choices": [{"message": {"content": "usual draft"}, "finish_reason": "stop"}]}
+    import service.assistant.brief as brief
+    monkeypatch.setattr(brief, "_c", lambda: Client())
+    train(20)
+    for reply in ({"text": "hey sam, friday wor", "finish": "length"}, {"text": "no finish given"}):
+        monkeypatch.setenv("STYLE_STUB_REPLY", json.dumps(reply))
+        assert asyncio.run(P.write("s", "m")) is None
+        assert asyncio.run(E._model_reply("sys", "mat")) == "usual draft"
+    assert len(usual) == 2
+    # The styled try waits no longer than its share; the usual model then writes the draft.
+    monkeypatch.setenv("STYLE_STUB_REPLY", json.dumps({"text": "late", "finish": "stop"}))
+    monkeypatch.setenv("STYLE_STUB_SLEEP", "5")
+    monkeypatch.setattr(E, "_STYLED_SHARE_S", 1.5)
+    assert asyncio.run(E._model_reply("sys", "mat")) == "usual draft" and len(usual) == 3
+    assert E._STYLED_SHARE_S < E._DRAFT_TIMEOUT_S and P._WRITE_TIMEOUT_S < E._DRAFT_TIMEOUT_S

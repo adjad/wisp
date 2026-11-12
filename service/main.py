@@ -530,9 +530,21 @@ async def lifespan(app: FastAPI):
         pass
     if app is not None:
         app.state.wisp_bridge_link = bridge_link    # /resetwisp stops it too
+    # Your writing style: a trainer orphaned by a crash or kill is ended and the mail text
+    # it was reading is deleted (service/personal_style.recover).
+    try:
+        from service import personal_style
+        await asyncio.to_thread(personal_style.recover)
+    except Exception:  # noqa: BLE001 — cleanup never blocks startup
+        pass
     try:
         yield
     finally:
+        try:
+            from service import personal_style
+            await personal_style.stop()             # ends the trainer; its mail text goes with it
+        except Exception:  # noqa: BLE001
+            pass
         if bridge_link is not None:
             bridge_link.stop()
         recovery_task.cancel()

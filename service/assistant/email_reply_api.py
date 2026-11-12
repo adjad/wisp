@@ -94,6 +94,7 @@ _THREAD_BODY_CHARS = 3_000
 _EARLIER_BODY_CHARS = 800
 _DRAFT_TOKENS = 320
 _DRAFT_TIMEOUT_S = 45.0
+_STYLED_SHARE_S = 25.0      # of _DRAFT_TIMEOUT_S, for a draft in the person's own style
 
 # Envelope nonces that already reached Mail (sent or unknown) → their expiry,
 # and the ones whose send is in flight right now.
@@ -188,6 +189,7 @@ async def _model_reply(system: str, material: str) -> str | None:
     from service.assistant.brief import _c
     from service.config import role_to_model, thinking_kwargs
     model = role_to_model("fast")
+    deadline = time.monotonic() + _DRAFT_TIMEOUT_S      # the styled try and the usual call share it
     idle.begin_foreground()
     try:
         # Your writing style (service/personal_style.py): when the person trained an
@@ -195,7 +197,11 @@ async def _model_reply(system: str, material: str) -> str | None:
         # only, into the same editable field; any failure falls through to the usual model.
         from service import personal_style
         if personal_style.ready():
-            styled = await personal_style.write(system, material, max_tokens=_DRAFT_TOKENS)
+            # A styled draft cut off at the token limit comes back as None (the same rule as
+            # the finish_reason check below), and its wait is part of this draft's one budget.
+            styled = await personal_style.write(
+                system, material, max_tokens=_DRAFT_TOKENS,
+                timeout=min(_STYLED_SHARE_S, deadline - time.monotonic()))
             if styled:
                 return styled
 
@@ -206,7 +212,7 @@ async def _model_reply(system: str, material: str) -> str | None:
                 model, [{"role": "system", "content": system},
                         {"role": "user", "content": material}],
                 max_tokens=_DRAFT_TOKENS, **thinking_kwargs(model, on=False))
-        response = await asyncio.wait_for(call(), timeout=_DRAFT_TIMEOUT_S)
+        response = await asyncio.wait_for(call(), timeout=max(1.0, deadline - time.monotonic()))
     except Exception:  # noqa: BLE001 — a failed draft leaves an empty, editable field
         return None
     finally:

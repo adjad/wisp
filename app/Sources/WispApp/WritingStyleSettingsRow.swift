@@ -7,6 +7,9 @@ import SwiftUI
 
 struct WritingStyle: Equatable {
     let available: Bool
+    /// False on a Mac with less memory than learning and styled drafts need.
+    let enoughMemory: Bool
+    let memoryNeededGB: Int
     let enabled: Bool
     let phase: String
     let step: Int
@@ -20,6 +23,8 @@ struct WritingStyle: Equatable {
         guard let available = json["available"] as? Bool, let enabled = json["enabled"] as? Bool,
               let trained = json["trained"] as? Bool else { return nil }
         self.available = available
+        enoughMemory = json["enough_memory"] as? Bool ?? true
+        memoryNeededGB = json["memory_needed_gb"] as? Int ?? 24
         self.enabled = enabled
         self.trained = trained
         phase = json["phase"] as? String ?? "idle"
@@ -34,6 +39,9 @@ struct WritingStyle: Equatable {
 
     /// The one line under the title. Never claims more than the service said.
     var line: String {
+        if !enoughMemory {
+            return "This needs a Mac with \(memoryNeededGB) GB of memory or more. Reply drafts use the usual model on this Mac."
+        }
         if !available { return "This needs the oMLX app on this Mac. Wisp couldn't find its Python." }
         if phase == "reading" { return step > 0 ? "Reading your sent mail… \(step) emails so far." : "Reading your sent mail…" }
         if phase == "training" { return steps > 0 ? "Learning… step \(step) of \(steps). You can keep using Wisp." : "Learning…" }
@@ -89,7 +97,7 @@ struct WritingStyleSettingsRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let state = model.state {
-                if state.trained {
+                if state.trained && state.enoughMemory {
                     Toggle(isOn: Binding(get: { state.enabled }, set: { model.setEnabled($0) })) { label(state) }
                         .toggleStyle(.switch)
                         .disabled(model.pending || state.busy)
@@ -105,7 +113,7 @@ struct WritingStyleSettingsRow: View {
                         Button("Stop") { model.stop() }
                     } else {
                         Button(state.trained ? "Learn again" : "Learn my writing style") { model.learn() }
-                            .disabled(!state.available)
+                            .disabled(!state.available || !state.enoughMemory)
                         if state.trained {
                             Button("Forget…") { confirmForget = true }
                         }

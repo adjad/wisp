@@ -101,6 +101,13 @@ enum MeetingClient {
 
     static func send(_ method: String, _ path: String, body: [String: Any]? = nil,
                      timeout: TimeInterval = 30) async -> Reply {
+        await sendTold(method, path, body: body, timeout: timeout).reply
+    }
+
+    /// `send`, also saying whether the service itself answered. `answered` is false when
+    /// nothing came back (the service is starting, stopping or busy), which is not a refusal.
+    static func sendTold(_ method: String, _ path: String, body: [String: Any]? = nil,
+                         timeout: TimeInterval = 30) async -> (reply: Reply, answered: Bool) {
         var request = URLRequest(url: WispClient.baseURL.appendingPathComponent(path))
         request.httpMethod = method
         request.timeoutInterval = timeout
@@ -110,11 +117,11 @@ enum MeetingClient {
         }
         guard let (data, response) = try? await URLSession.shared.data(for: request),
               let http = response as? HTTPURLResponse else {
-            return .refused("Wisp isn't answering yet. Try again in a moment.")
+            return (.refused("Wisp isn't answering yet. Try again in a moment."), false)
         }
         let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
-        if (200..<300).contains(http.statusCode) { return .ok(json) }
-        return .refused(json["detail"] as? String ?? "Wisp couldn't do that. Try again.")
+        if (200..<300).contains(http.statusCode) { return (.ok(json), true) }
+        return (.refused(json["detail"] as? String ?? "Wisp couldn't do that. Try again."), true)
     }
 }
 
@@ -393,6 +400,10 @@ final class MeetingModel: ObservableObject {
     private var clock: Timer?
     private var startedAt = Date()
 
+    /// The service stops taking windows after three hours (service/meetings.MAX_MEETING_S).
+    /// The app stops listening then too, so the microphone never runs on with nothing saved.
+    static let longestMeeting = 3 * 3600
+
     var elapsedText: String { String(format: "%d:%02d", elapsed / 60, elapsed % 60) }
 
     func refresh() async {
@@ -453,6 +464,10 @@ final class MeetingModel: ObservableObject {
             Task { @MainActor in
                 guard let self, self.phase == .recording else { return }
                 self.elapsed = Int(Date().timeIntervalSince(self.startedAt))
+                if self.elapsed >= Self.longestMeeting {
+                    self.message = "Wisp listens to a meeting for up to three hours, so it stopped here."
+                    self.stop()
+                }
             }
         }
     }
@@ -493,10 +508,19 @@ final class MeetingModel: ObservableObject {
         let previous = uploads
         uploads = Task { [weak self] in
             await previous?.value
-            let reply = await MeetingClient.send(
+            let (reply, answered) = await MeetingClient.sendTold(
                 "POST", "meetings/\(id)/windows",
                 body: ["seq": seq, "audio": window.base64EncodedString()], timeout: 75)
-            guard let self, case .ok(let json) = reply else { return }
+            guard let self else { return }
+            guard case .ok(let json) = reply else {
+                // The service said no (the meeting ended, or ran past three hours): nothing
+                // more will be saved, so stop listening now. No answer at all is not a no.
+                if answered, case .refused(let why) = reply, self.phase == .recording, self.meetingID == id {
+                    self.message = why + " Wisp kept what it heard."
+                    self.stop()
+                }
+                return
+            }
             if let text = json["text"] as? String, !text.isEmpty {
                 self.heardSoFar += (self.heardSoFar.isEmpty ? "" : " ") + text
             }
@@ -520,6 +544,27 @@ final class MeetingModel: ObservableObject {
             meetingID = nil
             phase = .idle
             await refresh()
+        }
+    }
+
+    /// Wisp is quitting. Stop the microphone and the call audio at once, and give the last
+    /// window a few seconds to reach the service. The notes are not written here: the
+    /// service keeps the transcript and closes the meeting, and Write again makes the notes.
+    func stopForQuit() async {
+        guard phase == .recording else { return }
+        clock?.invalidate(); clock = nil
+        level = 0
+        stopCallAudio()
+        if let tail = recorder?.stop() { enqueue(tail) }
+        recorder = nil
+        phase = .idle
+        guard let pending = uploads else { return }
+        uploads = nil
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await pending.value }
+            group.addTask { try? await Task.sleep(nanoseconds: 6_000_000_000) }
+            await group.next()
+            group.cancelAll()
         }
     }
 
