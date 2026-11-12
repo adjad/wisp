@@ -17,7 +17,7 @@ struct MarkdownPalette {
     /// surface's palette can follow the Text size setting.
     var fontScale: CGFloat = 1
     /// The typeface of running text (paragraphs and list items). Answers read in
-    /// a serif; code, tables and chips keep their own designs.
+    /// a rounded face; code, tables and chips keep their own designs.
     var design: Font.Design = .default
 
     /// Computed so the colors and sizes follow Increase Contrast and the
@@ -29,7 +29,7 @@ struct MarkdownPalette {
             codeFill: Color.white.opacity(0.06), tableFill: Color.white.opacity(0.04))
         p.fontScale = Theme.textScale
         p.bodySize = 14 * Theme.textScale
-        p.design = .serif
+        p.design = .rounded
         return p
     }
 

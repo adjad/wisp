@@ -78,7 +78,7 @@ enum ChatTheme {
             codeFill: glass, tableFill: glass)
         p.fontScale = Theme.textScale
         p.bodySize = WispTextRole.reading.size(on: .window) * Theme.textScale
-        p.design = .serif
+        p.design = .rounded
         return p
     }
 }

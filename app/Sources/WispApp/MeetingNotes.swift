@@ -663,7 +663,7 @@ struct NotchMeetingView: View {
             Text(model.heardSoFar.isEmpty
                  ? "The words appear here about every 25 seconds."
                  : String(model.heardSoFar.suffix(420)))
-                .font(.wisp(.reading, design: .serif))
+                .font(.wisp(.reading, design: .rounded))
                 .foregroundStyle(model.heardSoFar.isEmpty ? Theme.textMuted : Theme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             Text(model.hearsCall ? "Hearing the microphone and this Mac's sound."
@@ -709,7 +709,7 @@ struct NotchMeetingView: View {
         Text(Self.day.string(from: meeting.startedAt) + " · " + meeting.coverage)
             .font(.wisp(.caption)).foregroundStyle(Theme.textMuted)
         if let notes = meeting.notes {
-            Text(notes.summary).font(.wisp(.reading, design: .serif)).foregroundStyle(Theme.textPrimary)
+            Text(notes.summary).font(.wisp(.reading, design: .rounded)).foregroundStyle(Theme.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
             if !notes.decisions.isEmpty {
                 label("Decisions")
