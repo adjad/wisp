@@ -108,11 +108,17 @@ final class OverlayPanel: NSPanel {
         self.revealMask = mask
 
         NSLayoutConstraint.activate([
-            // host fully fills the slide view (slide view sizes to host height)
+            // host fills the slide view's height and is centred across it at
+            // the content's own width. Pinned leading and trailing, the host's
+            // size constraints dragged the window to the content's width the
+            // moment it changed, from the left edge, so leaving the two-column
+            // Brief sat off-centre until the window settled. Centred, only
+            // resizeToFit decides the window's width, and the panel (centred
+            // under the notch, like the window) stays centred while it
+            // narrows inside the wider window.
             hostView.topAnchor.constraint(equalTo: slideView.topAnchor),
             hostView.bottomAnchor.constraint(equalTo: slideView.bottomAnchor),
-            hostView.leadingAnchor.constraint(equalTo: slideView.leadingAnchor),
-            hostView.trailingAnchor.constraint(equalTo: slideView.trailingAnchor),
+            hostView.centerXAnchor.constraint(equalTo: slideView.centerXAnchor),
             // slide view pinned top/leading/trailing — NOT bottom — at a fixed
             // height taller than any screen; the window bounds clip it, and
             // the window's height comes from the content's measured size.

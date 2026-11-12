@@ -30,11 +30,14 @@ final class MotionFixtureProtocol: URLProtocol {
 @MainActor
 final class MotionFixtureModel: ObservableObject {
     @Published var height: CGFloat = 220
+    /// The content's width. In the app it follows the layout (OverlayView's
+    /// `.frame(width:)`), and the hosting view holds the window to it.
+    @Published var width: CGFloat = 640
 }
 
 struct MotionFixtureView: View {
     @ObservedObject var model: MotionFixtureModel
-    var body: some View { Text("Synthetic motion fixture").frame(width: 640, height: model.height) }
+    var body: some View { Text("Synthetic motion fixture").frame(width: model.width, height: model.height) }
 }
 
 @main
@@ -194,6 +197,7 @@ struct OverlayTransitionChecks {
         if wide.expandedWidth == base.expandedWidth { wide.expandedWidth = base.expandedWidth + 200 }
         var useWide = false
         panel.layoutProvider = { useWide ? wide : base }
+        fixture.width = base.expandedWidth
         fixture.height = 320
         panel.present()
         var opened = 0
@@ -205,6 +209,7 @@ struct OverlayTransitionChecks {
 
         // Widen and shrink together: covering frame at once, the target after the settle.
         useWide = true
+        fixture.width = wide.expandedWidth
         fixture.height = 240
         try? await Task.sleep(for: .milliseconds(60))
         panel.resizeToFit()
@@ -224,6 +229,7 @@ struct OverlayTransitionChecks {
         // Narrow back and shrink together: the covering frame keeps the wide width until the settle.
         let wideFrame = panel.frame
         useWide = false
+        fixture.width = base.expandedWidth
         fixture.height = 200
         try? await Task.sleep(for: .milliseconds(60))
         panel.resizeToFit()
@@ -233,6 +239,7 @@ struct OverlayTransitionChecks {
 
         // A pure widen (same height) applies at once with nothing pending.
         useWide = true
+        fixture.width = wide.expandedWidth
         try? await Task.sleep(for: .milliseconds(60))
         panel.resizeToFit()
         check(panel.frame == wide.expandedFrame(contentHeight: 200), "A pure widen applies at once")
