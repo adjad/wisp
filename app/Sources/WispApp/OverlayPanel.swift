@@ -122,7 +122,8 @@ struct RevealMotion: Equatable {
     }
 
     /// Closing holds its shape for this long, while the content fades
-    /// (AppDelegate.closeFade), so the shrinking edge never slices live text.
+    /// (AppDelegate.closeFade, the same length), so the content is gone, or
+    /// within a frame of it, when the edge starts to move.
     static let closeHold = 0.05
     /// Closing aims this far past the bar (a fraction of the travel) and stops
     /// at the bar. A spring aimed at the bar itself spends its last 200 ms
@@ -319,7 +320,13 @@ final class OverlayPanel: NSPanel {
         guard isVisible else { return }
         let interrupted = pendingReveal
         cancelReveal()
-        backBar(false)
+        // A close cut short still has its swap to the bar ahead of it (the
+        // caller's completion makes it), and a bar that has only just taken
+        // over may not have drawn yet. Both keep their backing, and
+        // settleToBar drops it as after any close. Nothing else has a use for
+        // one, and a bar that draws nothing never has one.
+        let headedForBar = interrupted?.opening == false || isCompact()
+        if !(headedForBar && l.barIsVisible) { backBar(false) }
         if isCompact() {
             settleToBar()
         } else if interrupted?.opening == false {
