@@ -141,8 +141,8 @@ enum Theme {
     /// Every change inside the open panel moves the same way: a tab switch, quick
     /// settings and the permission pages arriving and leaving, the selected tab
     /// gliding, the panel's height following its content. One calm spring with
-    /// no bounce, so nothing overshoots. Opening and closing the panel keep their
-    /// own curves (OverlayPanel.reveal).
+    /// no bounce, so nothing overshoots. Opening and closing the panel have their
+    /// own springs (NotchSpring), and only the open lands with a small bounce.
     enum Motion {
         static let panel = Animation.spring(duration: 0.3, bounce: 0)
         /// The panel's animation, or nil with Reduce Motion: an instant swap.

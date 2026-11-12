@@ -26,6 +26,74 @@ final class HoverView: NSView {
     override func mouseExited(with event: NSEvent) { onExit() }
 }
 
+/// The spring an open or close runs on, in SwiftUI's terms: `response` is the
+/// undamped period in seconds, `dampingRatio` 1 is no bounce at all.
+///
+/// The two springs are NotchBox's, measured from the app: it opens on
+/// `.spring(response: 0.5, dampingFraction: 0.7).speed(1.2)`, which lands a
+/// little past full size and settles back, and closes on
+/// `.spring(response: 0.35, dampingFraction: 1)`, which gathers into the notch
+/// with no bounce. A spring has no fixed end, so it starts fast, eases into
+/// rest, and never changes speed abruptly the way a timing curve's ends do.
+struct NotchSpring: Equatable {
+    var response: Double
+    var dampingRatio: Double
+
+    static let open = NotchSpring(response: 0.5 / 1.2, dampingRatio: 0.7)
+    static let close = NotchSpring(response: 0.35, dampingRatio: 1)
+    /// The furthest any edge travels past its resting place while opening, in
+    /// points. NotchBox's panel is small, so its bounce is about this much;
+    /// Wisp's can be the height of the screen, where the same spring would
+    /// swing four times as far. A taller panel is damped more, to this limit.
+    static let maxOvershoot: CGFloat = 10
+
+    // Core Animation's terms, for a mass of 1.
+    var stiffness: Double { let w = 2 * Double.pi / response; return w * w }
+    var damping: Double { 4 * Double.pi * dampingRatio / response }
+
+    /// How far past the end the spring swings, as a fraction of the travel.
+    var overshoot: Double {
+        guard dampingRatio < 1 else { return 0 }
+        return exp(-Double.pi * dampingRatio / (1 - dampingRatio * dampingRatio).squareRoot())
+    }
+
+    /// The same spring, damped just enough to swing no further than `limit`
+    /// (a fraction of the travel). Unchanged when it already stays inside.
+    func capped(overshoot limit: Double) -> NotchSpring {
+        guard limit < overshoot else { return self }
+        guard limit > 0 else { return NotchSpring(response: response, dampingRatio: 1) }
+        let l = log(limit)
+        return NotchSpring(response: response,
+                           dampingRatio: min(-l / (Double.pi * Double.pi + l * l).squareRoot(), 1))
+    }
+
+    /// The opening spring for a reveal whose furthest edge travels `reach` points.
+    static func opening(reach: CGFloat) -> NotchSpring {
+        guard reach > 0 else { return open }
+        return open.capped(overshoot: Double(maxOvershoot / reach))
+    }
+
+    /// Seconds until what is left of the motion stays under `tolerance`, a
+    /// fraction of the travel. The animation ends there: the rest is under a
+    /// pixel, and whoever waits on the reveal should not wait on that.
+    func settleTime(tolerance: Double) -> Double {
+        let w = 2 * Double.pi / response
+        let left = min(max(tolerance, 1e-4), 0.5)
+        if dampingRatio >= 1 {
+            // Critically damped: (1 + wt) e^-wt is what is left. Bisect for wt.
+            var low = 0.0, high = 24.0
+            for _ in 0..<48 {
+                let mid = (low + high) / 2
+                if (1 + mid) * exp(-mid) > left { low = mid } else { high = mid }
+            }
+            return high / w
+        }
+        // Under-damped: the swing decays inside e^-(ratio w t) / sqrt(1 - ratio^2).
+        let root = (1 - dampingRatio * dampingRatio).squareRoot()
+        return max(log(1 / (left * root)) / (dampingRatio * w), 0)
+    }
+}
+
 final class OverlayPanel: NSPanel {
     private var host: NSView?
     private var slide: NSView?
@@ -317,14 +385,7 @@ final class OverlayPanel: NSPanel {
         if disableActions { CATransaction.commit() }
     }
 
-    // MARK: - Calm, top-anchored reveal
-
-    // A shared non-overshooting curve keeps size and corners together. The
-    // top edge never moves, so content grows out of the notch without bounce.
-    private static let revealCurve = CAMediaTimingFunction(controlPoints: 0.22, 0.75, 0.25, 1)
-    // Closing starts gently, so the shape barely moves while the content
-    // fades (AppDelegate.closeFade), then gathers into the notch.
-    private static let closeCurve = CAMediaTimingFunction(controlPoints: 0.4, 0, 0.2, 1)
+    // MARK: - Sprung, top-anchored reveal
 
     /// The mask's rounded edge is rasterized at the layer's scale; left at the
     /// default 1x it can step visibly on a Retina screen while it animates.
@@ -334,11 +395,25 @@ final class OverlayPanel: NSPanel {
         mask.allowsEdgeAntialiasing = true
     }
 
+    /// The surface behind the content while an open is in flight. The opening
+    /// spring carries the shape a little past the panel's edges, where the
+    /// content draws nothing; this fills that sliver with the panel's own
+    /// surface, so the whole shape lands and settles as one. Off at rest: the
+    /// window is sometimes larger than the content then (resizeToFit), and
+    /// what the content leaves must stay clear.
+    private func backSurface(_ on: Bool) {
+        guard let layer = stage?.layer else { return }
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        layer.backgroundColor = on ? NSColor(Theme.surface).cgColor : nil
+        CATransaction.commit()
+    }
+
     private func cancelReveal() {
         revealGeneration &+= 1
         isRevealing = false
         pendingReveal = nil
         revealMask?.removeAllAnimations()
+        backSurface(false)
     }
 
     override func orderOut(_ sender: Any?) {
@@ -347,11 +422,16 @@ final class OverlayPanel: NSPanel {
         super.orderOut(sender)
     }
 
-    private func maskRects() -> (bar: CGRect, full: CGRect)? {
-        guard let bar = barFrame(), frame.width > 0, frame.height > 0 else { return nil }
-        return (CGRect(x: bar.origin.x - frame.origin.x, y: bar.origin.y - frame.origin.y,
-                       width: bar.width, height: bar.height),
-                CGRect(origin: .zero, size: frame.size))
+    /// The window for an open in flight: the panel's frame with room at the
+    /// sides and the bottom for the spring's swing past them. The top never
+    /// moves, and the panel stays centred in it.
+    static func openingFrame(_ panel: NSRect, from start: CGSize, spring: NotchSpring) -> NSRect {
+        let swing = CGFloat(spring.overshoot)
+        guard swing > 0 else { return panel }
+        let side = (swing * max(panel.width - start.width, 0) / 2).rounded(.up) + 1
+        let below = (swing * max(panel.height - start.height, 0)).rounded(.up) + 1
+        return NSRect(x: panel.minX - side, y: panel.minY - below,
+                      width: panel.width + 2 * side, height: panel.height + below)
     }
 
     private func reveal(opening: Bool, completion: @escaping () -> Void) {
@@ -360,10 +440,19 @@ final class OverlayPanel: NSPanel {
         let visibleBounds = visible?.bounds
         let visibleRadius = visible?.cornerRadius
         cancelReveal()
+        guard let bar = barFrame() else { completion(); return }
+        let animated = !reduceMotion()
+        // Where the panel comes to rest: its own frame when opening, the
+        // window as it stands when closing.
+        var panel = frame
+        var spring = NotchSpring.close
         if opening {
             guard let full = frame(compact: false) else { completion(); return }
+            panel = full
+            let start = visibleBounds?.size ?? bar.size
+            spring = .opening(reach: max((full.width - start.width) / 2, full.height - start.height))
             passMouseThrough(collapsed: false)
-            setFrame(full, display: true)
+            setFrame(animated ? Self.openingFrame(full, from: start, spring: spring) : full, display: true)
             if revealsWithoutKey {
                 // Nobody asked for this open: show it, but leave the keyboard
                 // with the app the person is typing in until they click here.
@@ -373,19 +462,21 @@ final class OverlayPanel: NSPanel {
                 makeKeyAndOrderFront(nil)
             }
         }
-        guard let mask = revealMask, let rects = maskRects() else { completion(); return }
-        let startSize = visibleBounds?.size ?? (opening ? rects.bar.size : rects.full.size)
-        let endSize = opening ? rects.full.size : rects.bar.size
+        guard let mask = revealMask, frame.width > 0, frame.height > 0 else { completion(); return }
+        let startSize = visibleBounds?.size ?? (opening ? bar.size : panel.size)
+        let endSize = opening ? panel.size : bar.size
         let startRadius = visibleRadius ?? (opening ? barCornerRadius : panelCornerRadius)
         let endRadius = opening ? panelCornerRadius : barCornerRadius
         let token = revealGeneration
         isRevealing = true
         pendingReveal = (opening: opening, completion: completion)
 
+        // The shape hangs from the top centre of the window, which is the top
+        // centre of the panel whichever frame the window has.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         matchBackingScale(mask)
-        mask.position = CGPoint(x: rects.full.midX, y: rects.full.maxY)
+        mask.position = CGPoint(x: frame.width / 2, y: frame.height)
         mask.bounds = CGRect(origin: .zero, size: endSize)
         mask.cornerRadius = endRadius
         CATransaction.commit()
@@ -394,31 +485,52 @@ final class OverlayPanel: NSPanel {
             guard let self, self.revealGeneration == token else { return }
             self.isRevealing = false
             self.pendingReveal = nil
+            if opening { self.settleOpen(at: panel) }
             completion()
             // Coalesce height changes received while opening. A close keeps
             // its small mask until the caller has swapped in the compact bar.
             if opening, self.revealGeneration == token { self.resizeToFit() }
         }
-        guard !reduceMotion() else { finish(); return }
+        guard animated else { finish(); return }
+        if opening { backSurface(true) }
 
-        let size = CABasicAnimation(keyPath: "bounds.size")
+        // One spring moves the size and the corners together. It ends once
+        // under a point of the furthest edge's travel is left.
+        let travel = max(abs(endSize.width - startSize.width), abs(endSize.height - startSize.height), 1)
+        let duration = spring.settleTime(tolerance: Double(1 / travel))
+        let size = CASpringAnimation(keyPath: "bounds.size")
         size.fromValue = NSValue(size: startSize)
         size.toValue = NSValue(size: endSize)
-        let radius = CABasicAnimation(keyPath: "cornerRadius")
+        let radius = CASpringAnimation(keyPath: "cornerRadius")
         radius.fromValue = startRadius
         radius.toValue = endRadius
+        for part in [size, radius] {
+            part.mass = 1
+            part.stiffness = CGFloat(spring.stiffness)
+            part.damping = CGFloat(spring.damping)
+            part.initialVelocity = 0
+            part.duration = duration
+        }
         let group = CAAnimationGroup()
         group.animations = [size, radius]
-        // Closing is a touch quicker than opening; the content fades out
-        // (OverlayModel.closing) while the slow start holds the shape.
-        group.duration = opening ? 0.38 : 0.28
-        size.duration = group.duration
-        radius.duration = group.duration
-        group.timingFunction = opening ? Self.revealCurve : Self.closeCurve
+        group.duration = duration
         CATransaction.begin()
         CATransaction.setCompletionBlock(finish)
         mask.add(group, forKey: "reveal")
         CATransaction.commit()
+    }
+
+    /// An open has landed: the window gives up the room it held for the
+    /// spring's swing, and the mask fills it. Nothing moves on screen, since
+    /// the shape had already come to rest on the panel's frame. Content that
+    /// grew during the open gets its room at once, as any grow does; content
+    /// that shrank is left to resizeToFit, which waits for it to settle.
+    private func settleOpen(at panel: NSRect) {
+        backSurface(false)
+        let latest = frame(compact: false) ?? panel
+        let rest = Self.covering(panel, latest)
+        if frame != rest { setFrame(rest, display: true) }
+        fillMask()
     }
 
     /// The next open shows the panel without making it key (an unrequested offer).

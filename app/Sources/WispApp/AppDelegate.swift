@@ -137,8 +137,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var activityReader: ActivityReader?
     private var nativeSourceReadersStarted = false
     private static let autoCollapseDelay: TimeInterval = 2
-    /// The content's fade at the start of a close: well inside the 0.28 s
-    /// retraction, so the shape never carries text for most of its travel.
+    /// The content's fade at the start of a close. The closing spring
+    /// (NotchSpring.close) is a quarter of the way in by the time this ends, so
+    /// the shape never carries text for most of its travel.
     static let closeFade: TimeInterval = 0.08
 
     func applicationDidFinishLaunching(_ notification: Notification) {
