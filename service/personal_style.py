@@ -28,10 +28,22 @@ IMPORTANT rules:
 - The adapter belongs to the model it was trained on. If the chat model
   changes, the adapter is not used until it is trained again.
 - Wisp's service does not import MLX. This needs a Python that has `mlx_lm`:
-  the one inside the person's oMLX.app, or `WISP_MLX_PYTHON`. Without one the
-  feature says so and stays off.
+  the one inside the person's oMLX.app (`WISP_MLX_PYTHON` is honoured only by
+  source runs and preview builds). Without one the feature says so and stays off.
+- That Python is run locked down: `-I -S` (no environment, no user site, no
+  `.pth` or sitecustomize startup code), the one site-packages folder named
+  explicitly, a minimal environment, and never with `service/` on its path.
+  A tree with a foreign owner, a world-writable entry, or an interpreter that
+  leaves the tree is refused.
+- Memory. Training takes about 6 GB beside the chat model and every draft loads
+  a second copy of the model, so both need a Mac with 24 GB or more
+  (MIN_MEMORY_GB). On a smaller Mac the row says so and drafts use the usual
+  model. A paused trainer still holds its memory.
 - Training yields to the person: the child is paused (SIGSTOP) while a
   foreground turn is running and resumed after it.
+- A crash or kill leaves nothing behind for long: the trainer's pid is recorded,
+  and the next start kills an orphan and deletes the training text
+  (`recover`). Shutdown stops a run.
 
 MEASURED 2026-11-11 on an M5 Pro 24 GB, gemma-4-E4B-it-oQ4e-mtp, oMLX.app's
 Python (mlx_lm 0.32.3): 10 steps at batch 1, 8 layers, 512 tokens took 12 s
@@ -46,6 +58,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import time
 from pathlib import Path
 from typing import Any
@@ -58,16 +71,27 @@ WINDOW_DAYS = 200
 _BODY_MIN, _BODY_MAX = 20, 1500
 _LAYERS = 8
 _MAX_SEQ = 768
-_WRITE_TIMEOUT_S = 60.0
+MIN_MEMORY_GB = 24
+_WRITE_TIMEOUT_S = 25.0
+_TREE_TTL_S = 300.0
+_TREE_MAX_ENTRIES = 200_000
 _TRAIN_TIMEOUT_S = 3 * 3600.0
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 _ITER = re.compile(r"^\s*(\d+)\s+(val\s+)?(\d+\.\d+)")
 
 _OMLX_PYTHON_ROOT = Path("/Applications/oMLX.app/Contents/Resources/Python")
 
+# Run a module, or a script, with exactly one extra import folder and no startup code.
+_BOOT = ("import runpy,sys\n"
+         "site=sys.argv[1]\n"
+         "sys.argv=['mlx_lm']+sys.argv[2:]\n"
+         "sys.path.append(site)\n"
+         "runpy.run_module('mlx_lm',run_name='__main__',alter_sys=True)\n")
+
 _task: asyncio.Task | None = None
 _child: asyncio.subprocess.Process | None = None
 _live: dict[str, Any] = {}
+_tree_checked: dict[str, tuple[float, int, bool]] = {}
 
 
 class StyleError(Exception):
@@ -91,16 +115,108 @@ def _save(state: dict[str, Any]) -> None:
     paths.private_write_bytes(_dir() / "state.json", json.dumps(state).encode("utf-8"))
 
 
-def mlx_python() -> tuple[str, dict[str, str]] | None:
-    """(interpreter, extra environment) for a Python that has mlx_lm, or None."""
+def memory_gb() -> int:
+    """This Mac's memory in whole GB; 0 when it cannot be read (treated as too little)."""
+    try:
+        return round(os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") / 2**30)
+    except (ValueError, OSError, AttributeError):
+        return 0
+
+
+def enough_memory() -> bool:
+    return memory_gb() >= MIN_MEMORY_GB
+
+
+_MEMORY_WORDS = f"This needs a Mac with {MIN_MEMORY_GB} GB of memory or more."
+
+
+def _override_allowed() -> bool:
+    """`WISP_MLX_PYTHON` counts in a source run and in a preview build, never in a release."""
+    plist = Path(__file__).resolve().parents[3] / "Info.plist"
+    if not plist.is_file():
+        return True
+    try:
+        import plistlib
+        with plist.open("rb") as handle:
+            return plistlib.load(handle).get("WispPreviewBuild") is True
+    except Exception:  # noqa: BLE001 — an unreadable plist is a release as far as this goes
+        return False
+
+
+def _tree_qualifies(root: Path) -> bool:
+    """No entry of the tree has a foreign owner or is writable by everyone.
+
+    local_peer.runtime_manifest's ownership and write rules, without its
+    hashing or its layout pin (this is the person's own oMLX.app, not a
+    runtime Wisp materialized). Start-up code is dealt with by not running it
+    (`-I -S`), so a `.pth` or sitecustomize in the tree cannot execute.
+    """
+    try:
+        key, stamp = str(root), root.lstat().st_mtime_ns
+    except OSError:
+        return False
+    seen = _tree_checked.get(key)
+    if seen and seen[1] == stamp and time.monotonic() - seen[0] < _TREE_TTL_S:
+        return seen[2]
+    ok, count, owners = True, 0, (0, os.getuid())
+    try:
+        for folder, names, files in os.walk(root, followlinks=False):
+            for name in ("", *names, *files):
+                info = os.lstat(os.path.join(folder, name) if name else folder)
+                count += 1
+                if (count > _TREE_MAX_ENTRIES or info.st_uid not in owners
+                        or (info.st_mode & 0o002 and not stat.S_ISLNK(info.st_mode))):
+                    ok = False
+                    break
+            if not ok:
+                break
+    except OSError:
+        ok = False
+    _tree_checked[key] = (time.monotonic(), stamp, ok)
+    return ok
+
+
+def mlx_python() -> tuple[str, str] | None:
+    """(interpreter, its mlx site-packages or "") for a Python that has mlx_lm, or None."""
     override = os.environ.get("WISP_MLX_PYTHON")
-    if override:
-        return (override, {}) if Path(override).is_file() else None
+    if override and _override_allowed():
+        return (override, "") if Path(override).is_file() else None
     exes = sorted(_OMLX_PYTHON_ROOT.glob("cpython-*/bin/python3"))
     sites = sorted(_OMLX_PYTHON_ROOT.glob("framework-mlx-base/lib/python3*/site-packages"))
-    if exes and sites and (sites[-1] / "mlx_lm").is_dir():
-        return str(exes[-1]), {"PYTHONPATH": str(sites[-1])}
-    return None
+    if not (exes and sites and (sites[-1] / "mlx_lm").is_dir()):
+        return None
+    try:
+        root = _OMLX_PYTHON_ROOT.resolve(strict=True)
+        exe, site = exes[-1].resolve(strict=True), sites[-1].resolve(strict=True)
+    except OSError:
+        return None
+    # The interpreter and the packages are inside the tree that was checked, not linked out of it.
+    if root not in exe.parents or root not in site.parents or not _tree_qualifies(root):
+        return None
+    return str(exe), str(site)
+
+
+def _command(python: tuple[str, str], *, module_args: list[str] | None = None,
+             script: Path | None = None) -> list[str]:
+    """The child's argv. `-I`: no PYTHON* variables, no user site, no script folder or cwd
+    on the path. `-S` (oMLX's tree): no site start-up, so no `.pth` and no sitecustomize."""
+    exe, site = python
+    flags = ["-I", "-S"] if site else ["-I"]
+    if script is not None:
+        return [exe, *flags, str(script), site]
+    return [exe, *flags, "-c", _BOOT, site, *(module_args or [])]
+
+
+def _child_env() -> dict[str, str]:
+    """What a child needs and nothing else: no tokens, no proxies, no PYTHON* (ignored anyway)."""
+    env = {"PATH": "/usr/bin:/bin", "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1",
+           "HOME": os.environ.get("HOME", "")}
+    for name in ("TMPDIR", "LANG", "LC_ALL"):
+        if os.environ.get(name):
+            env[name] = os.environ[name]
+    if os.environ.get("WISP_MLX_PYTHON") and _override_allowed():   # the tests' stand-in reads these
+        env.update({k: v for k, v in os.environ.items() if k.startswith("STYLE_STUB_")})
+    return env
 
 
 def _adapter() -> Path:
@@ -126,6 +242,8 @@ def status() -> dict[str, Any]:
     except Exception:  # noqa: BLE001 — an unreadable roster is not a reason to hide the row
         current = False
     return {"available": mlx_python() is not None,
+            "enough_memory": enough_memory(),
+            "memory_needed_gb": MIN_MEMORY_GB,
             "enabled": bool(state.get("enabled")),
             "phase": _live.get("phase", "idle") if training else "idle",
             "step": _live.get("step", 0) if training else 0,
@@ -147,7 +265,7 @@ def set_enabled(enabled: bool) -> dict[str, Any]:
 
 def ready() -> bool:
     """Drafts may use the adapter: switched on, trained on the current chat model, not mid-training."""
-    if _task is not None and not _task.done():
+    if (_task is not None and not _task.done()) or not enough_memory():
         return False
     state = _state()
     try:
@@ -282,17 +400,17 @@ async def _run_trainer(base: Path, data: Path, out: Path, steps: int) -> float |
     python = mlx_python()
     if python is None:
         raise StyleError("This needs oMLX's Python on this Mac, and Wisp couldn't find it.")
-    exe, extra = python
-    command = [exe, "-m", "mlx_lm", "lora", "--model", str(base), "--train", "--data", str(data),
-               "--adapter-path", str(out), "--iters", str(steps), "--batch-size", "1",
-               "--num-layers", str(_LAYERS), "--max-seq-length", str(_MAX_SEQ), "--mask-prompt",
-               "--steps-per-report", "5", "--steps-per-eval", str(max(20, steps // 4)),
-               "--val-batches", "8", "--save-every", str(steps)]
-    env = {**os.environ, **extra, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"}
+    command = _command(python, module_args=[
+        "lora", "--model", str(base), "--train", "--data", str(data),
+        "--adapter-path", str(out), "--iters", str(steps), "--batch-size", "1",
+        "--num-layers", str(_LAYERS), "--max-seq-length", str(_MAX_SEQ), "--mask-prompt",
+        "--steps-per-report", "5", "--steps-per-eval", str(max(20, steps // 4)),
+        "--val-batches", "8", "--save-every", str(steps)])
     child = await asyncio.create_subprocess_exec(
-        *command, cwd=str(_dir()), env=env, stdin=asyncio.subprocess.DEVNULL,
+        *command, cwd=str(_dir()), env=_child_env(), stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
     _child = child
+    _record_child(child.pid)
     watcher = asyncio.create_task(_pause_for_turns(child))
     loss: float | None = None
     try:
@@ -318,9 +436,69 @@ async def _run_trainer(base: Path, data: Path, out: Path, steps: int) -> float |
                 pass
             await child.wait()
         _child = None
+        _forget_child()
     if child.returncode != 0 or not (out / "adapters.safetensors").is_file():
         raise StyleError("Training didn't finish. Nothing was changed.")
     return loss
+
+
+# --- a run that was cut off ----------------------------------------------------------------
+
+def _pid_file() -> Path:
+    return _dir() / "trainer.json"
+
+
+def _started(pid: int) -> list[int] | None:
+    """When `pid` started, from the kernel (libproc); None when it is gone or cannot be read.
+    A pid alone can be reused by another program; a pid with its start time cannot."""
+    try:
+        from service.inference.local_peer import process_bsdinfo
+        info = process_bsdinfo(pid)
+        return [info[7], info[8]] if info[2] == os.getuid() else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _record_child(pid: int) -> None:
+    try:
+        paths.private_write_bytes(_pid_file(), json.dumps({"pid": pid, "started": _started(pid)}).encode("utf-8"))
+    except OSError:
+        pass
+
+
+def _forget_child() -> None:
+    try:
+        _pid_file().unlink()
+    except OSError:
+        pass
+
+
+def recover() -> bool:
+    """Called at startup. Kill a trainer orphaned by a crash or kill (it may be paused
+    forever) and delete the training text it left. True when something was cleaned up."""
+    if _task is not None and not _task.done():
+        return False
+    cleaned = False
+    try:
+        record = json.loads(_pid_file().read_text(encoding="utf-8"))
+        pid, started = record["pid"], record["started"]
+    except (OSError, ValueError, KeyError, TypeError):
+        pid, started = 0, None
+    # Still the same process (same pid AND same start time), so it is the trainer this file
+    # recorded and nothing else. It may be paused: continue it so the kill is delivered.
+    if type(pid) is int and pid > 1 and started and _started(pid) == started:
+        for sig in (signal.SIGCONT, signal.SIGKILL):
+            try:
+                os.kill(pid, sig)
+            except OSError:
+                break
+        cleaned = True
+    _forget_child()
+    for left in (_dir() / "data", _dir() / "adapter.new"):
+        if left.exists():
+            shutil.rmtree(left, ignore_errors=True)
+            cleaned = True
+    return cleaned
 
 
 async def _train(rows: list[dict] | None) -> None:
@@ -372,6 +550,8 @@ def start_training(rows: list[dict] | None = None) -> dict[str, Any]:
     global _task
     if _task is not None and not _task.done():
         raise StyleError("Wisp is already learning your writing style.")
+    if not enough_memory():
+        raise StyleError(_MEMORY_WORDS)
     if mlx_python() is None:
         raise StyleError("This needs oMLX's Python on this Mac, and Wisp couldn't find it.")
     _live.update(phase="reading", step=0, steps=0)
@@ -400,39 +580,47 @@ async def forget() -> bool:
 
 # --- drafting ----------------------------------------------------------------------------
 
-async def write(system: str, material: str, *, max_tokens: int = 320) -> str | None:
+async def write(system: str, material: str, *, max_tokens: int = 320,
+                timeout: float = _WRITE_TIMEOUT_S) -> str | None:
     """A reply draft in the person's style, or None to use the usual model.
 
     The caller already holds the foreground gate. One short-lived child loads the
-    chat model's files with the adapter, writes, and exits.
+    chat model's files with the adapter, writes, and exits. A draft that was cut
+    off at the token limit, or that did not arrive within `timeout`, is not used.
     """
-    if not ready():
+    if not ready() or timeout <= 1:
         return None
     python = mlx_python()
     base = _dir() / "base"
     if python is None or not (base / "config.json").exists():
         return None
-    exe, extra = python
     request = json.dumps({"model": str(base), "adapter": str(_adapter()), "max_tokens": max_tokens,
                           "messages": [{"role": "system", "content": system},
                                        {"role": "user", "content": material}]}).encode("utf-8")
     worker = Path(__file__).with_name("personal_style_worker.py")
-    env = {**os.environ, **extra, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"}
     child = None
     try:
         child = await asyncio.create_subprocess_exec(
-            exe, str(worker), env=env, stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
-        out, _ = await asyncio.wait_for(child.communicate(request), timeout=_WRITE_TIMEOUT_S)
-        text = json.loads(out.decode("utf-8")).get("text")
-    except Exception:  # noqa: BLE001 — any failure means the usual model writes the draft
+            *_command(python, script=worker), cwd=str(_dir()), env=_child_env(),
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL)
+        out, _ = await asyncio.wait_for(child.communicate(request), timeout=timeout)
+        reply = json.loads(out.decode("utf-8"))
+        text, finish = reply.get("text"), reply.get("finish")
+    except BaseException as error:  # any failure means the usual model writes the draft
         if child is not None and child.returncode is None:
             try:
                 child.kill()
             except ProcessLookupError:
                 pass
+            try:
+                await asyncio.shield(asyncio.wait_for(child.wait(), timeout=5))
+            except BaseException:  # noqa: BLE001
+                pass
+        if not isinstance(error, Exception):
+            raise
         return None
-    if not isinstance(text, str) or not text.strip():
+    if finish != "stop" or not isinstance(text, str) or not text.strip():
         return None
     state = _state()
     state["drafts"] = int(state.get("drafts") or 0) + 1

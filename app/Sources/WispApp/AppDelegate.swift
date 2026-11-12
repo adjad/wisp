@@ -2268,6 +2268,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // Stopping the engine unloads any models and frees its ~2GB baseline too.
         Task {
+            // A meeting being recorded: stop the microphone and the call audio first, and let
+            // the last window reach the service before it is stopped (bounded, about 6 s).
+            await MeetingModel.shared.stopForQuit()
             // Let any just-fired Settings change (role/model) finish
             // persisting to ~/.moe/config.yaml before the backend that writes it
             // gets killed — see PendingConfigWrites' docstring for the race this

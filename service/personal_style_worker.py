@@ -11,8 +11,13 @@ IMPORTANT rules:
   path under another interpreter.
 - Text in, text out, no tools. The request is one JSON object on stdin
   ({"model", "adapter", "messages", "max_tokens"}); the reply is one JSON object
-  on stdout ({"text"} or {"error"}). Nothing is written to disk and nothing is
-  sent anywhere.
+  on stdout ({"text", "finish"} or {"error"}). "finish" is "stop" when the draft
+  ended by itself and "length" when it was cut off at max_tokens; the parent uses
+  only a draft that stopped. Nothing is written to disk and nothing is sent
+  anywhere.
+- Run as `python -I [-S] personal_style_worker.py <site-packages or "">`: no
+  environment, no start-up code, and this file's folder (service/) is never on
+  the import path. The one extra import folder is argv[1].
 - The process exits after one draft, so the second copy of the model leaves
   memory at once.
 """
@@ -37,7 +42,11 @@ def main() -> int:
         _reply({"error": "bad request"})
         return 2
     try:
-        from mlx_lm import generate, load
+        here = __file__.rsplit("/", 1)[0]
+        sys.path[:] = [p for p in sys.path if p and p != here]
+        if len(sys.argv) > 1 and sys.argv[1]:
+            sys.path.append(sys.argv[1])
+        from mlx_lm import load, stream_generate
         from mlx_lm.sample_utils import make_sampler
         model, tokenizer = load(model_path, adapter_path=adapter)
         try:
@@ -45,12 +54,16 @@ def main() -> int:
                                                    tokenize=False, enable_thinking=False)
         except TypeError:
             prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
-        text = generate(model, tokenizer, prompt=prompt, max_tokens=max_tokens,
-                        sampler=make_sampler(temp=0.4, top_p=0.9), verbose=False)
+        parts, finish = [], None
+        for piece in stream_generate(model, tokenizer, prompt=prompt, max_tokens=max_tokens,
+                                     sampler=make_sampler(temp=0.4, top_p=0.9)):
+            parts.append(piece.text)
+            finish = getattr(piece, "finish_reason", None) or finish
+        text = "".join(parts)
     except Exception as error:  # noqa: BLE001 — the parent falls back to the usual model
         _reply({"error": type(error).__name__})
         return 1
-    _reply({"text": text if isinstance(text, str) else ""})
+    _reply({"text": text, "finish": finish if finish in ("stop", "length") else "length"})
     return 0
 
 

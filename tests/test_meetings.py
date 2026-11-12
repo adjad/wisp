@@ -225,3 +225,87 @@ def test_an_action_item_becomes_a_reminder_only_when_asked(client, monkeypatch):
     with pytest.raises(M.MeetingError, match="couldn't add"):
         run(M.remind(other["id"], 0))
     assert run(M.get(other["id"]))["notes"]["action_items"][0]["reminder"] == ""
+
+
+# --- review repairs: a write-up cut off by a crash, a late window, two presses at once ------
+
+def test_a_meeting_left_summarizing_by_a_crash_can_be_written_again(client):
+    meeting = run(M.start())
+    run(M.add_window(meeting["id"], 0, wav(1.0)))
+    stuck = M._load(meeting["id"])
+    stuck["status"] = "summarizing"                       # the process died mid write-up
+    M._save(stuck)
+    listed = run(M.listing())
+    assert listed[0]["status"] == "stopped" and "interrupted" in listed[0]["error"]
+    M._save(stuck)                                        # or the person presses Write again first
+    done = run(M.finish(meeting["id"]))
+    assert done["status"] == "done" and done["notes"]["summary"] and not M._writing
+
+
+def test_a_write_up_in_progress_is_not_started_twice_and_never_stays_stuck(client):
+    meeting = run(M.start())
+    run(M.add_window(meeting["id"], 0, wav(1.0)))
+
+    async def both():
+        gate = asyncio.Event()
+        real = client.chat
+
+        async def slow(model, messages, **kwargs):
+            await gate.wait()
+            return await real(model, messages, **kwargs)
+        client.chat = slow
+        first = asyncio.create_task(M.finish(meeting["id"]))
+        await asyncio.sleep(0.05)
+        with pytest.raises(M.MeetingError, match="already writing"):
+            await M.finish(meeting["id"])
+        assert (await M.listing())[0]["status"] == "summarizing"      # live, so not "recovered"
+        first.cancel()
+        await asyncio.gather(first, return_exceptions=True)
+        client.chat = real
+    run(both())
+    left = M._load(meeting["id"])
+    assert left["status"] == "stopped" and "interrupted" in left["error"] and not M._writing
+
+
+def test_a_window_that_lands_after_the_meeting_ended_is_refused(client):
+    meeting = run(M.start())
+
+    async def late():
+        gate = asyncio.Event()
+        real = client.chat
+
+        async def slow(model, messages, **kwargs):
+            await gate.wait()
+            return await real(model, messages, **kwargs)
+        client.chat = slow
+        window = asyncio.create_task(M.add_window(meeting["id"], 0, wav(1.0)))
+        await asyncio.sleep(0.05)
+        ended = M._load(meeting["id"])
+        ended["status"] = "stopped"
+        M._save(ended)
+        gate.set()
+        with pytest.raises(M.MeetingError, match="already ended"):
+            await window
+        client.chat = real
+    run(late())
+    assert M._load(meeting["id"])["segments"] == []
+
+
+def test_two_presses_at_once_add_one_reminder(client, monkeypatch):
+    added = []
+
+    async def add_reminder(title, when_iso, kind="reminder", all_day=False):
+        added.append(title)
+        await asyncio.sleep(0.05)
+        return f"Reminder set: “{title}”"
+    import service.tools.assistant_tools as tools
+    monkeypatch.setattr(tools, "add_reminder", add_reminder)
+    meeting = run(M.start())
+    run(M.add_window(meeting["id"], 0, wav(1.0)))
+    run(M.finish(meeting["id"]))
+
+    async def twice():
+        return await asyncio.gather(M.remind(meeting["id"], 0), M.remind(meeting["id"], 0))
+    run(twice())
+    assert added == ["Send the slides"] and not M._reminding
+    assert M._load(meeting["id"])["notes"]["action_items"][0]["reminder"] == "2099-01-05"
