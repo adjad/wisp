@@ -2,6 +2,11 @@
 
 The "MLX Python" here is a /bin/sh stand-in that writes an adapter file and prints
 progress lines; nothing loads a model, reads real mail or uses the GPU.
+
+Simulation QA runs this file in a sandbox where a child may exec only a short
+list of programs (/bin/sh, /bin/bash, /bin/cat, /usr/bin/env and a few more; not
+mkdir, not sleep). So the stand-in uses shell builtins plus cat and env, the
+fixture makes the output folder for it, and waiting is done with builtins.
 """
 from __future__ import annotations
 
@@ -9,6 +14,7 @@ import asyncio
 import json
 import os
 import stat
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -17,7 +23,8 @@ from service import personal_style as P
 
 MODEL = "gemma-stub"
 
-STUB = r"""#!/bin/sh
+STUB = r"""#!/bin/bash
+TRAINER_ARGV=$(printf '%s\n' "$@")
 case " $* " in
 *" lora "*)
   out=""; data=""
@@ -27,8 +34,9 @@ case " $* " in
     shift
   done
   [ -f "$data/train.jsonl" ] && [ -f "$data/valid.jsonl" ] || exit 3
+  printf '%s\n' "$TRAINER_ARGV" > "${STYLE_STUB_SEEN%seen.json}trainer.argv"
   [ -n "$STYLE_STUB_FAIL" ] && exit 1
-  mkdir -p "$out"
+  [ -d "$out" ] || exit 4
   printf '     1    \033[1;35mval\033[0m \033[1m6.034\033[0m    1.13s\n'
   printf '    30    \033[1;32m2.406\033[0m    17    0.1k\n'
   printf '    60    \033[1;35mval\033[0m \033[1m0.679\033[0m    0.21s\n'
@@ -37,7 +45,9 @@ case " $* " in
   ;;
 *)
   printf '%s\n' "$@" > "$STYLE_STUB_SEEN.argv"; env > "$STYLE_STUB_SEEN.env"; pwd > "$STYLE_STUB_SEEN.cwd"
-  [ -n "$STYLE_STUB_SLEEP" ] && sleep "$STYLE_STUB_SLEEP"
+  if [ -n "$STYLE_STUB_SLEEP" ]; then
+    end=$((SECONDS + STYLE_STUB_SLEEP)); while [ "$SECONDS" -lt "$end" ]; do :; done
+  fi
   cat > "$STYLE_STUB_SEEN"
   printf '%s' "$STYLE_STUB_REPLY"
   ;;
@@ -60,6 +70,15 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setenv("STYLE_STUB_SEEN", str(tmp_path / "seen.json"))
     monkeypatch.setenv("STYLE_STUB_REPLY", json.dumps({"text": " hey sam, friday works. ", "finish": "stop"}))
     monkeypatch.setattr(P, "memory_gb", lambda: 32)
+    # mlx_lm makes its own output folder; the stand-in cannot (no mkdir in the QA sandbox).
+    real_command = P._command
+
+    def command(python, **kwargs):
+        argv = real_command(python, **kwargs)
+        if "--adapter-path" in argv:
+            os.makedirs(argv[argv.index("--adapter-path") + 1], exist_ok=True)
+        return argv
+    monkeypatch.setattr(P, "_command", command)
     model_dir = tmp_path / "model"
     model_dir.mkdir()
     for name in ("config.json", "model-00001-of-00002.safetensors", "model-mtp.safetensors", ".cache"):
@@ -259,9 +278,12 @@ def test_startup_ends_an_orphaned_trainer_and_deletes_the_mail_text(home):
     (folder / "data").mkdir(parents=True)
     (folder / "data" / "train.jsonl").write_text("the person's mail")
     (folder / "adapter.new").mkdir()
-    orphan = subprocess.Popen(["/bin/sh", "-c", "kill -STOP $$; sleep 60"])     # paused, as a trainer can be
-    bystander = subprocess.Popen(["/bin/sh", "-c", "sleep 60"])
+    # Builtins only: `read -t` on a pipe nobody writes to is the wait (no sleep in the QA sandbox).
+    orphan = subprocess.Popen(["/bin/bash", "-c", "kill -STOP $$; read -t 60 x"],      # paused, as a trainer can be
+                              stdin=subprocess.PIPE)
+    bystander = subprocess.Popen(["/bin/bash", "-c", "read -t 60 x"], stdin=subprocess.PIPE)
     try:
+        assert orphan.poll() is None and bystander.poll() is None      # both really running
         P._record_child(orphan.pid)
         assert json.loads((folder / "trainer.json").read_text())["started"]
         assert P.recover() is True
@@ -298,6 +320,8 @@ def test_the_child_runs_isolated_with_a_minimal_environment(home, monkeypatch):
     # oMLX's own tree gets -S too, and its one site-packages folder by name.
     assert P._command(("/py", "/site"), script=seen)[:3] == ["/py", "-I", "-S"]
     assert P._command(("/py", "/site"), module_args=["lora"])[-2:] == ["/site", "lora"]
+    trained = (home / "trainer.argv").read_text().splitlines()
+    assert trained[:2] == ["-I", "-c"] and "runpy" in "\n".join(trained) and "lora" in trained
     assert P._child_env().keys() <= {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "HF_HUB_OFFLINE",
                                      "TRANSFORMERS_OFFLINE", "STYLE_STUB_SEEN", "STYLE_STUB_REPLY"}
 
@@ -360,5 +384,7 @@ def test_a_cut_off_or_slow_styled_draft_is_not_used(home, monkeypatch):
     monkeypatch.setenv("STYLE_STUB_REPLY", json.dumps({"text": "late", "finish": "stop"}))
     monkeypatch.setenv("STYLE_STUB_SLEEP", "5")
     monkeypatch.setattr(E, "_STYLED_SHARE_S", 1.5)
+    began = time.monotonic()
     assert asyncio.run(E._model_reply("sys", "mat")) == "usual draft" and len(usual) == 3
+    assert 1.0 < time.monotonic() - began < 4.5              # it did wait its share, and no longer
     assert E._STYLED_SHARE_S < E._DRAFT_TIMEOUT_S and P._WRITE_TIMEOUT_S < E._DRAFT_TIMEOUT_S
