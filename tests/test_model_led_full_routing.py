@@ -760,7 +760,10 @@ def test_a_question_about_an_earlier_action_is_never_a_plain_read():
              "what happened to my email", "did the reply go out", "was it successful", "what was the result",
              # Delta review: whether the other side has the user's own message.
              "did Sam get my email?", "did Sam see my text?", "is my message out?",
-             "any word from the mail app?", "has Dana read my message", "did this work", "what is this"]
+             "any word from the mail app?", "has Dana read my message", "did this work", "what is this",
+             # "fall", "spring" and "term" are not date words here: these ask after the action.
+             "did that fall through", "did it fall through?", "did the forward fall through",
+             "did that spring a problem", "what was that term"]
     plain = ["is there any email about class enrollment", "what's on my calendar today?", "any new texts",
              "what did mom say", "show my reminders", "who emailed me today",
              # Delta review: a date word after this/that, and "done" alone, are ordinary reads.
