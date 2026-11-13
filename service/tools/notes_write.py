@@ -89,6 +89,15 @@ def _body_html(text: str) -> str:
     return "".join(parts)
 
 
+_BULLET_ASK = re.compile(r"\b(?:bullets?|bullet\s+points?|list\s+items?|checklist\s+items?)\b", re.I)
+
+
+def _asked_for_bullet() -> bool:
+    """The person's own message this turn asked for a bullet or list item."""
+    from service.tools.self_send import turn_text
+    return bool(_BULLET_ASK.search(turn_text()))
+
+
 def _err(p: subprocess.CompletedProcess) -> str | None:
     if p.returncode == 0:
         return None
@@ -174,6 +183,7 @@ def create_note(title: str, body: str = "", folder: str = "",
         "properties": {
             "title": {"type": "string", "description": "Part of the existing note's title, e.g. 'shopping'."},
             "text": {"type": "string", "description": "The line(s) to add at the end."},
+            "bullet": {"type": "boolean", "description": "true when the user asked for a bullet or list item."},
         },
         "required": ["title", "text"],
     },
@@ -181,9 +191,19 @@ def create_note(title: str, body: str = "", folder: str = "",
     aliases=["add milk to my shopping list", "put that on my packing list",
              "add a line to the meeting note", "tack this onto my ideas note"],
 )
-def append_note(title: str, text: str) -> str:
+def append_note(title: str, text: str, bullet: bool = False) -> str:
     title = (title or "").strip()
     text = (text or "").strip()
+    # A bullet is a real list item. "Add one more bullet to that note" sent
+    # "<div>Demo point 4</div>", a plain line, and Wisp called it a bullet
+    # (2026-11-13 real-model run). When the note ends in a list, the new lines
+    # join that list; when a bullet was asked for, they start one; otherwise
+    # they stay the plain lines they were.
+    lines = [line for line in text.split("\n") if line.strip()]
+    items = "".join(f"<li>{_html(_item_text(line))}</li>" for line in lines)
+    if (bullet is True or _asked_for_bullet()) and not any(
+            _BULLET.match(line) or _NUMBERED.match(line) for line in lines):
+        text = "\n".join(f"- {line.strip()}" for line in lines)
     if not title:
         return not_done("(error: append_note needs the `title` of the note to add to.)",
                         question="Which note should I add that to?")
@@ -206,7 +226,20 @@ def append_note(title: str, text: str) -> str:
         f'    return "MANY:" & out\n'
         f'  end if\n'
         f'  set target to item 1 of hits\n'
-        f'  set body of target to (body of target) & "<div>{_esc(_body_html(text))}</div>"\n'
+        f'  set b to body of target\n'
+        f'  set e to b\n'
+        f'  repeat while (length of e) > 1 and (e ends with linefeed or e ends with return or e ends with " ")\n'
+        f'    set e to text 1 thru -2 of e\n'
+        f'  end repeat\n'
+        f'  set closer to ""\n'
+        f'  repeat with c in {{"</ul></div>", "</ol></div>", "</ul>", "</ol>"}}\n'
+        f'    if closer is "" and e ends with (c as text) then set closer to (c as text)\n'
+        f'  end repeat\n'
+        f'  if closer is not "" and (length of e) > (length of closer) then\n'
+        f'    set body of target to (text 1 thru -((length of closer) + 1) of e) & "{_esc(items)}" & closer\n'
+        f'  else\n'
+        f'    set body of target to b & "<div>{_esc(_body_html(text))}</div>"\n'
+        f'  end if\n'
         f'  return "OK:" & (name of target)\n'
         f'end tell')
 

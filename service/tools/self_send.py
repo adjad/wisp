@@ -56,6 +56,11 @@ def mark_turn(text: str) -> None:
     _turn_text.set(text or "")
 
 
+def turn_text() -> str:
+    """The person's own message this turn (never model text)."""
+    return _turn_text.get()
+
+
 def typed_this_turn(handle: str) -> bool:
     """The person's own message this turn contains this address or number."""
     said, want = _turn_text.get().casefold(), (handle or "").strip().casefold()

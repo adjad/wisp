@@ -264,3 +264,49 @@ def test_append_note_sends_list_items(fake):
     assert notes_write.append_note("Packing", "- socks\n- hat") == "Added it to \"Packing list\"."
     assert "<div><ul><li>socks</li><li>hat</li></ul></div>" in f.scripts[-1]
     assert "- socks" not in f.scripts[-1]
+
+
+# ------------------------------------------------- a bullet is a real list item
+# 2026-11-13 real-model run: "Add one more bullet to that note" sent
+# "<div>Demo point 4</div>", a plain line, and Wisp called it a bullet.
+
+def _appended(fake, title, text, **kwargs):
+    f = fake()
+
+    def answer(script):
+        f.scripts.append(script)
+        return subprocess.CompletedProcess(["osascript"], 0, "OK:Demo ideas\n", "")
+    notes_write._osa = answer
+    assert notes_write.append_note(title, text, **kwargs) == "Added it to \"Demo ideas\"."
+    return f.scripts[-1]
+
+
+def test_a_note_that_ends_in_a_list_gets_a_new_item_inside_it(fake):
+    script = _appended(fake, "Demo ideas", "Demo point 4")
+    # Inside the list's own closing tag, whichever form Notes stored it in.
+    assert '{"</ul></div>", "</ol></div>", "</ul>", "</ol>"}' in script
+    assert 'of e) & "<li>Demo point 4</li>" & closer' in script
+    # A note with no list at its end keeps the plain line.
+    assert 'set body of target to b & "<div>Demo point 4</div>"' in script
+
+
+def test_a_bullet_asked_for_starts_a_list(fake):
+    script = _appended(fake, "Demo ideas", "Demo point 4", bullet=True)
+    assert 'set body of target to b & "<div><ul><li>Demo point 4</li></ul></div>"' in script
+    assert 'of e) & "<li>Demo point 4</li>" & closer' in script
+
+
+def test_the_persons_own_word_bullet_starts_a_list_too(fake):
+    from service.tools import self_send
+    self_send.mark_turn("Add one more bullet to that note: Demo point 4")
+    try:
+        script = _appended(fake, "Demo ideas", "Demo point 4\nDemo point 5")
+    finally:
+        self_send.mark_turn("")
+    assert '"<div><ul><li>Demo point 4</li><li>Demo point 5</li></ul></div>"' in script
+    assert '"<li>Demo point 4</li><li>Demo point 5</li>" & closer' in script
+
+
+def test_marked_lines_join_an_existing_list_without_their_marker(fake):
+    script = _appended(fake, "Demo ideas", "- socks\n2. hat")
+    assert '"<li>socks</li><li>hat</li>" & closer' in script
