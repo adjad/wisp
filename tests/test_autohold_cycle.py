@@ -114,6 +114,74 @@ def test_an_undone_hold_is_not_offered_as_a_tap_card_again(setting, store, holds
     assert store.auto_added()[autohold.fingerprint(block_card())]["status"] == "undone"
 
 
+# --- follow-up reminders are reached through the same background pass ---------------------------
+
+def _cycle_with_default_autoadd(store, abort=lambda: False):
+    """run_cycle with the production auto-add step (cycle._default_autoadd), which is what a real
+    cycle uses when no schedule is injected; auto-add's and follow-ups' own steps are faked."""
+    import tests.test_proactive_auto_add as T
+    item = T.text("Maya", T.RECITAL)                     # one real-shaped message, so the cycle has work
+    return asyncio.run(cycle.run_cycle(
+        now=T.NOW, tz=T.TZ, force=True, reply_fn=_quiet_model, abort=abort, collect=lambda n, z: [item],
+        schedule_fn=lambda n, z: {"calendar": [], "reminders": []}, store=store,
+        resolve=lambda i: None, linked=set(), own=T.ME, allowed=set(), freeze=lambda ref: None,
+        deadline_fn=None, autoadd_fn=cycle._default_autoadd))
+
+
+def test_the_cycle_runs_follow_ups_after_auto_add_with_the_same_inputs(setting, store, monkeypatch):
+    from service.proactive import autoadd, followups
+    order, seen = [], {}
+
+    async def fake_autoadd(survivors, sched, *, now, tz, store, abort, **_):
+        order.append("autoadd")
+        return {"tap": [], "added": [], "items": set()}
+
+    async def fake_followups(survivors, sched, *, now, tz, store, abort, **_):
+        order.append("followups")
+        seen.update(survivors=survivors, sched=sched, now=now, tz=tz, store=store, abort=abort)
+    monkeypatch.setattr(autoadd, "step", fake_autoadd)
+    monkeypatch.setattr(followups, "step", fake_followups)
+    _cycle_with_default_autoadd(store)
+    assert order == ["autoadd", "followups"]
+    import tests.test_proactive_auto_add as T
+    assert seen["now"] == T.NOW and seen["tz"] == T.TZ and seen["store"] is store and callable(seen["abort"])
+    assert seen["sched"] == {"calendar": [], "reminders": []}
+    assert [s["item"]["who"] for s in seen["survivors"]] == ["Maya"]
+
+
+def test_a_follow_up_step_that_raises_never_breaks_the_cycle_or_auto_adds_result(setting, store, monkeypatch):
+    from service.proactive import autoadd, followups
+    calls = []
+
+    async def fake_autoadd(survivors, sched, **_):
+        calls.append("autoadd")
+        return {"tap": [], "added": ["fp"], "items": set()}
+
+    async def broken(*_a, **_k):
+        calls.append("followups")
+        raise RuntimeError("bad input")
+    monkeypatch.setattr(autoadd, "step", fake_autoadd)
+    monkeypatch.setattr(followups, "step", broken)
+    monkeypatch.setattr(cycle.traceback, "print_exc", lambda *a, **k: None)
+    result = asyncio.run(cycle._default_autoadd([], {}, now=NOW, tz=TZ, store=store, abort=lambda: False))
+    assert result == {"tap": [], "added": ["fp"], "items": set()} and calls == ["autoadd", "followups"]
+    _cycle_with_default_autoadd(store)                                   # and the whole cycle still completes
+    assert calls == ["autoadd", "followups", "autoadd", "followups"]
+
+
+def test_a_cycle_that_a_turn_interrupts_runs_neither(setting, store, monkeypatch):
+    from service.proactive import autoadd, followups
+    calls = []
+
+    async def record(*_a, **_k):
+        calls.append(1)
+        return {"tap": [], "added": [], "items": set()}
+    monkeypatch.setattr(autoadd, "step", record)
+    monkeypatch.setattr(followups, "step", record)
+    _cycle_with_default_autoadd(store, abort=lambda: True)
+    assert calls == []
+
+
 def test_a_light_cycle_holds_nothing_and_the_tap_card_stays(setting, store, holds):
     # A light cycle (between builds) never merges "Wisp did this" cards, so it must not
     # hold: the tap card would vanish with no Undo until the next full build.
