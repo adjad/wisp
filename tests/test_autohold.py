@@ -357,6 +357,45 @@ def test_an_already_planned_block_with_no_attempt_of_wisps_is_left_alone(setting
     assert run(store, [card(1)], holds) == set() and store.auto_added() == {}
 
 
+def test_the_record_says_dispatching_during_the_hold_and_a_cut_off_one_is_never_held_again(setting, store):
+    acting.set_enabled(True, now=NOW - 60)
+    seen = []
+
+    def watching(c):
+        seen.append({k: dict(v) for k, v in store.auto_added().items()})
+        return {"ok": True, "status": "succeeded", "task_id": "t1"}
+    assert run(store, [card(1)], watching) == {"card:deadline1"}
+    [[during]] = [list(s.values()) for s in seen]
+    assert during["status"] == "dispatching" and during["kind"] == "hold" and "card" not in during
+    assert [r["status"] for r in store.auto_added().values()] == ["added"]
+
+    # A hold cut off before its outcome was recorded (the process died inside the write).
+    class Died(BaseException):
+        pass
+
+    def dies(c):
+        raise Died()
+    with pytest.raises(Died):
+        run(store, [card(2)], dies)
+    left = [r for r in store.auto_added().values() if r["status"] == "dispatching"]
+    assert len(left) == 1 and acting.shown(left[0], NOW) is False
+    again = Holds()
+    assert run(store, [card(2)], again, now=NOW + 600) == set() and again.calls == []     # even before it is settled
+    assert acting.settle(store, NOW + 700) == 1
+    assert run(store, [card(2)], again, now=NOW + 800) == set() and again.calls == []
+    assert {r["check"] for r in acting.recent(store, NOW + 900) if r["check"]} == {"your Day plan"}
+
+
+def test_a_hold_that_cant_be_marked_first_is_not_made(setting, store, monkeypatch):
+    acting.set_enabled(True, now=NOW - 60)
+
+    def refuse(*a, **k):
+        raise OSError("disk full")
+    monkeypatch.setattr(store, "auto_add_put", refuse)
+    holds = Holds()
+    assert run(store, [card(1)], holds) == set() and holds.calls == []
+
+
 def test_a_hold_that_raised_is_unknown_counted_and_never_retried(setting, store):
     acting.set_enabled(True, now=NOW - 60)
     c = card(1)

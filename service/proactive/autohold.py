@@ -210,6 +210,9 @@ def _words(text) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip().casefold()
 
 
+DISPATCHING = "dispatching"     # a hold begun and not yet recorded (acting.settle turns a stale one to "unknown")
+
+
 def _unconfirmed_adds(records: dict) -> list[tuple[str, float | None]]:
     """(title, time) of each calendar or reminder auto-add that may have landed but has no
     source_id to match by (its write returned no id): the title and a nearby time stand in."""
@@ -271,7 +274,9 @@ def step(cards: list[dict], *, now: float, tz: str, store, abort, hold=None, hou
         if unconfirmed and _is_unconfirmed_add(card, unconfirmed):
             continue                                  # auto-add may have made this one: no second action
         fp, tk, nk, record = _prior(card, records)
-        if record.get("status") in acting.LANDED or int(record.get("attempts") or 0) >= MAX_ATTEMPTS:
+        # "dispatching" is a hold begun and never recorded (the cycle normally settles it to
+        # "unknown" first): it may be on the Day plan, so it is never tried again.
+        if record.get("status") in acting.LANDED + (DISPATCHING,) or int(record.get("attempts") or 0) >= MAX_ATTEMPTS:
             if record:
                 _remember_time(store, records, fp, record, card.get("due_ts"))
             continue
@@ -282,6 +287,28 @@ def step(cards: list[dict], *, now: float, tz: str, store, abort, hold=None, hou
         if abort() or acting.still_ok("hold") is not None:
             break
         attempts += 1
+        due = float(card["due_ts"]) if _num(card.get("due_ts")) else None
+        seen = sorted({t for t in _times(record) if due is None or abs(t - due) > 60})[-MAX_SEEN:]
+        title = str(card.get("title") or (action.get("envelope") or {}).get("title") or "")
+        tried = int(record.get("attempts") or 0)
+        mine_saved = record.get("saved_task_id")
+
+        def mark(status: str, attempts_now: int) -> None:
+            # A record with no card and no Undo: in flight, or put back as not done.
+            records[fp] = acting.record(
+                store, fp, kind="hold", status=status, now=now, title=title,
+                source=str(_source(card).get("kind") or ""), item_id=str(_source(card).get("ref") or ""),
+                timezone=tz, account=card.get("account", ""), attempts=attempts_now, title_key=tk,
+                native=nk is not None, native_key=nk, deadline_ts=due, deadline_seen=seen,
+                saved_task_id=mine_saved if isinstance(mine_saved, str) and mine_saved else None)
+
+        # In flight BEFORE the write: a hold cut off between the write and its outcome leaves
+        # this, which the next cycle reads as "unknown" (counted, never held again, listed in
+        # Settings as something to check). A hold that can't be recorded first isn't made.
+        try:
+            mark(DISPATCHING, tried + 1)
+        except Exception:  # noqa: BLE001
+            continue
         try:
             result = hold(card)
         except Exception as exc:  # noqa: BLE001 — it may have landed: counted, never retried
@@ -289,28 +316,35 @@ def step(cards: list[dict], *, now: float, tz: str, store, abort, hold=None, hou
         result = result if isinstance(result, dict) else {"ok": False, "status": "failed"}
         task_id = result.get("task_id")
         has_task = isinstance(task_id, str) and bool(task_id)
-        if result.get("status") == "blocked":
-            continue                                  # the slot went: nothing done
-        mine_saved = record.get("saved_task_id")
-        if result.get("already") and not (has_task and record.get("status") == "failed"
-                                          and isinstance(mine_saved, str) and task_id == mine_saved):
-            continue                                  # the person's own block: not Wisp's to claim
+        theirs = result.get("already") and not (has_task and record.get("status") == "failed"
+                                                and isinstance(mine_saved, str) and task_id == mine_saved)
+        if result.get("status") == "blocked" or theirs:
+            # The slot went, or the block is the person's own (not Wisp's to claim): nothing was
+            # done, so the in-flight mark comes off (the record is as it was before) and this
+            # try is not counted.
+            try:
+                if record:
+                    store.auto_add_put(fp, record)
+                    records[fp] = record
+                else:
+                    store.auto_add_drop(fp)
+                    records.pop(fp, None)
+            except Exception:  # noqa: BLE001 — it stays "dispatching": safe, never held again
+                pass
+            continue
         # An "already" whose task is the very one Wisp's own failed attempt saved (though
         # its read-back failed) is Wisp's, so it gets its card and Undo. Any other is theirs.
         ok = result.get("ok") is True and has_task
         status = "added" if ok else "unknown" if result.get("status") == "unknown" else "failed"
         saved_id = result.get("saved_task_id")
         saved_id = saved_id if isinstance(saved_id, str) and saved_id else mine_saved
-        due = float(card["due_ts"]) if _num(card.get("due_ts")) else None
-        seen = sorted({t for t in _times(record) if due is None or abs(t - due) > 60})[-MAX_SEEN:]
         env, slot = action.get("envelope") or {}, action.get("slot") or {}
         when = str(action.get("button") or "").removeprefix("Block ").removesuffix("?").strip()
-        title = str(card.get("title") or env.get("title") or "")
         records[fp] = acting.record(
             store, fp, kind="hold", status=status, now=now, title=title,
             source=str(_source(card).get("kind") or ""),
             item_id=str(_source(card).get("ref") or ""), timezone=tz,
-            account=card.get("account", ""), attempts=int(record.get("attempts") or 0) + 1,
+            account=card.get("account", ""), attempts=tried + 1,
             title_key=tk, native=nk is not None, native_key=nk, deadline_ts=due, deadline_seen=seen,
             saved_task_id=None if ok else (saved_id if isinstance(saved_id, str) and saved_id else None),
             card={"meta": "DAY PLAN", "title": f"Held {when} for {title}" if when else f"Held time for {title}",

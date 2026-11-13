@@ -606,6 +606,10 @@ def test_a_write_cut_off_mid_way_is_settled_for_every_kind_and_listed_as_uncerta
     assert acting.settle(store, NOW) == 3 and acting.settle(store, NOW) == 0
     assert {r["status"] for r in acting.records(store) if r["fingerprint"] != "ok-1"} == {"unknown"}
     assert acting.room(store, NOW) == acting.MAX_PER_DAY - 4                # now every kind's cap sees them
+    acting.record(store, "d-1", kind="draft", status="unknown", now=NOW - 650, title="Thing d-1", item_id="d")
+    assert [r["check"] for r in acting.recent(store, NOW) if r["title"] == "Thing d-1"] == ["Calendar and Reminders"]
+    store.auto_add_drop("d-1")
+    store.auto_add_drop("never-there")                                      # dropping nothing is fine
     rows = {r["title"]: r["check"] for r in acting.recent(store, NOW)}
     assert rows == {"Thing a-1": "Calendar", "Thing f-1": "Reminders", "Thing h-1": "your Day plan", "Fine": ""}
 

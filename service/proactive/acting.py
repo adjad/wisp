@@ -554,5 +554,6 @@ def recent(store, now: float, limit: int = 20) -> list[dict]:
              "title": guard.clean_title(str(r["title"] if r.get("status") == "unknown"
                                             else (r.get("card") or {}).get("title") or r["title"])),
              "who": str(r.get("who") or ""), "at": float(r.get("at") or 0), "undone": r.get("status") == "undone",
-             "check": where.get(r.get("kind"), "") if r.get("status") == "unknown" else ""}
+             # Never empty for an uncertain one: an empty `check` reads as "done" in Settings.
+             "check": where.get(r.get("kind"), "Calendar and Reminders") if r.get("status") == "unknown" else ""}
             for r in rows[:limit]]

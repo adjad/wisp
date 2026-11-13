@@ -352,11 +352,12 @@ def _contact_name(handle: str) -> str:
     return strict_contact_name(handle)
 
 
-def _plan_handle(item: dict, count: int = 3) -> str:
-    """The handle of the lines a plan reads (the last `count`, as _candidates does): every one
-    of them joined to the same known one-to-one chat, else "". Who the sender is does not
-    depend on how the message was delivered; that is _text_service's question."""
+def _plan_handle(item: dict, count: int | None = None) -> str:
+    """The handle of the lines a plan reads (the last sources.ORIGIN_LINES, as _candidates
+    does): every one of them joined to the same known one-to-one chat, else "". Who the sender
+    is does not depend on how the message was delivered; that is _text_service's question."""
     from service.proactive import sources
+    count = sources.ORIGIN_LINES if count is None else count
     lines, chats = list(item.get("lines") or []), list(item.get("line_chat") or [])
     if item.get("group") or not lines or len(chats) != len(lines):
         return ""

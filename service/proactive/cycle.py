@@ -727,6 +727,14 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
     # cycle (a slot goes stale as the day moves), filling what replies leave.
     # Runs even when the judge yielded to a turn: it is code only, and skipping
     # it would save the state without any deadline card until the next cycle.
+    # Before anything acts (holds here, adds and reply reminders in step 4): every kind's write
+    # that an earlier cycle began and never recorded becomes "unknown", so this cycle's caps
+    # and "already acted" checks all see it. Every cycle, whether or not deadlines are read.
+    try:
+        from service.proactive import acting as _acting
+        _acting.settle(store, now)
+    except Exception:  # noqa: BLE001 — each kind still treats "dispatching" as landed
+        traceback.print_exc()
     if deadline_fn is not None:
         decided = store.decisions()
         skip = set(decided["dismissed"]) | set(decided["fired"])
@@ -742,10 +750,7 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
         # tap card. Wisp-local, code only; not in a cycle that yielded to a turn, and
         # not in a light one: its done card is merged only by a full cycle (step 4).
         try:
-            from service.proactive import acting, autohold
-            # First, every kind's write that an earlier cycle began and never recorded becomes
-            # "unknown", so this cycle's caps and "already acted" checks all see it.
-            acting.settle(store, now)
+            from service.proactive import autohold
             found = autohold.without_undone(found, store)
             if not (light or yielded or abort()):
                 held = autohold.step(found, now=now, tz=tz, store=store, abort=abort)
