@@ -310,3 +310,39 @@ def test_the_persons_own_word_bullet_starts_a_list_too(fake):
 def test_marked_lines_join_an_existing_list_without_their_marker(fake):
     script = _appended(fake, "Demo ideas", "- socks\n2. hat")
     assert '"<li>socks</li><li>hat</li>" & closer' in script
+
+
+# ------------------------------------- "three bullet points: Alpha, Beta, Gamma"
+# 2026-11-13 real-model run: create_note wrote ONE bullet, "Alpha, Beta, Gamma".
+
+@pytest.fixture
+def said():
+    from service.tools import self_send
+    yield self_send.mark_turn
+    self_send.mark_turn("")
+
+
+ASKED_BULLETS = "Make a note called Demo ideas with three bullet points: Alpha, Beta, Gamma"
+
+
+@pytest.mark.parametrize("body,checklist", [
+    ("Alpha, Beta, Gamma", True), ("- Alpha, Beta, Gamma", False), ("Alpha, Beta and Gamma.", False),
+    ("Alpha, Beta, and Gamma", True),
+])
+def test_one_comma_run_becomes_one_item_each_when_bullets_were_asked_for(fake, said, body, checklist):
+    f = fake()
+    said(ASKED_BULLETS)
+    notes_write.create_note("Demo ideas", body, checklist=checklist)
+    assert "<ul><li>Alpha</li><li>Beta</li><li>Gamma</li></ul>" in f.scripts[-1]
+
+
+def test_a_sentence_several_lines_or_no_list_asked_for_are_left_alone(fake, said):
+    f = fake()
+    said(ASKED_BULLETS)
+    notes_write.create_note("Demo", "- We met Dana, who runs the lab, and agreed to send the full draft by Friday")
+    assert "<ul><li>We met Dana, who runs the lab, and agreed to send the full draft by Friday</li></ul>" in f.scripts[-1]
+    notes_write.create_note("Demo", "- Alpha, Beta\n- Gamma")
+    assert "<ul><li>Alpha, Beta</li><li>Gamma</li></ul>" in f.scripts[-1]
+    said("Make a note called Demo saying Alpha, Beta, Gamma")
+    notes_write.create_note("Demo", "Alpha, Beta, Gamma")
+    assert "Alpha, Beta, Gamma" in f.scripts[-1] and "<li>" not in f.scripts[-1]

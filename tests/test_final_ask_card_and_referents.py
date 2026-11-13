@@ -208,16 +208,16 @@ def test_a_move_that_only_read_the_calendar_cannot_end_on_im_moving(synthetic):
 # --- 5. the channel is the person's word ------------------------------------------
 
 @pytest.mark.parametrize("prompt,barred", [
-    ("Email Priya Shah that I'll be ten minutes late", {"send_message"}),
-    ("please send an email to Priya saying hi", {"send_message"}),
-    ("Text Priya that I'll be ten minutes late", {"send_email"}),
-    ("Message Dana I'm on my way", {"send_email"}),
+    ("Email Priya Shah that I'll be ten minutes late", {"send_message", "draft_message"}),
+    ("please send an email to Priya saying hi", {"send_message", "draft_message"}),
+    ("Text Priya that I'll be ten minutes late", {"send_email", "draft_email"}),
+    ("Message Dana I'm on my way", {"send_email", "draft_email"}),
     ("Email Priya the text of my note", set()),          # both words: left to the model
     ("Text Dana my email address", set()),
     ("Tell Priya I'll be late", set()),
     ("What did Priya email me?", set()),
 ])
 def test_only_the_named_channels_send_is_offered(prompt, barred):
-    registry = {"send_message": None, "send_email": None}
+    registry = {"send_message": None, "send_email": None, "draft_message": None, "draft_email": None}
     assert mo.other_channel_sends(prompt) == barred
     assert mo.ask_forbidden_tools(prompt, registry) == barred

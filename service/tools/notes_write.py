@@ -98,6 +98,26 @@ def _asked_for_bullet() -> bool:
     return bool(_BULLET_ASK.search(turn_text()))
 
 
+_LIST_ASK = re.compile(r"\b(?:bullets?|bullet\s+points?|(?:check)?list|list\s+items?)\b", re.I)
+_LIST_JOIN = re.compile(r"\s*[,;]\s*(?:and\s+)?|\s+and\s+", re.I)
+
+
+def _split_one_list_line(body: str) -> str:
+    """"Alpha, Beta, Gamma" as one "- " line each, when the person's own
+    message this turn asked for bullets or a list and the body is that single
+    run ("…with three bullet points: Alpha, Beta, Gamma" was written as ONE
+    bullet, 2026-11-13 real-model run). Anything else is returned unchanged:
+    several lines, a sentence, or a turn that asked for no list."""
+    from service.tools.self_send import turn_text
+    lines = [line for line in (body or "").split("\n") if line.strip()]
+    if len(lines) != 1 or not _LIST_ASK.search(turn_text()):
+        return body
+    items = [i.strip() for i in _LIST_JOIN.split(_item_text(lines[0]).rstrip(".")) if i.strip()]
+    if len(items) < 2 or any(len(i.split()) > 5 for i in items):
+        return body
+    return "\n".join(f"- {i}" for i in items)
+
+
 def _err(p: subprocess.CompletedProcess) -> str | None:
     if p.returncode == 0:
         return None
@@ -136,6 +156,7 @@ def create_note(title: str, body: str = "", folder: str = "",
         return not_done("(error: create_note needs a `title`.)",
                         question="What should the note be called?")
 
+    body = _split_one_list_line(body)
     if checklist and body.strip():
         items = "".join(f"<li>{_html(_item_text(ln))}</li>"
                         for ln in body.splitlines() if ln.strip())
