@@ -104,6 +104,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// stays this long for reading it, and then closes unless the pointer came back.
     private var collapseHeldForAnswer = false
     private var answerReadDelay: TimeInterval = 60
+    /// When the close being held for an answer first came due. An answer holds
+    /// it for at most `answerHoldCeiling`: a turn the service keeps alive past
+    /// that (heartbeats with nothing else) no longer keeps the notch over the
+    /// person's work. Cleared when the answer settles.
+    private var answerHeldSince: Date?
+    /// Ten minutes, the chat stream's own limit for silence (WispClient's
+    /// timeoutInterval for /agent); no answer worth waiting for runs longer.
+    private var answerHoldCeiling: TimeInterval = 600
     private var answerEnded: AnyCancellable?
     // Whether the pointer is over the expanded panel. Replaceable so the motion
     // checks, which host no real panel, can exercise both answers.
@@ -1617,8 +1625,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Don't hide a pinned panel, an unfinished edit (typed input, a
             // message draft being edited) or an answer being written out from
             // under the user.
-            if self.model.answerInFlight { self.collapseHeldForAnswer = true; return }
-            if self.model.holdsOpen { return }
+            // Past the answer's ceiling only the person's own holds remain.
+            if self.holdForAnswer() { return }
+            if self.model.holdsOpenBesidesAnswer { return }
             // A menu opened from the panel (the chat switcher) runs outside it,
             // so the pointer leaving the panel is not the person leaving. Hold
             // the collapse until the menu closes (see installMenuTrackingObservers).
@@ -1635,12 +1644,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func answerSettled() {
         guard collapseHeldForAnswer else { return }
         collapseHeldForAnswer = false
+        answerHeldSince = nil
         guard !model.collapsed, !pointerInPanel() else { return }
         pendingCollapse?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self, !self.model.collapsed, !self.menuTracking else { return }
-            if self.model.answerInFlight { self.collapseHeldForAnswer = true; return }
-            if self.model.holdsOpen { return }
+            if self.holdForAnswer() { return }
+            if self.model.holdsOpenBesidesAnswer { return }
             self.collapse()
         }
         pendingCollapse = work
@@ -1651,10 +1661,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// before the value is stored, so this reads it on the next turn.
     private func watchForAnswerEnding() {
         guard answerEnded == nil else { return }
-        answerEnded = model.$phase.receive(on: DispatchQueue.main).sink { [weak self] _ in
-            guard let self, !self.model.answerInFlight else { return }
-            self.answerSettled()
+        answerEnded = model.$phase.map { _ in () }
+            .merge(with: model.$briefComposing.map { _ in () })
+            .receive(on: DispatchQueue.main).sink { [weak self] _ in
+                guard let self, !self.model.generating else { return }
+                self.answerSettled()
+            }
+    }
+
+    /// Holds an automatic close while Wisp is writing (OverlayModel.generating),
+    /// for at most `answerHoldCeiling` from when the first close came due; then
+    /// the close goes ahead as usual. True while it holds. The turn's own state
+    /// ends the hold (answerSettled), not a flag of this one.
+    private func holdForAnswer() -> Bool {
+        guard model.generating else { return false }
+        let since = answerHeldSince ?? Date()
+        let left = answerHoldCeiling - Date().timeIntervalSince(since)
+        guard left > 0 else { return false }
+        if answerHeldSince == nil {
+            answerHeldSince = since
+            // Look again at the ceiling, in case the answer never ends.
+            DispatchQueue.main.asyncAfter(deadline: .now() + left) { [weak self] in
+                guard let self, self.collapseHeldForAnswer, self.answerHeldSince == since,
+                      !self.model.collapsed, !self.pointerInPanel() else { return }
+                self.scheduleCollapse()
+            }
         }
+        collapseHeldForAnswer = true
+        return true
     }
 
     private func pointerEnteredPanel() {
@@ -2794,8 +2828,24 @@ extension AppDelegate {
             delegate.model.phase = phase
             return delegate
         }
-        for delegate in [idle, pinned, typing, editing, addingTask, picking] + answering { delegate.scheduleCollapse() }
+        // The Brief being composed holds like an answer; a turn that fails lets go;
+        // a turn that never ends holds only up to the ceiling.
+        let composing = opened()
+        composing.model.qaSetBriefComposing(true)
+        let failing = opened()
+        failing.model.phase = .working
+        let hung = opened()
+        hung.model.phase = .streaming
+        hung.answerHoldCeiling = 0.3
+        for delegate in [idle, pinned, typing, editing, addingTask, picking, composing, failing, hung] + answering {
+            delegate.scheduleCollapse()
+        }
         try? await Task.sleep(for: .seconds(autoCollapseDelay + 0.5))
+        precondition(composing.presentation.desired == .chat && composing.collapseHeldForAnswer,
+                     "The Brief being written must hold the panel open")
+        precondition(failing.presentation.desired == .chat && failing.collapseHeldForAnswer,
+                     "A turn running tools must hold the panel open")
+        precondition(hung.presentation.desired == .chat, "Inside its ceiling an answer still holds")
         precondition(idle.presentation.desired == .bar, "Control: an idle panel must auto-collapse")
         for (delegate, what) in [(pinned, "a pin"), (typing, "typed input"), (editing, "a draft being edited"),
                                  (addingTask, "a Day task being typed"), (picking, "an open file dialog")] {
@@ -2807,18 +2857,31 @@ extension AppDelegate {
         }
         // Done: it stays long enough to read, then closes; the pointer coming back keeps it.
         let reading = answering[2]
-        reading.answerReadDelay = 0.3
-        reading.watchForAnswerEnding()
+        for delegate in [reading, failing, composing] {
+            delegate.answerReadDelay = 0.3
+            delegate.watchForAnswerEnding()
+        }
         reading.model.phase = .done
+        failing.model.phase = .error
+        composing.model.qaSetBriefComposing(false)
         try? await Task.sleep(for: .seconds(0.1))
-        precondition(!reading.collapseHeldForAnswer && reading.presentation.desired == .chat,
-                     "A finished answer stays up to be read")
+        for (delegate, what) in [(reading, "A finished answer"), (failing, "A failed turn"), (composing, "A composed Brief")] {
+            precondition(!delegate.collapseHeldForAnswer && delegate.presentation.desired == .chat,
+                         "\(what) stays up to be read: the close timer starts again at the turn's end")
+        }
         try? await Task.sleep(for: .seconds(0.5))
-        precondition(reading.presentation.desired == .bar, "A finished answer doesn't hold the panel forever")
+        for (delegate, what) in [(reading, "A finished answer"), (failing, "A failed turn"), (composing, "A composed Brief")] {
+            precondition(delegate.presentation.desired == .bar, "\(what) doesn't hold the panel forever")
+        }
         // An explicit close still closes, and a window of Wisp's doesn't during an answer.
-        let closing = answering[0]
+        let closing = answering[1]
         closing.collapse()
         precondition(closing.presentation.desired == .bar, "The chevron, Esc and the hotkey still close during an answer")
+        precondition(closing.model.phase == .working, "Closing the notch mid-answer leaves the answer running")
+        // The hung turn: past its ceiling the usual close goes ahead, the turn untouched.
+        try? await Task.sleep(for: .seconds(autoCollapseDelay + 0.6))
+        precondition(hung.presentation.desired == .bar && hung.model.phase == .streaming,
+                     "An answer that never ends holds the notch open only up to the ceiling")
         pinned.collapse()
         precondition(!pinned.model.pinned, "An explicit collapse must unpin")
         precondition(pinned.presentation.desired == .bar, "An explicit collapse still collapses a pinned panel")
@@ -2843,7 +2906,7 @@ extension AppDelegate {
         addingTask.model.tab = .research
         addingTask.model.prepareTab(byHover: false)
         precondition(addingTask.model.tab == .ask, "⌥Space opens Ask")
-        print("PASS: AppDelegate collapse holds (pin, typing, draft, Day task, file dialog), unpins on collapse and dismiss; tabs reopen as designed")
+        print("PASS: AppDelegate collapse holds (pin, typing, draft, Day task, file dialog, answers and the Brief up to a ceiling; done or failed turns restart the close), unpins on collapse and dismiss; tabs reopen as designed")
     }
 
     /// A reply written in the Brief holds the panel open until it is sent or
