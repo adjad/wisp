@@ -6753,6 +6753,8 @@ def routing_guard_contract(text: str, *, model_led: bool = False) -> tuple[froze
     """
     from service.tools.registry import REGISTRY
     from service.router.model_led import family_for, registry_specs
+    from service.router.web_request import bounded_quotes
+    text = bounded_quotes(text)
 
     if (history_reads := _history_read_contract(text)) is not None:
         return frozenset(set(REGISTRY) - set(history_reads)), {}
@@ -6850,6 +6852,16 @@ def routing_guard_contract(text: str, *, model_led: bool = False) -> tuple[froze
         forbidden.update(name for name, tool in REGISTRY.items()
                          if not tool.category.endswith("read"))
     web = _classify_web_request(t)
+    if model_led and not web.explicit and not web.private:
+        # The classifier reads quoted text as data, so a question sent inside
+        # quotes ('"Is Mom home yet?"') did not reach its ownership checks.
+        # They read the text as typed here.
+        from service.model_only import (lookalike_possessive, personal_owner, personal_reference,
+                                        without_leading_recipient)
+        about = without_leading_recipient(text)
+        if personal_reference(about) or personal_owner(about) or lookalike_possessive(text):
+            from service.router.model_led import PRIVATE_WEB_TOOLS
+            forbidden.update(PRIVATE_WEB_TOOLS)
     if model_led and web.provenance.name == "UNKNOWN" and not web.explicit:
         # Whose it is could not be told ("Did Sam's package arrive today?").
         # The rules route asks which public topic was meant and offers no web
