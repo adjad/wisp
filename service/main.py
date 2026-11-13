@@ -1826,13 +1826,28 @@ _READ_QUESTION = re.compile(
     r"|find|search|look\s+up|tell\s+me\s+(?:what|when|who|where|which|how|about|if|whether))\b", re.I)
 
 
+# A question about the held action itself ("did it send?", "did my email to Sam
+# go through?", "what's the status?") is not a plain read: the notice is what
+# answers it, and without it the model could say "yes, sent" of a send whose
+# outcome nobody knows. A bare "it" or "that" counts, since it most likely
+# points at the action.
+_ABOUT_EARLIER_ACTION = re.compile(
+    r"\b(?:it|that|this|sen[dt]|sends|sending|go(?:es|ne)?\s+through|went\s+through|going\s+through|"
+    r"deliver(?:ed|y|s)?|forward(?:ed|s|ing)?|repl(?:y|ied|ies)|respon[ds]e?d?|status|outcome|result|"
+    r"work(?:ed|s|ing)?|done|finish(?:ed)?|complete[d]?|happen(?:ed|s)?|fail(?:ed|s)?|succeed(?:ed)?|"
+    r"success(?:ful)?|receive[ds]?|arrive[ds]?|went\s+out|go\s+out|gone\s+out|earlier|last\s+(?:action|one))\b",
+    re.I)
+
+
 def _plain_read_request(prompt: str) -> bool:
-    """`prompt` asks to read or look something up and to change nothing."""
+    """`prompt` asks to read or look something up, changes nothing, and is not
+    about an earlier action's outcome."""
     try:
         from service.model_only import normalize_day_words
         from service.router.router import has_write_intent, mask_quoted
         text = normalize_day_words(mask_quoted(prompt or "")).strip()
-        return bool(text) and not has_write_intent(text) and bool(_READ_QUESTION.match(text))
+        return (bool(text) and not has_write_intent(text) and bool(_READ_QUESTION.match(text))
+                and not _ABOUT_EARLIER_ACTION.search(text))
     except Exception:  # noqa: BLE001 - unsure means the notice is shown
         return False
 

@@ -740,8 +740,11 @@ def test_withheld_actions_are_explained_and_lifted_by_resolution(endpoint, monke
         events = endpoint.request(question, sid)
         assert not any(main.UNRESOLVED_ACTION_NOTICE in e.get("text", "") for e in events), question
         assert "add_reminder" in endpoint.agent_calls[-1]["forbidden_tools"]
-    # Anything that is not plainly a read still gets it.
-    for request in ("try that again", "yes", "ok do it", "send it now", "can you text Sam the plan"):
+    # Anything that is not plainly a read still gets it, and so does a question
+    # about the held action's own outcome (review of 137397ba): the notice is its answer.
+    for request in ("try that again", "yes", "ok do it", "send it now", "can you text Sam the plan",
+                    "did it send?", "did my email to Sam go through?", "was the forward sent?",
+                    "check that it sent", "what's the status?", "did that work?", "has it been delivered"):
         events = endpoint.request(request, sid)
         texts = [e["text"] for e in events if e["type"] == "text"]
         assert texts and texts[0].startswith(main.UNRESOLVED_ACTION_NOTICE), request
@@ -749,3 +752,16 @@ def test_withheld_actions_are_explained_and_lifted_by_resolution(endpoint, monke
     events = endpoint.request("remind me to call Sam at 5", sid)
     assert not any(main.UNRESOLVED_ACTION_NOTICE in e.get("text", "") for e in events)
     assert "add_reminder" not in endpoint.agent_calls[-1]["forbidden_tools"]
+
+
+def test_a_question_about_an_earlier_action_is_never_a_plain_read():
+    about = ["did it send?", "did my email to Sam go through?", "was the forward sent?", "check that it sent",
+             "what's the status?", "did that work?", "is it done?", "did Sam get it?", "has it been delivered",
+             "what happened to my email", "did the reply go out", "was it successful", "what was the result"]
+    plain = ["is there any email about class enrollment", "what's on my calendar today?", "any new texts",
+             "what did mom say", "show my reminders", "who emailed me today"]
+    assert not any(main._plain_read_request(text) for text in about)
+    assert all(main._plain_read_request(text) for text in plain)
+    # has_write_intent alone would have let most of these through.
+    from service.router.router import has_write_intent
+    assert not has_write_intent("did my email to Sam go through?") and not has_write_intent("what's the status?")
