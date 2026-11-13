@@ -240,12 +240,42 @@ def _resolve(sentence: str, arrival: float, tz: str):
         return None
 
 
-def _saved_contact(item: dict) -> bool:
-    """A text conversation labelled by a contact's name, not a bare number."""
-    if item.get("source") != "messages":
+def _contact_name(handle: str) -> str:
+    """The saved contact this exact handle belongs to, or "" (Contacts, as the app synced it).
+    Tests replace this; production asks imessage_tools."""
+    from service.tools.imessage_tools import contact_name_for_handle
+    return contact_name_for_handle(handle)
+
+
+def _person_handle(handle: str) -> bool:
+    """A phone number or an email address a person texts from. Not a short code, not an
+    alphanumeric sender id ("AMAZON"), not a business chat ("urn:biz:...")."""
+    if not handle or handle.casefold().startswith("urn:"):
         return False
-    label = str(item.get("title") or "")
-    return bool(label) and not re.match(r"^[+\d(][\d() .+-]{2,}$|^\S+@\S+$", label)
+    if "@" in handle:
+        from service import mail_sender
+        return mail_sender.real_address(handle) == handle.casefold()
+    return bool(re.fullmatch(r"\+?\d{7,15}", re.sub(r"[\s().-]", "", handle)))
+
+
+def _saved_contact(item: dict) -> bool:
+    """A one-to-one text conversation whose HANDLE (the number or address the messages
+    really come from) is saved in the person's Contacts.
+
+    Decided from the handle, never from the conversation's label: a label is what is
+    shown ("+1 555 123 4567 (conversation 2)", "AMAZON"), and a stranger's label can
+    look like a name. No handle (a group, a mix of chats, an unknown chat), a handle
+    that is not a phone number or address, or a handle Contacts does not hold exactly,
+    is not a saved contact. Having answered someone does not make them one."""
+    if item.get("source") != "messages" or item.get("group"):
+        return False
+    handle = str(item.get("handle") or "").strip()
+    if not _person_handle(handle):
+        return False
+    try:
+        return bool(str(_contact_name(handle) or "").strip())
+    except Exception:  # noqa: BLE001 — Contacts can't be asked: nobody is known
+        return False
 
 
 _FREE_MAIL = frozenset({"gmail.com", "googlemail.com", "icloud.com", "me.com", "mac.com", "yahoo.com",
@@ -431,9 +461,13 @@ def plan_for(item: dict, result: dict | None, *, now: float, tz: str) -> tuple[d
     # nothing is added on its strength (sources.odd_sender).
     if item.get("odd_sender"):
         return None, "sender name carries an address"
-    # A stranger never writes to the user's calendar: a person must be someone
-    # the user has written to, or a saved contact (a text labelled by name).
-    if person and not (item.get("user_wrote") or _saved_contact(item) or _same_org(item)):
+    # A stranger never writes to the user's calendar. A TEXT must be one-to-one with a
+    # handle saved in Contacts; having answered them once is not enough. (Mail has its
+    # own, stronger proof and does not act at all while MAIL_ACTS is False.)
+    if source == "messages":
+        if not _saved_contact(item):
+            return None, "not a saved contact: tap to add"
+    elif person and not (item.get("user_wrote") or _same_org(item)):
         return None, "unknown sender: tap to add"
     arrival = item.get("received_ts")
     if type(arrival) not in (int, float):

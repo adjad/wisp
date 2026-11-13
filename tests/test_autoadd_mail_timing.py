@@ -12,6 +12,10 @@ from pathlib import Path
 import pytest
 
 import tests.test_proactive_auto_add as T
+
+# Texts in the shared helpers come from one saved contact's one-to-one chat (the autouse fixture
+# that says so lives with the helpers and applies here by being imported).
+from tests.test_proactive_auto_add import saved_contacts  # noqa: E402,F401
 from tests.test_proactive_auto_add import store, yes  # noqa: F401 — pytest fixtures
 from service.proactive import autoadd, sources
 
