@@ -8,7 +8,7 @@
 **Staged folder:** `~/Desktop/r5-hf-upload/gemma-4-E4B-it-r5-step-01800-oQ4e-mtp`.
 - It holds hard links to the quantized model, so it takes no extra space, plus `README.md` (the model card in this folder).
 - It sits outside `OMLX_Model_Files`, so oMLX doesn't list it twice.
-- Files, sizes and sha256 are in `MANIFEST.sha256-size.txt`: 11 files, 5,618,450,266 bytes in total (5.62 GB).
+- Files, sizes and sha256 are in `MANIFEST.sha256-size.txt`: 11 files, 5,618,450,318 bytes in total (5.62 GB).
 
 **Left out on purpose:**
 - `wisp-quant-recipe.json`: it carries local paths (`/Users/<name>/Desktop/...`) and a write time.
