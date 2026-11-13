@@ -41,7 +41,7 @@ def text_item(name="Maya", *, lines=(ASK,), received=NOW - 26 * H, **over):
     item = dict(id="messages:" + name, source="messages", account="me", raw_account="", who=name, title=name,
                 text=f"Conversation: {name}\n" + "\n".join(f"[{name} -> Adi (you)] {line}" for line in lines),
                 lines=list(lines), pending=list(lines), received_ts=received, replied=False, group=False,
-                person=True, unread=False, user_wrote=True, handle="", secret=False,
+                person=True, unread=False, user_wrote=True, handle="iMessage;-;+15550001111", secret=False,
                 ref={"kind": "text", "conversation": name, "label": name}, reply_ref="messages:" + name, hash="h1")
     item.update(over)
     return item
@@ -102,6 +102,51 @@ def test_an_email_from_someone_the_user_mailed_on_two_days_qualifies_without_the
 
 
 # --- the title and time never come from the message ------------------------------------
+
+
+def test_mail_a_subject_the_user_asked_is_not_their_ask():
+    # The user asked "Can we meet Friday?"; Sam's reply answers it.
+    got, why = plan(mail_item(subject="Re: Can you meet Friday?", body="Great, see you then.",
+                              sender="Sam Lee", address="sam@school.edu"))
+    assert got is None and why == "no direct ask"
+    got, why = plan(mail_item(subject="Re: Can you meet Friday?", body="(subject only)",
+                              sender="Sam Lee", address="sam@school.edu"))
+    assert got is None and why == "no direct ask"
+
+
+def test_mail_a_subject_alone_counts_only_when_the_user_never_wrote():
+    mailed = [sent("sam@school.edu", NOW - 6 * D), sent("sam@school.edu", NOW - 4 * D)]
+    got, why = plan(mail_item(subject="Re: Can you review my poster draft?", body="(subject only)", sender="Sam Lee",
+                              address="sam@school.edu", user_wrote=False), sent=mailed)
+    assert why == "" and got["quote"] == "Can you review my poster draft?"
+
+
+def test_a_late_ask_after_an_old_hello_waits_its_own_day():
+    recs = records(ask="morning!", asked=NOW - 27 * H,
+                   extra=[(NOW - 2 * H, "Maya", "Maya: can you send me the file?")])
+    got, why = plan(text_item(lines=("morning!", "can you send me the file?")), records=recs)
+    assert got is None and why == "not a day yet"
+
+
+def test_a_chat_that_isnt_known_one_to_one_never_qualifies():
+    got, why = plan(text_item(handle=""))
+    assert got is None and why == "not a known one-to-one chat"
+
+
+def test_an_ask_to_a_crowd_never_qualifies():
+    got, why = plan(mail_item(body="Can you all send your availability by Friday?"))
+    assert got is None and why == "no direct ask"
+
+
+def test_the_reminder_time_never_lands_in_quiet_hours():
+    stuck = {"n": 0}
+
+    def quiet_after_now(moment):
+        stuck["n"] += 1
+        return stuck["n"] > 1          # awake now, then quiet for days
+    got, why = plan(text_item(), quiet=quiet_after_now)
+    assert got is None and why == "no time outside quiet hours"
+    assert followups.due_time(NOW, TZ, lambda _m: True) is None
 
 
 def test_message_text_is_quoted_never_obeyed():
@@ -172,6 +217,9 @@ def test_alerts_roll_ups_and_machine_mail_never_qualify(over):
 @pytest.mark.parametrize("line", [
     "hey how are you?", "you up?", "lol", "Did you see the game last night?", "Will confirm later.",
     "I'll let you know tomorrow.", "Happy birthday!!", "right?", "Thanks for yesterday.",
+    "Can you believe this weather?", "You know what I mean?", "Are you kidding me?",
+    "John will send me the keys tomorrow.", "Don't email me about this.", "Tell me about it!",
+    "Mom says you can email me anytime.", "Is he coming tonight?",
 ])
 def test_small_talk_tags_and_statements_are_not_asks(line):
     got, why = plan(text_item(lines=(line,)), records=records(ask=line))
@@ -254,7 +302,7 @@ def test_an_ask_older_than_four_days_is_left_alone():
 def test_a_conversation_still_going_waits():
     extra = [(NOW - 30 * 60, "Maya", "Maya: also the quiz is moved")]
     got, why = plan(text_item(), records=records(extra=extra))
-    assert got is None and why == "still talking"
+    assert got is None and why == "not a day yet"
 
 
 def test_without_fresh_sent_mail_nothing_is_planned():
@@ -409,3 +457,177 @@ def test_a_cycle_honours_sent_mail_and_the_daily_cap():
     assert _run([text_item()], read_sent=answered)[0] == []
     assert _run([text_item()], read_sent=nothing, done_today=2) == ([], {})
     assert _run([text_item()], read_sent=nothing, since_ts=None) == ([], {})
+
+
+# --- the cycle's step: gate, caps, the verified write, the record and Undo ---------------
+
+import asyncio  # noqa: E402
+
+from service import config  # noqa: E402
+from service.proactive import acting, autoadd  # noqa: E402
+from service.proactive.store import ProactiveStore  # noqa: E402
+
+
+@pytest.fixture
+def setting(monkeypatch):
+    saved: dict = {}
+    monkeypatch.setattr(config, "user_overlay_valid", lambda: True)
+    monkeypatch.setattr(config, "models_config", lambda: dict(saved))
+    monkeypatch.setattr(config, "_save_overlay", lambda patch: saved.update(patch))
+    from service import idle
+    monkeypatch.setattr(idle, "foreground_busy", lambda: False)
+    acting.set_enabled(True, now=NOW - 30 * D)
+    return saved
+
+
+@pytest.fixture
+def store(tmp_path):
+    return ProactiveStore(tmp_path / "proactive")
+
+
+class Writer:
+    def __init__(self, outcome=None):
+        self.calls, self.outcome = [], outcome
+
+    async def __call__(self, plan):
+        self.calls.append(plan)
+        if self.outcome is not None:
+            return self.outcome
+        return {"ok": True, "source_id": f"R-{len(self.calls)}", "title": plan["title"]}
+
+
+async def _no_sent():
+    return [], True
+
+
+def step(store, items, *, now=NOW, write=None, abort=lambda: False, recs=None, **kw):
+    survivors = [{"item": item, "result": {}} for item in items]
+    return asyncio.run(followups.step(survivors, {"reminders": []}, now=now, tz=TZ, store=store, abort=abort,
+                                      write=write or Writer(), read_sent=kw.pop("read_sent", _no_sent),
+                                      records=records() if recs is None else recs, quiet=never_quiet,
+                                      reminders=kw.pop("reminders", []), **kw))
+
+
+def test_step_adds_one_verified_reminder_records_it_and_shows_its_card(setting, store):
+    write = Writer()
+    got = step(store, [text_item()], write=write)
+    [fp] = got["added"]
+    [plan] = write.calls
+    assert plan["title"] == "Reply to Maya" and plan["kind"] == "reminder"
+    record = store.auto_added()[fp]
+    assert record["kind"] == "follow_up" and record["status"] == "added"
+    assert record["undo"] == {"source_id": "R-1", "title": "Reply to Maya", "due_ts": plan["due_ts"]}
+    [card] = autoadd.done_cards(store, NOW + 60)
+    assert card["title"] == "Reminder to reply to Maya" and card["meta"] == "REMINDER"
+    assert card["body"].startswith(f"“{ASK}”") and "can't see calls" in card["body"]
+    assert "R-1" not in str(card)
+
+
+def test_undo_deletes_exactly_that_reminder_and_the_person_is_left_alone(setting, store, monkeypatch):
+    [fp] = step(store, [text_item()])["added"]
+    [card] = autoadd.done_cards(store, NOW + 60)
+    deleted = []
+
+    async def delete_reminder(stored):
+        deleted.append(dict(stored))
+        return {"ok": True, "status": "succeeded"}
+    monkeypatch.setattr(autoadd, "delete_reminder", delete_reminder)
+    result = asyncio.run(autoadd.undo(card, store, now=NOW + 120))
+    assert result["ok"] is True and deleted[0]["source_id"] == "R-1"
+    assert store.auto_added()[fp]["status"] == "undone"
+    # A new ask from Maya two days later is not followed up either.
+    later = NOW + 2 * D
+    recs = records(asked=later - 26 * H, mine=(NOW - 3 * D, NOW - 2 * D, NOW + 1 * H))
+    again = Writer()
+    assert step(store, [text_item(received=later - 26 * H)], now=later, write=again, recs=recs)["added"] == []
+    assert again.calls == []
+
+
+def test_dismissing_the_did_card_also_leaves_the_person_alone(setting, store):
+    step(store, [text_item()])
+    [card] = autoadd.done_cards(store, NOW + 60)
+    store.dismiss_card(card, now=NOW + 60)
+    later = NOW + 2 * D
+    recs = records(asked=later - 26 * H, mine=(NOW - 3 * D, NOW - 2 * D, NOW + 1 * H))
+    write = Writer()
+    assert step(store, [text_item(received=later - 26 * H)], now=later, write=write, recs=recs)["added"] == []
+    assert write.calls == []
+
+
+def test_a_person_gets_one_follow_up_a_week_whatever_came_of_it(setting, store):
+    step(store, [text_item()])
+    later = NOW + 2 * D
+    recs = records(asked=later - 26 * H, mine=(NOW - 3 * D, NOW - 2 * D, NOW + 1 * H))
+    write = Writer()
+    assert step(store, [text_item(received=later - 26 * H)], now=later, write=write, recs=recs)["added"] == []
+    assert write.calls == []
+
+
+def test_the_same_ask_is_never_added_twice(setting, store):
+    step(store, [text_item()])
+    write = Writer()
+    assert step(store, [text_item()], now=NOW + 600, write=write)["added"] == [] and write.calls == []
+
+
+def test_off_or_before_the_yes_writes_nothing(setting, store):
+    acting.set_enabled(False)
+    write = Writer()
+    assert step(store, [text_item()], write=write)["added"] == [] and write.calls == []
+    acting.set_enabled(True, now=NOW - 2 * H)          # the ask came before this yes
+    assert step(store, [text_item()], write=write)["added"] == [] and write.calls == []
+
+
+def test_a_turn_starting_stops_the_write(setting, store, monkeypatch):
+    write = Writer()
+    assert step(store, [text_item()], write=write, abort=lambda: True)["added"] == [] and write.calls == []
+    from service import idle
+    monkeypatch.setattr(idle, "foreground_busy", lambda: True)
+    assert step(store, [text_item()], write=write)["added"] == [] and write.calls == []
+    assert store.auto_added() == {}
+
+
+def test_an_unconfirmed_write_is_recorded_never_retried_and_shows_no_card(setting, store):
+    write = Writer({"ok": False, "status": "unknown"})
+    assert step(store, [text_item()], write=write)["added"] == []
+    [record] = store.auto_added().values()
+    assert record["status"] == "unknown" and "undo" not in record
+    assert autoadd.done_cards(store, NOW + 60) == []
+    again = Writer()
+    assert step(store, [text_item()], now=NOW + 600, write=again)["added"] == [] and again.calls == []
+
+
+def test_a_write_blocked_before_dispatch_may_try_again(setting, store):
+    assert step(store, [text_item()], write=Writer({"ok": False, "status": "blocked"}))["added"] == []
+    assert step(store, [text_item()], now=NOW + 600)["added"]
+
+
+def test_two_a_day_and_the_shared_cap_both_hold(setting, store):
+    people = ["Maya", "Sam", "Ravi"]
+    recs = sum((records(n) for n in people), [])
+    added = [step(store, [text_item(n)], now=NOW + i * 600, recs=recs)["added"] for i, n in enumerate(people)]
+    assert [len(a) for a in added] == [1, 1, 0]
+    store2 = ProactiveStore(store.root.parent / "other") if hasattr(store, "root") else None
+    if store2 is not None:
+        for i in range(acting.MAX_PER_DAY):
+            acting.record(store2, f"fp-{i}", kind="reminder", status="added", now=NOW - 60, title="x")
+        assert step(store2, [text_item()])["added"] == []
+
+
+def test_a_waved_away_reply_card_means_no_follow_up(setting, store):
+    from service.proactive.prepare import card_id
+    item = text_item()
+    store.dismiss_card({"id": card_id(f"{item['id']}:{item['hash']}", "text_reply")}, now=NOW - H)
+    write = Writer()
+    assert step(store, [item], write=write)["added"] == [] and write.calls == []
+
+
+def test_the_audit_line_names_no_one(setting, store, monkeypatch):
+    lines = []
+    monkeypatch.setattr(acting, "audit", lambda event, **f: lines.append((event, f)))
+    step(store, [text_item()])
+    assert lines and all("Maya" not in repr(f) and ASK not in repr(f) for _, f in lines)
+
+
+def test_every_surface_says_what_follow_ups_do():
+    assert any("remind you to reply" in line.lower() or "reminds you to reply" in line.lower()
+               for line in acting.DOES)

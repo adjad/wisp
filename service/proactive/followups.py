@@ -50,13 +50,13 @@ from service.proactive import guard
 DAY_S = 86400
 FOLLOW_UP_AFTER_S = DAY_S           # unanswered for a day
 MAX_AGE_S = 4 * DAY_S               # the texts window: older asks aren't seen whole
-SETTLE_S = 3600                     # the newest line is at least an hour old: not mid-conversation
 CONTACT_WINDOW_S = 30 * DAY_S
 MIN_TEXTS_OUT = 3                   # "talk to often": the user's own texts in the window...
 MIN_DAYS_OUT = 2                    # ...on at least this many different days
 MAX_PER_DAY = 2
 MAX_PER_CYCLE = 1
 PERSON_BLOCK_S = 30 * DAY_S         # after an Undo or dismiss, that person is left alone this long
+PERSON_REST_S = 7 * DAY_S           # after any follow-up, the next one for that person waits this long
 DUE_LEAD_S = 30 * 60
 MAX_LINES = 4                       # the newest unanswered lines read for the ask
 NAME_MAX = 40
@@ -123,14 +123,25 @@ def _name_tokens(name: str) -> set[str]:
 
 _SECOND_PERSON = re.compile(r"\b(?:you|u|ya|your|ur|yours|yourself|y'?all|you'?re|you'?d|you'?ll|you'?ve)\b", re.I)
 _PROPOSAL = re.compile(r"\b(?:should|shall|can|could|do|are|will|would)\s+(?:we|i)\b|\bwant\s+to\b|\bwanna\b", re.I)
-# A request in so many words, wherever it sits in the sentence.
+# A request in so many words, at the start of a sentence (after a greeting or a
+# "please" at most): "Let me know if Friday works", never "John will send me the
+# keys" or "Mom says you can email me".
+_LEAD = r"^\W*(?:(?:hey|hi|hello|also|and|so|ok|okay|oh|but|btw|plus)\W+)*(?:(?:please|pls|plz)\W+)?"
 _REQUEST = re.compile(
-    r"\b(?:let\s+me\s+know|lmk|get\s+back\s+to\s+me|text\s+me\s+back|call\s+me\s+back|"
-    r"email\s+me|send\s+me|tell\s+me|"
-    r"(?:please|pls|plz)\s+(?:let|send|reply|respond|confirm|answer|check|look|review|sign|fill|text|call|email))\b", re.I)
-# A bare verb counts only at the start, as an instruction: "Confirm by Friday",
-# never "Will confirm later".
-_IMPERATIVE = re.compile(r"^\W*(?:reply|respond|confirm|rsvp|answer)\b", re.I)
+    _LEAD + r"(?:let\s+me\s+know|lmk|get\s+back\s+to\s+me|text\s+me\s+back|call\s+me\s+back|"
+    r"email\s+me|send\s+me|reply|respond|confirm|rsvp|answer)\b", re.I)
+_PLEASE = re.compile(_LEAD.replace(r"(?:(?:please|pls|plz)\W+)?", r"(?:please|pls|plz)\W+") +
+                     r"(?:let|send|reply|respond|confirm|answer|check|look|review|sign|fill|text|call|email|tell)\b",
+                     re.I)
+_NOT_AN_ASK = re.compile(
+    r"\b(?:don'?t|do\s+not|never|no\s+need\s+to|says|said|told|tells|asked\s+if)\b|"
+    r"^\W*tell\s+me\s+about\s+it\b", re.I)
+_RHETORICAL = re.compile(
+    r"\b(?:can|could|would)\s+(?:you|u)\s+(?:believe|imagine)\b|\bare\s+(?:you|u)\s+(?:kidding|serious|for\s+real)\b|"
+    r"\b(?:you|u)\s+know\s+what\s+i\s+mean\b|\bguess\s+what\b|\bwho\s+knew\b|\bwhy\s+not\b", re.I)
+# An ask put to a crowd: a team mail, a class list, a group someone forwarded.
+_CROWD = re.compile(r"\b(?:you\s+all|y'?all|all\s+of\s+you|everyone|everybody|each\s+of\s+you|"
+                    r"team|guys|folks|you\s+both)\b", re.I)
 # Small talk and rhetorical tags: a question, but nothing waits on the answer.
 _SMALL_TALK = re.compile(
     r"^\W*(?:(?:hey|hi|hello|yo|hiya|sup)\W+)?(?:"
@@ -165,11 +176,11 @@ def is_ask(sentence: str) -> bool:
     words = re.findall(r"[\w']+", sentence)
     if len(words) < 3:
         return False
-    if sentence.rstrip().endswith("?"):
-        return bool(_SECOND_PERSON.search(sentence) or _PROPOSAL.search(sentence) or _REQUEST.search(sentence))
-    if re.match(r"(?i)^\W*(?:i|we|i'?ll|we'?ll|i'?m|we'?re)\b", sentence):
+    if _NOT_AN_ASK.search(sentence) or _RHETORICAL.search(sentence) or _CROWD.search(sentence):
         return False
-    return bool(_REQUEST.search(sentence) or _IMPERATIVE.match(sentence))
+    if sentence.rstrip().endswith("?"):
+        return bool(_SECOND_PERSON.search(sentence) or _PROPOSAL.search(sentence))
+    return bool(_REQUEST.match(sentence) or _PLEASE.match(sentence))
 
 
 def find_ask(lines) -> tuple[str, str]:
@@ -205,12 +216,19 @@ def _other_senders(item: dict) -> set[str]:
 
 
 def _mail_ask_lines(item: dict) -> list[str]:
-    """The subject and the newest incoming message: what waits on the user."""
-    blocks = [(s, t) for s, t in _mail_blocks(item) if not s.startswith("You (the user)")]
-    body = blocks[-1][1].strip() if blocks else ""
+    """The newest incoming message: what waits on the user. The subject counts only
+    when it is theirs alone: in a thread the user wrote in, "Re: Can we meet
+    Friday?" is the user's own question coming back."""
+    blocks = _mail_blocks(item)
+    incoming = [t for s, t in blocks if not s.startswith("You (the user)")]
+    body = incoming[-1].strip() if incoming else ""
     body = "" if body == "(subject only)" else body
+    if body:
+        return [body]
+    if any(s.startswith("You (the user)") for s, _ in blocks) or item.get("user_wrote"):
+        return []
     subject = str((item.get("ref") or {}).get("subject") or item.get("title") or "")
-    return [subject, body] if body else [subject]
+    return [re.sub(r"(?i)^\s*(?:(?:re|fwd?|aw|sv)\s*:\s*)+", "", subject)]
 
 
 def _mail_address(item: dict) -> str:
@@ -270,7 +288,7 @@ def _display_name(item: dict) -> str:
     return name
 
 
-def due_time(now: float, tz: str, quiet=None) -> float:
+def due_time(now: float, tz: str, quiet=None) -> float | None:
     """When the reminder comes up: the next half hour at least 30 minutes away,
     moved past quiet hours. From code, never from the message."""
     zone = ZoneInfo(tz)
@@ -280,9 +298,9 @@ def due_time(now: float, tz: str, quiet=None) -> float:
         at = at.replace(minute=30) if at.minute < 30 else at.replace(minute=0) + timedelta(hours=1)
     for _ in range(96):
         if quiet is None or not quiet(at):
-            break
+            return at.timestamp()
         at += timedelta(minutes=30)
-    return at.timestamp()
+    return None
 
 
 def _in_quiet(quiet, now: float, tz: str) -> bool:
@@ -359,6 +377,10 @@ def plan_for(item: dict, *, now: float, tz: str, history: dict | None = None, se
         context = str((item.get("ref") or {}).get("conversation") or "")
         if not context or context.startswith("Group ") or not _saved_contact(item.get("title") or ""):
             return None, "not a saved contact"
+        # One-to-one for certain: the native chat is a single person's, not a group
+        # the cache labelled by one member's name.
+        if not str(item.get("handle") or "").strip():
+            return None, "not a known one-to-one chat"
         entry = (history or {}).get(context)
         if entry is None:
             return None, "no text history"
@@ -388,12 +410,11 @@ def plan_for(item: dict, *, now: float, tz: str, history: dict | None = None, se
     if ask_ts < since_ts:
         return None, "arrived before the yes"
     waited = now - ask_ts
-    if waited < FOLLOW_UP_AFTER_S:
+    # Every line still waiting is a day old, so the ask is too, wherever it sits.
+    if now - newest < FOLLOW_UP_AFTER_S:
         return None, "not a day yet"
     if waited > MAX_AGE_S:
         return None, "too old"
-    if now - newest < SETTLE_S:
-        return None, "still talking"
 
     text = "\n".join(lines)
     if guard.source_sensitive(text) or guard.output_has_pii(text):
@@ -440,7 +461,12 @@ def plan_for(item: dict, *, now: float, tz: str, history: dict | None = None, se
 
     channel = "email" if source == "mail" else "text"
     title = guard.clean_title(f"Reply to {name}")
-    due = due_time(now, tz, quiet)
+    try:
+        due = due_time(now, tz, quiet)
+    except Exception:  # noqa: BLE001 — hours that can't be read: no time to pick
+        due = None
+    if due is None:
+        return None, "no time outside quiet hours"
     quote = guard.clean(ask, 160)
     return {
         "kind": "reminder", "action": "followup", "title": title, "due_ts": float(due),
@@ -533,3 +559,178 @@ async def plans(items, *, now: float, tz: str, records, reminders=(), results=No
         else:
             ready.append(got)
     return choose(ready, done_today=done_today, now=now), why
+
+
+# --- acting: the background cycle's step ------------------------------------------------
+
+KIND = "follow_up"
+MAX_ATTEMPTS = 2
+_REPLY_METHODS = ("text_reply", "email_reply", "read", "reminder", "add_to_day")
+
+
+def open_reminder_titles(sched: dict, store, now: float) -> list[str]:
+    """Every open reminder, dated or not, and the proactive to-dos, by title."""
+    rows = list(sched.get("reminders") or [])
+    try:
+        from service.proactive.autoadd import default_existing
+        rows += list(default_existing(now) or [])
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from service.assistant.store import assistant_store
+        rows += list(assistant_store.undated_reminders() or [])
+    except Exception:  # noqa: BLE001 — unreadable: the dated rows and to-dos still count
+        pass
+    try:
+        rows += [t for t in (store.state().get("todos") or []) if not t.get("done")]
+    except Exception:  # noqa: BLE001
+        pass
+    return [str(r.get("title") or "") if isinstance(r, dict) else str(r) for r in rows]
+
+
+def _blocked(store, now: float) -> tuple[set[str], int, dict]:
+    """(fingerprints and person keys never to plan again, follow-ups in the last
+    day, the records by fingerprint)."""
+    from service.proactive import acting
+    from service.proactive.prepare import card_id
+    records = store.auto_added()
+    dismissed = set(store.decisions().get("dismissed") or [])
+    blocked, today = set(), 0
+    for fp, record in records.items():
+        if not isinstance(record, dict):
+            continue
+        status = record.get("status")
+        if status in acting.LANDED or int(record.get("attempts") or 0) >= MAX_ATTEMPTS:
+            blocked.add(fp)
+        if record.get("kind") != KIND:
+            continue
+        if status in acting.LANDED and float(record.get("at") or 0) >= now - DAY_S:
+            today += 1
+        person = record.get("person_key")
+        # Undone, or its "Wisp did this" card waved away: leave that person alone.
+        waved = card_id(fp, "undo_add") in dismissed or status in ("undone", "undo_unknown")
+        if person and waved and now - float(record.get("undone_at") or record.get("at") or 0) <= PERSON_BLOCK_S:
+            blocked.add(person)
+        # One follow-up a week per person, whatever came of it: never a nag.
+        if person and status in acting.LANDED and now - float(record.get("at") or 0) <= PERSON_REST_S:
+            blocked.add(person)
+    return blocked, today, records
+
+
+def _when_phrase(due: float, now: float, tz: str) -> str:
+    zone = ZoneInfo(tz)
+    at, today = datetime.fromtimestamp(due, zone), datetime.fromtimestamp(now, zone).date()
+    clock = at.strftime("%-I %p") if at.minute == 0 else at.strftime("%-I:%M %p")
+    day = "today" if at.date() == today else "tomorrow" if at.date() == today + timedelta(days=1) \
+        else at.strftime("%A")
+    return f"{day} at {clock}"
+
+
+async def undo(record: dict) -> dict:
+    """Delete exactly the reminder Wisp added, by the identifier, title and time
+    stored in the record: the verified delete, read back as absent."""
+    stored = record.get("undo") if isinstance(record.get("undo"), dict) else {}
+    if not str(stored.get("source_id") or "").strip():
+        return {"ok": False, "status": "blocked", "error": "Wisp has no record of that reminder."}
+    from service.proactive.autoadd import delete_reminder
+    result = await delete_reminder(stored)
+    if isinstance(result, dict) and result.get("ok") is True:
+        return {"ok": True, "status": "succeeded", "message": "Reminder removed"}
+    return result if isinstance(result, dict) else {"ok": False, "status": "unknown"}
+
+
+def _register() -> None:
+    try:
+        from service.proactive import acting
+        acting.register_undoer(KIND, undo)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+_register()
+
+
+async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store, abort,
+               write=None, read_sent=read_sent_fresh, records=None, quiet=default_quiet,
+               reminders=None, debug: list | None = None) -> dict:
+    """Plan follow-ups for this cycle's items, and add the ones that pass through
+    the verified reminder write, each recorded with its Undo before any card.
+
+    `survivors` are the cycle's {"item", "result"} pairs. Returns {"added":
+    fingerprints added this pass}. `write`, `read_sent`, `records`, `quiet` and
+    `reminders` let tests replace the native write, Sent mail, the texts cache,
+    the hours and the open reminders."""
+    from service.proactive import acting
+    from service.proactive.prepare import card_id
+    _register()
+    since = acting.enabled_at()
+    if since is None:
+        return {"added": []}
+    blocked, today, recorded = _blocked(store, now)
+    if today >= MAX_PER_DAY or acting.room(store, now) <= 0:
+        return {"added": []}
+    decided = store.decisions()
+    gone = set(decided.get("dismissed") or []) | set(decided.get("fired") or [])
+    suppressed = set(decided.get("suppressed") or [])
+    items, results = [], {}
+    for survivor in survivors or ():
+        item = survivor.get("item") if isinstance(survivor, dict) else None
+        if not isinstance(item, dict) or item.get("source") not in ("mail", "messages"):
+            continue
+        if not acting.allows(item.get("received_ts")):
+            continue
+        # The user waved this item's card away, or already acted on it.
+        item_fp = f"{item.get('id')}:{item.get('hash')}"
+        if item_fp in suppressed or any(card_id(item_fp, m) in gone for m in _REPLY_METHODS):
+            continue
+        items.append(item)
+        results[item.get("id")] = survivor.get("result")
+    if not items:
+        return {"added": []}
+    if records is None:
+        records = []
+        if any(i.get("source") == "messages" for i in items):
+            from service.proactive.sources import text_records
+            records = text_records()
+    picked, why = await plans(
+        items, now=now, tz=tz, records=records,
+        reminders=open_reminder_titles(sched, store, now) if reminders is None else reminders,
+        results=results, since_ts=since, blocked=blocked, done_today=today, quiet=quiet, read_sent=read_sent)
+    if debug is not None:
+        debug.extend({"item": k, "follow_up": v} for k, v in why.items())
+    if write is None:
+        from service.proactive.autoadd import create_reminder as write
+    added = []
+    for plan in picked:
+        fp = plan["fingerprint"]
+        previous = recorded.get(fp) if isinstance(recorded.get(fp), dict) else {}
+        if not acting.allows(plan["received_ts"]):
+            continue
+        if acting.still_ok() is not None or acting.room(store, now) <= 0 or abort():
+            break
+        try:
+            outcome = await write(plan)
+        except Exception as exc:  # noqa: BLE001 — after a possible dispatch the outcome is unknown
+            outcome = {"ok": False, "status": "unknown", "error": type(exc).__name__}
+        outcome = outcome if isinstance(outcome, dict) else {"ok": False, "status": "unknown"}
+        source_id = str(outcome.get("source_id") or "").strip()
+        verified = outcome.get("ok") is True and bool(source_id)
+        status = "added" if verified else "unknown" if outcome.get("status") == "unknown" else \
+            "blocked" if outcome.get("status") == "blocked" else "failed"
+        attempts = int(previous.get("attempts") or 0) + (0 if status == "blocked" else 1)
+        title = outcome.get("title") if verified and isinstance(outcome.get("title"), str) \
+            and outcome["title"].strip() else plan["title"]
+        when = _when_phrase(plan["due_ts"], now, tz)
+        acting.record(
+            store, fp, kind=KIND, status=status, now=now, title=title, quote=plan["quote"], who=plan["who"],
+            source=plan["source"], item_id=str(plan.get("item_id") or ""), received_ts=plan["received_ts"],
+            timezone=tz, account=plan.get("account", ""), person_key=plan["person_key"], attempts=attempts,
+            due_ts=plan["due_ts"], item_fingerprint=plan["item_fingerprint"],
+            card={"meta": "REMINDER", "title": guard.clean_title(f"Reminder to reply to {plan['who']}"),
+                  "did": f"No reply yet in Messages or Mail, so I'll remind you {when}. "
+                         "Wisp can't see calls: if you already called, Undo."},
+            show_until=plan["due_ts"],
+            undo={"source_id": source_id, "title": title, "due_ts": plan["due_ts"]} if verified else None)
+        if verified:
+            added.append(fp)
+    return {"added": added}

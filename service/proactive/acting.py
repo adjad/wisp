@@ -59,6 +59,7 @@ LANDED = ("added", "undone", "unknown", "undo_unknown")
 # is built: a module adds its line here in the same change that makes it act.
 DOES: list[str] = [
     "Adds an event or deadline you missed in a text or email to Calendar or Reminders.",
+    "Reminds you to reply when someone you talk to often asked you something a day ago and hasn't heard back.",
 ]
 NEVER = "Wisp never sends, replies, deletes or pays for anything by itself."
 
