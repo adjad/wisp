@@ -866,6 +866,69 @@ def personal_event_question(prompt: str) -> bool:
     return bool(text.isascii() and _OWN_EVENT.match(text))
 
 
+# Everyday wordings whose tool the lexical head start left out of its six real
+# schemas (2026-11-12 probe of demo-style questions): "what did mom say" led
+# with lookup_contact and travel_time, "set a timer for 5 minutes" with
+# plan_meeting, "email Dana the notes" had no send_email at all. Each entry is
+# (pattern, tools to lead with). They only order tools the turn already has.
+# "what did you say", "what did the president say": not someone who texts the user.
+_NOT_A_SENDER = r"(?!(?:you|i|we|it|this|that|the|a|an|wisp|they|there)\b)"
+_DIRECT_LEADS = (
+    # What someone said or whether they answered: their texts first, then mail.
+    (re.compile(r"^(?:what\s+did|what\s+has|did|has|have)\s+" + _NOT_A_SENDER + r"[a-z][\w'.-]*(?:\s+[a-z][\w'.-]*){0,2}\s+"
+                r"(?:say|said|texted|text|messaged?|repl(?:y|ied)|respond(?:ed)?|answer(?:ed)?|"
+                r"wr(?:ite|ote)|g(?:e|o)t\s+back)\b", re.I),
+     ("view_messages", "view_emails")),
+    (re.compile(r"\b(?:any|new|unread|latest|recent)\s+(?:new\s+|unread\s+)?(?:texts?|messages?|imessages?)\b"
+                r"|\b(?:texts?|messages?)\s+from\b|\bwho\s+(?:texted|messaged)\b", re.I),
+     ("view_messages", "summarize_messages")),
+    (re.compile(r"^(?:did|has|have)\s+" + _NOT_A_SENDER + r"[a-z][\w'.-]*(?:\s+[a-z][\w'.-]*){0,2}\s+e-?mail(?:ed)?\b"
+                r"|\b(?:any|new|unread|latest)\s+e-?mails?\s+from\b|\bgrade\s+updates?\b", re.I),
+     ("view_emails", "summarize_emails")),
+    # "email <someone> ..." as an instruction. Never a question, and never
+    # "email from Dana", "email about the W-9", "email Dana sent yesterday" or
+    # "email addresses": those ask about mail, and send_email must not lead a read.
+    (re.compile(r"^(?:please\s+)?(?:can\s+you\s+|could\s+you\s+)?e-?mail\s+"
+                r"(?!(?:me|address(?:es)?|from|about|re|regarding|threads?|that|which|the|in|on|with|to|for|"
+                r"sent|and|or|is|was|of)\b)"
+                r"[a-z][\w'.-]*(?!\s+(?:sent|send|sends|wrote|emailed|forwarded|replied|said|got|received)\b)\b",
+                re.I),
+     ("send_email",), "instruction"),
+    (re.compile(r"\b(?:set|start|put)\s+(?:a|an|the|another)?\s*(?:[\w-]+\s+){0,3}?timer\b"
+                r"|\btimer\s+for\b|\b(?:set|wake)\b.*\balarm\b|\balarm\s+(?:for|at)\b", re.I),
+     ("set_timer", "manage_timers"), "timer"),
+    (re.compile(r"\b(?:do\s+i\s+have|any|show|list|what\s+are)\b.*\breminders?\b|\bwhat(?:'s|\s+is)\s+overdue\b", re.I),
+     ("search_reminders",)),
+    # An index by name. The price tool only: a web search leads through
+    # web_first, which has the privacy checks this pattern does not.
+    (re.compile(r"\b(?:s\s*&\s*p(?:\s*500)?|s\s+and\s+p\s+500|dow\s+jones|the\s+dow|nasdaq)\b", re.I),
+     ("get_stock_price",)),
+)
+# A request worded as a question ("did I set an alarm for 7?", "email from
+# Dana?"): it reads, so a tool that sends or creates never leads it.
+_ASKS = re.compile(r"^(?:did|do|does|is|are|was|were|has|have|had|how|what|when|where|who|which|why|any|"
+                   r"can\s+i|could\s+i|should\s+i|will)\b|\?\s*$", re.I)
+
+
+def direct_leads(prompt: str) -> list[str]:
+    """Tools that lead the Ask head start for an everyday wording (see
+    _DIRECT_LEADS), most wanted first. Empty for anything else."""
+    text = _ascii_text(normalize_day_words(prompt or "")).strip()
+    if not text.isascii() or len(text.split()) > 24:
+        return []
+    asks = bool(_ASKS.search(text))
+    out: list[str] = []
+    for pattern, tools, *kind in _DIRECT_LEADS:
+        if not pattern.search(text):
+            continue
+        if kind == ["instruction"] and asks:
+            continue                            # a question never leads with a send
+        if kind == ["timer"] and asks:
+            tools = ("manage_timers",)          # a question reads the timers; it sets none
+        out.extend(n for n in tools if n not in out)
+    return out
+
+
 def reminders_first(prompt: str) -> bool:
     """A personal question about to-dos ("what are my open tasks"):
     search_reminders leads the head start."""
@@ -1261,14 +1324,35 @@ def public_fact_question(prompt: str) -> bool:
 # return policy is a public fact. The owner is at most four words and never a
 # relation or a pronoun; the head is only one of these public business facts
 # (never a number, address, schedule or plan).
+_POSSESSIVE_OWNER = r"(?P<owner>[a-z0-9][a-z0-9&-]*(?:\s+[a-z][a-z0-9&-]*){0,3})'s"
+_POSSESSIVE_DAY = (r"(?:\s+(?:today|tomorrow|tonight|now|right\s+now|this\s+weekend|"
+                   r"on\s+(?:mondays?|tuesdays?|wednesdays?|thursdays?|fridays?|saturdays?|sundays?|"
+                   r"christmas(?:\s+eve)?|thanksgiving|easter|new\s+year'?s(?:\s+(?:day|eve))?)))?\s*[?.!]?$")
+# A counter inside the business, between its name and the question.
+_POSSESSIVE_DEPT = (r"(?:\s+(?:pharmacy|bakery|deli|cafe|food\s+court|gas\s+station|tire\s+center|"
+                    r"garden\s+center|auto\s+center|optical|drive-?thru|store))?")
 _PUBLIC_POSSESSIVE = re.compile(
     r"^(?:(?:what|when)\s+(?:are|is)\s+|what'?s\s+)?(?:the\s+)?"
-    r"(?P<owner>[a-z0-9][a-z0-9&-]*(?:\s+[a-z][a-z0-9&-]*){0,3})'s\s+"
+    + _POSSESSIVE_OWNER + r"\s+"
     r"(?:(?:opening|store|holiday|business|weekend|pharmacy|regular|normal|current)\s+)?"
     r"(?:hours|opening\s+times|menu|return\s+policy)"
-    r"(?:\s+(?:today|tomorrow|tonight|now|this\s+weekend|"
-    r"on\s+(?:mondays?|tuesdays?|wednesdays?|thursdays?|fridays?|saturdays?|sundays?|"
-    r"christmas(?:\s+eve)?|thanksgiving|easter|new\s+year'?s(?:\s+(?:day|eve))?)))?\s*[?.!]?$", re.I)
+    + _POSSESSIVE_DAY, re.I)
+# The same public fact asked as a yes/no or a time ("Is Trader Joe's open on
+# Thanksgiving?", "When does Costco's pharmacy close?", "How late is Lowe's
+# open?"): rc2 knew only the "<name>'s hours" wording, so these stayed private
+# and got no search on the first message of a chat.
+_PUBLIC_POSSESSIVE_OPEN = tuple(re.compile(r"^" + lead + _POSSESSIVE_DAY, re.I) for lead in (
+    r"(?:is|are)\s+(?:the\s+)?" + _POSSESSIVE_OWNER + _POSSESSIVE_DEPT + r"\s+(?:still\s+)?(?:open|closed)(?:\s+late)?",
+    r"(?:when|what\s+time)\s+(?:does|do|will)\s+(?:the\s+)?" + _POSSESSIVE_OWNER + _POSSESSIVE_DEPT
+    + r"\s+(?:open|close)",
+    r"how\s+late\s+(?:is|are)\s+(?:the\s+)?" + _POSSESSIVE_OWNER + _POSSESSIVE_DEPT + r"\s+open",
+))
+
+
+def _possessive_match(text: str):
+    """The match of either public possessive wording; its `owner` group is the name."""
+    return _PUBLIC_POSSESSIVE.match(text) or next(
+        (m for pattern in _PUBLIC_POSSESSIVE_OPEN if (m := pattern.match(text))), None)
 # Owners that are people in the user's life (or not a name at all).
 _RELATION_OWNERS = frozenset("""
 mom mum mommy mummy mama ma dad daddy papa pa mother father parents grandma grandpa granny gran nana
@@ -1283,7 +1367,7 @@ monday tuesday wednesday thursday friday saturday sunday
 
 
 def _possessive_owner_is_personal(text: str) -> bool:
-    m = _PUBLIC_POSSESSIVE.match(text)
+    m = _possessive_match(text)
     return bool(m and any(w.lower() in _RELATION_OWNERS for w in m.group("owner").split()))
 
 
@@ -1325,10 +1409,11 @@ def _known_people_tokens() -> set[str] | None:
 
 
 def _possessive_owner_is_known_person(owner: str) -> bool:
-    """Every word of the owner (titles aside) is a word of a name Wisp knows:
-    "Dana" or "Dr Patel" when Dana or a Patel is in the profile or contacts.
-    A failed lookup counts as known; no people data at all counts as unknown,
-    which leaves the words-only search rule as the only check."""
+    """The owner (titles aside) starts with, or is made only of, words of a
+    name Wisp knows: "Dana", "Dr Patel", and "Dana Lee" when a Dana Smith is in
+    the profile or contacts. "Trader Joe" is not, with a Joe known. A failed
+    lookup counts as known; no people data at all counts as unknown, which
+    leaves the words-only search rule as the only check."""
     words = [w for w in owner.lower().split() if w not in _OWNER_TITLES]
     if not words:
         return True
@@ -1336,7 +1421,7 @@ def _possessive_owner_is_known_person(owner: str) -> bool:
         tokens = _known_people_tokens()
     except Exception:  # noqa: BLE001 — an unreadable profile or cache fails closed
         return True
-    return bool(tokens) and all(w in tokens for w in words)
+    return bool(tokens) and (words[0] in tokens or all(w in tokens for w in words))
 
 
 def public_possessive_question(prompt: str) -> bool:
@@ -1347,11 +1432,78 @@ def public_possessive_question(prompt: str) -> bool:
     Wisp knows locally."""
     text = _ascii_text(prompt).strip()
     if not (text.isascii() and len(text.split()) <= _FACT_MAX_WORDS
-            and (m := _PUBLIC_POSSESSIVE.match(text)) and not _FIRST_PERSON.search(text)
+            and (m := _possessive_match(text)) and not _FIRST_PERSON.search(text)
             and not _possessive_owner_is_personal(text)):
         return False
     owner = m.group("owner")
     return not (_possessive_owner_is_contact_detail(owner) or _possessive_owner_is_known_person(owner))
+
+
+# A public question whose answer changes, so the model's own memory is stale:
+# opening hours ("Is Costco open on Sunday?", "When does Target close?"), who
+# holds an office now ("Who is the president?"), the newest version of a
+# product, today's news. In the 2026-11-04 debug export "who is the president?"
+# was answered from memory with no search. These lead the Ask head start with
+# web_search (service/main._ask_tool_rank); they open nothing a turn did not
+# already have.
+_WEB_FIRST = re.compile(
+    r"^(?:"
+    r"(?:is|are)\s+(?:the\s+)?[a-z0-9][a-z0-9&' -]{1,40}?\s+(?:still\s+)?(?:open|closed)\b.*"
+    r"|(?:when|what\s+time)\s+(?:does|do|will)\s+(?:the\s+)?[a-z0-9][a-z0-9&' -]{1,40}?\s+(?:open|close)\b.*"
+    r"|how\s+late\s+(?:is|are)\s+(?:the\s+)?[a-z0-9][a-z0-9&' -]{1,40}?\s+open\b.*"
+    r"|[a-z0-9][a-z0-9&' -]{1,40}?\s+(?:store\s+|opening\s+|holiday\s+)?hours\b.*"
+    r"|who(?:\s+is|'s|\s+are)\s+(?:the\s+)?(?:current\s+|new\s+|next\s+)?(?:us\s+|u\.s\.\s+)?"
+    r"(?:president|vice\s+president|prime\s+minister|governor|mayor|senators?|chancellor|pope|king|queen|"
+    r"secretary\s+of\s+[a-z ]+|speaker\s+of\s+the\s+house|ceo|chief\s+executive|chairman|head\s+coach)\b.*"
+    # The newest of a product line, or of a named thing's versions: never "the
+    # latest on <a topic>", which may be a deal or a project of the user's own.
+    r"|(?:what(?:'s|\s+is)|which\s+is)\s+the\s+(?:latest|newest|most\s+recent)\s+(?:"
+    r"(?:version|release|update|model|generation)\s+of\s+[a-z0-9][a-z0-9 .+-]{1,30}"
+    r"|(?:apple\s+|samsung\s+|google\s+)?(?:iphone|ipad|macbook|imac|mac|macos|ios|ipados|watchos|apple\s+watch|"
+    r"airpods|pixel|galaxy|android|windows|playstation|xbox|kindle)\b[a-z0-9 .+-]{0,20})\s*[?.!]?"
+    # The day's news, with no topic: "any news on <x>" names a topic that may be private.
+    r"|(?:what(?:'s|\s+is)\s+(?:the\s+|in\s+the\s+)?|today'?s\s+|top\s+|latest\s+)?"
+    r"(?:news|headlines)(?:\s+(?:today|tonight|now|right\s+now|this\s+morning))?\s*[?.!]?"
+    r")$", re.I)
+
+
+def web_first(prompt: str) -> bool:
+    """A short public question whose answer changes (see _WEB_FIRST), with
+    nothing of the user's in it: the search leads the Ask head start."""
+    text = _ascii_text(prompt).strip()
+    if not (text.isascii() and len(text.split()) <= _FACT_MAX_WORDS
+            and not _FIRST_PERSON.search(text) and _WEB_FIRST.match(text)
+            and not _possessive_owner_is_personal(text)):
+        return False
+    words = set(re.findall(r"[a-z]+", text.lower()))
+    # A relation, a thing of the user's own (their mail, their door), something
+    # "from" or "with" someone, or "open to" an idea is not a web question.
+    if (words & (_RELATION_OWNERS - _WEB_FIRST_PLAIN) or words & _WEB_FIRST_OWN
+            or words & {"from", "with"} or re.search(r"\b(?:open|closed)\s+(?:to|for|about)\b", text, re.I)
+            or asks_personal_data(prompt)):
+        return False
+    try:                                        # a person Wisp knows is not a business
+        known = _known_people_tokens()
+    except Exception:  # noqa: BLE001 — an unreadable profile or cache: no head start
+        return False
+    return not (known and words & known)
+
+
+# Things that are the user's own even with no "my" ("the latest email from
+# Sam", "is the garage door open", "office hours with the TA").
+_WEB_FIRST_OWN = frozenset("""
+email emails mail inbox message messages text texts imessage reminder reminders calendar event events
+meeting meetings class classes office ta note notes file files folder document documents doc docs
+order package delivery door window garage gate account appointment schedule flight trip homework
+assignment exam midterm quiz grade grades chat thread task tasks todo timer alarm brief
+deal deals project projects ticket tickets case cases application applications offer offers claim claims
+status issue issues bug bugs request requests position role job listing sale contract proposal
+budget budgets spreadsheet spreadsheets resume cv draft drafts plan report essay paper thesis
+enrollment registration poll survey invoice order orders pr
+""".split())
+# Relation words that are also ordinary words of a public question.
+_WEB_FIRST_PLAIN = frozenset("it that there here what who this these those today tomorrow tonight "
+                             "yesterday monday tuesday wednesday thursday friday saturday sunday".split())
 
 
 # Words a search for a public fact may add to the user's own: the query of a
@@ -1364,6 +1516,7 @@ score scores result results final game games match series standings
 rate rates exchange convert conversion usd eur gbp jpy inr cad aud cny chf mxn
 dollar dollars euro euros pound pounds yen rupee rupees peso pesos franc francs yuan
 stock stocks share shares crypto cryptocurrency market
+hours open opens opening close closes closing closed time times store holiday menu return policy
 """.split())
 # The only characters a public-fact search may contain, after NFKC folding:
 # anything else (Cyrillic, other scripts' digits) is invisible to a word check.
