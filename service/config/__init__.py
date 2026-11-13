@@ -331,14 +331,13 @@ def set_behavior_enabled(enabled: bool) -> bool:
 
 
 def proactive_auto_add_enabled() -> bool:
-    """Whether the background Brief may add a missed, time-sensitive event or
-    deadline to Calendar/Reminders on its own and report it after
-    (service/proactive/autoadd.py). Default False: the same items arrive as
-    tap-to-add cards. The standing approval is the person's yes to "Let Wisp act
-    for me" (``act_for_me`` in the user overlay, service/proactive/acting.py),
-    which also records when it was given. The older ``proactive_auto_add: true``
-    key carries no such time and no longer turns anything on.
-    An overlay that exists but cannot be read fails closed."""
+    """Whether "Let Wisp act for me" is on: only a report of the gate in
+    service/proactive/acting.py (``acting.enabled()``), which also covers
+    auto-add (service/proactive/autoadd.py). Default False: the same items
+    arrive as tap-to-add cards. The yes lives in the gate's own private file
+    (~/.moe/act_for_me.json, written only by the switch), read from disk on
+    every check. Nothing in config.yaml counts: not ``act_for_me``, not the
+    older ``proactive_auto_add: true`` key, in any overlay."""
     from service.proactive import acting
     return acting.enabled()
 

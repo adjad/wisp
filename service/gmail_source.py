@@ -617,12 +617,24 @@ def _header(payload: dict, name: str) -> str:
     return ""
 
 
+def _sender_address(raw_from: str) -> str:
+    """The address `parseaddr` reads from the raw From header, casefolded ("" if none).
+
+    Parsed BEFORE encoded words are decoded: a name that decodes to "<", "@" or ","
+    cannot move it. Carried on every row as `sender_address`, so readers never take
+    an address back out of the display name (see service/mail_sender.py)."""
+    address = _clean(parseaddr(raw_from or "")[1]).casefold()
+    return address if "@" in address and not any(c.isspace() for c in address) else ""
+
+
 def parse_metadata(message: dict) -> dict:
     payload = message.get("payload") or {}
-    name, address = parseaddr(_decode(_header(payload, "From")))
+    raw_from = _header(payload, "From")
+    name, address = parseaddr(_decode(raw_from))
     return {"id": message.get("id", ""),
             "ts": int(message.get("internalDate", 0)) / 1000.0,
             "name": _clean(name), "address": _clean(address),
+            "sender_address": _sender_address(raw_from),
             "to": _clean(_decode(_header(payload, "To"))),
             "subject": _clean(_decode(_header(payload, "Subject"))),
             "message_id": _clean(_header(payload, "Message-ID")),
@@ -631,9 +643,10 @@ def parse_metadata(message: dict) -> dict:
 
 
 def header_line(meta: dict, account: str, unread: bool) -> str:
-    # Same H2 record MailReader.swift emits (10 fields).
+    # Same H2 record MailReader.swift emits (10 fields). The address field is the
+    # one parsed from the raw From header, so header rows' sender_address matches it.
     return _FS.join(["H2", str(int(meta["ts"])), "U" if unread else "R", account,
-                     account, meta["name"], meta["address"], meta["message_id"],
+                     account, meta["name"], meta.get("sender_address") or meta["address"], meta["message_id"],
                      meta["subject"], meta["id"]])
 
 
@@ -770,8 +783,8 @@ def _attachment_message(account: str, message: dict) -> dict | None:
     meta = parse_metadata(message)
     sender = f"{meta['name']} <{meta['address']}>" if meta["name"] else meta["address"]
     return {"account": account, "message_id": meta["id"], "rfc_message_id": meta["message_id"],
-            "ts": meta["ts"], "sender": sender, "subject": meta["subject"],
-            "attachments": attachment_parts(message.get("payload") or {})}
+            "ts": meta["ts"], "sender": sender, "sender_address": meta["sender_address"],
+            "subject": meta["subject"], "attachments": attachment_parts(message.get("payload") or {})}
 
 
 async def search_attachments(account: str, terms: list[str], start: float | None, end: float | None,

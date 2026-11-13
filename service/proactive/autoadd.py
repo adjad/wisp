@@ -34,6 +34,18 @@ IMPORTANT rules:
   calendar_event/reminder).
 - One path per message: an item Caught for you already turned into a reminder
   or event (service/attention) is never added here as well.
+- Mail never acts on its own in this release (MAIL_ACTS): a mail sender's
+  identity comes from an unauthenticated From header, so a qualifying mail item
+  always stays a tap card. Texts still auto-add under the gate (a text's sender
+  is a handle matched to a saved contact). The mail timing rules below stay in
+  place and tested for when this is switched on.
+- "Arrived after the yes" is judged per sentence: a mail subject by the first
+  in-view message that carried it without a Re:/Fwd: prefix (sources._subject_ts),
+  a mail body sentence by its own message, or by an EARLIER message in view that
+  already said it (quoted history the cut missed), a text line by its own line.
+  A body whose history can't be told apart has no known time: never added
+  without a tap. Every date resolves against its own sentence's time; a
+  relative date ("Friday") whose time is unknown is never used.
 """
 from __future__ import annotations
 
@@ -53,6 +65,15 @@ MAX_AHEAD_S = 60 * DAY_S
 DEFAULT_EVENT_MIN = 60
 DONE_SHOWN_S = 3 * DAY_S
 MAX_ATTEMPTS = 2
+# Mail does not act on its own in this release: a mail sender's identity comes from an
+# unauthenticated From header (anyone can write "From: Prof. Lee"; service/mail_sender.py
+# reads it strictly but cannot prove it), so for now a qualifying MAIL item always stays a
+# tap card. Texts still auto-add under the gate: a text's sender is a handle matched to a
+# saved contact. The per-line arrival rules for mail stay in place, tested with this on.
+MAIL_ACTS = False
+# A body sentence counts as already said in an earlier message when at least this share
+# of its word 3-grams appear in that message (sources.quote_grams).
+QUOTED_SHARE = 0.5
 # Records never block forever, but they outlive every source window (7 days of
 # mail and texts) many times over.
 KEEP_S = 90 * DAY_S
@@ -132,6 +153,33 @@ def _latest_mail_block(item: dict) -> tuple[str, str]:
     return subject, "" if body.strip() == "(subject only)" else body
 
 
+def _incoming_blocks(item: dict) -> int:
+    parts = _BLOCK.split(item.get("text") or "")
+    return sum(1 for i in range(1, len(parts) - 1, 2) if not parts[i].startswith("You (the user)"))
+
+
+def _said_at(sentence: str, body_ts: float | None, earlier) -> float | None:
+    """When a sentence of the newest mail block was first said: the earliest
+    earlier in-view message that already carries it (an unmarked quote), else
+    the block's own time. None when that is unknown, or when the sentence is too
+    short to compare and anything earlier is in view."""
+    if body_ts is None:
+        return None
+    from service.proactive.sources import GRAM_N, quote_grams
+    grams = quote_grams(sentence.rstrip("…"))
+    found = []
+    for entry in earlier or []:
+        try:
+            ts, seen = float(entry[0]), set(entry[1])
+        except (TypeError, ValueError, IndexError):
+            return None                      # an unreadable record: the time is not known
+        if len(re.findall(r"[a-z0-9]+", sentence.casefold())) < GRAM_N:
+            return None
+        if grams and sum(g in seen for g in grams) >= QUOTED_SHARE * len(grams):
+            found.append(ts)
+    return min(found) if found else body_ts
+
+
 def _user_reply(item: dict) -> str:
     """The user's own newest message in the thread, or ""."""
     text = item.get("text") or ""
@@ -165,10 +213,15 @@ def _candidates(item: dict) -> list[tuple[str, bool, float | None]]:
         return float(value) if type(value) in (int, float) else None
     if item["source"] == "mail":
         subject, body = _latest_mail_block(item)
-        # The newest incoming message's own text (quoted history is cut in sources._excerpt)
-        # arrived at received_ts; the subject is as old as the thread.
+        # The subject is as old as the first message that carried it unprefixed
+        # (sources._subject_ts). The newest incoming block's own words arrived at
+        # body_ts, which sources leaves None when the block's history can't be told
+        # apart; and the block read here must be the one body_ts is about.
+        body_ts = stamp(item.get("body_ts"))
+        if _incoming_blocks(item) != item.get("mail_blocks_in"):
+            body_ts = None
         return [(subject, True, stamp(item.get("subject_ts")))] + \
-               [(s, True, stamp(item.get("received_ts"))) for s in _sentences(body)]
+               [(s, True, _said_at(s, body_ts, item.get("mail_earlier"))) for s in _sentences(body)]
     every, stamps = list(item.get("lines") or []), list(item.get("line_ts") or [])
     known = len(stamps) == len(every)
     lines, times = every[-3:], (stamps[-3:] if known else [None] * len(every[-3:]))
@@ -397,8 +450,13 @@ def plan_for(item: dict, result: dict | None, *, now: float, tz: str) -> tuple[d
         if _HEDGE.search(sentence):
             reason = "only a proposal"
             continue
-        got = _resolve(sentence, float(arrival), tz)
-        if not _explicit(got, relative_ok):
+        # Against the sentence's own arrival: a subject's "Friday" is the Friday after the
+        # thread began, not after its latest reply. A sentence whose time is unknown may
+        # use only an absolute date (its year read against the item's arrival), and its
+        # plan keeps line_ts None: a tap card.
+        known = type(line_ts) in (int, float)
+        got = _resolve(sentence, float(line_ts) if known else float(arrival), tz)
+        if not _explicit(got, relative_ok and known):
             continue
         zone = ZoneInfo(tz)
         if deadline:
@@ -821,6 +879,10 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
         # Only a line that itself arrived after the person's yes is added without a tap:
         # the time of the sentence the date came from, never the conversation's latest line.
         fresh = on and allows(plan.get("line_ts"))
+        if on and fresh and plan["source"] == "mail" and not MAIL_ACTS:
+            tap.append(tap_card(plan, now))
+            note(item, "mail: tap to add")
+            continue
         if not fresh or attempts >= MAX_PER_CYCLE or today + attempts >= MAX_PER_DAY:
             tap.append(tap_card(plan, now))
             note(item, "tap to add" if not on else "arrived before the yes: tap to add" if not fresh

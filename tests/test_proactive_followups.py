@@ -159,6 +159,11 @@ def test_mail_a_subject_alone_counts_only_when_the_user_never_wrote():
 @pytest.mark.parametrize("subject", ["Re: Can you send me the slides?", "Fwd: Can you send me the slides?",
                                      "RE: Re: Can you send me the slides?", "  Fw: Can you send me the slides?"])
 def test_a_reply_or_forward_subject_is_never_the_ask(subject):
+    from service.proactive import sources
+    # Through the reader: no unprefixed message in view, so no subject time at all.
+    [real] = sources.mail_items([_mail_row("Priya Shah <priya@school.edu>", subject=subject.strip(), body="")],
+                                mine={ME}, now=NOW, tz=TZ, linked=set(), own=ME)
+    assert real["subject_ts"] is None and plan(real, since_ts=NOW - 20 * D)[0] is None
     # Maya asked on day -10 and the user replied on day -9, both outside the windows. On day -2
     # "Re: Can you send me the slides?" arrives with "Got them, thanks", body not cached.
     mailed = list(MAILED)
@@ -1207,8 +1212,6 @@ def test_a_stranger_posing_as_the_user_in_the_name_is_neither_the_user_nor_follo
     assert plan(item, lookup=lambda address: "Priya Shah") == (None, "the sender's name hides an address")
 
 
-@pytest.mark.xfail(strict=True, reason="needs the lead's anchored-bracket fix in sources._address/odd_sender; "
-                                       "drop this marker when that merges")
 def test_a_quoted_local_part_cant_hide_the_real_address():
     from service.proactive import sources
     [item] = sources.mail_items([_mail_row('Priya <priya@school.edu> <"x y"@evil.com>')], mine={ME}, now=NOW,
@@ -1216,8 +1219,10 @@ def test_a_quoted_local_part_cant_hide_the_real_address():
     assert plan(item, lookup=lambda address: "Priya Shah")[0] is None
 
 
-@pytest.mark.xfail(strict=True, reason="needs the lead's fix: odd whenever the name carries an address, even "
-                                       "with sender_address present; drop this marker when that merges")
+@pytest.mark.xfail(strict=True, reason="OPEN: this row is identical to a genuine Gmail row (sender='Name <addr>' "
+                                       "plus sender_address, gmail_source), so mail_sender reads it as clean; whether "
+                                       "Mail.app ever reports such a name is the hand check "
+                                       "(followups-hand-check-mail-app-address.md)")
 def test_mail_apps_split_fields_with_an_address_in_the_name_get_no_reminder():
     # Mail.app reports `extract name` as sender and `extract address` as sender_address. If
     # AppleScript returned the address written inside the display name, only the name shows it.
@@ -1308,6 +1313,8 @@ def test_a_subject_is_never_the_ask_when_the_thread_is_older_than_the_message():
     assert plan(item, since_ts=NOW - 12 * D) == (None, "no direct ask")
     item = mail_item(subject="Can you review my poster draft?", body="(subject only)", user_wrote=False)
     del item["subject_ts"]
+    assert plan(item, since_ts=NOW - 12 * D) == (None, "no direct ask")
+    item["subject_ts"] = None                       # the reader's "no unprefixed message in view"
     assert plan(item, since_ts=NOW - 12 * D) == (None, "no direct ask")
 
 
