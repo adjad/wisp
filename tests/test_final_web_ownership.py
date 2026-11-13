@@ -604,3 +604,49 @@ def test_cutting_a_quote_run_keeps_what_is_quoted_and_what_is_not():
     assert bounded_quotes("'" * 5000) == "'" * 8 and bounded_quotes("'" * 5001) == "'" * 7
     assert bounded_quotes('say "hello" to them') == 'say "hello" to them'
     assert bounded_quotes("it's 5 o'clock") == "it's 5 o'clock"
+
+
+# ---- final review of 5d2d3ea0: a holiday excuses only itself -------------------
+
+HOLIDAY_NOT_AN_EXCUSE = [
+    "Grandma fell on Mother's Day, is she ok?", "Mom is in the hospital on Mother's Day, how is she?",
+    "Priya's Mother's Day flight today", "Dad is sick on Father's Day, is he better today?",
+    "Mom is sad on Mother's Day, is she ok today?", "Mom called on Mother's Day, what did she want",
+    "Mother's Day: Grandma is in hospital, any update?", "Aunt Sue is sick on Mother's Day, is she ok?",
+    "any update on grandma Mother's Day", "Dana's Mother's Day plans today", "Ben's Father's Day party tonight",
+    "Mother's Day at Dana's today?", "Uncle Joe's Father's Day party tonight", "Sam's Mother's Day surprise today",
+    "Mother's Day at the Smiths' house today", "Father's Day 42 Elm Street", "Mother's Day at 12 Oak Ave today",
+    "Valentine's Day with Sarah tonight?", "Mother's Day gift for Mom", "Father's Day card for Dad",
+    "Is she coming for Mother's Day?", "What did he get her for Valentine's Day?",
+    "Grandma fell on Valentine's Day, is she ok?", "Dad is sick on Children's Day, is he better today?",
+    "Dana's Father's Day plans today", "Sam's Valentine's Day surprise today",
+]
+HOLIDAY_PUBLIC = ["When is Father's Day?", "Father's Day gifts 2026", "Mother's Day brunch near me today",
+                  "Valentine's Day gift ideas", "Is father's day a federal holiday?", "When is Mother's Day this year?"]
+
+
+@pytest.mark.parametrize("prompt", HOLIDAY_NOT_AN_EXCUSE)
+def test_a_holiday_excuses_only_itself(prompt):
+    assert not mo.holiday_question(prompt), prompt
+    assert not classify(prompt).public_possessive
+    assert {"web_search", "web_fetch", "wikipedia_summary"} <= _model_led_forbidden(prompt), prompt
+
+
+@pytest.mark.parametrize("prompt", HOLIDAY_PUBLIC)
+def test_the_public_holiday_questions_still_search(prompt):
+    assert mo.holiday_question(prompt) and classify(prompt).public_possessive
+    assert "web_search" not in _model_led_forbidden(prompt)
+
+
+@pytest.mark.parametrize("prompt", ["Grandma fell on Mother's Day, is she ok?",
+                                    "Mom is in the hospital on Mother's Day, how is she?",
+                                    "Priya's Mother's Day flight today"])
+def test_the_loop_runs_no_web_tool_behind_a_holiday(synthetic, prompt):
+    effects, register = synthetic
+    _egress_tools(register)
+    approval = Approval(False)
+    run([[call(DISCOVERY_TOOL, families=["public_web"], tools=["web_search", "web_fetch", "wikipedia_summary"])],
+        [call("web_search", query=prompt.rstrip("?"))], [call("wikipedia_summary", topic="Mother's Day")],
+        [call("web_fetch", url="https://example.com")], "Synthetic reply."], prompt=prompt, approval=approval)
+    assert not [name for name, _ in effects if name in PRIVATE_WEB_TOOLS], effects
+    assert not approval.calls
