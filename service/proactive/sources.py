@@ -199,53 +199,32 @@ def bare_subject(subject: str) -> str:
     return subject.strip()
 
 
-_ADDR_SPEC = re.compile(r"[^\s<>@,;:\"'()]+@[^\s<>@,;:\"'()]+")
-_ANGLE_ADDR = re.compile(r"<\s*([^<>\s]+@[^<>\s]+)\s*>")
-
-
 def _address(row: dict) -> str:
-    """The address a mail row was really sent from.
-
-    A sender chooses their own display name, and it may itself contain an
-    address: `"Maya <maya@friend.com>" <x@evil.com>` is from x@evil.com. In a
-    mailbox the real address is always the LAST angle-bracketed one, so that is
-    the one read, never the first. A reader's own parsed `sender_address` is
-    used only when it is one clean address; a bare sender counts only when the
-    whole of it is one address. Anything else has no address at all."""
-    given = str(row.get("sender_address") or "").strip()
-    if _ADDR_SPEC.fullmatch(given):
-        return given.casefold()
-    sender = str(row.get("sender") or "")
-    found = _ANGLE_ADDR.findall(sender)
-    if found:
-        return found[-1].strip().casefold()
-    bare = sender.strip()
-    return bare.casefold() if _ADDR_SPEC.fullmatch(bare) else ""
+    """The address a mail row was really sent from, "" when there is none to
+    trust (service/mail_sender.py: the one strict reading every caller shares)."""
+    from service import mail_sender
+    return mail_sender.real_address(row.get("sender"), row.get("sender_address"))
 
 
 def odd_sender(row: dict) -> bool:
-    """The display name carries an address or a bracket ("Maya <maya@friend.com>",
-    "me@school.edu"): a name dressed up to be read as someone else's address.
-    Such mail is shown by its real address and nothing is done on its strength
-    without a tap (autoadd.plan_for)."""
-    sender = str(row.get("sender") or "")
-    last = None
-    for last in _ANGLE_ADDR.finditer(sender):
-        pass
-    name = sender[:last.start()] if last else ("" if _ADDR_SPEC.fullmatch(sender.strip()) else sender)
-    given = str(row.get("sender_address") or "").strip()
-    return ("@" in name or "<" in name or ">" in name
-            or bool(given) and not _ADDR_SPEC.fullmatch(given)
-            or len(_ANGLE_ADDR.findall(sender)) > 1)
+    """The display name is dressed up as an address, or the From value can't be
+    read cleanly (mail_sender.is_odd). Such mail is shown by its real address and
+    nothing is done on its strength without a tap (autoadd.plan_for)."""
+    from service import mail_sender
+    return mail_sender.is_odd(row.get("sender"), row.get("sender_address"))
 
 
 def shown_sender(row: dict) -> str:
     """Who a mail row is from, as shown: the name, or for an odd sender the real address alone."""
-    from service.assistant.daily_workspace import display_name
-    address = _address(row)
-    if odd_sender(row):
-        return address or "Unknown sender"
-    return display_name(row.get("sender"), address) or "Unknown sender"
+    from service import mail_sender
+    return clean(mail_sender.shown(row.get("sender"), row.get("sender_address")), 80) or "Unknown sender"
+
+
+def _is_mine(row: dict, mine) -> bool:
+    """The row is the user's own: its real address is theirs AND it is not odd
+    (mail_sender.is_own). A row with no real address is never the user's."""
+    from service import mail_sender
+    return mail_sender.is_own(row.get("sender"), row.get("sender_address"), mine)
 
 
 def reply_ref_for_row(row: dict) -> dict | None:
@@ -524,6 +503,88 @@ def _sentences(text: str) -> list[str]:
     return [clean(p, 300) for p in parts if len(clean(p)) >= 3]
 
 
+# --- when the newest message's own words arrived (autoadd.acting.allows) -------------------
+#
+# The newest message's body is cut at its quoted history (_QUOTED_HISTORY), but a
+# cut can miss history: an unmarked quote, HTML turned into text, a client whose
+# header block the pattern does not know. Two checks follow it. A sentence that
+# also appears in an EARLIER message in view takes that message's time (its word
+# 3-grams, hashed: no extra mail text is kept on the item). A body whose history
+# still can't be told apart has no known time at all, so nothing in it is ever
+# acted on without a tap.
+
+GRAM_N = 3
+MAX_GRAMS = 200            # per earlier message, from its start (its own words come first)
+MAX_EARLIER = 4            # earlier in-view messages kept per item
+# What is left of quoted history after the cut: a header line, an attribution, a
+# separator, a quote mark (also as HTML text). Any of these: the body's time is unknown.
+_HISTORY_HINT = re.compile(
+    r"(?im)^\s*(?:\*{0,2}(?:from|sent|von|de|da|envoyé|gesendet)\s*:\*{0,2}\s*\S.*(?:@|\[mailto:|\bsent\b)|"
+    r"\*{0,2}sent\s*:\*{0,2}\s*\S|"
+    r"(?:>|&gt;|\|)|-{2,}.*(?:forwarded|original|reply).*|_{8,}\s*$|"
+    r"(?:on|am|le|el)\b.*\b(?:wrote|schrieb|a écrit|escribió)\s*:?\s*$)"
+    r"|\b(?:wrote|schrieb|a écrit|escribió)\s*:\s*$")
+_HEADER_LINE = re.compile(r"(?im)^\s*\*{0,2}(?:from|sent|to|cc|date|subject)\s*:\*{0,2}\s*\S")
+# Quoting anywhere in the raw body: the message is a reply or a forward.
+_QUOTING = re.compile(r"(?m)^\s*(?:>|&gt;)")
+
+
+def quote_grams(text: str) -> list[str]:
+    """The hashed word 3-grams of `text`, in order, de-duplicated: compared by
+    autoadd against a candidate sentence, never shown or sent anywhere."""
+    words = re.findall(r"[a-z0-9]+", str(text or "").casefold())
+    out, seen = [], set()
+    for i in range(max(0, len(words) - GRAM_N + 1)):
+        digest = hashlib.blake2b(" ".join(words[i:i + GRAM_N]).encode(), digest_size=4).hexdigest()
+        if digest not in seen:
+            seen.add(digest)
+            out.append(digest)
+    return out
+
+
+def _history_unclear(row: dict, cut: str) -> bool:
+    """The body's own words can't be told apart from its quoted history: a
+    header-looking or attribution line, a separator or a quote mark survived the cut."""
+    if _HISTORY_HINT.search(cut):
+        return True
+    return len(_HEADER_LINE.findall(cut)) >= 2
+
+
+def _is_reply(row: dict) -> bool:
+    """The message itself is a reply or a forward: its own subject has a prefix,
+    or its raw body quotes something."""
+    return bool(_PREFIX.match(str(row.get("subject") or ""))) or bool(_QUOTING.search(str(row.get("body") or "")))
+
+
+def _subject_ts(messages: list[dict]) -> float | None:
+    """The arrival of the earliest in-view message whose own subject has no
+    reply/forward prefix: when the subject's words were first written. None when
+    every message in view is a "Re:"/"Fwd:" of something older."""
+    firsts = [float(m["ts"]) for m in messages if not _PREFIX.match(str(m.get("subject") or ""))]
+    return min(firsts) if firsts else None
+
+
+def _body_timing(messages: list[dict], newest: dict | None) -> dict:
+    """{"body_ts", "mail_earlier"} for the newest incoming message shown in the
+    item's text. body_ts is that message's arrival, or None when its own words
+    can't be told apart from history it carries: a history line survived the
+    cut, or it is a reply/forward and nothing earlier in the thread is in view
+    to compare its sentences with. mail_earlier is [[ts, grams]] for up to
+    MAX_EARLIER in-view messages before it (any sender, the user's included)."""
+    if newest is None:
+        return {"body_ts": None, "mail_earlier": []}
+    from service.assistant.daily_workspace import _QUOTED_HISTORY
+    from service.tools.imessage_tools import redact_summary_codes
+    index = next(i for i, m in enumerate(messages) if m is newest)
+    earlier = messages[:index]
+    body = str(newest.get("body") or "")
+    cut = _QUOTED_HISTORY.split(body)[0]
+    unclear = _history_unclear(newest, cut) or (_is_reply(newest) and not earlier)
+    kept = [[float(m["ts"]), quote_grams(redact_summary_codes(str(m.get("body") or "")))[:MAX_GRAMS]]
+            for m in earlier[-MAX_EARLIER:]]
+    return {"body_ts": None if unclear else float(newest["ts"]), "mail_earlier": kept}
+
+
 def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
                linked: set[str] | None = None, own: str | None = None,
                counts: dict | None = None, sent: list[dict] | None = None) -> list[dict]:
@@ -550,7 +611,7 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
     zone = ZoneInfo(tz)
     items = []
     for (bucket, account, thread_subject), messages in threads.items():
-        incoming = [m for m in messages if _address(m) not in mine]
+        incoming = [m for m in messages if not _is_mine(m, mine)]
         if not incoming:
             continue
         # A person wrote, or a school sent something with a deadline: anything
@@ -578,14 +639,16 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
         last_in = (people or critical or recalled)[-1]
         reason = None if people or critical else recall_reason(last_in)
         last = messages[-1]
-        replied = _address(last) in mine and last["ts"] >= last_in["ts"]
+        replied = _is_mine(last, mine) and last["ts"] >= last_in["ts"]
         if not replied and sent:
             replied = answered_by_sent(sent, account=account, subject=str(last_in.get("subject") or ""),
                                        message_id=str(last_in.get("message_id") or ""), after=float(last_in["ts"]),
                                        sender=_address(last_in))
         raw_subject = redact_summary_codes(clean(last_in.get("subject"), 200))
         who = shown_sender(last_in)
-        odd = any(odd_sender(m) for m in messages if _address(m) not in mine) or odd_sender(last_in)
+        # Any row of the thread, the ones posing as the user included; a row with no
+        # real address at all is as untrustworthy as one dressed up.
+        odd = any(odd_sender(m) or not _address(m) for m in messages)
         if reason == "doc_comment":
             who = _DOC_APP.sub("", who).strip() or who
         subject = shown_title(raw_subject, who, school=reason == "school" or school_mail(last_in))
@@ -610,7 +673,7 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
                               account=bucket, raw_account=account, who=who, title=title, text=text, lines=[], received_ts=float(last_in["ts"]),
                               replied=replied, ref=ref, reply_ref=reply_ref_for_row(last_in),
                               unread=last_in.get("unread"), person=False, critical=True, secret=secret,
-                              user_wrote=any(_address(m) in mine for m in messages),
+                              user_wrote=any(_is_mine(m, mine) for m in messages),
                               hash=_digest(text, replied, last_in["ts"])))
             continue
         if entries:
@@ -626,18 +689,26 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
                               hash=_digest(text, replied)))
             continue
         blocks, quotes = [], [subject]
+        head = f"Subject: {subject}\n"
+        offset, shown_in = len(head), []          # incoming messages whose block header survives the cap
         for message in messages[-3:]:
-            from_user = _address(message) in mine
+            from_user = _is_mine(message, mine)
             speaker = "You (the user)" if from_user else shown_sender(message)
             if not from_user and reason == "doc_comment":
                 speaker = _DOC_APP.sub("", speaker).strip() or speaker
             stamp = datetime.fromtimestamp(message["ts"], zone).strftime("%a %b %-d %-I:%M %p")
             excerpt = _excerpt(message) if message.get("body") else ""
-            blocks.append(f"From {speaker} · {stamp}:\n{excerpt or '(subject only)'}")
+            header = f"From {speaker} · {stamp}:\n"
+            blocks.append(header + (excerpt or "(subject only)"))
+            if not from_user and offset + len(header) <= MAX_ITEM_CHARS:
+                shown_in.append(message)
+            offset += len(blocks[-1]) + 1
             if not from_user and excerpt:
                 quotes.extend(_sentences(excerpt))
-        text = f"Subject: {subject}\n" + "\n".join(blocks)
+        text = head + "\n".join(blocks)
         text = text[:MAX_ITEM_CHARS]
+        timing = _body_timing(messages, shown_in[-1] if shown_in else None)
+        timing["mail_blocks_in"] = len(shown_in)
         # A doc comment came from Google's no-reply address: nothing to answer by email.
         reply_ref = None if reason == "doc_comment" else reply_ref_for_row(last_in)
         items.append(dict(id=item_id, source="mail", account=bucket,
@@ -645,11 +716,16 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
                           received_ts=float(last_in["ts"]), replied=replied, ref=ref, reply_ref=reply_ref,
                           # A sender name made to look like someone else's address (odd_sender).
                           odd_sender=odd,
-                          # A thread's subject is as old as its first message, whatever arrived last.
-                          subject_ts=float(min(m["ts"] for m in messages)),
+                          # A thread's subject is as old as the first message that carried it
+                          # without a Re:/Fwd: prefix; None when no such message is in view
+                          # (the original is older than the mail window, or was never seen).
+                          subject_ts=_subject_ts(messages),
+                          # When the newest incoming block's own words arrived, and the
+                          # hashed 3-grams of earlier in-view messages (_body_timing).
+                          **timing,
                           unread=last_in.get("unread"),
                           person=bool(people) or reason == "doc_comment", secret=secret,
-                          user_wrote=any(_address(m) in mine for m in messages),
+                          user_wrote=any(_is_mine(m, mine) for m in messages),
                           **({"recall": reason} if reason else {}),
                           hash=_digest(text, replied)))
     items.sort(key=lambda i: i["received_ts"], reverse=True)

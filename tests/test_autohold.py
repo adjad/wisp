@@ -175,33 +175,54 @@ def test_this_file_is_in_the_simulation_manifest():
     assert '"tests/test_autohold.py"' in manifest
 
 
-def test_a_slot_in_quiet_hours_or_outside_working_hours_is_never_held(setting, store, monkeypatch):
-    from datetime import datetime, timezone
+def _hours(monkeypatch, working, quiet):
+    """The person's hours as user_hours' own Hours objects (never the real file)."""
     from service import user_hours
+    monkeypatch.setattr(user_hours, "working_hours", lambda: working)
+    monkeypatch.setattr(user_hours, "quiet_hours", lambda: quiet)
+
+
+def test_a_slot_in_quiet_hours_or_outside_working_hours_is_never_held(setting, store, monkeypatch):
+    # Changed with finding 8: hours are read as Hours objects (user_hours never raises; it
+    # falls back to its defaults), so the old "reading the hours raised" case is gone.
+    from service.user_hours import ALL_DAYS, DEFAULT_QUIET, DEFAULT_WORKING, Hours
     acting.set_enabled(True, now=NOW - 60)
     holds = Holds()
-    quiet, working = {"on": False}, {"on": True}
-    monkeypatch.setattr(user_hours, "in_quiet_hours", lambda moment=None: quiet["on"])
-    monkeypatch.setattr(user_hours, "in_working_hours", lambda moment=None: working["on"])
     go = lambda: autohold.step([card(1)], now=NOW, tz="UTC", store=store, abort=lambda: False, hold=holds)   # noqa: E731
-    quiet["on"] = True
+    # card(1) is 09:00-10:00 UTC on Friday 2027-01-15.
+    _hours(monkeypatch, DEFAULT_WORKING, Hours(8 * 60, 9 * 60 + 30, ALL_DAYS))      # quiet till 9:30
     assert go() == set() and holds.calls == [] and store.auto_added() == {}
-    quiet["on"], working["on"] = False, False
+    _hours(monkeypatch, Hours(10 * 60, 17 * 60, ALL_DAYS), DEFAULT_QUIET)            # work starts at 10
     assert go() == set() and holds.calls == []
     # The END of the slot counts too: an hour that runs past the working day is not held.
-    edge = card(1)["action"]["slot"]["end"] - 60
-    monkeypatch.setattr(user_hours, "in_working_hours",
-                        lambda moment=None: moment.timestamp() < edge)
+    _hours(monkeypatch, Hours(6 * 60, 9 * 60 + 59, ALL_DAYS), DEFAULT_QUIET)
     assert go() == set() and holds.calls == []
-
-    def broken(moment=None):
-        raise RuntimeError("hours unreadable")
-    monkeypatch.setattr(user_hours, "in_working_hours", broken)
-    assert go() == set() and holds.calls == []                       # unknown hours: no hold
-    monkeypatch.setattr(user_hours, "in_working_hours", lambda moment=None: True)
+    # The defaults (9-5 weekdays, quiet 10 PM-8 AM) are what apply until the person sets hours.
+    _hours(monkeypatch, DEFAULT_WORKING, DEFAULT_QUIET)
     assert go() == {"card:deadline1"}
     assert autohold.inside_hours({"start": 5.0, "end": 5.0}, "UTC") is False and autohold.inside_hours({}, "UTC") is False
-    assert isinstance(datetime.fromtimestamp(NOW, timezone.utc), datetime)
+
+
+def test_quiet_hours_inside_a_long_slot_or_a_slot_past_the_working_day_are_seen(monkeypatch):
+    from service.user_hours import ALL_DAYS, DEFAULT_QUIET, Hours
+    day = NOW - 8 * 3600                                                    # Friday 00:00 UTC
+    slot = {"start": day + 9 * 3600, "end": day + 13 * 3600}                # 9 AM-1 PM
+    # Quiet 10:15-10:40, strictly inside the slot: neither end touches it.
+    _hours(monkeypatch, Hours(8 * 60, 18 * 60, ALL_DAYS), Hours(10 * 60 + 15, 10 * 60 + 40, ALL_DAYS))
+    assert autohold.inside_hours(slot, "UTC") is False
+    _hours(monkeypatch, Hours(8 * 60, 18 * 60, ALL_DAYS), Hours(0, 0, ALL_DAYS))       # no quiet hours
+    assert autohold.inside_hours(slot, "UTC") is True
+    # Working hours end at 12:30, inside the slot.
+    _hours(monkeypatch, Hours(8 * 60, 12 * 60 + 30, ALL_DAYS), DEFAULT_QUIET)
+    assert autohold.inside_hours(slot, "UTC") is False
+    # Ends exactly when the working day ends: held (the last minute is 12:59).
+    _hours(monkeypatch, Hours(8 * 60, 13 * 60, ALL_DAYS), DEFAULT_QUIET)
+    assert autohold.inside_hours(slot, "UTC") is True
+    # Saturday under the default weekday hours: not held.
+    from service.user_hours import DEFAULT_WORKING
+    _hours(monkeypatch, DEFAULT_WORKING, DEFAULT_QUIET)
+    sat = {"start": slot["start"] + 86400, "end": slot["start"] + 86400 + 3600}
+    assert autohold.inside_hours(sat, "UTC") is False
 
 
 # --- review repairs -------------------------------------------------------------------------
@@ -272,13 +293,60 @@ class Seq:
 def test_a_save_whose_read_back_failed_is_claimed_on_the_retry(setting, store):
     acting.set_enabled(True, now=NOW - 60)
     c = card(1)
-    holds = Seq({"ok": False, "status": "failed", "error": "The Day task wasn't saved."},
+    # Changed with finding 7: the failed save names its task (saved_task_id), and only that
+    # exact task is claimed on the retry.
+    holds = Seq({"ok": False, "status": "failed", "error": "The Day task wasn't saved.", "saved_task_id": "t-9"},
                 {"ok": True, "status": "succeeded", "task_id": "t-9", "already": True})
     assert run(store, [c], holds) == set()
+    assert store.auto_added()[autohold.fingerprint(c)]["saved_task_id"] == "t-9"
     assert run(store, [c], holds) == {"card:deadline1"}
     record = store.auto_added()[autohold.fingerprint(c)]
     assert record["status"] == "added" and record["undo"]["task_id"] == "t-9" and record["attempts"] == 2
     assert len(autoadd.done_cards(store, NOW + 1)) == 1 and acting.room(store, NOW) == acting.MAX_PER_DAY - 1
+
+
+def test_an_already_after_a_failure_that_saved_nothing_or_another_task_stays_the_persons(setting, store):
+    acting.set_enabled(True, now=NOW - 60)
+    # Nothing was saved (no saved_task_id): a block the person then pinned is theirs.
+    c = card(1)
+    holds = Seq({"ok": False, "status": "failed", "error": "Couldn't read today's plan."},
+                {"ok": True, "status": "succeeded", "task_id": "theirs", "already": True})
+    assert run(store, [c], holds) == set() and run(store, [c], holds) == set()
+    assert store.auto_added()[autohold.fingerprint(c)]["status"] == "failed"
+    assert autoadd.done_cards(store, NOW + 1) == []
+    # Saved t-1, but the "already" is another task: still theirs.
+    c2 = card(2)
+    holds = Seq({"ok": False, "status": "failed", "error": "x", "saved_task_id": "t-1"},
+                {"ok": True, "status": "succeeded", "task_id": "t-2", "already": True})
+    assert run(store, [c2], holds) == set() and run(store, [c2], holds) == set()
+    assert store.auto_added()[autohold.fingerprint(c2)]["status"] == "failed"
+
+
+def test_the_real_hold_never_adopts_the_persons_block_after_an_unreadable_plan(setting, store):
+    from service.proactive import deadlines
+    acting.set_enabled(True, now=NOW - 60)
+    day, c = FakeDay(), card(1)
+    snapshot = day.today_snapshot
+
+    def unreadable(d, tz):
+        raise OSError("locked")
+    day.today_snapshot = unreadable
+    real = lambda x: deadlines.hold(x, now=NOW, store=day)                   # noqa: E731
+    first = deadlines.hold(c, now=NOW, store=day)
+    assert first["status"] == "failed" and "saved_task_id" not in first
+    assert run(store, [c], real) == set() and not day.tasks
+    # The person taps the card themselves: the same title and start, their own task.
+    day.today_snapshot = snapshot
+    day.today_save_task({"title": "Worksheet 1 for STAT 5", "pinned_start": c["action"]["slot"]["start"],
+                         "duration_minutes": 60, "day": "2027-01-15", "timezone": "UTC"})
+    assert run(store, [c], real) == set()
+    assert store.auto_added()[autohold.fingerprint(c)]["status"] == "failed"
+    assert day.tasks["t1"]["status"] == "active" and autoadd.done_cards(store, NOW + 1) == []
+    # Saved but not read back: the failure names the saved task.
+    other = FakeDay()
+    other.read_back = False
+    out = deadlines.hold(card(2), now=NOW, store=other)
+    assert out["status"] == "failed" and out["saved_task_id"] == "t1"
 
 
 def test_an_already_planned_block_with_no_attempt_of_wisps_is_left_alone(setting, store):
@@ -407,3 +475,102 @@ def test_a_reminder_wisp_itself_auto_added_is_not_also_given_a_held_hour(setting
     holds = Holds()
     assert run(store, [card(1), card(2), card(3)], holds) == {"card:deadline3"}
     assert holds.calls == ["card:deadline3"]
+
+
+# --- repeating deadlines across Undo (finding 6), unconfirmed auto-adds (finding 11) ---------------
+
+DAY = 86400
+
+
+def occurrence(ref, due, n=1):
+    """One occurrence (or a snoozed copy) of the weekly "Worksheet 1": its own row and card id."""
+    return {**card(n), "id": f"card:{ref}", "due_ts": due,
+            "sources": [{"kind": "calendar", "ref": ref, "who": "", "quote": "Worksheet 1"}]}
+
+
+def undo_record(store, fp):
+    store.auto_add_put(fp, {**store.auto_added()[fp], "status": "undone"})
+
+
+def _key_of(store, card_id):
+    return next(k for k, r in store.auto_added().items() if r.get("item_id") == card_id.removeprefix("card:"))
+
+
+def test_a_later_occurrence_undone_and_then_snoozed_is_not_held_again(setting, store, native):
+    acting.set_enabled(True, now=NOW - 60)
+    native.update({r: "EK-weekly" for r in ("w1", "w2", "w2-snoozed")})
+    holds = Holds()
+    assert run(store, [occurrence("w1", NOW + DAY)], holds) == {"card:w1"}
+    week2 = occurrence("w2", NOW + 8 * DAY)
+    assert run(store, [week2], holds, now=NOW + 7 * DAY) == {"card:w2"}
+    rec = store.auto_added()[_key_of(store, "card:w2")]
+    assert rec["native_key"] and rec["deadline_ts"] == NOW + 8 * DAY and "EK-weekly" not in str(rec)
+    undo_record(store, _key_of(store, "card:w2"))
+    snoozed = occurrence("w2-snoozed", NOW + 9 * DAY)
+    assert run(store, [snoozed], holds, now=NOW + 7 * DAY) == set()
+    assert autohold.without_undone([snoozed], store) == []
+    assert holds.calls == ["card:w1", "card:w2"]
+
+
+def test_a_first_occurrence_undone_and_snoozed_four_days_is_not_held_again(setting, store, native):
+    acting.set_enabled(True, now=NOW - 60)
+    native.update({"a": "EK-1", "a-later": "EK-1"})
+    holds = Holds()
+    assert run(store, [occurrence("a", NOW + DAY)], holds) == {"card:a"}
+    undo_record(store, _key_of(store, "card:a"))
+    later = occurrence("a-later", NOW + 5 * DAY)                    # 4 days > SAME_DEADLINE_S
+    assert run(store, [later], holds) == set() and autohold.without_undone([later], store) == []
+    assert holds.calls == ["card:a"]
+
+
+def test_next_weeks_occurrence_is_still_held_once_when_nothing_was_undone(setting, store, native):
+    acting.set_enabled(True, now=NOW - 60)
+    native.update({"b1": "EK-2", "b2": "EK-2", "b2s": "EK-2"})
+    holds = Holds()
+    assert run(store, [occurrence("b1", NOW + DAY)], holds) == {"card:b1"}
+    nxt = occurrence("b2", NOW + 8 * DAY)
+    assert autohold.without_undone([nxt], store) == [nxt]
+    assert run(store, [nxt], holds, now=NOW + 7 * DAY) == {"card:b2"}
+    assert run(store, [nxt, occurrence("b2s", NOW + 9 * DAY)], holds, now=NOW + 7 * DAY) == set()
+    assert holds.calls == ["card:b1", "card:b2"]
+
+
+def test_a_run_of_short_snoozes_stays_one_deadline(setting, store, native):
+    acting.set_enabled(True, now=NOW - 60)
+    native.update({f"s{i}": "EK-3" for i in range(5)})
+    holds = Holds()
+    assert run(store, [occurrence("s0", NOW + DAY)], holds) == {"card:s0"}
+    for i in range(1, 5):                                            # snoozed a day at a time: 4 days in all
+        assert run(store, [occurrence(f"s{i}", NOW + (1 + i) * DAY)], holds) == set()
+    assert holds.calls == ["card:s0"]
+
+
+def test_an_occurrence_three_weeks_after_an_undone_one_is_held(setting, store, native):
+    acting.set_enabled(True, now=NOW - 60)
+    native.update({"c1": "EK-4", "c2": "EK-4", "c4": "EK-4"})
+    holds = Holds()
+    assert run(store, [occurrence("c1", NOW + DAY)], holds) == {"card:c1"}
+    undo_record(store, _key_of(store, "card:c1"))
+    week2 = occurrence("c2", NOW + 8 * DAY)                          # inside the 14-day window
+    assert autohold.without_undone([week2], store) == [] and run(store, [week2], holds) == set()
+    week4 = occurrence("c4", NOW + 22 * DAY)
+    assert autohold.without_undone([week4], store) == [week4]
+    assert run(store, [week4], holds, now=NOW + 21 * DAY) == {"card:c4"}
+    assert holds.calls == ["card:c1", "card:c4"]
+
+
+def test_an_unconfirmed_auto_add_with_no_id_blocks_a_hold_for_its_title_near_its_time(setting, store, native):
+    acting.set_enabled(True, now=NOW - 60)
+    acting.record(store, "autoadd:u", kind="reminder", status="unknown", now=NOW - 30, title="Worksheet 1",
+                  due_ts=NOW + DAY)
+    acting.record(store, "autoadd:f", kind="calendar", status="failed", now=NOW - 30, title="Worksheet 2",
+                  start_ts=NOW + DAY)                               # failed: never landed, no block
+    holds = Holds()
+    same = occurrence("u1", NOW + DAY + 3600)
+    far = {**occurrence("u2", NOW + 5 * DAY), "id": "card:u2"}
+    two = {**occurrence("u3", NOW + DAY, n=2), "sources": [{"kind": "calendar", "ref": "u3", "who": "",
+                                                           "quote": "Worksheet 2"}]}
+    assert run(store, [same], holds) == set() and holds.calls == []
+    assert run(store, [two], holds) == {"card:u3"}
+    assert run(store, [far], holds) == {"card:u2"}                  # the same title, days away: its own deadline
+    assert holds.calls == ["card:u3", "card:u2"]

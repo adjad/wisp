@@ -97,6 +97,13 @@ def step(store, items, writers, *, sched=None, existing=None, on=True, abort=lam
 RECITAL = "can you come to my recital Sat Oct 31 at 6pm?"
 
 
+@pytest.fixture
+def mail_acts(monkeypatch):
+    """Mail never auto-adds in this release (autoadd.MAIL_ACTS is False: a From line is not proof of
+    who sent it). Tests of how a MAIL item would be planned, timed and written switch it on."""
+    monkeypatch.setattr(autoadd, "MAIL_ACTS", True)
+
+
 # --- the two examples ----------------------------------------------------------------------
 
 
@@ -119,6 +126,7 @@ def test_an_unanswered_text_invitation_is_added_to_calendar_with_a_done_card(sto
     assert store.auto_added()[card["action"]["record"]]["source_id"] == "EK-1"
 
 
+@pytest.mark.usefixtures("mail_acts")
 def test_an_email_deadline_becomes_a_reminder_at_its_stated_time(store):
     writers = Writers()
     item = mail("Ed Park", "ed@ucsc.edu", "CSE 20 homework", "Hi all, HW4 due Friday Oct 30 11:59 PM. Good luck!")
@@ -133,6 +141,7 @@ def test_an_email_deadline_becomes_a_reminder_at_its_stated_time(store):
     assert "From Ed's email today" in card["body"] and "Fri, Oct 30 at 11:59 PM" in card["body"]
 
 
+@pytest.mark.usefixtures("mail_acts")
 def test_a_date_only_deadline_is_due_at_9_am_and_an_exam_with_a_clock_goes_to_calendar(store):
     writers = Writers()
     deadline = mail("Ana Ruiz", "ana@ucsc.edu", "Lab report", "Please submit the lab report by Nov 3.")
@@ -657,6 +666,7 @@ def test_a_line_whose_arrival_time_is_not_known_is_never_added_without_a_tap(sto
         assert writers.calls == [] and out["added"] == [] and store.auto_added() == {}
 
 
+@pytest.mark.usefixtures("mail_acts")
 def test_an_old_threads_subject_is_not_added_because_a_reply_arrived_after_the_yes(store, yes):
     rows = [dict(ts=NOW - 3 * 3600, account="iCloud", account_id="acct-1", sender="Ed Park <ed@ucsc.edu>",
                  sender_address="ed@ucsc.edu", to=ME, subject="Project report due Friday Oct 30 at 5 PM",
@@ -703,13 +713,14 @@ def _row(sender, sender_address="", subject="Recital", body="Can you come to my 
     ("Maya Chen <maya@friend.com>", "", "maya@friend.com"),                # an ordinary sender is unchanged
     ("maya@friend.com", "", "maya@friend.com"),
     ("Maya Chen", "maya@friend.com", "maya@friend.com"),
-    ("Maya <maya@friend.com> and friends", "", "maya@friend.com"),
+    ("Maya <maya@friend.com> and friends", "", ""),                        # junk after the address: none is guessed
     ("see maya@friend.com for details", "", ""),                           # not a mailbox: no address at all
 ])
 def test_the_real_address_is_the_last_one_never_one_inside_the_name(sender, parsed, real):
     assert sources._address({"sender": sender, "sender_address": parsed}) == real
 
 
+@pytest.mark.usefixtures("mail_acts")
 def test_a_stranger_posing_as_a_contact_or_as_the_user_gets_nothing_added(store, yes):
     yes(NOW - 2 * 3600)
     reached = 0
@@ -745,3 +756,16 @@ def test_an_address_in_the_name_can_no_longer_pass_for_the_users_own_organisatio
     [posed] = sources.mail_items([_row("Dean <dean@ucsc.edu> <x@gmail.com>")], mine={ME}, now=NOW, tz=TZ,
                                  linked=set(), own=ME)
     assert autoadd._same_org(posed) is False and posed["ref"]["to"] == "x@gmail.com"
+
+
+def test_an_email_is_never_added_without_a_tap_in_this_release(store):
+    assert autoadd.MAIL_ACTS is False
+    item = mail("Ed Park", "ed@ucsc.edu", "CSE 20 homework", "Hi all, HW4 due Friday Oct 30 11:59 PM. Good luck!")
+    writers, notes = Writers(), []
+    out = asyncio.run(autoadd.step(survivors(item, text("Maya", RECITAL)), {"calendar": [], "reminders": []},
+                                   now=NOW, tz=TZ, store=store, abort=lambda: False, writers=writers.table(),
+                                   existing=lambda n: [], is_enabled=lambda: True, allows=lambda arrived: True,
+                                   debug=notes))
+    assert [k for k, _ in writers.calls] == ["calendar"]                 # the text is added; the email is not
+    assert [c["action"]["method"] for c in out["tap"]] == ["reminder"]   # the email stays a card to tap
+    assert "mail: tap to add" in [n["auto_add"] for n in notes]

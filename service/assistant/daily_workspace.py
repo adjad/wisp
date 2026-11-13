@@ -102,7 +102,18 @@ def key(source, identity):
 
 
 # Quoted or forwarded history below the current body is not current work.
-_QUOTED_HISTORY = re.compile(r"(?im)^\s*(?:On .+wrote:|[- ]*Original Message[- ]*|Begin forwarded message:|>.*)$")
+# Each marker is a whole line (or an Outlook header pair) no ordinary sentence is:
+# "On … wrote:" (also wrapped over up to three lines, and its German, French and
+# Spanish forms), "-----Original Message-----", Gmail's "---------- Forwarded
+# message ---------", Apple's "Begin forwarded message:", Outlook's underscore rule
+# and its "From: …" line followed by "Sent:" (or "From: …@…" followed by
+# Date/To/Subject), and ">" quoting.
+_QUOTED_HISTORY = re.compile(
+    r"(?im)^\s*(?:On .+wrote:|On [^\n]+(?:\n[^\n]*){1,2}?wrote:|"
+    r"(?:Am|Le|El) [^\n]+(?:\n[^\n]*){0,2}?(?:schrieb|a écrit|escribió)\s*:|"
+    r"[- ]*Original Message[- ]*|-{2,}\s*Forwarded message\s*-{2,}|Begin forwarded message:|_{20,}|"
+    r"\*{0,2}From:\*{0,2}[^\n]*\n\s*\*{0,2}Sent:[^\n]*|"
+    r"\*{0,2}From:\*{0,2}[^\n]*@[^\n]*\n\s*\*{0,2}(?:Date|To|Subject):[^\n]*|>.*)$")
 # Who wrote it and when, carried from a communication record to its attention
 # item so the notch can name the sender and order by recency; `replied` marks a
 # conversation the user has texted since. An email's model-written gist is

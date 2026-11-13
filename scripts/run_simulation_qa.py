@@ -480,8 +480,12 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_public_fact_lookups.py",
     "tests/test_proactive_accounts.py",
     "tests/test_proactive_auto_add.py",
+    "tests/test_autoadd_mail_timing.py",
     # Let Wisp act for me: the gate, the shared record and card. Fake config and store; no model, network or native write.
     "tests/test_acting.py",
+    # One strict reading of a mail From value: pure strings, no mail is read.
+    "tests/test_mail_sender.py",
+    "tests/test_reply_recipient_sender.py",
     # Hold time for a deadline under the gate: fake holds and a fake Day store; no calendar, model or native write.
     "tests/test_autohold.py",
     # The background cycle calling the hold step: injected fakes and a tmp store only.

@@ -64,18 +64,25 @@ LANDED = ("added", "undone", "unknown", "undo_unknown")
 # (setup, Settings, the one-time card, About). ONE list, so no surface can claim more than
 # is built: a module adds its line here in the same change that makes it act.
 DOES: list[str] = [
-    "Adds an event or deadline you missed in a text or email to Calendar or Reminders.",
+    "Adds an event or deadline you missed in a text to Calendar or Reminders. "
+    "(For one in an email, Wisp shows a card and waits for your tap.)",
     "Holds a free hour on your Day plan for work due today or in the next three days (in Wisp only, never on your calendar).",
 ]
 NEVER = "Wisp never sends, replies, deletes or pays for anything by itself."
+# Why texts and not email: a text's sender is a handle matched to a saved contact, while an
+# email's From line is not proof of who sent it (autoadd.MAIL_ACTS). The list says so.
 # What the yes reaches, said the same way everywhere. True for the list above: adds read
 # messages (acting.allows on the line's own arrival); a hold reads the person's own calendar
 # and reminders, where "arrived" has no meaning, so it covers deadlines already there.
-SCOPE = ("Adding from texts and emails covers only messages that arrive after you say yes, never older ones. "
+SCOPE = ("Adding from texts covers only messages that arrive after you say yes, never older ones. "
          "Holding time is for deadlines on your calendar or in Reminders, including ones already there.")
 
 _undoers: dict[str, Callable[[dict], Awaitable[dict]]] = {}
 _lock = threading.Lock()
+# Set when an off (or a failed yes) could neither be written nor have its file removed: the
+# gate is then off for the rest of this process whatever the file says. Only a yes that is
+# actually saved clears it (set_enabled). See set_enabled for why it exists.
+_revoked = False
 
 
 # --- the gate ------------------------------------------------------------------------------
@@ -107,21 +114,28 @@ def _write(setting: dict[str, Any]) -> None:
 
 
 def enabled() -> bool:
-    """The person said yes and has not taken it back. Read every time, never cached."""
+    """The person said yes and has not taken it back. Read every time, never cached. An off this
+    process could not save (`_revoked`) counts, so enabled_at, allows and still_ok are off too."""
+    if _revoked:
+        return False
     setting = _setting()
     return setting.get("enabled") is True and type(setting.get("enabled_at")) in (int, float)
 
 
 def _born() -> float:
-    """When the gate's file itself was created. Every save replaces the file with a fresh one
-    (paths.private_write_bytes), so this is the time of the last write, kept by the filesystem."""
+    """The earliest time the gate's file can honestly have been written. Every save replaces the
+    file with a fresh one (paths.private_write_bytes), so its creation time is the last write.
+    Creation time alone can be moved back from user code (touch -t, os.utime with an earlier
+    time on APFS, cp -p, a restore), so this is the later of it and st_ctime, the inode's change
+    time, which the kernel sets to now on every change and nothing in user space can set back.
+    mtime is never used: it is whatever the writer says."""
     info = _path().stat()
-    return float(getattr(info, "st_birthtime", info.st_mtime))
+    return max(float(getattr(info, "st_birthtime", 0.0)), float(info.st_ctime))
 
 
 def enabled_at() -> float | None:
-    """The time the yes counts from: the recorded time, but never earlier than the file itself
-    was written. So a file forged or edited by anything other than the switch cannot backdate
+    """The time the yes counts from: max(recorded time, creation time, inode change time) (see
+    `_born`), so never earlier than the file itself was written. So a file forged or edited by anything other than the switch cannot backdate
     the yes to reach mail that arrived before it existed; it can only ever move it later."""
     if not enabled():
         return None
@@ -157,14 +171,58 @@ def still_ok() -> str | None:
     return None
 
 
+def _unlink() -> bool:
+    """Remove the gate's file (a missing file is off). True when it is gone afterwards."""
+    try:
+        _path().unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
 def set_enabled(on: bool, *, now: float | None = None) -> dict[str, Any]:
-    """The person's answer. Yes records the time it was given; no clears it."""
+    """The person's answer. Yes records the time it was given; no clears it.
+
+    Off ALWAYS takes effect in this process and never raises for a failed save. A yes that can't
+    be saved raises, and leaves the gate off.
+
+    What is on disk in each failure order. `_write` is paths.private_write_bytes: a temp file,
+    fsync, then os.replace, so a raise means the old file is untouched (or, at worst, the new
+    one is fully in place; os.replace is atomic). So after a failed write the old file may still
+    say `enabled: true` (an earlier yes), and nothing may be left to chance:
+    - off, write raises: the file is removed (missing = off). If that fails too, `_revoked` is set
+      and enabled() is False for the rest of this process whatever the file says. Off is never
+      reported as failed, because it is not: the gate is off.
+    - yes, write raises: the older file may be an earlier yes with an older enabled_at, or an off.
+      Keeping an earlier yes would mean a yes the person was just told failed is still in force,
+      reaching from an older time; so the file is removed, and if that fails `_revoked` is set.
+      Then the error is raised. The person sees "couldn't save your yes", and that is true:
+      nothing acts until a yes is saved. (Removing the file also forgets `asked`; the question
+      may be shown once more, which is the safe side.)
+    - yes, write succeeds: only then is `_revoked` cleared, so a yes saved after an unsaved off
+      works again. A crash after the write keeps the saved yes, which is what the person said.
+    `_revoked` lives only in this process: after a restart the file decides, and in the one
+    case it could still say yes (write AND unlink both failed) the disk refused every change.
+    """
+    global _revoked
     if type(on) is not bool:
         raise ValueError("enabled must be a boolean")
     stamp = (time.time() if now is None else float(now)) if on else None
+    saved = True
     with _lock:
-        _write({"enabled": on, "enabled_at": stamp, "asked": True})
-    audit("act_for_me.setting", enabled=on)
+        try:
+            _write({"enabled": on, "enabled_at": stamp, "asked": True})
+        except Exception:
+            saved = False
+            if not _unlink():
+                _revoked = True
+            if on:
+                audit("act_for_me.setting", enabled=False, saved=False)
+                raise
+        else:
+            if on:
+                _revoked = False
+    audit("act_for_me.setting", enabled=on, saved=saved)
     return state()
 
 
@@ -175,8 +233,9 @@ def mark_asked() -> None:
         setting = _setting()
         if setting.get("asked") is True:
             return
-        _write({"enabled": setting.get("enabled") is True and type(setting.get("enabled_at")) in (int, float),
-                "enabled_at": setting.get("enabled_at") if type(setting.get("enabled_at")) in (int, float) else None,
+        on = enabled()                       # honours an unsaved off (_revoked): never writes it back on
+        _write({"enabled": on,
+                "enabled_at": setting.get("enabled_at") if on else None,
                 "asked": True})
 
 

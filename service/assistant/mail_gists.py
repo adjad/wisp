@@ -293,11 +293,10 @@ def _user_addresses() -> set[str]:
 
 
 def _from_user(row: dict, mine: set[str]) -> bool:
-    address = (row.get("sender_address", "") or "").casefold()
-    if not address:
-        found = re.search(r"<([^>]+@[^>]+)>", row.get("sender", "") or "")
-        address = found.group(1).casefold() if found else ""
-    return bool(address) and address in mine
+    """The user's own mail: its real address is theirs and the name is not dressed up
+    as an address (service.mail_sender). An odd sender is never read as the user."""
+    from service import mail_sender
+    return mail_sender.is_own(row.get("sender", "") or "", row.get("sender_address", "") or "", mine)
 
 
 def _people_mail(rows: list[dict]):
