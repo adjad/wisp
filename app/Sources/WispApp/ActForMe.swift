@@ -31,6 +31,8 @@ struct ActForMe: Equatable {
     let new: [String]
     /// Not empty when something Wisp agreed to do can't work right now (Contacts off or not synced).
     let note: String
+    /// How many things Wisp did in the last day (what counts toward `perDay`).
+    let today: Int
     let recent: [Done]
 
     static let title = "Let Wisp act for me"
@@ -47,6 +49,7 @@ struct ActForMe: Equatable {
         agreed = (json["agreed"] as? [String] ?? []).filter { !$0.isEmpty }
         new = (json["new"] as? [String] ?? []).filter { !$0.isEmpty }
         note = json["note"] as? String ?? ""
+        today = max(0, json["today"] as? Int ?? 0)
         recent = (json["recent"] as? [[String: Any]] ?? []).enumerated().compactMap { index, row in
             guard let title = row["title"] as? String, !title.isEmpty else { return nil }
             return Done(id: index, title: title, who: row["who"] as? String ?? "",
@@ -65,6 +68,11 @@ struct ActForMe: Equatable {
               + "Wisp shows each thing it does in the Brief as “Wisp did this”, with an Undo. "
               + "At most \(perDay) a day. " + never
     }
+
+    /// The one line the Brief always shows once the question has been answered.
+    static let briefOff = "Let Wisp act for me is off"
+    static let briefTurnOn = "Turn on"
+    var briefOn: String { "Wisp is acting for you · \(min(today, perDay)) of \(perDay) today" }
 
     /// The confirmation for the notch row: compact, and explicit that a yes covers only what
     /// arrives after it. Same facts as `consent`.
@@ -211,6 +219,16 @@ struct ActForMeSettingsRow: View {
 struct ActForMeAskCard: View {
     enum Place { case setup, brief }
     let place: Place
+    /// Shown because the person pressed "Turn on" in the Brief, though it was asked before.
+    var forced = false
+    /// The person put the forced question aside again.
+    var onNotNow: (() -> Void)?
+
+    init(place: Place, forced: Bool = false, onNotNow: (() -> Void)? = nil) {
+        self.place = place
+        self.forced = forced
+        self.onNotNow = onNotNow
+    }
     @ObservedObject private var model = ActForMeModel.shared
     /// What the person just chose here, so the card can say so before it goes.
     @State private var answered: Bool?
@@ -223,7 +241,7 @@ struct ActForMeAskCard: View {
 
     var body: some View {
         Group {
-            if let state = model.state, !state.asked || answered != nil, !state.does.isEmpty {
+            if let state = model.state, !state.asked || answered != nil || forced, !state.does.isEmpty {
                 card(state)
             }
         }
@@ -269,7 +287,7 @@ struct ActForMeAskCard: View {
                             .background(Capsule().fill(Color.white.opacity(0.92))).contentShape(Capsule())
                     }
                     .buttonStyle(.plain)
-                    Button { askedAboutNew = aboutNew; answered = false; model.putAside() } label: {
+                    Button { askedAboutNew = aboutNew; answered = false; model.putAside(); onNotNow?() } label: {
                         Text(Self.notNow).font(.wisp(size: 12, weight: .medium)).foregroundStyle(Theme.textSecondary)
                             .padding(.horizontal, 8).padding(.vertical, 5).contentShape(Rectangle())
                     }
@@ -289,5 +307,85 @@ struct ActForMeAskCard: View {
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.chipStroke, lineWidth: 1))
         .accessibilityElement(children: .contain)
         .accessibilityLabel(Self.question)
+    }
+}
+
+/// "Let Wisp act for me" in the Brief, always: the question until it is answered; after
+/// "Not now", one quiet line with Turn on (which opens the same question: the yes is still
+/// the person's own tap); while on, one line with today's count that opens what Wisp did.
+/// Each thing Wisp did also has its own "Wisp did this" card with Undo among the Brief's cards.
+struct ActForMeBriefRow: View {
+    @ObservedObject private var model = ActForMeModel.shared
+    @State private var asking = false
+    @State private var listed = false
+
+    var body: some View {
+        if let state = model.state, !state.does.isEmpty {
+            if !state.asked {
+                ActForMeAskCard(place: .brief)
+            } else if !state.enabled {
+                if asking {
+                    ActForMeAskCard(place: .brief, forced: true, onNotNow: { asking = false })
+                } else {
+                    line(ActForMe.briefOff) {
+                        Button(ActForMe.briefTurnOn) { asking = true }
+                            .buttonStyle(.plain)
+                            .font(.wisp(size: 11.5, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                            .padding(.horizontal, 9).padding(.vertical, 3)
+                            .background(Capsule().fill(Theme.chipFill))
+                            .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
+                            .help("See what Wisp would do on its own, then say yes or not now.")
+                    }
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 5) {
+                    Button { listed.toggle() } label: {
+                        line(state.briefOn) {
+                            Image(systemName: listed ? "chevron.up" : "chevron.down")
+                                .font(.wisp(size: 8, weight: .bold)).foregroundStyle(Theme.textMuted)
+                                .accessibilityHidden(true)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("What Wisp did lately. Each one also has its own card with an Undo.")
+                    .accessibilityLabel(state.briefOn)
+                    .accessibilityHint(listed ? "Hides what Wisp did" : "Shows what Wisp did")
+                    if listed { done(state) }
+                }
+            }
+        }
+    }
+
+    private func line<Trailing: View>(_ text: String, @ViewBuilder trailing: () -> Trailing) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(text).font(.wisp(size: 12)).foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
+            trailing()
+        }
+    }
+
+    @ViewBuilder private func done(_ state: ActForMe) -> some View {
+        if state.recent.isEmpty {
+            Text("Nothing yet. When Wisp does something, it shows here and as a card with an Undo.")
+                .font(.wisp(size: 11.5)).foregroundStyle(Theme.textMuted)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            ForEach(state.recent.prefix(5)) { item in
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: !item.check.isEmpty ? "questionmark" : item.undone ? "arrow.uturn.backward" : "checkmark")
+                        .font(.wisp(size: 8, weight: .bold)).foregroundStyle(Theme.textMuted)
+                        .accessibilityHidden(true)
+                    Text(!item.check.isEmpty ? "May have added “\(item.title)”: check \(item.check)"
+                         : item.title + (item.undone ? " (undone)" : ""))
+                        .font(.wisp(size: 11.5)).foregroundStyle(Theme.textSecondary).lineLimit(2)
+                    Spacer(minLength: 4)
+                    Text(Date(timeIntervalSince1970: item.at), style: .relative)
+                        .font(.wisp(size: 10.5)).foregroundStyle(Theme.textMuted).monospacedDigit()
+                }
+                .accessibilityElement(children: .combine)
+            }
+        }
     }
 }

@@ -503,8 +503,8 @@ struct ProactiveBriefSection: View {
             }
             .frame(height: Self.controlsHeaderHeight)
             if proactive.isWorking || actions.analyzePending() { progressRow }
-            // Asked once, for an install set up before Wisp could act on its own (ActForMe.swift).
-            ActForMeAskCard(place: .brief)
+            // "Let Wisp act for me", always in the Brief: the question, or one line (ActForMe.swift).
+            ActForMeBriefRow()
             if !actions.analyzeError.isEmpty {
                 Text(actions.analyzeError).font(.wisp(size: 11)).foregroundStyle(Theme.bad)
             }
@@ -519,6 +519,11 @@ struct ProactiveBriefSection: View {
                 if !rest.isEmpty { otherCards(Array(rest.prefix(3))) }
             }
         }
+        // The gate's state is loaded HERE, on a view that always exists: every time the Brief
+        // shows, and again whenever its cards change (a cycle finished, an Undo), so the
+        // question, the line and today's count are never missing or stale. (A .task on the
+        // question card itself never ran: that view is empty until the state is loaded.)
+        .task(id: shown.cards.map(\.id)) { await ActForMeModel.shared.refresh() }
     }
 
     /// The other cards, by title; one tap makes it the one shown. They share a

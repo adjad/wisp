@@ -323,6 +323,50 @@ def test_a_module_can_read_its_own_records_and_count(setting, store):
     assert store.auto_added()["h-1"]["status"] == "added"
 
 
+def test_the_brief_always_shows_the_feature_in_each_of_its_three_states(setting):
+    """Never answered: the question. "Not now": one line with Turn on. On: one line with today's
+    count. The app must load the state on a view that always exists (a .task on the question card
+    itself never ran, because that view is empty until the state is loaded)."""
+    import re
+    from pathlib import Path
+    app = Path(__file__).resolve().parents[1] / "app" / "Sources" / "WispApp"
+    strip = lambda text: "\n".join(line.split("//", 1)[0] for line in text.splitlines())   # noqa: E731
+    cards, act = strip((app / "ProactiveCards.swift").read_text()), strip((app / "ActForMe.swift").read_text())
+    brief = cards[cards.index("func beforeYouAsk("):cards.index("private func otherCards(")]
+    assert "ActForMeBriefRow()" in brief and "ActForMeAskCard" not in brief
+    assert re.search(r"\.task\(id: shown\.cards\.map\(\\\.id\)\) \{ await ActForMeModel\.shared\.refresh\(\) \}", brief)
+    row = act[act.index("struct ActForMeBriefRow: View"):]
+    never, off, on = row.index("if !state.asked {"), row.index("} else if !state.enabled {"), row.index("line(state.briefOn)")
+    assert never < off < on
+    assert "ActForMeAskCard(place: .brief)" in row[never:off]                       # the question itself
+    assert "line(ActForMe.briefOff)" in row[off:on] and "Button(ActForMe.briefTurnOn) { asking = true }" in row[off:on]
+    assert "ActForMeAskCard(place: .brief, forced: true" in row[off:on]              # Turn on opens the same question
+    assert "model.set(" not in row                                                   # the row itself never says yes
+    assert 'static let briefOff = "Let Wisp act for me is off"' in act and 'static let briefTurnOn = "Turn on"' in act
+    assert '"Wisp is acting for you · \\(min(today, perDay)) of \\(perDay) today"' in act
+    # The service gives the three states and the count.
+    client = _client()
+    assert client.get("/assistant/proactive/act").json()["asked"] is False           # never answered
+    acting.mark_asked()
+    state = client.get("/assistant/proactive/act").json()
+    assert state["asked"] is True and state["enabled"] is False                      # "Not now"
+    acting.set_enabled(True, now=NOW)
+    state = client.get("/assistant/proactive/act").json()
+    assert state["asked"] is True and state["enabled"] is True and state["today"] == 0 and state["per_day"] == 10
+
+
+def test_todays_count_is_what_counts_toward_the_limit(setting, store, monkeypatch):
+    import time
+    from service.proactive import store as store_module
+    monkeypatch.setattr(store_module, "store", lambda: store)
+    now = time.time()
+    acting.record(store, "a-1", kind="calendar", status="added", now=now - 60, title="Dinner", item_id="m1")
+    acting.record(store, "a-2", kind="reminder", status="undone", now=now - 120, title="Report", item_id="m2")
+    acting.record(store, "a-3", kind="hold", status="failed", now=now - 30, title="Worksheet", item_id="c1")    # did nothing
+    acting.record(store, "a-4", kind="calendar", status="added", now=now - 2 * acting.DAY_S, title="Old", item_id="m4")
+    assert _client().get("/assistant/proactive/act").json()["today"] == 2
+
+
 def test_recent_lists_words_only(setting, store):
     _follow_up(store)
     [row] = acting.recent(store, NOW + 20)
