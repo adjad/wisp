@@ -6850,6 +6850,13 @@ def routing_guard_contract(text: str, *, model_led: bool = False) -> tuple[froze
         forbidden.update(name for name, tool in REGISTRY.items()
                          if not tool.category.endswith("read"))
     web = _classify_web_request(t)
+    if model_led and web.provenance.name == "UNKNOWN" and not web.explicit:
+        # Whose it is could not be told ("Did Sam's package arrive today?").
+        # The rules route asks which public topic was meant and offers no web
+        # tool meanwhile; a model-led turn has no such step, and used to leave
+        # every web tool open. It offers none now. An explicit "search the web
+        # for ..." is not this case.
+        forbidden.update({"web_search", "web_fetch", "http_request"})
     if web.opted_out or web.private:
         forbidden.update({"web_fetch", "http_request"})
         if not (model_led and web.public_possessive and not web.opted_out):
