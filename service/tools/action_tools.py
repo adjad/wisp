@@ -1395,6 +1395,16 @@ async def email_triage(message_id: str, action: str) -> str:
     return receipt
 
 
+# The app's forward script is held back on purpose (OutboundSender.swift,
+# unverifiedForwardLookup): its lookup finds no message, so Mail composes
+# nothing and the app can only report an unconfirmed result. That held the
+# whole chat ("An earlier action in this chat may not have finished") for a
+# send that never began. Until a real forward has been checked in Mail, the
+# tool says plainly that nothing was sent. Set True together with the app-side
+# change, after the hand check in docs/releases/0.5.0-hand-checks.md.
+APPLE_MAIL_FORWARD_READY = False
+
+
 @register(
     "forward_email",
     "Forward a specific email to someone else, keeping the original content "
@@ -1430,6 +1440,15 @@ async def forward_email(message_id: str, to: str, note: str = "") -> str:
         if problem:
             return problem
         resolved.append(handle)
+    if not APPLE_MAIL_FORWARD_READY:
+        # Returned before the app is asked for anything: proof nothing was sent,
+        # so the chat is not held for an unconfirmed send.
+        return _not_sent(
+            "(the forward was NOT sent: this build cannot forward an email through Apple Mail yet. "
+            "Nothing was sent and nothing changed. Offer to send the email's text as a new email "
+            "with send_email instead, and do not call forward_email again in this chat.)",
+            question="I can't forward an email through Mail yet, so nothing was sent. "
+                     "Want me to send its text as a new email instead?")
     note = note or ""
     if _unreviewed():  # as send_email: an approved note goes out as its card showed it
         note = _degarble(note)

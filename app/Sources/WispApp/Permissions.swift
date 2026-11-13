@@ -137,7 +137,7 @@ enum Permissions {
         var title: String {
             switch self {
             case .screenRecording: return "Screen Recording"
-            case .accessibility: return "Accessibility"
+            case .accessibility: return PrivacyNames.accessibility
             case .fullDiskAccess: return "Full Disk Access"
             }
         }

@@ -105,7 +105,7 @@ final class SearchModel: ObservableObject {
             : "\(captured.source.label) · \(captured.appName)"
         if captured.text.isEmpty {
             errorText = needsAccessibility
-                ? "Wisp needs Accessibility permission to read this window."
+                ? "Wisp needs \(PrivacyNames.accessibility) permission to read this window."
                 : "Couldn't read any text from \(captured.appName)."
         } else {
             errorText = ""

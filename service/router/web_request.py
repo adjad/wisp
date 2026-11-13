@@ -1192,6 +1192,13 @@ def _parse_request(text: str, last_user: str | None = None, *,
             # words only (router.routing_guard_contract, the agent loop's
             # public_fact_query_problem). Never ``allowed``.
             provenance, query, public_possessive = Provenance.PRIVATE, None, True
+        else:
+            from service.model_only import personal_possessive_question
+            if personal_possessive_question(text):
+                # The same wording about someone of the user's own ("Is Mom's
+                # open on Sunday?"): private, with no flag and no question
+                # about which public topic was meant.
+                provenance, query, clarification = Provenance.PRIVATE, None, ""
     if provenance == Provenance.UNKNOWN:
         if (explicit or current or fragment or last_user) and not opted_out:
             clarification = "Which public topic should I look up? Is this source public or private/local?"

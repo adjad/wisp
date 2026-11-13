@@ -193,7 +193,9 @@ def test_approved_email_and_forward_note_are_sent_as_shown() -> None:
         return {"ok": True, "status": "succeeded"}
 
     orig = action_tools.app_request
+    ready = action_tools.APPLE_MAIL_FORWARD_READY
     action_tools.app_request = fake_request
+    action_tools.APPLE_MAIL_FORWARD_READY = True      # the bridge path, for when the forward is switched on
     try:
         shown = action_tools.confirm_preview("send_email", {
             "to": "sam.fixture@example.com", "subject": r"Logs in C:\new", "body": WINDOWS_PATH})
@@ -225,8 +227,20 @@ def test_approved_email_and_forward_note_are_sent_as_shown() -> None:
               calls[-1][1]["body"] == "FYI\nSee below.", calls)
         asyncio.run(action_tools.forward_email("<m1@example.com>", "sam.fixture@example.com"))
         check("a forward with no note sends an empty note", calls[-1][1]["body"] == "", calls)
+
+        # As shipped: the forward is held back, so the app is never asked and
+        # the result is proof that nothing was sent (it cannot hold the chat).
+        action_tools.APPLE_MAIL_FORWARD_READY = False
+        before = len(calls)
+        held = asyncio.run(action_tools.forward_email("<m1@example.com>", "sam.fixture@example.com", "FYI"))
+        from service.tools.registry import REGISTRY, not_sent_receipt
+        check("a held-back forward never reaches the app", len(calls) == before, calls)
+        check("a held-back forward is proof nothing was sent",
+              not_sent_receipt(REGISTRY["forward_email"], held) and "NOT sent" in held, held)
+        check("it offers the text as a new email", "new email" in held.question, held.question)
     finally:
         action_tools.app_request = orig
+        action_tools.APPLE_MAIL_FORWARD_READY = ready
 
 
 def main() -> int:

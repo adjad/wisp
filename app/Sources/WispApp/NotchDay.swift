@@ -1454,11 +1454,34 @@ enum WispClock {
     /// Asks the locale's own hour pattern: "H"/"k" is a 24-hour clock. (Testing
     /// for the "a" marker misreads locales whose day period is "B".)
     static func uses24Hour(_ locale: Locale) -> Bool {
+        cache.lock.lock(); defer { cache.lock.unlock() }
+        if let known = cache.h24[locale.identifier] { return known }
         let format = DateFormatter.dateFormat(fromTemplate: "j", options: 0, locale: locale) ?? "h a"
         let unquoted = format.split(separator: "'", omittingEmptySubsequences: false)
             .enumerated().filter { $0.offset % 2 == 0 }.map(\.element).joined()
-        return unquoted.contains("H") || unquoted.contains("k")
+        let h24 = unquoted.contains("H") || unquoted.contains("k")
+        cache.h24[locale.identifier] = h24
+        return h24
     }
+
+    /// The 24-hour answer and the time formatters, kept. Building a formatter
+    /// (or asking a locale for its hour pattern) costs far more than using one,
+    /// and Day and the Brief format dozens of times per update: rebuilt each
+    /// time, they held a tab switch's first frame back. Emptied when the Mac's
+    /// locale changes, a 12/24-hour switch included.
+    private final class Cache: @unchecked Sendable {
+        let lock = NSLock()
+        var h24: [String: Bool] = [:]
+        var formatters: [String: DateFormatter] = [:]
+        init() {
+            NotificationCenter.default.addObserver(forName: NSLocale.currentLocaleDidChangeNotification,
+                                                   object: nil, queue: nil) { [weak self] _ in
+                guard let self else { return }
+                self.lock.lock(); self.h24 = [:]; self.formatters = [:]; self.lock.unlock()
+            }
+        }
+    }
+    private static let cache = Cache()
 
     /// An hour of the day as a whole-hour label: "3 PM" or "15:00".
     static func hour(_ hour: Int, locale: Locale) -> String {
@@ -1469,11 +1492,17 @@ enum WispClock {
 
     /// A time of day: "3:05 PM" or "15:05".
     static func time(_ t: Double, zone: TimeZone, locale: Locale) -> String {
-        let f = DateFormatter()
         let h24 = uses24Hour(locale)
-        f.locale = Locale(identifier: h24 ? "en_GB" : "en_US_POSIX")
-        f.timeZone = zone
-        f.dateFormat = h24 ? "HH:mm" : "h:mm a"
+        cache.lock.lock(); defer { cache.lock.unlock() }
+        let key = (h24 ? "24|" : "12|") + zone.identifier
+        let f = cache.formatters[key] ?? {
+            let f = DateFormatter()
+            f.locale = Locale(identifier: h24 ? "en_GB" : "en_US_POSIX")
+            f.timeZone = zone
+            f.dateFormat = h24 ? "HH:mm" : "h:mm a"
+            cache.formatters[key] = f
+            return f
+        }()
         return f.string(from: Date(timeIntervalSince1970: t))
     }
 }

@@ -1816,6 +1816,57 @@ UNRESOLVED_ACTION_REASON = (
     "until the user has checked it")
 
 
+# A request that only reads ("is there any email about enrollment?", "what's
+# on my calendar"). While actions are held it is answered as usual, without
+# the notice: in the 2026-11-04 debug export every later answer in the chat,
+# reads included, opened with it and told the user to start a new chat.
+_READ_QUESTION = re.compile(
+    r"^(?:what(?:'s|s)?|when|where|who(?:'s)?|which|how\s+(?:many|much|long|late|far|old|did|do|does|is|are|was|were)"
+    r"|is|are|was|were|does|do\s+i\s+have|did|has|have\s+i|any|anything|show|list|summari[sz]e|read|check"
+    r"|find|search|look\s+up|tell\s+me\s+(?:what|when|who|where|which|how|about|if|whether))\b", re.I)
+
+
+# A question about the held action itself ("did it send?", "did my email to Sam
+# go through?", "what's the status?") is not a plain read: the notice is what
+# answers it, and without it the model could say "yes, sent" of a send whose
+# outcome nobody knows. A bare "it" or "that" counts, since it most likely
+# points at the action.
+# Not "fall", "spring" or "term": "did that fall through" asks after the action.
+_TIME_WORD = (r"(?:week|weekend|month|year|morning|afternoon|evening|night|time|semester|quarter|summer|"
+              r"winter|monday|tuesday|wednesday|thursday|friday|saturday|sunday|day)s?")
+_SENT_THING = r"(?:e-?mail|mail|message|text|imessage|forward|reply|note)"
+_ABOUT_EARLIER_ACTION = re.compile(
+    # A pronoun that most likely points at the action ("did it send?"), not a
+    # date ("this week", "that day").
+    r"\b(?:it|that|this)\b(?!\s+" + _TIME_WORD + r"\b)"
+    r"|\b(?:sen[dt]|sends|sending|go(?:es|ne)?\s+through|went\s+through|going\s+through|"
+    r"deliver(?:ed|y|s)?|forward(?:ed|s|ing)?|repl(?:y|ied|ies)|respon[ds]e?d?|status|outcome|result|"
+    r"work(?:ed|s|ing)?|finish(?:ed)?|complete[d]?|happen(?:ed|s)?|fail(?:ed|s)?|succeed(?:ed)?|"
+    r"success(?:ful)?|receive[ds]?|arrive[ds]?|landed|went\s+out|go\s+out|gone\s+out|earlier|"
+    r"f[ae]ll\s+through|fallen\s+through|"
+    r"last\s+(?:action|one)|any\s+word|heard\s+(?:back|anything|from))\b"
+    # Whether the other side has the user's own message ("did Sam get my
+    # email?", "did Sam see my text?", "is my message out?").
+    r"|\b(?:get|got|gets|see|sees|saw|seen|read|reads|open(?:ed)?)\s+my\s+" + _SENT_THING + r"\b"
+    r"|\bmy\s+" + _SENT_THING + r"\s+(?:is\s+|was\s+|has\s+)?(?:out|gone|there|ok|okay|through|up)\b"
+    r"|\b(?:is|was|has)\s+my\s+" + _SENT_THING + r"\s+(?:out|gone|there|ok|okay|through)\b"
+    r"|\bthe\s+mail\s+app\b",
+    re.I)
+
+
+def _plain_read_request(prompt: str) -> bool:
+    """`prompt` asks to read or look something up, changes nothing, and is not
+    about an earlier action's outcome."""
+    try:
+        from service.model_only import normalize_day_words
+        from service.router.router import has_write_intent, mask_quoted
+        text = normalize_day_words(mask_quoted(prompt or "")).strip()
+        return (bool(text) and not has_write_intent(text) and bool(_READ_QUESTION.match(text))
+                and not _ABOUT_EARLIER_ACTION.search(text))
+    except Exception:  # noqa: BLE001 - unsure means the notice is shown
+        return False
+
+
 def _answer_prefixed(emit, prefix: str):
     """emit, with `prefix` put in front of the answer the user sees: the first
     answer delta or text event, again after a clear_answer discards a step."""
@@ -1994,11 +2045,21 @@ def _ask_tool_rank(prompt: str, previous: str = "") -> tuple[list[str], list[str
                                  ("search_reminders", reminders_first(prompt))):
                 if wanted and lead in REGISTRY:
                     head = [lead, *(n for n in head if n != lead)]
-        from service.model_only import public_possessive_question
-        if not writing and public_possessive_question(prompt) and "web_search" in REGISTRY:
+        from service.model_only import public_possessive_question, web_first
+        if (not writing and "web_search" in REGISTRY
+                and (public_possessive_question(prompt)
+                     or (web_first(prompt) and not (mail_first(prompt) or calendar_first(prompt)
+                                                    or reminders_first(prompt))))):
             # "What are Costco's hours?" ranked weather and stock tools first
-            # and left web_search a name stub: the search leads instead.
+            # and left web_search a name stub: the search leads instead. So it
+            # does for a public fact that changes ("Is Costco open on Sunday?",
+            # "who is the president?"), which was answered from stale memory.
             head = ["web_search", *(n for n in head if n != "web_search")]
+        from service.model_only import direct_leads
+        if leads := [n for n in direct_leads(prompt) if n in REGISTRY]:
+            # "what did mom say", "set a timer for 5 minutes", "email Dana the
+            # notes": the tool the request names leads, whatever the lexical rank.
+            head = [*leads, *(n for n in head if n not in leads)]
         from service.model_only import reply_reads
         if lead_reads := [n for n in reply_reads(prompt) if n in REGISTRY]:
             # A reply draft reads the conversation it answers before drafting.
@@ -2995,11 +3056,12 @@ async def agent(body: dict[str, Any]):
                 await emit({"type": "done"})
             elif decision.needs_tools:
                 agent_emit = emit
-                if model_led_turn and unresolved_block:
+                if model_led_turn and unresolved_block and not _plain_read_request(prompt):
                     # The action tools are withheld below; say so plainly
                     # instead of letting the model refuse with no reason
                     # (0.5.0-rc3 audit M2). The barrier is an earlier action
-                    # in this chat whose outcome was never confirmed.
+                    # in this chat whose outcome was never confirmed. A plain
+                    # read is answered without it: nothing it asked for is held.
                     agent_emit = _answer_prefixed(emit, UNRESOLVED_ACTION_NOTICE + "\n\n")
                 # create_tool generates code with its own inference client.
                 # Model-selected calls are already warm from the agent step;

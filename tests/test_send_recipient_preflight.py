@@ -610,10 +610,23 @@ def test_the_cancel_card_shows_the_handle_once(monkeypatch):
     assert f"To: Ian ({PHONE})\n" in action_tools._cancel_scheduled_preview({"id": "fixture-id"})
 
 
-async def test_a_forward_receipt_names_the_matched_contact(contacts, app_bridge):
+async def test_a_forward_receipt_names_the_matched_contact(contacts, app_bridge, monkeypatch):
+    # The bridge path, for when the Apple Mail forward is switched on.
+    monkeypatch.setattr(action_tools, "APPLE_MAIL_FORWARD_READY", True)
     receipt = await action_tools.forward_email("<m1@example.com>", "Ian, other.fixture@example.com")
     assert receipt == f"Forwarded to Brian Chen ({BRIAN}), other.fixture@example.com."
     assert app_bridge[0][1]["to"] == [BRIAN, "other.fixture@example.com"]
+
+
+async def test_a_held_back_forward_says_nothing_was_sent_and_asks_nothing_of_the_app(contacts, app_bridge):
+    from service.tools.registry import REGISTRY, not_sent_receipt
+    assert action_tools.APPLE_MAIL_FORWARD_READY is False
+    result = await action_tools.forward_email("<m1@example.com>", "Ian")
+    assert not app_bridge and not_sent_receipt(REGISTRY["forward_email"], result)
+    assert "NOT sent" in result and "new email" in result.question
+    # A recipient that cannot be resolved is still reported first.
+    missing = await action_tools.forward_email("<m1@example.com>", "Nobody Atall")
+    assert not app_bridge and "new email" not in getattr(missing, "question", "")
 
 
 # ---- Through the real loop: the approved card is the one that names them ----
