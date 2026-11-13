@@ -24,6 +24,7 @@ from service.setup.hardware import Hardware, current_hardware, detect_hardware
 Q6, Q5, Q4 = "Ling-3.0-tiny-oQ6e", "Ling-3.0-tiny-oQ5e", "Ling-3.0-tiny-oQ4e"
 GEMMA = "gemma-4-E4B-it-oQ4e-mtp"
 G = GEMMA
+TUNED = "gemma-4-E4B-it-r5-step-01800-oQ4e-mtp"   # Wisp's tuned Gemma, the default download since 0.5.0
 MELLUM = "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e"
 EMBED = "Qwen3-Embedding-0.6B-4bit-DWQ"
 
@@ -69,16 +70,34 @@ def test_hardware_rounds_real_memory_and_survives_failure():
 
 # --- recommendations --------------------------------------------------------
 
-def test_fresh_mac_downloads_gemma_on_every_mac_it_fits():
+def test_fresh_mac_downloads_the_tuned_gemma_on_every_mac_it_fits():
     missing = _status(ram=32, installed=[], roles=_roles(Q4))
-    assert missing["models"]["recommended"] == GEMMA
-    assert missing["models"]["download"]["model"] == GEMMA
-    assert missing["models"]["download"]["repo"] == "Jundot/gemma-4-E4B-it-oQ4e-mtp"
+    assert missing["models"]["recommended"] == TUNED
+    assert missing["models"]["download"]["model"] == TUNED
+    assert missing["models"]["download"]["repo"] == f"Neo-Arid/{TUNED}"
     assert _check(missing, "model")["action"] == "download_model"
     assert not missing["ready"]
     small = _status(ram=16, installed=[], roles=_roles(MELLUM))
-    assert small["models"]["recommended"] == GEMMA
-    assert small["models"]["download"]["model"] == GEMMA
+    assert small["models"]["recommended"] == TUNED
+    assert small["models"]["download"]["model"] == TUNED
+
+
+def test_tuned_gemma_repo_name_is_the_model_id_and_it_runs_with_base_gemmas_profile():
+    tuned, base = catalog.by_id(TUNED), catalog.by_id(GEMMA)
+    assert tuned.repo.split("/")[1] == TUNED
+    assert tuned.engine_profile == base.engine_profile and tuned.engine_profile is not base.engine_profile
+    assert tuned.tested and catalog.fits_memory(tuned, 16) and not catalog.fits_memory(tuned, 12)
+
+
+def test_an_install_with_base_gemma_keeps_it_and_is_only_offered_the_tuned_one():
+    # Existing installs are never moved: base stays in use, the tuned model is an offer.
+    s = _status(ram=24, installed=[GEMMA, EMBED], roles=_roles(GEMMA))
+    assert s["ready"] and s["models"]["use"] == GEMMA
+    assert all(role["model"] == GEMMA for role in s["roles"])
+    assert s["models"]["download"]["model"] == TUNED
+    # With both installed, the tuned one is the best fit and nothing more is offered.
+    both = catalog.recommend(24, [GEMMA, TUNED])
+    assert both["use"] == TUNED and both["get"] is None
 
 
 def test_gemma_repo_name_is_the_model_id_and_its_profile_is_set():
@@ -108,16 +127,16 @@ def test_configured_mellum_is_kept_when_another_model_is_recommended():
     entry = next(m for m in found["models"]["installed"] if m["id"] == MELLUM)
     assert entry["tested"] is False
     assert entry["fit"] == "good"
-    assert found["models"]["recommended"] == GEMMA
+    assert found["models"]["recommended"] == TUNED
     assert found["ready"]  # Discovery/readiness is separate from inference qualification.
     assert guide.download_info(MELLUM, "/models")["repo"] == catalog.by_id(MELLUM).repo
 
 
 def test_an_installed_ling_keeps_working_and_gemma_is_offered():
     result = catalog.recommend(32, [Q4])
-    assert result["first_choice"] == GEMMA
+    assert result["first_choice"] == TUNED
     assert result["use"] == Q4
-    assert result["get"] == GEMMA
+    assert result["get"] == TUNED
     assert catalog.fit(catalog.by_id(MELLUM), 16) == "heavy"
     assert catalog.recommend(16, [Q4, MELLUM])["use"] == Q4
 
@@ -153,37 +172,41 @@ def test_gemma_fresh_defaults_preserve_existing_user_overrides(tmp_path, monkeyp
 @pytest.mark.parametrize("ram", [64, 24, 16, 12, 8, 0])
 def test_first_choice_is_gemma_on_every_mac(ram):
     # The catalog's first choice; whether it is offered depends on `fits`.
-    assert catalog.recommend(ram, [])["first_choice"] == GEMMA
-    assert catalog.recommend(ram, [Q4])["first_choice"] == GEMMA
+    assert catalog.recommend(ram, [])["first_choice"] == TUNED
+    assert catalog.recommend(ram, [Q4])["first_choice"] == TUNED
+    assert [m.id for m in catalog.ranked_for(ram)[:2]] == [TUNED, GEMMA]   # base is the fallback
 
 
 @pytest.mark.parametrize("ram,second", [(64, Q6), (24, Q6), (16, Q5), (12, Q4)])
 def test_ling_keeps_its_memory_order_behind_gemma(ram, second):
-    assert catalog.ranked_for(ram, [Q4])[1].id == second
+    assert catalog.ranked_for(ram, [Q4])[2].id == second
 
 
 def test_unpublished_ling_build_is_never_offered_on_a_fresh_mac():
     assert catalog.by_id(Q5).repo is None
     assert Q5 not in [m.id for m in catalog.ranked_for(16, [])]
-    assert catalog.recommend(16, [Q5])["get"] == GEMMA
+    assert catalog.recommend(16, [Q5])["get"] == TUNED
 
 
 def test_24gb_with_only_oq4e_keeps_it_and_offers_gemma():
     rec = catalog.recommend(24, [Q4])
-    assert rec["use"] == Q4 and rec["get"] == GEMMA
+    assert rec["use"] == Q4 and rec["get"] == TUNED
 
 
 def test_best_installed_model_wins_and_nothing_is_offered_when_optimal():
+    rec = catalog.recommend(24, [Q4, Q6, MELLUM, GEMMA, TUNED])
+    assert rec["use"] == TUNED and rec["get"] is None
     rec = catalog.recommend(24, [Q4, Q6, MELLUM, GEMMA])
-    assert rec["use"] == GEMMA and rec["get"] is None
+    assert rec["use"] == GEMMA and rec["get"] == TUNED
     rec = catalog.recommend(24, [Q4, Q6, MELLUM])
-    assert rec["use"] == Q6 and rec["get"] == GEMMA
+    assert rec["use"] == Q6 and rec["get"] == TUNED
 
 
 def test_heavy_model_on_16gb_is_flagged_but_kept():
     assert catalog.fit(catalog.by_id(Q6), 16) == "heavy"
     assert catalog.fit(catalog.by_id(Q6), 24) == "good"
-    assert catalog.fit(catalog.by_id(GEMMA), 16) == "recommended"
+    assert catalog.fit(catalog.by_id(TUNED), 16) == "recommended"
+    assert catalog.fit(catalog.by_id(GEMMA), 16) == "good"
     assert catalog.recommend(16, [Q6])["use"] == Q6
 
 
@@ -203,9 +226,9 @@ def test_8gb_mac_is_offered_no_download_and_told_why():
 
 def test_16gb_mac_is_offered_gemma():
     rec = catalog.recommend(16, [])
-    assert rec["get"] == GEMMA and rec["fits"] is True and rec["warning"] is None
-    assert catalog.fits_memory(catalog.GEMMA_E4B_MTP, 16)
-    assert catalog.fit(catalog.by_id(GEMMA), 16) == "recommended"
+    assert rec["get"] == TUNED and rec["fits"] is True and rec["warning"] is None
+    assert catalog.fits_memory(catalog.GEMMA_E4B_MTP, 16) and catalog.fits_memory(catalog.GEMMA_E4B_WISP, 16)
+    assert catalog.fit(catalog.by_id(TUNED), 16) == "recommended"
 
 
 def test_unreadable_memory_offers_nothing_and_says_so_plainly():
@@ -334,7 +357,7 @@ def test_installed_but_stopped_engine_offers_start():
 def test_running_with_no_chat_model_points_at_download():
     s = _status(ram=16, installed=[EMBED], running=True)
     assert _check(s, "model")["action"] == "download_model"
-    assert s["models"]["download"]["model"] == GEMMA
+    assert s["models"]["download"]["model"] == TUNED
     assert s["ready"] is False
 
 
@@ -775,7 +798,7 @@ def test_status_route_falls_back_to_saved_models_when_engine_is_down(monkeypatch
     monkeypatch.setattr(main, "_models_on_disk", lambda: [])    # no model folders on disk
     s = asyncio.run(main.setup_status())
     assert s["omlx"]["running"] is False and s["models"]["source"] == "saved"
-    assert s["hardware"]["tier"] == "standard" and s["models"]["recommended"] == GEMMA
+    assert s["hardware"]["tier"] == "standard" and s["models"]["recommended"] == TUNED
     assert _check(s, "engine")["action"] == "start_engine"
 
 

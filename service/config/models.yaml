@@ -25,11 +25,16 @@ roles:
   # Every text role is the same resident model — no swap, no cold load, and no
   # routing decision that hinges on which model a request lands on.
   #
-  # Gemma 4 E4B (with its MTP head) for fresh installs: the setup guide's
-  # default download on every Mac, so a new user's roles already name the model
-  # they just fetched. Its sampling lives in the engine's per-model settings,
-  # seeded by service/engine/profiles.py. Existing user overrides are still
-  # deep-merged over these code defaults.
+  # Base Gemma 4 E4B (with its MTP head). Its sampling lives in the engine's
+  # per-model settings, seeded by service/engine/profiles.py. Existing user
+  # overrides are still deep-merged over these code defaults.
+  #
+  # 0.5.0: these stay on BASE even though the setup guide's first download is
+  # now the tuned Gemma (catalog.GEMMA_E4B_WISP). An install that never applied
+  # a model in setup runs on these defaults with no overlay of its own, so
+  # pointing them at the tuned id would move it to a model it doesn't have.
+  # A new install gets the tuned model through setup instead: the download
+  # finishes, setup applies it (/setup/apply), and the overlay names it.
   fast:       "gemma-4-E4B-it-oQ4e-mtp"
   router:     "gemma-4-E4B-it-oQ4e-mtp"
   coding:     "gemma-4-E4B-it-oQ4e-mtp"
@@ -80,6 +85,10 @@ tool_retrieval:
 tool_capable:
   # Gemma 4 E4B MTP: clean tool calls with thinking on and off (2026-10-24).
   - "gemma-4-E4B-it-oQ4e-mtp"
+  # Wisp's tuned Gemma (Ask LoRA r5, step 1800): base's template and tool
+  # format. Toolbench 2026-11-11, same clock as base: public 77% vs 68%,
+  # private 84% vs 72%; unsafe proposals about twice base's on the safety slice.
+  - "gemma-4-E4B-it-r5-step-01800-oQ4e-mtp"
   - "LFM2.5-2.6B-MLX-6bit"
   - "Ling-3.0-tiny-oQ6e"
   - "Ling-3.0-tiny-oQ4e"
@@ -105,6 +114,10 @@ no_thinking_capable:
   # messages on that path). NOT safe after a tool result: see
   # thinking_required_after_tool below.
   - "gemma-4-E4B-it-oQ4e-mtp"
+  # The tuned Gemma shares base's template. Without this entry it would think
+  # through the whole budget on digests, Brief summaries and message topics
+  # (measured on r4 2026-11-05: digests failed, topics returned no JSON).
+  - "gemma-4-E4B-it-r5-step-01800-oQ4e-mtp"
   - "Agents-A1-4B-oQe6"
   - "Ling-3.0-tiny-oQ6e"
   # oQ4e verified 2026-08-18 the way this comment requires: the enable_thinking
@@ -122,6 +135,7 @@ no_thinking_capable:
 # carry no tool messages, still use no_thinking_capable above.
 thinking_required_after_tool:
   - "gemma-4-E4B-it-oQ4e-mtp"
+  - "gemma-4-E4B-it-r5-step-01800-oQ4e-mtp"
 
 # Models whose think block Wisp states EXPLICITLY on every request, both
 # `enable_thinking: true` and `false`, instead of omitting the kwarg to mean

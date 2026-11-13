@@ -33,8 +33,9 @@ MELLUM_R1_Q4 = CatalogModel(
     "Optional Wisp fine-tune. Model validation is pending.", tested=False)
 
 
-# The default. Gemma 4 E4B with its multi-token-prediction head (oQ4e mixed
-# 4-bit): the model the live roster runs. Thinking must stay ON in its profile:
+# Base Gemma 4 E4B with its multi-token-prediction head (oQ4e mixed 4-bit): the
+# fallback since 0.5.0, one switch away in Settings, and the model the code
+# roles in models.yaml still name (see the note there). Thinking must stay ON in its profile:
 # with enable_thinking false it returns zero tokens on the step after a tool
 # result, so every tool-using answer came back empty (measured 2026-10-24).
 # Sampling: the model card's top_p/top_k, with temperature lowered from its 1.0
@@ -42,7 +43,8 @@ MELLUM_R1_Q4 = CatalogModel(
 GEMMA_E4B_MTP = CatalogModel(
     "gemma-4-E4B-it-oQ4e-mtp", "Gemma 4 E4B", "4-bit (oQ4e) + MTP", 5.5, 16,
     "Jundot/gemma-4-E4B-it-oQ4e-mtp",
-    "Wisp's default. Fast on Macs with 16 GB of memory or more, with clean tool calls.", tested=True,
+    "The original Gemma, before Wisp's tuning. It proposes fewer actions it shouldn't, "
+    "but is slower and less accurate on Wisp's tests.", tested=True,
     engine_profile={
         "temperature": 0.8, "top_p": 0.95, "top_k": 64,
         "enable_thinking": True,
@@ -53,6 +55,20 @@ GEMMA_E4B_MTP = CatalogModel(
         # whole Mac's GPU on every request, replies included. Wisp caps only
         # background requests, per request (service/inference/power_tier.py).
     })
+
+
+# The default since 0.5.0: base Gemma 4 E4B with Wisp's Ask LoRA r5 (step 1800)
+# merged in, quantized with base's recipe (oQ4e, group 64) and base's own MTP head
+# copied unchanged. Same template, so the same thinking rules and engine profile.
+# Measured 2026-11-11 against base on one clock: Wisp's public tool test 77% vs
+# 68% and the private one 84% vs 72%, but about twice base's unsafe proposals on
+# the safety slice (cards still ask before a send unless Full access is on). The
+# repo's name is the model id, as the download path requires.
+GEMMA_E4B_WISP = CatalogModel(
+    "gemma-4-E4B-it-r5-step-01800-oQ4e-mtp", "Gemma 4 E4B, tuned for Wisp", "4-bit (oQ4e) + MTP", 5.6, 16,
+    "Neo-Arid/gemma-4-E4B-it-r5-step-01800-oQ4e-mtp",
+    "Wisp's default. Better at Wisp's tools and faster to answer than the original Gemma.", tested=True,
+    engine_profile=dict(GEMMA_E4B_MTP.engine_profile))
 
 
 LING_Q6 = CatalogModel(
@@ -67,7 +83,7 @@ LING_Q4 = CatalogModel(
     "mlx-works/Ling-3.0-tiny-oQ4e",
     "Smallest build that keeps tool selection reliable. Comfortable on 16 GB.", tested=True)
 
-PRIMARY_MODELS = (GEMMA_E4B_MTP, LING_Q6, LING_Q5, LING_Q4, MELLUM_R1_Q4)
+PRIMARY_MODELS = (GEMMA_E4B_WISP, GEMMA_E4B_MTP, LING_Q6, LING_Q5, LING_Q4, MELLUM_R1_Q4)
 
 EMBEDDING_MODEL = CatalogModel(
     "Qwen3-Embedding-0.6B-4bit-DWQ", "Qwen3 Embedding 0.6B", "4-bit", 0.35, 8,
@@ -87,13 +103,15 @@ def ranked_for(ram_gb: int, installed: list[str] | None = None) -> tuple[Catalog
     Once any catalog model is installed the full order applies, keeping locally
     available private builds eligible for the memory-appropriate ranking.
     """
-    # Gemma first on every Mac; the Ling builds follow in their memory order.
+    # The tuned Gemma, then base Gemma, on every Mac; the Ling builds follow in
+    # their memory order. An install that already has base keeps it (`use`); a
+    # better-ranked model is only offered (`get`), never switched to.
     if ram_gb >= 24:
-        order = (GEMMA_E4B_MTP, LING_Q6, LING_Q5, LING_Q4, MELLUM_R1_Q4)
+        order = (GEMMA_E4B_WISP, GEMMA_E4B_MTP, LING_Q6, LING_Q5, LING_Q4, MELLUM_R1_Q4)
     elif ram_gb >= 16:
-        order = (GEMMA_E4B_MTP, LING_Q5, LING_Q4, LING_Q6, MELLUM_R1_Q4)
+        order = (GEMMA_E4B_WISP, GEMMA_E4B_MTP, LING_Q5, LING_Q4, LING_Q6, MELLUM_R1_Q4)
     else:
-        order = (GEMMA_E4B_MTP, LING_Q4, LING_Q5, LING_Q6, MELLUM_R1_Q4)
+        order = (GEMMA_E4B_WISP, GEMMA_E4B_MTP, LING_Q4, LING_Q5, LING_Q6, MELLUM_R1_Q4)
     if installed is None:
         return order
     have = set(installed)
