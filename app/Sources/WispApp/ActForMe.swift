@@ -21,6 +21,8 @@ struct ActForMe: Equatable {
     let perDay: Int
     let does: [String]
     let never: String
+    /// What the yes reaches, in the service's words (messages after the yes; deadlines already there).
+    let scope: String
     let recent: [Done]
 
     static let title = "Let Wisp act for me"
@@ -33,6 +35,7 @@ struct ActForMe: Equatable {
         perDay = json["per_day"] as? Int ?? 10
         does = (json["does"] as? [String] ?? []).filter { !$0.isEmpty }
         never = json["never"] as? String ?? "Wisp never sends anything by itself."
+        scope = json["scope"] as? String ?? "Adding from texts and emails covers only messages that arrive after you say yes."
         recent = (json["recent"] as? [[String: Any]] ?? []).enumerated().compactMap { index, row in
             guard let title = row["title"] as? String, !title.isEmpty else { return nil }
             return Done(id: index, title: title, who: row["who"] as? String ?? "",
@@ -43,16 +46,24 @@ struct ActForMe: Equatable {
     /// The one line under the title.
     var line: String {
         enabled
-            ? "On. Wisp acts on what arrives from now on and tells you in the Brief as “Wisp did this”, each with an Undo. "
+            ? "On. Wisp shows each thing it does in the Brief as “Wisp did this”, with an Undo. "
               + "At most \(perDay) a day. " + never
-            : "Off. Wisp shows cards and waits for your tap."
+            : "Off. Wisp does none of this without your tap."
+    }
+
+    /// The confirmation for the notch row: compact, and explicit that a yes covers only what
+    /// arrives after it. Same facts as `consent`.
+    var confirmation: String {
+        let list = does.joined(separator: " · ")
+        return "Without asking first, Wisp: " + list
+            + ". " + scope + " At most \(perDay) a day, and each one has an Undo. " + never
     }
 
     /// What the person agrees to: the service's list, then the limits, then what never happens.
     var consent: String {
         let list = does.map { "• " + $0 }.joined(separator: "\n")
         return "Without asking first, Wisp:\n" + list
-            + "\n\nOnly for messages that arrive after you say yes, from people you know, schools and bookings; "
+            + "\n\n" + scope + " Adds come only from people you know, schools and bookings; "
             + "never promotions or group chats. At most \(perDay) a day. Each one shows in the Brief as "
             + "“Wisp did this” with an Undo. " + never + " You can turn this off at any time."
     }
@@ -90,10 +101,15 @@ final class ActForMeModel: ObservableObject {
 
     /// The question was shown and put aside without a yes: it is not asked again.
     func putAside() {
+        guard !pending else { return }
+        pending = true
+        problem = nil
         Task {
-            if case .ok(let json) = await MeetingClient.send("POST", Self.path + "/asked", body: [:]) {
-                state = ActForMe(json)
+            switch await MeetingClient.send("POST", Self.path + "/asked", body: [:]) {
+            case .ok(let json): state = ActForMe(json)
+            case .refused(let why): problem = why
             }
+            pending = false
         }
     }
 }
@@ -187,9 +203,10 @@ struct ActForMeAskCard: View {
         VStack(alignment: .leading, spacing: 7) {
             Text(Self.question).font(.wisp(size: place == .setup ? 13 : 14.5, weight: .semibold))
                 .foregroundStyle(Theme.textPrimary)
-            if let answered {
-                Text(answered ? "On. Wisp acts on what arrives from now on, and shows each one as “Wisp did this” with an Undo."
-                              : "Off. You can turn it on in Settings whenever you like.")
+            if let answered, model.pending || model.problem == nil {
+                Text(model.pending ? "Saving…"
+                     : answered && state.enabled ? "On. Wisp shows each thing it does as “Wisp did this”, with an Undo."
+                     : "Off. You can turn it on in Settings whenever you like.")
                     .font(.wisp(size: 12)).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
@@ -201,7 +218,7 @@ struct ActForMeAskCard: View {
                     }
                     .font(.wisp(size: 12)).foregroundStyle(Theme.textPrimary)
                 }
-                Text("Only for what arrives after you say yes, at most \(state.perDay) a day, and each one has an Undo. "
+                Text(state.scope + " At most \(state.perDay) a day, and each one has an Undo. "
                      + state.never)
                     .font(.wisp(size: 11.5)).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)

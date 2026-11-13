@@ -6,9 +6,11 @@ shared record of what Wisp did, and the one "Wisp did this" card with Undo.
 
 IMPORTANT rules:
 - Off until the person says yes (first-run setup, the one-time card, or the
-  switch in Settings). The yes is stored with its time: `act_for_me: {enabled:
-  true, enabled_at: <unix time>}` in the person's settings file. A settings
-  file that cannot be read means off.
+  switch in Settings). The yes is stored with its time, `{enabled: true,
+  enabled_at: <unix time>, asked: true}`, in its own private file,
+  ~/.moe/act_for_me.json, read from disk on every check. A file that is
+  missing, damaged or of the wrong shape means off. It is not in config.yaml
+  on purpose: see `_path`.
 - Only what ARRIVES after the yes. `allows(received_ts)` is False for any
   message received before `enabled_at`, so turning this on never reaches back
   into old mail or texts. Turning it off and on again moves the line forward.
@@ -44,11 +46,13 @@ still works after a restart, before your step has run.
 """
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any, Awaitable, Callable
 
 from service.proactive import guard
 
+FILE = "act_for_me.json"               # in Wisp's home; see _path()
 MAX_PER_DAY = 10                       # every kind together, a rolling day
 DAY_S = 86400
 SHOWN_S = 3 * DAY_S                    # how long a "Wisp did this" card stays
@@ -61,24 +65,45 @@ LANDED = ("added", "undone", "unknown", "undo_unknown")
 # is built: a module adds its line here in the same change that makes it act.
 DOES: list[str] = [
     "Adds an event or deadline you missed in a text or email to Calendar or Reminders.",
-    "Holds a free hour on your Day plan for work due in the next three days (in Wisp only, never on your calendar).",
+    "Holds a free hour on your Day plan for work due today or in the next three days (in Wisp only, never on your calendar).",
 ]
 NEVER = "Wisp never sends, replies, deletes or pays for anything by itself."
+# What the yes reaches, said the same way everywhere. True for the list above: adds read
+# messages (acting.allows on the line's own arrival); a hold reads the person's own calendar
+# and reminders, where "arrived" has no meaning, so it covers deadlines already there.
+SCOPE = ("Adding from texts and emails covers only messages that arrive after you say yes, never older ones. "
+         "Holding time is for deadlines on your calendar or in Reminders, including ones already there.")
 
 _undoers: dict[str, Callable[[dict], Awaitable[dict]]] = {}
+_lock = threading.Lock()
 
 
 # --- the gate ------------------------------------------------------------------------------
 
+def _path():
+    """The gate's own file. Not config.yaml: under Full access the assistant's file tools may
+    write there without a card, and a line written by a model must never be able to give or
+    backdate this consent. This file is a protected root in service/safety/policy.py (a write
+    asks in every mode, a grant cannot lift it), and /resetwisp deletes it."""
+    from service import paths
+    return paths.moe_dir() / FILE
+
+
 def _setting() -> dict[str, Any]:
+    """Read from disk every time: no cache, so off, a reset or a damaged file counts at once.
+    Anything but a well-formed file means off."""
+    import json
     try:
-        from service import config
-        if not config.user_overlay_valid():
-            return {}
-        value = config.models_config().get("act_for_me")
-        return value if isinstance(value, dict) else {}
-    except Exception:  # noqa: BLE001 — a setting that can't be read means off
+        value = json.loads(_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
         return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _write(setting: dict[str, Any]) -> None:
+    import json
+    from service import paths
+    paths.private_write_bytes(_path(), json.dumps(setting).encode("utf-8"))
 
 
 def enabled() -> bool:
@@ -87,8 +112,23 @@ def enabled() -> bool:
     return setting.get("enabled") is True and type(setting.get("enabled_at")) in (int, float)
 
 
+def _born() -> float:
+    """When the gate's file itself was created. Every save replaces the file with a fresh one
+    (paths.private_write_bytes), so this is the time of the last write, kept by the filesystem."""
+    info = _path().stat()
+    return float(getattr(info, "st_birthtime", info.st_mtime))
+
+
 def enabled_at() -> float | None:
-    return float(_setting()["enabled_at"]) if enabled() else None
+    """The time the yes counts from: the recorded time, but never earlier than the file itself
+    was written. So a file forged or edited by anything other than the switch cannot backdate
+    the yes to reach mail that arrived before it existed; it can only ever move it later."""
+    if not enabled():
+        return None
+    try:
+        return max(float(_setting()["enabled_at"]), _born())
+    except OSError:
+        return None
 
 
 def asked() -> bool:
@@ -97,7 +137,9 @@ def asked() -> bool:
 
 
 def allows(received_ts: Any) -> bool:
-    """Wisp may act on a message that arrived at `received_ts`: on, and it arrived after the yes."""
+    """Wisp may act on something that arrived at `received_ts`: on, and it arrived after the yes.
+    Pass the arrival time of the very line or message being acted on, never a conversation's
+    latest. A time that is not known is never allowed."""
     since = enabled_at()
     return since is not None and type(received_ts) in (int, float) and float(received_ts) >= since
 
@@ -119,23 +161,28 @@ def set_enabled(on: bool, *, now: float | None = None) -> dict[str, Any]:
     """The person's answer. Yes records the time it was given; no clears it."""
     if type(on) is not bool:
         raise ValueError("enabled must be a boolean")
-    from service import config
     stamp = (time.time() if now is None else float(now)) if on else None
-    config._save_overlay({"act_for_me": {"enabled": on, "enabled_at": stamp, "asked": True}})
+    with _lock:
+        _write({"enabled": on, "enabled_at": stamp, "asked": True})
     audit("act_for_me.setting", enabled=on)
     return state()
 
 
 def mark_asked() -> None:
-    """The question was shown and put aside without a yes; it is not asked again."""
-    from service import config
-    if not asked():
-        config._save_overlay({"act_for_me": {"enabled": False, "enabled_at": None, "asked": True}})
+    """The question was shown and put aside without a yes; it is not asked again. Only `asked`
+    changes: a yes given a moment earlier (another window, a race) is never overwritten."""
+    with _lock:
+        setting = _setting()
+        if setting.get("asked") is True:
+            return
+        _write({"enabled": setting.get("enabled") is True and type(setting.get("enabled_at")) in (int, float),
+                "enabled_at": setting.get("enabled_at") if type(setting.get("enabled_at")) in (int, float) else None,
+                "asked": True})
 
 
 def state() -> dict[str, Any]:
     return {"enabled": enabled(), "enabled_at": enabled_at(), "asked": asked(), "per_day": MAX_PER_DAY,
-            "does": list(DOES), "never": NEVER}
+            "does": list(DOES), "never": NEVER, "scope": SCOPE}
 
 
 def audit(event: str, **fields) -> None:
