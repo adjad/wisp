@@ -39,6 +39,8 @@ FOR A NEW KIND OF ACTION (the interface; see tests/test_acting.py):
                   show_until=due_ts, undo={...whatever your undoer needs...})
     acting.register_undoer("follow_up", my_async_undo)   # async (record) -> {"ok": bool, "status": str}
 `autoadd.done_cards` then shows the card, and the card's Undo reaches your undoer.
+Also name your module in `_HOME` below (it must expose `async def undo(record)`), so Undo
+still works after a restart, before your step has run.
 """
 from __future__ import annotations
 
@@ -59,6 +61,7 @@ LANDED = ("added", "undone", "unknown", "undo_unknown")
 # is built: a module adds its line here in the same change that makes it act.
 DOES: list[str] = [
     "Adds an event or deadline you missed in a text or email to Calendar or Reminders.",
+    "Holds a free hour on your Day plan for work due in the next three days (in Wisp only, never on your calendar).",
 ]
 NEVER = "Wisp never sends, replies, deletes or pays for anything by itself."
 
@@ -187,7 +190,20 @@ def register_undoer(kind: str, undoer: Callable[[dict], Awaitable[dict]]) -> Non
     _undoers[kind] = undoer
 
 
+# The module that registers each kind's undoer, so Undo works in a process that has not
+# run that kind's step yet (after a restart, the card is still there).
+_HOME = {"hold": "service.proactive.autohold"}
+
+
 def undoer(kind: str):
+    if kind not in _undoers and kind in _HOME:
+        try:
+            import importlib
+            found = getattr(importlib.import_module(_HOME[kind]), "undo", None)
+            if callable(found):
+                _undoers[kind] = found
+        except Exception:  # noqa: BLE001 — no undoer: Undo says it can't, and nothing changes
+            pass
     return _undoers.get(kind)
 
 

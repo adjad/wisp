@@ -63,8 +63,10 @@ by default), and your Brief and answers fit you.
   yes, in setup or in Settings. On, Wisp adds an event or deadline you missed in a text or email to
   Calendar or Reminders by itself. That is the one calendar change that does not wait for your
   approval, and only for messages that arrive after your yes, from people you know, schools and
-  bookings, at most 10 a day. Each one appears in the Brief as "Wisp did this" with an Undo that
-  removes exactly what Wisp added. Wisp never sends, replies, deletes or pays for anything by itself.
+  bookings. It also holds a free hour on your Day plan for work due in the next three days; that
+  hold lives in Wisp only, never on your calendar. At most 10 actions a day. Each one appears in
+  the Brief as "Wisp did this" with an Undo that takes back exactly what Wisp did. Wisp never
+  sends, replies, deletes or pays for anything by itself.
 - **You can start over.** `/resetwisp` deletes everything Wisp has stored and revokes the access
   you gave it.
 
