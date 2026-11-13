@@ -213,6 +213,9 @@ def build_status(*, hardware: Hardware, omlx: OmlxState, installed: list[str],
                    "recommended_label": _label(rec["first_choice"]), "use": rec["use"], "warning": rec["warning"],
                    "fits": rec["fits"],
                    "download": download_info(rec["get"], omlx.model_dir),
+                   # Base Gemma, kept one switch away from the tuned default.
+                   "fallback_download": download_info(fb.id, omlx.model_dir)
+                                        if (fb := catalog.fallback_download(installed)) else None,
                    "embedding_download": None if embedder.id in installed
                                          else download_info(embedder.id, omlx.model_dir)},
         "roles": [{"role": r, "label": ROLE_LABELS[r], **roles.get(r, {})} for r in TEXT_ROLES],

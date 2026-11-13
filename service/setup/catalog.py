@@ -202,3 +202,21 @@ def recommend(ram_gb: int, installed: list[str]) -> dict:
 
 def by_id(model_id: str) -> CatalogModel | None:
     return next((m for m in (*PRIMARY_MODELS, EMBEDDING_MODEL) if m.id == model_id), None)
+
+
+# The model kept one switch away from a tuned default (0.5.0, user decision "Default,
+# base as fallback"). `recommend` never offers a model ranked below the one in use, so
+# without this a Mac that got the tuned Gemma had no way in Wisp to get base back.
+FALLBACK_FOR = {GEMMA_E4B_WISP.id: GEMMA_E4B_MTP.id}
+
+
+def fallback_download(installed: list[str]) -> CatalogModel | None:
+    """Base Gemma when this Mac has the tuned Gemma but not base, else None.
+
+    An offer only: setup shows it as a second download, and switching to it is the
+    person's own pick afterwards. Nothing changes roles."""
+    have = set(installed)
+    for tuned, base in FALLBACK_FOR.items():
+        if tuned in have and base not in have:
+            return by_id(base)
+    return None
