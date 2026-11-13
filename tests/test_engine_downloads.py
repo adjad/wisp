@@ -495,6 +495,20 @@ def test_an_extra_file_is_named_and_a_retry_removes_it(wire, tmp_path, monkeypat
     assert (folder / "config.json").exists() and (folder / "model.safetensors").exists()
 
 
+def test_an_extra_folder_is_named_for_removal_by_hand(wire, tmp_path, monkeypatch):
+    _, folder = _pinned_setup(wire, tmp_path, monkeypatch,
+                              {"config.json": b"{}", "model.safetensors": b"w" * 8, "stray.json": b"{}"})
+    (folder / "onnx").mkdir()
+    (folder / "onnx" / "model.onnx").write_bytes(b"1")
+    task = request(wire, "GET", "/downloads").json()["tasks"][0]
+    assert task["reason"] == "mismatch"
+    assert "a folder the tested model didn't: onnx. Remove it in Finder" in task["message"]
+    assert "files the tested model didn't: stray.json. Try again" in task["message"]
+    assert request(wire, "POST", "/downloads", json={"model": MODEL}).status_code == 200
+    assert (folder / "onnx" / "model.onnx").exists()        # never a recursive delete
+    assert not (folder / "stray.json").exists()
+
+
 def test_polls_and_the_startup_check_never_delete(wire, tmp_path, monkeypatch):
     _, folder = _pinned_setup(wire, tmp_path, monkeypatch,
                               {"config.json": b"{}", "model.safetensors": b"x" * 8, "extra.bin": b"1"})

@@ -12,6 +12,7 @@ import math
 import re
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
@@ -303,8 +304,18 @@ def _check_finished(tasks) -> list:
             message = _MESSAGES_AFTER_COMPLETION[reason].format(label=known.label, repo=known.repo)
             from service.setup.local_models import extra_files
             extras = extra_files(folder, known) if reason == "mismatch" else []
-            if extras:
-                message += f" It has files the tested model didn't: {_named(extras)}. Try again to remove them."
+            # Retry unlinks plain files only (never a recursive delete), so a folder or link
+            # the tested model didn't have is the user's to remove; saying so avoids a loop.
+            by_hand = [n for n in extras if (folder / n).is_symlink() or not (folder / n).is_file()]
+            files = [n for n in extras if n not in by_hand]
+            if files:
+                message += f" It has files the tested model didn't: {_named(files)}. Try again to remove them."
+            if by_hand:
+                one = len(by_hand) == 1
+                where = str(folder).replace(str(Path.home()), "~", 1)
+                message += (f" It has {'a folder' if one else 'folders'} the tested model didn't: "
+                            f"{_named(by_hand)}. Remove {'it' if one else 'them'} in Finder "
+                            f"(in {where}), then try again.")
             task.update(state="failed", reason=reason, message=message)
     return tasks
 
