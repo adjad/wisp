@@ -62,6 +62,7 @@ LANDED = ("added", "undone", "unknown", "undo_unknown")
 DOES: list[str] = [
     "Adds an event or deadline you missed in a text or email to Calendar or Reminders.",
     "Holds a free hour on your Day plan for work due in the next three days (in Wisp only, never on your calendar).",
+    "Reminds you to reply when someone you talk to often asked you something a day ago and hasn't heard back.",
 ]
 NEVER = "Wisp never sends, replies, deletes or pays for anything by itself."
 
