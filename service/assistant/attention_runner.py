@@ -500,6 +500,10 @@ def _capture_current(candidate, *, automatic: bool) -> bool:
             latest = one_path(latest)       # re-read at the effect: acting for you may have just been turned on
         if latest.mode == 'off' or (automatic and (latest.mode != 'live' or not latest.capture_events)):
             return False
+        if automatic:
+            from service.attention.event_capture import captures_itself
+            if not captures_itself(candidate):  # mail never adds by itself (MAIL_CAPTURES_ITSELF)
+                return False
         if _policy_block():
             return False
         current = capture_candidates(time.time(), candidate.timezone, latest)
@@ -543,7 +547,7 @@ def _capture_commitments(now: float, tz: str) -> list[dict]:
 
 
 async def run_capture_tick(now: float, tz: str, settings) -> list:
-    from service.attention.event_capture import capture, preview
+    from service.attention.event_capture import capture, captures_itself, preview
     ledger = get_ledger()
     ledger.recover(now)
     enabled = settings.mode == 'live' and settings.capture_events
@@ -556,7 +560,7 @@ async def run_capture_tick(now: float, tz: str, settings) -> list:
     floor = float(ledger.meta('capture_enabled_at') or now)
     for c in values:
         record = preview(c, ledger, now)
-        if not enabled or not c.automatic_eligible or c.source_ts < floor or record['state'] != 'shadow':
+        if not enabled or not captures_itself(c) or c.source_ts < floor or record['state'] != 'shadow':
             continue
         try:
             row = await capture(c, ledger=ledger, now=now, settings=settings,

@@ -11,7 +11,6 @@ import math
 import re
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
-from email.utils import parseaddr
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -23,6 +22,18 @@ from service.attention.ledger import Ledger
 from service.attention.live import LOOKBACK_S, Settings, _clause, items_from_records, local_midnight, plan_reminder
 from service.attention.matching import find_on_file, shares_words
 from service.attention.resolve import Resolved, _CANCEL, _TENTATIVE, resolve
+from service.mail_sender import is_odd, real_address, shown
+
+# Mail never captures by itself in this release, mirroring service/proactive/autoadd.MAIL_ACTS.
+# A mail sender's identity comes from an unauthenticated From header: it can be forged
+# outright, and a display name can be dressed up as someone else's address
+# (service/mail_sender.py reads it strictly but cannot prove it). So with Live and
+# capture_events on, a qualifying MAIL candidate stays a preview the person adds with a
+# tap (capture_one, automatic=False); only TEXT candidates are created automatically.
+# Turning this on needs stronger proof than the header: a sender the person has written to
+# or saved, plus the mail provider's authentication result (DMARC/DKIM/SPF pass) for that
+# message. The automatic mail path is kept, and tested with this switched on.
+MAIL_CAPTURES_ITSELF = False
 
 HORIZON_DAYS = 31
 _EVENT = re.compile(r"\b(?:exam|quiz|midterm|final|appointment|interview|meeting|coffee(?:\s+chat)?|hangout|hang\s+out|lunch|dinner|breakfast|brunch|party|practice|rehearsal|concert|visit|reservation|flight|workshop|class|seminar|session|catch\s+up|meet(?:\s+up)?|see\s+you|come\s+over)\b", re.I)
@@ -308,7 +319,9 @@ def mail_items(rows: list[dict]) -> tuple[list[Item], set[str]]:
     """Adapt *admitted* current rows. Identity includes native account + Message-ID.
 
     No body history, sender display-name trust, HTML interpretation or new source reads.
-    School eligibility requires an institutional address plus an actual class/event cue.
+    School eligibility requires an institutional REAL address (service/mail_sender.py), a
+    sender that is not odd, plus an actual class/event cue. A row with no real address is
+    dropped; an odd sender is shown by its real address alone and is never school mail.
     """
     items, institutional = [], set()
     for row in rows:
@@ -317,8 +330,14 @@ def mail_items(rows: list[dict]) -> tuple[list[Item], set[str]]:
             account, mid = str(row['account_id']), str(row['message_id'])
             if not account or not mid or not math.isfinite(ts):
                 continue
-            sender = str(row.get('sender') or '')
-            address = parseaddr(str(row.get('sender_address') or sender))[1].lower()
+            raw_sender, raw_address = row.get('sender') or '', row.get('sender_address') or ''
+            # One strict reading (service/mail_sender.py): never the first bracketed
+            # address, never a name dressed up as an address.
+            address = real_address(raw_sender, raw_address)
+            odd = is_odd(raw_sender, raw_address)
+            sender = shown(raw_sender, raw_address)
+            if not address:
+                continue        # no address to trust: never offered from this adapter
             domain = address.rpartition('@')[2]
             subject = str(row.get('subject') or '')[:2000]
             body = _QUOTED.split(str(row.get('body') or '')[:16000], maxsplit=1)[0]
@@ -328,7 +347,9 @@ def mail_items(rows: list[dict]) -> tuple[list[Item], set[str]]:
             sid = 'mail:' + digest(account + '\0' + mid)
             item = Item(sid, 'mail', ts, 'incoming', sender, address, text)
             items.append(item)
-            school = domain.endswith('.edu') or domain in {'edstem.org', 'us.edstem.org', 'edstem.com', 'instructure.com'}
+            # School is judged on the REAL address's domain only; an odd sender or one with
+            # no real address is never school mail.
+            school = not odd and (domain.endswith('.edu') or domain in {'edstem.org', 'us.edstem.org', 'edstem.com', 'instructure.com'})
             course = re.search(r"\b(?:[A-Z]{2,8}[- ]?\d{1,4}|exam|quiz|midterm|class|course)\b", subject, re.I)
             if school and (course or _EVENT.search(subject)) and _EVENT.search(text) and not (_PROMO.search(subject) or _SCAM_PHRASES.search(text)):
                 institutional.add(sid)
@@ -413,11 +434,26 @@ def candidates(records: list[dict], rows: list[dict], *, now: float, tz: str,
         automatic_eligible = item.source == 'messages' or bool(course and re.search(r'\b(?:exam|quiz|midterm|final|class)\b', text, re.I))
         if not automatic_eligible:
             when += ' · review participation before adding'
+        elif item.source != 'messages' and not MAIL_CAPTURES_ITSELF:
+            when += ' · from email: waits for your tap'
         when += f' · using {tz}'
         out.append(Candidate(item.id, item.ts, digest(f'{item.ts}|{item.sender}|{item.conversation}|{item.text}|{tz}|{settings.default_hour}|{settings.lead_minutes}'), key, title, quote,
                              r.day.isoformat(), tz, r.start.timestamp() if r.start else None,
                              minutes, plan.due_ts, when, r.inferred + ('timezone:local_at_first_preview',), item.source, scope, automatic_eligible))
     return out
+
+
+def captures_itself(c: Candidate) -> bool:
+    """May this candidate be created without the person's tap? Texts that qualify, yes.
+
+    Anything that is not a text (mail, or a source this code does not know) only when
+    MAIL_CAPTURES_ITSELF is on. Read at call time, so the switch is one constant.
+    """
+    if not c.automatic_eligible:
+        return False
+    if c.source_kind == 'messages' and c.source_id.startswith('msg:'):
+        return True
+    return MAIL_CAPTURES_ITSELF and c.source_kind == 'mail'
 
 
 def preview(candidate: Candidate, ledger: Ledger, now: float) -> dict:
@@ -440,6 +476,9 @@ async def capture(c: Candidate, *, ledger: Ledger, now: float, settings: Setting
                   fresh_commitments, create_calendar, create_reminder, automatic: bool,
                   still_current=lambda: True) -> dict:
     """Claim once, save each effect, never replay a completed/uncertain pair."""
+    if automatic and not captures_itself(c):
+        # The last word at the effect: no caller can create mail automatically.
+        raise ValueError('A plan from email is added only when you tap Add.')
     existing = ledger.get(c.capture_key)
     if existing:
         ledger.finish('preview:' + c.source_id, existing['state'], existing['detail'], now)
