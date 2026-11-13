@@ -108,7 +108,7 @@ def test_start_download_poll_cancel_retry_and_reopen(wire):
     request(wire, "POST", "/downloads/cancel", json={"model": MODEL})
     assert wire.seen[-2].url.path == "/admin/api/login"
     assert any(r.url.path == "/admin/api/hf/cancel/task-2" for r in wire.seen)
-    wire.tasks[0]["status"] = "completed"
+    wire.tasks[0].update(status="completed", downloaded_size=10**10, total_size=10**10)
     assert request(wire, "GET", "/downloads").json()["tasks"][0]["state"] == "completed"
     assert SECRET not in response.text and "fake-session" not in response.text
 
@@ -321,3 +321,15 @@ def test_a_running_download_has_no_reason_or_message(wire):
     wire.tasks = [row()]
     task = request(wire, "GET", "/downloads").json()["tasks"][0]
     assert task["reason"] is None and task["message"] is None
+
+
+def test_a_repo_without_the_weights_is_not_a_finished_download(wire):
+    # A README-only repo "completes" in a second; Wisp must not treat that as installed.
+    size = downloads.catalog.by_id(MODEL).size_gb * 1e9
+    wire.tasks = [row(status="completed", progress=100, downloaded_size=1547, total_size=1547)]
+    task = request(wire, "GET", "/downloads").json()["tasks"][0]
+    assert task["state"] == "failed" and task["reason"] == "incomplete"
+    assert "aren't all on Hugging Face yet" in task["message"]
+    wire.tasks = [row(status="completed", progress=100, downloaded_size=int(size), total_size=int(size))]
+    task = request(wire, "GET", "/downloads").json()["tasks"][0]
+    assert task["state"] == "completed" and task["message"] is None

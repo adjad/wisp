@@ -1,0 +1,81 @@
+{
+  "_about": "Extract of Neo-Arid/Gemma-Wisp's config.json and model.safetensors.index.json, the only files vision.py and voice.py read to decide capability. Source sha256 as in the HF upload manifest.",
+  "source_sha256": {
+    "config.json": "295c29be6170fd93bc50309ff2b27f6a6dce6020be5f69dcb2b061dfcb77b800",
+    "model.safetensors.index.json": "36f9da8215f08eb926109f0f8e4ce360101552e21c9b4cf4254fad7144d9ca2a"
+  },
+  "counts": {
+    "weights": 2820,
+    "vision": 661,
+    "audio": 754
+  },
+  "config": {
+    "model_type": "gemma4",
+    "vision_config": {
+      "model_type": "gemma4_vision"
+    },
+    "audio_config": {
+      "model_type": "gemma4_audio"
+    }
+  },
+  "weight_names": [
+    "embed_vision.embedding_projection.biases",
+    "embed_vision.embedding_projection.scales",
+    "embed_vision.embedding_projection.weight",
+    "vision_tower.encoder.layers.0.input_layernorm.weight",
+    "audio_tower.layers.0.feed_forward1.ffw_layer_1.input_max",
+    "audio_tower.layers.0.feed_forward1.ffw_layer_1.input_min",
+    "audio_tower.layers.0.feed_forward1.ffw_layer_1.linear.weight",
+    "audio_tower.layers.0.feed_forward1.ffw_layer_1.output_max",
+    "language_model.model.embed_tokens.biases",
+    "language_model.model.embed_tokens.scales",
+    "language_model.model.embed_tokens.weight",
+    "language_model.model.embed_tokens_per_layer.biases"
+  ],
+  "uploaded_files": {
+    "README.md": {
+      "sha256": "437ef9c400cbe451c009aaf89b43cb8f2c0b31521efd923149c8f7d87357737f",
+      "bytes": 4368
+    },
+    "chat_template.jinja": {
+      "sha256": "0a2c8073c878ab1da004bee933a998606537bbb62016310352c7285c3f01c5b5",
+      "bytes": 18569
+    },
+    "config.json": {
+      "sha256": "295c29be6170fd93bc50309ff2b27f6a6dce6020be5f69dcb2b061dfcb77b800",
+      "bytes": 35165
+    },
+    "generation_config.json": {
+      "sha256": "d4226bbe3117d2d253ba4609720ba82c6c4ce4627a9a6ae05387c78983ac03de",
+      "bytes": 208
+    },
+    "model-00001-of-00002.safetensors": {
+      "sha256": "b22e7af393e6d0ecfcf210e94d4b1b29ee34c65213ece4410bd7e515815664f7",
+      "bytes": 5001242218
+    },
+    "model-00002-of-00002.safetensors": {
+      "sha256": "27ec7843f33fab7d8c40d9c4d145ab374fdc5cf0ddf02c1d9f1a2eee6f4d2a07",
+      "bytes": 425560497
+    },
+    "model-mtp.safetensors": {
+      "sha256": "deb34acb448ba75d2087bcf76dda343cdcf77c2bfcb1eba79c21561dd5956c6c",
+      "bytes": 159139040
+    },
+    "model.safetensors.index.json": {
+      "sha256": "36f9da8215f08eb926109f0f8e4ce360101552e21c9b4cf4254fad7144d9ca2a",
+      "bytes": 275856
+    },
+    "processor_config.json": {
+      "sha256": "32bdf45d2ad4cc29a0822ddd157a182de76644f0419a6228d151495256e9813c",
+      "bytes": 1689
+    },
+    "tokenizer.json": {
+      "sha256": "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
+      "bytes": 32169626
+    },
+    "tokenizer_config.json": {
+      "sha256": "9f4fec4b1dc6ecddf8f4a92e9caea5971c0e67d81309f3f9066a2bee8c362633",
+      "bytes": 3082
+    }
+  }
+}

@@ -124,9 +124,37 @@ from . import authority_changes as _authority_changes
 from service.publication_authority import mutating as _publication_mutation, revocation as _publication_revocation
 
 
+def _stranded_roles(config: dict, overlay: dict) -> dict:
+    """Code-default roles name base Gemma, which 0.5.0 no longer offers. With no roles of
+    the person's own (a fresh or lost overlay) on a built-in-engine Mac where base is
+    missing but Wisp's tuned Gemma is on disk, the roles that name base move to it, so
+    the Mac isn't pointed at a model it doesn't have. Nothing is written."""
+    if "roles" in overlay:
+        return config
+    try:
+        from service.engine import mode
+        if not mode.is_bundled():
+            return config        # an oMLX.app folder may need macOS permission to list
+        from service.setup import catalog
+        from service.setup.local_models import catalogue_models_on_disk
+        base = catalog.GEMMA_E4B_MTP.id
+        tuned = (catalog.GEMMA_E4B_WISP.id, catalog.GEMMA_E4B_WISP_PRERELEASE.id)
+        roles = config.get("roles") or {}
+        if base not in roles.values():
+            return config
+        found = catalogue_models_on_disk([mode.engine_data_dir() / "models"], wanted=(base, *tuned))
+        use = next((m for m in tuned if m in found), None)
+        if base in found or use is None:
+            return config
+    except Exception:  # noqa: BLE001 — an unreadable folder is no reason to change roles
+        return config
+    return {**config, "roles": {r: (use if m == base else m) for r, m in roles.items()}}
+
+
 @lru_cache
 def _effective_config() -> dict:
-    return _deep_merge(_packaged_config(), _user_overlay())
+    overlay = _user_overlay()
+    return _stranded_roles(_deep_merge(_packaged_config(), overlay), overlay)
 
 
 _raw_overlay_cache_clear = _user_overlay.cache_clear

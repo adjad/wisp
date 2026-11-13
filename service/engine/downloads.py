@@ -188,6 +188,16 @@ def _failure(error, model_id: str) -> tuple[str, str]:
     return "other", _FAILED
 
 
+# A finished download under this share of the catalogue size fetched a repo that doesn't
+# hold the model yet (a README-only repo "completes" in a second, leaving no weights).
+_INCOMPLETE_SHARE = 0.5
+
+
+def _incomplete(model_id: str, downloaded: int, total: int) -> bool:
+    model = catalog.by_id(model_id)
+    return bool(model and model.size_gb) and max(downloaded, total) < _INCOMPLETE_SHARE * model.size_gb * 1e9
+
+
 def _tasks(payload: dict) -> list[tuple[float, str, dict]]:
     rows = payload.get("tasks")
     if not isinstance(rows, list) or len(rows) > 1000:
@@ -214,6 +224,11 @@ def _tasks(payload: dict) -> list[tuple[float, str, dict]]:
         # No button name: each surface adds its own (Retry, Retry download, Try again).
         task["reason"], task["message"] = (_failure(row.get("error"), catalogue[repo])
                                            if state == "failed" else (None, None))
+        if state == "completed" and _incomplete(task["model"], task["downloaded_bytes"], task["total_bytes"]):
+            known = catalog.by_id(task["model"])
+            task.update(state="failed", reason="incomplete", message=(
+                f"{known.label}'s files aren't all on Hugging Face yet (huggingface.co/{known.repo}). "
+                "Try again once they are."))
         created = _number(row.get("created_at"), 10**12)
         old = latest.get(repo)
         if old is None or created >= old[0]:

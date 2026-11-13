@@ -72,7 +72,7 @@ GEMMA_E4B_MTP = CatalogModel(
 GEMMA_E4B_WISP = CatalogModel(
     "Gemma-Wisp", "Gemma Wisp", "4-bit (oQ4e) + MTP", 5.6, 16,
     "Neo-Arid/Gemma-Wisp",
-    "Wisp's model. More accurate and faster on Wisp's tool tests than the original Gemma, but it "
+    "Wisp's model. More accurate on Wisp's tool tests than the original Gemma, but it "
     "proposes more actions you'll want to decline.", tested=True,
     engine_profile=dict(GEMMA_E4B_MTP.engine_profile))
 
