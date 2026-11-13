@@ -356,7 +356,7 @@ def _automatic_adds() -> tuple[str, list[tuple[str, str, bool]]]:
     as (full sentence, fragment for a combined sentence, cautious). Every
     automatic writer Wisp has is here: proactive auto-add, routine actions
     (behavior_runtime) and Caught for you (attention_runner live reminders and
-    capture_events). The last two pass the same assistant_write gate as
+    capture_events; not while the gate is on, when it only previews). The last two pass the same assistant_write gate as
     _write_mode, so a refusal there means they don't write."""
     mode = _write_mode()
     adds: list[tuple[str, str, bool]] = []
@@ -374,6 +374,10 @@ def _automatic_adds() -> tuple[str, list[tuple[str, str, bool]]]:
                     "reminders or Tentative holds in Wisp's own schedule, from your routine")
         adds.append((_ROUTINE[routine], fragment, routine == "unknown"))
     attention = _attention_state()
+    if _auto_add_on():
+        # While the gate is on, attention_runner.one_path turns Caught for you's
+        # live mode into shadow: it creates nothing, so it is not listed.
+        attention = ("shadow", False)
     if attention is None or (mode == "unknown" and attention[0] == "live"):
         adds.append(("Depending on your Caught for you settings, I may add reminders or Calendar "
                      "events from your mail and messages on my own, and tell you.",
