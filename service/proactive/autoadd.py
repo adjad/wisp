@@ -34,11 +34,15 @@ IMPORTANT rules:
   calendar_event/reminder).
 - One path per message: an item Caught for you already turned into a reminder
   or event (service/attention) is never added here as well.
-- Mail never acts on its own in this release (MAIL_ACTS): a mail sender's
+- Mail acts only with proof (default_mail_proof, MAIL_ACTS): a mail sender's
   identity comes from an unauthenticated From header, so a qualifying mail item
-  always stays a tap card. Texts still auto-add under the gate (a text's sender
-  is a handle matched to a saved contact). The mail timing rules below stay in
-  place and tested for when this is switched on.
+  is added without a tap only when it was fetched by Wisp's own Google sign-in,
+  its sender is read strictly, that exact address is a saved contact's or one
+  the user's own Sent mail went to before it arrived, the dated sentence is in
+  that very message, and Gmail itself reports the mail as authenticated for the
+  From domain. Anything missing, stale or unreadable means a tap card. Mail seen
+  only through Apple Mail is never added without a tap. Texts do not need this
+  (a text's sender is a handle matched to a saved contact).
 - "Arrived after the yes" is judged per sentence: a mail subject by the first
   in-view message that carried it without a Re:/Fwd: prefix (sources._subject_ts),
   a mail body sentence by its own message, or by an EARLIER message in view that
@@ -65,12 +69,13 @@ MAX_AHEAD_S = 60 * DAY_S
 DEFAULT_EVENT_MIN = 60
 DONE_SHOWN_S = 3 * DAY_S
 MAX_ATTEMPTS = 2
-# Mail does not act on its own in this release: a mail sender's identity comes from an
-# unauthenticated From header (anyone can write "From: Prof. Lee"; service/mail_sender.py
-# reads it strictly but cannot prove it), so for now a qualifying MAIL item always stays a
-# tap card. Texts still auto-add under the gate: a text's sender is a handle matched to a
-# saved contact. The per-line arrival rules for mail stay in place, tested with this on.
-MAIL_ACTS = False
+# Mail acts only with PROOF. A From line is not proof of who sent a mail (anyone can write
+# "From: Prof. Lee"), so a qualifying MAIL item is added without a tap only when
+# `mail_proof` holds every one of its checks; otherwise it stays a tap card. This constant
+# is the fail-closed switch over all of it: False, and no mail is ever added without a tap,
+# whatever the proof says. Texts do not pass through here: a text's sender is a handle
+# matched to a saved contact (_saved_contact).
+MAIL_ACTS = True
 # A body sentence counts as already said in an earlier message when at least this share
 # of its word 3-grams appear in that message (sources.quote_grams).
 QUOTED_SHARE = 0.5
@@ -467,8 +472,10 @@ def plan_for(item: dict, result: dict | None, *, now: float, tz: str) -> tuple[d
     if source == "messages":
         if not _saved_contact(item):
             return None, "not a saved contact: tap to add"
-    elif person and not (item.get("user_wrote") or _same_org(item)):
-        return None, "unknown sender: tap to add"
+    # MAIL: who the sender is, is not decided here. Having written in the thread, or sharing
+    # the user's domain, used to qualify a mail sender; both rest on the From line alone.
+    # A mail plan is only ever WRITTEN with default_mail_proof (step); without it the plan
+    # is a card the person taps.
     arrival = item.get("received_ts")
     if type(arrival) not in (int, float):
         return None, "no arrival time"
@@ -837,9 +844,71 @@ def merge_cards(done: list[dict], tap: list[dict], cards: list[dict], added_item
 # --- one pass, from the background cycle ------------------------------------------------------
 
 
+# --- proof for mail ------------------------------------------------------------------------------
+
+
+async def default_mail_proof(item: dict, plan: dict, evidence: dict) -> tuple[bool, str]:
+    """(True, "") only when EVERY check holds for this mail item; else (False, why).
+
+    1. Fetched by Wisp's own Google sign-in. The row's account is the linked Gmail
+       address itself, so its sender and Message-ID were parsed by gmail_source from
+       Gmail's own data. Mail that reaches Wisp only through Apple Mail is not acted
+       on: nothing yet confirms what Mail reports as a sender's address, and there is
+       no authentication result for it.
+    2. A sender read strictly (service/mail_sender.py): not odd, one real address.
+    3. A real person writing to the user, not an organisation or a roll-up.
+    4. The dated sentence is from the very message whose proof is checked: its own
+       arrival is this message's arrival. A date from an older message of the thread
+       (its subject, a quoted line) has no proof here.
+    5. A known correspondent, proven from the user's side (mail_known.known): that
+       exact address is a saved contact's, or the user's own Sent mail went to it
+       before this message arrived. Never inferred from the thread or the domain.
+    6. Authenticated by the receiving provider (gmail_source.authenticated_for,
+       service/mail_auth.py): exactly one result from Gmail itself, showing DMARC
+       pass or an aligned DKIM/SPF pass for the From domain. No result on hand
+       (never fetched, a restart since) is no proof.
+    `evidence` caches the Sent rows, Contacts addresses and the user's own addresses
+    for one cycle."""
+    from service import gmail_source
+    from service.proactive import mail_known
+    account, raw_account = str(item.get("account") or ""), str(item.get("raw_account") or "").strip().casefold()
+    # Said by sources from the row itself (the linked address is both its account and its
+    # account id, and it is not a Mail.app copy), never inferred here from how names look.
+    if item.get("google_fetched") is not True or "@" not in raw_account:
+        return False, "not from a Google account you linked"
+    ref = item.get("ref") or {}
+    address, message_id = str(ref.get("to") or "").strip().casefold(), str(ref.get("message_id") or "").strip()
+    if item.get("odd_sender") or not address or not message_id:
+        return False, "sender not read cleanly"
+    if not item.get("person") or item.get("digest") or item.get("critical"):
+        return False, "not a person"
+    arrived = item.get("received_ts")
+    if type(arrived) not in (int, float) or plan.get("line_ts") != arrived:
+        return False, "the date is not from this message"
+    if "sent" not in evidence:
+        evidence["sent"] = await mail_known.read_sent()
+        evidence["contacts"] = mail_known.read_contact_addresses()
+        try:
+            from service.memory.identity import user_emails
+            mine = {str(e).casefold() for e in user_emails() or []}
+        except Exception:  # noqa: BLE001
+            mine = set()
+        evidence["mine"] = mine
+    sent_rows, sent_fresh = evidence["sent"]
+    known, why = mail_known.known(address, before_ts=float(arrived), sent_rows=sent_rows, sent_fresh=sent_fresh,
+                                  contact_addresses=evidence["contacts"],
+                                  mine=evidence["mine"] | {account.casefold()})
+    if known is not True:
+        return False, why
+    verdict = gmail_source.authenticated_for(raw_account, message_id, address)
+    if not (isinstance(verdict, tuple) and len(verdict) == 2 and verdict[0] is True):
+        return False, "not verified by your mail provider" if verdict is None else str(verdict[1])
+    return True, ""
+
+
 async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store, abort,
                writers: dict | None = None, existing=None, is_enabled=None, allows=None,
-               debug: list | None = None) -> dict:
+               mail_proof=None, debug: list | None = None) -> dict:
     """Plan every eligible item, write up to the caps, record each outcome.
 
     Returns {"tap": tap-to-add cards (auto-add off, or over the caps),
@@ -849,6 +918,7 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
     production uses the verified paths and acting.allows."""
     writers = writers or WRITERS
     on = (is_enabled or enabled)()
+    evidence: dict = {}                      # default_mail_proof's per-cycle cache
     if allows is None:
         if is_enabled is None:
             from service.proactive import acting
@@ -906,10 +976,20 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
         # Only a line that itself arrived after the person's yes is added without a tap:
         # the time of the sentence the date came from, never the conversation's latest line.
         fresh = on and allows(plan.get("line_ts"))
-        if on and fresh and plan["source"] == "mail" and not MAIL_ACTS:
-            tap.append(tap_card(plan, now))
-            note(item, "mail: tap to add")
-            continue
+        if on and fresh and plan["source"] == "mail":
+            # Checked only for a mail plan that would otherwise be written, so the evidence
+            # (Sent mail, Contacts, the provider's verdict) is read at most once per cycle.
+            if not MAIL_ACTS:
+                proven, why = False, "mail does not act"
+            else:
+                try:
+                    proven, why = await (mail_proof or default_mail_proof)(item, plan, evidence)
+                except Exception as exc:  # noqa: BLE001 — proof that can't be had is no proof
+                    proven, why = False, "proof unavailable: " + type(exc).__name__
+            if proven is not True:
+                tap.append(tap_card(plan, now))
+                note(item, "mail: tap to add (" + str(why) + ")")
+                continue
         if not fresh or attempts >= MAX_PER_CYCLE or today + attempts >= MAX_PER_DAY:
             tap.append(tap_card(plan, now))
             note(item, "tap to add" if not on else "arrived before the yes: tap to add" if not fresh

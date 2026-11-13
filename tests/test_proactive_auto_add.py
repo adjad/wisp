@@ -110,9 +110,15 @@ RECITAL = "can you come to my recital Sat Oct 31 at 6pm?"
 
 @pytest.fixture
 def mail_acts(monkeypatch):
-    """Mail never auto-adds in this release (autoadd.MAIL_ACTS is False: a From line is not proof of
-    who sent it). Tests of how a MAIL item would be planned, timed and written switch it on."""
+    """Mail is added without a tap only with proof (autoadd.default_mail_proof: a From line is not
+    proof of who sent it). Tests of how a MAIL item is planned, timed and written grant the proof."""
     monkeypatch.setattr(autoadd, "MAIL_ACTS", True)
+
+    async def proven(item, plan, evidence):
+        return True, ""
+    # The proof itself (Google-fetched, known correspondent, authenticated) has its own tests
+    # in tests/test_autoadd_mail_proof.py; here it is granted.
+    monkeypatch.setattr(autoadd, "default_mail_proof", proven)
 
 
 # --- the two examples ----------------------------------------------------------------------
@@ -769,8 +775,7 @@ def test_an_address_in_the_name_can_no_longer_pass_for_the_users_own_organisatio
     assert autoadd._same_org(posed) is False and posed["ref"]["to"] == "x@gmail.com"
 
 
-def test_an_email_is_never_added_without_a_tap_in_this_release(store):
-    assert autoadd.MAIL_ACTS is False
+def test_an_email_without_proof_is_never_added_without_a_tap(store):
     item = mail("Ed Park", "ed@ucsc.edu", "CSE 20 homework", "Hi all, HW4 due Friday Oct 30 11:59 PM. Good luck!")
     writers, notes = Writers(), []
     out = asyncio.run(autoadd.step(survivors(item, text("Maya", RECITAL)), {"calendar": [], "reminders": []},
@@ -779,7 +784,7 @@ def test_an_email_is_never_added_without_a_tap_in_this_release(store):
                                    debug=notes))
     assert [k for k, _ in writers.calls] == ["calendar"]                 # the text is added; the email is not
     assert [c["action"]["method"] for c in out["tap"]] == ["reminder"]   # the email stays a card to tap
-    assert "mail: tap to add" in [n["auto_add"] for n in notes]
+    assert "mail: tap to add (not from a Google account you linked)" in [n["auto_add"] for n in notes]
 
 
 # --- a text counts only from a one-to-one chat whose HANDLE is saved in Contacts ----------------
