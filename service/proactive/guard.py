@@ -106,9 +106,27 @@ def grounded(text: str, source: str, *, allowed: set[str] | None = None) -> bool
         words = re.findall(r"[\w'’]+", sentence)
         for word in words[1:]:
             bare = re.sub(r"['’]s$", "", word)
-            if bare[:1].isupper() and bare.casefold() not in source_words:
+            if bare[:1].isupper() and bare.casefold() not in source_words \
+                    and not _month_written_as_number(bare, source or ""):
                 return False
     return True
+
+
+_MONTHS = {name: number for number, names in enumerate((
+    ("january", "jan"), ("february", "feb"), ("march", "mar"), ("april", "apr"), ("may",), ("june", "jun"),
+    ("july", "jul"), ("august", "aug"), ("september", "sep", "sept"), ("october", "oct"),
+    ("november", "nov"), ("december", "dec")), 1) for name in names}
+
+
+def _month_written_as_number(word: str, source: str) -> bool:
+    """A month's name for a date the source wrote in numbers: "November 19th" for "11/19".
+    The same fact in other words, not an invented one. Only the month: a weekday the source
+    did not name is still refused, because working it out could be wrong."""
+    month = _MONTHS.get(word.casefold())
+    if month is None:
+        return False
+    # Month first ("11/19") or day first ("19/11"): either way the source named this month.
+    return bool(re.search(rf"(?<!\d)0?{month}[/\-.]\d{{1,2}}(?!\d)|(?<!\d)\d{{1,2}}[/\-.]0?{month}(?!\d)", source))
 
 
 # --- parsing --------------------------------------------------------------------

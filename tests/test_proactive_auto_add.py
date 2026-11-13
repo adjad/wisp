@@ -974,6 +974,30 @@ def test_a_failed_reading_never_earns_a_card_and_never_reaches_follow_ups(store,
     assert len(got) == 1 and not got[0].get("add_only")
 
 
+def test_a_month_name_for_a_date_written_in_numbers_is_not_an_invented_fact():
+    """The real model read "Team meeting 11/19 at 3pm in the library." as "…for November 19th at 3pm…",
+    and the grounding check threw the whole reading away because "November" is not in the text."""
+    from service.proactive import guard, triage
+    source = "Conversation: Kim Lee\n[Kim Lee -> Adi Jain (you)] Team meeting 11/19 at 3pm in the library."
+    said = "Kim Lee scheduled a team meeting for November 19th at 3pm in the library."
+    assert guard.grounded(said, source, allowed=set())
+    assert guard.grounded("The meeting is on Nov 19 at 3pm.", source, allowed=set())
+    assert guard.grounded("Dinner is on 19 November.", "dinner 19/11 at 8pm", allowed=set())       # day first
+    assert guard.grounded("Due December 3.", "report due 12-3", allowed=set())
+    # Still refused: another month, a weekday the source never named, a number or a name it does not carry.
+    assert not guard.grounded("The meeting is on December 19 at 3pm.", source, allowed=set())
+    assert not guard.grounded("The meeting is on Thursday at 3pm.", source, allowed=set())
+    assert not guard.grounded("The meeting is on November 20 at 3pm.", source, allowed=set())
+    assert not guard.grounded("The meeting with Priya is on November 19.", source, allowed=set())
+    assert not guard.grounded("The meeting is in November.", "Team meeting at 3pm in room 11.", allowed=set())
+    # The reading that failed in the real run now validates.
+    item = {"source": "messages", "text": source, "who": "Kim Lee", "title": "Kim Lee"}
+    reply = json.dumps({"title": "Team meeting scheduled for November 19th", "summary": said, "junk": False,
+                        "sensitive": False, "asks_of_me": "Attend the team meeting on 11/19 at 3pm in the library"})
+    result = triage.validate(reply, item, allowed=set())
+    assert result is not None and result["junk"] is False and result["sensitive"] is False and result["summary"]
+
+
 def test_only_a_failed_reading_is_added_to_the_candidates(store, yes):
     from service.proactive import cycle
     # A secret is never sent to the model: its reading is "sensitive", not "failed", and it stays out.
