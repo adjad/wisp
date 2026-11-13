@@ -34,7 +34,9 @@ roles:
   # a model in setup runs on these defaults with no overlay of its own, so
   # pointing them at the tuned id would move it to a model it doesn't have.
   # A new install gets the tuned model through setup instead: the download
-  # finishes, setup applies it (/setup/apply), and the overlay names it.
+  # finishes, setup applies it (/setup/apply), and the overlay names it. A built-in-
+  # engine Mac with no roles of its own and only Gemma Wisp on disk (a lost overlay)
+  # resolves these to Gemma Wisp when read (config._stranded_roles); nothing is written.
   fast:       "gemma-4-E4B-it-oQ4e-mtp"
   router:     "gemma-4-E4B-it-oQ4e-mtp"
   coding:     "gemma-4-E4B-it-oQ4e-mtp"

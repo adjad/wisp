@@ -245,7 +245,8 @@ final class SetupGuideModel: ObservableObject {
         let model: String; let state: String; let progress: Double
         let downloadedBytes: Double; let totalBytes: Double; let bytesPerSecond: Double
         let message: String?
-        /// not_found, gated, no_space, offline or other: set only on a failed download.
+        /// not_found, gated, no_space, offline, other, or incomplete / mismatch (the engine finished,
+        /// Wisp's check of the files didn't pass): set only on a failed download.
         let reason: String?
         var id: String { model }
         var active: Bool { state == "pending" || state == "downloading" }

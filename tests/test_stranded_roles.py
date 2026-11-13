@@ -64,3 +64,24 @@ def test_external_mode_never_looks(engine, monkeypatch):
 def test_a_weightless_folder_does_not_count(engine, tmp_path):
     (tmp_path / "models" / "Neo-Arid" / TUNED).mkdir(parents=True)   # a README-only "download"
     assert _resolved()["fast"] == BASE
+
+
+def test_setup_token_and_the_apply_precondition_see_the_same_roles(engine, tmp_path, monkeypatch):
+    # A stranded Mac: the token (from models_config) and the automatic apply's precondition
+    # (from the file under the lock) must both see the roles resolved to Gemma Wisp, or the
+    # first automatic apply after a cache clear is refused.
+    import yaml
+    engine(TUNED)
+    overlay = tmp_path / "cfg" / "config.yaml"
+    monkeypatch.setattr(config, "USER_CONFIG", overlay)
+    config.models_config.cache_clear()
+    try:
+        expected = config.setup_configuration_token()
+        assert config.models_config()["roles"]["fast"] == TUNED
+        config.set_roles({"fast": TUNED, "general": TUNED}, expected_configuration=expected, available_models=[])
+        assert yaml.safe_load(overlay.read_text())["roles"]["fast"] == TUNED      # written, not refused
+        config.models_config.cache_clear()
+        with pytest.raises(config.ConfigurationPreconditionFailed):               # a stale token still is
+            config.set_roles({"fast": TUNED}, expected_configuration=expected, available_models=[])
+    finally:
+        config.models_config.cache_clear()

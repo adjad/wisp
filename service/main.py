@@ -1330,6 +1330,29 @@ def _setup_roles() -> dict[str, dict[str, str]]:
     return roles
 
 
+def _without_failed_downloads(installed: list[str]) -> list[str]:
+    """Built-in engine only: a pinned catalogue model whose engine folder failed Wisp's
+    check (files missing, or not the files Wisp tested) is not installed as far as setup
+    goes, so it is never applied. Uses only hashes the downloads check already made."""
+    if not is_bundled():
+        return installed
+    from service.engine.mode import engine_data_dir
+    from service.setup import catalog
+    from service.setup.local_models import verify_download
+    kept = []
+    for model_id in installed:
+        known = catalog.by_id(model_id)
+        if known and known.pinned_files and known.repo:
+            folder = engine_data_dir() / "models" / known.repo
+            try:
+                if folder.is_dir() and verify_download(folder, known, cached_only=True):
+                    continue
+            except Exception:  # noqa: BLE001 — an unreadable folder is the engine's to report
+                pass
+        kept.append(model_id)
+    return kept
+
+
 @app.get("/setup/status")
 async def setup_status() -> dict[str, Any]:
     installed: list[str] = []
@@ -1350,6 +1373,7 @@ async def setup_status() -> dict[str, Any]:
         on_disk = [m for m in on_disk if m not in installed]
         if on_disk:
             installed, source = installed + on_disk, "disk"
+    installed = _without_failed_downloads(installed)
     from service.config import tool_capable_models
     status = setup_guide.build_status(
         hardware=current_hardware(),

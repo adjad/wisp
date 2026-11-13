@@ -680,6 +680,10 @@ struct FirstRunSetupChecks {
             check(shown && brain.footer(stalled: false) == .retry,
                   "A repo that can't be fetched: the service's reason, word for word, and Retry")
             check(task("failed").reason == nil, "An older service without a reason still decodes")
+            check(["not_found", "gated", "incomplete", "mismatch"].allSatisfy { FirstRunBrain.needsAnotherRoute($0) }
+                  && !FirstRunBrain.needsAnotherRoute("offline") && !FirstRunBrain.needsAnotherRoute("no_space")
+                  && !FirstRunBrain.needsAnotherRoute(nil),
+                  "Failures Retry can't fix also offer the detailed setup; a connection or disk failure is Retry's")
         }
         // 0.5.0: base Gemma is kept, not offered. A first run on a Mac that has it.
         let base = "gemma-4-E4B-it-oQ4e-mtp-base-stand-in"

@@ -236,7 +236,8 @@ def _write_overlay(update: dict, *, precondition=None) -> dict:
         # writer. Cached config and an earlier endpoint check cannot fence a
         # settings change made while setup awaited the engine's model list.
         if precondition is not None:
-            precondition(_deep_merge(_packaged_config(), current or {}))
+            # The same roles the configuration token saw (models_config applies _stranded_roles).
+            precondition(_stranded_roles(_deep_merge(_packaged_config(), current or {}), current or {}))
         merged = _deep_merge(current or {}, update)
         fd, path = tempfile.mkstemp(prefix=".config-", dir=USER_CONFIG.parent)
         try:
@@ -270,7 +271,7 @@ def _save_overlay(update: dict, *, precondition=None) -> None:
         if token is not None:
             _authority_changes.finish(token)
     if not relevant:
-        _authority_changes.observe(_authority_projection(_deep_merge(_packaged_config(), merged)),
+        _authority_changes.observe(_authority_projection(_stranded_roles(_deep_merge(_packaged_config(), merged), merged)),
                                    valid=True, expected=before)
 
 

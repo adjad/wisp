@@ -14,8 +14,10 @@ config.json and complete weights.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import threading
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -114,3 +116,45 @@ def catalogue_models_on_disk(model_dirs: Iterable[Path | str],
                 if child.name in targets and weights_complete(child):
                     found.add(child.name)
     return sorted(found)
+
+
+# (path, size, mtime_ns) -> sha256, so a status poll hashes a 5.6 GB download once.
+_hashes: dict[tuple[str, int, int], str] = {}
+_hash_lock = threading.Lock()
+
+
+def _sha256(path: Path, stat) -> str:
+    key = (str(path), stat.st_size, stat.st_mtime_ns)
+    with _hash_lock:
+        if key not in _hashes:
+            digest = hashlib.sha256()
+            with path.open("rb") as f:
+                for chunk in iter(lambda: f.read(8 << 20), b""):
+                    digest.update(chunk)
+            _hashes[key] = digest.hexdigest()
+        return _hashes[key]
+
+
+def verify_download(folder: Path, model: "catalog.CatalogModel", *, cached_only: bool = False) -> str | None:
+    """None when `folder` holds a usable copy of `model`; else "incomplete" (weights
+    missing or partial) or "mismatch" (a pinned file differs from what Wisp tested).
+    `cached_only`: never hash; a file not hashed yet counts as matching."""
+    if not weights_complete(folder):
+        return "incomplete"
+    for name, sha256, size in model.pinned_files:
+        path = folder / name
+        try:
+            stat = path.stat()
+        except OSError:
+            return "incomplete"
+        if stat.st_size != size:
+            return "mismatch"
+        key = (str(path), stat.st_size, stat.st_mtime_ns)
+        if cached_only and key not in _hashes:
+            continue
+        try:
+            if _sha256(path, stat) != sha256:
+                return "mismatch"
+        except OSError:
+            return "incomplete"
+    return None

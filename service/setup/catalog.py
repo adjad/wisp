@@ -22,6 +22,9 @@ class CatalogModel:
     # (see service/engine/profiles.py). Wisp omits sampling from its requests, so
     # these are what the model actually runs with. Empty: the engine's defaults.
     engine_profile: dict = field(default_factory=dict, compare=False, hash=False)
+    # (file name, sha256, bytes) a download must match before Wisp uses it. The engine's
+    # downloader takes no revision, so a changed file on the Hub is caught here instead.
+    pinned_files: tuple = field(default=(), compare=False, hash=False)
 
 
 # The repo's name is the model id on purpose: the engine downloads into
@@ -69,12 +72,26 @@ GEMMA_E4B_MTP = CatalogModel(
 # Neo-Arid/Gemma-Wisp (the user's name for it, 2026-11-12). The engine serves a
 # download under the repo's name, so the id is "Gemma-Wisp"; the developer's own
 # Mac has the same weights under the pre-release folder name in WISP_LEGACY_IDS.
+GEMMA_WISP_FILES = (   # sha256 and bytes of each file Wisp was tested with (HF upload manifest)
+    ("chat_template.jinja", "0a2c8073c878ab1da004bee933a998606537bbb62016310352c7285c3f01c5b5", 18569),
+    ("config.json", "295c29be6170fd93bc50309ff2b27f6a6dce6020be5f69dcb2b061dfcb77b800", 35165),
+    ("generation_config.json", "d4226bbe3117d2d253ba4609720ba82c6c4ce4627a9a6ae05387c78983ac03de", 208),
+    ("model-00001-of-00002.safetensors", "b22e7af393e6d0ecfcf210e94d4b1b29ee34c65213ece4410bd7e515815664f7", 5001242218),
+    ("model-00002-of-00002.safetensors", "27ec7843f33fab7d8c40d9c4d145ab374fdc5cf0ddf02c1d9f1a2eee6f4d2a07", 425560497),
+    ("model-mtp.safetensors", "deb34acb448ba75d2087bcf76dda343cdcf77c2bfcb1eba79c21561dd5956c6c", 159139040),
+    ("model.safetensors.index.json", "36f9da8215f08eb926109f0f8e4ce360101552e21c9b4cf4254fad7144d9ca2a", 275856),
+    ("processor_config.json", "32bdf45d2ad4cc29a0822ddd157a182de76644f0419a6228d151495256e9813c", 1689),
+    ("tokenizer.json", "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f", 32169626),
+    ("tokenizer_config.json", "9f4fec4b1dc6ecddf8f4a92e9caea5971c0e67d81309f3f9066a2bee8c362633", 3082),
+)
+
+
 GEMMA_E4B_WISP = CatalogModel(
     "Gemma-Wisp", "Gemma Wisp", "4-bit (oQ4e) + MTP", 5.6, 16,
     "Neo-Arid/Gemma-Wisp",
     "Wisp's model. More accurate on Wisp's tool tests than the original Gemma, but it "
     "proposes more actions you'll want to decline.", tested=True,
-    engine_profile=dict(GEMMA_E4B_MTP.engine_profile))
+    engine_profile=dict(GEMMA_E4B_MTP.engine_profile), pinned_files=GEMMA_WISP_FILES)
 
 
 LING_Q6 = CatalogModel(
@@ -100,6 +117,9 @@ GEMMA_E4B_WISP_PRERELEASE = CatalogModel(
 # Known so a Mac that has them keeps working (profile, label, disk scan), never
 # ranked, recommended or downloadable.
 KEPT_MODELS = (GEMMA_E4B_MTP, GEMMA_E4B_WISP_PRERELEASE)
+# A kept id holding exactly the weights of an offered model: installed, it counts as that model,
+# so a Mac with the pre-release folder is never offered a second 5.6 GB copy of the same files.
+SAME_WEIGHTS = {GEMMA_E4B_WISP_PRERELEASE.id: GEMMA_E4B_WISP.id}
 
 EMBEDDING_MODEL = CatalogModel(
     "Qwen3-Embedding-0.6B-4bit-DWQ", "Qwen3 Embedding 0.6B", "4-bit", 0.35, 8,
@@ -183,7 +203,8 @@ def in_use_order(ram_gb: int, installed: list[str] | None = None) -> tuple[Catal
     in which an install's own models count as what it runs, and are listed. Kept models
     rank where base ranked before 0.5.0, but only `ranked_for` decides what is offered."""
     ranked = ranked_for(ram_gb, installed)
-    return (*ranked[:1], *KEPT_MODELS, *ranked[1:])
+    kept = sorted(KEPT_MODELS, key=lambda m: m.id not in SAME_WEIGHTS)   # the same weights first
+    return (*ranked[:1], *kept, *ranked[1:])
 
 
 def recommend(ram_gb: int, installed: list[str]) -> dict:
@@ -199,7 +220,9 @@ def recommend(ram_gb: int, installed: list[str]) -> dict:
     ranked = ranked_for(ram_gb, installed)
     have = set(installed)
     use = next((m for m in in_use_order(ram_gb, installed) if m.id in have), None)
-    better = ranked[:ranked.index(use)] if use in ranked else ranked[:1] if use else ranked
+    same = by_id(SAME_WEIGHTS[use.id]) if use and use.id in SAME_WEIGHTS else None
+    anchor = same if same in ranked else use
+    better = ranked[:ranked.index(anchor)] if anchor in ranked else ranked[:1] if use else ranked
     get = next((m for m in better if m.repo and m.id not in have and fits_memory(m, ram_gb)), None)
     # A local preferred model must not silently turn into an offer to download
     # a different family. Existing installed choices remain usable. (On a fresh

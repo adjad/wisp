@@ -1,6 +1,11 @@
 """0.5.0 ships Gemma Wisp as the only offered chat model, so its published files must turn on
 look-at-screen and voice: vision.py and voice.py decide from config.json and the weight index
-alone (the extract below), and personal_style.py leaves out the MTP head by its file name."""
+alone (the extract below), and personal_style.py leaves out the MTP head by its file name.
+
+What this does and doesn't prove: the fixture is an extract of the local files, so these tests pin the
+LAYOUT the code depends on, not the published bytes. The published files are checked separately, by
+sha256 against the upload manifest, once the Hub upload is complete (training/ask-lora-r5/hf/), and every
+download is checked against the same hashes (catalog.GEMMA_WISP_FILES, local_models.verify_download)."""
 import json
 from pathlib import Path
 
@@ -38,3 +43,10 @@ def test_the_fixture_is_the_uploaded_files_and_the_mtp_head_has_the_expected_nam
         assert uploaded[name]["sha256"] == FIXTURE["source_sha256"][name]
     assert "model-mtp.safetensors" in uploaded     # personal_style.py leaves out exactly this name
     assert "model-mtp.safetensors" in Path(vision.__file__).with_name("personal_style.py").read_text()
+
+
+def test_the_catalog_pins_are_the_manifest():
+    pins = {name: (sha, size) for name, sha, size in catalog.GEMMA_E4B_WISP.pinned_files}
+    for name, row in FIXTURE["uploaded_files"].items():
+        if name != "README.md":
+            assert pins[name] == (row["sha256"], row["bytes"]), name

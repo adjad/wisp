@@ -175,7 +175,7 @@ def _failure(error, model_id: str) -> tuple[str, str]:
     model = catalog.by_id(model_id)
     name = model.label if model else "This model"
     page = f"huggingface.co/{model.repo}" if model and model.repo else "Hugging Face"
-    if "is gated" in text:
+    if "is gated" in text or "gated repo" in text or ("401 client error" in text and "restricted" in text):
         return "gated", f"{page} asks for a Hugging Face sign-in, which Wisp's downloader doesn't have."
     if "repository not found" in text or "404 client error" in text:
         return "not_found", (f"{name} isn't available on Hugging Face right now ({page}). "
@@ -191,6 +191,8 @@ def _failure(error, model_id: str) -> tuple[str, str]:
 # A finished download under this share of the catalogue size fetched a repo that doesn't
 # hold the model yet (a README-only repo "completes" in a second, leaving no weights).
 _INCOMPLETE_SHARE = 0.5
+# Reasons Wisp gives a task the engine itself reports as completed.
+_ENGINE_COMPLETED = {"incomplete", "mismatch"}
 
 
 def _incomplete(model_id: str, downloaded: int, total: int) -> bool:
@@ -236,8 +238,38 @@ def _tasks(payload: dict) -> list[tuple[float, str, dict]]:
     return list(latest.values())
 
 
+# A completed catalogue download is checked on disk before Wisp calls it finished:
+# every promised shard present, and each pinned file's sha256 as tested.
+_MESSAGES_AFTER_COMPLETION = {
+    "incomplete": "{label}'s download is missing files (huggingface.co/{repo}). Try again.",
+    "mismatch": ("The files downloaded for {label} aren't the ones Wisp was tested with "
+                 "(huggingface.co/{repo}), so Wisp won't use them."),
+}
+
+
+def _model_folder(model: "catalog.CatalogModel"):
+    return mode.engine_data_dir() / "models" / model.repo
+
+
+def _check_finished(tasks) -> list:
+    from service.setup.local_models import verify_download
+    for _, _, task in tasks:
+        known = catalog.by_id(task["model"])
+        if task["state"] != "completed" or known is None or not known.repo:
+            continue
+        folder = _model_folder(known)
+        if not folder.is_dir():
+            continue      # nothing to check yet: setup's "hasn't appeared" route covers it
+        reason = verify_download(folder, known)
+        if reason:
+            task.update(state="failed", reason=reason,
+                        message=_MESSAGES_AFTER_COMPLETION[reason].format(label=known.label, repo=known.repo))
+    return tasks
+
+
 async def _inventory() -> list:
-    return _tasks(await _call("GET", "/admin/api/hf/tasks"))
+    tasks = _tasks(await _call("GET", "/admin/api/hf/tasks"))
+    return await asyncio.to_thread(_check_finished, tasks)
 
 
 def _display(tasks) -> dict:
@@ -378,7 +410,12 @@ async def download_model(request: Request):
                 previous = next(((task_id, task) for _, task_id, task in tasks if task["model"] == model), None)
                 if previous is not None and previous[1]["state"] in _ACTIVE:
                     return _display(tasks)  # double click/reopened setup never queues a duplicate
-                if previous is not None and previous[1]["state"] in {"failed", "cancelled"}:
+                if previous is not None and previous[1].get("reason") in _ENGINE_COMPLETED:
+                    # The engine finished this task, so it refuses a retry (400): drop the row
+                    # and download again, which fetches what is missing or changed.
+                    await _call("DELETE", f"/admin/api/hf/task/{previous[0]}")
+                    await _call("POST", "/admin/api/hf/download", {"repo_id": _catalogue()[model]})
+                elif previous is not None and previous[1]["state"] in {"failed", "cancelled"}:
                     await _call("POST", f"/admin/api/hf/retry/{previous[0]}", {})
                 else:
                     await _call("POST", "/admin/api/hf/download", {"repo_id": _catalogue()[model]})

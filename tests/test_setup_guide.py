@@ -1032,3 +1032,12 @@ def test_status_says_when_a_remote_provider_answers(monkeypatch):
         raise EndpointConfigurationError("bad profile")
     monkeypatch.setattr(remote_policy, "remote_only_profile", invalid)
     assert _status()["remote_only"] is False
+
+
+def test_the_pre_release_folder_is_gemma_wisp_and_never_offered_again():
+    # The same weights under their pre-release name: no second 5.6 GB download.
+    for installed in ([PRE], [PRE, GEMMA], [GEMMA, PRE, Q4]):
+        rec = catalog.recommend(24, installed)
+        assert rec["use"] == PRE and rec["get"] is None, installed
+    rec = catalog.recommend(24, [GEMMA])
+    assert rec["use"] == GEMMA and rec["get"] == TUNED          # base alone is still offered Gemma Wisp

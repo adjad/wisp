@@ -23,8 +23,9 @@ SECRET = "synthetic-engine-key-that-must-never-reach-the-ui"
 
 
 @pytest.fixture
-def wire(monkeypatch):
+def wire(monkeypatch, tmp_path):
     from service.inference import attributed_transport
+    monkeypatch.setattr(downloads.mode, "engine_data_dir", lambda: tmp_path / "engine")
     engine = SimpleNamespace(running=lambda: True, verified=True, api_key=SECRET)
     monkeypatch.setattr(downloads.mode, "is_bundled", lambda: True)
     monkeypatch.setattr(downloads.runtime, "_manager", engine)
@@ -59,9 +60,14 @@ def wire(monkeypatch):
             state.tasks.append(row())
         elif path == "/admin/api/hf/cancel/" + state.tasks[0]["task_id"]:
             state.tasks[0]["status"] = "cancelled"
-        elif path == "/admin/api/hf/retry/task-1":
+        elif path.startswith("/admin/api/hf/retry/"):
             assert json.loads(request.content) == {}
-            state.tasks[0] = {**state.tasks[0], "task_id": "task-2", "status": "pending", "created_at": 2}
+            task = next(t for t in state.tasks if t["task_id"] == path.rsplit("/", 1)[1])
+            if task["status"] not in ("failed", "cancelled"):     # as oMLX's retry_download refuses
+                return httpx.Response(400, json={"detail": "not retryable"})
+            state.tasks[state.tasks.index(task)] = {**task, "task_id": "task-2", "status": "pending", "created_at": 2}
+        elif path.startswith("/admin/api/hf/task/") and request.method == "DELETE":
+            state.tasks = [t for t in state.tasks if t["task_id"] != path.rsplit("/", 1)[1]]
         else:
             pytest.fail("Unexpected upstream operation: " + path)
         return httpx.Response(200, json={"success": True})
@@ -295,6 +301,8 @@ def test_native_setup_model_state_uses_only_intercepted_http(tmp_path):
 @pytest.mark.parametrize("error, reason, needle", [
     ("Repository not found: Neo-Arid/Gemma-Wisp. This may be a gated model", "not_found", "isn't available"),
     ("Repository 'x' is gated. Please provide a valid HF token with access.", "gated", "sign-in"),
+    ("GatedRepoError: Cannot access gated repo for url https://huggingface.co/x", "gated", "sign-in"),
+    ("401 Client Error. Access to model x is restricted.", "gated", "sign-in"),
     ("[Errno 28] No space left on device: '/synthetic/private'", "no_space", "disk space"),
     ("ConnectError: [Errno 8] nodename nor servname provided", "offline", "huggingface.co"),
     ("Max retries exceeded with url: /api/models (Caused by ReadTimeoutError)", "offline", "huggingface.co"),
@@ -321,6 +329,56 @@ def test_a_running_download_has_no_reason_or_message(wire):
     wire.tasks = [row()]
     task = request(wire, "GET", "/downloads").json()["tasks"][0]
     assert task["reason"] is None and task["message"] is None
+
+
+def test_retry_after_an_incomplete_download_starts_a_fresh_one(wire):
+    # The engine calls a README-only repo "completed" and refuses to retry a completed task.
+    wire.tasks = [row(status="completed", progress=100, downloaded_size=1547, total_size=1547)]
+    response = request(wire, "POST", "/downloads", json={"model": MODEL})
+    assert response.status_code == 200, response.text
+    paths = [(r.method, r.url.path) for r in wire.seen]
+    assert ("DELETE", "/admin/api/hf/task/task-1") in paths and ("POST", "/admin/api/hf/download") in paths
+    assert not any(p.startswith("/admin/api/hf/retry/") for _, p in paths)
+    assert response.json()["tasks"][0]["state"] == "downloading"
+
+
+def _folder(wire_tmp, model, files):
+    folder = wire_tmp / "engine" / "models" / model.repo
+    folder.mkdir(parents=True)
+    for name, data in files.items():
+        (folder / name).write_bytes(data)
+    return folder
+
+
+def test_a_finished_download_is_checked_on_disk(wire, tmp_path):
+    import hashlib
+    from dataclasses import replace
+    weights = b"w" * 64
+    pinned = (("config.json", hashlib.sha256(b"{}").hexdigest(), 2),
+              ("model.safetensors", hashlib.sha256(weights).hexdigest(), len(weights)))
+    model = replace(downloads.catalog.by_id(MODEL), pinned_files=pinned)
+    real_by_id = downloads.catalog.by_id
+    downloads.catalog.by_id = lambda m: model if m == MODEL else real_by_id(m)
+    try:
+        done = row(status="completed", progress=100, downloaded_size=10**10, total_size=10**10)
+        folder = _folder(tmp_path, model, {"config.json": b"{}", "model.safetensors": weights})
+        wire.tasks = [dict(done)]
+        assert request(wire, "GET", "/downloads").json()["tasks"][0]["state"] == "completed"
+        (folder / "model.safetensors").write_bytes(b"x" * 64)               # same size, other bytes
+        task = request(wire, "GET", "/downloads").json()["tasks"][0]
+        assert task["state"] == "failed" and task["reason"] == "mismatch" and "won't use them" in task["message"]
+        (folder / "model.safetensors").unlink()                               # shards missing
+        task = request(wire, "GET", "/downloads").json()["tasks"][0]
+        assert task["state"] == "failed" and task["reason"] == "incomplete"
+    finally:
+        downloads.catalog.by_id = real_by_id
+
+
+def test_gemma_wisp_pins_every_tested_file_but_the_card():
+    pins = {name for name, _, _ in downloads.catalog.GEMMA_E4B_WISP.pinned_files}
+    assert {"config.json", "chat_template.jinja", "model-00001-of-00002.safetensors",
+            "model-00002-of-00002.safetensors", "model-mtp.safetensors", "tokenizer.json"} <= pins
+    assert "README.md" not in pins and len(pins) == 10
 
 
 def test_a_repo_without_the_weights_is_not_a_finished_download(wire):
