@@ -462,6 +462,7 @@ def test_with_learning_off_and_no_auto_add_calendar_changes_wait(monkeypatch):
     for text in (wisp_about.privacy(), wisp_about.overview()):
         assert "change your calendar" not in text and "calendar changes" not in text
         assert "you let me act for you" in text and "Undo" in text
+        assert "Day plan (never on your calendar)" in text          # the hold is said too, and where it lives
 
 
 # The models report (wisp_status) and the self-answers read one cloud_state(),
