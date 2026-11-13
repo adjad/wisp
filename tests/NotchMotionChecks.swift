@@ -25,6 +25,7 @@ struct NotchMotionChecks {
         }
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
+        if MotionRig.lightMac { app.appearance = NSAppearance(named: .aqua) }
         Task { @MainActor in
             do {
                 let ok = try await Harness.runAll()
@@ -48,6 +49,7 @@ struct MotionSample {
     var scale: Double      // image pixels per point
     var imageHeight: Double
     var cost: Double = 0   // seconds the capture itself took
+    var band = false       // image is only the header band (thin samples)
 }
 
 @MainActor
@@ -62,6 +64,9 @@ final class MotionRig {
     var host: NSView!
 
     static let offscreenShift: CGFloat = -20000
+    /// WISP_NOTCH_MOTION_APPEARANCE=light: the app runs as on a Mac set to
+    /// Light, with nothing forcing the panel dark but the panel itself.
+    static let lightMac = ProcessInfo.processInfo.environment["WISP_NOTCH_MOTION_APPEARANCE"] == "light"
 
     init(reduce: Bool) throws {
         self.reduce = reduce
@@ -83,7 +88,9 @@ final class MotionRig {
             }
             if components?.path == "/assistant/upcoming" { return ok(try NotchQADriver.fixtureUpcoming(dayStart: dayStart)) }
             let day = components?.queryItems?.first { $0.name == "day" }?.value ?? ""
-            return ok(try NotchQADriver.fixturePlan(day: day, dayStart: dayStart))
+            // The engine's Brief, with its proactive cards, as people see it;
+            // the wide layout exists only for it.
+            return ok(try NotchQADriver.fixturePlan(day: day, dayStart: dayStart, proactive: .ready))
         })
 
         // The real main display's metrics, moved far to the left: the same
@@ -101,12 +108,13 @@ final class MotionRig {
         let model = self.model, today = self.today, settings = self.settings, setup = self.setup
         let reduce = reduce
         panel = OverlayPanel {
-            OverlayView(model: model,
-                        corpus: NotchCorpusController(store: ChatStore(backend: LiveChatBackend(client: client))),
-                        researchModel: ResearchModel(client: client), todayModel: today,
-                        settings: settings, setup: setup, onClose: {})
-                .environment(\.colorScheme, .dark)
-                .environment(\.reduceMotionOverride, reduce)
+            MotionRoot(forceDark: !Self.lightMac) {
+                OverlayView(model: model,
+                            corpus: NotchCorpusController(store: ChatStore(backend: LiveChatBackend(client: client))),
+                            researchModel: ResearchModel(client: client), todayModel: today,
+                            settings: settings, setup: setup, onClose: {})
+            }
+            .environment(\.reduceMotionOverride, reduce)
         }
         let base = self.base
         panel.isCompact = { false }
@@ -168,7 +176,19 @@ final class MotionRig {
         host.cacheDisplay(in: rect, to: rep)
         let scale = Double(rep.pixelsHigh) / h
         let vis = Self.surfaceBottom(rep) / scale
-        return MotionSample(t: 0, win: win, vis: vis, image: rep.cgImage, scale: scale, imageHeight: h)
+        if full { return MotionSample(t: 0, win: win, vis: vis, image: rep.cgImage, scale: scale, imageHeight: h) }
+        // A thin sample also keeps the header band, full width, so the tab
+        // capsule can be read in it (check d) without a whole frame.
+        let bandH = min(h, 90)
+        let bandRect = host.isFlipped
+            ? NSRect(x: 0, y: 0, width: bounds.width, height: bandH)
+            : NSRect(x: 0, y: bounds.height - bandH, width: bounds.width, height: bandH)
+        guard let bandRep = host.bitmapImageRepForCachingDisplay(in: bandRect) else {
+            return MotionSample(t: 0, win: win, vis: vis, image: nil, scale: scale, imageHeight: h)
+        }
+        host.cacheDisplay(in: bandRect, to: bandRep)
+        return MotionSample(t: 0, win: win, vis: vis, image: bandRep.cgImage,
+                            scale: Double(bandRep.pixelsHigh) / bandH, imageHeight: bandH, band: true)
     }
 
     /// Rows from the top of the centre column that are opaque (alpha > 0.9).
@@ -203,6 +223,16 @@ final class MotionRig {
     }
 }
 
+/// The panel's root as the app builds it: forced dark only when the harness
+/// stands in for a dark Mac (the default, as before).
+struct MotionRoot<Content: View>: View {
+    let forceDark: Bool
+    @ViewBuilder let content: () -> Content
+    var body: some View {
+        if forceDark { content().environment(\.colorScheme, .dark) } else { content() }
+    }
+}
+
 struct TransitionResult {
     var name: String
     var ok: Bool
@@ -223,12 +253,16 @@ enum Harness {
         }
         let real = SurfaceLayout.make(for: target, forcing: DisplayGeometry.forcedStyle)
         var report = "Notch motion report\n"
-        report += "display style: \(real.style.rawValue), notch: \(target.hasCameraHousing), expandedWidth \(real.expandedWidth)\n"
+        report += "display style: \(real.style.rawValue), notch: \(target.hasCameraHousing), expandedWidth \(real.expandedWidth), appearance \(MotionRig.lightMac ? "light Mac" : "dark")\n"
         print("display style \(real.style.rawValue) (notch: \(target.hasCameraHousing)), expandedWidth \(real.expandedWidth)")
         if !target.hasCameraHousing { print("note: no notch on this display; motion is measured on the \(real.style.rawValue) layout") }
         let shared = DisplayGeometry.shared.layout
         guard shared.expandedWidth == real.expandedWidth else {
             throw MotionFailure(description: "layout widths differ: view \(shared.expandedWidth) vs window \(real.expandedWidth)")
+        }
+
+        if let rounds = ProcessInfo.processInfo.environment["WISP_NOTCH_MOTION_PROFILE"].flatMap(Int.init) {
+            return try await profile(rounds: rounds, out: out)
         }
 
         var failures = 0
@@ -257,6 +291,39 @@ enum Harness {
             try await run("brief-to-day") { m.tab = .day }
             try await run("day-to-ask") { m.tab = .ask }
             try await run("day-to-brief-backwards", prepare: { m.tab = .day }) { m.tab = .brief }
+            // Something arriving inside a page (here Day's notice line) moves
+            // the panel on the same spring as a page change.
+            try await run("day-notice", prepare: { m.tab = .day }) {
+                // Long enough that it can't expire inside a later measurement.
+                m.showTransientNotice("Couldn't reach Calendar just now. Wisp will try again in a minute, and nothing on your day has changed.",
+                                      duration: 120)
+            }
+            try await run("day-to-brief-with-notice") { m.tab = .brief }
+            try await run("notice-clears") { m.transientNotice = nil }
+            // Meet, the fourth tab: in from both sides and out to both sides.
+            // Meet shows its home with three earlier meetings (no service).
+            let meet = MeetingModel.shared
+            try await run("brief-to-meet", prepare: { meet.qaShow(.earlier) }) { m.tab = .meet }
+            try await run("meet-to-day") { m.tab = .day }
+            try await run("day-to-meet") { m.tab = .meet }
+            try await run("meet-open-notes") { meet.qaShow(.notes) }
+            try await run("meet-close-notes") { meet.qaShow(.earlier) }
+            try await run("meet-to-ask") { m.tab = .ask }
+            // The Brief in two columns: the panel widens to its wide layout
+            // (840 pt where the display allows), and tabs switch out of it.
+            let wide = { (on: Bool) in
+                UserDefaults.standard.set(on, forKey: NotchBriefView.wideKey)
+                m.onResizeNow()
+            }
+            if rig.base.canWiden {
+                try await run("brief-wide-on", prepare: { m.tab = .brief }) { wide(true) }
+                try await run("wide-brief-to-day") { m.tab = .day }
+                try await run("day-to-wide-brief") { m.tab = .brief }
+                try await run("brief-wide-off") { wide(false) }
+            } else {
+                report += "SKIP wide Brief: this display has no room for the wide layout\n"
+                print("SKIP wide Brief: no room for the wide layout")
+            }
             try await run("gear-open") { m.showingQuickSettings = true }
             try await run("permissions-open") {
                 m.openPermissionPage(nil)
@@ -265,6 +332,15 @@ enum Harness {
             }
             try await run("permissions-done") { m.closePermissionPage() }
             try await run("gear-close") { m.showingQuickSettings = false }
+
+            // An Ask answer streaming in, from the first question on an empty chat.
+            let stream = try await streamCheck(rig, reduce: reduce, out: out)
+            report += stream.lines.joined(separator: "\n") + "\n"
+            print("\(stream.ok ? "PASS" : "FAIL") \(mode): ask-stream - \(stream.lines.first ?? "")")
+            if !stream.ok {
+                failures += 1
+                for line in stream.lines.dropFirst() where line.hasPrefix("  !") { print(line) }
+            }
 
             if !reduce {
                 let line = try await scrollMemory(rig)
@@ -282,10 +358,50 @@ enum Harness {
 
     static func f(_ v: Double) -> String { String(format: "%.1f", v) }
 
+    /// How long the main thread is held between a change and its first frame:
+    /// the SwiftUI update, layout and one draw of the host, done synchronously
+    /// right after the change. Loops so a sampler can attach and see where it goes.
+    static func profile(rounds: Int, out: URL) async throws -> Bool {
+        let rig = try MotionRig(reduce: false)
+        try await rig.open()
+        let m = rig.model
+        let steps: [(String, () -> Void)] = [
+            ("ask->brief", { m.tab = .brief }), ("brief->day", { m.tab = .day }),
+            ("day->meet", { m.tab = .meet }), ("meet->ask", { m.tab = .ask }),
+            ("ask->day", { m.tab = .day }), ("day->ask", { m.tab = .ask }),
+            ("gear open", { m.showingQuickSettings = true }), ("gear close", { m.showingQuickSettings = false }),
+        ]
+        var times: [String: [Double]] = [:]
+        print("profile pid \(getpid()), \(rounds) rounds")
+        for _ in 0..<rounds {
+            for (name, change) in steps {
+                let t0 = CACurrentMediaTime()
+                change()
+                rig.host.layoutSubtreeIfNeeded()
+                rig.host.display()
+                let update = CACurrentMediaTime() - t0
+                times[name, default: []].append(update * 1000)
+                try await Task.sleep(for: .milliseconds(450))
+            }
+        }
+        var lines = ["first-frame cost (ms): median / max over \(rounds) rounds"]
+        for (name, _) in steps {
+            let v = (times[name] ?? []).sorted()
+            guard !v.isEmpty else { continue }
+            lines.append(String(format: "  %-11@ %6.1f / %6.1f", name as NSString, v[v.count / 2], v.last!))
+        }
+        let text = lines.joined(separator: "\n")
+        print(text)
+        try text.write(to: out.appendingPathComponent("profile.txt"), atomically: true, encoding: .utf8)
+        rig.close()
+        return true
+    }
+
     static func transition(_ rig: MotionRig, name: String, reduce: Bool, change: @escaping () -> Void,
                            out: URL) async throws -> TransitionResult {
         try await rig.settle()
         let before = rig.capture()
+        let widthBefore = rig.panel.frame.width
         let t0 = CACurrentMediaTime()
         change()
         var samples: [MotionSample] = []
@@ -293,8 +409,12 @@ enum Harness {
         while true {
             try await Task.sleep(for: .milliseconds(8))
             let t = CACurrentMediaTime() - t0
-            // A full frame now and then for the contact sheet; a thin column otherwise.
-            let full = t - lastFull >= 0.07
+            // A full frame now and then for the contact sheet; a thin column
+            // otherwise. A full frame of a big page can take a quarter of a
+            // second to capture (cacheDisplay draws on the CPU, unlike the app),
+            // so the first 250 ms get one (after 150 ms) and are otherwise
+            // sampled thin, where a change is mid-flight.
+            let full = t - lastFull >= 0.07 && (t >= 0.25 || (lastFull < 0 && t >= 0.15))
             let c0 = CACurrentMediaTime()
             var s = rig.capture(full: full)
             s.cost = CACurrentMediaTime() - c0
@@ -368,7 +488,12 @@ enum Harness {
         // The selected-tab capsule: one solid white shape that moves. Two
         // capsules crossfading show as a wide band of half-bright pixels.
         var capsuleLine = "  capsule: not found"
-        if let row = capsuleRow(before), let a = readCapsule(before, row: row, span: nil),
+        // A width change moves the whole strip with the panel, so the capsule's
+        // own travel can't be read against a fixed row; the sheet shows it.
+        let widthChanged = abs(rig.panel.frame.width - widthBefore) > 1
+        if widthChanged {
+            capsuleLine = "  capsule: not measured (panel width \(f(widthBefore)) -> \(f(rig.panel.frame.width)))"
+        } else if let row = capsuleRow(before), let a = readCapsule(before, row: row, span: nil),
            let b = readCapsule(final, row: row, span: nil) {
             let span = (min(a.lo, b.lo), max(a.hi, b.hi))
             let from = a.centre, to = b.centre, moved = abs(to - from)
@@ -423,7 +548,7 @@ enum Harness {
         var picks: [(String, MotionSample)] = [("before", before)]
         var used = Set<Int>()
         for target in [20.0, 50, 90, 140, 210, 320] {
-            if let i = samples.indices.filter({ samples[$0].image != nil && samples[$0].scale > 0 && samples[$0].image!.width > 8 }).min(by: { abs(samples[$0].t * 1000 - target) < abs(samples[$1].t * 1000 - target) }),
+            if let i = samples.indices.filter({ samples[$0].image != nil && !samples[$0].band && samples[$0].scale > 0 && samples[$0].image!.width > 8 }).min(by: { abs(samples[$0].t * 1000 - target) < abs(samples[$1].t * 1000 - target) }),
                used.insert(i).inserted {
                 picks.append(("\(Int(samples[i].t * 1000)) ms", samples[i]))
             }
@@ -576,6 +701,124 @@ enum Harness {
         guard let png = rep.representation(using: .png, properties: [:]) else { throw MotionFailure(description: "no sheet PNG") }
         try png.write(to: url)
     }
+
+    // MARK: Streaming
+
+    /// A first question on an empty Ask: the suggestions give way to the
+    /// conversation and "Thinking…", then an answer streams in the way the
+    /// service delivers it (a flush of a few words every 60 ms, each followed by
+    /// onResize), then the reply moves into the history. Checks the panel
+    /// only ever grows while text arrives (no shrink-and-regrow jitter), the
+    /// window never clips it, and reports how far the panel jumps when the
+    /// reply is finished.
+    static func streamCheck(_ rig: MotionRig, reduce: Bool, out: URL) async throws -> TransitionResult {
+        let m = rig.model
+        m.tab = .ask
+        m.turns = []; m.answer = ""; m.phase = .idle
+        try await rig.settle()
+        let words = Self.streamAnswer.split(separator: " ", omittingEmptySubsequences: false).map(String.init)
+        let before = rig.capture()
+        let t0 = CACurrentMediaTime()
+        m.turns.append(OverlayModel.Turn(role: "user", text: "What should I get done before the study group?"))
+        m.phase = .working
+        m.onResize()
+        var samples: [MotionSample] = []
+        var lastFull = -1.0
+        var next = 0, streamStart = -1.0, doneAt = -1.0, lastFlush = 0.0
+        func sample(full: Bool) {
+            let t = CACurrentMediaTime() - t0
+            let c0 = CACurrentMediaTime()
+            var s = rig.capture(full: full)
+            s.cost = CACurrentMediaTime() - c0
+            s.t = t
+            samples.append(s)
+        }
+        while true {
+            // Sample first, then change: a change and a capture in the same
+            // turn would catch the window before its queued refit, a state the
+            // screen never shows (the app commits frames between turns).
+            try await Task.sleep(for: .milliseconds(8))
+            let st = CACurrentMediaTime() - t0
+            let full = st - lastFull >= 0.25
+            if full { lastFull = st }
+            sample(full: full)
+            if doneAt > 0, st - doneAt >= 0.8 { break }
+            if st > 12 { break }
+            try await Task.sleep(for: .milliseconds(1))
+            let t = CACurrentMediaTime() - t0
+            if t >= 0.5, next < words.count, t - lastFlush >= 0.06 {
+                if streamStart < 0 { streamStart = t; m.phase = .streaming }
+                let chunk = words[next..<min(words.count, next + 4)].joined(separator: " ")
+                m.answer += (next == 0 ? "" : " ") + chunk
+                next += 4
+                lastFlush = t
+                m.onResize()
+            } else if next >= words.count, doneAt < 0, t - lastFlush >= 0.3 {
+                doneAt = t
+                m.turns.append(OverlayModel.Turn(role: "assistant", text: m.answer))
+                m.answer = ""
+                m.phase = .done
+                m.onResize()
+            }
+        }
+        try await rig.settle()
+        var final = rig.capture()
+        final.t = CACurrentMediaTime() - t0
+
+        var problems: [String] = []
+        var maxClip = 0.0, shrinks = 0, worstShrink = 0.0, high = 0.0, winShrinks = 0
+        var lastWin = before.win, lastBeforeDone = before.vis
+        for s in samples {
+            maxClip = max(maxClip, s.vis - s.win)
+            if s.t >= streamStart, s.t < doneAt {
+                if s.vis < high - 1 { shrinks += 1; worstShrink = max(worstShrink, high - s.vis) }
+                if s.win < lastWin - 1 { winShrinks += 1 }
+                lastBeforeDone = s.vis
+            }
+            high = max(high, s.vis)
+            lastWin = s.win
+        }
+        let doneJump = final.vis - lastBeforeDone
+        if maxClip > 1 { problems.append("(s) clipped: the answer passes the window by \(f(maxClip)) pt") }
+        // With motion the surface's spring absorbs a reflow; with Reduce Motion
+        // it follows the text exactly, so a list's first line settling (about
+        // 5 pt) shows as is: noted there, a failure only past 6 pt.
+        let tolerated = reduce && worstShrink <= 6
+        if shrinks > 0, !tolerated { problems.append("(s) jitter: the panel shrank \(shrinks) time(s) while text arrived, by up to \(f(worstShrink)) pt") }
+        if winShrinks > 0, !tolerated { problems.append("(s) the window shrank \(winShrinks) time(s) while text arrived") }
+        var lines = ["ask-stream [\(reduce ? "reduce-motion" : "motion")] content \(f(before.vis)) -> \(f(final.vis)), streamed \(words.count) words from \(Int(streamStart * 1000)) to \(Int(doneAt * 1000)) ms, \(samples.count) samples, max overshoot past window \(f(max(maxClip, 0))), jump when finished \(f(doneJump)) pt"]
+        var steps: [Double] = []
+        var prev = before.vis
+        for s in samples where s.t >= streamStart && s.t < doneAt { steps.append(s.vis - prev); prev = s.vis }
+        if shrinks > 0, tolerated { lines.append("  note: Reduce Motion, the panel stepped back \(shrinks) time(s) by up to \(f(worstShrink)) pt as the text reflowed") }
+        lines.append("  growth steps while streaming: \(steps.filter { abs($0) > 0.5 }.map { f($0) }.joined(separator: " "))")
+        for p in problems { lines.append("  ! \(p)") }
+
+        var picks: [(String, MotionSample)] = [("before", before)]
+        for target in [0.1, streamStart + 0.2, streamStart + 0.8, streamStart + 1.6, doneAt - 0.02, doneAt + 0.1, doneAt + 0.4] {
+            if let s = samples.filter({ $0.image != nil && !$0.band && ($0.image?.width ?? 0) > 8 }).min(by: { abs($0.t - target) < abs($1.t - target) }) {
+                picks.append(("\(Int(s.t * 1000)) ms", s))
+            }
+        }
+        picks.append(("final", final))
+        try contactSheet(title: "ask-stream  \(reduce ? "(reduce motion)" : "(motion)")", frames: picks,
+                         to: out.appendingPathComponent(reduce ? "ask-stream-reduce-motion.png" : "ask-stream.png"))
+        // Leave Ask empty for whatever runs next.
+        m.turns = []; m.answer = ""; m.phase = .idle
+        try await rig.settle()
+        return TransitionResult(name: "ask-stream", ok: problems.isEmpty, lines: lines)
+    }
+
+    static let streamAnswer = """
+    Before the study group at 6, the one thing that matters is **Worksheet 3 for STAT 5**: it's due tomorrow and you have a free hour from 2 to 3.
+
+    - Finish problems 4–7 on the worksheet; 1–3 are already done.
+    - Skim the CSE 30 readings so you can follow the review.
+    - Reply to Ed about taking Exam 1 early on Tuesday.
+    - Grab coffee on the way: the group meets at the library café.
+
+    If you only get one of these done, make it the worksheet. I can hold 2–3 PM for it if you'd like.
+    """
 
     // MARK: Scroll memory
 
