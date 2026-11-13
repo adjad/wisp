@@ -118,14 +118,22 @@ def catalogue_models_on_disk(model_dirs: Iterable[Path | str],
     return sorted(found)
 
 
-# (path, size, mtime_ns) -> sha256, so a status poll hashes a 5.6 GB download once.
+# (path, size, mtime_ns) -> sha256, so a status poll hashes a 5.6 GB download once. One lock per
+# file, so a poll checking a small file never waits behind another file's hash.
 _hashes: dict[tuple[str, int, int], str] = {}
-_hash_lock = threading.Lock()
+_hash_locks: dict[str, threading.Lock] = {}
+_locks_guard = threading.Lock()
+
+# Besides the pinned files, a downloaded folder may hold only these (and dot-entries such
+# as .gitattributes and hub's .cache): an added template or token file changes the model.
+ALLOWED_EXTRA = frozenset({"README.md"})
 
 
 def _sha256(path: Path, stat) -> str:
     key = (str(path), stat.st_size, stat.st_mtime_ns)
-    with _hash_lock:
+    with _locks_guard:
+        lock = _hash_locks.setdefault(str(path), threading.Lock())
+    with lock:
         if key not in _hashes:
             digest = hashlib.sha256()
             with path.open("rb") as f:
@@ -135,12 +143,35 @@ def _sha256(path: Path, stat) -> str:
         return _hashes[key]
 
 
+def bad_pinned_files(folder: Path, model: "catalog.CatalogModel") -> list[str]:
+    """Pinned file names in `folder` whose size or sha256 differs (hashes them if needed)."""
+    bad = []
+    for name, sha256, size in model.pinned_files:
+        path = folder / name
+        try:
+            stat = path.stat()
+            if stat.st_size != size or _sha256(path, stat) != sha256:
+                bad.append(name)
+        except OSError:
+            continue        # missing: a fresh download fetches it anyway
+    return bad
+
+
 def verify_download(folder: Path, model: "catalog.CatalogModel", *, cached_only: bool = False) -> str | None:
     """None when `folder` holds a usable copy of `model`; else "incomplete" (weights
-    missing or partial) or "mismatch" (a pinned file differs from what Wisp tested).
-    `cached_only`: never hash; a file not hashed yet counts as matching."""
+    missing or partial) or "mismatch" (a pinned file differs from what Wisp tested, or
+    the folder holds a file the tested model didn't have). `cached_only`: never hash;
+    a file not hashed yet counts as matching."""
     if not weights_complete(folder):
         return "incomplete"
+    if model.pinned_files:
+        allowed = {name for name, _, _ in model.pinned_files} | ALLOWED_EXTRA
+        try:
+            extra = [e.name for e in folder.iterdir() if not e.name.startswith(".") and e.name not in allowed]
+        except OSError:
+            return "incomplete"
+        if extra:
+            return "mismatch"
     for name, sha256, size in model.pinned_files:
         path = folder / name
         try:

@@ -29,7 +29,8 @@ def wire(monkeypatch, tmp_path):
     engine = SimpleNamespace(running=lambda: True, verified=True, api_key=SECRET)
     monkeypatch.setattr(downloads.mode, "is_bundled", lambda: True)
     monkeypatch.setattr(downloads.runtime, "_manager", engine)
-    state = SimpleNamespace(tasks=[], seen=[], starts=0, status=200, payload=None, login=True, cookie=True)
+    state = SimpleNamespace(tasks=[], seen=[], starts=0, status=200, payload=None, login=True, cookie=True,
+                            delete_fails=False)
 
     async def ensure():
         state.starts += 1
@@ -67,6 +68,8 @@ def wire(monkeypatch, tmp_path):
                 return httpx.Response(400, json={"detail": "not retryable"})
             state.tasks[state.tasks.index(task)] = {**task, "task_id": "task-2", "status": "pending", "created_at": 2}
         elif path.startswith("/admin/api/hf/task/") and request.method == "DELETE":
+            if state.delete_fails:
+                return httpx.Response(404, json={"detail": "Task not found or still active"})
             state.tasks = [t for t in state.tasks if t["task_id"] != path.rsplit("/", 1)[1]]
         else:
             pytest.fail("Unexpected upstream operation: " + path)
@@ -391,3 +394,74 @@ def test_a_repo_without_the_weights_is_not_a_finished_download(wire):
     wire.tasks = [row(status="completed", progress=100, downloaded_size=int(size), total_size=int(size))]
     task = request(wire, "GET", "/downloads").json()["tasks"][0]
     assert task["state"] == "completed" and task["message"] is None
+
+
+
+def _pinned(tmp_path, files):
+    import hashlib
+    from dataclasses import replace
+    pins = tuple((n, hashlib.sha256(d).hexdigest(), len(d)) for n, d in files.items())
+    return replace(downloads.catalog.by_id(MODEL), pinned_files=pins)
+
+
+def test_a_finished_pinned_download_with_no_folder_is_not_usable(wire, tmp_path, monkeypatch):
+    model = _pinned(tmp_path, {"config.json": b"{}", "model.safetensors": b"w" * 8})
+    real = downloads.catalog.by_id
+    monkeypatch.setattr(downloads.catalog, "by_id", lambda m: model if m == MODEL else real(m))
+    wire.tasks = [row(status="completed", progress=100, downloaded_size=10**10, total_size=10**10)]
+    task = request(wire, "GET", "/downloads").json()["tasks"][0]
+    assert task["state"] == "failed" and task["reason"] == "incomplete"
+
+
+def test_an_added_file_is_a_mismatch_but_hub_and_card_files_are_not(tmp_path):
+    from service.setup.local_models import verify_download
+    files = {"config.json": b"{}", "model.safetensors": b"w" * 8}
+    model = _pinned(tmp_path, files)
+    folder = _folder(tmp_path, model, {**files, "README.md": b"card", ".gitattributes": b"*"})
+    (folder / ".cache" / "huggingface" / "download").mkdir(parents=True)
+    assert verify_download(folder, model) is None
+    (folder / "chat_template.json").write_text("{}")             # changes how the model is prompted
+    assert verify_download(folder, model) == "mismatch"
+
+
+def test_retry_after_a_mismatch_drops_only_the_bad_pinned_files_first(wire, tmp_path, monkeypatch):
+    files = {"config.json": b"{}", "model.safetensors": b"w" * 8}
+    model = _pinned(tmp_path, files)
+    real = downloads.catalog.by_id
+    monkeypatch.setattr(downloads.catalog, "by_id", lambda m: model if m == MODEL else real(m))
+    folder = _folder(tmp_path, model, {"config.json": b"{}", "model.safetensors": b"x" * 8, "README.md": b"c"})
+    meta = folder / ".cache" / "huggingface" / "download"
+    meta.mkdir(parents=True)
+    for name in ("config.json", "model.safetensors"):
+        (meta / f"{name}.metadata").write_text("commit\netag\n1\n")
+    wire.tasks = [row(status="completed", progress=100, downloaded_size=10**10, total_size=10**10)]
+    assert request(wire, "GET", "/downloads").json()["tasks"][0]["reason"] == "mismatch"
+    assert request(wire, "POST", "/downloads", json={"model": MODEL}).status_code == 200
+    assert not (folder / "model.safetensors").exists() and not (meta / "model.safetensors.metadata").exists()
+    assert (folder / "config.json").exists() and (meta / "config.json.metadata").exists()   # good file kept
+    assert (folder / "README.md").exists()
+
+
+def test_a_failed_delete_still_starts_the_fresh_download(wire):
+    wire.tasks = [row(status="completed", progress=100, downloaded_size=1547, total_size=1547)]
+    wire.delete_fails = True
+    response = request(wire, "POST", "/downloads", json={"model": MODEL})
+    assert response.status_code == 200, response.text
+    paths = [(r.method, r.url.path) for r in wire.seen]
+    assert ("DELETE", "/admin/api/hf/task/task-1") in paths and ("POST", "/admin/api/hf/download") in paths
+
+
+def test_downloads_land_where_wisp_checks_them():
+    # oMLX's HFDownloader writes to model_dir / repo_id with model_dir = dir_list[0], and
+    # Wisp's engine settings put its own models folder first.
+    from pathlib import Path
+    from service.engine import manager
+    settings = manager.engine_settings(8791, "k" * 40, [Path("/synthetic/engine/models"), Path("/x")], ["/user"])
+    assert settings["model"]["model_dirs"][0] == "/synthetic/engine/models"
+    layout = manager.EngineLayout(Path("/code"), Path("/synthetic/engine"))
+    assert layout.models_dir == Path("/synthetic/engine/models")
+    source = Path("/Applications/oMLX.app/Contents/Resources/omlx")
+    if not (source / "server.py").is_file():
+        pytest.skip("oMLX.app isn't installed here")
+    assert "model_dir=dir_list[0]" in (source / "server.py").read_text()
+    assert "target_dir = self._model_dir / task.repo_id" in (source / "admin" / "hf_downloader.py").read_text()

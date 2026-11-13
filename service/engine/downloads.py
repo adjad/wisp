@@ -247,8 +247,37 @@ _MESSAGES_AFTER_COMPLETION = {
 }
 
 
+def models_dir():
+    """Where the engine's downloader writes: oMLX's HFDownloader gets model_dir=dir_list[0],
+    the first of the engine's model_dirs, which manager.engine_settings makes Wisp's own
+    layout.models_dir (tests/test_engine_downloads.py pins this against oMLX's source)."""
+    layout = getattr(runtime._manager, "layout", None)
+    return layout.models_dir if layout is not None else mode.engine_data_dir() / "models"
+
+
 def _model_folder(model: "catalog.CatalogModel"):
-    return mode.engine_data_dir() / "models" / model.repo
+    return models_dir() / model.repo
+
+
+def check_failed(model_id: str, *, cached_only: bool = False) -> str | None:
+    """Built-in engine: why a pinned catalogue model's downloaded folder can't be used, or
+    None (unpinned, not Wisp's download, or it passes). A folder placed elsewhere by hand
+    is the person's own and stays trusted."""
+    from service.setup.local_models import verify_download
+    known = catalog.by_id(model_id)
+    if not mode.is_bundled() or known is None or not known.pinned_files or not known.repo:
+        return None
+    folder = _model_folder(known)
+    return verify_download(folder, known, cached_only=cached_only) if folder.is_dir() else None
+
+
+def warm_checks() -> None:
+    """Startup, in the background: hash pinned downloads once so setup's cached checks know."""
+    for model in catalog.PRIMARY_MODELS:
+        try:
+            check_failed(model.id)
+        except Exception:  # noqa: BLE001 — a check that can't run now runs at the next poll
+            pass
 
 
 def _check_finished(tasks) -> list:
@@ -259,12 +288,39 @@ def _check_finished(tasks) -> list:
             continue
         folder = _model_folder(known)
         if not folder.is_dir():
-            continue      # nothing to check yet: setup's "hasn't appeared" route covers it
+            if known.pinned_files:   # finished, yet not where the engine downloads: never usable
+                task.update(state="failed", reason="incomplete",
+                            message=_MESSAGES_AFTER_COMPLETION["incomplete"].format(label=known.label, repo=known.repo))
+            continue      # unpinned: setup's "hasn't appeared" route covers it
         reason = verify_download(folder, known)
         if reason:
             task.update(state="failed", reason=reason,
                         message=_MESSAGES_AFTER_COMPLETION[reason].format(label=known.label, repo=known.repo))
     return tasks
+
+
+def _drop_bad_pinned_files(model_id: str) -> list[str]:
+    """Delete, inside the catalogue folder only, each pinned file that fails its check and
+    hub's metadata for it, so the next download fetches it again."""
+    from service.setup.local_models import bad_pinned_files
+    known = catalog.by_id(model_id)
+    if known is None or not known.pinned_files or not known.repo:
+        return []
+    folder = _model_folder(known)
+    if not folder.is_dir():
+        return []
+    root = folder.resolve()
+    dropped = []
+    for name in bad_pinned_files(folder, known):
+        for path in (folder / name, folder / ".cache" / "huggingface" / "download" / f"{name}.metadata"):
+            if path.resolve().parent not in (root, (root / ".cache" / "huggingface" / "download").resolve()):
+                continue
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        dropped.append(name)
+    return dropped
 
 
 async def _inventory() -> list:
@@ -412,8 +468,14 @@ async def download_model(request: Request):
                     return _display(tasks)  # double click/reopened setup never queues a duplicate
                 if previous is not None and previous[1].get("reason") in _ENGINE_COMPLETED:
                     # The engine finished this task, so it refuses a retry (400): drop the row
-                    # and download again, which fetches what is missing or changed.
-                    await _call("DELETE", f"/admin/api/hf/task/{previous[0]}")
+                    # and download again, which fetches what is missing or changed. Hub skips a
+                    # local file whose saved metadata matches the remote, without hashing it, so
+                    # a pinned file damaged on disk is removed first or it would survive.
+                    await asyncio.to_thread(_drop_bad_pinned_files, model)
+                    try:
+                        await _call("DELETE", f"/admin/api/hf/task/{previous[0]}")
+                    except DownloadError:
+                        pass   # the row is gone already (or can't go): the fresh download still starts
                     await _call("POST", "/admin/api/hf/download", {"repo_id": _catalogue()[model]})
                 elif previous is not None and previous[1]["state"] in {"failed", "cancelled"}:
                     await _call("POST", f"/admin/api/hf/retry/{previous[0]}", {})

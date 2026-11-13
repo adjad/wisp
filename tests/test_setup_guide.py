@@ -1041,3 +1041,24 @@ def test_the_pre_release_folder_is_gemma_wisp_and_never_offered_again():
         assert rec["use"] == PRE and rec["get"] is None, installed
     rec = catalog.recommend(24, [GEMMA])
     assert rec["use"] == GEMMA and rec["get"] == TUNED          # base alone is still offered Gemma Wisp
+
+
+@pytest.mark.parametrize("failed, refused", [("mismatch", True), ("incomplete", True), (None, False)])
+def test_apply_refuses_a_download_that_failed_wisps_check(automatic_apply_state, monkeypatch, failed, refused):
+    # The engine lists a downloaded folder whatever is in it; apply is where a failed one stops.
+    config, main = automatic_apply_state
+    from service.engine import downloads
+
+    class Listed:
+        async def models(self):
+            return [TUNED]
+    monkeypatch.setattr(main, "client", Listed(), raising=False)
+    monkeypatch.setattr(downloads, "check_failed", lambda model, cached_only=False: failed if model == TUNED else None)
+    if refused:
+        with pytest.raises(main.HTTPException) as caught:
+            asyncio.run(main.setup_apply({"model": TUNED}))
+        assert caught.value.status_code == 409 and "tested" in caught.value.detail
+        assert config.role_to_model("fast") == "missing-fixture-model"
+    else:
+        assert asyncio.run(main.setup_apply({"model": TUNED})) == {"ok": True}
+        assert config.role_to_model("fast") == TUNED
