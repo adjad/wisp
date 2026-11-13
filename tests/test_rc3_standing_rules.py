@@ -70,7 +70,7 @@ def test_remove_drops_only_the_one_rule(client, monkeypatch):
     # A block rule can be removed the same way, by the Wisp app only (lifting a block lets the
     # action through again); the others are untouched.
     refused = _remove(client, "open_app", "")
-    assert refused.status_code == 403 and "Only the Wisp app" in refused.json()["detail"]
+    assert refused.status_code == 403 and "couldn't confirm this came from the Wisp app" in refused.json()["detail"]
     assert ("deny", "open_app", "") in _rules(client)
     monkeypatch.setattr(main, "_require_wisp_app", lambda request, reason: None)     # the app's own request
     assert _remove(client, "open_app", "").json() == {"ok": True}
@@ -82,7 +82,8 @@ def test_remove_drops_only_the_one_rule(client, monkeypatch):
 def test_only_the_wisp_app_can_add_an_always_allow_or_lift_a_block(client, monkeypatch):
     _seed()
     before = _rules(client)
-    reason = "Only the Wisp app can let Wisp act without asking. Change this in Wisp's Settings."
+    reason = main._APP_ONLY
+    assert "couldn't confirm this came from the Wisp app" in reason and "Quit and reopen Wisp" in reason
     # A local program that is not the app: no new "Always allow", by default or by name.
     for body in ({"tool": "run_shell", "scoped": False}, {"tool": "run_shell", "decision": "allow", "scoped": False},
                  {"tool": "write_file", "args": {"path": "/Users/sam/x/a.txt"}, "decision": "allow"}):

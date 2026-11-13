@@ -788,7 +788,10 @@ def choose_mode(chosen: dict[str, bool]) -> None:
             set_read_only(chosen["read_only"])
         if "full_access" in chosen:
             set_full_access(chosen["full_access"])
-        _save_mode({**_saved_mode(), **chosen})
+        # Both keys, as they are in force now, every time. Saving only the key that was chosen
+        # left the other to policy.yaml's default at the next start: after a damaged file had
+        # forced Full access off, choosing view-only alone would have brought Full access back.
+        _save_mode({"read_only": bool(_READ_ONLY), "full_access": bool(_FULL_ACCESS)})
 
 
 def _rules(key: str, default: list[str]) -> list[str]:

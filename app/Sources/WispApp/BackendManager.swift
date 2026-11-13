@@ -206,6 +206,10 @@ final class BackendManager {
             // person typed) is not worth keeping: the app alone asks about twice a
             // second. Start-up errors, tracebacks and Wisp's own lines still reach the log.
             "--no-access-log",
+            // Uvicorn otherwise trusts X-Forwarded-For from 127.0.0.1 and reports the address
+            // in it as the caller. The service decides "is this the Wisp app?" from the
+            // caller's address and port, so a forged header must never be able to set them.
+            "--no-proxy-headers",
         ]
         let configDigest = Self.configurationDigest()
         let launchNonce = UUID().uuidString

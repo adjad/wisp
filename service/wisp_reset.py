@@ -485,13 +485,30 @@ def caller_is_parent_app(client: tuple[str, int], server: tuple[str, int], *, pa
     return executable.name in {"Wisp", "WispApp"}
 
 
+# Headers a reverse proxy adds to say who the "real" caller is. Nothing sits between the Wisp
+# app and this service, and the app never sends them. A server that trusts them (uvicorn does,
+# from 127.0.0.1, unless started with --no-proxy-headers) replaces the caller's address and
+# port with what the header says, and a local program could then name the port of a connection
+# the app really holds. So a request that carries any of them is never "the app".
+FORWARDED_HEADERS = ("forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-port",
+                     "x-forwarded-proto", "x-forwarded-server", "x-real-ip", "x-client-ip")
+
+
+def names_another_caller(request: Request) -> bool:
+    """The request carries a header that can stand in for the caller's address."""
+    try:
+        return any(name in request.headers for name in FORWARDED_HEADERS)
+    except Exception:  # noqa: BLE001 — headers that can't be read are not the app's
+        return True
+
+
 def require_app_caller(request: Request) -> None:
     """The app's own JSON request, from the app that launched this service.
 
     Like the other native-only routes, a browser can't reach it (any Origin is
     refused, and so is a non-JSON body). On top of that the caller must be the
     parent app process itself, proven from the kernel's socket table."""
-    if "origin" in request.headers:
+    if "origin" in request.headers or names_another_caller(request):
         raise HTTPException(403, "Reset Wisp from its notch with /resetwisp.")
     media = (request.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
     if media != "application/json":
