@@ -1994,10 +1994,15 @@ def _ask_tool_rank(prompt: str, previous: str = "") -> tuple[list[str], list[str
                                  ("search_reminders", reminders_first(prompt))):
                 if wanted and lead in REGISTRY:
                     head = [lead, *(n for n in head if n != lead)]
-        from service.model_only import public_possessive_question
-        if not writing and public_possessive_question(prompt) and "web_search" in REGISTRY:
+        from service.model_only import public_possessive_question, web_first
+        if (not writing and "web_search" in REGISTRY
+                and (public_possessive_question(prompt)
+                     or (web_first(prompt) and not (mail_first(prompt) or calendar_first(prompt)
+                                                    or reminders_first(prompt))))):
             # "What are Costco's hours?" ranked weather and stock tools first
-            # and left web_search a name stub: the search leads instead.
+            # and left web_search a name stub: the search leads instead. So it
+            # does for a public fact that changes ("Is Costco open on Sunday?",
+            # "who is the president?"), which was answered from stale memory.
             head = ["web_search", *(n for n in head if n != "web_search")]
         from service.model_only import reply_reads
         if lead_reads := [n for n in reply_reads(prompt) if n in REGISTRY]:

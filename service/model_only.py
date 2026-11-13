@@ -1261,14 +1261,35 @@ def public_fact_question(prompt: str) -> bool:
 # return policy is a public fact. The owner is at most four words and never a
 # relation or a pronoun; the head is only one of these public business facts
 # (never a number, address, schedule or plan).
+_POSSESSIVE_OWNER = r"(?P<owner>[a-z0-9][a-z0-9&-]*(?:\s+[a-z][a-z0-9&-]*){0,3})'s"
+_POSSESSIVE_DAY = (r"(?:\s+(?:today|tomorrow|tonight|now|right\s+now|this\s+weekend|"
+                   r"on\s+(?:mondays?|tuesdays?|wednesdays?|thursdays?|fridays?|saturdays?|sundays?|"
+                   r"christmas(?:\s+eve)?|thanksgiving|easter|new\s+year'?s(?:\s+(?:day|eve))?)))?\s*[?.!]?$")
+# A counter inside the business, between its name and the question.
+_POSSESSIVE_DEPT = (r"(?:\s+(?:pharmacy|bakery|deli|cafe|food\s+court|gas\s+station|tire\s+center|"
+                    r"garden\s+center|auto\s+center|optical|drive-?thru|store))?")
 _PUBLIC_POSSESSIVE = re.compile(
     r"^(?:(?:what|when)\s+(?:are|is)\s+|what'?s\s+)?(?:the\s+)?"
-    r"(?P<owner>[a-z0-9][a-z0-9&-]*(?:\s+[a-z][a-z0-9&-]*){0,3})'s\s+"
+    + _POSSESSIVE_OWNER + r"\s+"
     r"(?:(?:opening|store|holiday|business|weekend|pharmacy|regular|normal|current)\s+)?"
     r"(?:hours|opening\s+times|menu|return\s+policy)"
-    r"(?:\s+(?:today|tomorrow|tonight|now|this\s+weekend|"
-    r"on\s+(?:mondays?|tuesdays?|wednesdays?|thursdays?|fridays?|saturdays?|sundays?|"
-    r"christmas(?:\s+eve)?|thanksgiving|easter|new\s+year'?s(?:\s+(?:day|eve))?)))?\s*[?.!]?$", re.I)
+    + _POSSESSIVE_DAY, re.I)
+# The same public fact asked as a yes/no or a time ("Is Trader Joe's open on
+# Thanksgiving?", "When does Costco's pharmacy close?", "How late is Lowe's
+# open?"): rc2 knew only the "<name>'s hours" wording, so these stayed private
+# and got no search on the first message of a chat.
+_PUBLIC_POSSESSIVE_OPEN = tuple(re.compile(r"^" + lead + _POSSESSIVE_DAY, re.I) for lead in (
+    r"(?:is|are)\s+(?:the\s+)?" + _POSSESSIVE_OWNER + _POSSESSIVE_DEPT + r"\s+(?:still\s+)?(?:open|closed)(?:\s+late)?",
+    r"(?:when|what\s+time)\s+(?:does|do|will)\s+(?:the\s+)?" + _POSSESSIVE_OWNER + _POSSESSIVE_DEPT
+    + r"\s+(?:open|close)",
+    r"how\s+late\s+(?:is|are)\s+(?:the\s+)?" + _POSSESSIVE_OWNER + _POSSESSIVE_DEPT + r"\s+open",
+))
+
+
+def _possessive_match(text: str):
+    """The match of either public possessive wording; its `owner` group is the name."""
+    return _PUBLIC_POSSESSIVE.match(text) or next(
+        (m for pattern in _PUBLIC_POSSESSIVE_OPEN if (m := pattern.match(text))), None)
 # Owners that are people in the user's life (or not a name at all).
 _RELATION_OWNERS = frozenset("""
 mom mum mommy mummy mama ma dad daddy papa pa mother father parents grandma grandpa granny gran nana
@@ -1283,7 +1304,7 @@ monday tuesday wednesday thursday friday saturday sunday
 
 
 def _possessive_owner_is_personal(text: str) -> bool:
-    m = _PUBLIC_POSSESSIVE.match(text)
+    m = _possessive_match(text)
     return bool(m and any(w.lower() in _RELATION_OWNERS for w in m.group("owner").split()))
 
 
@@ -1347,11 +1368,68 @@ def public_possessive_question(prompt: str) -> bool:
     Wisp knows locally."""
     text = _ascii_text(prompt).strip()
     if not (text.isascii() and len(text.split()) <= _FACT_MAX_WORDS
-            and (m := _PUBLIC_POSSESSIVE.match(text)) and not _FIRST_PERSON.search(text)
+            and (m := _possessive_match(text)) and not _FIRST_PERSON.search(text)
             and not _possessive_owner_is_personal(text)):
         return False
     owner = m.group("owner")
     return not (_possessive_owner_is_contact_detail(owner) or _possessive_owner_is_known_person(owner))
+
+
+# A public question whose answer changes, so the model's own memory is stale:
+# opening hours ("Is Costco open on Sunday?", "When does Target close?"), who
+# holds an office now ("Who is the president?"), the newest version of a
+# product, today's news. In the 2026-11-04 debug export "who is the president?"
+# was answered from memory with no search. These lead the Ask head start with
+# web_search (service/main._ask_tool_rank); they open nothing a turn did not
+# already have.
+_WEB_FIRST = re.compile(
+    r"^(?:"
+    r"(?:is|are)\s+(?:the\s+)?[a-z0-9][a-z0-9&' -]{1,40}?\s+(?:still\s+)?(?:open|closed)\b.*"
+    r"|(?:when|what\s+time)\s+(?:does|do|will)\s+(?:the\s+)?[a-z0-9][a-z0-9&' -]{1,40}?\s+(?:open|close)\b.*"
+    r"|how\s+late\s+(?:is|are)\s+(?:the\s+)?[a-z0-9][a-z0-9&' -]{1,40}?\s+open\b.*"
+    r"|[a-z0-9][a-z0-9&' -]{1,40}?\s+(?:store\s+|opening\s+|holiday\s+)?hours\b.*"
+    r"|who(?:\s+is|'s|\s+are)\s+(?:the\s+)?(?:current\s+|new\s+|next\s+)?(?:us\s+|u\.s\.\s+)?"
+    r"(?:president|vice\s+president|prime\s+minister|governor|mayor|senators?|chancellor|pope|king|queen|"
+    r"secretary\s+of\s+[a-z ]+|speaker\s+of\s+the\s+house|ceo|chief\s+executive|chairman|head\s+coach)\b.*"
+    r"|(?:what(?:'s|\s+is)|which\s+is)\s+the\s+(?:latest|newest|most\s+recent)\s+.+"
+    r"|(?:what(?:'s|\s+is)\s+(?:the\s+|in\s+the\s+)?|any\s+|latest\s+|today'?s\s+|top\s+)?"
+    r"(?:news|headlines)\b.*"
+    r")$", re.I)
+
+
+def web_first(prompt: str) -> bool:
+    """A short public question whose answer changes (see _WEB_FIRST), with
+    nothing of the user's in it: the search leads the Ask head start."""
+    text = _ascii_text(prompt).strip()
+    if not (text.isascii() and len(text.split()) <= _FACT_MAX_WORDS
+            and not _FIRST_PERSON.search(text) and _WEB_FIRST.match(text)
+            and not _possessive_owner_is_personal(text)):
+        return False
+    words = set(re.findall(r"[a-z]+", text.lower()))
+    # A relation, a thing of the user's own (their mail, their door), something
+    # "from" or "with" someone, or "open to" an idea is not a web question.
+    if (words & (_RELATION_OWNERS - _WEB_FIRST_PLAIN) or words & _WEB_FIRST_OWN
+            or words & {"from", "with"} or re.search(r"\b(?:open|closed)\s+(?:to|for|about)\b", text, re.I)
+            or asks_personal_data(prompt)):
+        return False
+    try:                                        # a person Wisp knows is not a business
+        known = _known_people_tokens()
+    except Exception:  # noqa: BLE001 — an unreadable profile or cache: no head start
+        return False
+    return not (known and words & known)
+
+
+# Things that are the user's own even with no "my" ("the latest email from
+# Sam", "is the garage door open", "office hours with the TA").
+_WEB_FIRST_OWN = frozenset("""
+email emails mail inbox message messages text texts imessage reminder reminders calendar event events
+meeting meetings class classes office ta note notes file files folder document documents doc docs
+order package delivery door window garage gate account appointment schedule flight trip homework
+assignment exam midterm quiz grade grades chat thread task tasks todo timer alarm brief
+""".split())
+# Relation words that are also ordinary words of a public question.
+_WEB_FIRST_PLAIN = frozenset("it that there here what who this these those today tomorrow tonight "
+                             "yesterday monday tuesday wednesday thursday friday saturday sunday".split())
 
 
 # Words a search for a public fact may add to the user's own: the query of a
@@ -1364,6 +1442,7 @@ score scores result results final game games match series standings
 rate rates exchange convert conversion usd eur gbp jpy inr cad aud cny chf mxn
 dollar dollars euro euros pound pounds yen rupee rupees peso pesos franc francs yuan
 stock stocks share shares crypto cryptocurrency market
+hours open opens opening close closes closing closed time times store holiday menu return policy
 """.split())
 # The only characters a public-fact search may contain, after NFKC folding:
 # anything else (Cyrillic, other scripts' digits) is invisible to a word check.
