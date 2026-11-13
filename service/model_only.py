@@ -1368,7 +1368,9 @@ monday tuesday wednesday thursday friday saturday sunday
 
 def _possessive_owner_is_personal(text: str) -> bool:
     m = _possessive_match(text)
-    return bool(m and any(w.lower() in _RELATION_OWNERS for w in m.group("owner").split()))
+    if not m or _KIN_PUBLIC.fullmatch(m.group("owner").lower() + "'s"):     # "Papa John's" is a shop
+        return False
+    return any(w.lower() in _RELATION_OWNERS for w in m.group("owner").split())
 
 
 # An owner that is a phone number or a street address is the user's detail,
@@ -1517,6 +1519,110 @@ def personal_possessive_question(prompt: str) -> bool:
     text = _ascii_text(prompt).strip()
     return bool(text.isascii() and len(text.split()) <= _FACT_MAX_WORDS
                 and _possessive_match(text) and not public_possessive_question(text))
+
+
+# ---- Whose question is it? The checks below only ever tighten web access, so
+# they carry none of the ASCII or length gates of the public shapes above: a
+# request they cannot read is not thereby public.
+
+# People in the user's life, as a word of the request ("How is Grandma doing
+# today?", "Is Mom home yet?"). Narrower than _RELATION_OWNERS: "team",
+# "doctor" and "teacher" are also words of public questions.
+_KIN = frozenset("""
+mom mum mommy mummy mama mamma dad daddy papa mother father parents grandma grandpa granny gran nana
+grandmother grandfather sister brother sis bro son daughter wife husband spouse boyfriend girlfriend
+fiance fiancee aunt auntie uncle cousin niece nephew bestie roommate landlord babysitter nanny
+""".split())
+# The same words inside a public name.
+_KIN_PUBLIC = re.compile(
+    r"\b(?:mother'?s\s+day|father'?s\s+day|uncle\s+sam|big\s+brother|papa\s+john'?s?|papa\s+murphy'?s?|"
+    r"auntie\s+anne'?s?|sister\s+act|mamma\s+mia|mama\s+mia|brother\s+printers?|son\s+of\s+\w+|"
+    r"father\s+of\s+the\s+bride|mother\s+teresa|mother\s+nature|father\s+time)\b")
+# Owners of an 's that are a person in the user's life (the relation words
+# that are not pronouns or dates).
+_PERSON_OWNERS = frozenset(_RELATION_OWNERS - frozenset("""
+it that there here what who he she they his her their your its this these those everyone everybody
+someone somebody nobody today tomorrow tonight yesterday monday tuesday wednesday thursday friday
+saturday sunday
+""".split()))
+# A contraction's first word, never an owner ("what's", "it's", "let's").
+_CONTRACTED = frozenset("what who it that there here he she how where when why let".split())
+_LOOSE_APOSTROPHES = str.maketrans({c: "'" for c in "\u2018\u2019\u02bc\u02b9\u02bb\u2032\u00b4`\uff07\u055a\u07f4"})
+# An apostrophe lookalike before a possessive s: the public shapes do not read
+# it, so the request would pass as having no owner at all.
+_LOOKALIKE_POSSESSIVE = re.compile("\\w[\u02b9\u02bb\u2032\u00b4`\u055a\u07f4]s\\b", re.I)
+_LOOSE_POSSESSIVE = re.compile(r"([a-z0-9][a-z0-9&.-]*)'s?(?=\s|$|[?.!,;:])")
+
+
+def _loose_text(text: str) -> str:
+    """Lower-cased, accents removed, every apostrophe-like mark a plain one:
+    "Is Mam\u00e1\u02b9s open?" reads as "is mama's open?"."""
+    import unicodedata
+    plain = unicodedata.normalize("NFKD", unicodedata.normalize("NFKC", text or ""))
+    plain = "".join(c for c in plain if not unicodedata.combining(c))
+    return plain.translate(_LOOSE_APOSTROPHES).lower()
+
+
+def personal_reference(prompt: str) -> bool:
+    """The request is about someone in the user's life, named by a kin word
+    ("How is Grandma doing today?", "Is Mom home yet?"). No ASCII or length
+    gate. A bare first name is not recognised here: reading the know-you
+    profile for every request would break the host's rule that routing loads
+    no saved context in test mode or when the user has opted out of it."""
+    loose = _KIN_PUBLIC.sub(" ", _loose_text(prompt))
+    return bool(_KIN.intersection(re.findall(r"[a-z0-9&-]+", loose)))
+
+
+def personal_owner(prompt: str) -> bool:
+    """Some 's in the request belongs to a person in the user's life: a
+    relation ("the doctor's office"), a kin word, a known person, or a contact
+    detail. No ASCII or length gate; a failed people lookup counts as personal."""
+    loose = _KIN_PUBLIC.sub(" ", _loose_text(prompt))
+    for owner in _LOOSE_POSSESSIVE.findall(loose):
+        owner = owner.strip(".-&")
+        if not owner or owner in _CONTRACTED:
+            continue
+        if (owner in _PERSON_OWNERS or owner in _KIN or _possessive_owner_is_contact_detail(owner)
+                or _possessive_owner_is_known_person(owner)):
+            return True
+    return False
+
+
+def lookalike_possessive(prompt: str) -> bool:
+    """An 's written with an apostrophe lookalike (U+02B9, a prime, a backtick)."""
+    return bool(_LOOKALIKE_POSSESSIVE.search(prompt or ""))
+
+
+# What an owner has that is the user's own business, whoever the owner is.
+_PERSONAL_HEADS = frozenset("""
+address addresses number numbers birthday anniversary flight flights package packages
+parcel appointment appointments schedule plans place house home apartment room car kids wedding party
+location whereabouts salary password diagnosis results health surgery visit trip itinerary reservation
+booking ticket tickets order orders delivery account accounts email emails mail text texts message
+messages call calls note notes file files folder document documents
+""".split())
+_OWNER_REQUEST_MAX_WORDS = 16
+
+
+def public_owner_request(prompt: str) -> bool:
+    """A request with an 's of unknown ownership that is still plainly public:
+    "Who won Sunday's game?", "What's Apple's stock price today?", "What is
+    Tesla's market cap right now?". Plain ASCII, short, no first person, no
+    person of the user's own, and nothing in it that is anyone's private
+    business (an address, a flight, a package). It reopens only a search of the
+    user's own words (see web_request._parse_request)."""
+    text = _ascii_text(prompt).strip()
+    if not (text.isascii() and len(text.split()) <= _OWNER_REQUEST_MAX_WORDS
+            and not _FIRST_PERSON.search(text)):
+        return False
+    if personal_reference(prompt) or personal_owner(prompt) or lookalike_possessive(prompt):
+        return False
+    words = set(re.findall(r"[a-z0-9&-]+", _KIN_PUBLIC.sub(" ", text.lower())))
+    if words & _PERSONAL_HEADS or words & _WEB_FIRST_OWN or words & (_PERSON_OWNERS | _KIN):
+        return False
+    if re.search(r"\d{4,}", text) and not re.search(r"\b(?:19|20)\d{2}\b", text):
+        return False
+    return bool(re.search(r"[a-z0-9]'(?:s\b|(?=\s|$|[?.!,]))", text.lower()))
 
 
 # Words a search for a public fact may add to the user's own: the query of a
