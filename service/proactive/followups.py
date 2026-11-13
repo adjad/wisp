@@ -273,7 +273,7 @@ def _bare(subject) -> str:
 def _mail_ask_lines(item: dict) -> tuple[list[str], bool]:
     """(the newest incoming message: what waits on the user, whether that is the
     subject). The subject is the ask only for a thread of exactly one message,
-    from them: in a thread the user wrote in, "Re: Can we meet Friday?" is the
+    from them, under a subject that is not a reply or a forward: in a thread the user wrote in, "Re: Can we meet Friday?" is the
     user's own question coming back, and after an earlier message the subject is
     an old question ("Got them, thanks" under "Can you send me the slides?")."""
     blocks = _mail_blocks(item)
@@ -288,7 +288,12 @@ def _mail_ask_lines(item: dict) -> tuple[list[str], bool]:
     # One incoming message shown, and it is the thread's first: nothing older is hidden.
     if len(incoming) != 1 or not (_finite(first) and _finite(newest)) or abs(float(newest) - float(first)) > 1:
         return [], False
-    return [_bare((item.get("ref") or {}).get("subject") or item.get("title"))], True
+    subject = str((item.get("ref") or {}).get("subject") or item.get("title") or "")
+    # "Re:" or "Fwd:" says the thread is older than anything in the window: the
+    # question under it may be long answered, outside every Sent list we hold.
+    if _bare(subject) != subject.strip():
+        return [], False
+    return [_bare(subject)], True
 
 
 def _sent_in_thread(sent, address: str, item: dict, mine) -> bool:

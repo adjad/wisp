@@ -151,12 +151,19 @@ def test_mail_a_subject_the_user_asked_is_not_their_ask():
 
 def test_mail_a_subject_alone_counts_only_when_the_user_never_wrote():
     mailed = [sent("sam@school.edu", NOW - 6 * D), sent("sam@school.edu", NOW - 4 * D)]
-    got, why = plan(mail_item(subject="Re: Can you review my poster draft?", body="(subject only)", sender="Sam Lee",
+    got, why = plan(mail_item(subject="Can you review my poster draft?", body="(subject only)", sender="Sam Lee",
                               address="sam@school.edu", user_wrote=False), sent=mailed)
     assert why == "" and got["quote"] == "Can you review my poster draft?"
-    got, why = plan(mail_item(subject="Re: Can you review my poster draft?", body="(subject only)", sender="Sam Lee",
-                              address="sam@school.edu", user_wrote=False), sent=mailed)
-    assert why == "" and got["quote"] == "Can you review my poster draft?"
+
+
+@pytest.mark.parametrize("subject", ["Re: Can you send me the slides?", "Fwd: Can you send me the slides?",
+                                     "RE: Re: Can you send me the slides?", "  Fw: Can you send me the slides?"])
+def test_a_reply_or_forward_subject_is_never_the_ask(subject):
+    # Maya asked on day -10 and the user replied on day -9, both outside the windows. On day -2
+    # "Re: Can you send me the slides?" arrives with "Got them, thanks", body not cached.
+    mailed = list(MAILED)
+    item = mail_item(subject=subject, body="(subject only)", user_wrote=False, received=NOW - 2 * D)
+    assert plan(item, sent=mailed, since_ts=NOW - 20 * D) == (None, "no direct ask")
 
 
 def test_a_late_ask_after_an_old_hello_waits_its_own_day():
