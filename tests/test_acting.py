@@ -558,3 +558,21 @@ def test_auto_add_never_adds_what_is_already_on_the_list(store):
 def test_resetting_wisp_erases_the_yes():
     from service import wisp_reset
     assert acting.FILE not in wisp_reset.KEEP_ENTRIES          # everything outside KEEP_ENTRIES is deleted
+
+
+@pytest.mark.parametrize("cmd, protected", [
+    ("echo x > ~/.moe/act_for*.json", True), ("echo x > ~/.moe/act_for_me.jso?", True),
+    ("cp /tmp/x ~/.moe/a[c]t_for_me.json", True), ("echo x > ~/.moe/*.json", True), ("rm ~/.moe/*", True),
+    ("sed -i '' s/false/true/ ~/.moe/acc*", True), ("echo x > ~/.moe/gr?nts.json", True),
+    ("echo x > ~/.moe/notes*.txt", False), ("ls *.json", False), ("cat ~/Documents/act_for*.json", False),
+    ("echo x > ~/.moe/meetings/*.json", False),
+])
+def test_a_wildcard_that_can_expand_to_a_protected_file_is_never_simply_allowed(monkeypatch, cmd, protected):
+    from service.safety import policy
+    monkeypatch.setattr(policy, "_FULL_ACCESS", True)
+    monkeypatch.setattr(policy, "_READ_ONLY", False)
+    tier = policy.decide("shell", {"cmd": cmd}, tool="run_shell").tier.name
+    assert (tier != "ALLOW") is protected or (not protected and tier in ("ALLOW", "CONFIRM", "DENY")), (cmd, tier)
+    if protected:
+        assert tier in ("CONFIRM", "DENY"), (cmd, tier)
+    assert (policy._moe_glob_hit(cmd) is not None) is protected, cmd
