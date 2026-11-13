@@ -1212,7 +1212,7 @@ def _brace_options(word: str, budget: int) -> tuple[list[str], int] | None:
 
 
 _GLOB_ANY = "\x00"             # stands for text this check could not read: it may be anything
-_GLOB_GROUP = re.compile(r"\([^()\s]*\)")
+_GLOB_GROUP = re.compile(r"\([^()]*\)")        # innermost first; spaces and quotes inside included
 
 
 def _glob_brackets(segment: str) -> str:
@@ -1310,17 +1310,28 @@ def _moe_glob_hit(form: str) -> str | None:
     This reads the command's TEXT. It cannot see a name built at run time (a variable, an
     interpreter, `$'\\x2e'`, find's own matching): it is not what keeps the files safe by
     itself, only what makes the plain spellings ask."""
+    dotglob = bool(_SHELL_DOTGLOB.search(form))           # before casefolding: zsh's (D) is upper case
+    form = form.casefold()
+    # Two readings, and either one asks. First the text as it stands, where parentheses break
+    # words: a subshell or `$(…)` is then read through, `(cat>~/.moe/act*)`. Then with every
+    # group in parentheses taken as "any text" glued into its word, which is how zsh reads
+    # `~/.moe/(act_for_me| x).json` (alternatives; spaces and quotes allowed inside). The
+    # second reading alone would hide what is inside a subshell, so it never replaces the first.
+    if (hit := _moe_glob_pass(form, dotglob)) is not None:
+        return hit
+    grouped = form
+    for _ in range(8):                                    # nested groups, innermost first
+        grouped, found = _GLOB_GROUP.subn(_GLOB_ANY, grouped)
+        if not found:
+            break
+    return _moe_glob_pass(grouped, dotglob) if grouped != form else None
+
+
+def _moe_glob_pass(form: str, dotglob: bool) -> str | None:
+    """One reading of a casefolded command for _moe_glob_hit (see there)."""
     import posixpath
     from service.paths import MOE_DIR
     hit = "a protected Wisp file (wildcard)"
-    dotglob = bool(_SHELL_DOTGLOB.search(form))           # before casefolding: zsh's (D) is upper case
-    form = form.casefold()
-    # A group in parentheses with no space in it may be part of a word: `(a|b)` in zsh. The
-    # word break below would cut it out and lose the wildcard, so it becomes "any text" first.
-    for _ in range(8):                                    # nested groups, innermost first
-        form, found = _GLOB_GROUP.subn(_GLOB_ANY, form)
-        if not found:
-            break
     folders = tuple(dict.fromkeys((".moe", str(MOE_DIR).rstrip("/").rsplit("/", 1)[-1].casefold())))
     names = tuple(name.casefold() for name in _MOE_PROTECTED_NAMES)
 
