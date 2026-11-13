@@ -134,6 +134,20 @@ def test_the_daily_cap_is_shared_by_every_kind(setting, store):
     assert acting.room(store, NOW + acting.DAY_S + 100) == acting.MAX_PER_DAY
 
 
+def test_a_module_can_read_its_own_records_and_count(setting, store):
+    _follow_up(store, now=NOW + 1, fp="f-1")
+    acting.record(store, "f-2", kind="follow_up", status="undone", now=NOW + 2, title="t", person="maya@x")
+    acting.record(store, "f-3", kind="follow_up", status="failed", now=NOW + 3, title="t")
+    acting.record(store, "h-1", kind="hold", status="added", now=NOW + 4, title="t")
+    assert [r["fingerprint"] for r in acting.records(store, kind="follow_up")] == ["f-3", "f-2", "f-1"]
+    undone = acting.records(store, kind="follow_up", statuses=("undone", "undo_unknown"))
+    assert [(r["fingerprint"], r["person"]) for r in undone] == [("f-2", "maya@x")]
+    assert acting.done_since(store, NOW, kind="follow_up") == 2 and acting.done_since(store, NOW) == 3
+    assert acting.done_since(store, NOW + 2.5, kind="follow_up") == 0
+    acting.records(store)[0]["status"] = "changed"                       # copies: the store is untouched
+    assert store.auto_added()["h-1"]["status"] == "added"
+
+
 def test_recent_lists_words_only(setting, store):
     _follow_up(store)
     [row] = acting.recent(store, NOW + 20)

@@ -148,9 +148,21 @@ def audit(event: str, **fields) -> None:
 
 # --- the record of what Wisp did --------------------------------------------------------------
 
-def done_since(store, since: float) -> int:
-    return sum(1 for v in store.auto_added().values()
-               if isinstance(v, dict) and v.get("status") in LANDED and float(v.get("at") or 0) >= since)
+def records(store, *, kind: str | None = None, statuses: tuple[str, ...] | None = None,
+            since: float | None = None) -> list[dict]:
+    """The stored actions, newest first, optionally of one kind, in given statuses, since a time.
+    Read-only copies. Each has "fingerprint", "kind", "status", "at", "item_id", "who" and
+    whatever its module stored (a follow-up's person key, say, passed to record() as **more)."""
+    rows = [dict(v) for v in store.auto_added().values() if isinstance(v, dict)
+            and (kind is None or v.get("kind") == kind)
+            and (statuses is None or v.get("status") in statuses)
+            and (since is None or float(v.get("at") or 0) >= since)]
+    return sorted(rows, key=lambda r: -float(r.get("at") or 0))
+
+
+def done_since(store, since: float, kind: str | None = None) -> int:
+    """Actions since `since` that may have changed something (LANDED), of every kind or one."""
+    return len(records(store, kind=kind, statuses=LANDED, since=since))
 
 
 def room(store, now: float) -> int:
