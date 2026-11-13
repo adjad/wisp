@@ -44,6 +44,7 @@ SHORT: dict[str, str] = {
     # notes, knowledge, memory
     "append_note": "Add lines to the end of an EXISTING note, found by title.",
     "create_note": "Create a NEW note in Notes.app; not write_file.",
+    "delete_note": "Delete ONE note by its exact title (folder optional); always confirmed.",
     "search_notes": "Raw verbatim text of Notes.app notes (not a summary); search by keyword or date.",
     "read_knowledge": "Read explicitly saved knowledge snippets (not Notes.app); exact ID optional.",
     "save_knowledge": "Save explicitly user-selected text as a knowledge record; needs explicit instruction.",

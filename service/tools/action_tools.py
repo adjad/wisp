@@ -366,6 +366,11 @@ def _own_address_guard(to: str, tool: str, confirmed_self_send: bool = False,
     addr = (to or "").strip().lower()
     if not addr or confirmed_self_send:
         return None
+    # The person's own words this turn named themselves ("email myself …"):
+    # that is the confirmation, and the card that follows is still the approval.
+    from service.tools.self_send import named_self
+    if named_self():
+        return None
     try:
         from service.memory.identity import user_emails
         own = {e.strip().lower() for e in (user_emails() or []) if e}
@@ -588,11 +593,73 @@ def _not_sent(text: str, *, question: str = "", needs_recipient: bool = False) -
     return _NotSentResult(text, question=question, needs_recipient=needs_recipient)
 
 
+# What a model passes as `to` when the person said "text myself": "me", "my
+# number", "my own email". The person's own name is checked separately.
+_SELF_RECIPIENT_RE = re.compile(
+    r"^(?:to\s+)?(?:me|myself|self|the\s+user|(?:my|the\s+user'?s)\s+(?:own\s+)?(?:number|phone(?:\s+number)?|"
+    r"cell(?:\s+number)?|mobile|e-?mail(?:\s+address)?|address|inbox|account|apple\s+id))$", re.I)
+_APPLE_ID_DOMAINS = frozenset({"icloud.com", "me.com", "mac.com"})
+_NO_OWN_HANDLE_EMAIL = ("I don't know your own email address: Wisp takes it from the accounts "
+                        "set up in Mail, and none has synced yet. What address should I use?")
+_NO_OWN_HANDLE_TEXT = ("I don't know your own number or address: Wisp has no phone number for "
+                       "you, and takes your address from the accounts set up in Mail, where "
+                       "none has synced yet. What number or address should I use?")
+
+
+def _names_user(name: str) -> bool:
+    """`name` is the person's own name: full, first, or what they asked to be called."""
+    typed = " ".join(name.split()).casefold()
+    own = set()
+    try:
+        from service.memory import identity
+        names = (identity.user_name(), identity._preferred_name())
+    except Exception:  # noqa: BLE001 - no identity: not their name
+        return False
+    for full in names:
+        if full := " ".join(str(full or "").split()).casefold():
+            own |= {full, full.split()[0]}
+    return bool(typed) and typed in own
+
+
+def _own_recipient(name: str, *, want_email: bool = False) -> tuple[str, str] | None:
+    """(the person's own handle, "") for "me"/"myself"/their own name when their
+    own words this turn named themselves; ("", not-sent) when no own handle is
+    known; None when this is not a send to themselves (resolve as a contact).
+
+    Read-only identity: no phone number is known to Wisp, so a text goes to an
+    own address (an Apple ID one first, since iMessage reaches those)."""
+    from service.tools.self_send import named_self
+    typed = (name or "").strip().strip(".!?\"'")
+    if not named_self() or not (_SELF_RECIPIENT_RE.match(typed) or _names_user(typed)):
+        return None
+    try:
+        from service.memory.identity import user_emails
+        emails = [e.strip() for e in user_emails() or [] if _EMAIL_RE.match(e.strip())]
+    except Exception:  # noqa: BLE001 - no identity yet: asked for below
+        emails = []
+    if not want_email:
+        emails = ([e for e in emails if e.rsplit("@", 1)[-1].lower() in _APPLE_ID_DOMAINS]
+                  + [e for e in emails if e.rsplit("@", 1)[-1].lower() not in _APPLE_ID_DOMAINS])
+    if emails:
+        return emails[0], ""
+    what = "email address" if want_email else "phone number or address"
+    return "", _not_sent(
+        (f"(NOT sent — the user asked to send this to themselves, but Wisp knows no {what} "
+         "of theirs: it has no phone number for them, and their own address comes only from "
+         "the accounts set up in Mail, where none has synced yet. Ask the user which "
+         f"{'address' if want_email else 'number or address'} to use — don't guess, and "
+         "don't look their name up as a contact.)"),
+        question=_NO_OWN_HANDLE_EMAIL if want_email else _NO_OWN_HANDLE_TEXT,
+        needs_recipient=True)
+
+
 def _resolve_recipient(name: str, *, want_email: bool = False) -> tuple[str, str]:
     """A contact NAME -> (handle, ""), or ("", explanation) if it can't be
     resolved unambiguously. The explanation is written for the model to relay;
     it is a lookup failure, so it also proves that nothing was sent.
     """
+    if (own := _own_recipient(name, want_email=want_email)) is not None:
+        return own
     from service.tools import imessage_tools as contacts
     from service.tools.imessage_tools import find_contacts
 
@@ -753,6 +820,10 @@ def prepare_send_recipient(tool, args: dict) -> tuple[dict, str | None]:
         return args, None
     tool = name
     to = str(args.get("to") or "").strip()
+    if not to and _own_recipient("me") is not None:
+        # "Text myself …" with no recipient passed: the person named themselves.
+        to = "me"
+        args = {**args, "to": to}
     if tool == "send_message":
         # Never the model's own value: set here from the lookup, or not at all.
         args = {k: v for k, v in args.items() if k != "resolved_to"}

@@ -2153,6 +2153,10 @@ def _ask_tool_rank(prompt: str, previous: str = "") -> tuple[list[str], list[str
             # "what did mom say", "set a timer for 5 minutes", "email Dana the
             # notes": the tool the request names leads, whatever the lexical rank.
             head = [*leads, *(n for n in head if n not in leads)]
+        from service.model_only import ONE_REMINDER_DELETE_TOOL, single_reminder_delete
+        if single_reminder_delete(prompt) and ONE_REMINDER_DELETE_TOOL in REGISTRY:
+            # "Delete the dentist reminder" is one item by title, not a bulk clear.
+            head = [ONE_REMINDER_DELETE_TOOL, *(n for n in head if n != ONE_REMINDER_DELETE_TOOL)]
         from service.model_only import reply_reads
         if lead_reads := [n for n in reply_reads(prompt) if n in REGISTRY]:
             # A reply draft reads the conversation it answers before drafting.
@@ -3238,6 +3242,17 @@ async def agent(body: dict[str, Any]):
                     ask_stub_rank = [n for n in ask_stub_rank if n not in lead]
                 if ask_quality and subject_tools:
                     ask_stub_rank = list(dict.fromkeys([*ask_stub_rank, *subject_tools]))
+                ask_pending_write = ""
+                if ask_quality and not offered_creations and not draft_bound:
+                    # "Demo point 4" answering "What should the bullet say?": the
+                    # request it completes keeps its tools (it ranked calculate
+                    # and mail tools, and the note was never changed).
+                    from service.model_only import ASK_PRELOAD, pending_write_request
+                    ask_pending_write = pending_write_request(prompt, previous_prompt, last_assistant)
+                    if ask_pending_write:
+                        lead, more = _ask_tool_rank(ask_pending_write, "")
+                        ask_preload = [*lead, *(n for n in ask_preload if n not in lead)][:ASK_PRELOAD]
+                        ask_stub_rank = list(dict.fromkeys([*more, *ask_stub_rank]))
                 if ask_quality:
                     from service.model_only import ASK_STYLE_HINT, wisp_self_hint, wisp_self_question
                     synthesis_guidance.insert(0, ASK_STYLE_HINT)
@@ -3246,6 +3261,9 @@ async def agent(body: dict[str, Any]):
                     from service.model_only import ASK_DAY_PLAN_HINT, day_plan_question
                     if day_plan_question(prompt, previous_prompt):
                         synthesis_guidance.insert(1, ASK_DAY_PLAN_HINT)
+                    if ask_pending_write:
+                        from service.model_only import pending_write_hint
+                        synthesis_guidance.insert(1, pending_write_hint(ask_pending_write))
                 ask_forbidden: frozenset[str] = frozenset()
                 ask_direct = False
                 if ask_quality:

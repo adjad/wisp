@@ -2643,6 +2643,10 @@ async def run_agent(
     # user's requested memory context.
     memory_query = next((str(m.get("content") or "") for m in reversed(messages)
                          if m.get("role") == "user"), "")
+    # The person's own words decide whether "me"/"myself" is the recipient of a
+    # send this turn (service/tools/self_send.py); never model text.
+    from service.tools import self_send as _self_send
+    _self_send.mark_turn(memory_query)
     if ask_quality and not test_mode and not ask_direct and picture_reading is None:
         # Wisp's own permissions and switches, and what it does on its own:
         # answered by fixed, true text before any model step. No tool changes
@@ -2689,6 +2693,11 @@ async def run_agent(
         from service.router.router import has_write_intent as _has_write_intent
         _ask_wanted_change = bool(_has_write_intent(memory_query)
                                   or _answers_offer(guard_prompt, guard_last_assistant))
+        if not _ask_wanted_change:
+            # The answer to the assistant's own question about a change the
+            # person asked for ("What should the bullet say?" -> "Demo point 4").
+            from service.model_only import pending_write_request as _pending_write
+            _ask_wanted_change = bool(_pending_write(guard_prompt, guard_previous_user, guard_last_assistant))
 
     def _ask_unbacked_claim(text: str):
         """The sentence of an ask_quality final that says a change was made
@@ -2703,6 +2712,12 @@ async def run_agent(
         if pure_writing(memory_query):
             return None
         claim = claimed_effect(text)
+        if claim is None and _ask_wanted_change:
+            # Any other wording of "it is done" ("The note now has four
+            # bullets.") on a turn that asked for a change and made none.
+            from service.model_only import _CLAIM_BACKREF, EffectClaim, claimed_write
+            if said := claimed_write(text):
+                claim = EffectClaim(said, bool(_CLAIM_BACKREF.search(said)), True)
         if claim is None:
             return None
         if earlier_effects and (claim.backref or not _ask_wanted_change):
@@ -4637,6 +4652,11 @@ async def run_agent(
                         # The call was only text, so nothing ran: a "sent it"
                         # around it is false and never reaches the user.
                         text = ""
+                from service.model_only import strip_call_text
+                if (plain := strip_call_text(text, list(_registry()))) != text:
+                    # `get_my_day_plan(day='tomorrow')` printed in the answer.
+                    audit("ask_call_text", step=_step)
+                    text, wrote_call = plain, wrote_call or not plain
                 from service.router.router import has_write_intent
                 asks_change = has_write_intent(memory_query)
                 if (wrote_call and not text and not ask_text_call_nudged and _step < max_steps - 1
@@ -5652,6 +5672,15 @@ async def run_agent(
                             continue
                         action["args"] = json.loads(json.dumps(args, allow_nan=False))
                         action["fingerprint"] = _action_fingerprint(name, args)
+                    elif name == "delete_note":
+                        # Name the one matching note's folder on the card and bind
+                        # the delete to that folder.
+                        from service.tools.notes_write import delete_note_card
+                        _card = await asyncio.to_thread(delete_note_card, args)
+                        if _card is not None:
+                            args, action["reason"] = _card
+                            action["args"] = json.loads(json.dumps(args))
+                            action["fingerprint"] = _action_fingerprint(name, args)
                     elif name == "clear_past_reminders":
                         # A bulk delete has to show its whole list, not a
                         # count: the user asked for "old reminders" and only

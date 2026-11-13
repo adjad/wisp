@@ -162,6 +162,7 @@ _NOT_DONE_TOOLS = {
     "set_timer": "service.tools.timers_alarms",
     "create_note": "service.tools.notes_write",
     "append_note": "service.tools.notes_write",
+    "delete_note": "service.tools.notes_write",
     "remember": "service.tools.memory_tools",
     "save_email_attachment": "service.tools.attachment_actions",
 }
@@ -381,6 +382,7 @@ _TOOL_EFFECTS = {
     "organize_files": "moved", "save_email_attachment": "saved",
     "commit_private_meeting": "created",
     "save_knowledge": "created", "edit_knowledge": "updated", "delete_knowledge": "deleted",
+    "delete_note": "deleted",
 }
 
 
@@ -462,7 +464,7 @@ def classify_tool_outcome(tool_name: str, result: str, *, planned: bool = False,
         "draft_message": "message draft prepared in wisp",
         "commit_private_meeting": "private calendar block created: ",
         "save_knowledge": "saved knowledge: ", "edit_knowledge": "updated knowledge: ",
-        "delete_knowledge": "deleted knowledge: ",
+        "delete_knowledge": "deleted knowledge: ", "delete_note": "deleted the note ",
     }
     if tool_name in receipts and not low.startswith(receipts[tool_name]):
         return ToolOutcome("failed", text, effect)

@@ -1018,6 +1018,11 @@ ALWAYS_CONFIRM_TOOLS = frozenset({"run_applescript"})
 # unasked under full access; this file is confirmed on a card naming it in every
 # mode, and never grantable (grants._NEVER_GRANTABLE).
 ALWAYS_CONFIRM_FILE_TOOLS = frozenset({"save_email_attachment"})
+# Deletes a note. Its category is notes_write (view-only and the ordinary note
+# rules apply), but notes_write runs unasked under full access; a delete is
+# confirmed on a card naming the note and its folder in every mode, and never
+# grantable (grants._NEVER_GRANTABLE).
+ALWAYS_CONFIRM_DELETE_TOOLS = frozenset({"delete_note"})
 
 
 # Where keys, tokens and Wisp's own grants live. Reading one puts a secret in
@@ -4052,6 +4057,7 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
             return Decision(Tier.DENY, f"you blocked {tool} for this target")
         if (verdict == "allow" and category not in ALWAYS_CONFIRM_CATEGORIES
                 and tool not in ALWAYS_CONFIRM_TOOLS and tool not in ALWAYS_CONFIRM_FILE_TOOLS
+                and tool not in ALWAYS_CONFIRM_DELETE_TOOLS
                 and not destructive and not outbound and not secret and not cut_off
                 and grants.is_grantable(tool, args)):
             return Decision(Tier.ALLOW, f"you allowed {tool} for this target")
@@ -4083,6 +4089,12 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
             return Decision(Tier.DENY, "view-only mode: saving files is disabled")
         return Decision(Tier.CONFIRM, "saves a file somebody sent onto this Mac — always confirmed; "
                         "the card names the exact file")
+
+    if tool in ALWAYS_CONFIRM_DELETE_TOOLS:
+        if read_only():
+            return Decision(Tier.DENY, "view-only mode: changing notes is disabled")
+        from service.tools.notes_write import delete_note_reason
+        return Decision(Tier.CONFIRM, delete_note_reason(args.get("title"), args.get("folder")))
 
     if outbound and tool == "open_app":
         if read_only():

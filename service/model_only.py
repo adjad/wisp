@@ -434,6 +434,136 @@ def wisp_self_question(prompt: str) -> bool:
     return capability_question(text) or bool(_WISP_SELF.search(text)) or bool(own_question(text))
 
 
+# --- A write the assistant asked about, then never made ---------------------
+# 2026-11-13 run: "Add one more bullet to the Wisp test note" -> "What should
+# it say?" -> "Demo point 4" -> "four bullets are saved", with only a note
+# search run. The answer to Wisp's own question carries no write word, so the
+# turn lost the write's tools and the claim check did not see a requested
+# change. A turn that answers such a question keeps the earlier request.
+_NEW_REQUEST = re.compile(
+    r"^\W*(?:(?:please|ok(?:ay)?|hey\s+wisp|wisp)[,\s]+)*(?:what|when|where|who|why|how|which|is|are|do|does|did|can|could|"
+    r"will|would|show|list|find|search|read|check|tell)\b", re.I)
+_PENDING_DECLINE = re.compile(r"^\W*(?:no|nope|cancel|stop|never\s*mind|don't|do\s+not|forget\s+it|nothing)\b", re.I)
+
+
+def pending_write_request(prompt: str, previous: str, last_assistant: str | None) -> str:
+    """The earlier request this message completes, else "". True only when the
+    person's previous message asked for a change, the assistant's last reply
+    ENDED with a question, and this message is a plain answer to it: not a
+    decline, not a question and not a new request of its own."""
+    from service.router.router import has_write_intent
+    text = " ".join((prompt or "").replace("’", "'").split())
+    earlier = (previous or "").strip()
+    asked = (last_assistant or "").strip()
+    if not text or not earlier or not asked or len(text) > 300 or "?" in text:
+        return ""
+    if "?" not in asked or re.search(r"[A-Za-z0-9]", asked[asked.rfind("?") + 1:]):
+        return ""
+    if _PENDING_DECLINE.search(text) or _NEW_REQUEST.search(text) or has_write_intent(text):
+        return ""
+    return earlier if has_write_intent(earlier) else ""
+
+
+def pending_write_hint(earlier: str) -> str:
+    return ("STILL OPEN: the user's last message answers the question you asked. Their request is "
+            f"still not done: \"{earlier[:300]}\". Their answer is the missing detail. Make the tool call "
+            "for that request now, with their answer; do not search again, and do not say it is done "
+            "until the tool result says so.")
+
+
+# A change stated in any form, for a turn where the person asked for one and
+# no tool made it: "The note now has four bullets.", "Demo point 4 was added
+# to your note.", "Your four bullets are saved." claimed_effect covers the
+# first-person and lead forms; this covers the rest.
+_WRITE_DONE = (r"(?:set|created|added|appended|scheduled|rescheduled|sent|moved|deleted|removed|cancel+ed|booked|"
+               r"saved|updated|edited|changed|renamed|archived|forwarded|written|recorded|logged|completed|"
+               r"marked\s+(?:as\s+)?(?:done|complete|completed))")
+_WRITE_THING = (r"(?:reminders?|timers?|alarms?|events?|meetings?|appointments?|notes?|messages?|texts?|e-?mails?|"
+                r"drafts?|bullets?|bullet\s+points?|lines?|items?|entr(?:y|ies)|lists?|calendar)")
+_WRITE_PASSIVE = re.compile(
+    rf"\b{_WRITE_THING}\b[^.?!\n]{{0,80}}\b(?:is|are|was|were|has\s+been|have\s+been|got|gets)\s+"
+    rf"(?:now\s+|successfully\s+|all\s+)?{_WRITE_DONE}\b"
+    rf"|\b(?:is|are|was|were|has\s+been|have\s+been)\s+(?:now\s+|successfully\s+)?{_WRITE_DONE}\b"
+    rf"[^.?!\n]{{0,60}}\b{_WRITE_THING}\b"
+    rf"|\b{_WRITE_THING}\b[^.?!\n]{{0,40}}\bnow\s+(?:has|have|contains?|includes?|reads?|shows?|lists?|says?)\b"
+    rf"|\bnow\s+(?:has|have|contains?|includes?)\b[^.?!\n]{{0,40}}\b{_WRITE_THING}\b"
+    rf"|^(?:i(?:'ve|\s+have)?(?:\s+(?:just|now|also|already|gone\s+ahead\s+and))?\s+)?"
+    rf"(?:appended|edited|changed|renamed|written|wrote|recorded|logged|put|completed)\b[^.?!\n]{{0,80}}\b{_WRITE_THING}\b",
+    re.I)
+_WRITE_MODAL = re.compile(
+    r"\b(?:i'll|i\s+will|i\s+can|i\s+could|can\s+i|should\s+i|shall\s+i|would\s+you|want\s+me|let\s+me|"
+    r"going\s+to|about\s+to|ready\s+to|will\s+be|can\s+be|could\s+be|to\s+be|needs?\s+to|once|before\s+i)\b", re.I)
+
+
+def claimed_write(text: str) -> str:
+    """The sentence where the reply states a change was made, in any form,
+    else "". Only for a turn where the person asked for a change: on a read it
+    would catch narrated data ("the event was moved by Dana")."""
+    for line in (text or "").replace("’", "'").splitlines():
+        stripped = line.strip().lstrip("-*• ").strip()
+        if not stripped or stripped.startswith((">", '"', "`", "“")):
+            continue
+        for sentence in re.split(r"(?<=[.!?])\s+", stripped):
+            body = _CLAIM_PREFIX.sub("", sentence).strip().strip("*").strip()
+            if not body or _CLAIM_HEDGE.search(body) or _WRITE_MODAL.search(body):
+                continue
+            if _CLAIM_I.search(body) or _CLAIM_LEAD.search(body) or _WRITE_PASSIVE.search(body):
+                return sentence.strip()
+    return ""
+
+
+# --- One named reminder is deleted by cancel_event, never a bulk clearer ----
+# "Delete the Wisp test reminder" got a card for clear_past_reminders
+# ("permanently deletes 0 past-due items"). cancel_event removes ONE reminder
+# or event by title, in Reminders.app too; the past-due clearer only sees items
+# whose time has gone by.
+_ONE_REMINDER = re.compile(
+    r"\b(?:delete|remove|cancel|erase|trash|get\s+rid\s+of|drop)\s+(?:the|my|that|this)\s+"
+    r"(?:[^.?!\n,]{1,60}?\s+)?reminder\b(?!s)", re.I)
+_MANY_REMINDERS = re.compile(
+    r"\b(?:all|every|each|overdue|old|older|past[-\s]due|past|expired|stale|completed|finished|done|"
+    r"today's|tomorrow's|reminders)\b", re.I)
+# clear_reminders with the title as `query` stays: its card lists exactly the
+# matching reminder (tests/test_conversation_authority_contract.py).
+BULK_REMINDER_CLEARERS = frozenset({"clear_past_reminders"})
+ONE_REMINDER_DELETE_TOOL = "cancel_event"
+
+
+def single_reminder_delete(prompt: str) -> bool:
+    """The person asks to delete ONE named reminder ("Delete the dentist
+    reminder"), not many ("clear my overdue reminders")."""
+    text = " ".join((prompt or "").replace("’", "'").split())
+    return bool(_ONE_REMINDER.search(text)) and not _MANY_REMINDERS.search(text)
+
+
+# --- A tool call written as plain text in an answer -------------------------
+# "What's on my calendar tomorrow?" ended with `get_my_day_plan(day='tomorrow')`
+# printed in the reply. Only a registered tool's name followed by a call's
+# brackets is removed, with its backticks.
+_CALL_TEXT = re.compile(r"`{0,3}\s*(?:print\s*\(\s*)?\b([A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+)\s*"
+                        r"\((?:[^()\n`]|\([^()\n`]*\)){0,300}\)\s*\)?\s*`{0,3}")
+_CALL_FENCE = re.compile(r"```(?:tool_code|tool_call|python|json)?\s*```", re.I)
+
+
+def strip_call_text(text: str, tool_names) -> str:
+    """The reply without tool calls written as text (`tool_name(arg='x')`)."""
+    names = set(tool_names or ())
+    if not text or "(" not in text or not names:
+        return text or ""
+    out = _CALL_TEXT.sub(lambda m: "" if m.group(1) in names else m.group(0), text)
+    if out == text:
+        return text
+    out = _CALL_FENCE.sub("", out)
+    if out.count("```") % 2:
+        # The call took its closing fence with it: drop the opening one too.
+        out = re.sub(r"(?m)^[ \t]*```\w*[ \t]*\n?", "", out, count=1)
+    lines = [line.rstrip() for line in out.splitlines()]
+    # A line left with only list or label debris ("- ", "Calling:") goes too.
+    debris = re.compile(r"\s*(?:[-*•]\s*)?(?:(?:calling|tool\s+call|call)\s*:?)?\s*[.:]?\s*", re.I)
+    lines = [line for line in lines if not line.strip() or not debris.fullmatch(line)]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
 # --- Wisp's own permissions and switches ------------------------------------
 # Ask has no tool for any of these: Full access, view-only, a standing "always
 # allow" / "stop asking" rule, "Let Wisp act for me", Demo mode. Only the
@@ -756,6 +886,9 @@ def ask_forbidden_tools(prompt: str, registry: dict) -> frozenset[str]:
                            or n in WRITING_FORBIDDEN_READS)}
     if compose_only(prompt):
         forbidden |= {n for n, t in registry.items() if t.category in COMPOSE_ONLY_FORBIDDEN_CATEGORIES}
+    if single_reminder_delete(prompt):
+        # One named reminder: cancel_event deletes it; the past-due clearer cannot see it.
+        forbidden |= {n for n in BULK_REMINDER_CLEARERS if n in registry}
     return frozenset(forbidden)
 
 

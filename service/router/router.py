@@ -2878,7 +2878,7 @@ _WRITE_TOOL_DOMAIN = {
     "send_message": "messages", "draft_message": "messages",
     "send_email": "email", "reply_to_email": "email", "draft_email": "email",
     "email_triage": "email",
-    "create_note": "notes", "append_note": "notes",
+    "create_note": "notes", "append_note": "notes", "delete_note": "notes",
 }
 
 
@@ -3649,7 +3649,7 @@ _DOMAIN_WRITE_TOOLS = {
     # reached a subset of exactly ["search_notes"] and the model either wrote a
     # text file to disk with write_file — which is not where the user keeps
     # notes and does not sync — or said it couldn't.
-    "notes": ["create_note", "append_note", "search_notes"],
+    "notes": ["create_note", "append_note", "delete_note", "search_notes"],
 }
 
 # "When am I free" — an availability question, not a schedule read-out. The
@@ -4944,7 +4944,7 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
             and any(x.startswith("draft_") for x in subset)):
         subset = [x for x in subset if x not in _SEND_TOOLS]
     if _PLAIN_TEXT_FILE_RE.search(t):
-        subset = [x for x in subset if x not in {"create_note", "append_note", "scan_to_note"}]
+        subset = [x for x in subset if x not in {"create_note", "append_note", "delete_note", "scan_to_note"}]
     # Channel still unknown -> withhold every tool that would COMMIT to one, so
     # asking is the only move left. The reads stay, so the model can still
     # gather what it needs and ask an informed question in the same turn; only
@@ -6086,7 +6086,8 @@ def _checklist_ownership(text: str) -> tuple[list[str], str | None, set[str], se
         if rejected_here:
             domain = match.group("domain").lower()
             if domain.startswith("note"):
-                rejected_destinations.update({"search_notes", "create_note", "append_note", "scan_to_note"})
+                rejected_destinations.update({"search_notes", "create_note", "append_note", "delete_note",
+                                              "scan_to_note"})
             elif domain.startswith("reminder"):
                 rejected_destinations.update(_REMINDER_ROUTE_TOOLS)
             elif domain != "wisp":
@@ -6218,7 +6219,7 @@ def _apply_notes_todo_exclusion(decision: RouteDecision, text: str) -> None:
         return
     allow_calendar_read = _positive_notes_todo_calendar_read(text)
     forbidden = set(decision.forbidden_tools) | {
-        "search_notes", "create_note", "append_note", "scan_to_note",
+        "search_notes", "create_note", "append_note", "delete_note", "scan_to_note",
         *_ALL_SOURCES, "daily_brief",
     }
     if allow_calendar_read:
@@ -6587,7 +6588,7 @@ def _apply_execution_contract(decision: RouteDecision, text: str, web_request: _
         conditionals.append(("get_weather", "add_reminder", "rain_chance_above", 0))
     if _PLAIN_TEXT_FILE_RE.search(t) and _NOTES_INTENT_RE.search(t):
         require("search_notes"); require("write_file")
-        forbidden |= {"create_note", "append_note", "scan_to_note"}
+        forbidden |= {"create_note", "append_note", "delete_note", "scan_to_note"}
     if re.search(r"\bremind\s+me\b", t, re.I) and _SELF_SEND_RE.search(t):
         require("add_reminder"); require("draft_email")
         forbidden |= {"send_email"}
@@ -6903,7 +6904,7 @@ def routing_guard_contract(text: str, *, model_led: bool = False) -> tuple[froze
         forbidden.update(_REMINDER_ROUTE_TOOLS)
         bindings["get_upcoming"] = {"calendar_only": True}
     if _notes_todo_destination_is_excluded(t):
-        forbidden.update({"search_notes", "create_note", "append_note", "scan_to_note"})
+        forbidden.update({"search_notes", "create_note", "append_note", "delete_note", "scan_to_note"})
     if re.search(r"\bdo\s+not\b[^.?!]{0,80}\bopen\s+(?:a\s+)?different\s+app\b", t, re.I):
         forbidden.update({"open_app", "switch_app"})
     if re.search(r"\bnot\s+(?:the\s+)?calendar\s+event\b", t, re.I):
