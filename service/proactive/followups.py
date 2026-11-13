@@ -42,6 +42,8 @@ IMPORTANT rules:
 - Known limits:
   - Wisp can't see phone calls, and a reply after the reminder is written
     leaves it standing; the card says both.
+  - A reply sent from an account that isn't linked in Wisp, while Apple Mail's
+    Sent isn't current, is not seen.
   - Cc isn't in any cache, so "the user in To plus a big Cc" can qualify.
   - A plain From address can be forged where the sender's domain doesn't
     enforce DMARC. The harm is a wrong "Reply to Maya" with Undo: Reply-To is
@@ -276,8 +278,14 @@ def _other_senders(item: dict) -> set[str]:
     return {speaker.casefold() for speaker, _ in _mail_blocks(item) if not speaker.startswith("You (the user)")}
 
 
+# Reply and forward prefixes in the languages mail clients use, numbered ("Re[2]:") or not,
+# with an ASCII or full-width colon: Re, Fw/Fwd, AW/WG (German), SV/VS (Nordic), TR/RV
+# (French/Spanish), RES (Portuguese), Antw (Dutch), R (Italian), 回复/答复/转发 (Chinese).
+_REPLY_PREFIX = re.compile(r"(?i)^\s*(?:(?:re|fwd?|aw|sv|wg|tr|res|antw|vs|r|rv|回复|转发|答复)(?:\[\d+\])?\s*[:：]\s*)+")
+
+
 def _bare(subject) -> str:
-    return re.sub(r"(?i)^\s*(?:(?:re|fwd?|aw|sv)\s*:\s*)+", "", str(subject or "")).strip()
+    return _REPLY_PREFIX.sub("", unicodedata.normalize("NFKC", str(subject or ""))).strip()
 
 
 def _mail_ask_lines(item: dict) -> tuple[list[str], bool]:
@@ -301,7 +309,7 @@ def _mail_ask_lines(item: dict) -> tuple[list[str], bool]:
     subject = str((item.get("ref") or {}).get("subject") or item.get("title") or "")
     # "Re:" or "Fwd:" says the thread is older than anything in the window: the
     # question under it may be long answered, outside every Sent list we hold.
-    if _bare(subject) != subject.strip():
+    if _bare(subject) != unicodedata.normalize("NFKC", subject).strip():
         return [], False
     return [_bare(subject)], True
 
@@ -353,8 +361,7 @@ def _automated_address(address: str) -> bool:
 
 def _writes_to(sent, address: str, item: dict, ask_ts: float, mine, tz: str) -> bool:
     from service.proactive.sent_check import recipients
-    subject = re.sub(r"(?i)^\s*(?:(?:re|fwd?|aw|sv)\s*:\s*)+", "",
-                     str((item.get("ref") or {}).get("subject") or item.get("title") or "")).strip().casefold()
+    subject = _bare((item.get("ref") or {}).get("subject") or item.get("title")).casefold()
     days, in_thread = [], False
     for row in sent or ():
         try:
@@ -366,7 +373,7 @@ def _writes_to(sent, address: str, item: dict, ask_ts: float, mine, tz: str) -> 
         if address not in {a for _, a in recipients(row.get("to")) if a not in mine}:
             continue
         days.append(ts)
-        bare = re.sub(r"(?i)^\s*(?:(?:re|fwd?|aw|sv)\s*:\s*)+", "", str(row.get("subject") or "")).strip().casefold()
+        bare = _bare(row.get("subject")).casefold()
         in_thread = in_thread or (bool(subject) and bare == subject)
     return in_thread or len(_local_days(days, tz)) >= MIN_DAYS_OUT
 

@@ -159,6 +159,29 @@ def test_mail_a_subject_alone_counts_only_when_the_user_never_wrote():
     assert why == "" and got["quote"] == "Can you review my poster draft?"
 
 
+@pytest.mark.parametrize("prefix", ["WG: ", "TR: ", "RES: ", "Antw: ", "Re[2]: ", "RE[12]:", "回复：", "回复: ", "转发: ",
+                                    "答复：", "VS: ", "R: ", "RV: ", "Aw: Wg: ", "Re：", "Ｒｅ: ", "SV:"])
+def test_localized_and_numbered_reply_prefixes_are_never_the_ask(prefix):
+    item = mail_item(subject=prefix + "Can you send me the slides?", body="(subject only)", user_wrote=False,
+                     received=NOW - 2 * D)
+    assert plan(item, since_ts=NOW - 20 * D) == (None, "no direct ask")
+    assert followups._bare(prefix + "Can you send me the slides?") == "Can you send me the slides?"
+
+
+@pytest.mark.parametrize("subject", ["Can you review my poster draft?", "Trip: can you drive Friday?",
+                                     "Results: can you check mine?", "Ｃａｎ you review my poster draft?"])
+def test_words_that_merely_start_like_a_prefix_stay_fresh_subjects(subject):
+    item = mail_item(subject=subject, body="(subject only)", user_wrote=False)
+    got, why = plan(item, since_ts=NOW - 5 * D)
+    assert got is not None, (subject, why)
+
+
+def test_sent_mail_under_a_localized_reply_subject_still_counts_as_the_thread():
+    mailed = [sent("sam@school.edu", NOW - 6 * D, subject="WG: Lab report draft")]
+    item = mail_item(sender="Sam Lee", address="sam@school.edu")
+    assert plan(item, sent=mailed)[0] is not None           # once, in that very thread
+
+
 @pytest.mark.parametrize("subject", ["Re: Can you send me the slides?", "Fwd: Can you send me the slides?",
                                      "RE: Re: Can you send me the slides?", "  Fw: Can you send me the slides?"])
 def test_a_reply_or_forward_subject_is_never_the_ask(subject):
