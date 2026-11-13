@@ -501,11 +501,15 @@ from service.proactive.store import ProactiveStore  # noqa: E402
 
 
 @pytest.fixture
-def setting(monkeypatch):
+def setting(tmp_path, monkeypatch):
     saved: dict = {}
     monkeypatch.setattr(config, "user_overlay_valid", lambda: True)
     monkeypatch.setattr(config, "models_config", lambda: dict(saved))
     monkeypatch.setattr(config, "_save_overlay", lambda patch: saved.update(patch))
+    # The gate now keeps its yes in its own file (acting._path), read from disk; this test's
+    # copy lives in tmp_path, and the made-up clock (NOW) stands in for the file's creation time.
+    monkeypatch.setattr(acting, "_path", lambda: tmp_path / acting.FILE)
+    monkeypatch.setattr(acting, "_born", lambda: 0.0)
     from service import idle
     monkeypatch.setattr(idle, "foreground_busy", lambda: False)
     acting.set_enabled(True, now=NOW - 30 * D)

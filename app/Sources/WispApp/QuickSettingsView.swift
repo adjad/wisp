@@ -348,13 +348,29 @@ struct QuickSettingsView: View {
     /// (a dialog would cover the notch); off is immediate. Unknown state offers Check and Turn off.
     private var actForMeRow: some View {
         let state = acting.state
-        return row(ActForMe.title, help: state?.consent ?? "Wisp does a few things without asking, each with an Undo.") {
+        let help = state?.consent ?? "Wisp does a few things without asking, each with an Undo."
+        if confirmingAct, acting.problem == nil, let state {
+            // Confirmed in place; the full text must stay readable, so this does not use row().
+            return AnyView(VStack(alignment: .leading, spacing: 8) {
+                Text(ActForMe.title).font(.wisp(.reading, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                Text(state.confirmation).font(.wisp(.body)).foregroundStyle(Theme.textSecondary)
+                    .lineLimit(nil).fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 6) {
+                    pillButton("Turn on", primary: true) { confirmingAct = false; acting.set(true) }
+                    pillButton("Cancel") { confirmingAct = false }
+                }
+            }
+            .help(help)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14).padding(.vertical, 11)
+            .accessibilityElement(children: .contain)
+            .task { await acting.refresh() })
+        }
+        return AnyView(row(ActForMe.title, help: help) {
             if let problem = acting.problem {
                 Text(problem)
-            } else if confirmingAct, let state {
-                Text("Wisp will act without asking, up to \(state.perDay) a day, each with an Undo. " + state.never)
             } else if let state {
-                Text(state.enabled ? "On · every action has an Undo" : "Off · Wisp waits for your tap")
+                Text(state.enabled ? "On · every action has an Undo" : "Off · none of this without your tap")
             } else {
                 Text("Wisp couldn't check this yet.")
             }
@@ -376,7 +392,7 @@ struct QuickSettingsView: View {
                 }
             }
         }
-        .task { await acting.refresh() }
+        .task { await acting.refresh() })
     }
 
     private var learningRow: some View {

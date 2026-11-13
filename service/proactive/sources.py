@@ -601,6 +601,8 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
         items.append(dict(id=item_id, source="mail", account=bucket,
                           raw_account=account, who=who, title=subject, text=text, lines=quotes,
                           received_ts=float(last_in["ts"]), replied=replied, ref=ref, reply_ref=reply_ref,
+                          # A thread's subject is as old as its first message, whatever arrived last.
+                          subject_ts=float(min(m["ts"] for m in messages)),
                           unread=last_in.get("unread"),
                           person=bool(people) or reason == "doc_comment", secret=secret,
                           # The newest incoming message's To header ("" when the cache has none).
@@ -750,11 +752,15 @@ def text_items(records: list[tuple], *, now: float, own: str | None = None,
         replied = rows[-1][2].partition(":")[0].strip() == "Me"
         rendered = _render(rows)
         text = ("Conversation: " + label + (" (group)" if group else "") + "\n" + "\n".join(rendered))[:MAX_ITEM_CHARS]
-        quotes = []
-        for _, _, line in incoming:
+        # line_ts: when each quoted line itself arrived, one per entry of `lines`. An item's
+        # received_ts is only its NEWEST line; a rule about when something arrived (acting.allows)
+        # must use the time of the line it is reading, never the conversation's latest.
+        quotes, line_ts = [], []
+        for stamp, _, line in incoming:
             sender, _, body = line.partition(":")
             if body.strip():
                 quotes.append(clean(body, 300))
+                line_ts.append(float(stamp))
         # The incoming lines since the user's own last line: what a reply card is
         # about. An earlier ask the user already answered must not headline it.
         # Empty when the user hasn't written in this window: then every line is
@@ -767,7 +773,8 @@ def text_items(records: list[tuple], *, now: float, own: str | None = None,
         speaker = last_in[2].partition(":")[0].strip()
         who = label if not group else (f"{speaker} in {label}" if speaker else label)
         items.append(dict(id="messages:" + _digest(context), source="messages", account=own, raw_account="",
-                          who=who, title=label, text=text, lines=quotes, pending=pending, received_ts=last_in[0],
+                          who=who, title=label, text=text, lines=quotes, line_ts=line_ts, pending=pending,
+                          received_ts=last_in[0],
                           replied=replied, group=group, person=True, unread=unread_at.get((context, last_in[0])),
                           user_wrote=any(r[2].partition(":")[0].strip() == "Me" for r in rows),
                           handle="" if group else chat_handle(chats.get(context, set())),

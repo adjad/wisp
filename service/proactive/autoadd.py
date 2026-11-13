@@ -153,18 +153,29 @@ def _confirmed(item: dict) -> bool:
     return bool(reply) and len(reply) <= 200 and bool(_CONFIRM.search(reply)) and not _DECLINE.search(reply)
 
 
-def _candidates(item: dict) -> list[tuple[str, bool]]:
-    """(sentence, may use a relative date) in reading order, newest message only
-    for relative dates: "Friday" means the Friday after THAT message arrived,
-    and only the newest message is stamped with its arrival time."""
+def _candidates(item: dict) -> list[tuple[str, bool, float | None]]:
+    """(sentence, may use a relative date, when THAT sentence arrived) in reading
+    order. Relative dates only in the newest message: "Friday" means the Friday
+    after that message arrived. The third value is the arrival time of the line
+    or message the sentence is in, or None when it is not known: the person's
+    yes covers only what arrived after it (acting.allows), and an item's
+    received_ts is only its newest line, so a "👍" today must never carry
+    yesterday's "recital Sunday at 2pm" past that rule."""
+    def stamp(value):
+        return float(value) if type(value) in (int, float) else None
     if item["source"] == "mail":
         subject, body = _latest_mail_block(item)
-        return [(subject, True)] + [(s, True) for s in _sentences(body)]
-    lines = list(item.get("lines") or [])[-3:]
+        # The newest incoming message's own text (quoted history is cut in sources._excerpt)
+        # arrived at received_ts; the subject is as old as the thread.
+        return [(subject, True, stamp(item.get("subject_ts")))] + \
+               [(s, True, stamp(item.get("received_ts"))) for s in _sentences(body)]
+    every, stamps = list(item.get("lines") or []), list(item.get("line_ts") or [])
+    known = len(stamps) == len(every)
+    lines, times = every[-3:], (stamps[-3:] if known else [None] * len(every[-3:]))
     out = []
     for index, line in enumerate(lines):
         newest = index == len(lines) - 1
-        out += [(s, newest) for s in _sentences(line)]
+        out += [(s, newest, stamp(times[index])) for s in _sentences(line)]
     return out
 
 
@@ -373,7 +384,7 @@ def plan_for(item: dict, result: dict | None, *, now: float, tz: str) -> tuple[d
     if not _missed(item, now):
         return None, "already handled"
     reason = "no explicit date"
-    for sentence, relative_ok in _candidates(item):
+    for sentence, relative_ok, line_ts in _candidates(item):
         if len(sentence) > 300 or _RECURRING.search(sentence) or guard.source_sensitive(sentence):
             continue
         deadline, event = _DEADLINE.search(sentence), _EVENT.search(sentence)
@@ -411,6 +422,8 @@ def plan_for(item: dict, result: dict | None, *, now: float, tz: str) -> tuple[d
         plan = {"kind": kind, "title": title, "word": word.lower(), "quote": quote,
                 "fingerprint": fingerprint(item, kind, at), "item_id": item.get("id"), "source": source,
                 "who": item.get("who", ""), "account": item.get("account", ""), "received_ts": float(arrival),
+                # When the sentence this plan was read from arrived (None: not known).
+                "line_ts": line_ts,
                 "has_clock": bool(got.has_clock), "timezone": tz,
                 "item_fingerprint": f"{item.get('id')}:{item.get('hash')}"}
         if kind == "calendar":
@@ -745,7 +758,9 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
             from service.proactive import acting
             allows = acting.allows
         else:
-            allows = lambda _received: True                              # noqa: E731
+            # A caller that replaces the setting must also say which arrivals it covers.
+            # Nothing is assumed: without it, everything stays a tap card.
+            allows = lambda _received: False                             # noqa: E731
     rows = list(sched.get("calendar") or []) + list(sched.get("reminders") or [])
     rows += list((existing or default_existing)(now) or [])
     decided = store.decisions()
@@ -756,6 +771,9 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
     # time, or the same plan as a reminder, is never added again.
     retired = {r.get("item_id") for r in records.values()
                if isinstance(r, dict) and r.get("status") in ("undone", "undo_unknown") and r.get("item_id")}
+    acted_elsewhere = {r.get("item_id") for r in records.values()
+                       if isinstance(r, dict) and r.get("kind") not in ("calendar", "reminder", None)
+                       and r.get("status") in ("added", "undone", "unknown", "undo_unknown") and r.get("item_id")}
     today = store.auto_added_since(now - DAY_S)
     from service.proactive.prepare import card_id
     tap, added = [], []
@@ -778,6 +796,10 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
         if item.get("id") in retired:
             note(item, "undone before")
             continue
+        if item.get("id") in acted_elsewhere:
+            # One message, at most one action of Wisp's own (a follow-up reminder is already on it).
+            note(item, "Wisp already acted on this message")
+            continue
         fp = plan["fingerprint"]
         record = records.get(fp) or {}
         if record.get("status") in _RECORD_STATES_BLOCKING or int(record.get("attempts") or 0) >= MAX_ATTEMPTS:
@@ -792,8 +814,9 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
         if (dup := already_there(plan, rows, tz)) is not None:
             note(item, f"already on {'Calendar' if dup.get('source') == 'calendar' else 'your list'}")
             continue
-        # Only a message that arrived after the person's yes is added without a tap.
-        fresh = on and allows(item.get("received_ts"))
+        # Only a line that itself arrived after the person's yes is added without a tap:
+        # the time of the sentence the date came from, never the conversation's latest line.
+        fresh = on and allows(plan.get("line_ts"))
         if not fresh or attempts >= MAX_PER_CYCLE or today + attempts >= MAX_PER_DAY:
             tap.append(tap_card(plan, now))
             note(item, "tap to add" if not on else "arrived before the yes: tap to add" if not fresh
