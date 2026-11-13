@@ -40,6 +40,7 @@ IMPORTANT rules:
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -60,6 +61,10 @@ PERSON_REST_S = 7 * DAY_S           # after any follow-up, the next one for that
 DUE_LEAD_S = 30 * 60
 MAX_LINES = 4                       # the newest unanswered lines read for the ask
 NAME_MAX = 40
+
+
+def _finite(value) -> bool:
+    return type(value) in (int, float) and math.isfinite(value)
 
 
 def _digest(*parts) -> str:
@@ -84,6 +89,8 @@ def text_history(records) -> dict[str, TextHistory]:
         try:
             ts, context, text = float(record[0]), str(record[1]), str(record[2])
         except (TypeError, ValueError, IndexError):
+            continue
+        if not math.isfinite(ts):
             continue
         entry = out.setdefault(context, TextHistory())
         (entry.outgoing if text.partition(":")[0].strip() == "Me" else entry.incoming).append(ts)
@@ -291,14 +298,20 @@ def _display_name(item: dict) -> str:
 def due_time(now: float, tz: str, quiet=None) -> float | None:
     """When the reminder comes up: the next half hour at least 30 minutes away,
     moved past quiet hours. From code, never from the message."""
-    zone = ZoneInfo(tz)
-    at = datetime.fromtimestamp(now + DUE_LEAD_S, zone)
+    try:
+        zone = ZoneInfo(tz)
+        at = datetime.fromtimestamp(now + DUE_LEAD_S, zone)
+    except Exception:  # noqa: BLE001 — no readable time zone or time: no time
+        return None
     at = at.replace(second=0, microsecond=0)
     if at.minute not in (0, 30):
         at = at.replace(minute=30) if at.minute < 30 else at.replace(minute=0) + timedelta(hours=1)
     for _ in range(96):
-        if quiet is None or not quiet(at):
-            return at.timestamp()
+        try:
+            if quiet is None or not quiet(at):
+                return at.timestamp()
+        except Exception:  # noqa: BLE001 — hours that can't be read: no time
+            return None
         at += timedelta(minutes=30)
     return None
 
@@ -335,20 +348,23 @@ def _age_phrase(seconds: float) -> str:
 
 def plan_for(item: dict, *, now: float, tz: str, history: dict | None = None, sent=None,
              sent_fresh: bool = False, mine=(), reminders=(), result: dict | None = None,
-             since_ts: float | None = None, blocked=frozenset(), quiet=default_quiet) -> tuple[dict | None, str]:
+             since_ts: float | None = None, blocked=frozenset(), quiet=default_quiet,
+             defer_sent: bool = False) -> tuple[dict | None, str]:
     """(plan, "") for an unanswered ask Wisp should remind the user about, else
     (None, why not). Pure: no store, no I/O. `history` is `text_history(...)`,
     `sent` the user's sent mail rows, `sent_fresh` whether that list was read
     this cycle, `mine` the user's own addresses, `reminders` the open reminders
     and to-dos (titles or rows), `result` the judge's verdict on the item,
     `since_ts` when the user said yes to acting for them, `blocked` the
-    fingerprints and person keys never to plan again."""
+    fingerprints and person keys never to plan again. `defer_sent` (the
+    first pass in `plans`) leaves every check that needs Sent mail for later."""
     from service.proactive import triage
     source = item.get("source")
     if source not in ("mail", "messages"):
         return None, "not mail or texts"
-    if since_ts is None:
+    if not _finite(since_ts):
         return None, "acting for the user is off"
+    blocked = blocked or frozenset()
     if _in_quiet(quiet, now, tz):
         return None, "quiet hours"
     if item.get("critical") or item.get("digest") or item.get("recall"):
@@ -399,11 +415,12 @@ def plan_for(item: dict, *, now: float, tz: str, history: dict | None = None, se
         if len(_other_senders(item)) > 1:
             return None, "several people in the thread"
         ask_ts = newest = item.get("received_ts")
-        if type(ask_ts) not in (int, float):
+        if not _finite(ask_ts):
             return None, "no arrival time"
         wrote_before = [t for t in _sent_times_to(sent, address, "", mine)
                         if ask_ts - CONTACT_WINDOW_S <= t < ask_ts]
-        if not item.get("user_wrote") and len({int(t // DAY_S) for t in wrote_before}) < MIN_DAYS_OUT:
+        if not item.get("user_wrote") and not defer_sent and \
+                len({int(t // DAY_S) for t in wrote_before}) < MIN_DAYS_OUT:
             return None, "not someone the user writes to often"
         lines = _mail_ask_lines(item)
 
@@ -483,9 +500,13 @@ def choose(plans, *, done_today: int, now: float) -> list[dict]:
     """The plans to act on this cycle: the longest-waiting first, at most one a
     cycle and never past MAX_PER_DAY in a rolling day (`done_today`, counted by
     the caller from its records), one per person."""
-    room = max(0, min(MAX_PER_CYCLE, MAX_PER_DAY - int(done_today)))
+    try:
+        room = max(0, min(MAX_PER_CYCLE, MAX_PER_DAY - int(done_today)))
+    except (TypeError, ValueError):
+        return []
     picked, people = [], set()
-    for plan in sorted(plans or (), key=lambda p: p["received_ts"]):
+    valid = [p for p in plans or () if isinstance(p, dict) and p.get("person_key") and _finite(p.get("received_ts"))]
+    for plan in sorted(valid, key=lambda p: p["received_ts"]):
         if len(picked) >= room:
             break
         if plan["person_key"] in people:
@@ -497,9 +518,9 @@ def choose(plans, *, done_today: int, now: float) -> list[dict]:
 
 def audit_fields(plan: dict) -> dict:
     """What the audit line records: no message text, no name in the clear."""
-    return {"fingerprint": plan["fingerprint"], "person": plan["person_key"], "source": plan["source"],
-            "title_sha256": hashlib.sha256(plan["title"].encode()).hexdigest()[:16],
-            "due_ts": plan["due_ts"], "received_ts": plan["received_ts"]}
+    return {"fingerprint": plan.get("fingerprint"), "person": plan.get("person_key"), "source": plan.get("source"),
+            "title_sha256": hashlib.sha256(str(plan.get("title") or "").encode()).hexdigest()[:16],
+            "due_ts": plan.get("due_ts"), "received_ts": plan.get("received_ts")}
 
 
 # --- one cycle ------------------------------------------------------------------------
@@ -520,6 +541,14 @@ async def read_sent_fresh() -> tuple[list[dict], bool]:
     return gmail + list(rows), True
 
 
+def _safely(item, **kw) -> tuple[dict | None, str]:
+    """plan_for, but an item it can't read is a refusal, never an error in the cycle."""
+    try:
+        return plan_for(item, **kw)
+    except Exception as exc:  # noqa: BLE001
+        return None, f"unreadable: {type(exc).__name__}"
+
+
 async def plans(items, *, now: float, tz: str, records, reminders=(), results=None,
                 since_ts: float | None, blocked=frozenset(), done_today: int = 0,
                 quiet=default_quiet, read_sent=read_sent_fresh) -> tuple[list[dict], dict]:
@@ -529,31 +558,42 @@ async def plans(items, *, now: float, tz: str, records, reminders=(), results=No
     with nothing waiting costs no read. Writes nothing: the caller checks for a
     user turn, writes through the verified reminder path, records the Undo,
     audits (`audit_fields`) and makes the card."""
-    if since_ts is None or done_today >= MAX_PER_DAY:
+    try:
+        done_today = int(done_today)
+    except (TypeError, ValueError):
+        return [], {}
+    if not _finite(since_ts) or done_today >= MAX_PER_DAY:
         return [], {}
     history = text_history(records)
-    results = results or {}
+    results = results if isinstance(results, dict) else {}
+    blocked = blocked if isinstance(blocked, (set, frozenset)) else frozenset()
     common = dict(now=now, tz=tz, history=history, reminders=reminders, since_ts=since_ts,
                   blocked=blocked, quiet=quiet)
     why: dict[str, str] = {}
     hopeful = []
     for item in items or ():
+        if not isinstance(item, dict):
+            continue
         # Everything but Sent mail first: an empty, "fresh" list is only a filter.
-        got, reason = plan_for(item, sent=[], sent_fresh=True, mine=(), result=results.get(item.get("id")),
-                               **common)
+        got, reason = _safely(item, sent=[], sent_fresh=True, mine=(), result=results.get(item.get("id")),
+                              defer_sent=True, **common)
         if got is None:
             why[str(item.get("id"))] = reason
         else:
             hopeful.append(item)
     if not hopeful:
         return [], why
-    sent, fresh = await read_sent()
-    from service.proactive.sent_check import own_addresses
-    mine = own_addresses(sent)
+    try:
+        sent, fresh = await read_sent()
+        sent = [r for r in sent if isinstance(r, dict)]
+        from service.proactive.sent_check import own_addresses
+        mine = own_addresses(sent)
+    except Exception:  # noqa: BLE001 — Sent mail that can't be read is not fresh
+        sent, fresh, mine = [], False, set()
     ready = []
     for item in hopeful:
-        got, reason = plan_for(item, sent=sent, sent_fresh=fresh, mine=mine,
-                               result=results.get(item.get("id")), **common)
+        got, reason = _safely(item, sent=sent, sent_fresh=bool(fresh), mine=mine,
+                              result=results.get(item.get("id")), **common)
         if got is None:
             why[str(item.get("id"))] = reason
         else:
@@ -690,8 +730,11 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
     if records is None:
         records = []
         if any(i.get("source") == "messages" for i in items):
-            from service.proactive.sources import text_records
-            records = text_records()
+            try:
+                from service.proactive.sources import text_records
+                records = text_records()
+            except Exception:  # noqa: BLE001 — no texts readable: texts don't qualify
+                records = []
     picked, why = await plans(
         items, now=now, tz=tz, records=records,
         reminders=open_reminder_titles(sched, store, now) if reminders is None else reminders,

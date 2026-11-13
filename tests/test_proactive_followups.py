@@ -631,3 +631,128 @@ def test_the_audit_line_names_no_one(setting, store, monkeypatch):
 def test_every_surface_says_what_follow_ups_do():
     assert any("remind you to reply" in line.lower() or "reminds you to reply" in line.lower()
                for line in acting.DOES)
+
+
+# --- review: Sent-only evidence through a cycle, bad input, edges ---------------------------
+
+
+def test_a_cycle_plans_mail_whose_only_evidence_is_sent_mail():
+    async def mailed():
+        return [sent("Priya Shah <priya@school.edu>", NOW - 6 * D), sent("priya@school.edu", NOW - 4 * D)], True
+    got, why = _run([mail_item(user_wrote=False)], read_sent=mailed)
+    assert [p["title"] for p in got] == ["Reply to Priya Shah"], why
+
+    async def nothing():
+        return [], True
+    got, why = _run([mail_item(user_wrote=False)], read_sent=nothing)
+    assert got == [] and list(why.values()) == ["not someone the user writes to often"]
+
+
+def test_a_cycle_survives_malformed_input_and_plans_nothing_from_it():
+    async def nothing():
+        return [], True
+    bad = [None, "x", {"source": "messages", "ref": "x"}, text_item(pending=[None, 5]),
+           mail_item(text=5), {"source": "mail", "person": True, "received_ts": float("nan")}]
+    got, why = _run(bad + [text_item()], read_sent=nothing)
+    assert [p["who"] for p in got] == ["Maya"]
+    assert _run([text_item()], read_sent=nothing, results=["junk"])[0]
+    assert _run([text_item()], read_sent=nothing, done_today=None) == ([], {})
+    assert _run([text_item()], read_sent=nothing, blocked=None)[0]
+
+
+def test_a_sent_read_that_raises_or_returns_junk_is_not_fresh():
+    async def boom():
+        raise RuntimeError("bridge away")
+
+    async def junk():
+        return None
+    for read in (boom, junk):
+        got, why = _run([text_item()], read_sent=read)
+        assert got == [] and why[text_item()["id"]] == "sent mail not checked"
+
+
+def test_the_judges_verdict_reaches_a_cycle():
+    async def nothing():
+        return [], True
+    got, why = _run([text_item()], read_sent=nothing, results={text_item()["id"]: {"junk": True}})
+    assert got == [] and why[text_item()["id"]] == "sensitive or junk"
+
+
+@pytest.mark.parametrize("since", [float("nan"), float("inf") * 0, "yesterday", None])
+def test_a_consent_time_that_isnt_a_time_means_off(since):
+    assert plan(text_item(), since_ts=since)[1] == "acting for the user is off"
+
+
+def test_a_mail_arrival_that_isnt_a_time_plans_nothing():
+    assert plan(mail_item(received=float("nan")))[1] == "no arrival time"
+
+
+def test_mail_from_the_users_own_address_is_not_a_person():
+    assert plan(mail_item(address=ME))[1] == "not a person"
+
+
+def test_the_users_own_address_on_sent_mail_does_not_count_as_answering():
+    got, why = plan(text_item(), sent=[sent("Maya <me@school.edu>", NOW - 3 * H)])
+    assert got is not None, why
+
+
+def test_a_group_label_is_never_a_contact():
+    got, why = plan(text_item("Group Chat", title="Group Chat", ref={"kind": "text", "conversation": "Group Chat"}),
+                    records=records("Group Chat"))
+    assert got is None and why == "not a saved contact"
+
+
+def test_an_ask_withdrawn_in_its_own_line_is_answered():
+    line = "Can you send the notes? nvm"
+    got, why = plan(text_item(lines=(line,)), records=records(ask=line))
+    assert got is None and why == "the ask was withdrawn"
+
+
+def test_only_the_newest_lines_are_read_for_the_ask():
+    lines = (ASK, "ok", "anyway", "practice was fun", "see ya")
+    got, why = plan(text_item(lines=lines))
+    assert got is None and why == "no direct ask"
+
+
+def test_a_day_and_four_days_are_the_edges():
+    assert plan(text_item(received=NOW - D), records=records(asked=NOW - D))[0] is not None
+    assert plan(text_item(received=NOW - D + 60), records=records(asked=NOW - D + 60))[1] == "not a day yet"
+    old = (NOW - 12 * D, NOW - 9 * D, NOW - 7 * D)
+    assert plan(text_item(received=NOW - 4 * D), records=records(asked=NOW - 4 * D, mine=old))[0] is not None
+    assert plan(text_item(received=NOW - 4 * D - 60), records=records(asked=NOW - 4 * D - 60, mine=old))[1] \
+        == "too old"
+
+
+def test_choose_keeps_one_per_person_even_with_room(monkeypatch):
+    monkeypatch.setattr(followups, "MAX_PER_CYCLE", 2)
+    first, _ = plan(text_item())
+    second = {**first, "fingerprint": "followup:other", "received_ts": first["received_ts"] + 60}
+    assert [p["fingerprint"] for p in followups.choose([first, second], done_today=0, now=NOW)] == \
+        [first["fingerprint"]]
+    assert followups.choose([{}, None, {"person_key": "p"}], done_today=0, now=NOW) == []
+    assert followups.choose([first], done_today="x", now=NOW) == []
+    assert followups.audit_fields({})["fingerprint"] is None
+
+
+@pytest.mark.parametrize("day", [(2026, 3, 7), (2026, 3, 8), (2026, 10, 31), (2026, 11, 1)])
+def test_due_times_across_daylight_saving_changes(day):
+    zone = ZoneInfo(TZ)
+    start = datetime(*day, 0, 0, tzinfo=zone).timestamp()
+    for minute in range(0, 48 * 60, 7):
+        now = start + minute * 60
+        due = followups.due_time(now, TZ, never_quiet)
+        assert 30 * 60 <= due - now <= 2 * 3600
+        assert datetime.fromtimestamp(due, zone).minute in (0, 30)
+
+
+def test_due_time_without_readable_hours_or_zone_is_none():
+    calls = {"n": 0}
+
+    def flaky(_m):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise ZeroDivisionError
+        return True
+    assert followups.due_time(NOW, TZ, flaky) is None
+    assert followups.due_time(NOW, "Not/AZone", never_quiet) is None
+    assert followups.due_time(float("nan"), TZ, never_quiet) is None
