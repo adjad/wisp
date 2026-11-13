@@ -64,6 +64,12 @@ def test_each_history_pattern_is_linear_on_a_hostile_body(pattern, name):
 
 def test_the_whole_body_timing_check_is_fast_on_a_hostile_body():
     newest = {"ts": 1.0, "body": " \n" * 16_000 + "From: a@b\n" * 5_000, "subject": "Hi"}
+    # The first call in a process pays once for compiling the patterns (about 0.6 s of CPU on
+    # a fast Mac, more on a CI runner). That cost does not grow with the body, so it is paid
+    # here, outside the measurement: the bound is about the hostile body alone.
+    warm = {"ts": 1.0, "body": "Hi\n", "subject": "Hi"}
+    sources._body_timing([warm], warm)
+    sources._excerpt(warm)
     started = time.process_time()
     sources._body_timing([newest], newest)
     sources._excerpt(newest)
