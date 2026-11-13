@@ -50,6 +50,9 @@ def texts_on(monkeypatch):
     """Texts are off in production until reactions reach the cache; these tests
     exercise the text rules as they will run once they are on."""
     monkeypatch.setattr(followups, "TEXTS_ENABLED", True)
+    # Most tests build Mail.app-shaped items: run them as they will once the hand check passes.
+    # The switch's own tests set it back off.
+    monkeypatch.setattr(followups, "APPLE_MAIL_SENDER_TRUSTED", True)
     followups._sent_cache.update(at=None, rows=[], fresh=False)
     from service.memory import identity
     monkeypatch.setattr(identity, "user_emails", lambda: [ME])      # the user's own address, synthetic
@@ -1219,17 +1222,62 @@ def test_a_quoted_local_part_cant_hide_the_real_address():
     assert plan(item, lookup=lambda address: "Priya Shah")[0] is None
 
 
-@pytest.mark.xfail(strict=True, reason="OPEN: this row is identical to a genuine Gmail row (sender='Name <addr>' "
-                                       "plus sender_address, gmail_source), so mail_sender reads it as clean; whether "
-                                       "Mail.app ever reports such a name is the hand check "
-                                       "(followups-hand-check-mail-app-address.md)")
-def test_mail_apps_split_fields_with_an_address_in_the_name_get_no_reminder():
-    # Mail.app reports `extract name` as sender and `extract address` as sender_address. If
-    # AppleScript returned the address written inside the display name, only the name shows it.
+def _items(rows, linked=frozenset()):
     from service.proactive import sources
-    [item] = sources.mail_items([_mail_row("Priya <priya@school.edu>", sender_address="priya@school.edu")],
-                                mine={ME}, now=NOW, tz=TZ, linked=set(), own=ME)
-    assert plan(item, lookup=lambda address: "Priya Shah")[0] is None
+    return sources.mail_items(rows, mine={ME}, now=NOW, tz=TZ, linked=set(linked), own=sources.OWN)
+
+
+def _google_row(sender, sender_address="", **kw):
+    # A row Wisp's own Google sign-in fetched: account and account id are the linked address.
+    return _mail_row(sender, sender_address, **kw) | {"account": ME, "account_id": ME}
+
+
+def test_while_apple_mail_senders_are_untrusted_only_google_fetched_mail_qualifies(monkeypatch):
+    monkeypatch.setattr(followups, "APPLE_MAIL_SENDER_TRUSTED", False)
+    assert plan(mail_item()) == (None, "sender not verified for Apple Mail yet")         # the "me" bucket
+    google = mail_item(account=ME, raw_account=ME)
+    got, why = plan(google, apple_current=False, gmail_current={ME})
+    assert got is not None, why
+    assert plan(mail_item(account="me", raw_account=ME), gmail_current={ME})[1] == \
+        "sender not verified for Apple Mail yet"
+    assert plan(mail_item(account=ME, raw_account="other@school.edu"), gmail_current={ME})[1] == \
+        "sender not verified for Apple Mail yet"
+
+
+def test_through_the_reader_a_mail_app_copy_waits_and_a_google_copy_acts(monkeypatch):
+    monkeypatch.setattr(followups, "APPLE_MAIL_SENDER_TRUSTED", False)
+    [native] = _items([_mail_row("Priya Shah", "priya@school.edu")], linked={ME})
+    assert plan(native, gmail_current={ME}) == (None, "sender not verified for Apple Mail yet")
+    # The same account read through Mail.app: Mail's own account id, so still the "me" bucket.
+    [mail_app_copy] = _items([_mail_row("Priya Shah", "priya@school.edu") | {"account": ME}], linked={ME})
+    assert plan(mail_app_copy, gmail_current={ME})[1] == "sender not verified for Apple Mail yet"
+    [google] = _items([_google_row("Priya Shah <priya@school.edu>", "priya@school.edu")], linked={ME})
+    got, why = plan(google, apple_current=False, gmail_current={ME})
+    assert got is not None and got["title"] == "Reply to Priya Shah", why
+
+
+def test_the_shape_only_the_hand_check_can_settle_is_refused_while_untrusted(monkeypatch):
+    # Mail.app gives `extract name` as sender and `extract address` as sender_address. If it
+    # were fooled by "Priya <priya@school.edu>" <x@evil.com>, the row would look exactly like
+    # this, which is also what a genuine Gmail row looks like (gmail_source builds "Name <addr>").
+    shape = dict(sender="Priya <priya@school.edu>", sender_address="priya@school.edu")
+    monkeypatch.setattr(followups, "APPLE_MAIL_SENDER_TRUSTED", False)
+    [from_mail_app] = _items([_mail_row(**shape)], linked={ME})
+    assert plan(from_mail_app, lookup=lambda a: "Priya Shah", gmail_current={ME})[0] is None
+    [from_google] = _items([_google_row(**shape)], linked={ME})
+    assert plan(from_google, lookup=lambda a: "Priya Shah", apple_current=False, gmail_current={ME})[0] is not None
+    # Once the hand check passes and the switch flips, Mail.app's reading is taken as it comes.
+    monkeypatch.setattr(followups, "APPLE_MAIL_SENDER_TRUSTED", True)
+    assert plan(from_mail_app, lookup=lambda a: "Priya Shah")[0] is not None
+
+
+def test_the_switch_ships_off():
+    # Read from the source, since the fixture flips the live module's values.
+    import ast
+    tree = ast.parse(open(followups.__file__, encoding="utf-8").read())
+    values = {t.id: node.value.value for node in tree.body if isinstance(node, ast.Assign)
+              for t in node.targets if isinstance(t, ast.Name) and isinstance(node.value, ast.Constant)}
+    assert values["APPLE_MAIL_SENDER_TRUSTED"] is False and values["TEXTS_ENABLED"] is False
 
 
 @pytest.mark.parametrize("sender", ['"Priya <priya@school.edu>" <"x>"@evil.com>',

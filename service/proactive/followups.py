@@ -10,6 +10,9 @@ verified reminder path, and records the action with its Undo before any card.
 IMPORTANT rules:
 - Mail only for now. Texts stay off (TEXTS_ENABLED) until the user's own
   reactions reach the cache: a "Loved" ask reads as unanswered today.
+- Google-linked accounts only for now (APPLE_MAIL_SENDER_TRUSTED): mail read
+  through Mail.app waits on a hand check that Mail reports a posed sender's
+  real address.
 - An email qualifies only when EVERY check in `plan_for` holds:
   - from one person (never a thread with several other senders, a promo, bulk
     or automated mail, an account alert or a school roll-up), addressed to the
@@ -90,6 +93,13 @@ NATIVE_SENT_DAYS = 31               # the app's limit: covers the 30-day "writes
 # Texts stay off until the user's own tapbacks reach the cache: a "Loved" ask
 # reads as unanswered today (MessagesReader drops every reaction).
 TEXTS_ENABLED = False
+# Whether a sender address read through Mail.app's AppleScript reader (`extract address`)
+# can be trusted to act on. Off until the hand check in the shared notes,
+# followups-hand-check-mail-app-address.md, shows Mail.app returns the real address
+# for `"Priya <priya@school.edu>" <x@evil.com>`: a row it got wrong arrives looking
+# exactly like a genuine one, and no parser here can tell. While off, only mail that
+# Wisp's Google sign-in fetched itself (gmail_source parses the header) qualifies.
+APPLE_MAIL_SENDER_TRUSTED = False
 
 
 def _finite(value) -> bool:
@@ -326,6 +336,16 @@ def _mail_address(item: dict) -> str:
     return str((item.get("ref") or {}).get("to") or "").strip().casefold()
 
 
+def _read_by_google(item: dict) -> bool:
+    """The thread came through Wisp's own Google sign-in, not Mail.app. sources files
+    every Mail.app row under the owner's bucket ("me", never an address) and a
+    Google-fetched row under its linked account's address; a thread is one bucket."""
+    from service.proactive.sources import OWN
+    account = str(item.get("account") or "").strip().casefold()
+    raw = str(item.get("raw_account") or "").strip().casefold()
+    return bool(account) and account != OWN and account == raw and "@" in account
+
+
 def _automated_address(address: str) -> bool:
     from service.attention.exclusions import _AUTOMATED_ADDRESS
     return bool(_AUTOMATED_ADDRESS.search(address or ""))
@@ -556,6 +576,8 @@ def plan_for(item: dict, *, now: float, tz: str, history: dict | None = None, se
             return None, "not a person"
         if _spoofed_sender(item):
             return None, "the sender's name hides an address"
+        if not APPLE_MAIL_SENDER_TRUSTED and not _read_by_google(item):
+            return None, "sender not verified for Apple Mail yet"
         if len(_other_senders(item)) > 1:
             return None, "several people in the thread"
         from service.proactive.sent_check import recipients
