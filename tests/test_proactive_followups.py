@@ -1003,15 +1003,46 @@ def test_the_card_says_what_wisp_cant_see(setting, store):
 # --- re-review of 4f194600: spoofed senders, current Sent mail, restart, consent time ------
 
 
-@pytest.mark.parametrize("raw", ['"Maya <maya@friend.com>" <x@evil.com>', "Maya <maya@friend.com> <x@evil.com>",
-                                 "maya@friend.com <x@evil.com>"])
-def test_a_display_name_that_holds_an_address_never_qualifies(raw):
-    got, why = plan(mail_item(sender_raw=raw))
+def _mail_row(sender, sender_address="", subject="Lab report draft",
+              body="Thanks! Can you review my section before Thursday?"):
+    return dict(ts=NOW - 30 * H, account="iCloud", account_id="acct-1", sender=sender,
+                sender_address=sender_address, to=ME, subject=subject, message_id="m-" + subject,
+                body=body, unread=False)
+
+
+def test_an_item_marked_odd_sender_never_qualifies():
+    got, why = plan(mail_item(odd_sender=True))
     assert got is None and why == "the sender's name hides an address"
 
 
-def test_a_plain_from_header_is_fine_and_a_who_with_an_address_is_not():
-    assert plan(mail_item(sender_raw="Priya Shah <priya@school.edu>"))[0] is not None
+@pytest.mark.parametrize("sender", ['"Priya <priya@school.edu>" <x@evil.com>',
+                                    "Priya <priya@school.edu> <x@evil.com>",
+                                    f'"{ME}" <x@evil.com>', f"Me <{ME}> <x@evil.com>"])
+def test_a_contact_or_the_user_posed_in_the_display_name_gets_no_reminder(sender):
+    # Through the real reader: the address is the last angle-addr, and the thread is odd.
+    from service.proactive import sources
+    items = sources.mail_items([_mail_row(sender)], mine={ME}, now=NOW, tz=TZ, linked=set(), own=ME)
+    # The quoted forms are dropped by the mail filter outright; the Gmail-shaped ones become items.
+    assert len(items) == (0 if sender.startswith('"') else 1)
+    for item in items:
+        assert item["ref"]["to"] == "x@evil.com" and item["odd_sender"] is True
+        # Even with the real address in Contacts and in Sent mail, the posed name refuses it.
+        got, why = plan(item, lookup=lambda address: "Priya Shah",
+                        sent=list(MAILED) + [sent("x@evil.com", NOW - 6 * D), sent("x@evil.com", NOW - 4 * D)])
+        assert got is None and why == "the sender's name hides an address"
+
+
+def test_the_same_ask_from_the_real_address_still_qualifies():
+    from service.proactive import sources
+    [item] = sources.mail_items([_mail_row("Priya Shah <priya@school.edu>")], mine={ME}, now=NOW, tz=TZ,
+                                linked=set(), own=ME)
+    assert item["odd_sender"] is False and item["ref"]["to"] == "priya@school.edu"
+    got, why = plan(item)
+    assert got is not None, why
+    assert got["title"] == "Reply to Priya Shah"
+
+
+def test_a_who_with_an_address_is_refused_even_without_the_flag():
     assert plan(mail_item(sender="maya@friend.com"))[1] == "the sender's name hides an address"
 
 

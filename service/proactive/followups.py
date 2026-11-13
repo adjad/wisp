@@ -273,16 +273,15 @@ def _mail_ask_lines(item: dict) -> list[str]:
 
 
 def _spoofed_sender(item: dict) -> bool:
-    """A From whose display name itself holds an address ("Maya <maya@x>" <evil@y>):
-    the name and the address can then say different people. Checked on the raw
-    header when the item carries it."""
-    raw = str(item.get("sender_raw") or "")
-    if "<" in raw:
-        display = raw[:raw.rfind("<")]
-        if "@" in display or "<" in display:
-            return True
+    """A From whose display name itself holds an address or a bracket
+    ("Maya <maya@x>" <evil@y>): the name and the address can say different people.
+    sources.mail_items marks such a thread `odd_sender` and shows only its real
+    address as `who`; either sign refuses. The address itself is never parsed
+    here: it is the item's ref, read by sources._address (the last angle-addr)."""
+    if item.get("odd_sender"):
+        return True
     who = str(item.get("who") or "")
-    return "@" in who or "<" in who
+    return "@" in who or "<" in who or ">" in who
 
 
 def _mail_address(item: dict) -> str:
