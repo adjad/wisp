@@ -25,8 +25,11 @@ ME = "me@ucsc.edu"
 
 
 @pytest.fixture
-def setting(monkeypatch):
+def setting(monkeypatch, tmp_path):
     saved: dict = {}
+    # The gate's own file (acting._path), in this test's folder: never ~/.moe.
+    if hasattr(acting, "_path"):
+        monkeypatch.setattr(acting, "_path", lambda: tmp_path / "home" / "act_for_me.json")
     monkeypatch.setattr(config, "user_overlay_valid", lambda: True)
     monkeypatch.setattr(config, "models_config", lambda: dict(saved))
     monkeypatch.setattr(config, "_save_overlay", lambda patch: saved.update(patch))
@@ -35,6 +38,8 @@ def setting(monkeypatch):
     # The hours guard has its own test (test_autohold.py); here every slot is inside the person's day.
     from service.proactive import autohold as _autohold
     monkeypatch.setattr(_autohold, "inside_hours", lambda slot, tz: True)
+    # Never the real assistant store: the card's native id is looked up in this fake.
+    monkeypatch.setattr(_autohold, "resolve_native", lambda ref: {"cal:1": "evt-1"}.get(ref))
     return saved
 
 
@@ -68,9 +73,9 @@ async def _quiet_model(system, material, abort, tokens):
     return ""
 
 
-def cycle_once(store, now=NOW):
+def cycle_once(store, now=NOW, light=False, abort=lambda: False):
     return asyncio.run(cycle.run_cycle(
-        now=now, tz=TZ, force=True, reply_fn=_quiet_model, abort=lambda: False, collect=lambda n, z: [],
+        now=now, tz=TZ, force=True, reply_fn=_quiet_model, abort=abort, collect=lambda n, z: [], light=light,
         schedule_fn=lambda n, z: {"calendar": [], "reminders": []}, store=store, resolve=lambda i: None,
         linked=set(), own=ME, allowed=set(), freeze=lambda ref: None,
         deadline_fn=lambda n, z, skip, own, linked: [block_card()], autoadd_fn=None))
@@ -107,3 +112,34 @@ def test_an_undone_hold_is_not_offered_as_a_tap_card_again(setting, store, holds
     assert holds == []
     assert "block_time" not in methods(store)
     assert store.auto_added()[autohold.fingerprint(block_card())]["status"] == "undone"
+
+
+def test_a_light_cycle_holds_nothing_and_the_tap_card_stays(setting, store, holds):
+    # A light cycle (between builds) never merges "Wisp did this" cards, so it must not
+    # hold: the tap card would vanish with no Undo until the next full build.
+    acting.set_enabled(True, now=NOW - 60)
+    assert cycle_once(store, light=True)["status"] == "done"
+    assert holds == [] and store.auto_added() == {}
+    assert methods(store) == ["block_time"]
+    # The next full cycle holds it and shows its card.
+    cycle_once(store, now=NOW + 60)
+    assert holds == ["card:deadline1"] and "undo_add" in methods(store) and "block_time" not in methods(store)
+
+
+def test_a_light_cycle_still_hides_an_undone_deadline(setting, store, holds):
+    acting.set_enabled(True, now=NOW - 60)
+    acting.record(store, autohold.fingerprint(block_card()), kind="hold", status="undone", now=NOW - 10,
+                  title="Worksheet 1 for STAT 5")
+    cycle_once(store, light=True)
+    assert holds == [] and "block_time" not in methods(store)
+
+
+def test_a_cycle_that_yielded_to_a_turn_holds_nothing(setting, store, holds):
+    acting.set_enabled(True, now=NOW - 60)
+    calls = {"n": 0}
+
+    def abort():                       # a turn is running when the judge starts, then it ends
+        calls["n"] += 1
+        return calls["n"] == 1
+    assert cycle_once(store, abort=abort)["status"] == "yielded"
+    assert holds == [] and store.auto_added() == {} and methods(store) == ["block_time"]
