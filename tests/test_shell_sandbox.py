@@ -115,8 +115,80 @@ def test_neither_the_folder_nor_a_parent_can_be_renamed_away(world, folder):
 
 @real
 def test_the_keychains_folder_is_closed_too(world):
-    out = builtin.run_shell(f"echo x > {world}/Library/Keychains/login.keychain-db")
+    # The name is put together at run time: the text policy refuses the plain spelling
+    # itself, and this must be the guard's doing.
+    cmd = f'k=chains; echo x > "{world}/Library/Key$k/login.$k-db"'
+    assert policy.decide("shell", {"cmd": cmd}, tool="run_shell").tier is policy.Tier.ALLOW
+    out = builtin.run_shell(cmd)
     assert list((world / "Library" / "Keychains").iterdir()) == [], out
+
+
+@real
+def test_a_disk_image_cannot_be_mounted_over_the_folder_or_a_parent(world):
+    """`hdiutil attach -mountpoint` would swap every file in the folder at once."""
+    source = _TOP / "elsewhere" / "image-source"
+    source.mkdir(exist_ok=True)
+    (source / "act_for_me.json").write_text("forged")
+    image = _TOP / "elsewhere" / "swap.dmg"
+    if not image.exists():
+        subprocess.run(["/usr/bin/hdiutil", "create", "-quiet", "-srcfolder", str(source),
+                        "-format", "UDRO", str(image)], check=True, capture_output=True, timeout=60)
+    free = _TOP / "elsewhere" / "mount-here"
+    free.mkdir(exist_ok=True)
+    attach = "hdiutil attach -quiet -nobrowse -readonly -mountpoint"
+    try:
+        for target in (_WISP, _WISP.parent, _WISP.parent.parent):
+            out = builtin.run_shell(f"{attach} {target} {image}")
+            assert GATE.read_text() == BEFORE, (target, out)
+            assert not os.path.ismount(target), (target, out)
+        # Mounting somewhere else is not this guard's business.
+        builtin.run_shell(f"{attach} {free} {image}")
+        assert (free / "act_for_me.json").read_text() == "forged"
+    finally:
+        for target in (free, _WISP, _WISP.parent, _WISP.parent.parent):
+            if os.path.ismount(target):
+                subprocess.run(["/usr/bin/hdiutil", "detach", "-quiet", "-force", str(target)],
+                               capture_output=True, timeout=60)
+
+
+@real
+def test_wisps_own_service_cannot_be_reached_and_other_local_ports_can(world, monkeypatch):
+    """A script the shell runs is a local program like the app; the kernel tells them apart."""
+    import socket
+    import threading
+
+    def listen():
+        server = socket.socket()
+        server.bind(("127.0.0.1", 0))
+        server.listen(4)
+
+        def serve():
+            while True:
+                try:
+                    peer, _ = server.accept()
+                except OSError:
+                    return
+                peer.sendall(b"reached")
+                peer.close()
+
+        threading.Thread(target=serve, daemon=True).start()
+        return server, server.getsockname()[1]
+
+    wisp, wisp_port = listen()
+    other, other_port = listen()
+    monkeypatch.setattr(shell_sandbox, "wisp_ports", lambda: [wisp_port])
+    # The port is worked out at run time, as a script file would.
+    ask = ("import socket, sys; s = socket.create_connection((sys.argv[1], int(sys.argv[2]) + int(sys.argv[3])), 3); "
+           "print(s.recv(16).decode())")
+    try:
+        for host in ("127.0.0.1", "localhost"):
+            out = builtin.run_shell(shlex.join([sys.executable, "-I", "-c", ask, host, str(wisp_port - 1), "1"]))
+            assert "reached" not in out and "Operation not permitted" in out, (host, out)
+        out = builtin.run_shell(shlex.join([sys.executable, "-I", "-c", ask, "127.0.0.1", str(other_port - 1), "1"]))
+        assert str(out) == "reached"
+    finally:
+        wisp.close()
+        other.close()
 
 
 @real
@@ -177,10 +249,25 @@ def test_the_profile_names_each_folder_as_written_and_as_it_resolves(world, monk
     # Every parent by its exact path, so it cannot be renamed or (a symlink) swapped ...
     for parent in (link, _WISP.parent, _WISP.parent.parent, world, world / "Library"):
         assert f'(deny file-write* (literal "{parent}"))' in lines
+    # Mounting over a folder or a parent is closed the same way as writing to it.
+    assert sorted(line.replace("file-mount", "file-write*") for line in lines if "file-mount" in line) \
+        == sorted(line for line in lines if "file-write*" in line)
     # ... and nothing wider than that: no parent is closed as a whole, the root is not named.
     assert '(literal "/")' not in profile and '(subpath "/")' not in profile
     assert f'(subpath "{_WISP.parent}")' not in profile and f'(subpath "{world}")' not in profile
-    assert all(line.startswith("(deny file-write* ") for line in lines[2:])
+    # Wisp's own service, and no other local port.
+    assert lines[-1] == '(deny network-outbound (remote ip "localhost:8765"))'
+    assert all(line.startswith(("(deny file-write* ", "(deny file-mount ")) for line in lines[2:-1])
+
+
+def test_the_service_port_follows_an_isolated_backend(monkeypatch):
+    monkeypatch.setattr("service.identity.bind_port", lambda argv=None: 8775)
+    assert shell_sandbox.wisp_ports() == [8765, 8775]
+    assert shell_sandbox.build_profile().endswith(
+        '(deny network-outbound (remote ip "localhost:8765"))\n'
+        '(deny network-outbound (remote ip "localhost:8775"))\n')
+    monkeypatch.setattr("service.identity.bind_port", lambda argv=None: None)
+    assert shell_sandbox.wisp_ports() == [8765]
 
 
 def test_a_quote_in_a_path_cannot_end_the_profile_string(world, monkeypatch, tmp_path):

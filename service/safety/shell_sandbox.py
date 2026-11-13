@@ -7,27 +7,44 @@ can read: a name built at run time (a shell variable, an interpreter, find's own
 `act_for_me.json` (the person's yes to "Let Wisp act for me"), `grants.json` or
 `access_mode.json` with no card at all.
 
-So the command runs under macOS's `sandbox-exec` with one rule: no writing inside Wisp's
-data folder or the Keychains folder. The kernel refuses the write whatever the path was
-spelled like, including through a symlink, a hard link, `..`, another letter case or the
-/System/Volumes/Data spelling, and for every process the command starts. Everything else
-(reads, the network, writes anywhere else) is as before.
+So the command runs under macOS's `sandbox-exec` with three rules:
+- no writing inside Wisp's data folder or the Keychains folder;
+- no mounting a volume over those folders or a parent of them;
+- no connecting to Wisp's own local service.
+The kernel refuses the write whatever the path was spelled like, including through a symlink,
+a hard link, `..`, another letter case or the /System/Volumes/Data spelling, and for every
+process the command starts. Everything else (reads, the rest of the network, writes
+anywhere else) is as before.
 
 What was checked on macOS 27.0.1, and is pinned by tests/test_shell_sandbox.py:
 - a write-deny on a folder also refuses creating, deleting, renaming, chmod and touch
   inside it, renaming the folder itself, and making a hard link to a file in it;
 - it does NOT stop a PARENT folder being renamed, which would leave Wisp's path pointing
   at a fresh folder anyone can fill. Every parent folder is therefore denied by its exact
-  path; that stops the rename and does not stop files being made in the parent.
+  path; that stops the rename and does not stop files being made in the parent;
+- it does NOT stop a disk image being mounted over the folder (`hdiutil attach
+  -mountpoint`), which swaps every file in it at once. Mounting is denied separately;
+- Wisp's service writes these files for the app. It tells a browser from a local program,
+  not the app from a script, on some routes (POST /mode, POST /permissions), so a script
+  the shell runs is refused the connection instead.
 
-What this does not cover:
-- a command that hands the work to a process the shell did not start: `osascript` and
-  `shortcuts` (always confirmed), `open`, `launchctl`. Those run outside the sandbox;
+What this is NOT: a guarantee that nothing a shell command sets in motion can ever change
+these files. It covers the command's own processes. It does not cover work the command
+hands to a process the shell did not start:
+- `osascript`, `shortcuts`, `open`, `launchctl`, a cron table, a LaunchAgent file, a line
+  added to a shell profile. launchd, cron, another app or the person's next Terminal run
+  that work outside the sandbox, now or later. The policy asks first when the command's
+  text names one of these; when the name is built at run time, or sits in a script file,
+  nothing asks on a turn that shows no card for shell commands;
+- other tools: AppleScript, Shortcuts and skill tools have their own rules and are not
+  run through here.
+It also costs two things:
 - a command that needs a sandbox of its own (`swift build` without `--disable-sandbox`,
-  Homebrew builds from source, other agent CLIs): macOS does not nest sandboxes, so it
-  fails here. explain() tells the model why;
-- a Wisp backend that is itself sandboxed (Simulation QA, some CI): `sandbox-exec` cannot
-  be applied there, usable() is False and the command runs as it did before.
+  Homebrew builds from source, other agent CLIs) fails, because macOS does not nest
+  sandboxes; and a command that saves to the login Keychain (`security
+  add-generic-password`, `gh auth login`) is refused. explain() tells the model why;
+- a Wisp backend that is itself sandboxed (Simulation QA, some CI) cannot apply one:
+  usable() is False there and the command runs as it did before.
 """
 from __future__ import annotations
 
@@ -94,18 +111,36 @@ def _spellings(root: Path) -> list[Path]:
     return list(dict.fromkeys((written, real)))
 
 
+WISP_PORT = 8765
+
+
+def wisp_ports() -> list[int]:
+    """The local ports Wisp's own service may be listening on: the standard one, and the
+    one this process was started with when that differs (an isolated test backend)."""
+    from service.identity import bind_port
+    try:
+        own = bind_port()
+    except (ValueError, OSError):
+        own = None
+    return list(dict.fromkeys(port for port in (WISP_PORT, own) if port))
+
+
 def build_profile() -> str:
-    """The sandbox profile: everything allowed, except writing under protected_roots()."""
+    """The sandbox profile: everything allowed, except writing under protected_roots(),
+    mounting over them, and reaching Wisp's own service."""
     folders, parents = [], []
     for root in protected_roots():
         for path in _spellings(root):
             folders.append(path)
             parents.extend(parent for parent in path.parents if str(parent) != "/")
-    lines = ["(version 1)", "(allow default)"]
-    lines += [f'(deny file-write* (subpath "{_q(path)}"))' for path in dict.fromkeys(folders)]
+    folders = list(dict.fromkeys(folders))
     # A parent's exact path only: renaming or replacing it is refused, files in it are not.
-    lines += [f'(deny file-write* (literal "{_q(path)}"))'
-              for path in dict.fromkeys(parents) if path not in folders]
+    parents = [path for path in dict.fromkeys(parents) if path not in folders]
+    lines = ["(version 1)", "(allow default)"]
+    for what in ("file-write*", "file-mount"):
+        lines += [f'(deny {what} (subpath "{_q(path)}"))' for path in folders]
+        lines += [f'(deny {what} (literal "{_q(path)}"))' for path in parents]
+    lines += [f'(deny network-outbound (remote ip "localhost:{port}"))' for port in wisp_ports()]
     return "\n".join(lines) + "\n"
 
 
@@ -116,10 +151,11 @@ def contain(argv: list[str]) -> tuple[list[str], bool]:
     return [SANDBOX_EXEC, "-p", build_profile(), *argv], True
 
 
-_NOTE = ("[note] Wisp's shell cannot change anything inside Wisp's own data folder or the "
-         "Keychains folder, and a command run from it cannot start a sandbox of its own "
-         "(`swift build` needs --disable-sandbox). \"Operation not permitted\" above may be "
-         "that guard. Do not retry it another way; tell the person what was refused.")
+_NOTE = ("[note] Wisp's shell cannot change or mount over Wisp's own data folder or the "
+         "Keychains folder, cannot call Wisp's own local service, and a command run from it "
+         "cannot start a sandbox of its own (`swift build` needs --disable-sandbox). "
+         "\"Operation not permitted\" above may be that guard. Do not retry it another way; "
+         "tell the person what was refused.")
 
 
 def explain(contained: bool, returncode: int, stderr: str | None) -> str:
