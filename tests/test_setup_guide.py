@@ -89,6 +89,18 @@ def test_tuned_gemma_repo_name_is_the_model_id_and_it_runs_with_base_gemmas_prof
     assert tuned.tested and catalog.fits_memory(tuned, 16) and not catalog.fits_memory(tuned, 12)
 
 
+def test_packaged_lists_carry_the_tuned_gemma_wherever_they_carry_base():
+    # Missing from no_thinking_capable, a Gemma thinks through the whole budget on digests,
+    # Brief summaries and message topics; missing after-tool thinking, its tool answers come back empty.
+    import yaml
+    packaged = yaml.safe_load((Path(__file__).resolve().parents[1] / "service/config/models.yaml").read_text())
+    for key in ("tool_capable", "no_thinking_capable", "thinking_required_after_tool"):
+        assert GEMMA in packaged[key] and TUNED in packaged[key], key
+    assert packaged["explicit_thinking"] and TUNED not in packaged["explicit_thinking"]
+    assert all(model == GEMMA for role, model in packaged["roles"].items()
+               if role not in ("embedding", "reranker"))   # code roles stay on base (see models.yaml)
+
+
 def test_an_install_with_base_gemma_keeps_it_and_is_only_offered_the_tuned_one():
     # Existing installs are never moved: base stays in use, the tuned model is an offer.
     s = _status(ram=24, installed=[GEMMA, EMBED], roles=_roles(GEMMA))

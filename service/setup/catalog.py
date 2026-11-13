@@ -43,8 +43,8 @@ MELLUM_R1_Q4 = CatalogModel(
 GEMMA_E4B_MTP = CatalogModel(
     "gemma-4-E4B-it-oQ4e-mtp", "Gemma 4 E4B", "4-bit (oQ4e) + MTP", 5.5, 16,
     "Jundot/gemma-4-E4B-it-oQ4e-mtp",
-    "The original Gemma, before Wisp's tuning. It proposes fewer actions it shouldn't, "
-    "but is slower and less accurate on Wisp's tests.", tested=True,
+    "The original Gemma, before Wisp's tuning. More cautious about acting, but slower "
+    "and less accurate on Wisp's tool tests.", tested=True,
     engine_profile={
         "temperature": 0.8, "top_p": 0.95, "top_k": 64,
         "enable_thinking": True,
@@ -60,14 +60,16 @@ GEMMA_E4B_MTP = CatalogModel(
 # The default since 0.5.0: base Gemma 4 E4B with Wisp's Ask LoRA r5 (step 1800)
 # merged in, quantized with base's recipe (oQ4e, group 64) and base's own MTP head
 # copied unchanged. Same template, so the same thinking rules and engine profile.
-# Measured 2026-11-11 against base on one clock: Wisp's public tool test 77% vs
-# 68% and the private one 84% vs 72%, but about twice base's unsafe proposals on
-# the safety slice (cards still ask before a send unless Full access is on). The
-# repo's name is the model id, as the download path requires.
+# Measured against base: Wisp's public tool test 77% vs 68% and median turn 6.5 s
+# vs 8.8 s (one run, 2026-11-11), the private one 84% vs 72%; but two to three
+# times base's unsafe proposals on the safety slice (2026-11-12). Sends and
+# calendar changes still always ask, even under Full access. The repo's name is
+# the model id, as the download path requires.
 GEMMA_E4B_WISP = CatalogModel(
     "gemma-4-E4B-it-r5-step-01800-oQ4e-mtp", "Gemma 4 E4B, tuned for Wisp", "4-bit (oQ4e) + MTP", 5.6, 16,
     "Neo-Arid/gemma-4-E4B-it-r5-step-01800-oQ4e-mtp",
-    "Wisp's default. Better at Wisp's tools and faster to answer than the original Gemma.", tested=True,
+    "Wisp's default. More accurate and faster on Wisp's tool tests than the original Gemma, but it "
+    "proposes more actions you'll want to decline.", tested=True,
     engine_profile=dict(GEMMA_E4B_MTP.engine_profile))
 
 
