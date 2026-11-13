@@ -1816,6 +1816,27 @@ UNRESOLVED_ACTION_REASON = (
     "until the user has checked it")
 
 
+# A request that only reads ("is there any email about enrollment?", "what's
+# on my calendar"). While actions are held it is answered as usual, without
+# the notice: in the 2026-11-04 debug export every later answer in the chat,
+# reads included, opened with it and told the user to start a new chat.
+_READ_QUESTION = re.compile(
+    r"^(?:what(?:'s|s)?|when|where|who(?:'s)?|which|how\s+(?:many|much|long|late|far|old|did|do|does|is|are|was|were)"
+    r"|is|are|was|were|does|do\s+i\s+have|did|has|have\s+i|any|anything|show|list|summari[sz]e|read|check"
+    r"|find|search|look\s+up|tell\s+me\s+(?:what|when|who|where|which|how|about|if|whether))\b", re.I)
+
+
+def _plain_read_request(prompt: str) -> bool:
+    """`prompt` asks to read or look something up and to change nothing."""
+    try:
+        from service.model_only import normalize_day_words
+        from service.router.router import has_write_intent, mask_quoted
+        text = normalize_day_words(mask_quoted(prompt or "")).strip()
+        return bool(text) and not has_write_intent(text) and bool(_READ_QUESTION.match(text))
+    except Exception:  # noqa: BLE001 - unsure means the notice is shown
+        return False
+
+
 def _answer_prefixed(emit, prefix: str):
     """emit, with `prefix` put in front of the answer the user sees: the first
     answer delta or text event, again after a clear_answer discards a step."""
@@ -3000,11 +3021,12 @@ async def agent(body: dict[str, Any]):
                 await emit({"type": "done"})
             elif decision.needs_tools:
                 agent_emit = emit
-                if model_led_turn and unresolved_block:
+                if model_led_turn and unresolved_block and not _plain_read_request(prompt):
                     # The action tools are withheld below; say so plainly
                     # instead of letting the model refuse with no reason
                     # (0.5.0-rc3 audit M2). The barrier is an earlier action
-                    # in this chat whose outcome was never confirmed.
+                    # in this chat whose outcome was never confirmed. A plain
+                    # read is answered without it: nothing it asked for is held.
                     agent_emit = _answer_prefixed(emit, UNRESOLVED_ACTION_NOTICE + "\n\n")
                 # create_tool generates code with its own inference client.
                 # Model-selected calls are already warm from the agent step;

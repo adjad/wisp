@@ -734,6 +734,17 @@ def test_withheld_actions_are_explained_and_lifted_by_resolution(endpoint, monke
     texts = [e["text"] for e in events if e["type"] == "text"]
     assert texts[0] == main.UNRESOLVED_ACTION_NOTICE + "\n\nSynthetic answer."
     assert "add_reminder" in endpoint.agent_calls[0]["forbidden_tools"]
+    # A plain read in the same held chat is answered without the notice, and
+    # the action tools stay withheld all the same.
+    for question in ("is there any email about class enrollment", "what's on my calendar today?"):
+        events = endpoint.request(question, sid)
+        assert not any(main.UNRESOLVED_ACTION_NOTICE in e.get("text", "") for e in events), question
+        assert "add_reminder" in endpoint.agent_calls[-1]["forbidden_tools"]
+    # Anything that is not plainly a read still gets it.
+    for request in ("try that again", "yes", "ok do it", "send it now", "can you text Sam the plan"):
+        events = endpoint.request(request, sid)
+        texts = [e["text"] for e in events if e["type"] == "text"]
+        assert texts and texts[0].startswith(main.UNRESOLVED_ACTION_NOTICE), request
     assert endpoint.store.resolve_model_effects(sid) == 1
     events = endpoint.request("remind me to call Sam at 5", sid)
     assert not any(main.UNRESOLVED_ACTION_NOTICE in e.get("text", "") for e in events)
