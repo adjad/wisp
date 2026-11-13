@@ -2313,6 +2313,11 @@ struct FirstRunSetupView: View {
                                detail: Self.helpLine(title: item.title, line: item.line,
                                                      voiceKeyRegistered: voiceKeyRegistered)) { EmptyView() }
             }
+            // The one question setup asks about acting without being asked (ActForMe.swift). It shows
+            // once the service can answer; unanswered, the Brief asks it once instead.
+            if !qaFixture {
+                ActForMeAskCard(place: .setup).padding(.top, 8)
+            }
             OnboardingHeading(title: "Wisp lives at the top of your screen",
                               subtitle: "No window to find. It's always one gesture away.")
                 .padding(.top, 12)
