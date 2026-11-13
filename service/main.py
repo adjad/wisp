@@ -2157,6 +2157,11 @@ def _ask_tool_rank(prompt: str, previous: str = "") -> tuple[list[str], list[str
         if single_reminder_delete(prompt) and ONE_REMINDER_DELETE_TOOL in REGISTRY:
             # "Delete the dentist reminder" is one item by title, not a bulk clear.
             head = [ONE_REMINDER_DELETE_TOOL, *(n for n in head if n != ONE_REMINDER_DELETE_TOOL)]
+        from service.model_only import email_reply_sender
+        if email_reply_sender(prompt) and {"view_emails", "reply_to_email"} <= set(REGISTRY):
+            # "Reply to Dana's last email and say yes": read her mail, then reply in its thread.
+            lead_reply = ["view_emails", "reply_to_email"]
+            head = [*lead_reply, *(n for n in head if n not in lead_reply)]
         from service.model_only import reply_reads
         if lead_reads := [n for n in reply_reads(prompt) if n in REGISTRY]:
             # A reply draft reads the conversation it answers before drafting.
@@ -3274,6 +3279,12 @@ async def agent(body: dict[str, Any]):
                     # gets no reads (a [Name] placeholder covers what it lacks),
                     # and one with no destination gets no write/draft/send.
                     ask_forbidden = ask_forbidden_tools(prompt, REGISTRY)
+                    from service.model_only import (chat_reminder, chat_reminder_hint, email_reply_hint,
+                                                    email_reply_sender)
+                    if that_title := chat_reminder(prompt, previous_prompt, last_assistant or ""):
+                        synthesis_guidance.insert(1, chat_reminder_hint(that_title))
+                    if reply_sender := email_reply_sender(prompt):
+                        synthesis_guidance.insert(1, email_reply_hint(reply_sender))
                     if pure_writing(prompt):
                         synthesis_guidance.insert(1, ASK_COMPOSE_HINT)
                     from service.model_only import ASK_KNOWLEDGE_HINT, compose_only, knowledge_question
