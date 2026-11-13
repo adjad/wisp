@@ -664,6 +664,35 @@ struct FirstRunSetupChecks {
         if case .failed(_, _, let message, false) = FirstRunBrain.from(status: status(), downloads: [task("failed")]) {
             check(message.contains("Retry") && !message.contains("Resume"), "Failed: the message names Retry")
         } else { check(false, "Failed reads as failed") }
+        // 0.5.0: Gemma Wisp is the only download offered, so its failure must say why, beside Retry.
+        do {
+            let why = "Gemma Wisp isn't available on Hugging Face right now (huggingface.co/Neo-Arid/Gemma-Wisp). "
+                + "It may not be published yet."
+            let json = #"{"model":"\#(gemma)","state":"failed","progress":0,"downloaded_bytes":0,"total_bytes":0,"#
+                + #""bytes_per_second":0,"message":"\#(why)","reason":"not_found"}"#
+            let decoder = JSONDecoder()
+            decoder.keyDecodingStrategy = .convertFromSnakeCase
+            let missing = try! decoder.decode(SetupGuideModel.DownloadTask.self, from: Data(json.utf8))
+            check(missing.reason == "not_found", "The failure's reason decodes")
+            let brain = FirstRunBrain.from(status: status(), downloads: [missing])
+            var shown = false
+            if case .failed(gemma, _, why, false) = brain { shown = true }
+            check(shown && brain.footer(stalled: false) == .retry,
+                  "A repo that can't be fetched: the service's reason, word for word, and Retry")
+            check(task("failed").reason == nil, "An older service without a reason still decodes")
+            check(["not_found", "gated", "incomplete", "mismatch"].allSatisfy { FirstRunBrain.needsAnotherRoute($0) }
+                  && !FirstRunBrain.needsAnotherRoute("offline") && !FirstRunBrain.needsAnotherRoute("no_space")
+                  && !FirstRunBrain.needsAnotherRoute(nil),
+                  "Failures Retry can't fix also offer the detailed setup; a connection or disk failure is Retry's")
+        }
+        // 0.5.0: base Gemma is kept, not offered. A first run on a Mac that has it.
+        let base = "gemma-4-E4B-it-oQ4e-mtp-base-stand-in"
+        check(FirstRunBrain.from(status: status(ready: true, installed: [base], roles: base), downloads: [])
+                == .ready(label: base),
+              "Base on disk and the code-default roles naming it: ready on base, nothing downloaded")
+        let stranded = FirstRunBrain.from(status: status(installed: [base], roles: "MISSING"), downloads: [])
+        check(stranded.modelToFetch == gemma && stranded.waitsForDownloadClick,
+              "Base on disk, roles on a missing model: Wisp's model is one Download click away, never fetched by itself")
 
         // The disk warning goes with every click that starts a download.
         check(FirstRunBrain.Footer.download.fetches && FirstRunBrain.Footer.retry.fetches

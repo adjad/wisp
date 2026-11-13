@@ -349,9 +349,11 @@ The MoE premise inverted. Every text role now resolves to **one resident
 model**, because swapping cost more than specialization bought.
 
 **`service/config/models.yaml` (defaults)** — all of `fast`, `router`,
-`coding`, `reasoning`, `agent`, `general` → `gemma-4-E4B-it-oQ4e-mtp` (the
-default since `71e7bcb2`, 2026-10-25: the setup guide's default download, so a
-fresh install's roles name the model it just fetched); `embedding` →
+`coding`, `reasoning`, `agent`, `general` → `gemma-4-E4B-it-oQ4e-mtp` (base
+Gemma, the default since `71e7bcb2`, 2026-10-25). Since 0.5.0 setup downloads
+Gemma Wisp (`Gemma-Wisp`) instead and points the roles at it; base is kept for
+Macs that have it but no longer offered, so these code defaults only keep such
+a Mac working; `embedding` →
 `Qwen3-Embedding-0.6B-4bit-DWQ`; `reranker` → `Qwen3-Reranker-0.6B-mlx-6bit`
 (optional, see §2.3). `model_only: true` (§2.3). Gemma returns zero tokens when
 it writes after a tool result with thinking off, so it is listed under
@@ -456,7 +458,7 @@ Ordered by how likely a real user is to hit it. Status is honest:
 
 Nearly every remaining quality complaint traces here rather than to framework
 code. The resident model (`Ling-3.0-tiny-oQ4e` when these rows were measured,
-`gemma-4-E4B-it-oQ4e-mtp` by default since 2026-10-25) is a small model doing a
+`gemma-4-E4B-it-oQ4e-mtp` from 2026-10-25, `Gemma-Wisp` since 0.5.0) is a small model doing a
 large job.
 
 | Issue | Status |

@@ -49,7 +49,7 @@ by default), and your Brief and answers fit you.
 
 ## Private by design
 
-- **The AI runs on your Mac.** Wisp downloads its model once (Gemma 4 E4B, about 5.5 GB) and runs it
+- **The AI runs on your Mac.** Wisp downloads its model once (Gemma Wisp, about 5.6 GB) and runs it
   with an engine built into the app. Your mail, calendar, messages and notes are read on the Mac
   and stored there, in `~/.moe`.
 - **You decide how much it does on its own.** Wisp starts with **Full access** on, so everyday
@@ -168,7 +168,7 @@ built-in sign-in? See [docs/google-cloud-setup.md](docs/google-cloud-setup.md).
 - **Uninstall.**
   1. Disconnect Google first (**Settings ▸ Google ▸ Disconnect & erase**).
   2. Quit Wisp, then drag **Wisp.app** to the Bin.
-  3. To remove everything, also delete `~/.moe` (it holds the 5.5 GB model) and run
+  3. To remove everything, also delete `~/.moe` (it holds the 5.6 GB model) and run
      `defaults delete com.wisp.assistant` and `tccutil reset All com.wisp.assistant`.
 
 ### Report a problem
@@ -197,7 +197,7 @@ macOS system `python3` is 3.9 and too old) and Apple's Command Line Tools
    ```
 
 2. **Start a model server.** Run [oMLX](https://github.com/jundot/omlx) with a model loaded; its
-   menu-bar app serves on `127.0.0.1:8000`. Gemma 4 E4B (`gemma-4-E4B-it-oQ4e-mtp`) is the default.
+   menu-bar app serves on `127.0.0.1:8000`. Gemma Wisp (`Gemma-Wisp`, from `Neo-Arid/Gemma-Wisp`) is the default.
 3. **Run the backend** with auto-reload on `:8765`:
 
    ```bash

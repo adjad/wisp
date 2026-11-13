@@ -120,7 +120,7 @@ def download_info(model_id: str | None, model_dir: str | None) -> dict | None:
 def build_status(*, hardware: Hardware, omlx: OmlxState, installed: list[str],
                  models_source: str, roles: dict[str, dict], externals: list[EngineState],
                  tool_capable: list[str]) -> dict:
-    ranked = [m.id for m in catalog.ranked_for(hardware.ram_gb, installed)]
+    ranked = [m.id for m in catalog.in_use_order(hardware.ram_gb, installed)]
     rec = catalog.recommend(hardware.ram_gb, installed)
     chat_models = [m for m in installed if m != catalog.EMBEDDING_MODEL.id
                    and "embedding" not in m.lower() and "rerank" not in m.lower()]

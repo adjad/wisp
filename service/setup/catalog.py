@@ -22,6 +22,9 @@ class CatalogModel:
     # (see service/engine/profiles.py). Wisp omits sampling from its requests, so
     # these are what the model actually runs with. Empty: the engine's defaults.
     engine_profile: dict = field(default_factory=dict, compare=False, hash=False)
+    # (file name, sha256, bytes) a download must match before Wisp uses it. The engine's
+    # downloader takes no revision, so a changed file on the Hub is caught here instead.
+    pinned_files: tuple = field(default=(), compare=False, hash=False)
 
 
 # The repo's name is the model id on purpose: the engine downloads into
@@ -33,8 +36,11 @@ MELLUM_R1_Q4 = CatalogModel(
     "Optional Wisp fine-tune. Model validation is pending.", tested=False)
 
 
-# The default. Gemma 4 E4B with its multi-token-prediction head (oQ4e mixed
-# 4-bit): the model the live roster runs. Thinking must stay ON in its profile:
+# Base Gemma 4 E4B with its multi-token-prediction head (oQ4e mixed 4-bit). Since
+# 0.5.0 it is KEPT, not offered (user decision 2026-11-12: "do not keep the base gemma
+# as a fallback"): a Mac that already has it keeps its profile, lists and label, and
+# the code roles in models.yaml still name it (see the note there), but setup never
+# ranks, recommends or downloads it. Thinking must stay ON in its profile:
 # with enable_thinking false it returns zero tokens on the step after a tool
 # result, so every tool-using answer came back empty (measured 2026-10-24).
 # Sampling: the model card's top_p/top_k, with temperature lowered from its 1.0
@@ -42,7 +48,8 @@ MELLUM_R1_Q4 = CatalogModel(
 GEMMA_E4B_MTP = CatalogModel(
     "gemma-4-E4B-it-oQ4e-mtp", "Gemma 4 E4B", "4-bit (oQ4e) + MTP", 5.5, 16,
     "Jundot/gemma-4-E4B-it-oQ4e-mtp",
-    "Wisp's default. Fast on Macs with 16 GB of memory or more, with clean tool calls.", tested=True,
+    "The original Gemma, before Wisp's tuning. Wisp keeps it working on Macs that have it, "
+    "but no longer offers it.", tested=True,
     engine_profile={
         "temperature": 0.8, "top_p": 0.95, "top_k": 64,
         "enable_thinking": True,
@@ -53,6 +60,38 @@ GEMMA_E4B_MTP = CatalogModel(
         # whole Mac's GPU on every request, replies included. Wisp caps only
         # background requests, per request (service/inference/power_tier.py).
     })
+
+
+# The default since 0.5.0: base Gemma 4 E4B with Wisp's Ask LoRA r5 (step 1800)
+# merged in, quantized with base's recipe (oQ4e, group 64) and base's own MTP head
+# copied unchanged. Same template, so the same thinking rules and engine profile.
+# Measured against base: Wisp's public tool test 77% vs 68% and median turn 6.5 s
+# vs 8.8 s (one run, 2026-11-11), the private one 84% vs 72%; but two to three
+# times base's unsafe proposals on the safety slice (2026-11-12). Sends and
+# calendar changes still always ask, even under Full access. Published as
+# Neo-Arid/Gemma-Wisp (the user's name for it, 2026-11-12). The engine serves a
+# download under the repo's name, so the id is "Gemma-Wisp"; the developer's own
+# Mac has the same weights under the pre-release folder name in WISP_LEGACY_IDS.
+GEMMA_WISP_FILES = (   # sha256 and bytes of each file Wisp was tested with (HF upload manifest)
+    ("chat_template.jinja", "0a2c8073c878ab1da004bee933a998606537bbb62016310352c7285c3f01c5b5", 18569),
+    ("config.json", "295c29be6170fd93bc50309ff2b27f6a6dce6020be5f69dcb2b061dfcb77b800", 35165),
+    ("generation_config.json", "d4226bbe3117d2d253ba4609720ba82c6c4ce4627a9a6ae05387c78983ac03de", 208),
+    ("model-00001-of-00002.safetensors", "b22e7af393e6d0ecfcf210e94d4b1b29ee34c65213ece4410bd7e515815664f7", 5001242218),
+    ("model-00002-of-00002.safetensors", "27ec7843f33fab7d8c40d9c4d145ab374fdc5cf0ddf02c1d9f1a2eee6f4d2a07", 425560497),
+    ("model-mtp.safetensors", "deb34acb448ba75d2087bcf76dda343cdcf77c2bfcb1eba79c21561dd5956c6c", 159139040),
+    ("model.safetensors.index.json", "36f9da8215f08eb926109f0f8e4ce360101552e21c9b4cf4254fad7144d9ca2a", 275856),
+    ("processor_config.json", "32bdf45d2ad4cc29a0822ddd157a182de76644f0419a6228d151495256e9813c", 1689),
+    ("tokenizer.json", "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f", 32169626),
+    ("tokenizer_config.json", "9f4fec4b1dc6ecddf8f4a92e9caea5971c0e67d81309f3f9066a2bee8c362633", 3082),
+)
+
+
+GEMMA_E4B_WISP = CatalogModel(
+    "Gemma-Wisp", "Gemma Wisp", "4-bit (oQ4e) + MTP", 5.6, 16,
+    "Neo-Arid/Gemma-Wisp",
+    "Wisp's model. More accurate on Wisp's tool tests than the original Gemma, but it "
+    "proposes more actions you'll want to decline.", tested=True,
+    engine_profile=dict(GEMMA_E4B_MTP.engine_profile), pinned_files=GEMMA_WISP_FILES)
 
 
 LING_Q6 = CatalogModel(
@@ -67,7 +106,20 @@ LING_Q4 = CatalogModel(
     "mlx-works/Ling-3.0-tiny-oQ4e",
     "Smallest build that keeps tool selection reliable. Comfortable on 16 GB.", tested=True)
 
-PRIMARY_MODELS = (GEMMA_E4B_MTP, LING_Q6, LING_Q5, LING_Q4, MELLUM_R1_Q4)
+PRIMARY_MODELS = (GEMMA_E4B_WISP, LING_Q6, LING_Q5, LING_Q4, MELLUM_R1_Q4)
+# The tuned Gemma's pre-release folder name: the same weights, on the developer's own
+# Mac. No repo, so nothing offers or downloads it; models.yaml lists it beside Gemma-Wisp.
+GEMMA_E4B_WISP_PRERELEASE = CatalogModel(
+    "gemma-4-E4B-it-r5-step-01800-oQ4e-mtp", "Gemma Wisp (pre-release folder)", GEMMA_E4B_WISP.quant,
+    GEMMA_E4B_WISP.size_gb, GEMMA_E4B_WISP.min_ram_gb, None,
+    "The same weights as Gemma Wisp under their pre-release name.", tested=True,
+    engine_profile=dict(GEMMA_E4B_MTP.engine_profile))
+# Known so a Mac that has them keeps working (profile, label, disk scan), never
+# ranked, recommended or downloadable.
+KEPT_MODELS = (GEMMA_E4B_MTP, GEMMA_E4B_WISP_PRERELEASE)
+# A kept id holding exactly the weights of an offered model: installed, it counts as that model,
+# so a Mac with the pre-release folder is never offered a second 5.6 GB copy of the same files.
+SAME_WEIGHTS = {GEMMA_E4B_WISP_PRERELEASE.id: GEMMA_E4B_WISP.id}
 
 EMBEDDING_MODEL = CatalogModel(
     "Qwen3-Embedding-0.6B-4bit-DWQ", "Qwen3 Embedding 0.6B", "4-bit", 0.35, 8,
@@ -87,13 +139,15 @@ def ranked_for(ram_gb: int, installed: list[str] | None = None) -> tuple[Catalog
     Once any catalog model is installed the full order applies, keeping locally
     available private builds eligible for the memory-appropriate ranking.
     """
-    # Gemma first on every Mac; the Ling builds follow in their memory order.
+    # The tuned Gemma first on every Mac; the Ling builds follow in their memory
+    # order. Base Gemma is not ranked (KEPT_MODELS): an install that has it keeps
+    # it (`use`), and the tuned one is only offered (`get`), never switched to.
     if ram_gb >= 24:
-        order = (GEMMA_E4B_MTP, LING_Q6, LING_Q5, LING_Q4, MELLUM_R1_Q4)
+        order = (GEMMA_E4B_WISP, LING_Q6, LING_Q5, LING_Q4, MELLUM_R1_Q4)
     elif ram_gb >= 16:
-        order = (GEMMA_E4B_MTP, LING_Q5, LING_Q4, LING_Q6, MELLUM_R1_Q4)
+        order = (GEMMA_E4B_WISP, LING_Q5, LING_Q4, LING_Q6, MELLUM_R1_Q4)
     else:
-        order = (GEMMA_E4B_MTP, LING_Q4, LING_Q5, LING_Q6, MELLUM_R1_Q4)
+        order = (GEMMA_E4B_WISP, LING_Q4, LING_Q5, LING_Q6, MELLUM_R1_Q4)
     if installed is None:
         return order
     have = set(installed)
@@ -144,6 +198,15 @@ def fit(model: CatalogModel, ram_gb: int, installed: list[str] | None = None) ->
     return "recommended" if model == ranked_for(ram_gb, installed)[0] else "good"
 
 
+def in_use_order(ram_gb: int, installed: list[str] | None = None) -> tuple[CatalogModel, ...]:
+    """`ranked_for` with the kept models (base Gemma) right below the first: the order
+    in which an install's own models count as what it runs, and are listed. Kept models
+    rank where base ranked before 0.5.0, but only `ranked_for` decides what is offered."""
+    ranked = ranked_for(ram_gb, installed)
+    kept = sorted(KEPT_MODELS, key=lambda m: m.id not in SAME_WEIGHTS)   # the same weights first
+    return (*ranked[:1], *kept, *ranked[1:])
+
+
 def recommend(ram_gb: int, installed: list[str]) -> dict:
     """Pick what to run and, when something better is missing, how to get it.
 
@@ -156,8 +219,10 @@ def recommend(ram_gb: int, installed: list[str]) -> dict:
     """
     ranked = ranked_for(ram_gb, installed)
     have = set(installed)
-    use = next((m for m in ranked if m.id in have), None)
-    better = ranked if use is None else ranked[:ranked.index(use)]
+    use = next((m for m in in_use_order(ram_gb, installed) if m.id in have), None)
+    same = by_id(SAME_WEIGHTS[use.id]) if use and use.id in SAME_WEIGHTS else None
+    anchor = same if same in ranked else use
+    better = ranked[:ranked.index(anchor)] if anchor in ranked else ranked[:1] if use else ranked
     get = next((m for m in better if m.repo and m.id not in have and fits_memory(m, ram_gb)), None)
     # A local preferred model must not silently turn into an offer to download
     # a different family. Existing installed choices remain usable. (On a fresh
@@ -181,4 +246,4 @@ def recommend(ram_gb: int, installed: list[str]) -> dict:
 
 
 def by_id(model_id: str) -> CatalogModel | None:
-    return next((m for m in (*PRIMARY_MODELS, EMBEDDING_MODEL) if m.id == model_id), None)
+    return next((m for m in (*PRIMARY_MODELS, *KEPT_MODELS, EMBEDDING_MODEL) if m.id == model_id), None)
