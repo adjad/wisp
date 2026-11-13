@@ -55,8 +55,39 @@ def test_they_stay_private_for_egress_and_open_only_a_search(prompt):
 @pytest.mark.parametrize("prompt", STILL_PRIVATE)
 def test_personal_or_compound_wordings_get_no_search(prompt):
     assert not mo.public_possessive_question(prompt)
-    forbidden, _ = routing_guard_contract(prompt, model_led=True)
-    assert set(WEB) <= set(forbidden) or not classify(prompt).public_possessive
+    assert not classify(prompt).public_possessive
+
+
+# The same wordings about someone of the user's own. With a time word the
+# classifier left these of unknown ownership, where a model-led turn could
+# still search them: the real-model run of 2026-11-12 searched "Mom's operating
+# hours on Sunday". The earlier form of the test above passed without checking.
+OWN_PERSON = [
+    "Is Mom's open on Sunday?", "When does Mom's close tonight?", "What are Mom's hours today?",
+    "How late is Dad's open?", "Is my dentist's open today?", "is her boss's store open today",
+    "What time does Grandma's open tomorrow?", "Is the doctor's open now?", "When does Dad's close on Sundays?",
+]
+
+
+@pytest.mark.parametrize("prompt", OWN_PERSON)
+def test_an_own_persons_hours_are_private_on_every_route(prompt):
+    request = classify(prompt)
+    assert request.provenance == Provenance.PRIVATE and request.private
+    assert not request.public_possessive and not request.allowed and request.query is None
+    for model_led in (True, False):
+        forbidden, _ = routing_guard_contract(prompt, model_led=model_led)
+        assert set(WEB) <= set(forbidden), (prompt, model_led)
+    assert not mo.web_first(prompt) and main._ask_tool_rank(prompt)[0][:1] != ["web_search"]
+
+
+def test_a_known_persons_hours_are_private_too(monkeypatch):
+    monkeypatch.setattr(mo, "_known_people_tokens", lambda: {"dana", "lee"})
+    for prompt in ("Is Dana's open on Sunday?", "When does Dana Lee's close tonight?"):
+        assert mo.personal_possessive_question(prompt)
+        forbidden, _ = routing_guard_contract(prompt, model_led=True)
+        assert set(WEB) <= set(forbidden), prompt
+    assert not mo.personal_possessive_question("Is Trader Joe's open on Sunday?")
+    assert not mo.personal_possessive_question("Is Costco open on Sunday?")       # no 's: not this shape
 
 
 def test_a_known_person_is_not_a_business(monkeypatch):

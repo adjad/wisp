@@ -1506,6 +1506,19 @@ _WEB_FIRST_PLAIN = frozenset("it that there here what who this these those today
                              "yesterday monday tuesday wednesday thursday friday saturday sunday".split())
 
 
+def personal_possessive_question(prompt: str) -> bool:
+    """The request has the shape of a public possessive question but its owner
+    is the user's own: a relation, a contact detail or a person Wisp knows
+    ("Is Mom's open on Sunday?", "When does Dana's close tonight?"). It is the
+    user's private matter and nothing about it goes to the web. With a time
+    word the classifier used to leave these of unknown ownership, where a
+    model-led turn could still search them (real-model run, 2026-11-12: a
+    search for "Mom's operating hours on Sunday")."""
+    text = _ascii_text(prompt).strip()
+    return bool(text.isascii() and len(text.split()) <= _FACT_MAX_WORDS
+                and _possessive_match(text) and not public_possessive_question(text))
+
+
 # Words a search for a public fact may add to the user's own: the query of a
 # public-fact search is checked against these plus the user's message, so a
 # remembered fact or anything else from context cannot reach the web.
