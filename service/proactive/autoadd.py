@@ -431,9 +431,23 @@ def _saved_contact(item: dict) -> bool:
     if not _person_handle(handle) or _own_handle(handle):
         return False
     try:
-        return bool(str(_contact_name(handle) or "").strip())
+        name = str(_contact_name(handle) or "").strip()
     except Exception:  # noqa: BLE001 — Contacts can't be asked: nobody is known
         return False
+    # The person's own card (a note-to-self chat keyed by their own phone number, which
+    # _own_handle cannot know): never a correspondent.
+    return bool(name) and not _own_name(name)
+
+
+def _own_name(name: str) -> bool:
+    """The saved contact carries the user's own name: exactly, case and spacing aside.
+    Their own number saved under another name is not caught by this."""
+    try:
+        from service.memory.identity import user_name
+        mine = " ".join(str(user_name() or "").split()).casefold()
+    except Exception:  # noqa: BLE001 — their name can't be read: nothing is assumed to be theirs
+        return False
+    return bool(mine) and " ".join(name.split()).casefold() == mine
 
 
 _FREE_MAIL = frozenset({"gmail.com", "googlemail.com", "icloud.com", "me.com", "mac.com", "yahoo.com",

@@ -41,6 +41,9 @@ def saved_contacts(monkeypatch):
     """Contacts holds exactly one handle, SAVED. Texts in these tests come from that one-to-one
     chat unless a test says otherwise; nothing reads the real Contacts."""
     monkeypatch.setattr(autoadd, "_contact_name", lambda handle: "Saved Contact" if handle == SAVED else "")
+    # The user's own name, fixed: nothing here asks the system for it (identity.user_name runs `id -F`).
+    from service.memory import identity
+    monkeypatch.setattr(identity, "user_name", lambda: "Test Owner")
 
 
 def text(who, line, ago_h=1.0, unread=True, mine=(), chat=CHAT, service="iMessage"):
@@ -871,6 +874,33 @@ def test_a_saved_contacts_one_to_one_text_is_added(store, yes):
 def test_a_short_code_never_becomes_an_item_at_all():
     records = [(NOW - 3600, "36726 (conversation 2)", f"36726 (conversation 2): {DATED}", "SMS;-;36726", True)]
     assert sources.text_items(records, now=NOW, own=ME) == []
+
+
+def test_a_note_to_self_chat_under_the_users_own_name_is_never_a_correspondent(store, yes, monkeypatch):
+    """A note-to-self chat keyed by the person's own phone number: _own_handle only knows their
+    email addresses, and their own card is in Contacts, so the name on the card decides."""
+    from service.memory import identity
+    monkeypatch.setattr(autoadd, "_contact_name", lambda handle: "Adi  Jain" if handle == "+15551230001" else "")
+    item = text("Adi Jain", RECITAL)
+    monkeypatch.setattr(identity, "user_name", lambda: "adi jain")       # case and spacing aside
+    assert autoadd._own_name("Adi  Jain") and autoadd._saved_contact(item) is False
+    assert autoadd.plan_for(item, dict(OK), now=NOW, tz=TZ) == (None, "not a saved contact: tap to add")
+    yes(NOW - 2 * 3600)
+    writers = Writers()
+    out, notes = production_step(store, survivors(item), writers)
+    assert writers.calls == [] and out["added"] == [] and store.auto_added() == {}
+    # Another person's card, a name that only contains theirs, or a name that can't be read: unchanged.
+    monkeypatch.setattr(identity, "user_name", lambda: "Maya Chen")
+    assert autoadd._saved_contact(item) is True
+    monkeypatch.setattr(identity, "user_name", lambda: "Adi")
+    assert autoadd._saved_contact(item) is True and not autoadd._own_name("Adi Jain")
+    monkeypatch.setattr(identity, "user_name", lambda: "")
+    assert autoadd._saved_contact(item) is True
+
+    def broken():
+        raise OSError("no name")
+    monkeypatch.setattr(identity, "user_name", broken)
+    assert autoadd._saved_contact(item) is True
 
 
 def test_contacts_that_cannot_be_asked_mean_nobody_is_known(store, yes, monkeypatch):
