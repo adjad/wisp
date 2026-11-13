@@ -40,7 +40,8 @@ PRIVATE_WEB_TOOLS = frozenset({"web_search", "web_fetch", "http_request", "wikip
 # On a turn known to be private the last five stay: "drive time to Mom's"
 # needs the maps tools.
 UNOWNED_EGRESS_TOOLS = PRIVATE_WEB_TOOLS | frozenset({
-    "find_place", "travel_time", "route_to_arrive", "get_weather", "get_stock_price"})
+    "find_place", "travel_time", "route_to_arrive", "get_weather", "get_stock_price",
+    "daily_brief"})                             # its `location` goes to the weather service
 OPAQUE_OUTBOUND_TOOLS = frozenset({"run_shortcut", "run_shell", "run_applescript",
                                     "create_tool", "http_request", "place_call"})
 # Effects the legacy router admitted only for an exact ID the user typed (a

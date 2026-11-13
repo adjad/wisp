@@ -374,7 +374,9 @@ def _explicit(text: str) -> bool:
     # "online" as a state is not a source: "Tell me if Mom is online right
     # now" and "show me who is online" ask nobody to search the web.
     sourced = re.sub(r"\b(?:is|are|am|be|been|being|was|were|gets?|got|goes|went|came|comes?|back|still|"
-                     r"stays?|appears?|shows?(?:\s+up)?|who'?s|it'?s)\s+(?:[a-z]+\s+)?online\b",
+                     r"stays?|appears?|shows?(?:\s+up)?|who'?s|it'?s)\s+(?:[a-z]+\s+)?online\b"
+                     # "Mom's online", "Mom's still online": the 's is "is". Not "Dana's bakery online".
+                     r"|\b[a-z]+'s\s+(?:still\s+|back\s+|currently\s+|even\s+|now\s+)?online\b",
                      " ", _root(text), flags=re.I)
     return command and bool(re.search(r"\b" + _SOURCE_CUE + r"\b", sourced, re.I))
 
@@ -1240,7 +1242,10 @@ def _parse_request(text: str, last_user: str | None = None, *,
         # agent path active so an unverified model claim cannot stream or render.
         acknowledgement_without_offer = False
         provenance, query, clarification = Provenance.PRIVATE, None, None
-    if (provenance in (Provenance.EXTERNAL, Provenance.UNKNOWN) and not explicit and not opted_out
+    names_the_web = explicit and bool(re.search(
+        r"\b(?:web|websites?|internet|google|bing|wikipedia|external\s+(?:sources?|requests?))\b"
+        r"|\b(?:look(?:ing)?\s*up|search(?:ing)?|find|research|check)\b.*\bonline\b", text, re.I))
+    if (provenance in (Provenance.EXTERNAL, Provenance.UNKNOWN) and not names_the_web and not opted_out
             and not write_intent):
         from service.model_only import lookalike_possessive, personal_reference
         # Someone the request only names as a recipient ("email Mom the latest
@@ -1249,7 +1254,8 @@ def _parse_request(text: str, last_user: str | None = None, *,
         # "Did the hospital call Mom today?" is about Mom.
         about = re.sub(r"^\s*(?:(?:please|hey|ok|okay|wisp|can\s+you|could\s+you|would\s+you)[, ]+)*"
                        r"(?:e-?mail|text|message|msg|tell|send|forward|notify|ping|call|remind|let)\s+"
-                       r"(?:to\s+)?(?:my\s+|our\s+)?[A-Za-z]+\b", " ", text, count=1, flags=re.I)
+                       r"(?:to\s+)?(?:my\s+|our\s+)?(?!(?:if|whether|when|where|what|why|how|that|me|us)\b)"
+                       r"[A-Za-z]+\b", " ", text, count=1, flags=re.I)
         if personal_reference(about) or lookalike_possessive(text):
             # A question about someone in the user's life is not a public
             # lookup, whatever time word it carries ("How is Grandma doing

@@ -1540,6 +1540,7 @@ _KIN_PUBLIC = re.compile(
     r"son\s+of\s+\w+|son\s+heung-?min|father\s+of\s+the\s+bride|mother\s+of\s+the\s+bride|"
     r"mother\s+teresa|mother\s+nature|father\s+time|dad'?s\s+army|daddy\s+yankee|papa\s+roach|"
     r"big\s+mama|mama\s+june|father\s+christmas|mother\s+goose|brother\s+hl-?\w+|brother\s+mfc-?\w+)\b")
+_KIN_PUBLIC_CASED = re.compile(_KIN_PUBLIC.pattern, re.I)
 # Owners of an 's that are a person in the user's life (the relation words
 # that are not pronouns or dates).
 _PERSON_OWNERS = frozenset(_RELATION_OWNERS - frozenset("""
@@ -1557,29 +1558,39 @@ _LOOKALIKE_SITE = re.compile(r"[A-Za-z]([^\x00-\x7f])s\b")
 _LOOSE_POSSESSIVE = re.compile(r"([a-z0-9][a-z0-9&.-]*)'s?(?=\s|$|[?.!,;:])")
 
 
-def _loose_text(text: str) -> str:
-    """Lower-cased, accents removed, every apostrophe-like mark a plain one:
-    "Is Mam\u00e1\u02b9s open?" reads as "is mama's open?"."""
+def _loose_cased(text: str) -> str:
+    """Accents removed and every apostrophe-like mark a plain one, casing kept."""
     import unicodedata
     plain = unicodedata.normalize("NFKD", unicodedata.normalize("NFKC", text or ""))
     plain = "".join(c for c in plain if not unicodedata.combining(c))
-    return plain.translate(_LOOSE_APOSTROPHES).lower()
+    return plain.translate(_LOOSE_APOSTROPHES)
+
+
+def _loose_text(text: str) -> str:
+    """_loose_cased, lower-cased: "Is Mam\u00e1\u02b9s open?" reads as "is mama's open?"."""
+    return _loose_cased(text).lower()
 
 
 _KIN_ALT = "|".join(sorted(_KIN, key=len, reverse=True))
 # "my mom", "our landlord", "my little sister".
 _KIN_MINE = re.compile(rf"\b(?:my|our)\s+(?:[a-z]+\s+)?(?:{_KIN_ALT})\b")
-# The kin word as the subject of a question about how, where or what they are
-# or did: "How is Grandma doing", "Is Mom home yet", "Where is Dad right now",
-# "Did Dad call", "What did Mom say".
+# The kin word in subject position, right after a question lead: "How is
+# Grandma doing", "When will Dad be home", "Is Mom mad at me", "Did Grandma
+# fall again", "Why is Mom upset", "Who is Dad with". Whatever follows, the
+# question is about them, unless what follows makes the kin word the start of
+# a name (see personal_reference).
+_KIN_AUX = (r"(?:is|are|was|were|did|does|do|has|have|had|will|would|can|could|should|might|may|"
+            r"isn't|aren't|wasn't|didn't|doesn't|hasn't|won't|can't)")
 _KIN_SUBJECT = re.compile(
-    rf"^(?:(?:so|and|hey|ok|okay|wisp|please)[, ]+)*"
-    rf"(?:how(?:'s|\s+is|\s+are|\s+was|\s+were|\s+has|\s+did)|where(?:'s|\s+is|\s+are|\s+was|\s+did)|"
-    rf"what(?:'s|\s+is|\s+did|\s+does|\s+has|\s+was)|what\s+time\s+(?:is|does|did|will)|"
-    rf"when\s+(?:is|does|did|will|are)|is|are|was|were|did|does|do|has|have|had|will|would|can|could|should)\s+"
-    rf"(?:the\s+)?(?:{_KIN_ALT})\b[\s,]*(?P<next>[a-z']*)")
-# What may follow the kin word for it to be a person and not the first word of
-# a name ("Is Brother printer ...", "Did Daddy Yankee ...", "Is Son Heung-min ...").
+    rf"^(?:(?:so|and|hey|ok|okay|wisp|please|um|uh)[, ]+)*"
+    rf"(?:(?:how|where|when|why|who|which|what(?:\s+time)?)(?:'s|\s+{_KIN_AUX})?|{_KIN_AUX})\s+"
+    rf"(?:the\s+)?(?P<kin>{_KIN_ALT})\b", re.I)
+# The same with the verb dropped: "Mom home yet?", "Dad ok?".
+_KIN_BARE = re.compile(
+    rf"^(?:the\s+)?(?:{_KIN_ALT})\s+(?:home|ok|okay|alright|back|here|there|awake|asleep|up|coming|free|busy|"
+    rf"sick|better|fine|around|in|out|still|safe|ready|done|yet)\b", re.I)
+# Words that may follow a kin subject with a capital letter and still not make
+# it a name ("Is Mom OK", "Is Dad Home").
 _KIN_FOLLOW = frozenset("""
 doing home ok okay alright fine well sick better worse awake asleep up free busy coming going here
 there back around out in at on still yet now today tonight tomorrow right call called calling text
@@ -1587,7 +1598,8 @@ texted texting message messaged email emailed reply replied say said saying arri
 landed leave left leaving get got getting make made want wants wanted need needs needed feel feeling
 sleep sleeping eat eating work working visit visiting drive driving fly flying send sent know see
 ask asked like have has go come stay staying move moved moving plan planning pick picking mention
-mentioned write wrote tell told think thinks and or with up
+mentioned write wrote tell told think thinks and or with up be been mad upset lonely sad happy angry
+tired hurt safe ready done late early eaten take taken pay paid fall fell i
 """.split())
 # The kin word as the one something was done to, in a question ("Did the
 # hospital call Mom today?", "Will they let Dad go home today?").
@@ -1602,28 +1614,41 @@ _KIN_CLAUSE = re.compile(
     rf"\b(?:if|whether|when|where|why|how|what|that)\s+(?:the\s+)?(?:{_KIN_ALT})\s+"
     rf"(?:is|are|was|were|has|had|will|would|did|does|can|could|got|gets|said|says|wants|needs|called|"
     rf"texted|arrived|arrives|landed|lands|left|leaves)\b")
-# News of them: "any news from mom", "what's the latest from Grandma".
-_KIN_FROM = re.compile(rf"\b(?:from|with)\s+(?:the\s+)?(?:{_KIN_ALT})\b\s*[?.!]*$")
+# News of them: "any news from mom", "any word from Dad yet?", "what's the latest from Grandma today".
+_KIN_FROM = re.compile(
+    rf"\b(?:from|with)\s+(?:the\s+)?(?:{_KIN_ALT})\b"
+    rf"(?:\s+(?:today|tonight|yet|now|lately|recently|so\s+far|at\s+all|this\s+[a-z]+|right\s+now))*\s*[?.!]*$")
 
 
 def personal_reference(prompt: str) -> bool:
     """The request is ABOUT someone in the user's life, named by a kin word:
-    with "my" or "our" ("my mom", "our landlord"), as the subject of a how,
-    where or what question ("How is Grandma doing today?", "Is Mom home
-    yet?", "Did Dad call?"), as the one something was done to in a question
-    ("Did the hospital call Mom today?"), or as whom news is from. A kin word
-    that merely appears is not one: "best gifts for dad", "husband pillow
-    reviews", "Brother printer", "Daddy Yankee tour dates" stay public. An 's
-    is personal_owner's. No ASCII or length gate. A bare first name is not
-    recognised: reading the know-you profile for every request would break
-    the host's rule that routing loads no saved context in test mode or when
-    the user has opted out of it."""
-    loose = _KIN_PUBLIC.sub(" ", _loose_text(prompt)).strip()
+    with "my" or "our" ("my mom", "our landlord"); in subject position after
+    a question lead, whatever follows ("How is Grandma doing today?", "When
+    will Dad be home?", "Is Mom mad at me?", "Did Grandma fall again?"), or
+    with the verb dropped ("Mom home yet?"); as the one something was done to
+    in a question ("Did the hospital call Mom today?"); inside a clause
+    ("Tell me if Mom is online"); or as whom news is from.
+
+    A kin word that merely appears is not one: "best gifts for dad",
+    "husband pillow reviews", "Brother printer". In subject position it is
+    still a name when it starts one on the public list (_KIN_PUBLIC) or when,
+    in the text as typed, the next word is capitalised and is not an ordinary
+    word ("Is Sister Rosetta Tharpe touring?"). An 's is personal_owner's.
+
+    No ASCII or length gate. A bare first name is not recognised: reading the
+    know-you profile for every request would break the host's rule that
+    routing loads no saved context in test mode or after an opt-out."""
+    cased = _KIN_PUBLIC_CASED.sub(lambda m: " " * len(m.group()), _loose_cased(prompt))
+    loose = cased.lower().strip()
     if (_KIN_MINE.search(loose) or _KIN_OBJECT.search(loose) or _KIN_FROM.search(loose)
-            or _KIN_CLAUSE.search(loose)):
+            or _KIN_CLAUSE.search(loose) or _KIN_BARE.match(loose)):
         return True
-    m = _KIN_SUBJECT.match(loose)
-    return bool(m and (not m.group("next") or m.group("next").strip("'") in _KIN_FOLLOW))
+    m = _KIN_SUBJECT.match(cased.lstrip())
+    if not m:
+        return False
+    following = re.match(r"\s+([A-Z][\w'-]*)", cased.lstrip()[m.end():])
+    # "Is Sister Rosetta ..." is a name; "Is Mom OK" and "Is Dad Home" are not.
+    return not (following and following.group(1).lower().strip("'") not in _KIN_FOLLOW)
 
 
 def personal_owner(prompt: str) -> bool:
@@ -1676,6 +1701,8 @@ ipo game games match matches score scores standings record season playoffs final
 album albums song songs single tour concert concerts show shows movie movies film films episode
 episodes series trailer premiere menu hours release launch event events keynote lineup roster
 ratio ratios ceo headquarters founder showing airing streaming playing
+phone phones laptop laptops tablet console version update model models product products
+burger burgers flavor flavors flavour flavours sandwich breakfast brunch drive-thru
 """.split())
 # A holiday written with an 's: its date is public.
 _HOLIDAY = re.compile(r"\b(?:mother|father|valentine|st\.?\s+patrick|new\s+year|president|veteran)s?'?s?\s+(?:day|eve)\b")
@@ -1700,11 +1727,14 @@ def public_owner_request(prompt: str) -> bool:
     words = set(re.findall(r"[a-z0-9&-]+", _KIN_PUBLIC.sub(" ", text.lower())))
     if words & _PERSONAL_HEADS or words & _WEB_FIRST_OWN or words & (_PERSON_OWNERS | _KIN):
         return False
-    if not (words & _PUBLIC_HEADS or words & _FRESH_WORDS or _HOLIDAY.search(text.lower())):
+    # A public noun, not merely "new" or "latest": "Is Ben's new puppy okay today?" has none.
+    if not (words & _PUBLIC_HEADS or _HOLIDAY.search(text.lower())):
         return False
     # Every long number must itself be a year: one year does not excuse a phone number.
     if any(not re.fullmatch(r"(?:19|20)\d{2}", run) for run in re.findall(r"\d{4,}", text)):
         return False
+    if _PHONE_GROUP.search(text) or re.search(r"\d{3}[\s.)]+\d{3}[\s.-]+\d{4}\b", text):
+        return False                            # "415-555-2019" ends in a year-like group
     return bool(re.search(r"[a-z0-9]'(?:s\b|(?=\s|$|[?.!,]))", text.lower()))
 
 
