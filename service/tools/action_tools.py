@@ -799,6 +799,26 @@ def _cc_addresses(cc: str) -> tuple[list[str], str]:
     return resolved, ""
 
 
+def _self_not_invented(to: str) -> str:
+    """`to` with every address or number the person did not type, and that is
+    not their own, read as "me", on a turn where they named themselves as the
+    recipient ("Email myself a test" reached a card addressed to an address
+    the model made up, 2026-11-13 real-model run). Other turns: unchanged."""
+    from service.tools.self_send import named_self, typed_this_turn
+    if not to or not named_self():
+        return to
+    try:
+        from service.memory.identity import user_emails
+        own = {e.strip().casefold() for e in user_emails() or []}
+    except Exception:  # noqa: BLE001 - no identity: nothing is known to be theirs
+        own = set()
+    parts = _split_recipients(to) if "@" in to else [to]
+    kept = ["me" if (_is_handle(r) and r.casefold() not in own and not typed_this_turn(r)
+                     and not _saved_name(r)) else r
+            for r in parts]
+    return ", ".join(dict.fromkeys(kept))
+
+
 def prepare_send_recipient(tool, args: dict) -> tuple[dict, str | None]:
     """(args, problem): settle a send's recipient once, BEFORE its card.
 
@@ -820,6 +840,9 @@ def prepare_send_recipient(tool, args: dict) -> tuple[dict, str | None]:
         return args, None
     tool = name
     to = str(args.get("to") or "").strip()
+    if (mine := _self_not_invented(to)) != to:
+        to = mine
+        args = {**args, "to": to}
     if not to and _own_recipient("me") is not None:
         # "Text myself …" with no recipient passed: the person named themselves.
         to = "me"
