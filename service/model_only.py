@@ -1808,19 +1808,34 @@ _FRESH_WORDS = frozenset("new newest latest current upcoming next".split())
 _OWNER_REQUEST_MAX_WORDS = 16
 
 
+_HOLIDAY_CASED = re.compile(_HOLIDAY.pattern, re.I)
+
+
 def holiday_question(prompt: str) -> bool:
     """A question about a public holiday written with an 's ("When is Father's
     Day?", "Mother's Day brunch near me today", "Valentine's Day gift ideas"):
-    its date and customs are public, with or without a time word. Plain ASCII,
-    short, not "my" or "our", and nobody of the user's own beside the holiday."""
+    its date and customs are public, with or without a time word.
+
+    The holiday excuses only itself. With its name taken out, the rest must
+    hold nobody and nothing of anyone's: no other possessive ('s or s'), no
+    family word of either set, no he/she/him/her/his/hers, no "with <Name>",
+    no street address (a number before a capitalised word), no my or our, no
+    long number that is not a year. "Grandma fell on Mother's Day, is she
+    ok?" and "Dana's Mother's Day plans today" are not holiday questions."""
     text = _ascii_text(prompt).strip()
-    low = text.lower()
-    if not (text.isascii() and len(text.split()) <= _OWNER_REQUEST_MAX_WORDS and _HOLIDAY.search(low)):
+    if not (text.isascii() and len(text.split()) <= _OWNER_REQUEST_MAX_WORDS
+            and _HOLIDAY.search(text.lower())) or lookalike_possessive(prompt):
         return False
-    if re.search(r"\b(?:my|our|mine|ours)\b", low) or lookalike_possessive(prompt):
+    rest_cased = _HOLIDAY_CASED.sub(" ", text)
+    rest = rest_cased.lower()
+    words = set(re.findall(r"[a-z0-9&-]+", rest))
+    if "'" in rest or words & (_KIN | _SOFT_KIN | _PERSON_OWNERS):
         return False
-    rest = _HOLIDAY.sub(" ", low)
-    if personal_reference(rest) or personal_owner(rest):
+    if words & {"my", "our", "mine", "ours", "he", "she", "him", "her", "his", "hers"}:
+        return False
+    if re.search(r"\bwith\s+[A-Z][a-z]+", rest_cased) or re.search(r"\b\d+[a-z]?\s+[A-Z][a-z]+", rest_cased):
+        return False
+    if personal_reference(rest_cased) or personal_owner(rest_cased):
         return False
     return not any(re.fullmatch(r"(?:19|20)\d{2}", run) is None for run in re.findall(r"\d{4,}", text))
 
