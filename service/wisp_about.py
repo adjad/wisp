@@ -691,6 +691,127 @@ def privacy() -> str:
     return "\n".join(out)
 
 
+# --- What Wisp does on its own (service/proactive/acting.py) ------------------
+# Answers to "How much do you do on your own?", "Will you reply to my emails
+# for me?", "Does anything I type leave this Mac?" and "What's new in Wisp?"
+# (model_only.own_question). Every line about acting is acting.py's own
+# wording (ACTIONS, NEVER, SCOPE) and its live state, read and never written.
+
+_ACTING_LABELS = {"add": "Texts with a date", "hold": "Deadlines", "follow_up": "Replies you owe"}
+_ACT_WHERE = "Settings › Privacy, or the notch's settings (the gear)"
+_DRAFTS = "I draft replies for you to send; a send always shows a card and waits for your OK."
+
+
+def _acting_state() -> dict | None:
+    """acting.state() plus how many of today's actions are used, or None when
+    it can't be read (the answer then says the cautious thing)."""
+    try:
+        import time
+        from service.proactive import acting
+        state = dict(acting.state())
+        state["actions"] = dict(acting.ACTIONS)
+        state["covered"] = [key for key in acting.ACTIONS if acting.enabled(key)]
+        state["used"] = None
+        if state["enabled"]:
+            try:
+                from service.proactive.store import store
+                state["used"] = int(acting.done_since(store(), time.time() - acting.DAY_S))
+            except Exception:  # noqa: BLE001 - the count is a detail; say the limit without it
+                state["used"] = None
+        return state
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def acting() -> str:
+    state = _acting_state()
+    if state is None:
+        return ("**I couldn't check whether \"Let Wisp act for me\" is on.**\n\n"
+                "- It is off until you say yes, in " + _ACT_WHERE + ".\n"
+                "- **Never**: Wisp never sends, replies, deletes or pays for anything by itself. " + _DRAFTS)
+    limit = state["per_day"]
+    if state["enabled"]:
+        out = ["**\"Let Wisp act for me\" is on**, so I do these on my own, each with an Undo:", ""]
+        keys = state["covered"]
+    else:
+        out = ["**Nothing yet: \"Let Wisp act for me\" is off.** It stays off until you say yes. "
+               "After your yes I would do these on my own, each with an Undo:", ""]
+        keys = list(state["actions"])
+    out += [f"- **{_ACTING_LABELS.get(key, key)}**: {state['actions'][key]}" for key in keys]
+    waiting = [key for key in state["actions"] if key not in keys]
+    if state["enabled"] and waiting:
+        out.append("- **Not agreed yet**: " + _join([_ACTING_LABELS.get(k, k).lower() for k in waiting])
+                   + ". I don't do that until you say yes to it.")
+    used = state.get("used")
+    cap = f"- **Limit**: at most {limit} actions a day, all kinds together."
+    if state["enabled"] and used is not None:
+        cap += f" {min(used, limit)} of today's {limit} used."
+    out += [cap,
+            "- **Scope**: " + state["scope"],
+            "- **Never**: " + state["never"] + " " + _DRAFTS,
+            "- **The switch**: " + _ACT_WHERE + "."]
+    return "\n".join(out)
+
+
+def replies() -> str:
+    state = _acting_state()
+    on = bool(state and state["enabled"] and "follow_up" in state["covered"])
+    never = state["never"] if state else "Wisp never sends, replies, deletes or pays for anything by itself."
+    reminder = ("- **Reminders to reply**: \"Let Wisp act for me\" is on, so when someone asked you something by "
+                "email over a day ago and hasn't heard back, I add a \"Reply to <name>\" reminder (Google accounts "
+                "linked in Wisp)." if on else
+                "- **Reminders to reply**: with \"Let Wisp act for me\" on, I add a \"Reply to <name>\" reminder when "
+                "someone asked you something by email over a day ago and hasn't heard back (Google accounts linked "
+                "in Wisp). It is off now"
+                + ("." if state is not None else " or I couldn't check.")
+                + " The switch is in " + _ACT_WHERE + ".")
+    return "\n".join([
+        "**No. I never send a reply by myself.**", "",
+        "- **Drafts**: ask me to reply to an email or a text and I write it. It is sent only after you "
+        "OK its card, every time.",
+        reminder,
+        "- **Never**: " + never])
+
+
+_WEB_WORDS = ("- **The web**: a web lookup sends only its search words, or the address of the page it opens. "
+              "A question about someone in your life is not searched.")
+
+
+def leaves() -> str:
+    """privacy() for the live local/cloud state, plus what a web lookup sends."""
+    lines = privacy().split("\n")
+    at = next((i for i, line in enumerate(lines) if line.startswith("- Some things have to go online")), len(lines))
+    return "\n".join([*lines[:at + 1], _WEB_WORDS, *lines[at + 1:]])
+
+
+def whats_new() -> str:
+    state = _acting_state()
+    switch = ("on" if state["enabled"] else "off until you say yes") if state else "off until you say yes"
+    limit = state["per_day"] if state else 10
+    return "\n".join([
+        "**New in Wisp 0.5.0:**", "",
+        f"- **Acting for you**: a new switch, \"Let Wisp act for me\" ({switch}). With it on I add a dated "
+        "iMessage from a saved contact to Calendar, hold an hour for a deadline and remind you to reply to "
+        f"email, at most {limit} actions a day, each with an Undo. Wisp never sends anything by itself.",
+        "- **Gemma Wisp**: a model tuned on Wisp's own tools is the default for new installs.",
+        "- **Demo mode**: a switch in the menu-bar icon's menu that keeps the model loaded and warm for the "
+        "fastest answers.",
+        "- **Web privacy**: a web lookup sends only its search words, and a question about someone in your "
+        "life stays off the web."])
+
+
+OWN_ANSWERS = {"acting": acting, "replies": replies, "leaves": leaves, "whats_new": whats_new}
+
+
+def own_answer(kind: str) -> str:
+    """The report for one model_only.own_question kind, else ""."""
+    build = OWN_ANSWERS.get(kind)
+    try:
+        return build() if build else ""
+    except Exception:  # noqa: BLE001 - no report: the model answers as before
+        return ""
+
+
 # How-to entries: (keywords that pick it, the step). A specific question
 # ("how do I connect Google?") gets only its matching entries; anything else
 # gets the whole guide.

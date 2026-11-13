@@ -2643,6 +2643,26 @@ async def run_agent(
     # user's requested memory context.
     memory_query = next((str(m.get("content") or "") for m in reversed(messages)
                          if m.get("role") == "user"), "")
+    if ask_quality and not test_mode and not ask_direct and picture_reading is None:
+        # Wisp's own permissions and switches, and what it does on its own:
+        # answered by fixed, true text before any model step. No tool changes
+        # a permission, so a model answer here could only be a claim.
+        from service.model_only import OWN_SWITCH_ANSWER, own_question, own_switch_request
+        from service.model_only import pure_writing as _own_writing
+        from service.router.router import mask_quoted as _own_mask
+        own_text = ""
+        if _own_writing(memory_query):
+            pass  # "Write IT an email asking them to enable full access" is writing
+        elif own_switch_request(_own_mask(memory_query)):
+            own_text, own_kind = OWN_SWITCH_ANSWER, "switch"
+        elif own_kind := own_question(memory_query):
+            from service import wisp_about
+            own_text = wisp_about.own_answer(own_kind)
+        if own_text:
+            audit("ask_own_answer", kind=own_kind)
+            await emit({"type": "text", "text": own_text})
+            await emit({"type": "done"})
+            return own_text
     # The user's own words for service/safety/intent_guard: this request, the
     # message before it, and the assistant turn it answers.
     _said = [i for i, m in enumerate(messages) if m.get("role") == "user"]
@@ -4841,6 +4861,15 @@ async def run_agent(
                 audit("ask_unknown_personal_fact", step=_step)
                 from service.model_only import ASK_UNKNOWN_MESSAGE
                 text = ASK_UNKNOWN_MESSAGE
+            if ask_quality and not test_mode:
+                from service.model_only import OWN_SWITCH_ANSWER, own_switch_claim
+                if own_switch_claim(text):
+                    # "I've turned on Full access": no tool changes Wisp's own
+                    # permissions or switches, so this is never true.
+                    audit("ask_own_switch_claim", step=_step)
+                    if content_streamed:
+                        await emit({"type": "clear_answer"})
+                    text = OWN_SWITCH_ANSWER
             if _ask_unbacked_claim(text) is not None:
                 # Still claims a change no tool made: say plainly it was not
                 # done, never the claim (the user looked for a reminder that

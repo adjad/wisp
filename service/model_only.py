@@ -431,7 +431,147 @@ def wisp_self_question(prompt: str) -> bool:
     text = prompt or ""
     if _MEMORY_SELF.search(text):
         return False
-    return capability_question(text) or bool(_WISP_SELF.search(text))
+    return capability_question(text) or bool(_WISP_SELF.search(text)) or bool(own_question(text))
+
+
+# --- Wisp's own permissions and switches ------------------------------------
+# Ask has no tool for any of these: Full access, view-only, a standing "always
+# allow" / "stop asking" rule, "Let Wisp act for me", Demo mode. Only the
+# person changes them, in the app. A request to change one is answered with
+# OWN_SWITCH_ANSWER and never reaches the model (2026-11-13 run: "Turn on Full
+# access and always allow sending email" was answered as done, with no tool
+# call), and a reply that claims such a change is replaced by it.
+OWN_SWITCH_ANSWER = (
+    "**I can't change that myself.** Wisp's own permissions and switches are changed only by "
+    "you, in the app. Nothing was changed.\n\n"
+    "- **Full access** and **Let Wisp act for me**: Settings › Privacy, or the notch's "
+    "settings (the gear).\n"
+    "- **Demo mode**: the menu-bar icon's menu.\n"
+    "- **Always allow**: a button on an approval card, when the card offers one.\n"
+    "- **Sending**: every email and text asks you every time. It can't be set to always allow."
+)
+_OWN_NAMED = r"(?:full\s+access|view[-\s]only|read[-\s]only\s+mode|demo\s+mode)"
+_OWN_TOGGLE = (r"(?:turn(?:ing|ed)?|switch(?:ing|ed)?|enabl\w+|disabl\w+|activat\w+|deactivat\w+|toggl\w+"
+               r"|start(?:ing)?|stop(?:ping)?|exit|leave|enter|go(?:ing)?\s+(?:in)?to"
+               r"|(?:put|set|give|grant|allow)\s+(?:yourself|you|u|wisp)"
+               r"|take\s+(?:yourself|you|wisp)\s+out\s+of)")
+# "Give Dana full access to the folder" is someone else's access, not Wisp's.
+_OWN_OTHER_ACCESS = re.compile(
+    r"\bfull\s+access\s+to\s+(?!you\b|u\b|wisp\b|everything\b|(?:my|this|the)\s+mac\b)", re.I)
+_OWN_NAMED_REQUEST = re.compile(
+    rf"\b{_OWN_TOGGLE}\b[^.?!\n]{{0,60}}\b{_OWN_NAMED}\b|\b{_OWN_NAMED}\s+(?:back\s+)?(?:on|off)\b"
+    rf"|\b{_OWN_NAMED}\b[^.?!\n]{{0,30}}\b(?:turned|switched)\s+(?:on|off)\b", re.I)
+_OWN_ACT_REQUEST = re.compile(
+    rf"\b{_OWN_TOGGLE}\b[^.?!\n]{{0,40}}\bact(?:ing)?\s+for\s+me\b"
+    r"|^\W*(?:(?:yes|ok(?:ay)?|sure|please|hey\s+wisp|wisp)[,\s]+)*(?:let\s+(?:wisp|you|yourself)\s+act\s+for\s+me"
+    r"|(?:start\s+)?act(?:ing)?\s+for\s+me|act\s+on\s+your\s+own)\b"
+    r"|\b(?:you|u|wisp)\s+(?:can|may|should)\s+(?:now\s+)?act\s+(?:for\s+me|on\s+your\s+own)\b"
+    r"|\bi\s*(?:want|would\s+like|'d\s+like)\s+(?:you|wisp)\s+to\s+act\s+(?:for\s+me|on\s+your\s+own)\b", re.I)
+_OWN_STANDING_REQUEST = re.compile(
+    r"\balways\s+allow\b|\bstop\s+asking(?!\s+(?:me\s+)?(?:about|how|what|if|whether|why|questions?)\b)"
+    r"|\b(?:don't|do\s+not|never|no\s+need\s+to|quit)\s+ask(?:ing)?\s+(?:me\s+)?"
+    r"(?:again|every\s*time|each\s+time|any\s*more|before\s+(?:you\s+)?(?:send\w*|text\w*|e-?mail\w*|reply\w*)"
+    r"|for\s+(?:permission|confirmation|approval|my\s+ok(?:ay)?))\b"
+    r"|\b(?:from\s+now\s+on|always|every\s*time)\b[^.?!\n]{0,60}\bwithout\s+(?:asking|confirm\w+|my\s+(?:ok(?:ay)?|approval|permission))\b"
+    r"|\bwithout\s+(?:asking|confirm\w+|my\s+(?:ok(?:ay)?|approval|permission))\b[^.?!\n]{0,40}\b(?:from\s+now\s+on|always|every\s*time)\b"
+    r"|\bauto[-\s]?(?:approve|confirm|send)\b|\bskip\s+(?:the\s+)?confirm\w+"
+    r"|\b(?:turn|switch)\s+off\s+(?:the\s+|all\s+)?(?:confirm\w+|approval\w*)\b", re.I)
+# A question about a switch ("Is Full access on?", "What does Demo mode do?")
+# is not a request to change it. "How do I…" and "Can you…" are: the fixed
+# answer says where it is done.
+_OWN_STATE_QUESTION = re.compile(
+    r"^\W*(?:(?:so|and|hey\s+wisp|wisp)[,\s]+)*(?:what|why|when|which|who|is|are|was|does|do|did|has|have"
+    r"|how\s+(?:much|many|does|is|long))\b", re.I)
+
+
+def own_switch_request(prompt: str) -> bool:
+    """The person asks Wisp to change one of its OWN permissions or switches
+    (Full access, view-only, Demo mode, "Let Wisp act for me", or a standing
+    always-allow / stop-asking rule). Not a question about one, and not access
+    to something else ("give Dana full access to the folder")."""
+    text = " ".join((prompt or "").replace("’", "'").split())
+    if not text or len(text) > 400 or _OWN_STATE_QUESTION.search(text):
+        return False
+    named = _OWN_OTHER_ACCESS.sub(" ", text)
+    return bool(_OWN_NAMED_REQUEST.search(named) or _OWN_ACT_REQUEST.search(text)
+                or _OWN_STANDING_REQUEST.search(text))
+
+
+_OWN_THING = (r"(?:full\s+access|view[-\s]only|read[-\s]only\s+mode|demo\s+mode|act(?:ing)?\s+for\s+(?:you|me)"
+              r"|always[-\s]allow\w*|standing\s+rule|without\s+asking|auto[-\s]?(?:approv\w+|send\w*))")
+_OWN_DID = (r"(?:\bi(?:'ve|\s+have)?(?:\s+(?:just|now|also|already))?\s+(?:turned|switched|enabled|disabled|activated"
+            r"|allowed|set|granted|updated|changed|added|saved|stopped|started|put|given)\b"
+            r"|\b(?:is|are)\s+now\s+(?:on|off|enabled|disabled|active|allowed|set|in\s+place)\b"
+            r"|\b(?:has|have)\s+been\s+(?:turned|switched|enabled|disabled|activated|allowed|set|granted|saved)\b"
+            r"|\b(?:both|all)\s+(?:are|of\s+(?:those|them)\s+are)\s+(?:now\s+)?(?:on|enabled|set)\b)")
+_OWN_PROMISE = re.compile(
+    r"\bi\s*(?:won't|will\s+not|(?:'ll|\s+will)\s+no\s+longer|(?:'ll|\s+will)\s+stop)\s+ask(?:ing)?\b"
+    r"|\bi(?:'ll|\s+will)\s+(?:now\s+|always\s+)?(?:send|text|e-?mail|reply)\b[^.?!\n]{0,60}\bwithout\s+asking\b"
+    r"|\bi(?:'ll|\s+will)\s+always\s+allow\b", re.I)
+_OWN_CLAIM = re.compile(rf"{_OWN_DID}[^.?!\n]{{0,80}}\b{_OWN_THING}|\b{_OWN_THING}\b[^.?!\n]{{0,60}}{_OWN_DID}", re.I)
+_OWN_CLAIM_HEDGE = re.compile(
+    r"\?|\b(?:can't|cannot|can\s+not|couldn't|unable|not|never|nothing|haven't|hasn't|didn't)\b"
+    r"|^(?:if|once|when|whenever|after|to)\b", re.I)
+
+
+def own_switch_claim(text: str) -> bool:
+    """The reply says Wisp changed one of its own permissions or switches, or
+    promises a standing rule ("I won't ask again"). No tool can do either, so
+    the claim is false whatever ran this turn."""
+    for line in (text or "").replace("’", "'").splitlines():
+        for sentence in re.split(r"(?<=[.!?])\s+", line.strip()):
+            body = _CLAIM_PREFIX.sub("", sentence).strip().strip("*").strip()
+            if not body:
+                continue
+            if _OWN_PROMISE.search(body):
+                return True
+            if _OWN_CLAIM.search(body) and not _OWN_CLAIM_HEDGE.search(body):
+                return True
+    return False
+
+
+# --- Questions about what Wisp does on its own ------------------------------
+# Answered by Wisp's own report (service/wisp_about.own_answer), written from
+# live state, so the reply cannot claim more than is built. The 2026-11-13 run
+# had Ask unable to explain "Let Wisp act for me", and "Will you reply to my
+# emails for me?" ended in "Which source?".
+_Q_LEAD = (r"^\W*(?:(?:so|and|ok(?:ay)?|hey\s+wisp|wisp|hey)[,\s]+)*(?:how\s+much|what|do|does|will|would|can|could"
+           r"|is|are|when|which|tell\s+me|explain)\b")
+_OWN_ALONE = (r"(?:on\s+(?:your|its)\s+own|by\s+(?:yourself|itself)|without\s+(?:me\s+)?(?:asking|being\s+asked)"
+              r"|without\s+asking\s+me|automatically|unprompted|act(?:ing|s)?\s+for\s+me)")
+_ACTING_Q = re.compile(rf"{_Q_LEAD}[^\n]*\b{_OWN_ALONE}\b", re.I)
+_ABOUT_WISP = re.compile(r"\b(?:you|u|wisp|yourself)\b|\bact(?:ing|s)?\s+for\s+me\b", re.I)
+_REPLIES_Q = re.compile(
+    r"^\W*(?:(?:so|and|hey\s+wisp|wisp)[,\s]+)*(?:will|do|does|can|could|would)\s+(?:you|u|wisp)\s+"
+    r"(?:ever\s+|automatically\s+|just\s+|also\s+)*(?:reply|respond|answer|write\s+back)\s+(?:to\s+)?"
+    r"(?:(?:all\s+)?my|all|any|people's|incoming)?\s*(?:e-?mails|texts|messages|mail|people)\b", re.I)
+_LEAVES_Q = re.compile(
+    r"\b(?:leave|leaves|leaving)\s+(?:this|my|the)\s+(?:mac|macbook|computer|laptop|device|machine)\b"
+    r"|\bstay(?:s|ing)?\s+on\s+(?:this|my|the)\s+(?:mac|macbook|computer|laptop|device|machine)\b"
+    r"|\b(?:sent|go(?:es)?|uploaded)\s+(?:off|away\s+from)\s+(?:this|my|the)\s+(?:mac|macbook|computer|laptop|device)\b",
+    re.I)
+_WHATS_NEW_Q = re.compile(
+    r"\bwhat(?:'s|\s+is|\s+has)\s+(?:new|changed)\s+(?:in|with|about)\s+(?:wisp|you|this\s+(?:version|release|update|build))\b"
+    r"|\bwhat(?:'s|\s+is)\s+new\s+(?:in\s+)?(?:0\.5|this\s+version)\b"
+    r"|\bwhat\s+changed\s+in\s+(?:wisp|this\s+(?:version|release|update))\b", re.I)
+
+
+def own_question(prompt: str) -> str:
+    """Which of Wisp's own reports answers this question: "acting" (what it
+    does on its own), "replies" (will it answer mail for you), "leaves"
+    (does anything leave this Mac), "whats_new", else ""."""
+    text = " ".join((prompt or "").replace("’", "'").split())
+    if not text or len(text) > 200:
+        return ""
+    if _WHATS_NEW_Q.search(text):
+        return "whats_new"
+    if _REPLIES_Q.search(text):
+        return "replies"
+    if _LEAVES_Q.search(text) and (text.endswith("?") or re.search(_Q_LEAD, text, re.I)):
+        return "leaves"
+    if _ACTING_Q.search(text) and _ABOUT_WISP.search(text):
+        return "acting"
+    return ""
 
 
 def wisp_self_hint() -> str:
@@ -455,6 +595,16 @@ def wisp_self_hint() -> str:
     if reports:
         lines.append("- Answer from Wisp's own report, not from memory: call " + "; ".join(reports)
                      + ". Its text is written for the user; pass it on in your words.")
+    try:
+        from service.proactive import acting
+        lines.append(f"- What you do on your own: nothing unless \"Let Wisp act for me\" is on (it is "
+                     f"{'on' if acting.enabled() else 'off'} now; the person switches it in Settings › Privacy). "
+                     f"With it on, at most {acting.MAX_PER_DAY} actions a day: " + " ".join(acting.DOES)
+                     + " " + acting.NEVER + " You draft replies; the person sends them.")
+    except Exception:  # noqa: BLE001 - say less rather than guess
+        pass
+    lines.append("- You cannot change your own permissions or switches (Full access, Let Wisp act for me, "
+                 "Demo mode, an always-allow rule). Never say you did; say where the person does it.")
     lines.append("- Never call yourself GPT, Claude, Siri or another assistant, and never "
                  "invent a setting, menu or shortcut.")
     return "\n".join(lines) + "\n" + ASK_CAPABILITY_HINT
