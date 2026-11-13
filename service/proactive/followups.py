@@ -25,18 +25,28 @@ IMPORTANT rules:
   - nothing sensitive or withheld, and no link, address or phone number in it;
   - unanswered for one to four days by the thread AND by Sent mail that is
     known to be current for that account: a Google account signed in and
-    synced in the last 10 minutes, or Apple Mail's index after Mail has been
-    running and the Mac awake 30 minutes with a Mail read since it woke;
+    synced in the last 10 minutes (and its Sent rows read this cycle), or
+    Apple Mail's index read at least 30 minutes after both Mail started and the
+    Mac woke, with Mail still running and a Mail read since;
   - arrived after the user's yes to "Let Wisp act for me", judged by the ask's
-    own arrival (a subject ask by the thread's first message);
+    own arrival. The subject is the ask only in a one-message thread, judged by
+    that message, and any Sent mail to them under that subject answers it;
   - not already in Reminders or the to-dos under the person's name, not on a
     card the user dismissed or acted on during this wait, and not a message
     auto-add already acted on;
   - never twice: by fingerprint, by person for 30 days after an Undo or a
     dismissed card, and one follow-up a week per person whatever came of it.
-- Wisp can't see phone calls, and a reply after the reminder is written leaves
-  it standing; the card says both. Cc isn't in any cache, so "the user in To
-  plus a big Cc" is a known limit.
+- Known limits:
+  - Wisp can't see phone calls, and a reply after the reminder is written
+    leaves it standing; the card says both.
+  - Cc isn't in any cache, so "the user in To plus a big Cc" can qualify.
+  - A plain From address can be forged where the sender's domain doesn't
+    enforce DMARC. The harm is a wrong "Reply to Maya" with Undo: Reply-To is
+    never read here, and a reply goes to the From address, the real Maya.
+  - Apple Mail's freshness is one answer for all its accounts: Mail running but
+    offline, or one account switched off, still counts as current.
+  - The 30-minute grace is a judgement of how long Mail takes to fetch, not a
+    measurement.
 - Message text is untrusted: it is compared and quoted, never obeyed. The title
   ("Reply to Priya Shah") and the time come from code, never from the message.
 - At most 2 a rolling day and 1 a cycle, inside the shared cap. Never during
@@ -256,20 +266,43 @@ def _other_senders(item: dict) -> set[str]:
     return {speaker.casefold() for speaker, _ in _mail_blocks(item) if not speaker.startswith("You (the user)")}
 
 
-def _mail_ask_lines(item: dict) -> list[str]:
-    """The newest incoming message: what waits on the user. The subject counts only
-    when it is theirs alone: in a thread the user wrote in, "Re: Can we meet
-    Friday?" is the user's own question coming back."""
+def _bare(subject) -> str:
+    return re.sub(r"(?i)^\s*(?:(?:re|fwd?|aw|sv)\s*:\s*)+", "", str(subject or "")).strip()
+
+
+def _mail_ask_lines(item: dict) -> tuple[list[str], bool]:
+    """(the newest incoming message: what waits on the user, whether that is the
+    subject). The subject is the ask only for a thread of exactly one message,
+    from them: in a thread the user wrote in, "Re: Can we meet Friday?" is the
+    user's own question coming back, and after an earlier message the subject is
+    an old question ("Got them, thanks" under "Can you send me the slides?")."""
     blocks = _mail_blocks(item)
     incoming = [t for s, t in blocks if not s.startswith("You (the user)")]
     body = incoming[-1].strip() if incoming else ""
     body = "" if body == "(subject only)" else body
     if body:
-        return [body]
+        return [body], False
     if any(s.startswith("You (the user)") for s, _ in blocks) or item.get("user_wrote"):
-        return []
-    subject = str((item.get("ref") or {}).get("subject") or item.get("title") or "")
-    return [re.sub(r"(?i)^\s*(?:(?:re|fwd?|aw|sv)\s*:\s*)+", "", subject)]
+        return [], False
+    first, newest = item.get("subject_ts"), item.get("received_ts")
+    # One incoming message shown, and it is the thread's first: nothing older is hidden.
+    if len(incoming) != 1 or not (_finite(first) and _finite(newest)) or abs(float(newest) - float(first)) > 1:
+        return [], False
+    return [_bare((item.get("ref") or {}).get("subject") or item.get("title"))], True
+
+
+def _sent_in_thread(sent, address: str, item: dict, mine) -> bool:
+    """Any Sent mail to this address under the thread's bare subject, at any time."""
+    from service.proactive.sent_check import recipients
+    subject = _bare((item.get("ref") or {}).get("subject") or item.get("title")).casefold()
+    if not subject:
+        return False
+    for row in sent or ():
+        if not isinstance(row, dict) or _bare(row.get("subject")).casefold() != subject:
+            continue
+        if address in {a for _, a in recipients(row.get("to")) if a not in mine}:
+            return True
+    return False
 
 
 def _spoofed_sender(item: dict) -> bool:
@@ -313,12 +346,16 @@ def _writes_to(sent, address: str, item: dict, ask_ts: float, mine, tz: str) -> 
     return in_thread or len(_local_days(days, tz)) >= MIN_DAYS_OUT
 
 
-def _sent_times_to(sent, address: str, name: str, mine) -> list[float]:
-    """When the user's sent mail went to this person: by address, or by a
-    recipient whose name holds every word of `name` (one word is enough to
-    match, which errs toward "already answered")."""
+def _sent_times_to(sent, address: str, name: str, mine, *, after: float | None = None,
+                   lookup=None) -> list[float]:
+    """When the user's sent mail went to this person: by address, by a recipient
+    whose name holds every word of `name` (one word is enough to match, which
+    errs toward "already answered"), or, for mail after `after`, by any other
+    address the user's Contacts files under the same name (a reply to their
+    other saved address)."""
     from service.proactive.sent_check import _names_match, recipients
     names = frozenset(_name_tokens(name))
+    same = name.strip().casefold()
     out = []
     for row in sent or ():
         try:
@@ -331,6 +368,14 @@ def _sent_times_to(sent, address: str, name: str, mine) -> list[float]:
             if (address and addr == address) or (names and _names_match(names, display, addr)):
                 out.append(ts)
                 break
+            if lookup is not None and same and after is not None and ts > after:
+                try:
+                    if _display_name({"source": "mail", "ref": {"to": addr}}, lookup).casefold() == same:
+                        out.append(ts)
+                        break
+                except Exception:  # noqa: BLE001 — unreadable: errs toward "answered"
+                    out.append(ts)
+                    break
     return sorted(out)
 
 
@@ -535,12 +580,13 @@ def plan_for(item: dict, *, now: float, tz: str, history: dict | None = None, se
         # never counts: anyone can send "Quick question".
         if not defer_sent and not _writes_to(sent, address, item, ask_ts, mine, tz):
             return None, "not someone the user writes to often"
-        lines = _mail_ask_lines(item)
-        if lines and not any(t.strip() and t.strip() != "(subject only)" for s_, t in _mail_blocks(item)
-                             if not s_.startswith("You (the user)")):
-            # The ask is the subject itself: it is as old as the thread.
-            first = item.get("subject_ts")
-            consent_ts = min(ask_ts, float(first)) if _finite(first) else ask_ts
+        lines, from_subject = _mail_ask_lines(item)
+        if from_subject:
+            # The ask is the subject itself: it is as old as the thread, and any Sent
+            # mail under that subject to them is an answer, whenever it went.
+            consent_ts = float(item["subject_ts"])
+            if not defer_sent and _sent_in_thread(sent, address, item, mine):
+                return None, "answered in the thread"
 
     consent_ts = ask_ts if consent_ts is None else consent_ts
     if min(ask_ts, consent_ts) < since_ts:
@@ -582,7 +628,8 @@ def plan_for(item: dict, *, now: float, tz: str, history: dict | None = None, se
 
     # Nothing answers it elsewhere: Sent mail to them after the ask, or (for a
     # text) the user writing in another conversation with the same name.
-    if [t for t in _sent_times_to(sent, _mail_address(item) if source == "mail" else "", name, mine)
+    if [t for t in _sent_times_to(sent, _mail_address(item) if source == "mail" else "", name, mine,
+                                  after=ask_ts, lookup=lookup if source == "mail" else None)
             if ask_ts < t <= now + 300]:
         return None, "answered by sent mail"
     if source == "messages":
@@ -652,18 +699,22 @@ def audit_fields(plan: dict) -> dict:
 _sent_cache: dict = {"at": None, "rows": [], "fresh": False}
 
 
-async def read_sent_fresh() -> tuple[list[dict], bool]:
-    """The user's sent mail and whether Apple Mail's Sent index was read just now:
-    the app reads Mail's own index on disk (never the network) for the last 31
-    days, at most every SENT_EVERY_S and never longer than SENT_TIMEOUT_S. The
-    linked Gmail accounts' Sent rows are taken as they are now, never from a
-    cache older than their own freshness verdict. A failed read is not fresh."""
+async def read_sent_fresh() -> tuple[list[dict], float | None, bool]:
+    """(the user's sent mail, when Apple Mail's Sent index was read or None,
+    whether the Google Sent rows could be read).
+
+    The app reads Mail's own index on disk (never the network) for the last 31
+    days, at most every SENT_EVERY_S and never longer than SENT_TIMEOUT_S; the
+    time returned is when that read began, so a cached read is judged by its own
+    age (apple_mail_current). The linked Gmail accounts' Sent rows are taken as
+    they are now, never from a cache older than their own freshness verdict, and
+    a failed Google read marks every Google account stale (`plans`)."""
     import asyncio
-    from service.proactive import sources
     try:
-        gmail = list(sources.sent_rows())
+        from service import gmail_source
+        gmail, google_ok = list(gmail_source.sent_rows()), True
     except Exception:  # noqa: BLE001
-        gmail = []
+        gmail, google_ok = [], False
     now = time.time()
     at = _sent_cache["at"]
     if at is None or not 0 <= now - at < SENT_EVERY_S:
@@ -675,29 +726,82 @@ async def read_sent_fresh() -> tuple[list[dict], bool]:
             _sent_cache.update(rows=list(rows), fresh=True)
         except Exception:  # noqa: BLE001 — the app is away, Mail can't be read, or it took too long: not fresh
             pass
-    return gmail + list(_sent_cache["rows"]), bool(_sent_cache["fresh"])
+    read_at = float(_sent_cache["at"]) if _sent_cache["fresh"] else None
+    return gmail + list(_sent_cache["rows"]), read_at, google_ok
 
 
 _clock: dict = {"offset": None, "awake_since": None}
+_WAKETIME = re.compile(r"\bsec\s*=\s*(\d+)")
 
 
-def awake_since() -> float:
-    """When the Mac last woke, or this service started: the monotonic clock stops
-    during sleep, so the wall clock running ahead of it marks a sleep."""
+def _kernel_waketime() -> float:
+    """macOS's own record of the last wake (`sysctl kern.waketime`), or 0."""
+    try:
+        import subprocess
+        out = subprocess.run(["/usr/sbin/sysctl", "-n", "kern.waketime"], capture_output=True, text=True, timeout=2)
+        found = _WAKETIME.search(out.stdout or "") if out.returncode == 0 else None
+        return float(found.group(1)) if found else 0.0
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+def awake_since(waketime=_kernel_waketime) -> float:
+    """When the Mac last woke, or this service started, whichever is later. Two
+    signs, the later one wins: the kernel's own wake time, and the wall clock
+    running ahead of the monotonic one. The second ASSUMES time.monotonic stops
+    during sleep (mach_absolute_time on macOS does); it backs up the first when
+    sysctl can't be read."""
     offset = time.time() - time.monotonic()
     previous = _clock["offset"]
     if previous is None or offset - previous > SLEEP_JUMP_S or _clock["awake_since"] is None:
         _clock["awake_since"] = time.time()
     _clock["offset"] = offset
-    return float(_clock["awake_since"])
-
-
-def _mail_app_running() -> bool:
     try:
+        kernel = float(waketime() or 0.0)
+    except Exception:  # noqa: BLE001
+        kernel = 0.0
+    kernel = kernel if _finite(kernel) and kernel <= time.time() + 60 else 0.0
+    return max(float(_clock["awake_since"]), kernel)
+
+
+_mail_seen: dict = {"pid": None, "since": None}
+
+
+def _process_start(pid: str) -> float | None:
+    try:
+        import os
         import subprocess
-        return subprocess.run(["/usr/bin/pgrep", "-x", "Mail"], capture_output=True, timeout=2).returncode == 0
+        out = subprocess.run(["/bin/ps", "-o", "lstart=", "-p", pid], capture_output=True, text=True, timeout=2,
+                             env={**os.environ, "LC_ALL": "C"})
+        stamp = " ".join((out.stdout or "").split())
+        return datetime.strptime(stamp, "%a %b %d %H:%M:%S %Y").timestamp() if out.returncode == 0 and stamp else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def mail_app_started() -> float | None:
+    """When the user's own Mail.app process started, or None when it isn't
+    running or that can't be told. The process's own start time (ps), else the
+    first time this service saw that process; a new process starts over."""
+    try:
+        import os
+        import subprocess
+        out = subprocess.run(["/usr/bin/pgrep", "-x", "-U", str(os.getuid()), "Mail"],
+                             capture_output=True, text=True, timeout=2)
+        pids = [p for p in (out.stdout or "").split() if p.isdigit()] if out.returncode == 0 else []
     except Exception:  # noqa: BLE001 — unknown: not running
-        return False
+        pids = []
+    if not pids:
+        _mail_seen.update(pid=None, since=None)
+        return None
+    now = time.time()
+    key = ",".join(sorted(pids))
+    if _mail_seen["pid"] != key:
+        _mail_seen.update(pid=key, since=now)
+    starts = [_process_start(p) for p in pids]
+    if all(_finite(t) and t <= now + 60 for t in starts):
+        return max(starts)
+    return float(_mail_seen["since"])
 
 
 def _native_mail_synced_at() -> float:
@@ -711,16 +815,24 @@ def _native_mail_synced_at() -> float:
         return 0.0
 
 
-def apple_mail_current(now: float | None = None, *, running=_mail_app_running, synced=_native_mail_synced_at,
-                       woke=awake_since) -> bool:
-    """Apple Mail's Sent index can be trusted to hold a reply sent from another
-    device: Mail is running, the Mac has been awake AWAKE_GRACE_S, and the app
-    has finished a Mail read since it woke. The index on disk holds only what
-    Mail last fetched, so a successful read alone proves nothing."""
+def apple_mail_current(now: float | None = None, *, read_at: float | None = None, started=mail_app_started,
+                       synced=_native_mail_synced_at, woke=awake_since) -> bool:
+    """Apple Mail's Sent rows can be trusted to hold a reply sent from another
+    device. The index on disk holds only what Mail last fetched, so a successful
+    read alone proves nothing. All of: Mail is running and has been for
+    AWAKE_GRACE_S, the Mac has been awake that long, the app finished a Mail read
+    after both, and the Sent rows in hand (`read_at`) were read at least
+    AWAKE_GRACE_S after Mail started and after the wake. Blocking (pgrep, ps,
+    sysctl): `plans` runs it off the event loop."""
     now = time.time() if now is None else now
     try:
-        since = float(woke())
-        if not running() or now - since < AWAKE_GRACE_S:
+        began = started()
+        if began is None or not _finite(read_at):
+            return False
+        since = max(float(woke()), float(began))
+        if not _finite(since) or now - since < AWAKE_GRACE_S:
+            return False
+        if float(read_at) < since + AWAKE_GRACE_S:
             return False
         return float(synced()) > since
     except Exception:  # noqa: BLE001
@@ -810,14 +922,25 @@ async def plans(items, *, now: float, tz: str, records, reminders=(), results=No
     if abort is not None and abort():
         return [], why
     try:
-        sent, fresh = await read_sent()
+        got = tuple(await read_sent())
+        sent, read_at = got[0], got[1]
+        google_ok = bool(got[2]) if len(got) > 2 else True
+        if read_at is True:                       # a reader that only says "read just now"
+            read_at = now
+        read_at = float(read_at) if _finite(read_at) and read_at is not False else None
+        fresh = read_at is not None
         sent = [r for r in sent if isinstance(r, dict)]
         from service.proactive.sent_check import own_addresses
         mine = own_addresses(sent) | own
     except Exception:  # noqa: BLE001 — Sent mail that can't be read is not fresh
-        sent, fresh, mine = [], False, set()
+        sent, fresh, read_at, google_ok, mine = [], False, None, False, set()
+    if not google_ok:
+        # The Google rows couldn't be read: none of those accounts' Sent mail is in hand.
+        common["stale_accounts"] = set(common["stale_accounts"]) | set(common["gmail_current"])
+        common["gmail_current"] = set()
     try:
-        apple_ok = bool(fresh) and bool(apple(now))
+        import asyncio
+        apple_ok = fresh and bool(await asyncio.to_thread(apple, now, read_at=read_at))
     except Exception:  # noqa: BLE001
         apple_ok = False
     ready = []

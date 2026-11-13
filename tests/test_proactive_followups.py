@@ -41,7 +41,7 @@ def no_google(_now=None):
     return set(), set()
 
 
-def apple_ok(_now=None):
+def apple_ok(_now=None, **_kw):
     return True
 
 
@@ -86,7 +86,7 @@ def mail_item(*, body="Thanks! Can you review my section before Thursday?", send
                 text=f"Subject: {subject}\n" + "\n".join(blocks), lines=[subject, body], received_ts=received,
                 replied=False, person=True, secret=False, user_wrote=user_wrote, unread=False,
                 ref={"kind": "email", "message_id": "<p1@x>", "account": ME, "to": address, "subject": subject},
-                to_header=ME, hash="h2")
+                to_header=ME, hash="h2", subject_ts=received - (60 * H if user_wrote or others else 0))
     item.update(over)
     return item
 
@@ -151,6 +151,9 @@ def test_mail_a_subject_the_user_asked_is_not_their_ask():
 
 def test_mail_a_subject_alone_counts_only_when_the_user_never_wrote():
     mailed = [sent("sam@school.edu", NOW - 6 * D), sent("sam@school.edu", NOW - 4 * D)]
+    got, why = plan(mail_item(subject="Re: Can you review my poster draft?", body="(subject only)", sender="Sam Lee",
+                              address="sam@school.edu", user_wrote=False), sent=mailed)
+    assert why == "" and got["quote"] == "Can you review my poster draft?"
     got, why = plan(mail_item(subject="Re: Can you review my poster draft?", body="(subject only)", sender="Sam Lee",
                               address="sam@school.edu", user_wrote=False), sent=mailed)
     assert why == "" and got["quote"] == "Can you review my poster draft?"
@@ -935,7 +938,8 @@ def test_a_cycle_never_reads_sent_mail_once_a_turn_starts():
 def test_the_sent_read_is_throttled_and_bounded(monkeypatch):
     from service.mail_memory import bridge
     from service.proactive import sources
-    monkeypatch.setattr(sources, "sent_rows", lambda: [])
+    from service import gmail_source
+    monkeypatch.setattr(gmail_source, "sent_rows", lambda: [])
     reads = []
 
     async def quick(days, timeout=8.0):
@@ -944,7 +948,8 @@ def test_the_sent_read_is_throttled_and_bounded(monkeypatch):
     monkeypatch.setattr(bridge, "read_sent", quick)
     first = asyncio.run(followups.read_sent_fresh())
     second = asyncio.run(followups.read_sent_fresh())
-    assert first == second and first[1] is True and reads == [31]
+    # The second answer is the cached read, stamped with when it was really read.
+    assert first == second and isinstance(first[1], float) and first[2] is True and reads == [31]
 
     async def slow(days, timeout=8.0):
         await asyncio.sleep(5)
@@ -952,7 +957,7 @@ def test_the_sent_read_is_throttled_and_bounded(monkeypatch):
     monkeypatch.setattr(bridge, "read_sent", slow)
     monkeypatch.setattr(followups, "SENT_TIMEOUT_S", 0.05)
     followups._sent_cache.update(at=None)
-    assert asyncio.run(followups.read_sent_fresh()) == ([], False)
+    assert asyncio.run(followups.read_sent_fresh()) == ([], None, True)
 
 
 def test_switching_off_between_plan_and_write_writes_nothing(setting, store):
@@ -1046,18 +1051,165 @@ def test_a_who_with_an_address_is_refused_even_without_the_flag():
     assert plan(mail_item(sender="maya@friend.com"))[1] == "the sender's name hides an address"
 
 
+def _apple(started=NOW - 3 * H, woke=NOW - 2 * H, synced=NOW - 60, read_at=NOW - 60):
+    return followups.apple_mail_current(NOW, read_at=read_at, started=lambda: started, synced=lambda: synced,
+                                        woke=lambda: woke)
+
+
 def test_apple_mails_sent_counts_only_when_mail_has_had_time_to_fetch():
-    woke = NOW - 2 * H
-    assert followups.apple_mail_current(NOW, running=lambda: True, synced=lambda: NOW - 60, woke=lambda: woke)
-    assert not followups.apple_mail_current(NOW, running=lambda: False, synced=lambda: NOW - 60, woke=lambda: woke)
-    assert not followups.apple_mail_current(NOW, running=lambda: True, synced=lambda: NOW - 60,
-                                            woke=lambda: NOW - 10 * 60)                  # just woke
-    assert not followups.apple_mail_current(NOW, running=lambda: True, synced=lambda: woke - 60,
-                                            woke=lambda: woke)                           # no read since waking
+    assert _apple()
+    assert not _apple(started=None)                                    # Mail isn't running
+    assert not _apple(woke=NOW - 10 * 60)                              # just woke
+    assert not _apple(synced=NOW - 2 * H - 60)                         # no Mail read since waking
+    assert not _apple(read_at=None)                                    # no Sent rows in hand
 
     def broken():
         raise RuntimeError
-    assert not followups.apple_mail_current(NOW, running=broken, synced=lambda: NOW, woke=lambda: woke)
+    assert not followups.apple_mail_current(NOW, read_at=NOW, started=broken, synced=lambda: NOW,
+                                            woke=lambda: NOW - 2 * H)
+
+
+def test_mail_opened_two_minutes_ago_isnt_current_yet():
+    # Awake all day with Mail closed; the user answered from their phone and opens Mail now.
+    assert not _apple(started=NOW - 2 * 60, woke=NOW - 8 * H, synced=NOW - 30, read_at=NOW - 30)
+    # Still not after 29 minutes...
+    assert not _apple(started=NOW - 29 * 60, woke=NOW - 8 * H, synced=NOW - 30, read_at=NOW - 30)
+    # ...and Sent rows read before Mail had run 30 minutes don't count once it has.
+    assert not _apple(started=NOW - 31 * 60, woke=NOW - 8 * H, synced=NOW - 30, read_at=NOW - 29 * 60)
+    assert _apple(started=NOW - 31 * 60, woke=NOW - 8 * H, synced=NOW - 30, read_at=NOW - 30)
+
+
+def test_rows_read_before_the_wake_dont_count_after_it():
+    assert not _apple(started=NOW - 8 * H, woke=NOW - 40 * 60, read_at=NOW - 45 * 60)
+    assert not _apple(started=NOW - 8 * H, woke=NOW - 40 * 60, read_at=NOW - 20 * 60)
+    assert _apple(started=NOW - 8 * H, woke=NOW - 70 * 60, read_at=NOW - 20 * 60, synced=NOW - 60)
+
+
+def test_the_cycle_passes_the_apple_read_time_and_a_failed_google_read_stales_google(monkeypatch):
+    seen = []
+
+    def apple(now, *, read_at=None):
+        seen.append(read_at)
+        return True
+
+    async def read():
+        return list(MAILED), NOW - 120, False             # Apple read two minutes ago; Google failed
+    item = mail_item()
+    got, why = _run([item], read_sent=read, apple=apple, gmail=lambda _n: ({ME}, set()))
+    assert seen == [NOW - 120]
+    assert got == [] and why[item["id"]] == "sent mail not checked"   # Google can't vouch, Apple can't for a Google account
+
+    async def read_ok():
+        return list(MAILED), None, True
+    got, _ = _run([item], read_sent=read_ok, apple=apple, gmail=lambda _n: ({ME}, set()))
+    assert got                                            # Google's own Sent is current
+
+
+def test_the_mail_process_start_comes_from_ps_or_first_sight(monkeypatch):
+    import subprocess
+
+    class Done:
+        def __init__(self, code, out):
+            self.returncode, self.stdout = code, out
+    answers = {}
+
+    def run(cmd, **kw):
+        if cmd[0] == "/usr/bin/pgrep":
+            assert cmd[1:4] == ["-x", "-U", str(__import__("os").getuid())]
+            return Done(*answers["pgrep"])
+        return Done(*answers["ps"])
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(followups, "_mail_seen", {"pid": None, "since": None})
+    answers.update(pgrep=(1, ""), ps=(0, ""))
+    assert followups.mail_app_started() is None
+    answers.update(pgrep=(0, "412\n"), ps=(0, "Thu Nov 12 09:00:00 2026\n"))
+    from datetime import datetime as _dt
+    assert followups.mail_app_started() == _dt(2026, 11, 12, 9, 0, 0).timestamp()
+    answers.update(ps=(1, ""))                            # ps unreadable: the first time this pid was seen
+    assert abs(followups.mail_app_started() - followups._mail_seen["since"]) < 1e-6
+
+
+def test_wake_is_the_later_of_the_kernels_and_the_clock_jump(monkeypatch):
+    clock = {"wall": 5000.0, "mono": 50.0}
+    monkeypatch.setattr(followups.time, "time", lambda: clock["wall"])
+    monkeypatch.setattr(followups.time, "monotonic", lambda: clock["mono"])
+    monkeypatch.setattr(followups, "_clock", {"offset": None, "awake_since": None})
+    assert followups.awake_since(waketime=lambda: 4000.0) == 5000.0          # service started after the wake
+    clock.update(wall=6000.0, mono=1050.0)
+    assert followups.awake_since(waketime=lambda: 5500.0) == 5500.0          # the kernel saw a later wake
+    assert followups.awake_since(waketime=lambda: 9e9) == 5000.0             # a time in the future is ignored
+
+
+def test_monotonic_stops_in_sleep_is_the_backup_assumption(monkeypatch):
+    # Pinned: with no kernel answer, only "wall moved, monotonic didn't" marks a wake.
+    clock = {"wall": 1000.0, "mono": 50.0}
+    monkeypatch.setattr(followups.time, "time", lambda: clock["wall"])
+    monkeypatch.setattr(followups.time, "monotonic", lambda: clock["mono"])
+    monkeypatch.setattr(followups, "_clock", {"offset": None, "awake_since": None})
+    assert followups.awake_since(waketime=lambda: 0.0) == 1000.0
+    clock.update(wall=9600.0, mono=700.0)
+    assert followups.awake_since(waketime=lambda: 0.0) == 9600.0
+
+
+def test_a_reply_to_another_saved_address_of_the_contact_answers_it():
+    # An address with no trace of her name in it: only Contacts ties it to her.
+    contacts = dict(CONTACTS, **{"ps1984@gmail.com": "Priya Shah"})
+    after = list(MAILED) + [sent("ps1984@gmail.com", NOW - 2 * H)]
+    got, why = plan(mail_item(), sent=after, lookup=lambda a: contacts.get(a, ""))
+    assert got is None and why == "answered by sent mail"
+    # The same address filed under someone else isn't an answer.
+    contacts["ps1984@gmail.com"] = "Sam Lee"
+    assert plan(mail_item(), sent=after, lookup=lambda a: contacts.get(a, ""))[0] is not None
+
+
+@pytest.mark.parametrize("sender, parsed", [
+    ('"Priya <priya@school.edu>" <x@evil.com>', "priya@school.edu"),   # Mail.app's `extract address` got it wrong
+    ("Priya <priya@school.edu> <x@evil.com>", "priya@school.edu"),
+    ("Priya <priya@school.edu> <x@evil.com>", "x@evil.com"),
+])
+def test_a_posed_name_is_refused_even_when_the_reader_parsed_an_address(sender, parsed):
+    from service.proactive import sources
+    [item] = sources.mail_items([_mail_row(sender, sender_address=parsed)], mine={ME}, now=NOW, tz=TZ,
+                                linked=set(), own=ME)
+    got, why = plan(item, lookup=lambda address: "Priya Shah")
+    assert got is None and why == "the sender's name hides an address", (sender, parsed, item["ref"])
+
+
+def test_a_stranger_posing_as_the_user_in_the_name_is_neither_the_user_nor_followed_up():
+    from service.proactive import sources
+    [item] = sources.mail_items([_mail_row(f"Priya Shah <{ME}> <x@evil.com>")], mine={ME}, now=NOW, tz=TZ,
+                                linked=set(), own=ME)
+    assert item["user_wrote"] is False and "You (the user)" not in item["text"]
+    assert plan(item, lookup=lambda address: "Priya Shah") == (None, "the sender's name hides an address")
+
+
+@pytest.mark.xfail(strict=True, reason="needs the lead's anchored-bracket fix in sources._address/odd_sender; "
+                                       "drop this marker when that merges")
+def test_a_quoted_local_part_cant_hide_the_real_address():
+    from service.proactive import sources
+    [item] = sources.mail_items([_mail_row('Priya <priya@school.edu> <"x y"@evil.com>')], mine={ME}, now=NOW,
+                                tz=TZ, linked=set(), own=ME)
+    assert plan(item, lookup=lambda address: "Priya Shah")[0] is None
+
+
+@pytest.mark.xfail(strict=True, reason="needs the lead's fix: odd whenever the name carries an address, even "
+                                       "with sender_address present; drop this marker when that merges")
+def test_mail_apps_split_fields_with_an_address_in_the_name_get_no_reminder():
+    # Mail.app reports `extract name` as sender and `extract address` as sender_address. If
+    # AppleScript returned the address written inside the display name, only the name shows it.
+    from service.proactive import sources
+    [item] = sources.mail_items([_mail_row("Priya <priya@school.edu>", sender_address="priya@school.edu")],
+                                mine={ME}, now=NOW, tz=TZ, linked=set(), own=ME)
+    assert plan(item, lookup=lambda address: "Priya Shah")[0] is None
+
+
+@pytest.mark.parametrize("sender", ['"Priya <priya@school.edu>" <"x>"@evil.com>',
+                                    'Priya <priya@school.edu> <"x>"@evil.com>',
+                                    '"Priya <priya@school.edu>" <"x y"@evil.com>'])
+def test_other_quoted_local_parts_get_no_reminder(sender):
+    from service.proactive import sources
+    for item in sources.mail_items([_mail_row(sender)], mine={ME}, now=NOW, tz=TZ, linked=set(), own=ME):
+        assert plan(item, lookup=lambda address: "Priya Shah")[0] is None
 
 
 def test_mail_waits_unless_its_sent_mail_is_known_current():
@@ -1068,8 +1220,8 @@ def test_mail_waits_unless_its_sent_mail_is_known_current():
 
     async def mailed():
         return list(MAILED), True
-    assert _run([item], read_sent=mailed, apple=lambda _n: False)[0] == []
-    assert _run([item], read_sent=mailed, apple=lambda _n: False, gmail=lambda _n: ({ME}, set()))[0]
+    assert _run([item], read_sent=mailed, apple=lambda _n, **_kw: False)[0] == []
+    assert _run([item], read_sent=mailed, apple=lambda _n, **_kw: False, gmail=lambda _n: ({ME}, set()))[0]
 
 
 def test_a_sleep_resets_the_awake_clock(monkeypatch):
@@ -1077,11 +1229,11 @@ def test_a_sleep_resets_the_awake_clock(monkeypatch):
     monkeypatch.setattr(followups.time, "time", lambda: clock["wall"])
     monkeypatch.setattr(followups.time, "monotonic", lambda: clock["mono"])
     monkeypatch.setattr(followups, "_clock", {"offset": None, "awake_since": None})
-    assert followups.awake_since() == 1000.0
+    assert followups.awake_since(waketime=lambda: 0.0) == 1000.0
     clock.update(wall=1600.0, mono=650.0)                                # awake: both clocks moved
-    assert followups.awake_since() == 1000.0
+    assert followups.awake_since(waketime=lambda: 0.0) == 1000.0
     clock.update(wall=9600.0, mono=700.0)                                # slept: only the wall clock moved
-    assert followups.awake_since() == 9600.0
+    assert followups.awake_since(waketime=lambda: 0.0) == 9600.0
 
 
 def test_google_sent_rows_are_never_older_than_their_verdict(monkeypatch):
@@ -1093,11 +1245,12 @@ def test_google_sent_rows_are_never_older_than_their_verdict(monkeypatch):
         reads.append(days)
         return [{"ts": NOW, "to": ["n@x.y"]}], False
     monkeypatch.setattr(bridge, "read_sent", native)
-    monkeypatch.setattr(sources, "sent_rows", lambda: [{"ts": 1, "to": "old@x.y"}])
-    first, _ = asyncio.run(followups.read_sent_fresh())
-    monkeypatch.setattr(sources, "sent_rows", lambda: [{"ts": 2, "to": "new@x.y"}])
-    second, fresh = asyncio.run(followups.read_sent_fresh())
-    assert reads == [31] and fresh is True
+    from service import gmail_source
+    monkeypatch.setattr(gmail_source, "sent_rows", lambda: [{"ts": 1, "to": "old@x.y"}])
+    first, _, _ = asyncio.run(followups.read_sent_fresh())
+    monkeypatch.setattr(gmail_source, "sent_rows", lambda: [{"ts": 2, "to": "new@x.y"}])
+    second, read_at, google_ok = asyncio.run(followups.read_sent_fresh())
+    assert reads == [31] and read_at is not None and google_ok
     assert [r["to"] for r in second] == ["new@x.y", ["n@x.y"]]
 
 
@@ -1116,14 +1269,39 @@ def test_undo_works_after_a_restart_through_the_gates_map(setting, store, monkey
     assert asyncio.run(autoadd.undo(card, store, now=NOW + 120))["ok"] is True and deleted == ["R-1"]
 
 
-def test_a_subject_ask_is_judged_by_the_threads_first_message():
-    mailed = MAILED
+def test_a_subject_ask_is_judged_by_its_one_message():
+    item = mail_item(subject="Can you review my poster draft?", body="(subject only)", user_wrote=False)
+    got, why = plan(item, since_ts=NOW - 1 * D)
+    assert got is None and why == "arrived before the yes"
+    got, why = plan(item, since_ts=NOW - 2 * D)
+    assert why == "" and got["consent_ts"] == item["subject_ts"] == item["received_ts"]
+
+
+def test_a_subject_is_never_the_ask_when_the_thread_is_older_than_the_message():
+    # Only one message is shown, but the thread began ten days ago: the subject is an old question.
     item = mail_item(subject="Can you review my poster draft?", body="(subject only)", user_wrote=False,
                      subject_ts=NOW - 10 * D)
-    got, why = plan(item, sent=mailed, since_ts=NOW - 5 * D)
-    assert got is None and why == "arrived before the yes"
-    got, _ = plan(item, sent=mailed, since_ts=NOW - 12 * D)
-    assert got["consent_ts"] == NOW - 10 * D
+    assert plan(item, since_ts=NOW - 12 * D) == (None, "no direct ask")
+    item = mail_item(subject="Can you review my poster draft?", body="(subject only)", user_wrote=False)
+    del item["subject_ts"]
+    assert plan(item, since_ts=NOW - 12 * D) == (None, "no direct ask")
+
+
+def test_thanks_without_a_cached_body_under_an_old_ask_is_not_an_ask():
+    # Maya asked for the slides before the yes; the user answered; after the yes "Got them,
+    # thanks" arrives with no cached body. The subject is not a new ask.
+    item = mail_item(subject="Can you send me the slides?", body="(subject only)", user_wrote=False,
+                     sender="Priya Shah", others=("Priya Shah",), subject_ts=NOW - 3 * D)
+    item["text"] = item["text"].replace("Looks fine to me.", "Can you send me the slides?")
+    got, why = plan(item, since_ts=NOW - 2 * D)
+    assert got is None and why == "no direct ask"
+
+
+def test_sent_mail_under_the_same_subject_answers_a_subject_ask_whenever_it_went():
+    item = mail_item(subject="Can you review my poster draft?", body="(subject only)", user_wrote=False)
+    earlier = list(MAILED) + [sent("priya@school.edu", NOW - 10 * D, subject="Re: Can you review my poster draft?")]
+    assert plan(item, sent=earlier) == (None, "answered in the thread")
+    assert plan(item)[0] is not None                     # Sent mail under other subjects isn't an answer
 
 
 def test_mail_says_mail_and_not_messages():
