@@ -368,3 +368,44 @@ def test_the_audit_line_carries_no_message_text_or_name():
     blob = repr(fields)
     assert "Maya" not in blob and "notes" not in blob and "Tuesday" not in blob
     assert fields["fingerprint"] == got["fingerprint"] and fields["due_ts"] == got["due_ts"]
+
+
+# --- one cycle --------------------------------------------------------------------------
+
+
+def _run(items, *, read_sent, **kw):
+    import asyncio
+    args = dict(now=NOW, tz=TZ, records=kw.pop("records", records()), since_ts=NOW - 30 * D, quiet=never_quiet,
+                read_sent=read_sent)
+    args.update(kw)
+    return asyncio.run(followups.plans(items, **args))
+
+
+def test_a_cycle_reads_sent_mail_only_when_something_could_qualify():
+    calls = []
+
+    async def read():
+        calls.append(1)
+        return [], True
+    got, why = _run([text_item(lines=("lol",))], read_sent=read, records=records(ask="lol"))
+    assert got == [] and calls == [] and list(why.values()) == ["no direct ask"]
+    got, _ = _run([text_item()], read_sent=read)
+    assert [p["title"] for p in got] == ["Reply to Maya"] and calls == [1]
+
+
+def test_a_cycle_plans_nothing_when_the_sent_read_failed():
+    async def failed():
+        return [], False
+    got, why = _run([text_item()], read_sent=failed)
+    assert got == [] and why[text_item()["id"]] == "sent mail not checked"
+
+
+def test_a_cycle_honours_sent_mail_and_the_daily_cap():
+    async def answered():
+        return [sent("Maya Chen <maya.c@school.edu>", NOW - 3 * H)], True
+
+    async def nothing():
+        return [], True
+    assert _run([text_item()], read_sent=answered)[0] == []
+    assert _run([text_item()], read_sent=nothing, done_today=2) == ([], {})
+    assert _run([text_item()], read_sent=nothing, since_ts=None) == ([], {})

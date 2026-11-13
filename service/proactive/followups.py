@@ -474,3 +474,62 @@ def audit_fields(plan: dict) -> dict:
     return {"fingerprint": plan["fingerprint"], "person": plan["person_key"], "source": plan["source"],
             "title_sha256": hashlib.sha256(plan["title"].encode()).hexdigest()[:16],
             "due_ts": plan["due_ts"], "received_ts": plan["received_ts"]}
+
+
+# --- one cycle ------------------------------------------------------------------------
+
+
+async def read_sent_fresh() -> tuple[list[dict], bool]:
+    """The user's sent mail and whether it was read just now: Apple Mail's Sent
+    mailboxes through the app (its own index on disk, never the network) plus the
+    linked Gmail accounts' Sent label. A failed read is not fresh, so nothing is
+    planned on it."""
+    from service.proactive import sources
+    gmail = sources.sent_rows()
+    try:
+        from service.mail_memory import bridge
+        rows, _capped = await bridge.read_sent(sources.NATIVE_SENT_DAYS)
+    except Exception:  # noqa: BLE001 — the app is away or Mail can't be read: not fresh
+        return gmail, False
+    return gmail + list(rows), True
+
+
+async def plans(items, *, now: float, tz: str, records, reminders=(), results=None,
+                since_ts: float | None, blocked=frozenset(), done_today: int = 0,
+                quiet=default_quiet, read_sent=read_sent_fresh) -> tuple[list[dict], dict]:
+    """(the plans to act on this cycle, {item id: why not}) for the cycle's items.
+
+    Sent mail is read only when some item passes every other check, so a cycle
+    with nothing waiting costs no read. Writes nothing: the caller checks for a
+    user turn, writes through the verified reminder path, records the Undo,
+    audits (`audit_fields`) and makes the card."""
+    if since_ts is None or done_today >= MAX_PER_DAY:
+        return [], {}
+    history = text_history(records)
+    results = results or {}
+    common = dict(now=now, tz=tz, history=history, reminders=reminders, since_ts=since_ts,
+                  blocked=blocked, quiet=quiet)
+    why: dict[str, str] = {}
+    hopeful = []
+    for item in items or ():
+        # Everything but Sent mail first: an empty, "fresh" list is only a filter.
+        got, reason = plan_for(item, sent=[], sent_fresh=True, mine=(), result=results.get(item.get("id")),
+                               **common)
+        if got is None:
+            why[str(item.get("id"))] = reason
+        else:
+            hopeful.append(item)
+    if not hopeful:
+        return [], why
+    sent, fresh = await read_sent()
+    from service.proactive.sent_check import own_addresses
+    mine = own_addresses(sent)
+    ready = []
+    for item in hopeful:
+        got, reason = plan_for(item, sent=sent, sent_fresh=fresh, mine=mine,
+                               result=results.get(item.get("id")), **common)
+        if got is None:
+            why[str(item.get("id"))] = reason
+        else:
+            ready.append(got)
+    return choose(ready, done_today=done_today, now=now), why
