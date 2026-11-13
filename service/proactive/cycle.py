@@ -33,7 +33,7 @@ Rules:
   failed idle probe counts as "in use".
 - Auto-add (autoadd.py) runs last, in this background cycle only and never
   once a turn has started. Off by default, a missed, time-sensitive event or
-  deadline becomes a tap-to-add card; with `proactive_auto_add: true` it goes
+  deadline becomes a tap-to-add card; once the person lets Wisp act for them (acting.py) it goes
   on Calendar/Reminders through the verified writes, and its "Wisp did this"
   card leads the cards (it counts toward the 5).
 """

@@ -386,18 +386,19 @@ def test_with_the_flag_off_nothing_is_written_and_tap_cards_stand_in(store):
     assert event["start_ts"] == at(10, 31, 18) and event["duration_min"] == 60
 
 
-def test_the_config_flag_defaults_off_and_only_true_turns_it_on(monkeypatch):
+def test_the_config_flag_defaults_off_and_only_a_dated_yes_turns_it_on(monkeypatch):
     import service.config as config
     monkeypatch.setattr(config, "user_overlay_valid", lambda: True)
     monkeypatch.setattr(config, "models_config", lambda: {})
     assert config.proactive_auto_add_enabled() is False
-    for value in (None, "true", 1, "yes"):
-        monkeypatch.setattr(config, "models_config", lambda value=value: {"proactive_auto_add": value})
-        assert config.proactive_auto_add_enabled() is False
-    monkeypatch.setattr(config, "models_config", lambda: {"proactive_auto_add": False})
-    assert config.proactive_auto_add_enabled() is False
-    monkeypatch.setattr(config, "models_config", lambda: {"proactive_auto_add": True})
-    assert config.proactive_auto_add_enabled() is True
+    # The old key carried no time of the yes, so it no longer turns anything on.
+    for value in ({"proactive_auto_add": True}, {"act_for_me": True}, {"act_for_me": {"enabled": True}},
+                  {"act_for_me": {"enabled": "true", "enabled_at": 5.0}},
+                  {"act_for_me": {"enabled": False, "enabled_at": 5.0}}):
+        monkeypatch.setattr(config, "models_config", lambda value=value: value)
+        assert config.proactive_auto_add_enabled() is False and autoadd.enabled() is False
+    monkeypatch.setattr(config, "models_config", lambda: {"act_for_me": {"enabled": True, "enabled_at": 5.0}})
+    assert config.proactive_auto_add_enabled() is True and autoadd.enabled() is True
     monkeypatch.setattr(config, "user_overlay_valid", lambda: False)
     assert config.proactive_auto_add_enabled() is False
 
@@ -578,3 +579,19 @@ def test_a_clocked_deadline_is_reminded_the_morning_of_and_three_hours_before(st
     assert "I'll remind you Fri, Oct 30 at 9 AM and 8:59 PM." in card["body"]
     assert asyncio.run(autoadd.delete_reminder(record))["ok"]
     assert deleted == [("R-1", at(10, 30, 9)), ("R-2", at(10, 30, 20, 59))]
+
+
+# --- only what arrives after the yes --------------------------------------------------------
+
+def test_a_message_from_before_the_yes_stays_a_tap_card(store):
+    writers = Writers()
+    old = text("Maya Chen", RECITAL, ago_h=3.0)
+    new = text("Sam Lee", "can you come to my recital Sun Nov 1 at 2pm?", ago_h=0.5)
+    yes_at = NOW - 3600                                  # the person said yes an hour ago
+    out = asyncio.run(autoadd.step(survivors(old, new), {"calendar": [], "reminders": []}, now=NOW, tz=TZ,
+                                   store=store, abort=lambda: False, writers=writers.table(),
+                                   existing=lambda n: [], is_enabled=lambda: True,
+                                   allows=lambda received: received >= yes_at))
+    assert [plan["who"] for _, plan in writers.calls] == ["Sam Lee"]          # only the one that arrived after
+    assert len(out["tap"]) == 1 and out["tap"][0]["action"]["method"] == "calendar_event"
+    assert len(out["added"]) == 1

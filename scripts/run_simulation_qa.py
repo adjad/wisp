@@ -477,6 +477,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_public_fact_lookups.py",
     "tests/test_proactive_accounts.py",
     "tests/test_proactive_auto_add.py",
+    # Let Wisp act for me: the gate, the shared record and card. Fake config and store; no model, network or native write.
+    "tests/test_acting.py",
     "tests/test_proactive_clear.py",
     "tests/test_proactive_handled.py",
     "tests/test_proactive_sent_check.py",

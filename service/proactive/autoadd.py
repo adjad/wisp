@@ -27,9 +27,13 @@ IMPORTANT rules:
 - Undo deletes exactly the item Wisp created, by the identifier stored here
   (never one from a request or a card), through the verified cancel/delete
   paths, and blocks the item from ever being added again.
-- Off by default: writing needs `proactive_auto_add: true` in config.yaml (the
-  user's standing approval). Off, the same items become ordinary tap-to-add
-  cards (the executor's calendar_event/reminder).
+- Off by default: writing needs the person's yes to "Let Wisp act for me"
+  (service/proactive/acting.py, their standing approval), and only a message
+  that ARRIVED after that yes is ever added. Off, or for an older message, the
+  same items become ordinary tap-to-add cards (the executor's
+  calendar_event/reminder).
+- One path per message: an item Caught for you already turned into a reminder
+  or event (service/attention) is never added here as well.
 """
 from __future__ import annotations
 
@@ -61,8 +65,8 @@ def _digest(*parts) -> str:
 
 def enabled() -> bool:
     try:
-        from service.config import proactive_auto_add_enabled
-        return proactive_auto_add_enabled()
+        from service.proactive import acting
+        return acting.enabled()
     except Exception:  # noqa: BLE001 — a setting that can't be read writes nothing
         return False
 
@@ -460,7 +464,7 @@ def _turn_running() -> bool:
 def _still_ok() -> str | None:
     """Re-checked at dispatch: the setting is still on and no turn has started."""
     if not enabled():
-        return "Auto-add was turned off"
+        return "Acting for you was turned off"
     if _turn_running():
         return "A turn started; auto-add waits for the background"
     return None
@@ -468,7 +472,7 @@ def _still_ok() -> str | None:
 
 async def create_event(plan: dict) -> dict:
     """The verified EventKit create: attention_calendar.create_calendar, for
-    exactly this plan. `proactive_auto_add` is the user's standing approval
+    exactly this plan. The person's yes to "Let Wisp act for me" is the standing approval
     (checked again at dispatch); view-only mode and the calendar_write policy
     are enforced inside create_calendar."""
     if not _app_connected_now():
@@ -682,6 +686,14 @@ def done_cards(store, now: float) -> list[dict]:
     for record in sorted(store.auto_added().values(), key=lambda r: -float(r.get("at") or 0)):
         if not isinstance(record, dict) or record.get("status") != "added" or not record.get("title"):
             continue
+        if record.get("kind") not in ("calendar", "reminder"):
+            # Another kind of action behind the same gate (acting.py): its card is built from its record.
+            from service.proactive import acting
+            if acting.shown(record, now):
+                card = acting.did_card(record, now)
+                if card["id"] not in gone:
+                    out.append(card)
+            continue
         at = record.get("start_ts") if record.get("kind") == "calendar" else record.get("due_ts")
         if type(at) not in (int, float) or at <= now or now - float(record.get("at") or 0) > DONE_SHOWN_S:
             continue
@@ -717,15 +729,23 @@ def merge_cards(done: list[dict], tap: list[dict], cards: list[dict], added_item
 
 
 async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store, abort,
-               writers: dict | None = None, existing=None, is_enabled=None, debug: list | None = None) -> dict:
+               writers: dict | None = None, existing=None, is_enabled=None, allows=None,
+               debug: list | None = None) -> dict:
     """Plan every eligible item, write up to the caps, record each outcome.
 
     Returns {"tap": tap-to-add cards (auto-add off, or over the caps),
     "added": fingerprints added this pass, "items": item ids Wisp has added}.
-    `writers`, `existing` and `is_enabled` let tests replace the native writes,
-    the synced schedule and the setting; production uses the verified paths."""
+    `writers`, `existing`, `is_enabled` and `allows` let tests replace the native
+    writes, the synced schedule, the setting and the arrived-after-the-yes check;
+    production uses the verified paths and acting.allows."""
     writers = writers or WRITERS
     on = (is_enabled or enabled)()
+    if allows is None:
+        if is_enabled is None:
+            from service.proactive import acting
+            allows = acting.allows
+        else:
+            allows = lambda _received: True                              # noqa: E731
     rows = list(sched.get("calendar") or []) + list(sched.get("reminders") or [])
     rows += list((existing or default_existing)(now) or [])
     decided = store.decisions()
@@ -772,9 +792,12 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
         if (dup := already_there(plan, rows, tz)) is not None:
             note(item, f"already on {'Calendar' if dup.get('source') == 'calendar' else 'your list'}")
             continue
-        if not on or attempts >= MAX_PER_CYCLE or today + attempts >= MAX_PER_DAY:
+        # Only a message that arrived after the person's yes is added without a tap.
+        fresh = on and allows(item.get("received_ts"))
+        if not fresh or attempts >= MAX_PER_CYCLE or today + attempts >= MAX_PER_DAY:
             tap.append(tap_card(plan, now))
-            note(item, "tap to add" if not on else "cap reached: tap to add")
+            note(item, "tap to add" if not on else "arrived before the yes: tap to add" if not fresh
+                 else "cap reached: tap to add")
             continue
         if abort():
             note(item, "a turn started")
@@ -834,9 +857,13 @@ async def undo(card: dict, store, *, undoers: dict | None = None, now: float | N
     now = time.time() if now is None else now
     fp = (card.get("action") or {}).get("record")
     record = store.auto_added().get(fp) if isinstance(fp, str) else None
-    if not isinstance(record, dict) or record.get("status") != "added" or not record.get("source_id"):
+    native = isinstance(record, dict) and record.get("kind") in ("calendar", "reminder")
+    if not isinstance(record, dict) or record.get("status") != "added" or (native and not record.get("source_id")):
         return {"ok": False, "status": "blocked", "error": "Wisp has no record of adding this, so nothing was removed."}
-    call = {**UNDOERS, **(undoers or {})}["calendar" if record.get("kind") == "calendar" else "reminder"]
+    from service.proactive import acting
+    call = {**UNDOERS, **(undoers or {})}.get(record.get("kind")) or acting.undoer(record.get("kind"))
+    if call is None:
+        return {"ok": False, "status": "blocked", "error": "Wisp can't undo that one from here."}
     try:
         result = await call(record)
     except Exception as exc:  # noqa: BLE001
@@ -848,6 +875,8 @@ async def undo(card: dict, store, *, undoers: dict | None = None, now: float | N
            status="succeeded" if ok else result.get("status", "failed"), args={"fingerprint": fp})
     if ok:
         store.auto_add_put(fp, {**record, "status": "undone", "undone_at": now})
+        if not native:
+            return {"ok": True, "status": "succeeded", "message": str(result.get("message") or "Undone")}
         where = "your calendar" if record.get("kind") == "calendar" else "your reminders"
         return {"ok": True, "status": "succeeded", "message": f"Removed it from {where}"}
     if result.get("status") == "unknown":
