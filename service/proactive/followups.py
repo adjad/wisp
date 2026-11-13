@@ -42,6 +42,8 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+import time
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -61,6 +63,14 @@ PERSON_REST_S = 7 * DAY_S           # after any follow-up, the next one for that
 DUE_LEAD_S = 30 * 60
 MAX_LINES = 4                       # the newest unanswered lines read for the ask
 NAME_MAX = 40
+MAX_TO = 2                          # the user plus at most one other in To
+SENT_EVERY_S = 300.0                # Sent mail is read at most this often
+SENT_TIMEOUT_S = 10.0
+SENT_FRESH_S = 600.0                # a linked Gmail account's Sent synced within this, or it's stale
+NATIVE_SENT_DAYS = 31               # the app's limit: covers the 30-day "writes to often" window
+# Texts stay off until the user's own tapbacks reach the cache: a "Loved" ask
+# reads as unanswered today (MessagesReader drops every reaction).
+TEXTS_ENABLED = False
 
 
 def _finite(value) -> bool:
@@ -100,10 +110,18 @@ def text_history(records) -> dict[str, TextHistory]:
     return out
 
 
-def _talks_often(times, before: float) -> bool:
+def _local_days(times, tz: str) -> set:
+    """The calendar dates, in the user's own time zone, the times fall on."""
+    try:
+        zone = ZoneInfo(tz)
+    except Exception:  # noqa: BLE001 — no readable zone: UTC dates
+        zone = ZoneInfo("UTC")
+    return {datetime.fromtimestamp(t, zone).date() for t in times}
+
+
+def _talks_often(times, before: float, tz: str = "UTC") -> bool:
     recent = [t for t in times if before - CONTACT_WINDOW_S <= t < before]
-    days = {int(t // DAY_S) for t in recent}
-    return len(recent) >= MIN_TEXTS_OUT and len(days) >= MIN_DAYS_OUT
+    return len(recent) >= MIN_TEXTS_OUT and len(_local_days(recent, tz)) >= MIN_DAYS_OUT
 
 
 def _streak_start(entry: TextHistory, now: float) -> float | None:
@@ -120,6 +138,13 @@ def _saved_contact(label: str) -> bool:
     """A conversation labelled by a contact's name, not a bare number or address."""
     label = str(label or "").strip()
     return bool(label) and not _LABEL_NUMBER.match(label) and not label.startswith("Group ")
+
+
+def _visible(text) -> str:
+    """Text without control, format (bidi overrides, zero-width) or private-use
+    characters, which can make a name or a quote read as something it isn't."""
+    return "".join(ch for ch in str(text or "")
+                   if ch in "\n\t" or unicodedata.category(ch) not in ("Cc", "Cf", "Co", "Cs"))
 
 
 def _name_tokens(name: str) -> set[str]:
@@ -247,6 +272,26 @@ def _automated_address(address: str) -> bool:
     return bool(_AUTOMATED_ADDRESS.search(address or ""))
 
 
+def _writes_to(sent, address: str, item: dict, ask_ts: float, mine, tz: str) -> bool:
+    from service.proactive.sent_check import recipients
+    subject = re.sub(r"(?i)^\s*(?:(?:re|fwd?|aw|sv)\s*:\s*)+", "",
+                     str((item.get("ref") or {}).get("subject") or item.get("title") or "")).strip().casefold()
+    days, in_thread = [], False
+    for row in sent or ():
+        try:
+            ts = float(row.get("ts") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not (ask_ts - CONTACT_WINDOW_S <= ts < ask_ts):
+            continue
+        if address not in {a for _, a in recipients(row.get("to")) if a not in mine}:
+            continue
+        days.append(ts)
+        bare = re.sub(r"(?i)^\s*(?:(?:re|fwd?|aw|sv)\s*:\s*)+", "", str(row.get("subject") or "")).strip().casefold()
+        in_thread = in_thread or (bool(subject) and bare == subject)
+    return in_thread or len(_local_days(days, tz)) >= MIN_DAYS_OUT
+
+
 def _sent_times_to(sent, address: str, name: str, mine) -> list[float]:
     """When the user's sent mail went to this person: by address, or by a
     recipient whose name holds every word of `name` (one word is enough to
@@ -283,11 +328,21 @@ def fingerprint(item: dict, ask_ts: float) -> str:
     return "followup:" + _digest(person_key(item), int(float(ask_ts) // 60))
 
 
-def _display_name(item: dict) -> str:
-    """The person's name for a title, from the contact label or the sender's display
-    name: never a number, an address or anything that reads like one."""
-    raw = item.get("title") if item.get("source") == "messages" else item.get("who")
-    name = guard.clean(re.sub(r"[\"“”‘’<>\[\](){}]", " ", str(raw or "")), 80)
+def contacts_name(address: str) -> str:
+    """The user's own Contacts name for an address, or "" (no Contacts, no entry)."""
+    try:
+        from service.tools.imessage_tools import contact_name_for_handle
+        return str(contact_name_for_handle(address) or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _display_name(item: dict, lookup=contacts_name) -> str:
+    """The person's name for a title: the contact label of a text, the user's own
+    Contacts name for a mail sender (never the name the sender chose for
+    themself). Never a number, an address or anything that reads like one."""
+    raw = item.get("title") if item.get("source") == "messages" else lookup(_mail_address(item))
+    name = guard.clean(re.sub(r"[\"“”‘’<>\[\](){}]", " ", _visible(raw)), 80)
     if not name or len(name) > NAME_MAX or not re.search(r"[^\W\d_]", name):
         return ""
     if guard.has_contact_or_link(name) or guard.output_has_pii(name) or _LABEL_NUMBER.match(name):
@@ -349,7 +404,8 @@ def _age_phrase(seconds: float) -> str:
 def plan_for(item: dict, *, now: float, tz: str, history: dict | None = None, sent=None,
              sent_fresh: bool = False, mine=(), reminders=(), result: dict | None = None,
              since_ts: float | None = None, blocked=frozenset(), quiet=default_quiet,
-             defer_sent: bool = False) -> tuple[dict | None, str]:
+             defer_sent: bool = False, self_names=(), waved=None,
+             stale_accounts=frozenset(), lookup=contacts_name) -> tuple[dict | None, str]:
     """(plan, "") for an unanswered ask Wisp should remind the user about, else
     (None, why not). Pure: no store, no I/O. `history` is `text_history(...)`,
     `sent` the user's sent mail rows, `sent_fresh` whether that list was read
@@ -357,11 +413,16 @@ def plan_for(item: dict, *, now: float, tz: str, history: dict | None = None, se
     and to-dos (titles or rows), `result` the judge's verdict on the item,
     `since_ts` when the user said yes to acting for them, `blocked` the
     fingerprints and person keys never to plan again. `defer_sent` (the
-    first pass in `plans`) leaves every check that needs Sent mail for later."""
+    first pass in `plans`) leaves every check that needs Sent mail for later.
+    `self_names` are the user's own names (a note to self is never a follow-up),
+    `waved` {item id: newest ask time whose card the user dismissed or acted on},
+    `stale_accounts` the linked accounts whose Sent mail isn't known to be current."""
     from service.proactive import triage
     source = item.get("source")
     if source not in ("mail", "messages"):
         return None, "not mail or texts"
+    if source == "messages" and not TEXTS_ENABLED:
+        return None, "texts are off: reactions aren't visible yet"
     if not _finite(since_ts):
         return None, "acting for the user is off"
     blocked = blocked or frozenset()
@@ -382,11 +443,16 @@ def plan_for(item: dict, *, now: float, tz: str, history: dict | None = None, se
     if not sent_fresh or sent is None:
         return None, "sent mail not checked"
     mine = {str(a).casefold() for a in mine or ()}
-    name = _display_name(item)
+    name = _display_name(item, lookup)
     if not name:
-        return None, "no safe name"
+        return None, "not in your Contacts" if source == "mail" else "no safe name"
     if person_key(item) in blocked:
         return None, "undone or dismissed before"
+    me = set()
+    for own in self_names or ():
+        me |= _name_tokens(own)
+    if me and _name_tokens(name) and _name_tokens(name) <= me:
+        return None, "the user themself"
 
     # Who, when the waiting began, and what was asked.
     if source == "messages":
@@ -403,7 +469,7 @@ def plan_for(item: dict, *, now: float, tz: str, history: dict | None = None, se
         ask_ts = _streak_start(entry, now)
         if ask_ts is None:
             return None, "answered in the thread"
-        if not _talks_often(entry.outgoing, ask_ts):
+        if not _talks_often(entry.outgoing, ask_ts, tz):
             return None, "not someone the user texts often"
         newest = max(t for t in entry.incoming if t <= now)
         lines = list(item.get("pending") or []) or list(item.get("lines") or [])
@@ -414,18 +480,33 @@ def plan_for(item: dict, *, now: float, tz: str, history: dict | None = None, se
             return None, "not a person"
         if len(_other_senders(item)) > 1:
             return None, "several people in the thread"
+        from service.proactive.sent_check import recipients
+        to = {a for _, a in recipients(item.get("to_header"))}
+        if not to:
+            return None, "not addressed to the user"
+        if len(to) > MAX_TO:
+            return None, "sent to several people"
+        # Who "the user" is comes partly from Sent mail: checked once it is read.
+        if not defer_sent and not to & mine:
+            return None, "not addressed to the user"
+        stale_accounts = set(stale_accounts or ())
+        if "*" in stale_accounts or \
+                {str(item.get(k) or "").casefold() for k in ("account", "raw_account")} & stale_accounts:
+            return None, "sent mail not checked"
         ask_ts = newest = item.get("received_ts")
         if not _finite(ask_ts):
             return None, "no arrival time"
-        wrote_before = [t for t in _sent_times_to(sent, address, "", mine)
-                        if ask_ts - CONTACT_WINDOW_S <= t < ask_ts]
-        if not item.get("user_wrote") and not defer_sent and \
-                len({int(t // DAY_S) for t in wrote_before}) < MIN_DAYS_OUT:
+        # Someone the user writes to: Sent mail to this exact address before the ask,
+        # on two different days, or once in this very thread. A shared subject alone
+        # never counts: anyone can send "Quick question".
+        if not defer_sent and not _writes_to(sent, address, item, ask_ts, mine, tz):
             return None, "not someone the user writes to often"
         lines = _mail_ask_lines(item)
 
     if ask_ts < since_ts:
         return None, "arrived before the yes"
+    if (waved or {}).get(str(item.get("id")), float("-inf")) >= ask_ts:
+        return None, "its card was dismissed or acted on"
     waited = now - ask_ts
     # Every line still waiting is a day old, so the ask is too, wherever it sits.
     if now - newest < FOLLOW_UP_AFTER_S:
@@ -433,6 +514,7 @@ def plan_for(item: dict, *, now: float, tz: str, history: dict | None = None, se
     if waited > MAX_AGE_S:
         return None, "too old"
 
+    lines = [_visible(line) for line in lines]
     text = "\n".join(lines)
     if guard.source_sensitive(text) or guard.output_has_pii(text):
         return None, "sensitive"
@@ -487,7 +569,7 @@ def plan_for(item: dict, *, now: float, tz: str, history: dict | None = None, se
     quote = guard.clean(ask, 160)
     return {
         "kind": "reminder", "action": "followup", "title": title, "due_ts": float(due),
-        "quote": quote, "notes": f"{name} asked: “{quote}”",
+        "quote": quote,
         "why": f"{name} asked {_age_phrase(waited)} by {channel}, and there's no reply in Messages or Mail. "
                "Wisp can't see calls.",
         "fingerprint": fp, "person_key": person_key(item), "item_id": item.get("id"), "source": source,
@@ -526,19 +608,55 @@ def audit_fields(plan: dict) -> dict:
 # --- one cycle ------------------------------------------------------------------------
 
 
+_sent_cache: dict = {"at": None, "rows": [], "fresh": False}
+
+
 async def read_sent_fresh() -> tuple[list[dict], bool]:
     """The user's sent mail and whether it was read just now: Apple Mail's Sent
-    mailboxes through the app (its own index on disk, never the network) plus the
-    linked Gmail accounts' Sent label. A failed read is not fresh, so nothing is
-    planned on it."""
+    mailboxes through the app (its own index on disk, never the network) for the
+    last 31 days, plus the linked Gmail accounts' Sent label. At most every
+    SENT_EVERY_S and never longer than SENT_TIMEOUT_S. A failed read is not
+    fresh, so nothing is planned on it."""
+    import asyncio
     from service.proactive import sources
-    gmail = sources.sent_rows()
+    now = time.time()
+    at = _sent_cache["at"]
+    if at is not None and 0 <= now - at < SENT_EVERY_S:
+        return list(_sent_cache["rows"]), bool(_sent_cache["fresh"])
+    _sent_cache.update(at=now, rows=[], fresh=False)
+    try:
+        gmail = list(sources.sent_rows())
+    except Exception:  # noqa: BLE001
+        gmail = []
     try:
         from service.mail_memory import bridge
-        rows, _capped = await bridge.read_sent(sources.NATIVE_SENT_DAYS)
-    except Exception:  # noqa: BLE001 — the app is away or Mail can't be read: not fresh
+        rows, _capped = await asyncio.wait_for(bridge.read_sent(NATIVE_SENT_DAYS, timeout=SENT_TIMEOUT_S - 1),
+                                               SENT_TIMEOUT_S)
+    except Exception:  # noqa: BLE001 — the app is away, Mail can't be read, or it took too long: not fresh
+        _sent_cache.update(rows=gmail, fresh=False)
         return gmail, False
-    return gmail + list(rows), True
+    _sent_cache.update(rows=gmail + list(rows), fresh=True)
+    return list(_sent_cache["rows"]), True
+
+
+def stale_gmail_accounts(now: float | None = None) -> set[str]:
+    """Linked Google accounts whose Sent mail isn't known to be current: signed
+    out (the sign-in lapses every 7 days), or no Sent sync in SENT_FRESH_S. Their
+    cached Sent list may miss a reply, so their mail is never followed up."""
+    now = time.time() if now is None else now
+    try:
+        from service import gmail_source
+        accounts = gmail_source.connected_accounts()
+        last = getattr(gmail_source, "_last", {}) or {}
+    except Exception:  # noqa: BLE001 — Google state unreadable: no Google account is current
+        return {"*"}
+    stale = set()
+    for account, config in (accounts or {}).items():
+        synced = (last.get(account) or {}).get("sent") if isinstance(last.get(account), dict) else None
+        expired = isinstance(config, dict) and config.get("auth_expired")
+        if expired or not _finite(synced) or not 0 <= now - synced <= SENT_FRESH_S:
+            stale.add(str(account).casefold())
+    return stale
 
 
 def _safely(item, **kw) -> tuple[dict | None, str]:
@@ -551,7 +669,8 @@ def _safely(item, **kw) -> tuple[dict | None, str]:
 
 async def plans(items, *, now: float, tz: str, records, reminders=(), results=None,
                 since_ts: float | None, blocked=frozenset(), done_today: int = 0,
-                quiet=default_quiet, read_sent=read_sent_fresh) -> tuple[list[dict], dict]:
+                quiet=default_quiet, read_sent=read_sent_fresh, abort=None, self_names=(),
+                waved=None, stale=stale_gmail_accounts, lookup=contacts_name) -> tuple[list[dict], dict]:
     """(the plans to act on this cycle, {item id: why not}) for the cycle's items.
 
     Sent mail is read only when some item passes every other check, so a cycle
@@ -567,15 +686,25 @@ async def plans(items, *, now: float, tz: str, records, reminders=(), results=No
     history = text_history(records)
     results = results if isinstance(results, dict) else {}
     blocked = blocked if isinstance(blocked, (set, frozenset)) else frozenset()
+    try:
+        stale_accounts = set(stale(now) if stale is not None else ())
+    except Exception:  # noqa: BLE001
+        stale_accounts = {"*"}
     common = dict(now=now, tz=tz, history=history, reminders=reminders, since_ts=since_ts,
-                  blocked=blocked, quiet=quiet)
+                  blocked=blocked, quiet=quiet, self_names=self_names, waved=waved or {},
+                  stale_accounts=stale_accounts, lookup=lookup)
+    try:
+        from service.proactive.sent_check import own_addresses
+        own = own_addresses(())
+    except Exception:  # noqa: BLE001
+        own = set()
     why: dict[str, str] = {}
     hopeful = []
     for item in items or ():
         if not isinstance(item, dict):
             continue
         # Everything but Sent mail first: an empty, "fresh" list is only a filter.
-        got, reason = _safely(item, sent=[], sent_fresh=True, mine=(), result=results.get(item.get("id")),
+        got, reason = _safely(item, sent=[], sent_fresh=True, mine=own, result=results.get(item.get("id")),
                               defer_sent=True, **common)
         if got is None:
             why[str(item.get("id"))] = reason
@@ -583,11 +712,13 @@ async def plans(items, *, now: float, tz: str, records, reminders=(), results=No
             hopeful.append(item)
     if not hopeful:
         return [], why
+    if abort is not None and abort():
+        return [], why
     try:
         sent, fresh = await read_sent()
         sent = [r for r in sent if isinstance(r, dict)]
         from service.proactive.sent_check import own_addresses
-        mine = own_addresses(sent)
+        mine = own_addresses(sent) | own
     except Exception:  # noqa: BLE001 — Sent mail that can't be read is not fresh
         sent, fresh, mine = [], False, set()
     ready = []
@@ -656,6 +787,32 @@ def _blocked(store, now: float) -> tuple[set[str], int, dict]:
     return blocked, acting.done_since(store, now - DAY_S, kind=KIND), mine
 
 
+def _self_names() -> tuple[str, ...]:
+    try:
+        from service.memory.identity import user_name
+        return tuple(n for n in (user_name(),) if n)
+    except Exception:  # noqa: BLE001
+        return ()
+
+
+def _waved(decided: dict) -> dict[str, float]:
+    """{item id: the newest ask time a card for it was dismissed or acted on}, from
+    the stable ask keys ("ask:<item id>@<time>") the store keeps for every card the
+    user dealt with: a new message after that still counts as the same wait."""
+    out: dict[str, float] = {}
+    for bucket in ("suppressed", "held_asks"):
+        for key in (decided.get(bucket) or {}):
+            if not isinstance(key, str) or not key.startswith("ask:") or "@" not in key:
+                continue
+            item_id, _, stamp = key[4:].rpartition("@")
+            try:
+                at = float(stamp)
+            except ValueError:
+                continue
+            out[item_id] = max(out.get(item_id, float("-inf")), at)
+    return out
+
+
 def _when_phrase(due: float, now: float, tz: str) -> str:
     zone = ZoneInfo(tz)
     at, today = datetime.fromtimestamp(due, zone), datetime.fromtimestamp(now, zone).date()
@@ -686,12 +843,10 @@ def _register() -> None:
         pass
 
 
-_register()
-
 
 async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store, abort,
                write=None, read_sent=read_sent_fresh, records=None, quiet=default_quiet,
-               reminders=None, debug: list | None = None) -> dict:
+               reminders=None, debug: list | None = None, stale=None, lookup=None) -> dict:
     """Plan follow-ups for this cycle's items, and add the ones that pass through
     the verified reminder write, each recorded with its Undo before any card.
 
@@ -745,7 +900,9 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
     picked, why = await plans(
         items, now=now, tz=tz, records=records,
         reminders=open_reminder_titles(sched, store, now) if reminders is None else reminders,
-        results=results, since_ts=since, blocked=blocked, done_today=today, quiet=quiet, read_sent=read_sent)
+        results=results, since_ts=since, blocked=blocked, done_today=today, quiet=quiet, read_sent=read_sent,
+        abort=abort, self_names=_self_names(), waved=_waved(decided), **({"stale": stale} if stale else {}),
+        **({"lookup": lookup} if lookup else {}))
     if debug is not None:
         debug.extend({"item": k, "follow_up": v} for k, v in why.items())
     if write is None:
@@ -756,7 +913,8 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
         previous = recorded.get(fp) if isinstance(recorded.get(fp), dict) else {}
         if not acting.allows(plan["received_ts"]):
             continue
-        if acting.still_ok() is not None or acting.room(store, now) <= 0 or abort():
+        if acting.still_ok() is not None or acting.room(store, now) <= 0 or abort() \
+                or _in_quiet(quiet, now, tz):
             break
         try:
             outcome = await write(plan)
@@ -777,8 +935,11 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
             timezone=tz, account=plan.get("account", ""), person=plan["person_key"], attempts=attempts,
             due_ts=plan["due_ts"], item_fingerprint=plan["item_fingerprint"],
             card={"meta": "REMINDER", "title": guard.clean_title(f"Reminder to reply to {plan['who']}"),
-                  "did": f"No reply yet in Messages or Mail, so I'll remind you {when}. "
-                         "Wisp can't see calls: if you already called, Undo."},
+                  "did": f"No reply yet in Mail, so I'll remind you {when}. If you answer before then, "
+                         "check it off. Wisp can't see calls: if you already called, Undo."
+                         if plan["source"] == "mail" else
+                         f"No reply yet in Messages or Mail, so I'll remind you {when}. If you answer before "
+                         "then, check it off. Wisp can't see calls: if you already called, Undo."},
             show_until=plan["due_ts"],
             undo={"source_id": source_id, "title": title, "due_ts": plan["due_ts"]} if verified else None)
         if verified:

@@ -30,6 +30,31 @@ def never_quiet(_moment):
     return False
 
 
+CONTACTS = {"priya@school.edu": "Priya Shah", "sam@school.edu": "Sam Lee"}
+
+
+def lookup(address):
+    return CONTACTS.get(address, "")
+
+
+def no_stale(_now=None):
+    return set()
+
+
+@pytest.fixture(autouse=True)
+def texts_on(monkeypatch):
+    """Texts are off in production until reactions reach the cache; these tests
+    exercise the text rules as they will run once they are on."""
+    monkeypatch.setattr(followups, "TEXTS_ENABLED", True)
+    followups._sent_cache.update(at=None, rows=[], fresh=False)
+    from service.memory import identity
+    monkeypatch.setattr(identity, "user_emails", lambda: [ME])      # the user's own address, synthetic
+    monkeypatch.setattr(identity, "user_name", lambda: "Adi Jain")
+    yield
+    acting_module = __import__("service.proactive.acting", fromlist=["_undoers"])
+    acting_module._undoers.pop("follow_up", None)
+
+
 def records(name="Maya", *, ask=ASK, asked=NOW - 26 * H, mine=(NOW - 10 * D, NOW - 5 * D, NOW - 3 * D), extra=()):
     rows = [(t, name, "Me: sounds good") for t in mine]
     rows += [(NOW - 9 * D, name, f"{name}: see you at practice")]
@@ -57,20 +82,25 @@ def mail_item(*, body="Thanks! Can you review my section before Thursday?", send
                 text=f"Subject: {subject}\n" + "\n".join(blocks), lines=[subject, body], received_ts=received,
                 replied=False, person=True, secret=False, user_wrote=user_wrote, unread=False,
                 ref={"kind": "email", "message_id": "<p1@x>", "account": ME, "to": address, "subject": subject},
-                hash="h2")
+                to_header=ME, hash="h2")
     item.update(over)
     return item
 
 
 def plan(item, **kw):
-    args = dict(now=NOW, tz=TZ, history=followups.text_history(kw.pop("records", records())), sent=[],
-                sent_fresh=True, mine={ME}, reminders=[], since_ts=NOW - 30 * D, quiet=never_quiet)
+    args = dict(now=NOW, tz=TZ, history=followups.text_history(kw.pop("records", records())), sent=list(MAILED),
+                sent_fresh=True, mine={ME}, reminders=[], since_ts=NOW - 30 * D, quiet=never_quiet, lookup=lookup)
     args.update(kw)
     return followups.plan_for(item, **args)
 
 
-def sent(to, ts):
-    return {"ts": ts, "to": to, "subject": "Re: notes", "account": ME}
+def sent(to, ts, subject="Re: notes"):
+    return {"ts": ts, "to": to, "subject": subject, "account": ME}
+
+
+# The user wrote to Priya and Sam on two different days in the week before.
+MAILED = [sent("Priya Shah <priya@school.edu>", NOW - 6 * D), sent("priya@school.edu", NOW - 4 * D),
+          sent("sam@school.edu", NOW - 6 * D), sent("Sam <sam@school.edu>", NOW - 4 * D)]
 
 
 # --- what qualifies ------------------------------------------------------------------
@@ -192,6 +222,8 @@ def test_contact_is_counted_before_the_ask_never_after():
 
 def test_an_email_from_an_automated_address_never_qualifies():
     got, why = plan(mail_item(address="no-reply@school.edu"))
+    assert got is None and why in ("not a person", "not in your Contacts")
+    got, why = plan(mail_item(address="no-reply@school.edu"), lookup=lambda _a: "School")
     assert got is None and why == "not a person"
 
 
@@ -201,7 +233,7 @@ def test_an_email_thread_with_several_other_people_never_qualifies():
 
 
 def test_an_email_from_someone_the_user_never_wrote_to_does_not_qualify():
-    got, why = plan(mail_item(user_wrote=False))
+    got, why = plan(mail_item(user_wrote=False), sent=[])
     assert got is None and why == "not someone the user writes to often"
 
 
@@ -311,12 +343,12 @@ def test_without_fresh_sent_mail_nothing_is_planned():
 
 
 def test_sent_mail_to_the_person_after_the_ask_answers_it():
-    got, why = plan(mail_item(), sent=[sent("priya@school.edu", NOW - 2 * H)])
+    got, why = plan(mail_item(), sent=MAILED + [sent("priya@school.edu", NOW - 2 * H)])
     assert got is None and why == "answered by sent mail"
 
 
 def test_sent_mail_before_the_ask_does_not_answer_it():
-    got, why = plan(mail_item(), sent=[sent("priya@school.edu", NOW - 40 * H)])
+    got, why = plan(mail_item(), sent=MAILED + [sent("priya@school.edu", NOW - 40 * H)])
     assert got is not None, why
 
 
@@ -424,7 +456,7 @@ def test_the_audit_line_carries_no_message_text_or_name():
 def _run(items, *, read_sent, **kw):
     import asyncio
     args = dict(now=NOW, tz=TZ, records=kw.pop("records", records()), since_ts=NOW - 30 * D, quiet=never_quiet,
-                read_sent=read_sent)
+                read_sent=read_sent, stale=no_stale, lookup=lookup)
     args.update(kw)
     return asyncio.run(followups.plans(items, **args))
 
@@ -505,7 +537,7 @@ def step(store, items, *, now=NOW, write=None, abort=lambda: False, recs=None, *
     return asyncio.run(followups.step(survivors, {"reminders": []}, now=now, tz=TZ, store=store, abort=abort,
                                       write=write or Writer(), read_sent=kw.pop("read_sent", _no_sent),
                                       records=records() if recs is None else recs, quiet=never_quiet,
-                                      reminders=kw.pop("reminders", []), **kw))
+                                      reminders=kw.pop("reminders", []), stale=no_stale, lookup=lookup, **kw))
 
 
 def test_step_adds_one_verified_reminder_records_it_and_shows_its_card(setting, store):
@@ -691,7 +723,7 @@ def test_a_mail_arrival_that_isnt_a_time_plans_nothing():
 
 
 def test_mail_from_the_users_own_address_is_not_a_person():
-    assert plan(mail_item(address=ME))[1] == "not a person"
+    assert plan(mail_item(address=ME), lookup=lambda _a: "Adi")[1] == "not a person"
 
 
 def test_the_users_own_address_on_sent_mail_does_not_count_as_answering():
@@ -774,3 +806,186 @@ def test_a_message_auto_add_acted_on_gets_no_follow_up_too(setting, store, tmp_p
     acting.record(other, "autoadd:recital", kind="calendar", status="blocked", now=NOW - 60, title="Recital",
                   item_id=item["id"], received_ts=item["received_ts"])
     assert step(other, [item], recs=records(ask=line))["added"]
+
+
+# --- review of ff50667e: the blocking findings and their repairs --------------------------
+
+
+def test_texts_are_off_until_reactions_are_visible(monkeypatch):
+    # A "Loved" ask reads as unanswered: the Messages reader drops every reaction.
+    monkeypatch.setattr(followups, "TEXTS_ENABLED", False)
+    got, why = plan(text_item())
+    assert got is None and why == "texts are off: reactions aren't visible yet"
+    assert plan(mail_item())[0] is not None
+
+
+def test_a_shared_subject_is_not_a_relationship():
+    # The user mailed Bob "Quick question"; a stranger sends "Quick question" too.
+    stranger = mail_item(subject="Quick question", sender="Lee Park", address="lee@school.edu",
+                         body="Can you send me your notes?")
+    got, why = plan(stranger, lookup=lambda _a: "Lee Park",
+                    sent=MAILED + [sent("bob@school.edu", NOW - 3 * D, "Quick question")])
+    assert got is None and why == "not someone the user writes to often"
+
+
+def test_one_reply_in_this_very_thread_counts_as_writing_to_them():
+    once = [sent("sam@school.edu", NOW - 3 * D, "Re: Lab report draft")]
+    got, why = plan(mail_item(sender="Sam Lee", address="sam@school.edu", user_wrote=False), sent=once)
+    assert why == "", why
+
+
+def test_writing_on_two_local_days_not_two_utc_days():
+    zone = ZoneInfo(TZ)
+    evening = datetime(2026, 10, 22, 16, 30, tzinfo=zone).timestamp()      # 23:30 UTC
+    late = datetime(2026, 10, 22, 17, 30, tzinfo=zone).timestamp()         # 00:30 UTC the next day
+    same_day = [sent("sam@school.edu", evening), sent("sam@school.edu", late)]
+    got, why = plan(mail_item(sender="Sam Lee", address="sam@school.edu"), sent=same_day)
+    assert got is None and why == "not someone the user writes to often"
+
+
+def test_a_stale_google_account_plans_nothing_for_its_mail():
+    got, why = plan(mail_item(), stale_accounts={ME})
+    assert got is None and why == "sent mail not checked"
+    assert plan(mail_item(), stale_accounts={"*"})[1] == "sent mail not checked"
+    assert plan(mail_item(), stale_accounts={"other@gmail.com"})[0] is not None
+
+
+def test_google_accounts_are_stale_when_signed_out_or_not_synced_lately(monkeypatch):
+    from service import gmail_source
+    monkeypatch.setattr(gmail_source, "connected_accounts", lambda *a: {
+        "fresh@gmail.com": {}, "old@gmail.com": {}, "never@gmail.com": {},
+        "expired@gmail.com": {"auth_expired": NOW - D}})
+    monkeypatch.setattr(gmail_source, "_last", {"fresh@gmail.com": {"sent": NOW - 60},
+                                                "old@gmail.com": {"sent": NOW - 3 * H},
+                                                "expired@gmail.com": {"sent": NOW - 60}})
+    assert followups.stale_gmail_accounts(NOW) == {"old@gmail.com", "never@gmail.com", "expired@gmail.com"}
+
+    def broken(*_a):
+        raise RuntimeError
+    monkeypatch.setattr(gmail_source, "connected_accounts", broken)
+    assert followups.stale_gmail_accounts(NOW) == {"*"}
+
+
+def test_the_mail_name_is_the_users_contact_never_the_senders_own():
+    got, why = plan(mail_item(sender="Mom"), lookup=lambda _a: "Priya Shah")
+    assert got["title"] == "Reply to Priya Shah"
+    got, why = plan(mail_item(sender="Apple Support"), lookup=lambda _a: "")
+    assert got is None and why == "not in your Contacts"
+
+
+@pytest.mark.parametrize("to,why", [
+    ("", "not addressed to the user"),
+    ("class-list@school.edu", "not addressed to the user"),
+    (f"{ME}, a@school.edu, b@school.edu", "sent to several people"),
+])
+def test_mail_to_a_crowd_or_not_to_the_user_never_qualifies(to, why):
+    got, reason = plan(mail_item(to_header=to))
+    assert got is None and reason == why
+
+
+def test_mail_to_the_user_and_one_other_still_qualifies():
+    assert plan(mail_item(to_header=f"Adi <{ME}>, Sam <sam@school.edu>"))[0] is not None
+
+
+def test_a_note_to_self_is_never_a_follow_up():
+    got, why = plan(text_item("Adi Jain", title="Adi Jain", ref={"kind": "text", "conversation": "Adi Jain"}),
+                    records=records("Adi Jain"), self_names=("Adi Jain",))
+    assert got is None and why == "the user themself"
+
+
+def test_invisible_characters_never_reach_a_title_or_quote():
+    hidden = "Ma‮ya​"
+    got, why = plan(text_item(hidden, title=hidden, ref={"kind": "text", "conversation": hidden},
+                              lines=("Can you​ send the⁦ notes?",)),
+                    records=records(hidden, ask="Can you send the notes?"))
+    assert why == "" and got["title"] == "Reply to Maya" and got["quote"] == "Can you send the notes?"
+
+
+def test_a_card_waved_away_during_this_wait_still_counts_after_new_messages():
+    item = text_item()
+    assert plan(item, waved={item["id"]: NOW - 26 * H})[1] == "its card was dismissed or acted on"
+    assert plan(item, waved={item["id"]: NOW - 30 * H})[0] is not None      # an earlier wait
+
+
+def test_waved_reads_stable_ask_keys():
+    decided = {"suppressed": {"ask:messages:Maya@1792900000": 1, "other": 2},
+               "held_asks": {"ask:messages:Maya@1792906000": 1, "ask:bad@x": 3}}
+    assert followups._waved(decided) == {"messages:Maya": 1792906000.0}
+
+
+def test_a_cycle_never_reads_sent_mail_once_a_turn_starts():
+    calls = []
+
+    async def read():
+        calls.append(1)
+        return [], True
+    got, _ = _run([text_item()], read_sent=read, abort=lambda: True)
+    assert got == [] and calls == []
+
+
+def test_the_sent_read_is_throttled_and_bounded(monkeypatch):
+    from service.mail_memory import bridge
+    from service.proactive import sources
+    monkeypatch.setattr(sources, "sent_rows", lambda: [])
+    reads = []
+
+    async def quick(days, timeout=8.0):
+        reads.append(days)
+        return [{"ts": NOW, "to": ["x@y.z"]}], False
+    monkeypatch.setattr(bridge, "read_sent", quick)
+    first = asyncio.run(followups.read_sent_fresh())
+    second = asyncio.run(followups.read_sent_fresh())
+    assert first == second and first[1] is True and reads == [31]
+
+    async def slow(days, timeout=8.0):
+        await asyncio.sleep(5)
+        return [], False
+    monkeypatch.setattr(bridge, "read_sent", slow)
+    monkeypatch.setattr(followups, "SENT_TIMEOUT_S", 0.05)
+    followups._sent_cache.update(at=None)
+    assert asyncio.run(followups.read_sent_fresh()) == ([], False)
+
+
+def test_switching_off_between_plan_and_write_writes_nothing(setting, store):
+    async def read_then_off():
+        acting.set_enabled(False)
+        return [], True
+    write = Writer()
+    assert step(store, [text_item()], write=write, read_sent=read_then_off)["added"] == []
+    assert write.calls == [] and store.auto_added() == {}
+
+
+def test_quiet_hours_starting_before_the_write_stop_it(setting, store):
+    state = {"read": False}
+
+    async def read():
+        state["read"] = True
+        return [], True
+
+    def quiet(_m):
+        return state["read"]
+    write = Writer()
+    got = asyncio.run(followups.step([{"item": text_item(), "result": {}}], {"reminders": []}, now=NOW, tz=TZ,
+                                     store=store, abort=lambda: False, write=write, read_sent=read,
+                                     records=records(), quiet=quiet, reminders=[], stale=no_stale, lookup=lookup))
+    assert got["added"] == [] and write.calls == []
+
+
+def test_undo_after_the_user_edited_the_reminder_changes_nothing(setting, store, monkeypatch):
+    [fp] = step(store, [text_item()])["added"]
+    [card] = autoadd.done_cards(store, NOW + 60)
+
+    async def changed(_stored):
+        return {"ok": False, "status": "failed", "error": "Reminder changed since selection; nothing changed"}
+    monkeypatch.setattr(autoadd, "delete_reminder", changed)
+    result = asyncio.run(autoadd.undo(card, store, now=NOW + 120))
+    assert result["ok"] is False
+    assert store.auto_added()[fp]["status"] == "added"
+
+
+def test_the_card_says_what_wisp_cant_see(setting, store):
+    async def mailed():
+        return list(MAILED), True
+    step(store, [mail_item()], recs=[], read_sent=mailed)
+    [card] = autoadd.done_cards(store, NOW + 60)
+    assert "check it off" in card["body"] and "can't see calls" in card["body"]
