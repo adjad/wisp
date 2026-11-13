@@ -48,8 +48,21 @@ def user_names_self(text: str) -> bool:
                for c in _CLAUSES.split(head) if c.strip())
 
 
+_turn_text: ContextVar[str] = ContextVar("wisp_user_turn_text", default="")
+
+
 def mark_turn(text: str) -> None:
     _named_self.set(bool(user_names_self(text or "")))
+    _turn_text.set(text or "")
+
+
+def typed_this_turn(handle: str) -> bool:
+    """The person's own message this turn contains this address or number."""
+    said, want = _turn_text.get().casefold(), (handle or "").strip().casefold()
+    if not want:
+        return False
+    digits = re.sub(r"\D", "", want)
+    return want in said or ("@" not in want and len(digits) >= 7 and digits in re.sub(r"\D", "", said))
 
 
 def named_self() -> bool:

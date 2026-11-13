@@ -167,3 +167,57 @@ def test_the_real_head_start_reads_mail_then_replies():
     import service.tools  # noqa: F401
     from service import main
     assert main._ask_tool_rank("Reply to Dana's last email and say yes", "")[0][:2] == ["view_emails", "reply_to_email"]
+
+
+# --- 4. a change said to be under way, with nothing behind it ---------------------
+
+MOVING = ("I'm moving your Coffee with Alex Chen from 3:00 PM to 4:00 PM today. "
+          "I'll let you know as soon as that change is confirmed.")
+
+
+@pytest.mark.parametrize("text", [
+    MOVING, "I'm sending that email to Priya now.", "I am now adding Demo point 4 to the note.",
+    "I'll let you know as soon as that change is confirmed.", "I will confirm once the reminder is set.",
+    "Okay, I'm cancelling the dentist reminder.",
+])
+def test_in_progress_and_promised_changes_are_claims(text):
+    assert mo.claimed_write(text)
+
+
+@pytest.mark.parametrize("text", [
+    "I'm not moving anything until you confirm.", "I'll move it once you tell me the time.",
+    "Should I move it to 4?", "I'm looking at your calendar for today.", "I'll let you know what I find.",
+    "You have Coffee with Alex Chen at 3:00 PM.",
+])
+def test_offers_refusals_and_reads_are_not(text):
+    assert not mo.claimed_write(text)
+
+
+def test_a_move_that_only_read_the_calendar_cannot_end_on_im_moving(synthetic):
+    effects, register = synthetic
+    register("update_event", "assistant_tools", "calendar_write", parameters=TITLE)
+    client, events, answer = run(
+        [[call("get_upcoming", days=1)], MOVING, MOVING, "never reached"],
+        prompt="Move my 3pm with Alex Chen today to 4", ask_quality=True,
+        model_led_preload=["update_event", "get_upcoming"])
+    assert [name for name, _ in effects] == ["get_upcoming"]
+    assert "Nothing has run yet, so that was not done." in client.requests[2]["messages"][-1]["content"]
+    assert answer == mo.ASK_CLAIM_NOT_DONE
+
+
+# --- 5. the channel is the person's word ------------------------------------------
+
+@pytest.mark.parametrize("prompt,barred", [
+    ("Email Priya Shah that I'll be ten minutes late", {"send_message"}),
+    ("please send an email to Priya saying hi", {"send_message"}),
+    ("Text Priya that I'll be ten minutes late", {"send_email"}),
+    ("Message Dana I'm on my way", {"send_email"}),
+    ("Email Priya the text of my note", set()),          # both words: left to the model
+    ("Text Dana my email address", set()),
+    ("Tell Priya I'll be late", set()),
+    ("What did Priya email me?", set()),
+])
+def test_only_the_named_channels_send_is_offered(prompt, barred):
+    registry = {"send_message": None, "send_email": None}
+    assert mo.other_channel_sends(prompt) == barred
+    assert mo.ask_forbidden_tools(prompt, registry) == barred

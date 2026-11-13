@@ -151,3 +151,41 @@ async def test_someone_else_on_a_self_turn_is_still_a_contact(world):
     self_send.mark_turn("Send me a text that says hi")
     args, problem = action_tools.prepare_send_recipient(TEXT, {"to": "Dana", "text": "hi"})
     assert problem is None and args["resolved_to"] == DANA
+
+
+# --- an address the model made up never stands in for "myself" --------------------
+# 2026-11-13 real-model run, Full access on: "Email myself…" with no own address
+# known reached a card addressed to an invented address, and it was approved.
+
+async def test_an_invented_address_for_myself_is_refused_before_any_card(world, monkeypatch):
+    monkeypatch.setattr("service.memory.identity.user_emails", lambda: [])
+    self_send.mark_turn("Email myself a test with the subject Hello")
+    _, problem = action_tools.prepare_send_recipient(
+        EMAIL, {"to": "test@test.com", "subject": "Hello", "body": "test"})
+    assert problem is not None and registry.not_sent_receipt(EMAIL, problem)
+    assert problem.question.startswith("I don't know your own email address")
+    self_send.mark_turn("Text myself: hi")
+    _, problem = action_tools.prepare_send_recipient(TEXT, {"to": "+1 555 010 0199", "text": "hi"})
+    assert problem is not None and problem.question.startswith("I don't know your own number")
+    assert world == []
+
+
+async def test_an_invented_address_becomes_my_own_when_one_is_known(world):
+    self_send.mark_turn("Email myself a test")
+    args, problem = action_tools.prepare_send_recipient(
+        EMAIL, {"to": "test@test.com", "subject": "Hello", "body": "test"})
+    assert problem is None and args["to"] == ME
+
+
+async def test_an_address_i_typed_or_a_saved_contact_keeps_its_place(world):
+    self_send.mark_turn("Email me and pat@example.org the notes")
+    args, problem = action_tools.prepare_send_recipient(
+        EMAIL, {"to": "me, pat@example.org", "subject": "Notes", "body": "here"})
+    assert problem is None and args["to"] == f"{ME}, pat@example.org"
+    self_send.mark_turn("Email me and Dana the notes")
+    args, problem = action_tools.prepare_send_recipient(
+        EMAIL, {"to": f"me, {DANA}", "subject": "Notes", "body": "here"})
+    assert problem is None and args["to"] == f"{ME}, {DANA}"                 # Dana is a saved contact
+    # Not a turn that names me: nothing is rewritten.
+    self_send.mark_turn("Email pat@example.org the notes")
+    assert action_tools._self_not_invented("someone@else.test") == "someone@else.test"

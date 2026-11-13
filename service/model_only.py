@@ -495,6 +495,23 @@ _WRITE_MODAL = re.compile(
     r"going\s+to|about\s+to|ready\s+to|will\s+be|can\s+be|could\s+be|to\s+be|needs?\s+to|once|before\s+i)\b", re.I)
 
 
+# A change said to be under way or promised, with nothing behind it (2026-11-13
+# real-model run: "Move my 3pm with Alex Chen today to 4" -> "I'm moving your
+# Coffee with Alex Chen from 3:00 PM to 4:00 PM today… I'll let you know as
+# soon as that change is confirmed." Only a calendar read had run). A turn has
+# no later step: what is not done when the answer is written is not done.
+_WRITE_DOING = (r"(?:moving|sending|adding|appending|creating|scheduling|rescheduling|deleting|removing|"
+                r"cancel+ing|booking|saving|updating|setting|texting|e-?mailing|messaging|forwarding|replying|"
+                r"changing|renaming|writing|putting|marking|completing|archiving)")
+_WRITE_PROGRESS = re.compile(
+    rf"\bi(?:'m|\s+am)\s+(?:now\s+|just\s+|currently\s+|also\s+|going\s+ahead\s+and\s+)*{_WRITE_DOING}\b"
+    rf"|^(?:now\s+)?{_WRITE_DOING}\s+(?:it|that|this|your|the)\b[^.?!\n]{{0,80}}\b(?:now|\.\.\.|…)"
+    r"|\bi(?:'ll|\s+will)\s+(?:let\s+you\s+know|confirm|update\s+you|tell\s+you|report\s+back)\b[^.?!\n]{0,80}"
+    r"\b(?:confirmed|done|complete|completed|finished|through|moved|sent|saved|added|deleted|updated|set|ready)\b",
+    re.I)
+_PROGRESS_HEDGE = re.compile(r"\?|\b(?:not|never|nothing)\b|n't\b|^(?:if|should|would)\b", re.I)
+
+
 def claimed_write(text: str) -> str:
     """The sentence where the reply states a change was made, in any form,
     else "". Only for a turn where the person asked for a change: on a read it
@@ -505,6 +522,8 @@ def claimed_write(text: str) -> str:
             continue
         for sentence in re.split(r"(?<=[.!?])\s+", stripped):
             body = _CLAIM_PREFIX.sub("", sentence).strip().strip("*").strip()
+            if body and _WRITE_PROGRESS.search(body) and not _PROGRESS_HEDGE.search(body):
+                return sentence.strip()
             if not body or _CLAIM_HEDGE.search(body) or _WRITE_MODAL.search(body):
                 continue
             if _CLAIM_I.search(body) or _CLAIM_LEAD.search(body) or _WRITE_PASSIVE.search(body):
@@ -966,6 +985,29 @@ COMPOSE_ONLY_FORBIDDEN_CATEGORIES = frozenset({
 })
 
 
+# The channel is the person's word: "Email Priya Shah that I'll be ten minutes
+# late" was sent as a text 1 run in 3 (2026-11-13 real-model run). An
+# instruction that opens with "email <someone>" and never says text or message
+# is not offered the text send, and the reverse.
+_CHANNEL_LEAD = r"^\W*(?:(?:please|pls|hey\s+wisp|wisp|ok(?:ay)?|can\s+you|could\s+you|quickly|just)[,\s]+)*"
+_EMAIL_SOMEONE = re.compile(_CHANNEL_LEAD + r"(?:send\s+(?:an?\s+)?e-?mail\s+to|e-?mail)\s+\w", re.I)
+_TEXT_SOMEONE = re.compile(_CHANNEL_LEAD + r"(?:send\s+(?:a\s+)?(?:text|i?message)\s+to|text|i?message)\s+\w", re.I)
+_EMAIL_WORD = re.compile(r"\be-?mail\w*|\bmail\b|\binbox\b", re.I)
+_TEXT_WORD = re.compile(r"\btext\w*|\bi?messag\w+|\bsms\b", re.I)
+
+
+def other_channel_sends(prompt: str) -> frozenset[str]:
+    """The send of the channel the person did NOT name: send_message for
+    "email Priya …", send_email for "text Priya …". Empty when both or
+    neither are named."""
+    text = " ".join((prompt or "").split())
+    if _EMAIL_SOMEONE.search(text) and not _TEXT_WORD.search(text):
+        return frozenset({"send_message"})
+    if _TEXT_SOMEONE.search(text) and not _EMAIL_WORD.search(text):
+        return frozenset({"send_email"})
+    return frozenset()
+
+
 def ask_forbidden_tools(prompt: str, registry: dict) -> frozenset[str]:
     """Tools a model-only Ask turn may not offer for this request: every read
     (except contact lookups) for a pure writing request, and every write, draft
@@ -977,6 +1019,7 @@ def ask_forbidden_tools(prompt: str, registry: dict) -> frozenset[str]:
                            or n in WRITING_FORBIDDEN_READS)}
     if compose_only(prompt):
         forbidden |= {n for n, t in registry.items() if t.category in COMPOSE_ONLY_FORBIDDEN_CATEGORIES}
+    forbidden |= other_channel_sends(prompt) & set(registry)
     if single_reminder_delete(prompt):
         # One named reminder: cancel_event deletes it; the past-due clearer cannot see it.
         forbidden |= {n for n in BULK_REMINDER_CLEARERS if n in registry}
