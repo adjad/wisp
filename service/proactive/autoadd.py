@@ -133,7 +133,7 @@ _HEDGE = re.compile(r"\b(?:maybe|might|possibly|perhaps|tentative(?:ly)?|how abo
 _DEADLINE = re.compile(r"\b(due|deadline|submit(?:ted)?|submission|turn in|hand in|pay(?:ment)?|rsvp|"
                        r"register|registration|apply|application|expires?|last day)\b", re.I)
 _EVENT = re.compile(r"\b(meeting|exam|midterm|final exam|quiz|test|appointment|appt|call|interview|class|lecture|"
-                    r"lab|section|seminar|session|recital|concert|performance|game|party|dinner|lunch|breakfast|"
+                    r"lab|section|seminar|session|recital|concert|performance|game|party|dinner|supper|lunch|breakfast|"
                     r"brunch|reservation|ceremony|office hours|orientation|rehearsal|practice|tour|checkup|"
                     r"check-up|dentist|doctor|consultation|visit|meetup|meet-up|workshop|presentation)\b", re.I)
 _PROMO = re.compile(r"\bunsubscribe\b|\d+\s?% off\b|\b(?:sale|deals?|promo(?:tion)?|coupon|discount|"
@@ -246,6 +246,37 @@ def _candidates(item: dict) -> list[tuple[str, bool, float | None]]:
         newest = index == len(lines) - 1
         out += [(s, newest, stamp(times[index])) for s in _sentences(line)]
     return out
+
+
+# A meal word settles which half of the day a bare hour means, in the SAME sentence only.
+# Nothing else does: "meet at 7", "call me at 5" and an hour outside the meal's own range
+# stay unread, and an am/pm the sender wrote always stands as written.
+_MEAL_HOURS = (
+    (re.compile(r"\b(?:dinner|supper)\b", re.I), {5: "pm", 6: "pm", 7: "pm", 8: "pm", 9: "pm", 10: "pm"}),
+    (re.compile(r"\blunch\b", re.I), {11: "am", 12: "pm", 1: "pm", 2: "pm"}),
+    (re.compile(r"\bbreakfast\b", re.I), {6: "am", 7: "am", 8: "am", 9: "am", 10: "am", 11: "am"}),
+)
+# "at 7" or "at 12:30" with no am/pm after it (and not part of a longer number or a date).
+_BARE_HOUR = re.compile(r"\bat\s+(\d{1,2})(:[0-5]\d)?(?!\s*(?:[ap]\.?\s?m\b|o'?clock|[\d:/.-]))(?=\W|$)", re.I)
+_HAS_MERIDIEM = re.compile(r"\b\d{1,2}(?::[0-5]\d)?\s*[ap]\.?\s?m\b|\b(?:noon|midnight)\b", re.I)
+
+
+def _meal_time(sentence: str) -> str:
+    """The sentence with "pm" or "am" written after its one bare hour, when a meal word in the
+    same sentence settles it: dinner or supper at 5 to 10 is the evening, lunch at 11, 12, 1
+    or 2 is midday, breakfast at 6 to 11 is the morning. Otherwise the sentence unchanged:
+    no meal word, two meals, an hour outside the meal's range, more than one bare hour, or
+    any time already written with am/pm, noon or midnight."""
+    meals = [hours for word, hours in _MEAL_HOURS if word.search(sentence)]
+    if len(meals) != 1 or _HAS_MERIDIEM.search(sentence):
+        return sentence
+    found = list(_BARE_HOUR.finditer(sentence))
+    if len(found) != 1:
+        return sentence
+    half = meals[0].get(int(found[0].group(1)))
+    if half is None:
+        return sentence
+    return sentence[:found[0].end()] + half + sentence[found[0].end():]
 
 
 def _resolve(sentence: str, arrival: float, tz: str):
@@ -667,7 +698,7 @@ def plan_for(item: dict, result: dict | None, *, now: float, tz: str) -> tuple[d
         # use only an absolute date (its year read against the item's arrival), and its
         # plan keeps line_ts None: a tap card.
         known = type(line_ts) in (int, float)
-        got = _resolve(sentence, float(line_ts) if known else float(arrival), tz)
+        got = _resolve(_meal_time(sentence), float(line_ts) if known else float(arrival), tz)
         if not _explicit(got, relative_ok and known):
             continue
         zone = ZoneInfo(tz)

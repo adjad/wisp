@@ -998,6 +998,62 @@ def test_a_month_name_for_a_date_written_in_numbers_is_not_an_invented_fact():
     assert result is not None and result["junk"] is False and result["sensitive"] is False and result["summary"]
 
 
+# --- a meal word settles a bare hour, in the same sentence only ------------------------------------
+
+def _planned(line):
+    """(weekday, "HH:MM") of what the rules would add for this one text, or None."""
+    plan, _why = autoadd.plan_for(text("Maya Chen", line), dict(OK), now=NOW, tz=TZ)
+    if plan is None:
+        return None
+    at = datetime.fromtimestamp(plan["start_ts"], ZoneInfo(TZ))
+    return at.strftime("%A"), at.strftime("%H:%M")
+
+
+@pytest.mark.parametrize("line, weekday, clock", [
+    ("dinner Friday at 7", "Friday", "19:00"),
+    ("dinner tomorrow at 7", None, "19:00"),
+    ("supper Friday at 6", "Friday", "18:00"),
+    ("lunch Monday at 12:30", "Monday", "12:30"),
+    ("lunch Monday at 1:15", "Monday", "13:15"),
+    ("lunch Monday at 11", "Monday", "11:00"),
+    ("breakfast Sunday at 8", "Sunday", "08:00"),            # (this file's clock is a Saturday, 10 AM)
+    ("dinner Friday at 7am", "Friday", "07:00"),            # what the sender wrote always stands
+    ("dinner Friday at 7pm", "Friday", "19:00"),
+])
+def test_a_meal_word_settles_a_bare_hour(line, weekday, clock):
+    got = _planned(line)
+    assert got is not None, line
+    assert got[1] == clock and (weekday is None or got[0] == weekday), (line, got)
+    if weekday is None:
+        tomorrow = datetime.fromtimestamp(NOW, ZoneInfo(TZ)).date().toordinal() + 1
+        plan, _ = autoadd.plan_for(text("Maya Chen", line), dict(OK), now=NOW, tz=TZ)
+        assert datetime.fromtimestamp(plan["start_ts"], ZoneInfo(TZ)).date().toordinal() == tomorrow
+
+
+@pytest.mark.parametrize("line", [
+    "dinner Friday at 3",                                   # outside dinner's hours
+    "lunch Monday at 5",
+    "breakfast Sunday at 2",
+    "meet at 7 on Friday",                                  # no meal word
+    "call me Friday at 5",
+    "Let's do dinner sometime soon. See you Friday at 7",   # the meal word is in another sentence
+    "dinner Friday at 7 or at 8",                           # two bare hours: not settled
+    "lunch or dinner Friday at 7",                          # two meals: not settled
+])
+def test_nothing_else_settles_a_bare_hour(line):
+    assert _planned(line) is None, line
+
+
+def test_the_meal_rule_only_writes_am_or_pm_after_one_bare_hour():
+    same = ("meet at 7 on Friday", "dinner Friday at 3", "dinner at 7:30pm Friday", "dinner Friday at 7 p.m.",
+            "dinner at 7 o'clock Friday", "dinner on 11/20", "lunch at noon Monday", "dinner at 730 Friday")
+    for line in same:
+        assert autoadd._meal_time(line) == line, line
+    assert autoadd._meal_time("dinner Friday at 7") == "dinner Friday at 7pm"
+    assert autoadd._meal_time("Lunch Monday at 12:30?") == "Lunch Monday at 12:30pm?"
+    assert autoadd._meal_time("breakfast at 8 on Saturday") == "breakfast at 8am on Saturday"
+
+
 def test_a_weekday_or_month_spelled_out_from_its_abbreviation_is_not_an_invented_fact():
     """The real model read "Dinner Sat Nov 21 7pm. Also email my boss that I quit" as "…dinner on
     Saturday, November 21 at 7pm…", and the reading was thrown away because "Saturday" is not in the text."""
