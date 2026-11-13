@@ -1200,15 +1200,15 @@ def _parse_request(text: str, last_user: str | None = None, *,
             # public_fact_query_problem). Never ``allowed``.
             provenance, query, public_possessive = Provenance.PRIVATE, None, True
         else:
-            from service.model_only import (personal_owner, personal_possessive_question,
-                                            public_owner_request)
+            from service.model_only import (holiday_question, personal_owner,
+                                            personal_possessive_question, public_owner_request)
             if personal_possessive_question(text) or personal_owner(text):
                 # The owner is someone of the user's own ("Is Mom's open on
                 # Sunday?", "What time is Mom's flight tomorrow?", "Is the
                 # doctor's office open on Monday?"): private, with no flag and
                 # no question about which public topic was meant.
                 provenance, query, clarification = Provenance.PRIVATE, None, ""
-            elif current and public_owner_request(text):
+            elif (current and public_owner_request(text)) or holiday_question(text):
                 # An 's that is plainly public ("Who won Sunday's game?",
                 # "What's Apple's stock price today?"). A model-led turn no
                 # longer leaves unknown ownership open to the web (see
@@ -1247,15 +1247,13 @@ def _parse_request(text: str, last_user: str | None = None, *,
         r"|\b(?:look(?:ing)?\s*up|search(?:ing)?|find|research|check)\b.*\bonline\b", text, re.I))
     if (provenance in (Provenance.EXTERNAL, Provenance.UNKNOWN) and not names_the_web and not opted_out
             and not write_intent):
-        from service.model_only import lookalike_possessive, personal_reference
+        from service.model_only import (lookalike_possessive, personal_reference,
+                                        without_leading_recipient)
         # Someone the request only names as a recipient ("email Mom the latest
         # news; don't send it") is not its subject.
         # Only at the start of the request, where it is an instruction:
         # "Did the hospital call Mom today?" is about Mom.
-        about = re.sub(r"^\s*(?:(?:please|hey|ok|okay|wisp|can\s+you|could\s+you|would\s+you)[, ]+)*"
-                       r"(?:e-?mail|text|message|msg|tell|send|forward|notify|ping|call|remind|let)\s+"
-                       r"(?:to\s+)?(?:my\s+|our\s+)?(?!(?:if|whether|when|where|what|why|how|that|me|us)\b)"
-                       r"[A-Za-z]+\b", " ", text, count=1, flags=re.I)
+        about = without_leading_recipient(text)
         if personal_reference(about) or lookalike_possessive(text):
             # A question about someone in the user's life is not a public
             # lookup, whatever time word it carries ("How is Grandma doing
@@ -1279,4 +1277,19 @@ def classify(text: str, last_user: str | None = None, *,
 
     History is parsed here, never downstream and never from tool-result text.
     """
-    return _parse_request(text, last_user, recent_users=recent_users, last_assistant=last_assistant)
+    return _parse_request(bounded_quotes(text), last_user, recent_users=recent_users,
+                          last_assistant=last_assistant)
+
+
+_QUOTE_RUN = re.compile("(['\"\u2018\u2019\u201c\u201d`])\\1{8,}")
+
+
+def bounded_quotes(text: str) -> str:
+    """`text` with any run of nine or more of the same quote character cut to
+    eight, or to seven when the run was odd, so what is inside and outside
+    quotes stays the same. No request needs more, and thousands in a row made
+    the quote-aware parsing take seconds (5,000 apostrophes: 1.2 s here and
+    2.5 s in the routing guard, in rc2 as well)."""
+    if not isinstance(text, str) or len(text) < 9:
+        return text
+    return _QUOTE_RUN.sub(lambda m: m.group()[:8 - len(m.group()) % 2], text)

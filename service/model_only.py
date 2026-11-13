@@ -1555,7 +1555,7 @@ _LOOSE_APOSTROPHES = str.maketrans({c: "'" for c in "\u2018\u2019\u02bc\u02b9\u0
 # it, so the request would pass as having no owner at all.
 _LOOKALIKE_BACKTICK = re.compile(r"[A-Za-z]`s\b")
 _LOOKALIKE_SITE = re.compile(r"[A-Za-z]([^\x00-\x7f])s\b")
-_LOOSE_POSSESSIVE = re.compile(r"([a-z0-9][a-z0-9&.-]*)'s?(?=\s|$|[?.!,;:])")
+_LOOSE_POSSESSIVE = re.compile(r"(?<![a-z0-9&.'-])([a-z0-9][a-z0-9&.-]{0,40})'s?(?=\s|$|[?.!,;:])")
 
 
 def _loose_cased(text: str) -> str:
@@ -1571,26 +1571,43 @@ def _loose_text(text: str) -> str:
     return _loose_cased(text).lower()
 
 
+# The longest text the ownership checks read. A question about someone is
+# short; a cap keeps every pattern below linear in what it is given.
+_OWNER_TEXT_CAP = 600
 _KIN_ALT = "|".join(sorted(_KIN, key=len, reverse=True))
-# "my mom", "our landlord", "my little sister".
-_KIN_MINE = re.compile(rf"\b(?:my|our)\s+(?:[a-z]+\s+)?(?:{_KIN_ALT})\b")
-# The kin word in subject position, right after a question lead: "How is
-# Grandma doing", "When will Dad be home", "Is Mom mad at me", "Did Grandma
-# fall again", "Why is Mom upset", "Who is Dad with". Whatever follows, the
-# question is about them, unless what follows makes the kin word the start of
-# a name (see personal_reference).
+# Family words that are just as often ordinary words ("baby formula", "pop
+# music", "kids menu", "partner visa"). They count only where what follows
+# shows a person is meant ("Is the baby asleep yet?", "Are the kids home yet?").
+_SOFT_KIN = frozenset("kid kids baby twins pop pops partner hubby wifey granddad grandad grandson "
+                      "granddaughter grandparents grandkids toddler".split())
+_SOFT_ALT = "|".join(sorted(_SOFT_KIN, key=len, reverse=True))
+_ANY_KIN_ALT = "|".join(sorted(_KIN | _SOFT_KIN, key=len, reverse=True))
+# "my mom", "our landlord", "my little sister", "my kids".
+_KIN_MINE = re.compile(rf"\b(?:my|our)\s+(?:[a-z]+\s+)?(?:{_ANY_KIN_ALT})\b")
+# A question lead: "is", "when will", "how's", and with words between,
+# "how old is", "which hospital is", "what time does".
 _KIN_AUX = (r"(?:is|are|was|were|did|does|do|has|have|had|will|would|can|could|should|might|may|"
             r"isn't|aren't|wasn't|didn't|doesn't|hasn't|won't|can't)")
-_KIN_SUBJECT = re.compile(
-    rf"^(?:(?:so|and|hey|ok|okay|wisp|please|um|uh)[, ]+)*"
-    rf"(?:(?:how|where|when|why|who|which|what(?:\s+time)?)(?:'s|\s+{_KIN_AUX})?|{_KIN_AUX})\s+"
-    rf"(?:the\s+)?(?P<kin>{_KIN_ALT})\b", re.I)
-# The same with the verb dropped: "Mom home yet?", "Dad ok?".
-_KIN_BARE = re.compile(
-    rf"^(?:the\s+)?(?:{_KIN_ALT})\s+(?:home|ok|okay|alright|back|here|there|awake|asleep|up|coming|free|busy|"
-    rf"sick|better|fine|around|in|out|still|safe|ready|done|yet)\b", re.I)
+_KIN_LEAD = (rf"(?:(?:how|where|when|why|who|which|what)(?:'s|\s+{_KIN_AUX})?"
+             rf"|(?:how|what|which)\s+[a-z]+(?:\s+[a-z]+)?\s+{_KIN_AUX}|{_KIN_AUX})")
+# The kin word in subject position, right after a question lead at the start
+# of a clause: "How is Grandma doing", "When will Dad be home", "Is Mom mad at
+# me", "How old is Mom", "Which hospital is Grandma at". Whatever follows, the
+# question is about them, unless what follows makes the kin word the start of
+# a name (see personal_reference).
+_KIN_SUBJECT = re.compile(rf"^{_KIN_LEAD}\s+(?:the\s+)?(?P<kin>{_KIN_ALT})\b", re.I)
+_SOFT_SUBJECT = re.compile(rf"^{_KIN_LEAD}\s+(?:the\s+)?(?:{_SOFT_ALT})\b\s*(?P<next>[a-z']*)", re.I)
+# The same with the verb dropped: "Mom home yet?", "Dad ok?", and with any
+# -ing or -ed word when the clause is a question or carries a time word
+# ("Mom feeling better today?", "Dad landed yet?").
+_KIN_STATE = (r"(?:home|ok|okay|alright|back|here|there|awake|asleep|up|coming|free|busy|sick|better|fine|"
+              r"around|in|out|still|safe|ready|done|yet)")
+_KIN_BARE = re.compile(rf"^(?:the\s+)?(?:{_ANY_KIN_ALT})\s+{_KIN_STATE}\b", re.I)
+_KIN_BARE_VERB = re.compile(rf"^(?:the\s+)?(?:{_ANY_KIN_ALT})\s+[a-z]+(?:ing|ed)\b", re.I)
+_TIME_WORD = re.compile(r"\b(?:today|tonight|tomorrow|yet|now|lately|recently|this\s+(?:morning|afternoon|"
+                        r"evening|week|weekend)|right\s+now|so\s+far)\b", re.I)
 # Words that may follow a kin subject with a capital letter and still not make
-# it a name ("Is Mom OK", "Is Dad Home").
+# it a name ("Is Mom OK", "Is Dad Home"), and that show a soft kin word is a person.
 _KIN_FOLLOW = frozenset("""
 doing home ok okay alright fine well sick better worse awake asleep up free busy coming going here
 there back around out in at on still yet now today tonight tomorrow right call called calling text
@@ -1604,30 +1621,80 @@ tired hurt safe ready done late early eaten take taken pay paid fall fell i
 # The kin word as the one something was done to, in a question ("Did the
 # hospital call Mom today?", "Will they let Dad go home today?").
 _KIN_OBJECT = re.compile(
-    rf"^(?:did|does|do|has|have|had|will|would|can|could|should|is|are|was|were|when|why|how)\b.*\b"
+    rf"^(?:did|does|do|has|have|had|will|would|can|could|should|is|are|was|were|when|why|how)\b[^.!?\n]{{0,200}}?\b"
     rf"(?:call(?:ed|ing)?|text(?:ed|ing)?|let|see|seen|saw|visit(?:ed|ing)?|help(?:ed|ing)?|pick(?:ed|ing)?\s+up|"
     rf"told|tell|ask(?:ed|ing)?|e-?mail(?:ed|ing)?|message[d]?|messaging|release[d]?|discharg(?:e|ed|ing)|"
     rf"admit(?:ted)?|take|took|taking|bring|brought|drive|drove|driving|pay|paid|charge[d]?|evict(?:ed|ing)?)\s+"
     rf"(?:the\s+)?(?:{_KIN_ALT})\b")
 # The same inside a clause: "Tell me if Mom is online right now", "do you know when Dad lands".
 _KIN_CLAUSE = re.compile(
-    rf"\b(?:if|whether|when|where|why|how|what|that)\s+(?:the\s+)?(?:{_KIN_ALT})\s+"
+    rf"\b(?:if|whether|when|where|why|how|what|that)\s+(?:the\s+)?(?:{_ANY_KIN_ALT})\s+"
     rf"(?:is|are|was|were|has|had|will|would|did|does|can|could|got|gets|said|says|wants|needs|called|"
     rf"texted|arrived|arrives|landed|lands|left|leaves)\b")
-# News of them: "any news from mom", "any word from Dad yet?", "what's the latest from Grandma today".
+# News of them, at the end: "any news from mom", "any word from Dad yet?".
 _KIN_FROM = re.compile(
     rf"\b(?:from|with)\s+(?:the\s+)?(?:{_KIN_ALT})\b"
     rf"(?:\s+(?:today|tonight|yet|now|lately|recently|so\s+far|at\s+all|this\s+[a-z]+|right\s+now))*\s*[?.!]*$")
+# With them, anywhere in a question: "Is dinner with Dad still on tonight?".
+_KIN_WITH = re.compile(rf"\bwith\s+(?:the\s+)?(?:{_KIN_ALT})\b")
+# Looking in on them: "check on mom", "check in on grandma today".
+_KIN_CHECK = re.compile(rf"\bcheck(?:ing)?\s+(?:in\s+|up\s+)?on\s+(?:the\s+)?(?:{_ANY_KIN_ALT})\b")
+# The 's left out, or no 's at all, before something that is theirs: "is moms
+# flight on time today", "mom flight today", "grandma hospital today".
+_KIN_THEIRS = (r"(?:flight|flights|surgery|appointment|appointments|hospital|doctor|meds|medication|"
+               r"prescription|birthday|address|number|package|house|place|apartment|car|test|results?|"
+               r"diagnosis|treatment|therapy|recovery|fever|schedule|trip|visit|rent|lease)")
+_KIN_NOUN = re.compile(rf"\b(?:{_KIN_ALT})s?\s+{_KIN_THEIRS}\b")
+# The subject after an auxiliary anywhere, when a state or action word follows:
+# "xyzzy is mom ok today?" has no clause start to match, and is about Mom.
+_KIN_MID = re.compile(
+    rf"\b(?:is|are|was|were|did|does|has|have|had|will|would|can|could|should|how's|where's)\s+"
+    rf"(?:the\s+)?(?:{_ANY_KIN_ALT})\s+(?P<next>[a-z']+)")
+# Words at the start of a clause that are not part of the question.
+_CLAUSE_FILLER = re.compile(
+    r"^(?:(?:hi|hey|hello|yo|ok|okay|so|and|also|but|btw|by\s+the\s+way|wisp|please|um+|uh+|er+|well|"
+    r"quick\s+question|one\s+more\s+thing|good\s+(?:morning|afternoon|evening)|morning|"
+    r"sorry(?:\s+to\s+bother\s+you)?|thanks|thank\s+you|actually|anyway|oh|hmm+|now|then)\b[\s,!]*"
+    r"|(?:[-*>]+|\d{1,2}[.)])\s*)+", re.I)
+_CLAUSE_END = re.compile(r"[.!?:;,\n\"()\[\]]+|\s[-–—]+\s")
+
+
+def _clauses(cased: str):
+    """(clause, is_question) for each sentence or clause of `cased`: split at
+    . ! ? : ; , quotes, brackets and spaced dashes, with greetings, fillers
+    and list markers removed from the front of each."""
+    start = 0
+    for m in [*_CLAUSE_END.finditer(cased), None]:
+        end = m.start() if m else len(cased)
+        clause = _CLAUSE_FILLER.sub("", cased[start:end].strip(), count=1).strip()
+        if clause:
+            yield clause, bool(m and "?" in m.group())
+        if m is None:
+            break
+        start = m.end()
+
+
+def _readable(prompt: str) -> str:
+    """The text the ownership checks read: accents and apostrophes folded,
+    zero-width and other format characters and emoji removed, capped."""
+    import unicodedata
+    cased = _loose_cased((prompt or "")[:_OWNER_TEXT_CAP * 2])
+    cased = "".join(" " if unicodedata.category(c) in {"So", "Sk", "Cs", "Co"} else c
+                    for c in cased if unicodedata.category(c) != "Cf")
+    return cased[:_OWNER_TEXT_CAP]
 
 
 def personal_reference(prompt: str) -> bool:
     """The request is ABOUT someone in the user's life, named by a kin word:
     with "my" or "our" ("my mom", "our landlord"); in subject position after
-    a question lead, whatever follows ("How is Grandma doing today?", "When
-    will Dad be home?", "Is Mom mad at me?", "Did Grandma fall again?"), or
-    with the verb dropped ("Mom home yet?"); as the one something was done to
+    a question lead at the start of any sentence or clause, whatever follows
+    ("How is Grandma doing today?", "Hi, is Mom home yet?", "How old is
+    Mom", "Which hospital is Grandma at today?"), or with the verb dropped
+    ("Mom home yet?", "Dad landed yet?"); as the one something was done to
     in a question ("Did the hospital call Mom today?"); inside a clause
-    ("Tell me if Mom is online"); or as whom news is from.
+    ("Tell me if Mom is online"); with them in a question ("Is dinner with
+    Dad still on tonight?"); looked in on ("check on grandma"); or before
+    something that is theirs with the 's left out ("is moms flight on time").
 
     A kin word that merely appears is not one: "best gifts for dad",
     "husband pillow reviews", "Brother printer". In subject position it is
@@ -1635,27 +1702,57 @@ def personal_reference(prompt: str) -> bool:
     in the text as typed, the next word is capitalised and is not an ordinary
     word ("Is Sister Rosetta Tharpe touring?"). An 's is personal_owner's.
 
-    No ASCII or length gate. A bare first name is not recognised: reading the
-    know-you profile for every request would break the host's rule that
-    routing loads no saved context in test mode or after an opt-out."""
-    cased = _KIN_PUBLIC_CASED.sub(lambda m: " " * len(m.group()), _loose_cased(prompt))
-    loose = cased.lower().strip()
-    if (_KIN_MINE.search(loose) or _KIN_OBJECT.search(loose) or _KIN_FROM.search(loose)
-            or _KIN_CLAUSE.search(loose) or _KIN_BARE.match(loose)):
+    No ASCII gate, and greetings, list markers, quotes, emoji and zero-width
+    characters do not hide a question. A bare first name is not recognised:
+    reading the know-you profile for every request would break the host's
+    rule that routing loads no saved context in test mode or after an opt-out."""
+    cased = _KIN_PUBLIC_CASED.sub(lambda m: " " * len(m.group()), _readable(prompt))
+    loose = cased.lower()
+    if (_KIN_MINE.search(loose) or _KIN_CLAUSE.search(loose) or _KIN_FROM.search(loose.strip())
+            or _KIN_CHECK.search(loose) or _KIN_NOUN.search(loose)):
         return True
-    m = _KIN_SUBJECT.match(cased.lstrip())
-    if not m:
-        return False
-    following = re.match(r"\s+([A-Z][\w'-]*)", cased.lstrip()[m.end():])
-    # "Is Sister Rosetta ..." is a name; "Is Mom OK" and "Is Dad Home" are not.
-    return not (following and following.group(1).lower().strip("'") not in _KIN_FOLLOW)
+    if any(m.group("next").strip("'") in _KIN_FOLLOW for m in _KIN_MID.finditer(loose)):
+        return True
+    whole_is_question = "?" in loose
+    for clause, asked in _clauses(cased):
+        low = clause.lower()
+        if _KIN_OBJECT.match(low) or _KIN_BARE.match(low):
+            return True
+        if (asked or whole_is_question or _TIME_WORD.search(low)) and _KIN_BARE_VERB.match(low):
+            return True
+        if (asked or whole_is_question) and _KIN_WITH.search(low) and re.match(_KIN_LEAD + r"\b", low):
+            return True
+        soft = _SOFT_SUBJECT.match(low)
+        if soft and soft.group("next").strip("'") in _KIN_FOLLOW:
+            return True
+        m = _KIN_SUBJECT.match(clause)
+        if m:
+            following = re.match(r"\s+([A-Z][\w'-]*)", clause[m.end():])
+            # "Is Sister Rosetta ..." is a name; "Is Mom OK" and "Is Dad Home" are not.
+            if not (following and following.group(1).lower().strip("'") not in _KIN_FOLLOW):
+                return True
+    return False
+
+
+_LEADING_RECIPIENT = re.compile(
+    r"^\s*(?:(?:please|hey|ok|okay|wisp|can\s+you|could\s+you|would\s+you)[, ]+)*"
+    r"(?:e-?mail|text|message|msg|tell|send|forward|notify|ping|call|remind|let)\s+"
+    r"(?:to\s+)?(?:my\s+|our\s+)?(?!(?:if|whether|when|where|what|why|how|that|me|us)\b)[A-Za-z]+\b", re.I)
+
+
+def without_leading_recipient(text: str) -> str:
+    """`text` without the person an instruction at its start is addressed to
+    ("text mom the bitcoin price", "send my dad the news"): the recipient of
+    a delivery is not whom the request is about. Only at the start, so "Did
+    the hospital call Mom today?" keeps its Mom."""
+    return _LEADING_RECIPIENT.sub(" ", text or "", count=1)
 
 
 def personal_owner(prompt: str) -> bool:
     """Some 's in the request belongs to a person in the user's life: a
     relation ("the doctor's office"), a kin word, a known person, or a contact
     detail. No ASCII or length gate; a failed people lookup counts as personal."""
-    loose = _KIN_PUBLIC.sub(" ", _loose_text(prompt))
+    loose = _KIN_PUBLIC.sub(" ", _readable(prompt).lower())
     for owner in _LOOSE_POSSESSIVE.findall(loose):
         owner = owner.strip(".-&")
         if not owner or owner in _CONTRACTED:
@@ -1672,7 +1769,7 @@ def lookalike_possessive(prompt: str) -> bool:
     between an ASCII letter and "s" (U+02B9, a prime, the saltillo U+A78C,
     U+02BD, U+02C8, U+2035). "caf\u00e9s" is a word, not a possessive."""
     import unicodedata
-    text = prompt or ""
+    text = (prompt or "")[:_OWNER_TEXT_CAP * 2]
     if _LOOKALIKE_BACKTICK.search(text):
         return True
     for mark in _LOOKALIKE_SITE.findall(text):
@@ -1705,9 +1802,27 @@ phone phones laptop laptops tablet console version update model models product p
 burger burgers flavor flavors flavour flavours sandwich breakfast brunch drive-thru
 """.split())
 # A holiday written with an 's: its date is public.
-_HOLIDAY = re.compile(r"\b(?:mother|father|valentine|st\.?\s+patrick|new\s+year|president|veteran)s?'?s?\s+(?:day|eve)\b")
+_HOLIDAY = re.compile(r"\b(?:mother|father|valentine|st\.?\s+patrick|new\s+year|president|veteran|"
+                      r"grandparent|sibling|women|men|children|april\s+fool)s?'?s?\s+(?:day|eve)\b")
 _FRESH_WORDS = frozenset("new newest latest current upcoming next".split())
 _OWNER_REQUEST_MAX_WORDS = 16
+
+
+def holiday_question(prompt: str) -> bool:
+    """A question about a public holiday written with an 's ("When is Father's
+    Day?", "Mother's Day brunch near me today", "Valentine's Day gift ideas"):
+    its date and customs are public, with or without a time word. Plain ASCII,
+    short, not "my" or "our", and nobody of the user's own beside the holiday."""
+    text = _ascii_text(prompt).strip()
+    low = text.lower()
+    if not (text.isascii() and len(text.split()) <= _OWNER_REQUEST_MAX_WORDS and _HOLIDAY.search(low)):
+        return False
+    if re.search(r"\b(?:my|our|mine|ours)\b", low) or lookalike_possessive(prompt):
+        return False
+    rest = _HOLIDAY.sub(" ", low)
+    if personal_reference(rest) or personal_owner(rest):
+        return False
+    return not any(re.fullmatch(r"(?:19|20)\d{2}", run) is None for run in re.findall(r"\d{4,}", text))
 
 
 def public_owner_request(prompt: str) -> bool:
