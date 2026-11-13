@@ -3707,6 +3707,11 @@ _NOTE_WRITE_RE = re.compile(
     r"\badd\s+.{1,40}\bto\s+(?:my\s+)?\w*\s*(?:list|note)\b|"
     r"\btack\s+.{1,40}\bonto\s+(?:my\s+)?\w*\s*(?:list|note)\b|"
     r"\bscan\b.{0,20}\binto\s+(?:my\s+)?notes?\b|"
+    # Deleting a note in words _WRITE_INTENT_RE has no verb for ("get rid of the
+    # old meeting note", "trash my ideas note"): the lookup rule offered only
+    # search_notes, so delete_note was unreachable by its own aliases.
+    r"\b(?:get\s+rid\s+of|trash|bin|delete|remove|erase)\s+(?:the|my|that|this|a)\s+"
+    r"(?:[^.?!\n]{0,40}?\s+)?note\b|"
     # "save/create/write/add a note", "note: ...", "save this to my notes": the
     # everyday wordings, anchored to an imperative start so a READ such as "what
     # did I save in my notes" never arms the write tools. Without these a request
