@@ -772,14 +772,20 @@ def awake_since(waketime=_kernel_waketime) -> float:
 _mail_seen: dict = {"pid": None, "since": None}
 
 
+_ETIME = re.compile(r"^(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)$")
+
+
 def _process_start(pid: str) -> float | None:
+    """now minus the process's elapsed time (`ps -o etime=`, [[dd-]hh:]mm:ss):
+    no locale, time zone or daylight-saving hour to read."""
     try:
-        import os
         import subprocess
-        out = subprocess.run(["/bin/ps", "-o", "lstart=", "-p", pid], capture_output=True, text=True, timeout=2,
-                             env={**os.environ, "LC_ALL": "C"})
-        stamp = " ".join((out.stdout or "").split())
-        return datetime.strptime(stamp, "%a %b %d %H:%M:%S %Y").timestamp() if out.returncode == 0 and stamp else None
+        out = subprocess.run(["/bin/ps", "-o", "etime=", "-p", pid], capture_output=True, text=True, timeout=2)
+        found = _ETIME.match((out.stdout or "").strip()) if out.returncode == 0 else None
+        if not found:
+            return None
+        days, hours, minutes, seconds = (int(g or 0) for g in found.groups())
+        return time.time() - (((days * 24 + hours) * 60 + minutes) * 60 + seconds)
     except Exception:  # noqa: BLE001
         return None
 
@@ -896,6 +902,15 @@ async def plans(items, *, now: float, tz: str, records, reminders=(), results=No
         return [], {}
     history = text_history(records)
     results = results if isinstance(results, dict) else {}
+    # One Contacts lookup per address a cycle, however many items and Sent rows ask.
+    names: dict[str, str] = {}
+    contacts = lookup
+
+    def lookup(address):
+        key = str(address or "")
+        if key not in names:
+            names[key] = contacts(key)
+        return names[key]
     blocked = blocked if isinstance(blocked, (set, frozenset)) else frozenset()
     try:
         gmail_current, stale_accounts = gmail(now)

@@ -1129,11 +1129,14 @@ def test_the_mail_process_start_comes_from_ps_or_first_sight(monkeypatch):
     monkeypatch.setattr(followups, "_mail_seen", {"pid": None, "since": None})
     answers.update(pgrep=(1, ""), ps=(0, ""))
     assert followups.mail_app_started() is None
-    answers.update(pgrep=(0, "412\n"), ps=(0, "Thu Nov 12 09:00:00 2026\n"))
-    from datetime import datetime as _dt
-    assert followups.mail_app_started() == _dt(2026, 11, 12, 9, 0, 0).timestamp()
+    monkeypatch.setattr(followups.time, "time", lambda: NOW)
+    for etime, elapsed in [("02:05", 125), ("01:02:05", 3725), ("3-01:02:05", 3 * 86400 + 3725), ("  00:00 ", 0)]:
+        answers.update(pgrep=(0, "412\n"), ps=(0, etime + "\n"))
+        assert followups.mail_app_started() == NOW - elapsed, etime
+    answers.update(ps=(0, "Thu Nov 12 09:00:00 2026\n"))     # anything else isn't read as a time
+    assert followups.mail_app_started() == followups._mail_seen["since"]
     answers.update(ps=(1, ""))                            # ps unreadable: the first time this pid was seen
-    assert abs(followups.mail_app_started() - followups._mail_seen["since"]) < 1e-6
+    assert followups.mail_app_started() == followups._mail_seen["since"]
 
 
 def test_wake_is_the_later_of_the_kernels_and_the_clock_jump(monkeypatch):
@@ -1156,6 +1159,20 @@ def test_monotonic_stops_in_sleep_is_the_backup_assumption(monkeypatch):
     assert followups.awake_since(waketime=lambda: 0.0) == 1000.0
     clock.update(wall=9600.0, mono=700.0)
     assert followups.awake_since(waketime=lambda: 0.0) == 9600.0
+
+
+def test_contacts_is_asked_once_per_address_a_cycle():
+    asked = []
+
+    def counting(address):
+        asked.append(address)
+        return CONTACTS.get(address, "")
+    many = list(MAILED) + [sent("someone@else.org", NOW - 2 * H) for _ in range(20)]
+
+    async def read():
+        return many, True
+    _run([mail_item(), mail_item(id="mail:other")], read_sent=read, lookup=counting)
+    assert asked and len(asked) == len(set(asked))
 
 
 def test_a_reply_to_another_saved_address_of_the_contact_answers_it():
