@@ -192,13 +192,14 @@ def test_the_loop_holds_a_public_owner_search_to_the_users_words(synthetic):
 from service.router.model_led import PRIVATE_WEB_TOOLS, UNOWNED_EGRESS_TOOLS  # noqa: E402
 from service.tools.registry import REGISTRY  # noqa: E402
 
-OTHER_EGRESS = ["wikipedia_summary", "find_place", "travel_time", "route_to_arrive", "get_weather", "get_stock_price"]
+OTHER_EGRESS = ["wikipedia_summary", "find_place", "travel_time", "route_to_arrive", "get_weather",
+                "get_stock_price", "daily_brief"]
 
 
 def test_the_outbound_tool_sets_name_every_tool_that_sends_words_out():
     assert PRIVATE_WEB_TOOLS == {"web_search", "web_fetch", "http_request", "wikipedia_summary"}
     assert UNOWNED_EGRESS_TOOLS == PRIVATE_WEB_TOOLS | {"find_place", "travel_time", "route_to_arrive",
-                                                        "get_weather", "get_stock_price"}
+                                                        "get_weather", "get_stock_price", "daily_brief"}
     import service.main  # noqa: F401  (registers the built-ins)
     assert set(OTHER_EGRESS) <= set(REGISTRY)
 
@@ -218,7 +219,8 @@ def test_a_private_turn_withholds_wikipedia_and_keeps_maps_weather_and_prices(pr
     assert {"web_fetch", "http_request", "wikipedia_summary"} <= forbidden
     # Known limit, on purpose: "drive time to Mom's" needs the maps tools, so a
     # private turn still offers place, route, weather and price lookups.
-    assert not {"find_place", "travel_time", "route_to_arrive", "get_weather", "get_stock_price"} & forbidden
+    assert not {"find_place", "travel_time", "route_to_arrive", "get_weather", "get_stock_price",
+                "daily_brief"} & forbidden
 
 
 def _egress_tools(register):
@@ -228,14 +230,16 @@ def _egress_tools(register):
             "query": {"type": "string"}, "topic": {"type": "string"}, "location": {"type": "string"}}})
 
 
-@pytest.mark.parametrize("tool", ["web_search", "web_fetch", *OTHER_EGRESS])
-def test_the_loop_runs_none_of_them_on_a_turn_of_unknown_ownership(synthetic, tool):
+@pytest.mark.parametrize("history", [(), "private"])
+@pytest.mark.parametrize("tool", ["web_search", "web_fetch", "http_request", *OTHER_EGRESS])
+def test_the_loop_runs_none_of_them_on_a_turn_of_unknown_ownership(synthetic, tool, history):
+    from tests.test_model_led_integration import PRIVATE_HISTORY
     effects, register = synthetic
     _egress_tools(register)
     approval = Approval(False)
-    args = {"url": "https://example.com"} if tool == "web_fetch" else {"query": "Dana address"}
+    args = {"url": "https://example.com"} if tool in ("web_fetch", "http_request") else {"query": "Dana address"}
     run([[call(DISCOVERY_TOOL, families=["public_web"], tools=[tool])], [call(tool, **args)], "Synthetic reply."],
-        prompt="What's Dana's address now?", approval=approval)
+        prompt="What's Dana's address now?", history=PRIVATE_HISTORY if history else (), approval=approval)
     assert not effects and not approval.calls
 
 
@@ -273,7 +277,18 @@ KIN_ABOUT = [
     "Tell me if Mom is online right now", "do you know when Dad lands", "What time is Mom's flight tomorrow?",
     "Has grandma arrived yet?", "When does Dad land tonight?",
 ]
+# The delta review of dce3fd9b: a relative in subject position, whatever follows.
+KIN_ABOUT += [
+    "When will Dad be home?", "Will Mom be back tonight?", "Is Mom mad at me?", "Is Dad upset?",
+    "Has Mom eaten today?", "Did Mom take her meds today?", "Did Dad pay the rent?", "Did Grandma fall again?",
+    "Is Grandma lonely?", "Why is Mom upset?", "Who is Dad with?", "Mom home yet?", "Dad ok?", "Is Mom OK",
+    "Tell me if Mom's online right now", "Check if Dad's online", "Show me if Mom's still online",
+    "any news from Mom today?", "any word from Dad yet?", "Can you tell if Mom is home yet?",
+]
 KIN_MERELY_NAMED = [
+    # A capitalised word after the kin word, as typed, makes it a name.
+    "Is Sister Rosetta Tharpe touring this year?", "Did Daddy Yankee tour this year?",
+    "Is Brother HL-L2350DW in stock today?",
     "husband pillow reviews 2026", "best gifts for dad", "landlord tenant law changes this year",
     "Daddy Yankee tour dates this year", "Brother HL-L2350DW driver", "Sister Wives new season",
     "mother of the bride dresses", "Is Papa Roach touring this year?", "Is Son Heung-min playing today?",
@@ -323,7 +338,7 @@ def test_a_recipient_is_skipped_only_at_the_start_of_the_request():
 # An unknown name reopens a search only with a public noun.
 @pytest.mark.parametrize("prompt", [
     "Is Ben's fever down today?", "How did Priya's interview go today?", "How's Maya's recovery going today?",
-    "What's Sam's latest test result today?", "Is Dana's new baby home today?", "Does McDonald's have breakfast all day today?",
+    "What's Sam's latest test result today?", "Is Dana's new baby home today?", "Does McDonald's have wifi today?",
     "What's Ben's status today?", "Where is Priya's team meeting today?",
 ])
 def test_an_unknown_name_with_no_public_noun_stays_closed(prompt):
@@ -368,3 +383,101 @@ def test_one_year_does_not_excuse_another_long_number():
     assert mo.public_owner_request("What's Acme's 2026 price today?")
     assert not mo.public_owner_request("What's Acme's 2026 price for order 4155550123 today?")
     assert not mo.public_owner_request("What's Acme's price for 20261 today?")
+
+
+# ---- delta review of dce3fd9b ------------------------------------------------
+
+@pytest.mark.parametrize("prompt", ["When will Dad be home?", "Is Mom mad at me?", "Did Grandma fall again?",
+                                    "Mom home yet?", "Tell me if Mom's online right now",
+                                    "any news from Mom today?", "Can you tell if Mom is home yet?"])
+@pytest.mark.parametrize("history", [(), "private"])
+def test_the_loop_runs_no_web_tool_for_a_question_about_a_relative(synthetic, prompt, history):
+    from tests.test_model_led_integration import PRIVATE_HISTORY
+    effects, register = synthetic
+    _egress_tools(register)
+    approval = Approval(False)
+    run([[call(DISCOVERY_TOOL, families=["public_web"], tools=["web_search", "web_fetch", "wikipedia_summary"])],
+        [call("web_search", query=prompt.rstrip("?"))], [call("wikipedia_summary", topic="Mom")],
+        [call("web_fetch", url="https://example.com")], "Synthetic reply."],
+        prompt=prompt, history=PRIVATE_HISTORY if history else (), approval=approval)
+    assert not [name for name, _ in effects if name in PRIVATE_WEB_TOOLS], effects
+    assert not approval.calls
+
+
+def test_a_question_whether_someone_is_online_is_not_explicit():
+    from service.router.web_request import _explicit
+    for prompt in ("Tell me if Mom's online right now", "Check if Dad's online", "Show me if Mom's still online",
+                   "Tell me if Mom is online right now"):
+        assert not _explicit(prompt), prompt
+        request = classify(prompt)
+        assert request.provenance == Provenance.PRIVATE and not request.explicit_unknown_owner
+        assert set(UNOWNED_EGRESS_TOOLS) & set(REGISTRY) - {"find_place", "travel_time", "route_to_arrive",
+                                                             "get_weather", "get_stock_price", "daily_brief"} \
+            <= _model_led_forbidden(prompt)
+    # A request that names the web as the place to look is still explicit.
+    for prompt in ("search the web for Dana's bakery", "look up Dana's bakery online", "google Mom's bakery hours"):
+        assert _explicit(prompt), prompt
+
+
+def test_an_explicit_search_of_unknown_ownership_keeps_its_search_and_only_that_path(synthetic):
+    # "search the web for ..." is the user asking; it stays as rc2 had it.
+    prompt = "search the web for Dana's bakery"
+    request = classify(prompt)
+    assert request.explicit and request.provenance == Provenance.UNKNOWN
+    assert "web_search" not in _model_led_forbidden(prompt)
+    effects, register = synthetic
+    _egress_tools(register)
+    run([[call(DISCOVERY_TOOL, families=["public_web"], tools=["web_search"])],
+        [call("web_search", query="Dana's bakery")], "Synthetic reply."], prompt=prompt, approval=Approval(False))
+    assert [name for name, _ in effects] == ["web_search"]
+
+
+def test_a_capitalised_ordinary_word_after_a_relative_is_not_a_name():
+    for prompt in ("Is Mom OK", "Is Dad Home yet", "Did Mom Call"):
+        assert mo.personal_reference(prompt), prompt
+    for prompt in ("Is Sister Rosetta Tharpe touring this year?", "Is Uncle Kracker touring this year?"):
+        assert not mo.personal_reference(prompt), prompt
+
+
+# Over-blocks the subject rule accepts, pinned so a change to them is a choice.
+@pytest.mark.parametrize("prompt", ["Are mom jeans in style this year?", "Is dad rock still popular today?",
+                                    "is brother a good printer brand", "Is sister location scary"])
+def test_known_over_blocks_of_the_subject_rule(prompt):
+    assert classify(prompt).provenance == Provenance.PRIVATE
+
+
+@pytest.mark.parametrize("prompt", ["Is Ben's new puppy okay today?", "What's Ben's current mood today?",
+                                    "What's Dana's next move today?", "Is Priya's latest idea good today?"])
+def test_new_or_latest_alone_does_not_reopen_a_search(prompt):
+    assert not mo.public_owner_request(prompt)
+    assert {"web_search", "web_fetch", "wikipedia_summary"} <= _model_led_forbidden(prompt)
+
+
+@pytest.mark.parametrize("prompt", ["What's Google's latest phone this year?", "What's McDonald's new burger this month?",
+                                    "Does McDonald's have breakfast all day today?",
+                                    "What's Dr Pepper's new flavor this year?"])
+def test_a_product_or_food_noun_keeps_the_words_only_search(prompt):
+    assert mo.public_owner_request(prompt) and classify(prompt).public_possessive
+
+
+def test_a_phone_number_is_not_excused_by_a_year_like_group():
+    for prompt in ("What's Acme's price for 415-555-2019 today?", "What's Acme's price for 415 555 2019 today?",
+                   "What's Acme's price for (415) 555-2019 today?"):
+        assert not mo.public_owner_request(prompt), prompt
+
+
+def test_news_from_a_relative_with_a_time_word_is_private():
+    for prompt in ("any news from Mom today?", "any word from Dad yet?", "what's the latest from Grandma this week"):
+        assert mo.personal_reference(prompt), prompt
+    assert not mo.personal_reference("recipes from grandma style cooking channels")
+
+
+def test_the_recipient_skip_keeps_the_clause_word():
+    for prompt in ("Can you tell if Mom is home yet?", "tell me when Dad lands", "let me know if Grandma called"):
+        assert classify(prompt).provenance == Provenance.PRIVATE, prompt
+
+
+def test_a_decomposed_accent_reads_as_a_lookalike_known_over_block():
+    # "cafe" + U+0301 + "s": the combining mark sits between a letter and s.
+    assert mo.lookalike_possessive("best cafe\u0301s in Paris today")
+    assert not mo.lookalike_possessive("best caf\u00e9s in Paris today")
