@@ -622,6 +622,11 @@ final class BackendManager {
     /// Bytecode must be cached outside the bundle: writing .pyc beside the
     /// packaged sources adds unsealed files to Wisp.app and invalidates its
     /// code signature on first launch. Caching outside preserves import speed.
+    /// Inherited variables that choose where Python loads code from. Never passed on.
+    nonisolated static let inheritedPythonPathKeys: Set<String> = [
+        "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE", "PYTHONEXECUTABLE",
+    ]
+
     nonisolated static func backendEnvironment(
         base: [String: String] = ProcessInfo.processInfo.environment,
         home: String = NSHomeDirectory(),
@@ -630,12 +635,18 @@ final class BackendManager {
         region: String? = Locale.current.region?.identifier
     ) -> [String: String] {
         // The bridge endpoint is chosen by the app for each launch; an inherited one is ignored.
+        // So are the variables that tell Python where to load code from: the app sets none of
+        // them itself, and an inherited one would put someone else's modules in the service.
         var environment = BackendCredentials.injecting(credentials, into: base.filter {
             $0.key != "WISP_BROWSER_BRIDGE_CONTROL" && $0.key != BackendOwnership.nonceEnvironmentKey
-                && $0.key != "WISP_REGION"
+                && $0.key != "WISP_REGION" && !inheritedPythonPathKeys.contains($0.key)
         }).merging([
             "WISP_CREDENTIAL_GENERATION": generation,
             "PYTHONUNBUFFERED": "1",
+            // No per-user site-packages (~/.local/lib/python3.x/site-packages): a `.pth` file
+            // any program dropped there would otherwise run inside the service at its next
+            // start. Not `-I`, which would also drop PYTHONPYCACHEPREFIX below.
+            "PYTHONNOUSERSITE": "1",
             "PYTHONPYCACHEPREFIX": (home as NSString)
                 .appendingPathComponent(".moe/cache/pycache"),
         ]) { _, new in new }
