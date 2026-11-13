@@ -2025,6 +2025,11 @@ def _ask_tool_rank(prompt: str, previous: str = "") -> tuple[list[str], list[str
             # does for a public fact that changes ("Is Costco open on Sunday?",
             # "who is the president?"), which was answered from stale memory.
             head = ["web_search", *(n for n in head if n != "web_search")]
+        from service.model_only import direct_leads
+        if leads := [n for n in direct_leads(prompt) if n in REGISTRY]:
+            # "what did mom say", "set a timer for 5 minutes", "email Dana the
+            # notes": the tool the request names leads, whatever the lexical rank.
+            head = [*leads, *(n for n in head if n not in leads)]
         from service.model_only import reply_reads
         if lead_reads := [n for n in reply_reads(prompt) if n in REGISTRY]:
             # A reply draft reads the conversation it answers before drafting.

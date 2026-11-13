@@ -866,6 +866,50 @@ def personal_event_question(prompt: str) -> bool:
     return bool(text.isascii() and _OWN_EVENT.match(text))
 
 
+# Everyday wordings whose tool the lexical head start left out of its six real
+# schemas (2026-11-12 probe of demo-style questions): "what did mom say" led
+# with lookup_contact and travel_time, "set a timer for 5 minutes" with
+# plan_meeting, "email Dana the notes" had no send_email at all. Each entry is
+# (pattern, tools to lead with). They only order tools the turn already has.
+# "what did you say", "what did the president say": not someone who texts the user.
+_NOT_A_SENDER = r"(?!(?:you|i|we|it|this|that|the|a|an|wisp|they|there)\b)"
+_DIRECT_LEADS = (
+    # What someone said or whether they answered: their texts first, then mail.
+    (re.compile(r"^(?:what\s+did|what\s+has|did|has|have)\s+" + _NOT_A_SENDER + r"[a-z][\w'.-]*(?:\s+[a-z][\w'.-]*){0,2}\s+"
+                r"(?:say|said|texted|text|messaged?|repl(?:y|ied)|respond(?:ed)?|answer(?:ed)?|"
+                r"wr(?:ite|ote)|g(?:e|o)t\s+back)\b", re.I),
+     ("view_messages", "view_emails")),
+    (re.compile(r"\b(?:any|new|unread|latest|recent)\s+(?:new\s+|unread\s+)?(?:texts?|messages?|imessages?)\b"
+                r"|\b(?:texts?|messages?)\s+from\b|\bwho\s+(?:texted|messaged)\b", re.I),
+     ("view_messages", "summarize_messages")),
+    (re.compile(r"^(?:did|has|have)\s+" + _NOT_A_SENDER + r"[a-z][\w'.-]*(?:\s+[a-z][\w'.-]*){0,2}\s+e-?mail(?:ed)?\b"
+                r"|\b(?:any|new|unread|latest)\s+e-?mails?\s+from\b|\bgrade\s+updates?\b", re.I),
+     ("view_emails", "summarize_emails")),
+    (re.compile(r"^(?:please\s+)?(?:can\s+you\s+|could\s+you\s+)?e-?mail\s+(?!me\b|address\b)[a-z][\w'.-]*\b", re.I),
+     ("send_email",)),
+    (re.compile(r"\b(?:set|start|put)\s+(?:a|an|the|another)?\s*(?:[\w-]+\s+){0,3}?timer\b"
+                r"|\btimer\s+for\b|\b(?:set|wake)\b.*\balarm\b|\balarm\s+(?:for|at)\b", re.I),
+     ("set_timer", "manage_timers")),
+    (re.compile(r"\b(?:do\s+i\s+have|any|show|list|what\s+are)\b.*\breminders?\b|\bwhat(?:'s|\s+is)\s+overdue\b", re.I),
+     ("search_reminders",)),
+    (re.compile(r"\b(?:s\s*&\s*p(?:\s*500)?|s\s+and\s+p|dow(?:\s+jones)?|nasdaq|stock\s+market)\b", re.I),
+     ("get_stock_price", "web_search")),
+)
+
+
+def direct_leads(prompt: str) -> list[str]:
+    """Tools that lead the Ask head start for an everyday wording (see
+    _DIRECT_LEADS), most wanted first. Empty for anything else."""
+    text = _ascii_text(normalize_day_words(prompt or "")).strip()
+    if not text.isascii() or len(text.split()) > 24:
+        return []
+    out: list[str] = []
+    for pattern, tools in _DIRECT_LEADS:
+        if pattern.search(text):
+            out.extend(n for n in tools if n not in out)
+    return out
+
+
 def reminders_first(prompt: str) -> bool:
     """A personal question about to-dos ("what are my open tasks"):
     search_reminders leads the head start."""
