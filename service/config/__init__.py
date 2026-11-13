@@ -334,19 +334,13 @@ def proactive_auto_add_enabled() -> bool:
     """Whether the background Brief may add a missed, time-sensitive event or
     deadline to Calendar/Reminders on its own and report it after
     (service/proactive/autoadd.py). Default False: the same items arrive as
-    tap-to-add cards. Only an explicit ``proactive_auto_add: true`` in the user
-    overlay is the standing approval to write to Calendar/Reminders unasked.
+    tap-to-add cards. The standing approval is the person's yes to "Let Wisp act
+    for me" (``act_for_me`` in the user overlay, service/proactive/acting.py),
+    which also records when it was given. The older ``proactive_auto_add: true``
+    key carries no such time and no longer turns anything on.
     An overlay that exists but cannot be read fails closed."""
-    if not user_overlay_valid():
-        return False
-    return models_config().get("proactive_auto_add") is True
-
-
-def set_proactive_auto_add(enabled: bool) -> bool:
-    if type(enabled) is not bool:
-        raise ValueError("proactive_auto_add must be a boolean")
-    _save_overlay({"proactive_auto_add": enabled})
-    return enabled
+    from service.proactive import acting
+    return acting.enabled()
 
 
 def omlx_base_url() -> str:

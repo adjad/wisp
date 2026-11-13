@@ -71,6 +71,65 @@ def _item_id(item_id: str) -> str:
     return item_id
 
 
+class Act(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    enabled: bool
+
+
+def _act_state() -> dict:
+    """What the switch shows: the gate (service/proactive/acting.py) and what Wisp did lately."""
+    import time
+    from service.proactive import acting, autoadd
+    state = acting.state()
+    state["per_cycle"] = autoadd.MAX_PER_CYCLE
+    try:
+        from service.proactive.store import store
+        state["recent"] = acting.recent(store(), time.time())
+    except Exception:  # noqa: BLE001 — the list is a courtesy; the switch still works without it
+        state["recent"] = []
+    return state
+
+
+@router.get("/act")
+def act():
+    """Whether Wisp may act without asking, since when, and what it did lately."""
+    return _act_state()
+
+
+@router.put("/act")
+async def set_act(request: Request):
+    """The person's own answer to "Let Wisp act for me": their standing approval, or its end.
+
+    The app's own JSON request only. It changes one thing, `act_for_me` in the person's
+    settings file, and a yes records its time so only later messages are acted on. What
+    Wisp may do stays in each action's own code, which reads the setting again right
+    before it writes. Off takes effect at once."""
+    body = await _body(request, Act)
+    import yaml
+    from service.proactive import acting
+    try:
+        acting.set_enabled(body.enabled)
+    except (ValueError, OSError, yaml.YAMLError) as exc:
+        # An unreadable config.yaml is never overwritten, and Wisp does nothing on its own while it is unreadable.
+        raise HTTPException(409, "Wisp can't save this setting because its settings file (~/.moe/config.yaml) "
+                                 "can't be read. Fix or remove that file and try again. Until then Wisp "
+                                 "does nothing on its own.") from exc
+    return _act_state()
+
+
+@router.post("/act/asked")
+async def act_asked(request: Request):
+    """The question was shown and put aside without a yes. It is not asked again."""
+    await _body(request, Empty)
+    import yaml
+    from service.proactive import acting
+    try:
+        acting.mark_asked()
+    except (ValueError, OSError, yaml.YAMLError):
+        pass                                # it will simply be asked once more
+    return _act_state()
+
+
 @router.get("")
 def proactive(account: str | None = None):
     from service.proactive.cycle import snapshot
