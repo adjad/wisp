@@ -246,7 +246,7 @@ def step(cards: list[dict], *, now: float, tz: str, store, abort, hold=None, hou
     The write is checked against the wall clock at that moment (`clock`), not the cycle's
     start, so a slow cycle never pins a block that has already begun."""
     held: set[str] = set()
-    if not acting.enabled():
+    if not acting.enabled("hold"):         # on, and the yes named holding time
         return held
     if hold is None:
         from service.proactive.deadlines import hold as real_hold
@@ -279,7 +279,7 @@ def step(cards: list[dict], *, now: float, tz: str, store, abort, hold=None, hou
             continue                                  # outside their day: it stays a card to tap
         if attempts >= MAX_PER_CYCLE or acting.room(store, now) <= 0:
             break
-        if abort() or acting.still_ok() is not None:
+        if abort() or acting.still_ok("hold") is not None:
             break
         attempts += 1
         try:

@@ -339,7 +339,7 @@ def proactive_auto_add_enabled() -> bool:
     every check. Nothing in config.yaml counts: not ``act_for_me``, not the
     older ``proactive_auto_add: true`` key, in any overlay."""
     from service.proactive import acting
-    return acting.enabled()
+    return acting.enabled("add")
 
 
 def omlx_base_url() -> str:

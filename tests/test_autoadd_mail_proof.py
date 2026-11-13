@@ -214,7 +214,16 @@ def test_the_switch_off_beats_every_proof(store, world, monkeypatch):
     world["contacts"] = {PRIYA}
     fetched(world, [PASS])
     monkeypatch.setattr(autoadd, "MAIL_ACTS", False)
-    stays_a_card(store, item_for(gmail_row()), "mail does not act")
+    wrote, out, _ = run(store, item_for(gmail_row()))
+    assert wrote == [] and out["added"] == [] and store.auto_added() == {}
+    # With mail not acting, a sender the user has not written to in the thread gets no add-card
+    # at all; one they have written to gets the card, and still no write.
+    mine = gmail_row(sender="Me", address=GMAIL, subject="Re: Recital", body="ok", mid="m-0@me", ago_h=1.5)
+    theirs = gmail_row(subject="Re: Recital", ago_h=1.0)
+    item = item_for(mine, theirs)
+    assert item["user_wrote"] is True
+    wrote, out, notes = run(store, item)
+    assert wrote == [] and out["added"] == [] and notes == ["mail: tap to add (mail does not act)"], notes
 
 
 def test_proof_that_cannot_be_had_is_no_proof(store, world, monkeypatch):

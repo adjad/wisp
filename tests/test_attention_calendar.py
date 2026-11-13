@@ -78,6 +78,12 @@ async def test_auto_consent_is_fresh_persisted_separate_from_legacy_live(isolate
         assert (await create_calendar(item))["status"] == "blocked"
     request.assert_not_awaited()
     settings.mode, settings.capture_events = "live", True
+    # With everything opted in, a plan read from EMAIL still waits for a tap (the fixture's
+    # source is "email:fixture"): mail never writes by itself. A plan read from a text does.
+    blocked = await create_calendar(item)
+    assert blocked["status"] == "blocked" and "email" in blocked["error"]
+    request.assert_not_awaited()
+    item = {**item, "source_id": "msg:fixture"}
     assert (await create_calendar(item))["ok"]
     # Generic tools keep the original always-confirm rule even with opt-in.
     monkeypatch.setattr(policy, "_FULL_ACCESS", True)

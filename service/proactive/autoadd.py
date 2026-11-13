@@ -102,7 +102,7 @@ def _digest(*parts) -> str:
 def enabled() -> bool:
     try:
         from service.proactive import acting
-        return acting.enabled()
+        return acting.enabled("add")             # on, and the yes named adding (acting.ACTIONS)
     except Exception:  # noqa: BLE001 — a setting that can't be read writes nothing
         return False
 
@@ -571,7 +571,11 @@ def plan_for(item: dict, result: dict | None, *, now: float, tz: str) -> tuple[d
     # MAIL: who the sender is, is not decided here. Having written in the thread, or sharing
     # the user's domain, used to qualify a mail sender; both rest on the From line alone.
     # A mail plan is only ever WRITTEN with default_mail_proof (step); without it the plan
-    # is a card the person taps.
+    # is a card the person taps. While mail does not act at all, a sender the user has
+    # neither written to in this thread nor shares an organisation with gets no add-card
+    # here either, as before: a dated email from a stranger is what phishing looks like.
+    elif person and not MAIL_ACTS and not (item.get("user_wrote") or _same_org(item)):
+        return None, "unknown sender: tap to add"
     arrival = item.get("received_ts")
     if type(arrival) not in (int, float):
         return None, "no arrival time"
@@ -1018,7 +1022,7 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
     if allows is None:
         if is_enabled is None:
             from service.proactive import acting
-            allows = acting.allows
+            allows = lambda arrived: acting.allows(arrived, "add")       # noqa: E731
         else:
             # A caller that replaces the setting must also say which arrivals it covers.
             # Nothing is assumed: without it, everything stays a tap card.

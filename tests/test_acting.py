@@ -45,13 +45,16 @@ def store(tmp_path):
 
 def test_off_until_a_yes_and_the_yes_is_dated(setting):
     assert acting.state() == {"enabled": False, "enabled_at": None, "asked": False, "per_day": acting.MAX_PER_DAY,
-                              "does": acting.DOES, "never": acting.NEVER, "scope": acting.SCOPE}
+                              "does": acting.DOES, "never": acting.NEVER, "scope": acting.SCOPE,
+                              "agreed": [], "new": []}
     assert "after you say yes" in acting.SCOPE and "already there" in acting.SCOPE
     assert acting.DOES and "never sends" in acting.NEVER
     assert not acting.allows(NOW) and acting.still_ok() == "Acting for you was turned off"
     acting.set_enabled(True, now=NOW)
-    assert read(setting) == {"enabled": True, "enabled_at": NOW, "asked": True}
+    assert read(setting) == {"enabled": True, "enabled_at": NOW, "asked": True,
+                             "covers": {key: NOW for key in acting.ACTIONS}}       # the yes names what it covers
     assert setting.stat().st_mode & 0o077 == 0                          # private to the person
+    assert acting.state()["agreed"] == acting.DOES and acting.state()["new"] == []
     assert acting.enabled() and acting.enabled_at() == NOW and acting.asked() and acting.still_ok() is None
 
 
@@ -225,9 +228,11 @@ def test_put_aside_is_not_asked_again_and_never_turns_it_on(setting):
 
 def test_putting_the_question_aside_never_overwrites_a_yes(setting):
     acting.set_enabled(True, now=NOW)                                    # a yes from another window
-    setting.write_text('{"enabled": true, "enabled_at": %r, "asked": false}' % NOW)
+    covers = dict(read(setting)["covers"])
+    setting.write_text(__import__("json").dumps({"enabled": True, "enabled_at": NOW, "asked": False, "covers": covers}))
     acting.mark_asked()                                                  # "Not now" lands a moment later
-    assert read(setting) == {"enabled": True, "enabled_at": NOW, "asked": True} and acting.allows(NOW + 1)
+    assert read(setting) == {"enabled": True, "enabled_at": NOW, "asked": True, "covers": covers, "aside": []}
+    assert acting.allows(NOW + 1, "add")
     acting.set_enabled(False)
     before = setting.read_text()
     acting.mark_asked()
@@ -583,7 +588,11 @@ def test_resetting_wisp_erases_the_yes():
     ("echo x > ~/.moe/act_for*.json", True), ("echo x > ~/.moe/act_for_me.jso?", True),
     ("cp /tmp/x ~/.moe/a[c]t_for_me.json", True), ("echo x > ~/.moe/*.json", True), ("rm ~/.moe/*", True),
     ("sed -i '' s/false/true/ ~/.moe/acc*", True), ("echo x > ~/.moe/gr?nts.json", True),
+    ("echo x > ~/.m?e/act*", True), ("cp /tmp/x ~/.*/gra*", True), ("echo x > ~/.[m]oe/act_for_me.jso?", True),
+    ("echo x > ~/.moe/{grants,act_for_me}.json", True), ("echo x > ~/.moe/act_for_me.{json,bak}", True),
+    ("cd ~/.moe && cat act*", True), ("cd ~/.moe; echo x > acc*.json", True),
     ("echo x > ~/.moe/notes*.txt", False), ("ls *.json", False), ("cat ~/Documents/act_for*.json", False),
+    ("cd ~/Documents && cat act*", False), ("echo x > ~/.moe/meetings/{a,b}.json", False),
     ("echo x > ~/.moe/meetings/*.json", False),
 ])
 def test_a_wildcard_that_can_expand_to_a_protected_file_is_never_simply_allowed(monkeypatch, cmd, protected):
@@ -595,3 +604,81 @@ def test_a_wildcard_that_can_expand_to_a_protected_file_is_never_simply_allowed(
     if protected:
         assert tier in ("CONFIRM", "DENY"), (cmd, tier)
     assert (policy._moe_glob_hit(cmd) is not None) is protected, cmd
+
+
+# --- a yes covers the actions that were named when it was given, and nothing added since -----------
+
+def _write(setting, **fields):
+    setting.parent.mkdir(parents=True, exist_ok=True)
+    setting.write_text(__import__("json").dumps(fields))
+
+
+def test_a_yes_from_before_actions_were_recorded_covers_nothing_and_is_asked_again(setting):
+    _write(setting, enabled=True, enabled_at=NOW, asked=True)             # an earlier build's yes
+    assert acting.enabled() is True                                         # the switch is on...
+    for action in acting.ACTIONS:                                           # ...but it named nothing
+        assert not acting.enabled(action) and not acting.allows(NOW + 60, action)
+        assert acting.enabled_at(action) is None and acting.still_ok(action) == "You haven't said yes to this yet"
+    assert autoadd.enabled() is False and autoadd._still_ok() is not None
+    state = acting.state()
+    assert state["asked"] is False and state["agreed"] == [] and state["new"] == acting.DOES
+    assert acting.pending() == list(acting.ACTIONS)
+
+
+def test_an_action_added_after_the_yes_does_nothing_until_it_is_agreed_to(setting):
+    _write(setting, enabled=True, enabled_at=NOW, asked=True, covers={"add": NOW, "hold": NOW})
+    assert acting.enabled("add") and acting.enabled("hold") and not acting.enabled("follow_up")
+    assert acting.allows(NOW + 60, "add") and not acting.allows(NOW + 60, "follow_up")
+    assert acting.pending() == ["follow_up"] and acting.asked() is False
+    assert acting.state()["new"] == [acting.ACTIONS["follow_up"]]
+    assert acting.state()["agreed"] == [acting.ACTIONS["add"], acting.ACTIONS["hold"]]
+    # Yes to the new one: it counts from THIS yes; what was agreed keeps its own time.
+    acting.set_enabled(True, now=NOW + 500)
+    assert read(setting)["covers"] == {"add": NOW, "hold": NOW, "follow_up": NOW + 500}
+    assert read(setting)["enabled_at"] == NOW
+    assert acting.allows(NOW + 100, "add") and not acting.allows(NOW + 100, "follow_up")
+    assert acting.allows(NOW + 501, "follow_up") and acting.pending() == [] and acting.asked() is True
+
+
+def test_putting_a_new_action_aside_keeps_it_off_and_is_not_asked_again(setting):
+    _write(setting, enabled=True, enabled_at=NOW, asked=True, covers={"add": NOW, "hold": NOW})
+    acting.mark_asked()                                                    # "Not now" on the re-ask
+    assert read(setting)["aside"] == ["follow_up"] and read(setting)["covers"] == {"add": NOW, "hold": NOW}
+    assert acting.asked() is True and not acting.enabled("follow_up") and acting.enabled("add")
+    assert acting.state()["new"] == [acting.ACTIONS["follow_up"]]         # still shown as not agreed
+    acting.set_enabled(True, now=NOW + 900)                                # the switch, flipped on again later
+    assert acting.enabled("follow_up") and acting.allows(NOW + 901, "follow_up")
+
+
+def test_off_then_on_names_everything_from_the_new_yes(setting):
+    acting.set_enabled(True, now=NOW)
+    acting.set_enabled(False)
+    acting.set_enabled(True, now=NOW + 300)
+    assert read(setting)["covers"] == {key: NOW + 300 for key in acting.ACTIONS}
+    assert not acting.allows(NOW + 200, "add") and acting.allows(NOW + 301, "add")
+
+
+def test_an_unknown_action_or_a_malformed_list_covers_nothing(setting):
+    for covers in ("add", ["add"], {"add": "yesterday"}, {"send_email": NOW}, None):
+        _write(setting, enabled=True, enabled_at=NOW, asked=True, covers=covers)
+        assert not acting.enabled("add") and not acting.enabled("send_email") and not acting.allows(NOW + 1, "add")
+    assert acting.ACTION_OF["calendar"] == acting.ACTION_OF["reminder"] == "add"
+    assert set(acting.ACTION_OF.values()) - {"draft"} == set(acting.ACTIONS)
+
+
+def test_each_writer_names_its_own_action(setting, store, monkeypatch):
+    from service.proactive import autohold, followups
+    _write(setting, enabled=True, enabled_at=NOW, asked=True, covers={"hold": NOW})
+    assert autoadd.enabled() is False and followups.ACTION == "follow_up"
+    card = {"id": "c1", "title": "Worksheet", "sources": [{"kind": "calendar", "ref": "cal:1"}],
+            "action": {"method": "block_time", "button": "Block 2–3 PM?", "slot": {"start": NOW + 3600, "end": NOW + 7200},
+                       "envelope": {"title": "Worksheet", "start": NOW + 3600}}}
+    monkeypatch.setattr(autohold, "resolve_native", lambda ref: None)
+    held = autohold.step([card], now=NOW, tz="UTC", store=store, abort=lambda: False, hours=lambda slot, tz: True,
+                         hold=lambda c: {"ok": True, "status": "succeeded", "task_id": "t1"})
+    assert held == {"c1"}                                                   # holding was agreed to
+    _write(setting, enabled=True, enabled_at=NOW, asked=True, covers={"add": NOW})
+    store2 = ProactiveStore(store._base.parent / "p2") if hasattr(store, "_base") else store
+    assert autohold.step([{**card, "id": "c2", "sources": [{"kind": "calendar", "ref": "cal:2"}]}], now=NOW, tz="UTC",
+                         store=store2, abort=lambda: False, hours=lambda slot, tz: True,
+                         hold=lambda c: {"ok": True, "status": "succeeded", "task_id": "t2"}) == set()
