@@ -584,7 +584,13 @@ final class OverlayModel: ObservableObject {
     }
 
     /// Slash commands the Ask field's text could still become. /corpus only in Debug Mode.
-    var commandSuggestions: [NotchCommand] { NotchCommand.suggestions(for: input, includeCorpus: debugMode, includeScreen: screenCommandAvailable) }
+    var commandSuggestions: [NotchCommand] {
+        // Nothing typed starts with "/" on almost every update: answer that
+        // without asking macOS about Screen Recording (screenCommandAvailable),
+        // a privacy-service call the panel made on every redraw.
+        guard input.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") else { return [] }
+        return NotchCommand.suggestions(for: input, includeCorpus: debugMode, includeScreen: screenCommandAvailable)
+    }
 
     /// Sources Wisp can't read right now ("calendar", "email"), refreshed each
     /// time the panel opens, so a starter never asks about a denied source. Nil

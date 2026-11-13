@@ -74,7 +74,7 @@ struct QuickSettingsView: View {
             voicePreview.stop()
             chosen.save()
         }
-        .onAppear { voices = ReadAloudVoice.installed() }
+        .onAppear { voices = ReadAloudVoice.installedForOpening { voices = $0 } }
         .onDisappear { voicePreview.stop() }
         .task {
             guard refreshes else { return }

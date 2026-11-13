@@ -296,6 +296,18 @@ final class CallAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unche
     /// Screen Recording is on for Wisp, so the Mac's sound can be captured without a question.
     static var allowed: Bool { CGPreflightScreenCaptureAccess() }
 
+    /// `allowed` for text on screen, asked of macOS at most every 5 seconds:
+    /// the Meet tab's home reads it in every update, and each ask goes to the
+    /// privacy service. Starting a recording still asks `allowed` itself.
+    @MainActor static var allowedLately: Bool {
+        let now = ProcessInfo.processInfo.systemUptime
+        if let known = allowedMemo, now - known.at < 5 { return known.value }
+        let value = allowed
+        allowedMemo = (now, value)
+        return value
+    }
+    @MainActor private static var allowedMemo: (at: TimeInterval, value: Bool)?
+
     var onSamples: (Data) -> Void = { _ in }
     var onStopped: () -> Void = {}
 
@@ -666,7 +678,7 @@ struct NotchMeetingView: View {
     private var home: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Meeting notes").font(.wisp(.headline, weight: .semibold)).foregroundStyle(Theme.textPrimary)
-            Text("Wisp listens through the microphone" + (CallAudioCapture.allowed
+            Text("Wisp listens through the microphone" + (CallAudioCapture.allowedLately
                     ? " and to the sound this Mac plays, so a call on headphones is heard too. It"
                     : ". To hear the other side of a call on headphones, turn on Screen Recording for Wisp first. It")
                  + " writes the words down on this Mac. "
