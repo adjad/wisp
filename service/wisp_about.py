@@ -337,7 +337,8 @@ def _attention_state() -> tuple[str, bool] | None:
 _SEND_OK = "Before anything is sent, I show it to you and wait for your OK."
 _CALENDAR_OK = "Before anything is sent, or your calendar changes, I show it to you and wait for your OK."
 _AUTO_ADD = ("Because you let me act for you, I may add a time-sensitive event or deadline to your Calendar "
-             "or Reminders on my own, then tell you, with Undo.")
+             "or Reminders on my own, and hold a free hour on my own Day plan (never on your calendar) for work "
+             "due soon, then tell you, with Undo.")
 _ROUTINE = {
     "held": ("For your first few days I only suggest reminders from your routine. After that I may "
              "add a reminder or a Tentative hold in Wisp's own schedule on my own and tell you, with Undo."),
