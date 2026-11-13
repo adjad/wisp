@@ -2182,6 +2182,10 @@ struct SettingsView: View {
 
                         Divider()
 
+                        WritingStyleSettingsRow()
+
+                        Divider()
+
                         if loader.behaviorEnabled != nil {
                             Toggle(isOn: Binding(
                                 get: { loader.behaviorEnabled == true },

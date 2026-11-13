@@ -19,7 +19,9 @@ struct OverlayView: View {
     var onDismiss: () -> Void = {}
     @FocusState private var focused: Bool
     @State private var breathe = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    @Environment(\.reduceMotionOverride) private var reduceMotionOverride
+    private var reduceMotion: Bool { reduceMotionOverride ?? systemReduceMotion }
     // Text size (the notch's Settings > Voice) and Increase Contrast both
     // change values that child views read when they are built, so a change
     // rebuilds the panel's content once. Cheap: both are rare, deliberate.
@@ -40,6 +42,10 @@ struct OverlayView: View {
     @State private var headerHeight: CGFloat = 30
     // The Brief in two columns in a wider panel (the header's toggle); persists.
     @AppStorage(NotchBriefView.wideKey) private var briefWide = false
+    // Which way the page change in flight slides (NotchPageSlide).
+    @State private var pageSlide = NotchPageSlide()
+    // The selected tab's white capsule, which glides from tab to tab.
+    @Namespace private var tabSelection
 
     var body: some View {
         Group {
@@ -76,15 +82,21 @@ struct OverlayView: View {
             if !model.collapsed { model.updatePersonalStarters(today: todayModel) }
         }
         .onChange(of: model.collapsed) { _, isCollapsed in
+            if isCollapsed {
+                // Reopening shows its page without a slide from the last one,
+                // and each tab back at its top, as before.
+                pageSlide.forget()
+                PanelScrollMemory.forgetAll()
+            }
             if !isCollapsed {
-                if !model.tab.showsDay { focused = true }
+                if model.tab.hasPrompt { focused = true }
                 model.refreshRecentChats()
                 model.refreshStarters(today: todayModel)
             }
         }
         // Switching to Ask or Research (including Ask Wisp from Brief or Day) puts the cursor in the field.
         .onChange(of: model.tab) { _, tab in
-            if !tab.showsDay && !model.collapsed { focused = true }
+            if tab.hasPrompt && !model.collapsed { focused = true }
         }
     }
 
@@ -102,8 +114,11 @@ struct OverlayView: View {
     /// Brief and Day under the fixed header: as tall as their content until the
     /// panel would pass the screen's bottom (SurfaceLayout.maxPanelHeight), then
     /// scrolling. Without this the window clipped the last rows out of reach.
+    /// It keeps the tab's scroll position while the panel is open
+    /// (PanelScrollMemory), so going back to a tab finds it where it was left.
     private func tabScroll<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-        CappedScroll(cap: layout.tabScrollCap(headerHeight: headerHeight), reveals: true) {
+        CappedScroll(cap: layout.tabScrollCap(headerHeight: headerHeight), reveals: true,
+                     remembers: PanelScrollMemory.key(model.tab)) {
             content().frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.top, SurfaceLayout.tabTopPadding)
@@ -117,75 +132,22 @@ struct OverlayView: View {
     }
 
     private var expandedPanel: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        let page = model.page
+        pageSlide.follow(page)
+        return VStack(alignment: .leading, spacing: 0) {
             header
                 .background(GeometryReader { geo in
                     Color.clear.onAppear { noteHeader(geo.size.height) }
                         .onChange(of: geo.size.height) { noteHeader(geo.size.height) }
                 })
-            if model.resetCard != nil {
-                // /resetwisp's confirmation takes the tab's place until Cancel.
-                ResetWispCard(model: model)
-            } else if let knowYou = model.knowYou {
-                // Getting to know you takes the tab's place until Done or a tab.
-                KnowYouView(model: knowYou)
-            } else if model.showingPermissions {
-                // A permission row's page, like quick settings, in the tab's place.
-                NotchPermissionsView(model: model, cap: layout.pageContentCap(headerHeight: headerHeight))
-                    .padding(.top, SurfaceLayout.tabTopPadding)
-            } else if model.showingQuickSettings {
-                QuickSettingsView(model: model, settings: settings,
-                                  cap: layout.pageContentCap(headerHeight: headerHeight))
-                    .padding(.top, SurfaceLayout.tabTopPadding)
-            } else {
-            switch model.tab {
-            case .ask:
-                // First run: the open setup card replaces Ask until it is done or
-                // set aside, then shrinks to a line. One view in one place for both.
-                if model.setupCard != .open { chatSwitcherRow.padding(.top, 8) }
-                transientNotice
-                if model.setupCard.showsOnAsk { NotchSetupView(model: model, setup: setup) }
-                if model.setupCard != .open {
-                    if model.reportIsUnattached {
-                        ReportDraftCard(draft: model.report,
-                                        title: model.report.snapshot?.key == "chat:none"
-                                            ? "Report a problem" : "Report a problem with the last turn",
-                                        save: { model.saveReport(model.report) })
-                            .padding(.top, 8)
-                    }
-                    if model.serviceDown { serviceDownCard }
-                    MemoryReviewNotice()
-                    NudgeStack(model: model)
-                    promptArea
-                    if model.showingCorpus {
-                        NotchCorpusView(controller: corpus, openWindow: model.openTabInWindow)
-                    } else {
-                        content
-                        statusRow.padding(.top, 10)
-                    }
-                }
-            case .brief:
-                tabScroll { NotchBriefView(model: model, today: todayModel, wide: briefIsWide) }
-            case .day:
-                tabScroll { NotchDayView(model: model, today: todayModel) }
-            case .research:
-                if model.showingResearch {
-                    ResearchView(model: researchModel, compact: true,
-                                 onBack: { model.returnToChat() })
-                } else {
-                    transientNotice
-                    promptArea
-                    HStack(alignment: .firstTextBaseline) {
-                        Text("Wisp drafts an editable plan first, then reads the web and writes a cited report.")
-                            .font(.wisp(.body)).foregroundStyle(Theme.textMuted)
-                        Spacer(minLength: 12)
-                        Button("Research library") { WispRouter.shared.open(.research) }
-                            .buttonStyle(.plain).font(.wisp(.caption)).foregroundStyle(Theme.textSecondary)
-                            .fixedSize()
-                    }
-                    statusRow.padding(.top, 10)
-                }
-            }
+            // One page at a time, keyed by what it is, so any change of page
+            // (a tab, quick settings, a permission page, a card) crossfades with
+            // a short slide while the panel's height follows. The ZStack lets
+            // the leaving page and the arriving one overlap rather than stack.
+            ZStack(alignment: .topLeading) {
+                VStack(alignment: .leading, spacing: 0) { pageBody }
+                    .id(page)
+                    .transition(.notchPage(pageSlide))
             }
         }
         .background(shortcuts)
@@ -206,9 +168,10 @@ struct OverlayView: View {
         .background(GeometryReader { geo in
             Color.clear.onChange(of: geo.size.height) { model.onResize() }
         })
-        // Closing: the content fades before the shape retracts; the surface
-        // below stays, so the panel still reads as the notch drawing back in.
-        .opacity(model.closing ? 0 : 1)
+        // The content fades before the shape retracts and after it has grown;
+        // the surface below stays, so the panel still reads as the notch
+        // drawing back in and out.
+        .opacity(model.contentVeiled ? 0 : 1)
         // Must match the width OverlayPanel sizes its window to — both widen
         // SurfaceLayout.expandedWidth from the same state (AppDelegate's layout
         // provider asks NotchBriefView.showsWide), so they cannot disagree.
@@ -222,6 +185,88 @@ struct OverlayView: View {
         // Two columns on or off: refit the window, which reads the same state,
         // once SwiftUI has laid the change out.
         .onChange(of: briefIsWide) { model.onResize() }
+        // Every change of page moves together, on the panel's one spring: the
+        // pages, the panel's height and width, the selected tab's capsule, the
+        // header's buttons. The window grows ahead of it and shrinks after it
+        // (OverlayPanel.resizeToFit). Reduce Motion: an instant swap.
+        .animation(Theme.Motion.panel(reduceMotion: reduceMotion), value: page)
+    }
+
+    /// What the page shows: the reset card, Getting to know you, a permission
+    /// page, quick settings, or the tab.
+    @ViewBuilder private var pageBody: some View {
+        if model.resetCard != nil {
+            // /resetwisp's confirmation takes the tab's place until Cancel.
+            ResetWispCard(model: model)
+        } else if let knowYou = model.knowYou {
+            // Getting to know you takes the tab's place until Done or a tab.
+            KnowYouView(model: knowYou)
+        } else if model.showingPermissions {
+            // A permission row's page, like quick settings, in the tab's place.
+            NotchPermissionsView(model: model, cap: layout.pageContentCap(headerHeight: headerHeight))
+                .padding(.top, SurfaceLayout.tabTopPadding)
+        } else if model.showingQuickSettings {
+            QuickSettingsView(model: model, settings: settings,
+                              cap: layout.pageContentCap(headerHeight: headerHeight))
+                .padding(.top, SurfaceLayout.tabTopPadding)
+        } else {
+            tabBody
+        }
+    }
+
+    /// The tab's own content. Any tab added to NotchTab gets the same page
+    /// motion with no case of its own: the page is keyed by the tab.
+    @ViewBuilder private var tabBody: some View {
+        switch model.tab {
+        case .ask:
+            // First run: the open setup card replaces Ask until it is done or
+            // set aside, then shrinks to a line. One view in one place for both.
+            if model.setupCard != .open { chatSwitcherRow.padding(.top, 8) }
+            transientNotice
+            if model.setupCard.showsOnAsk { NotchSetupView(model: model, setup: setup) }
+            if model.setupCard != .open {
+                if model.reportIsUnattached {
+                    ReportDraftCard(draft: model.report,
+                                    title: model.report.snapshot?.key == "chat:none"
+                                        ? "Report a problem" : "Report a problem with the last turn",
+                                    save: { model.saveReport(model.report) })
+                        .padding(.top, 8)
+                }
+                if model.serviceDown { serviceDownCard }
+                MemoryReviewNotice()
+                NudgeStack(model: model)
+                promptArea
+                if model.showingCorpus {
+                    NotchCorpusView(controller: corpus, openWindow: model.openTabInWindow)
+                } else {
+                    content
+                    statusRow.padding(.top, 10)
+                }
+            }
+        case .brief:
+            tabScroll { NotchBriefView(model: model, today: todayModel, wide: briefIsWide) }
+        case .day:
+            tabScroll { NotchDayView(model: model, today: todayModel) }
+        case .meet:
+            tabScroll { NotchMeetingView(model: MeetingModel.shared) }
+        case .research:
+            if model.showingResearch {
+                ResearchView(model: researchModel, compact: true,
+                             onBack: { model.returnToChat() })
+            } else {
+                transientNotice
+                promptArea
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Wisp drafts an editable plan first, then reads the web and writes a cited report.")
+                        .font(.wisp(.body)).foregroundStyle(Theme.textMuted)
+                    Spacer(minLength: 12)
+                    Button("Research library") { WispRouter.shared.open(.research) }
+                        .buttonStyle(.plain).font(.wisp(.caption)).foregroundStyle(Theme.textSecondary)
+                        .fixedSize()
+                }
+                statusRow.padding(.top, 10)
+            }
+        }
     }
 
     // Collapsed with nothing drawn: a built-in display without a notch, or a notch
@@ -354,6 +399,32 @@ struct OverlayView: View {
         HStack(spacing: 2) {
             ForEach(NotchTab.strip, id: \.self) { tab in tabButton(tab) }
         }
+        // One white capsule for the whole strip, over the grey labels, with
+        // the same labels in black shown only where the capsule is. The capsule
+        // never leaves the view tree: it takes the selected tab's frame (each
+        // tab is a source), so a switch slides one solid shape, and each label
+        // is dark exactly where white is under it, every frame.
+        // Before: a capsule inside the selected tab behind an `if`, so a switch
+        // removed one capsule and inserted another and SwiftUI faded the pair
+        // while both travelled (two half-white capsules), and each label's
+        // colour faded on its own clock (dark text on the dark strip before
+        // the capsule reached it).
+        .overlay {
+            ZStack {
+                selectionCapsule
+                HStack(spacing: 2) {
+                    ForEach(NotchTab.strip, id: \.self) { tab in tabLabel(tab, onCapsule: true) }
+                }
+                // At its own ideal width, like the buttons under it. Offered the
+                // strip's width instead, which rounds to the pixel grid, it can
+                // come up a fraction short: then "Day" truncates to "…" and the
+                // row re-centres, shifting every dark label off its capsule.
+                .fixedSize()
+                .mask { selectionCapsule }
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
         .padding(2)
         .background(Capsule().fill(Theme.chipFill))
         .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
@@ -362,19 +433,33 @@ struct OverlayView: View {
         .accessibilityLabel("Wisp tabs")
     }
 
+    /// The strip's white capsule, wherever the selected tab is.
+    private var selectionCapsule: some View {
+        Capsule().fill(Color.white)
+            .matchedGeometryEffect(id: model.tab.stripTab, in: tabSelection, isSource: false)
+            .animation(Theme.Motion.panel(reduceMotion: reduceMotion), value: model.tab.stripTab)
+    }
+
+    /// A tab's title and Day's count: grey on the strip, black on the capsule.
+    private func tabLabel(_ tab: NotchTab, onCapsule: Bool) -> some View {
+        let count = tab == .day ? todayCount : 0
+        return HStack(spacing: 5) {
+            Text(tab.title).font(.wisp(.footnote, weight: .medium))
+            if count > 0 { countBadge(count, selected: onCapsule) }
+        }
+        .foregroundStyle(onCapsule ? Color.black : Theme.textSecondary)
+        .padding(.horizontal, 10).padding(.vertical, 4)
+    }
+
     private func tabButton(_ tab: NotchTab) -> some View {
         let selected = model.tab.stripTab == tab
         let count = tab == .day ? todayCount : 0
         let shortcut = tab.title + (tab.shortcutDigit.map { " (⌘" + String($0) + ")" } ?? "")
         return Button { model.leaveKnowYou(); model.closePermissionPage(); model.tab = tab } label: {
-            HStack(spacing: 5) {
-                Text(tab.title).font(.wisp(.footnote, weight: .medium))
-                if count > 0 { countBadge(count, selected: selected) }
-            }
-            .foregroundStyle(selected ? Color.black : Theme.textSecondary)
-            .padding(.horizontal, 10).padding(.vertical, 4)
-            .background(Capsule().fill(selected ? Color.white : Color.clear))
-            .contentShape(Capsule())
+            tabLabel(tab, onCapsule: false)
+                // Where the strip's white capsule sits when this tab is chosen.
+                .matchedGeometryEffect(id: tab, in: tabSelection)
+                .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .help(shortcut)
@@ -388,6 +473,8 @@ struct OverlayView: View {
             .foregroundStyle(selected ? Color.white : Color.black)
             .padding(.horizontal, 5).padding(.vertical, 1)
             .background(Capsule().fill(selected ? Color.black : Color.white.opacity(0.85)))
+            // Never recoloured: the strip draws one copy for the dark strip and
+            // one for the capsule, and the capsule's mask decides which shows.
     }
 
     private var windowControls: some View {
@@ -429,6 +516,7 @@ struct OverlayView: View {
         case .ask: return "Open this chat in the Wisp window (⌘O)"
         case .brief, .day: return "Open the full planner in the Wisp window (⌘O)"
         case .research: return "Open the research library (⌘O)"
+        case .meet: return "Open the Wisp window (⌘O)"
         }
     }
 
@@ -750,10 +838,14 @@ struct OverlayView: View {
                     }
                 }
                 .frame(maxHeight: 360)
+                // Back from another tab with the conversation unchanged: where it
+                // was left (PanelScrollMemory). Anything new since goes to the end.
+                .modifier(RemembersScroll(key: Self.askScrollKey, version: askScrollVersion))
                 // Reopening the panel recreates this ScrollView; jump straight to
                 // the latest message so an existing conversation isn't scrolled to
                 // the top. Deferred a runloop so it runs after layout.
                 .onAppear {
+                    guard PanelScrollMemory.offset(Self.askScrollKey, version: askScrollVersion) == nil else { return }
                     DispatchQueue.main.async { proxy.scrollTo("bottom", anchor: .bottom) }
                 }
                 .onChange(of: model.turns.count) {
@@ -769,6 +861,11 @@ struct OverlayView: View {
             }
         }
     }
+
+    private static let askScrollKey = PanelScrollMemory.key(.ask)
+    /// Changes whenever the conversation does, so a kept position is only
+    /// used for the conversation it was kept for.
+    private var askScrollVersion: Int { model.turns.count &* 1_000_003 &+ model.answer.count }
 
     // A completed exchange: user prompt as a chip, assistant reply as markdown.
     @ViewBuilder private func turnView(_ turn: OverlayModel.Turn) -> some View {
@@ -1396,5 +1493,52 @@ extension TodayModel {
     var dueBadgeCount: Int {
         guard isShowingCurrentDay, let plan = currentPlan else { return 0 }
         return DayTimeline.badgeCount(plan.dayNeeds, endOfDay: dayInterval.end.timeIntervalSince1970)
+    }
+}
+
+/// The slide of the page change in flight. A transition reads it when a page
+/// arrives or leaves, not when the page was last drawn: the leaving page was
+/// drawn before anyone knew where the panel was going, so a plain
+/// `.offset(x:)` transition would slide it the way the previous change went.
+@MainActor
+final class NotchPageSlide {
+    private(set) var shown: NotchPage?
+    private(set) var motion = NotchPageMotion.none
+
+    /// Called with the page about to be drawn; a new page sets the slide.
+    func follow(_ page: NotchPage) {
+        guard page != shown else { return }
+        motion = shown.map { NotchPage.motion(from: $0, to: page) } ?? .none
+        shown = page
+    }
+
+    func forget() {
+        shown = nil
+        motion = .none
+    }
+}
+
+/// A page part of the way in or out: shifted by its slide steps and faded.
+private struct NotchPageShift: ViewModifier {
+    let slide: NotchPageSlide
+    let arriving: Bool
+    let away: Bool
+
+    func body(content: Content) -> some View {
+        let steps = away ? (arriving ? slide.motion.insertion : slide.motion.removal) : 0
+        content
+            .offset(x: CGFloat(steps) * Theme.Motion.slideStep)
+            .opacity(away ? 0 : 1)
+    }
+}
+
+extension AnyTransition {
+    /// The notch page's arrival and departure (NotchPage.motion).
+    @MainActor static func notchPage(_ slide: NotchPageSlide) -> AnyTransition {
+        .asymmetric(
+            insertion: .modifier(active: NotchPageShift(slide: slide, arriving: true, away: true),
+                                 identity: NotchPageShift(slide: slide, arriving: true, away: false)),
+            removal: .modifier(active: NotchPageShift(slide: slide, arriving: false, away: true),
+                               identity: NotchPageShift(slide: slide, arriving: false, away: false)))
     }
 }

@@ -1219,30 +1219,40 @@ struct ProactiveBriefSection: View {
 /// indicator and no bounce. Used for an opened Brief row, and for the whole
 /// Brief and Day tabs under the panel's header (OverlayView.tabScroll), where
 /// `reveals` lets a view inside ask to be scrolled into sight (`revealInPanel`).
+///
+/// Its height is measured in the same layout pass as everything else
+/// (CappedHeight), not learned a pass later: a page that arrives with a slide
+/// is its real height from its first frame, so the panel moves once, not twice.
+/// `remembers` keeps the scroll position under that key while the panel is
+/// open (PanelScrollMemory).
 struct CappedScroll<Content: View>: View {
     let cap: CGFloat?
     var reveals = false
+    var remembers: String? = nil
     @ViewBuilder var content: Content
+    /// The content's height, for the scroll indicator only.
     @State private var height: CGFloat = 0
 
     var body: some View {
         if let cap {
-            ScrollViewReader { proxy in
-                ScrollView(.vertical) {
-                    content
-                        .background(GeometryReader { geo in
-                            Color.clear.preference(key: CappedScrollHeight.self, value: geo.size.height)
-                        })
+            CappedHeight(cap: cap) {
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical) {
+                        content
+                            .background(GeometryReader { geo in
+                                Color.clear.preference(key: CappedScrollHeight.self, value: geo.size.height)
+                            })
+                    }
+                    .scrollIndicators(height > cap ? .automatic : .never)
+                    .scrollBounceBehavior(.basedOnSize)
+                    .modifier(RemembersScroll(key: remembers))
+                    .environment(\.panelReveal, reveals ? PanelReveal { id in
+                        // After the panel has grown to fit what just opened. Never
+                        // animated, so Reduce Motion needs no special case.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { proxy.scrollTo(id) }
+                    } : nil)
                 }
-                .scrollIndicators(height > cap ? .automatic : .never)
-                .scrollBounceBehavior(.basedOnSize)
-                .environment(\.panelReveal, reveals ? PanelReveal { id in
-                    // After the panel has grown to fit what just opened. Never
-                    // animated, so Reduce Motion needs no special case.
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { proxy.scrollTo(id) }
-                } : nil)
             }
-            .frame(height: min(max(height, 1), cap))
             .onPreferenceChange(CappedScrollHeight.self) { height = $0 }
             // A CappedScroll inside this one reports its own content; keep it
             // from reaching (and inflating) an outer one.
@@ -1250,6 +1260,80 @@ struct CappedScroll<Content: View>: View {
         } else {
             content
         }
+    }
+}
+
+/// Lays out one scroll view as tall as its content, up to `cap`. A vertical
+/// ScrollView asked for its ideal height answers with its content's height.
+struct CappedHeight: Layout {
+    let cap: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let scroll = subviews.first else { return .zero }
+        let ideal = scroll.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil))
+        return CGSize(width: proposal.width ?? ideal.width, height: max(min(ideal.height, cap), 1))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, anchor: .topLeading, proposal: ProposedViewSize(bounds.size))
+    }
+}
+
+/// Where each tab's scroll was left, while the panel stays open. Going back to
+/// a tab finds it there; closing the panel forgets them all, so it reopens on
+/// each tab's top as before. `version` lets a view refuse a position that no
+/// longer fits what it shows (Ask: a conversation that has moved on).
+@MainActor
+enum PanelScrollMemory {
+    private static var offsets: [String: (y: CGFloat, version: Int)] = [:]
+
+    static func key(_ tab: NotchTab) -> String { "tab.\(tab.rawValue)" }
+
+    static func note(_ key: String, y: CGFloat, version: Int = 0) { offsets[key] = (y, version) }
+
+    /// The remembered offset, if one was kept for this version.
+    static func offset(_ key: String, version: Int = 0) -> CGFloat? {
+        guard let kept = offsets[key], kept.version == version else { return nil }
+        return kept.y
+    }
+
+    static func forgetAll() { offsets = [:] }
+}
+
+/// Keeps a scroll view's position under `key` (PanelScrollMemory). Needs
+/// macOS 15's scroll geometry; on macOS 14 a tab comes back at its top.
+struct RemembersScroll: ViewModifier {
+    let key: String?
+    var version = 0
+
+    func body(content: Content) -> some View {
+        if #available(macOS 15, *), let key {
+            content.modifier(RemembersScrollPosition(key: key, version: version))
+        } else {
+            content
+        }
+    }
+}
+
+@available(macOS 15, *)
+private struct RemembersScrollPosition: ViewModifier {
+    let key: String
+    let version: Int
+    @State private var position: ScrollPosition
+
+    init(key: String, version: Int) {
+        self.key = key
+        self.version = version
+        let y = PanelScrollMemory.offset(key, version: version)
+        _position = State(initialValue: y.map { ScrollPosition(point: CGPoint(x: 0, y: $0)) } ?? ScrollPosition())
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .scrollPosition($position)
+            .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.y + $0.contentInsets.top }) { _, y in
+                PanelScrollMemory.note(key, y: max(y, 0), version: version)
+            }
     }
 }
 

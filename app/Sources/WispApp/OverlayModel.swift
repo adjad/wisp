@@ -227,6 +227,14 @@ final class OverlayModel: ObservableObject {
 
     func closePermissionPage() { showingPermissions = false }
 
+    /// What fills the panel under its header now. OverlayView animates every
+    /// change of it the same way (Theme.Motion), however it was made: a tab
+    /// click, ⌘1 to ⌘3, a deep link, a notification, the gear, Done or Esc.
+    var page: NotchPage {
+        NotchPage.shown(tab: tab, settings: showingQuickSettings, permissions: showingPermissions,
+                        reset: resetCard != nil, knowYou: knowYou != nil)
+    }
+
     /// Its states are read only while it can be seen. Opening the panel reads
     /// them again at once, so coming back from System Settings shows the answer.
     private func syncPermissionPoll() {
@@ -346,10 +354,12 @@ final class OverlayModel: ObservableObject {
             liveChatForgotten = true
         }
     }
-    /// True while the panel retracts into the bar: the content fades out at
-    /// the start of the close so the shrinking shape never slices live text.
-    /// Cleared when the bar takes over or the panel opens again.
-    @Published var closing = false
+    /// True while the panel's content is hidden behind its surface: at the
+    /// start of a close it fades out, so the shrinking shape never slices live
+    /// text, and at the start of an open it stays out until the shape has
+    /// grown, then fades in. Cleared when the bar takes over or the open is
+    /// under way.
+    @Published var contentVeiled = false
 
     @Published var collapsed = false {
         didSet {
@@ -1195,6 +1205,7 @@ final class OverlayModel: ObservableObject {
             else { showTransientNotice("Wisp is still answering. Open the window when it finishes.") }
         case .brief, .day: WispRouter.shared.open(.today(focus: .plan))
         case .research: WispRouter.shared.open(.research)
+        case .meet: WispRouter.shared.open(.today(focus: .plan))
         }
     }
 

@@ -301,7 +301,7 @@ enum MailFactsText {
     static let forgetButton = "Forget what Wisp learned from mail…"
     static let forgetTitle = "Forget what Wisp learned from mail?"
     static let forgetMessage = "This forgets every fact Wisp learned from your mail and erases the text it kept "
-        + "from attachments it read. It also turns off learning facts from mail until you turn it back on. "
+        + "from attachments it read and the writing style it learned from your sent mail. It also turns off learning facts from mail until you turn it back on. "
         + "Facts you told Wisp yourself, and your mail suggestions, stay."
     static let forgetHelp = "Forgets the facts Wisp learned from your mail and erases the text it kept "
         + "from attachments it read. Asks first."

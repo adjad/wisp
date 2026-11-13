@@ -188,6 +188,49 @@ enum Permissions {
     static let screenRecordingPromptedKey = "wisp.screenRecordingPrompted"
     static let accessibilityPromptedKey = "wisp.accessibilityPrompted"
 
+    // A grant macOS shows as on but doesn't apply. Found 2026-11-11: System Settings
+    // listed Wisp as on for Screen Recording and Accessibility while both checks said
+    // no. macOS had saved each grant against the code hash of one build (its record
+    // read `cdhash H"…"`, not Wisp's certificate), so a newer copy of Wisp doesn't
+    // match it and the switch in System Settings is already on, with nothing to flip.
+    // The way out is to drop that record and ask again, which binds it to this copy.
+
+    /// macOS's name for the grant `tccutil` resets, and the marker that says Wisp
+    /// already showed its one question. Nil for anything but these two.
+    static func staleGrant(_ extra: Extra) -> (service: String, promptedKey: String)? {
+        switch extra {
+        case .screenRecording: return ("ScreenCapture", screenRecordingPromptedKey)
+        case .accessibility: return ("Accessibility", accessibilityPromptedKey)
+        case .fullDiskAccess: return nil
+        }
+    }
+
+    /// `tccutil reset <service> <bundle>`, only ever for Wisp's own bundle id; nil
+    /// for an unbundled developer build, so it never runs there. Pure.
+    static func startOverArguments(_ extra: Extra, bundleID: String?) -> [String]? {
+        guard let grant = staleGrant(extra), let bundleID, bundleID == WispReset.bundleID else { return nil }
+        return ["reset", grant.service, bundleID]
+    }
+
+    /// Forget one saved answer so macOS asks again for this copy of Wisp. Only from
+    /// the person's own press. True when macOS dropped it; the next press of Allow
+    /// shows macOS's question.
+    @discardableResult
+    static func startOver(_ extra: Extra) -> Bool {
+        guard let grant = staleGrant(extra),
+              let arguments = startOverArguments(extra, bundleID: Bundle.main.bundleIdentifier) else { return false }
+        let tcc = Process()
+        tcc.executableURL = URL(fileURLWithPath: WispReset.tccutil)
+        tcc.arguments = arguments
+        tcc.standardOutput = FileHandle.nullDevice
+        tcc.standardError = FileHandle.nullDevice
+        guard (try? tcc.run()) != nil else { return false }
+        tcc.waitUntilExit()
+        guard tcc.terminationStatus == 0 else { return false }
+        UserDefaults.standard.removeObject(forKey: grant.promptedKey)
+        return true
+    }
+
     // Screen Recording: needed for screen_capture (the `screencapture` CLI wrapper).
     static func requestScreenRecording() {
         let defaults = UserDefaults.standard

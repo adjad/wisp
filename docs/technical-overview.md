@@ -7,7 +7,7 @@ engines, running from source, and where state lives. This was the second half of
 
 ## What it does
 
-**Chat overlay — ⌥Space.** A top-centre panel with three tabs (Ask, Brief and Day) that
+**Chat overlay — ⌥Space.** A top-centre panel with four tabs (Ask, Brief, Day and Meet) that
 adapts to your display. On a MacBook with a notch it hangs from the notch: collapsed it is a
 small black bar wrapped around the camera housing, and hovering it opens the panel. On a Mac
 without a notch (M1 Air, 13" Pro, iMac) nothing is drawn: the menu-bar icon is the anchor and

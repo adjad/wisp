@@ -215,6 +215,12 @@ async def forget_facts(body: Nothing) -> dict:
         # "Everything Wisp learned from mail" includes the text it kept from
         # attachments it was asked to read; erase it even if the facts erase raised.
         attachment_erased = (await asyncio.to_thread(attachment_store.forget_all_result))[0]
+    # The writing-style adapter was trained on sent mail and can reproduce its phrases.
+    try:
+        from service import personal_style
+        style_erased = await personal_style.forget()
+    except Exception:  # noqa: BLE001 — report it, never hide the other results
+        style_erased = False
     try:
         reading_off = not await asyncio.to_thread(attachment_index.enabled)
     except Exception:  # noqa: BLE001
@@ -223,7 +229,8 @@ async def forget_facts(body: Nothing) -> dict:
     return {"ok": True, **result, "enabled": False,
             "attachment_text": "erased" if attachment_erased else "failed",
             "attachment_reading": "off" if reading_off else "still on",
-            "complete": bool(attachment_erased and reading_off)}
+            "writing_style": "erased" if style_erased else "failed",
+            "complete": bool(attachment_erased and reading_off and style_erased)}
 
 
 @router.post("/assistant/sync/mail_memory", dependencies=[Depends(_native_only)])

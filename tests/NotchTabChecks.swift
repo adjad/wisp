@@ -15,13 +15,15 @@ struct NotchTabChecks {
         }
 
         // Tabs, in strip order, with ⌘1 to ⌘3. Research is a mode of Ask, not a tab.
-        check(NotchTab.strip == [.ask, .brief, .day], "the strip reads Ask, Brief, Day")
-        check(NotchTab.strip.map(\.shortcutDigit) == ["1", "2", "3"], "⌘1 to ⌘3 follow the strip")
-        check(NotchTab.strip.map(\.title) == ["Ask", "Brief", "Day"], "tab titles")
+        check(NotchTab.strip == [.ask, .brief, .day, .meet], "the strip reads Ask, Brief, Day, Meet")
+        check(NotchTab.strip.map(\.shortcutDigit) == ["1", "2", "3", "4"], "⌘1 to ⌘4 follow the strip")
+        check(NotchTab.strip.map(\.title) == ["Ask", "Brief", "Day", "Meet"], "tab titles")
         check(!NotchTab.strip.contains(.research) && NotchTab.research.shortcutDigit == nil, "Research is out of the strip")
         check(NotchTab.research.stripTab == .ask && NotchTab.day.stripTab == .day, "Research shows as Ask in the strip")
         check(NotchTab.brief.showsDay && NotchTab.day.showsDay && !NotchTab.ask.showsDay && !NotchTab.research.showsDay,
               "Brief and Day show the day; Ask and Research take a prompt")
+        check(NotchTab.ask.hasPrompt && NotchTab.research.hasPrompt && !NotchTab.meet.hasPrompt && !NotchTab.day.hasPrompt,
+              "Meet has no prompt field and shows as itself")
 
         // Opening: ⌥Space always Ask; hover the last tab for ten minutes after closing.
         let closed = Date(timeIntervalSince1970: 1_000_000)
@@ -55,6 +57,63 @@ struct NotchTabChecks {
         check(NotchSetupCard.open.tabForOpening(.day) == .ask, "an open setup card opens the panel on Ask")
         check(NotchSetupCard.later.tabForOpening(.day) == .day, "a card set aside keeps hover's last tab")
         check(NotchSetupCard.hidden.tabForOpening(.research) == .research, "no card, no change to the tab")
+
+        // Pages: what shows, how deep, and how a change slides.
+        let strip = NotchTab.strip
+        func shown(_ tab: NotchTab = .ask, settings: Bool = false, permissions: Bool = false,
+                   reset: Bool = false, knowYou: Bool = false) -> NotchPage {
+            NotchPage.shown(tab: tab, settings: settings, permissions: permissions, reset: reset, knowYou: knowYou)
+        }
+        check(shown(.day) == .tab(.day), "no overlay shows the tab")
+        check(shown(settings: true) == .settings, "settings over a tab")
+        check(shown(settings: true, permissions: true) == .permissions, "permissions beat settings")
+        check(shown(settings: true, permissions: true, knowYou: true) == .knowYou, "Getting to know you beats permissions")
+        check(shown(settings: true, permissions: true, reset: true, knowYou: true) == .reset, "reset beats everything")
+        check(shown(permissions: true, reset: true) == .reset, "reset beats permissions")
+        check(shown(.brief, knowYou: true) == .knowYou && shown(.brief, reset: true) == .reset, "cards replace the tab")
+
+        for tab in NotchTab.allCases { check(NotchPage.tab(tab).depth == 0, "\(tab) is depth 0") }
+        check(NotchPage.reset.depth == 0 && NotchPage.knowYou.depth == 0, "cards are depth 0")
+        check(NotchPage.settings.depth == 1 && NotchPage.permissions.depth == 2, "settings 1, permissions 2")
+
+        let allPages: [NotchPage] = NotchTab.allCases.map { .tab($0) } + [.settings, .permissions, .reset, .knowYou]
+        for page in allPages {
+            check(NotchPage.motion(from: page, to: page) == .none, "\(page) to itself does not move")
+        }
+        check(NotchPageMotion.none == NotchPageMotion(insertion: 0, removal: 0), "none is zero")
+
+        let forward = NotchPageMotion(insertion: 1, removal: -1)
+        let back = NotchPageMotion(insertion: -1, removal: 1)
+        let push = NotchPageMotion(insertion: 3, removal: -1)
+        let pop = NotchPageMotion(insertion: -1, removal: 3)
+        for (i, a) in strip.enumerated() {
+            for (j, b) in strip.enumerated() where i != j {
+                check(NotchPage.motion(from: .tab(a), to: .tab(b)) == (j > i ? forward : back),
+                      "\(a) to \(b) slides \(j > i ? "forward" : "back")")
+            }
+        }
+        if strip.count >= 2 {
+            check(NotchPage.motion(from: .tab(strip[0]), to: .tab(strip[1])) == forward, "first to second tab is forward")
+            check(NotchPage.motion(from: .tab(strip[strip.count - 1]), to: .tab(strip[0])) == back,
+                  "last tab to first is back")
+        }
+        check(NotchPage.motion(from: .tab(.ask), to: .tab(.brief)) == NotchPageMotion(insertion: 1, removal: -1), "Ask to Brief")
+        check(NotchPage.motion(from: .tab(.day), to: .tab(.ask)) == NotchPageMotion(insertion: -1, removal: 1), "Day to Ask")
+        check(NotchPage.motion(from: .tab(.research), to: .tab(.ask)) == .none, "Research to Ask is no move")
+        check(NotchPage.motion(from: .tab(.ask), to: .tab(.research)) == .none, "Ask to Research is no move")
+        check(NotchPage.motion(from: .tab(.research), to: .tab(.day)) == forward, "Research to Day is forward")
+        check(NotchPage.motion(from: .tab(.day), to: .tab(.research)) == back, "Day to Research is back")
+        for tab in strip {
+            check(NotchPage.motion(from: .tab(tab), to: .settings) == push, "\(tab) to settings pushes")
+            check(NotchPage.motion(from: .settings, to: .tab(tab)) == pop, "settings to \(tab) pops")
+            check(NotchPage.motion(from: .tab(tab), to: .reset) == .none && NotchPage.motion(from: .reset, to: .tab(tab)) == .none,
+                  "\(tab) and reset crossfade in place")
+            check(NotchPage.motion(from: .tab(tab), to: .knowYou) == .none && NotchPage.motion(from: .knowYou, to: .tab(tab)) == .none,
+                  "\(tab) and Getting to know you crossfade in place")
+        }
+        check(NotchPage.motion(from: .settings, to: .permissions) == push, "settings to permissions pushes")
+        check(NotchPage.motion(from: .permissions, to: .settings) == pop, "permissions to settings pops")
+        check(NotchPage.motion(from: .reset, to: .knowYou) == .none, "card to card crossfades")
 
         dayChecks(check)
         quickSettingsChecks(check)
