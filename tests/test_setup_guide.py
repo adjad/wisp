@@ -24,7 +24,8 @@ from service.setup.hardware import Hardware, current_hardware, detect_hardware
 Q6, Q5, Q4 = "Ling-3.0-tiny-oQ6e", "Ling-3.0-tiny-oQ5e", "Ling-3.0-tiny-oQ4e"
 GEMMA = "gemma-4-E4B-it-oQ4e-mtp"
 G = GEMMA
-TUNED = "gemma-4-E4B-it-r5-step-01800-oQ4e-mtp"   # Wisp's tuned Gemma, the default download since 0.5.0
+TUNED = "Gemma-Wisp"   # Wisp's tuned Gemma, the only Gemma setup offers since 0.5.0
+PRE = "gemma-4-E4B-it-r5-step-01800-oQ4e-mtp"   # its pre-release folder name
 MELLUM = "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e"
 EMBED = "Qwen3-Embedding-0.6B-4bit-DWQ"
 
@@ -186,12 +187,13 @@ def test_first_choice_is_gemma_on_every_mac(ram):
     # The catalog's first choice; whether it is offered depends on `fits`.
     assert catalog.recommend(ram, [])["first_choice"] == TUNED
     assert catalog.recommend(ram, [Q4])["first_choice"] == TUNED
-    assert [m.id for m in catalog.ranked_for(ram)[:2]] == [TUNED, GEMMA]   # base is the fallback
+    assert catalog.ranked_for(ram)[0].id == TUNED
+    assert GEMMA not in [m.id for m in catalog.ranked_for(ram)] and GEMMA not in [m.id for m in catalog.ranked_for(ram, [Q4])]
 
 
 @pytest.mark.parametrize("ram,second", [(64, Q6), (24, Q6), (16, Q5), (12, Q4)])
 def test_ling_keeps_its_memory_order_behind_gemma(ram, second):
-    assert catalog.ranked_for(ram, [Q4])[2].id == second
+    assert catalog.ranked_for(ram, [Q4])[1].id == second
 
 
 def test_unpublished_ling_build_is_never_offered_on_a_fresh_mac():
@@ -209,7 +211,7 @@ def test_best_installed_model_wins_and_nothing_is_offered_when_optimal():
     rec = catalog.recommend(24, [Q4, Q6, MELLUM, GEMMA, TUNED])
     assert rec["use"] == TUNED and rec["get"] is None
     rec = catalog.recommend(24, [Q4, Q6, MELLUM, GEMMA])
-    assert rec["use"] == GEMMA and rec["get"] == TUNED
+    assert rec["use"] == GEMMA and rec["get"] == TUNED          # base still counts as in use
     rec = catalog.recommend(24, [Q4, Q6, MELLUM])
     assert rec["use"] == Q6 and rec["get"] == TUNED
 
@@ -415,7 +417,7 @@ def test_missing_embedder_is_optional():
 def test_model_list_is_ranked_and_excludes_embedding_and_reranker():
     s = _status(ram=24, installed=["zzz-custom", Q4, "Qwen3-Reranker-0.6B-mlx-6bit", EMBED, Q6, G])
     ids = [m["id"] for m in s["models"]["installed"]]
-    assert ids == [G, Q6, Q4, "zzz-custom"]
+    assert ids == [G, Q6, Q4, "zzz-custom"]                    # base keeps its place in the list
     by_id = {m["id"]: m for m in s["models"]["installed"]}
     assert by_id[Q6]["fit"] == "good" and by_id[Q6]["tested"] is True
     assert by_id["zzz-custom"]["fit"] == "unknown" and by_id["zzz-custom"]["tested"] is False

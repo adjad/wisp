@@ -32,7 +32,7 @@ _SHARD = re.compile(r"-(\d+)-of-(\d+)\.safetensors$")
 
 
 def catalogue_ids() -> tuple[str, ...]:
-    return tuple(m.id for m in (*catalog.PRIMARY_MODELS, catalog.EMBEDDING_MODEL))
+    return tuple(m.id for m in (*catalog.PRIMARY_MODELS, *catalog.KEPT_MODELS, catalog.EMBEDDING_MODEL))
 
 
 def _entries(folder: Path) -> list[Path]:

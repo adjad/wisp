@@ -96,7 +96,7 @@ def test_start_download_poll_cancel_retry_and_reopen(wire):
     task = response.json()["tasks"][0]
     assert task == {"model": MODEL, "state": "downloading", "progress": 42.5,
                     "downloaded_bytes": 425, "total_bytes": 1000, "bytes_per_second": 100,
-                    "message": None}
+                    "message": None, "reason": None}
     # Progress comes from the engine's persisted state, not the setup window.
     assert request(wire, "GET", "/downloads").json() == response.json()
     assert request(wire, "POST", "/downloads", json={"model": MODEL}).status_code == 200
@@ -290,3 +290,34 @@ def test_native_setup_model_state_uses_only_intercepted_http(tmp_path):
     checked = subprocess.run([str(output)], capture_output=True, text=True, env=environment, timeout=30)
     assert checked.returncode == 0, checked.stderr[-5000:]
     assert "setup model-state checks passed; all HTTP intercepted" in checked.stdout
+
+
+@pytest.mark.parametrize("error, reason, needle", [
+    ("Repository not found: Neo-Arid/Gemma-Wisp. This may be a gated model", "not_found", "isn't available"),
+    ("Repository 'x' is gated. Please provide a valid HF token with access.", "gated", "sign-in"),
+    ("[Errno 28] No space left on device: '/synthetic/private'", "no_space", "disk space"),
+    ("ConnectError: [Errno 8] nodename nor servname provided", "offline", "huggingface.co"),
+    ("Max retries exceeded with url: /api/models (Caused by ReadTimeoutError)", "offline", "huggingface.co"),
+    (SECRET, "other", "Check your connection and free disk space"),
+    (None, "other", "Check your connection and free disk space"),
+])
+def test_a_failed_download_says_why_in_fixed_words(wire, error, reason, needle):
+    wire.tasks = [row(status="failed", error=error)]
+    response = request(wire, "GET", "/downloads")
+    task = response.json()["tasks"][0]
+    assert task["reason"] == reason and needle in task["message"]
+    assert SECRET not in response.text and "/synthetic/private" not in response.text
+    assert "Errno" not in task["message"]
+
+
+def test_a_missing_repo_names_the_page_people_can_check(wire):
+    wire.tasks = [row(status="failed", error="Repository not found: whatever")]
+    message = request(wire, "GET", "/downloads").json()["tasks"][0]["message"]
+    model = downloads.catalog.by_id(MODEL)
+    assert f"huggingface.co/{model.repo}" in message and model.label in message
+
+
+def test_a_running_download_has_no_reason_or_message(wire):
+    wire.tasks = [row()]
+    task = request(wire, "GET", "/downloads").json()["tasks"][0]
+    assert task["reason"] is None and task["message"] is None

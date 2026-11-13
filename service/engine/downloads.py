@@ -160,6 +160,34 @@ def _number(value, ceiling: float) -> float:
     return 0
 
 
+_FAILED = "Download failed. Check your connection and free disk space."
+# The engine's error text is matched, never forwarded: it can carry paths, tokens and
+# repository text. Each kind maps to a fixed sentence naming only catalogue values.
+_OFFLINE_MARKERS = ("connecterror", "connectionerror", "connection error", "connection refused",
+                    "connection reset", "connection aborted", "failed to resolve", "name resolution",
+                    "nodename nor servname", "max retries exceeded", "network is unreachable",
+                    "timed out", "timeout", "temporary failure", "offline")
+
+
+def _failure(error, model_id: str) -> tuple[str, str]:
+    """(reason, message) for a failed catalogue download, from the engine's error text."""
+    text = error.lower() if isinstance(error, str) else ""
+    model = catalog.by_id(model_id)
+    name = model.label if model else "This model"
+    page = f"huggingface.co/{model.repo}" if model and model.repo else "Hugging Face"
+    if "is gated" in text:
+        return "gated", f"{page} asks for a Hugging Face sign-in, which Wisp's downloader doesn't have."
+    if "repository not found" in text or "404 client error" in text:
+        return "not_found", (f"{name} isn't available on Hugging Face right now ({page}). "
+                             "It may not be published yet.")
+    if "no space left" in text or "errno 28" in text or "enospc" in text:
+        size = f" ({model.size_gb:.1f} GB)" if model and model.size_gb else ""
+        return "no_space", f"Not enough free disk space for {name}{size}. Free some space, then try again."
+    if any(marker in text for marker in _OFFLINE_MARKERS):
+        return "offline", "Wisp couldn't reach huggingface.co. Check your internet connection."
+    return "other", _FAILED
+
+
 def _tasks(payload: dict) -> list[tuple[float, str, dict]]:
     rows = payload.get("tasks")
     if not isinstance(rows, list) or len(rows) > 1000:
@@ -182,10 +210,10 @@ def _tasks(payload: dict) -> list[tuple[float, str, dict]]:
             "downloaded_bytes": int(_number(row.get("downloaded_size"), 10**13)),
             "total_bytes": int(_number(row.get("total_size"), 10**13)),
             "bytes_per_second": _number(row.get("speed_bps"), 10**12),
-            # No button name: each surface adds its own (Retry, Retry download, Try again).
-            "message": ("Download failed. Check your connection and free disk space."
-                        if state == "failed" else None),
         }
+        # No button name: each surface adds its own (Retry, Retry download, Try again).
+        task["reason"], task["message"] = (_failure(row.get("error"), catalogue[repo])
+                                           if state == "failed" else (None, None))
         created = _number(row.get("created_at"), 10**12)
         old = latest.get(repo)
         if old is None or created >= old[0]:

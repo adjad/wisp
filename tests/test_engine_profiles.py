@@ -10,6 +10,7 @@ from service.setup import catalog
 
 GEMMA = catalog.GEMMA_E4B_MTP
 TUNED = catalog.GEMMA_E4B_WISP
+PRE = catalog.GEMMA_E4B_WISP_PRERELEASE
 
 
 def _entries(path):
@@ -18,8 +19,8 @@ def _entries(path):
 
 def test_fresh_engine_gets_gemma_profile(tmp_path):
     settings, record = tmp_path / "model_settings.json", tmp_path / "seeded.json"
-    assert profiles.seed(settings, record) == [TUNED.id, GEMMA.id]
-    assert _entries(settings)[TUNED.id] == _entries(settings)[GEMMA.id]   # the tuned Gemma runs like base
+    assert profiles.seed(settings, record) == [TUNED.id, GEMMA.id, PRE.id]
+    assert _entries(settings)[TUNED.id] == _entries(settings)[GEMMA.id] == _entries(settings)[PRE.id]
     entry = _entries(settings)[GEMMA.id]
     assert entry["temperature"] == 0.8 and entry["top_p"] == 0.95 and entry["top_k"] == 64
     assert entry["enable_thinking"] is True and entry["mtp_enabled"] is True
@@ -76,7 +77,7 @@ def test_push_body_sends_the_full_entry_filtered_by_schema():
 
 
 def test_only_models_with_a_profile_are_seeded():
-    assert [m.id for m in profiles.profiled_models()] == [TUNED.id, GEMMA.id]
+    assert [m.id for m in profiles.profiled_models()] == [TUNED.id, GEMMA.id, PRE.id]   # kept models keep theirs
 
 
 # The push after a download finishes belongs to the backend, not to a setup
