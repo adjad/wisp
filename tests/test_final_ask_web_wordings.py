@@ -54,8 +54,12 @@ def test_they_stay_private_for_egress_and_open_only_a_search(prompt):
 
 @pytest.mark.parametrize("prompt", STILL_PRIVATE)
 def test_personal_or_compound_wordings_get_no_search(prompt):
-    assert not mo.public_possessive_question(prompt)
-    assert not classify(prompt).public_possessive
+    request = classify(prompt)
+    assert not mo.public_possessive_question(prompt) and not request.public_possessive
+    # None of them may search on a model-led turn: each is private, or of unknown ownership.
+    forbidden, _ = routing_guard_contract(prompt, model_led=True)
+    # (http_request is absent from the set when a rule forbids "every tool but these".)
+    assert {"web_search", "web_fetch"} <= set(forbidden), (prompt, request.provenance)
 
 
 # The same wordings about someone of the user's own. With a time word the
