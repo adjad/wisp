@@ -72,6 +72,99 @@ def test_a_wildcard_that_can_reach_a_protected_file_asks_first(cmd):
     assert _tier(cmd) in ("CONFIRM", "DENY"), cmd
 
 
+# Routes a review found past the first version of this check. Each wrote the gate's file with no card.
+REVIEW_ROUTES = [
+    # `..` was never resolved.
+    "cp /tmp/forged ~/.moe/cache/../act_for_me.js?n",
+    "tee ~/.moe/skills/../act_for_me.js{o,}n",
+    "cd ~/.moe/cache && cp /tmp/f ../act_for_m?.json",
+    "cp /tmp/f ~/Documents/../.moe/gra*",
+    "cd ~/.moe && cat sub/../act*",
+    # Brackets that fnmatch reads differently from the shell.
+    "cp /tmp/f ~/.moe/act_for_me[^x]json",
+    "cp /tmp/f ~/.moe/act_for_me[!x]json",
+    "cp /tmp/f ~/.moe/act_for_me[[:punct:]]json",
+    "cp /tmp/f ~/.moe/[[:alpha:]]ct_for_me.json",
+    "cp /tmp/f ~/.moe/act_for_me[[.x.]]json",
+    "cp /tmp/f ~/.moe/act_for_me[[=x=]]json",
+    "cp /tmp/f ~/.[^x]oe/act*",
+    "cp /tmp/f ~/.moe/act_for_me[]x.]json",
+    # A quoted or escaped separator inside braces cut the word before expansion.
+    'tee ~/.moe/act_for_me.{json,"a b"} </tmp/f',
+    "tee ~/.moe/act_for_me.{json,a\\ b} </tmp/f",
+    'tee ~/.moe/act_for_me.{json,"("} </tmp/f',
+    'tee ~/.{moe,"x y"}/act* </tmp/f',
+    'cd ~/.moe && tee act_for_me.{json,"a b"} </tmp/f',
+    # An expansion over the cap in a word with no dot, the folder named elsewhere.
+    "cd ~/.{moe,x} && tee act_for_me?json{,{0..300}} </tmp/f",
+    "cd ~/.moe && tee act_for_me?json{,{0..300}} </tmp/f",
+    # "Not now" sits with the gate.
+    "echo x > ~/.moe/act_for_me_asked.json",
+    "echo x > ~/.moe/act_for_me_ask*",
+]
+
+# Ordinary commands that the repairs above must not start catching.
+STILL_UNTOUCHED = [
+    "awk '{print $1}' notes.txt",
+    "awk '{print $1.x}' data/*.json",
+    """curl -s -d '{"path": "a.b", "n": 1.5}' https://example.com""",
+    "ls ../*.json",
+    "cat ../act*",
+    "cp a[^x]b.json /tmp/",
+    "echo x{,{0..300}}",
+    "echo x > ~/.moe/meetings/../notes*.txt",
+    "ls ~/Documents/[[:alpha:]]*.json",
+]
+
+
+@pytest.mark.parametrize("cmd", REVIEW_ROUTES)
+def test_the_routes_a_review_found_all_ask_first(cmd):
+    assert _tier(cmd) in ("CONFIRM", "DENY"), (cmd, _tier(cmd))
+
+
+@pytest.mark.parametrize("cmd", STILL_UNTOUCHED)
+def test_ordinary_commands_stay_untouched_after_the_repairs(cmd):
+    assert policy._moe_glob_hit(cmd) is None, cmd
+
+
+def test_a_bracket_is_read_as_any_one_character():
+    assert policy._glob_brackets("a[^x]b[[:alpha:]]c[]x]d[!]]e") == "a?b?c?d?e"
+    assert policy._glob_brackets("a[b") == "a[[]b" and policy._glob_brackets("[") == "[[]"
+    assert policy._glob_segment_matches("act_for_me.json", "act_for_me[^x]json", False)
+    assert not policy._glob_segment_matches(".moe", "[.]moe", False)          # no leading dot, as in the shell
+    assert policy._glob_segment_matches(".moe", ".[^x]oe", False)
+
+
+def test_the_gates_asked_file_is_a_protected_root():
+    assert any(str(root).endswith("/act_for_me_asked.json") for root in policy._credential_roots())
+
+
+# Names built at run time: no reading of the command's text can catch these. What stands between
+# them and the gate's file is not this check.
+BUILT_AT_RUN_TIME = [
+    "f=act_for_me; echo '{}' > ~/.moe/$f.json",
+    'python3 -c "import os;open(os.path.expanduser(\'~/.moe/act_for_m\'+\'e.json\'),\'w\').write(\'{}\')"',
+    "echo x > ~/.moe/act_for_me$'\\x2e'json",
+    "find ~ -name 'act_for*' -exec cp /tmp/f {} \\;",
+]
+
+
+@pytest.mark.parametrize("cmd", BUILT_AT_RUN_TIME)
+def test_a_name_built_at_run_time_asks_in_the_default_mode_and_on_a_model_led_turn(cmd, monkeypatch):
+    # Default access mode: every shell command that is not a fixed read asks, with the command shown.
+    monkeypatch.setattr(policy, "_FULL_ACCESS", False)
+    assert _tier(cmd) == "CONFIRM", cmd
+    # Full access, the bare policy layer: allowed. This is the known limit of reading text.
+    monkeypatch.setattr(policy, "_FULL_ACCESS", True)
+    allowed = policy.decide("shell", {"cmd": cmd}, tool="run_shell")
+    assert allowed.tier.name == "ALLOW", cmd
+    # Full access on a model-led turn (agent/loop.py applies this to every call): a shell command
+    # the model chose is always confirmed, so these still show a card.
+    again = policy.opaque_outbound_decision("run_shell", "shell", {"cmd": cmd}, allowed, reason="model-led",
+                                            categories=policy.OPAQUE_ACTION_CATEGORIES)
+    assert again.tier.name == "CONFIRM", cmd
+
+
 @pytest.mark.parametrize("cmd", LITERAL)
 def test_a_protected_file_spelled_in_another_case_asks_first(cmd):
     assert policy.shell_secret_hit({"cmd": cmd}) is not None, cmd
