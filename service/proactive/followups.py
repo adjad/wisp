@@ -1,40 +1,47 @@
-"""Follow-ups: someone the user talks to often asked them something a day ago
-and nothing answers it, so Wisp adds a reminder to reply and reports it on a
+"""Follow-ups: someone the user writes to asked them something by email a day
+ago and nothing answers it, so Wisp adds a reminder to reply and reports it on a
 "Wisp did this" card with Undo.
 
 This acts without asking, so it is deliberately narrow: a wrong reminder is
-worse than a missed one. Everything here is pure (no store, no I/O): the caller
-passes in what the sources already read, and gets back a plan or the reason
-there is none. The write, the card, the Undo and the gate belong to the shared
-"Let Wisp act for me" path.
+worse than a missed one. `plan_for` is pure (no store, no I/O); `step` is the
+background cycle's one call: it plans, re-checks the gate, writes through the
+verified reminder path, and records the action with its Undo before any card.
 
 IMPORTANT rules:
-- An item qualifies only when EVERY check in `plan_for` holds:
-  - a text or an email from one person (never a group chat, a thread with
-    several other senders, a promo, bulk or automated mail, an account alert
-    or a school roll-up);
-  - someone the user talks to often: a saved contact the user texted at least
-    3 times on 2 different days in the 30 days before the ask, or, for mail,
-    a thread the user already wrote in or an address the user mailed on 2
-    different days in that window;
+- Mail only for now. Texts stay off (TEXTS_ENABLED) until the user's own
+  reactions reach the cache: a "Loved" ask reads as unanswered today.
+- An email qualifies only when EVERY check in `plan_for` holds:
+  - from one person (never a thread with several other senders, a promo, bulk
+    or automated mail, an account alert or a school roll-up), addressed to the
+    user in To with at most one other recipient, and not from the user;
+  - someone the user writes to: Sent mail to that exact address before the ask
+    on two different local days in 30, or once in that very thread. A shared
+    subject alone never counts;
+  - named by the user's own Contacts entry for the address, never by the name
+    the sender chose, and not a sender whose display name holds an address;
   - a direct ask in the message's own words (a question put to the user, or a
-    plain request such as "let me know"), not small talk, not a rhetorical tag,
-    and not withdrawn later ("nvm", "figured it out");
+    plain request such as "let me know"), not small talk, rhetorical, negated,
+    reported or put to a crowd, and not withdrawn later ("nvm");
   - nothing sensitive or withheld, and no link, address or phone number in it;
-  - unanswered for at least a day and at most 4 by the thread itself AND by
-    Sent mail, which must have been read freshly (no Sent data, no follow-up);
-    for a text, no reply in another conversation with the same person either;
-  - arrived after the user said yes to "Let Wisp act for me" (`since_ts`);
-  - not already in Reminders or the to-dos under the person's name;
-  - never planned twice: the fingerprint and, after an Undo or dismiss, the
-    person are blocked by the caller (`blocked`).
-- Wisp can't see phone calls, so "unanswered" means texts and mail only, and the
-  card says so.
+  - unanswered for one to four days by the thread AND by Sent mail that is
+    known to be current for that account: a Google account signed in and
+    synced in the last 10 minutes, or Apple Mail's index after Mail has been
+    running and the Mac awake 30 minutes with a Mail read since it woke;
+  - arrived after the user's yes to "Let Wisp act for me", judged by the ask's
+    own arrival (a subject ask by the thread's first message);
+  - not already in Reminders or the to-dos under the person's name, not on a
+    card the user dismissed or acted on during this wait, and not a message
+    auto-add already acted on;
+  - never twice: by fingerprint, by person for 30 days after an Undo or a
+    dismissed card, and one follow-up a week per person whatever came of it.
+- Wisp can't see phone calls, and a reply after the reminder is written leaves
+  it standing; the card says both. Cc isn't in any cache, so "the user in To
+  plus a big Cc" is a known limit.
 - Message text is untrusted: it is compared and quoted, never obeyed. The title
-  ("Reply to Maya") and the time come from code, never from the message.
-- At most 2 a rolling day and 1 a cycle (`choose`). Never during quiet hours,
-  and the reminder's time is never inside them. The caller aborts when a user
-  turn starts and audits every action (`audit_fields` carries no message text).
+  ("Reply to Priya Shah") and the time come from code, never from the message.
+- At most 2 a rolling day and 1 a cycle, inside the shared cap. Never during
+  quiet hours, and the reminder's time is never inside them. A starting turn
+  stops the Sent read and the write; the audit line carries no message text.
 - Nothing outbound, ever: Wisp reminds the user to reply; it never replies.
 """
 from __future__ import annotations
@@ -67,6 +74,8 @@ MAX_TO = 2                          # the user plus at most one other in To
 SENT_EVERY_S = 300.0                # Sent mail is read at most this often
 SENT_TIMEOUT_S = 10.0
 SENT_FRESH_S = 600.0                # a linked Gmail account's Sent synced within this, or it's stale
+AWAKE_GRACE_S = 30 * 60             # Apple Mail's Sent counts only after this long awake with Mail running
+SLEEP_JUMP_S = 120.0                # wall clock running ahead of the monotonic clock by this much = a sleep
 NATIVE_SENT_DAYS = 31               # the app's limit: covers the 30-day "writes to often" window
 # Texts stay off until the user's own tapbacks reach the cache: a "Loved" ask
 # reads as unanswered today (MessagesReader drops every reaction).
@@ -263,6 +272,19 @@ def _mail_ask_lines(item: dict) -> list[str]:
     return [re.sub(r"(?i)^\s*(?:(?:re|fwd?|aw|sv)\s*:\s*)+", "", subject)]
 
 
+def _spoofed_sender(item: dict) -> bool:
+    """A From whose display name itself holds an address ("Maya <maya@x>" <evil@y>):
+    the name and the address can then say different people. Checked on the raw
+    header when the item carries it."""
+    raw = str(item.get("sender_raw") or "")
+    if "<" in raw:
+        display = raw[:raw.rfind("<")]
+        if "@" in display or "<" in display:
+            return True
+    who = str(item.get("who") or "")
+    return "@" in who or "<" in who
+
+
 def _mail_address(item: dict) -> str:
     return str((item.get("ref") or {}).get("to") or "").strip().casefold()
 
@@ -405,7 +427,8 @@ def plan_for(item: dict, *, now: float, tz: str, history: dict | None = None, se
              sent_fresh: bool = False, mine=(), reminders=(), result: dict | None = None,
              since_ts: float | None = None, blocked=frozenset(), quiet=default_quiet,
              defer_sent: bool = False, self_names=(), waved=None,
-             stale_accounts=frozenset(), lookup=contacts_name) -> tuple[dict | None, str]:
+             stale_accounts=frozenset(), lookup=contacts_name, gmail_current=frozenset(),
+             apple_current: bool = False) -> tuple[dict | None, str]:
     """(plan, "") for an unanswered ask Wisp should remind the user about, else
     (None, why not). Pure: no store, no I/O. `history` is `text_history(...)`,
     `sent` the user's sent mail rows, `sent_fresh` whether that list was read
@@ -416,7 +439,10 @@ def plan_for(item: dict, *, now: float, tz: str, history: dict | None = None, se
     first pass in `plans`) leaves every check that needs Sent mail for later.
     `self_names` are the user's own names (a note to self is never a follow-up),
     `waved` {item id: newest ask time whose card the user dismissed or acted on},
-    `stale_accounts` the linked accounts whose Sent mail isn't known to be current."""
+    `stale_accounts` the linked Google accounts whose Sent mail isn't known to be
+    current, `gmail_current` those whose Sent mail is, and `apple_current`
+    whether Apple Mail's own Sent index can be trusted to hold a recent reply
+    (`apple_mail_current`)."""
     from service.proactive import triage
     source = item.get("source")
     if source not in ("mail", "messages"):
@@ -440,7 +466,7 @@ def plan_for(item: dict, *, now: float, tz: str, history: dict | None = None, se
         return None, "withheld"
     if isinstance(result, dict) and (result.get("sensitive") or result.get("junk")):
         return None, "sensitive or junk"
-    if not sent_fresh or sent is None:
+    if sent is None or (source == "messages" and not sent_fresh):
         return None, "sent mail not checked"
     mine = {str(a).casefold() for a in mine or ()}
     name = _display_name(item, lookup)
@@ -455,6 +481,7 @@ def plan_for(item: dict, *, now: float, tz: str, history: dict | None = None, se
         return None, "the user themself"
 
     # Who, when the waiting began, and what was asked.
+    consent_ts = None
     if source == "messages":
         context = str((item.get("ref") or {}).get("conversation") or "")
         if not context or context.startswith("Group ") or not _saved_contact(item.get("title") or ""):
@@ -478,6 +505,8 @@ def plan_for(item: dict, *, now: float, tz: str, history: dict | None = None, se
         address = _mail_address(item)
         if not address or address in mine or _automated_address(address):
             return None, "not a person"
+        if _spoofed_sender(item):
+            return None, "the sender's name hides an address"
         if len(_other_senders(item)) > 1:
             return None, "several people in the thread"
         from service.proactive.sent_check import recipients
@@ -489,10 +518,16 @@ def plan_for(item: dict, *, now: float, tz: str, history: dict | None = None, se
         # Who "the user" is comes partly from Sent mail: checked once it is read.
         if not defer_sent and not to & mine:
             return None, "not addressed to the user"
+        # A reply sent from another device must be visible in Sent before "unanswered"
+        # means anything: a current Google Sent sync for this account, or Apple Mail's
+        # index after Mail has been running and awake long enough to have fetched it.
         stale_accounts = set(stale_accounts or ())
-        if "*" in stale_accounts or \
-                {str(item.get(k) or "").casefold() for k in ("account", "raw_account")} & stale_accounts:
-            return None, "sent mail not checked"
+        accounts = {str(item.get(k) or "").casefold() for k in ("account", "raw_account")} - {""}
+        if not defer_sent:
+            if "*" in stale_accounts or accounts & stale_accounts:
+                return None, "sent mail not checked"
+            if not accounts & set(gmail_current or ()) and not (sent_fresh and apple_current):
+                return None, "sent mail not checked"
         ask_ts = newest = item.get("received_ts")
         if not _finite(ask_ts):
             return None, "no arrival time"
@@ -502,10 +537,16 @@ def plan_for(item: dict, *, now: float, tz: str, history: dict | None = None, se
         if not defer_sent and not _writes_to(sent, address, item, ask_ts, mine, tz):
             return None, "not someone the user writes to often"
         lines = _mail_ask_lines(item)
+        if lines and not any(t.strip() and t.strip() != "(subject only)" for s_, t in _mail_blocks(item)
+                             if not s_.startswith("You (the user)")):
+            # The ask is the subject itself: it is as old as the thread.
+            first = item.get("subject_ts")
+            consent_ts = min(ask_ts, float(first)) if _finite(first) else ask_ts
 
-    if ask_ts < since_ts:
+    consent_ts = ask_ts if consent_ts is None else consent_ts
+    if min(ask_ts, consent_ts) < since_ts:
         return None, "arrived before the yes"
-    if (waved or {}).get(str(item.get("id")), float("-inf")) >= ask_ts:
+    if (waved or {}).get(str(item.get("id")), float("-inf")) >= int(ask_ts):
         return None, "its card was dismissed or acted on"
     waited = now - ask_ts
     # Every line still waiting is a day old, so the ask is too, wherever it sits.
@@ -570,10 +611,11 @@ def plan_for(item: dict, *, now: float, tz: str, history: dict | None = None, se
     return {
         "kind": "reminder", "action": "followup", "title": title, "due_ts": float(due),
         "quote": quote,
-        "why": f"{name} asked {_age_phrase(waited)} by {channel}, and there's no reply in Messages or Mail. "
-               "Wisp can't see calls.",
+        "why": f"{name} asked {_age_phrase(waited)} by {channel}, and there's no reply in "
+               + ("Mail. " if source == "mail" else "Messages or Mail. ") + "Wisp can't see calls.",
         "fingerprint": fp, "person_key": person_key(item), "item_id": item.get("id"), "source": source,
         "channel": channel, "who": name, "account": item.get("account", ""), "received_ts": float(ask_ts),
+        "consent_ts": float(min(ask_ts, consent_ts)),
         "has_clock": True, "timezone": tz, "item_fingerprint": f"{item.get('id')}:{item.get('hash')}",
     }, ""
 
@@ -612,51 +654,103 @@ _sent_cache: dict = {"at": None, "rows": [], "fresh": False}
 
 
 async def read_sent_fresh() -> tuple[list[dict], bool]:
-    """The user's sent mail and whether it was read just now: Apple Mail's Sent
-    mailboxes through the app (its own index on disk, never the network) for the
-    last 31 days, plus the linked Gmail accounts' Sent label. At most every
-    SENT_EVERY_S and never longer than SENT_TIMEOUT_S. A failed read is not
-    fresh, so nothing is planned on it."""
+    """The user's sent mail and whether Apple Mail's Sent index was read just now:
+    the app reads Mail's own index on disk (never the network) for the last 31
+    days, at most every SENT_EVERY_S and never longer than SENT_TIMEOUT_S. The
+    linked Gmail accounts' Sent rows are taken as they are now, never from a
+    cache older than their own freshness verdict. A failed read is not fresh."""
     import asyncio
     from service.proactive import sources
-    now = time.time()
-    at = _sent_cache["at"]
-    if at is not None and 0 <= now - at < SENT_EVERY_S:
-        return list(_sent_cache["rows"]), bool(_sent_cache["fresh"])
-    _sent_cache.update(at=now, rows=[], fresh=False)
     try:
         gmail = list(sources.sent_rows())
     except Exception:  # noqa: BLE001
         gmail = []
+    now = time.time()
+    at = _sent_cache["at"]
+    if at is None or not 0 <= now - at < SENT_EVERY_S:
+        _sent_cache.update(at=now, rows=[], fresh=False)
+        try:
+            from service.mail_memory import bridge
+            rows, _capped = await asyncio.wait_for(
+                bridge.read_sent(NATIVE_SENT_DAYS, timeout=SENT_TIMEOUT_S - 1), SENT_TIMEOUT_S)
+            _sent_cache.update(rows=list(rows), fresh=True)
+        except Exception:  # noqa: BLE001 — the app is away, Mail can't be read, or it took too long: not fresh
+            pass
+    return gmail + list(_sent_cache["rows"]), bool(_sent_cache["fresh"])
+
+
+_clock: dict = {"offset": None, "awake_since": None}
+
+
+def awake_since() -> float:
+    """When the Mac last woke, or this service started: the monotonic clock stops
+    during sleep, so the wall clock running ahead of it marks a sleep."""
+    offset = time.time() - time.monotonic()
+    previous = _clock["offset"]
+    if previous is None or offset - previous > SLEEP_JUMP_S or _clock["awake_since"] is None:
+        _clock["awake_since"] = time.time()
+    _clock["offset"] = offset
+    return float(_clock["awake_since"])
+
+
+def _mail_app_running() -> bool:
     try:
-        from service.mail_memory import bridge
-        rows, _capped = await asyncio.wait_for(bridge.read_sent(NATIVE_SENT_DAYS, timeout=SENT_TIMEOUT_S - 1),
-                                               SENT_TIMEOUT_S)
-    except Exception:  # noqa: BLE001 — the app is away, Mail can't be read, or it took too long: not fresh
-        _sent_cache.update(rows=gmail, fresh=False)
-        return gmail, False
-    _sent_cache.update(rows=gmail + list(rows), fresh=True)
-    return list(_sent_cache["rows"]), True
+        import subprocess
+        return subprocess.run(["/usr/bin/pgrep", "-x", "Mail"], capture_output=True, timeout=2).returncode == 0
+    except Exception:  # noqa: BLE001 — unknown: not running
+        return False
 
 
-def stale_gmail_accounts(now: float | None = None) -> set[str]:
-    """Linked Google accounts whose Sent mail isn't known to be current: signed
-    out (the sign-in lapses every 7 days), or no Sent sync in SENT_FRESH_S. Their
-    cached Sent list may miss a reply, so their mail is never followed up."""
+def _native_mail_synced_at() -> float:
+    """When the app last finished reading Mail through Mail.app itself, or 0."""
+    try:
+        from service.tools import email_tools
+        if getattr(email_tools, "_email_read_source", "") != "mail_app":
+            return 0.0
+        return float(email_tools._source_receipt(getattr(email_tools, "_native_headers_at", 0.0)) or 0.0)
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+def apple_mail_current(now: float | None = None, *, running=_mail_app_running, synced=_native_mail_synced_at,
+                       woke=awake_since) -> bool:
+    """Apple Mail's Sent index can be trusted to hold a reply sent from another
+    device: Mail is running, the Mac has been awake AWAKE_GRACE_S, and the app
+    has finished a Mail read since it woke. The index on disk holds only what
+    Mail last fetched, so a successful read alone proves nothing."""
+    now = time.time() if now is None else now
+    try:
+        since = float(woke())
+        if not running() or now - since < AWAKE_GRACE_S:
+            return False
+        return float(synced()) > since
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def gmail_sent_state(now: float | None = None) -> tuple[set[str], set[str]]:
+    """(linked Google accounts whose Sent mail is current, those whose isn't):
+    current means signed in and a Sent sync in the last SENT_FRESH_S. A stale
+    account's cached Sent list may miss a reply, so its mail is never followed up."""
     now = time.time() if now is None else now
     try:
         from service import gmail_source
         accounts = gmail_source.connected_accounts()
         last = getattr(gmail_source, "_last", {}) or {}
     except Exception:  # noqa: BLE001 — Google state unreadable: no Google account is current
-        return {"*"}
-    stale = set()
+        return set(), {"*"}
+    current, stale = set(), set()
     for account, config in (accounts or {}).items():
         synced = (last.get(account) or {}).get("sent") if isinstance(last.get(account), dict) else None
         expired = isinstance(config, dict) and config.get("auth_expired")
-        if expired or not _finite(synced) or not 0 <= now - synced <= SENT_FRESH_S:
-            stale.add(str(account).casefold())
-    return stale
+        fresh = not expired and _finite(synced) and 0 <= now - synced <= SENT_FRESH_S
+        (current if fresh else stale).add(str(account).casefold())
+    return current, stale
+
+
+def stale_gmail_accounts(now: float | None = None) -> set[str]:
+    """The linked Google accounts whose Sent mail isn't current (gmail_sent_state)."""
+    return gmail_sent_state(now)[1]
 
 
 def _safely(item, **kw) -> tuple[dict | None, str]:
@@ -670,7 +764,8 @@ def _safely(item, **kw) -> tuple[dict | None, str]:
 async def plans(items, *, now: float, tz: str, records, reminders=(), results=None,
                 since_ts: float | None, blocked=frozenset(), done_today: int = 0,
                 quiet=default_quiet, read_sent=read_sent_fresh, abort=None, self_names=(),
-                waved=None, stale=stale_gmail_accounts, lookup=contacts_name) -> tuple[list[dict], dict]:
+                waved=None, gmail=gmail_sent_state, apple=apple_mail_current,
+                lookup=contacts_name) -> tuple[list[dict], dict]:
     """(the plans to act on this cycle, {item id: why not}) for the cycle's items.
 
     Sent mail is read only when some item passes every other check, so a cycle
@@ -687,12 +782,13 @@ async def plans(items, *, now: float, tz: str, records, reminders=(), results=No
     results = results if isinstance(results, dict) else {}
     blocked = blocked if isinstance(blocked, (set, frozenset)) else frozenset()
     try:
-        stale_accounts = set(stale(now) if stale is not None else ())
+        gmail_current, stale_accounts = gmail(now)
+        gmail_current, stale_accounts = set(gmail_current), set(stale_accounts)
     except Exception:  # noqa: BLE001
-        stale_accounts = {"*"}
+        gmail_current, stale_accounts = set(), {"*"}
     common = dict(now=now, tz=tz, history=history, reminders=reminders, since_ts=since_ts,
                   blocked=blocked, quiet=quiet, self_names=self_names, waved=waved or {},
-                  stale_accounts=stale_accounts, lookup=lookup)
+                  stale_accounts=stale_accounts, lookup=lookup, gmail_current=gmail_current)
     try:
         from service.proactive.sent_check import own_addresses
         own = own_addresses(())
@@ -721,9 +817,13 @@ async def plans(items, *, now: float, tz: str, records, reminders=(), results=No
         mine = own_addresses(sent) | own
     except Exception:  # noqa: BLE001 — Sent mail that can't be read is not fresh
         sent, fresh, mine = [], False, set()
+    try:
+        apple_ok = bool(fresh) and bool(apple(now))
+    except Exception:  # noqa: BLE001
+        apple_ok = False
     ready = []
     for item in hopeful:
-        got, reason = _safely(item, sent=sent, sent_fresh=bool(fresh), mine=mine,
+        got, reason = _safely(item, sent=sent, sent_fresh=bool(fresh), mine=mine, apple_current=apple_ok,
                               result=results.get(item.get("id")), **common)
         if got is None:
             why[str(item.get("id"))] = reason
@@ -846,7 +946,7 @@ def _register() -> None:
 
 async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store, abort,
                write=None, read_sent=read_sent_fresh, records=None, quiet=default_quiet,
-               reminders=None, debug: list | None = None, stale=None, lookup=None) -> dict:
+               reminders=None, debug: list | None = None, gmail=None, apple=None, lookup=None) -> dict:
     """Plan follow-ups for this cycle's items, and add the ones that pass through
     the verified reminder write, each recorded with its Undo before any card.
 
@@ -901,8 +1001,8 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
         items, now=now, tz=tz, records=records,
         reminders=open_reminder_titles(sched, store, now) if reminders is None else reminders,
         results=results, since_ts=since, blocked=blocked, done_today=today, quiet=quiet, read_sent=read_sent,
-        abort=abort, self_names=_self_names(), waved=_waved(decided), **({"stale": stale} if stale else {}),
-        **({"lookup": lookup} if lookup else {}))
+        abort=abort, self_names=_self_names(), waved=_waved(decided), **({"gmail": gmail} if gmail else {}),
+        **({"apple": apple} if apple else {}), **({"lookup": lookup} if lookup else {}))
     if debug is not None:
         debug.extend({"item": k, "follow_up": v} for k, v in why.items())
     if write is None:
@@ -911,7 +1011,7 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
     for plan in picked:
         fp = plan["fingerprint"]
         previous = recorded.get(fp) if isinstance(recorded.get(fp), dict) else {}
-        if not acting.allows(plan["received_ts"]):
+        if not acting.allows(plan.get("consent_ts", plan["received_ts"])):
             continue
         if acting.still_ok() is not None or acting.room(store, now) <= 0 or abort() \
                 or _in_quiet(quiet, now, tz):

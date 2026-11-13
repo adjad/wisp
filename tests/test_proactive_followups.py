@@ -37,8 +37,12 @@ def lookup(address):
     return CONTACTS.get(address, "")
 
 
-def no_stale(_now=None):
-    return set()
+def no_google(_now=None):
+    return set(), set()
+
+
+def apple_ok(_now=None):
+    return True
 
 
 @pytest.fixture(autouse=True)
@@ -89,7 +93,8 @@ def mail_item(*, body="Thanks! Can you review my section before Thursday?", send
 
 def plan(item, **kw):
     args = dict(now=NOW, tz=TZ, history=followups.text_history(kw.pop("records", records())), sent=list(MAILED),
-                sent_fresh=True, mine={ME}, reminders=[], since_ts=NOW - 30 * D, quiet=never_quiet, lookup=lookup)
+                sent_fresh=True, mine={ME}, reminders=[], since_ts=NOW - 30 * D, quiet=never_quiet, lookup=lookup,
+                apple_current=True)
     args.update(kw)
     return followups.plan_for(item, **args)
 
@@ -456,7 +461,7 @@ def test_the_audit_line_carries_no_message_text_or_name():
 def _run(items, *, read_sent, **kw):
     import asyncio
     args = dict(now=NOW, tz=TZ, records=kw.pop("records", records()), since_ts=NOW - 30 * D, quiet=never_quiet,
-                read_sent=read_sent, stale=no_stale, lookup=lookup)
+                read_sent=read_sent, gmail=no_google, apple=apple_ok, lookup=lookup)
     args.update(kw)
     return asyncio.run(followups.plans(items, **args))
 
@@ -541,7 +546,7 @@ def step(store, items, *, now=NOW, write=None, abort=lambda: False, recs=None, *
     return asyncio.run(followups.step(survivors, {"reminders": []}, now=now, tz=TZ, store=store, abort=abort,
                                       write=write or Writer(), read_sent=kw.pop("read_sent", _no_sent),
                                       records=records() if recs is None else recs, quiet=never_quiet,
-                                      reminders=kw.pop("reminders", []), stale=no_stale, lookup=lookup, **kw))
+                                      reminders=kw.pop("reminders", []), gmail=no_google, apple=apple_ok, lookup=lookup, **kw))
 
 
 def test_step_adds_one_verified_reminder_records_it_and_shows_its_card(setting, store):
@@ -971,7 +976,7 @@ def test_quiet_hours_starting_before_the_write_stop_it(setting, store):
     write = Writer()
     got = asyncio.run(followups.step([{"item": text_item(), "result": {}}], {"reminders": []}, now=NOW, tz=TZ,
                                      store=store, abort=lambda: False, write=write, read_sent=read,
-                                     records=records(), quiet=quiet, reminders=[], stale=no_stale, lookup=lookup))
+                                     records=records(), quiet=quiet, reminders=[], gmail=no_google, apple=apple_ok, lookup=lookup))
     assert got["added"] == [] and write.calls == []
 
 
@@ -993,3 +998,110 @@ def test_the_card_says_what_wisp_cant_see(setting, store):
     step(store, [mail_item()], recs=[], read_sent=mailed)
     [card] = autoadd.done_cards(store, NOW + 60)
     assert "check it off" in card["body"] and "can't see calls" in card["body"]
+
+
+# --- re-review of 4f194600: spoofed senders, current Sent mail, restart, consent time ------
+
+
+@pytest.mark.parametrize("raw", ['"Maya <maya@friend.com>" <x@evil.com>', "Maya <maya@friend.com> <x@evil.com>",
+                                 "maya@friend.com <x@evil.com>"])
+def test_a_display_name_that_holds_an_address_never_qualifies(raw):
+    got, why = plan(mail_item(sender_raw=raw))
+    assert got is None and why == "the sender's name hides an address"
+
+
+def test_a_plain_from_header_is_fine_and_a_who_with_an_address_is_not():
+    assert plan(mail_item(sender_raw="Priya Shah <priya@school.edu>"))[0] is not None
+    assert plan(mail_item(sender="maya@friend.com"))[1] == "the sender's name hides an address"
+
+
+def test_apple_mails_sent_counts_only_when_mail_has_had_time_to_fetch():
+    woke = NOW - 2 * H
+    assert followups.apple_mail_current(NOW, running=lambda: True, synced=lambda: NOW - 60, woke=lambda: woke)
+    assert not followups.apple_mail_current(NOW, running=lambda: False, synced=lambda: NOW - 60, woke=lambda: woke)
+    assert not followups.apple_mail_current(NOW, running=lambda: True, synced=lambda: NOW - 60,
+                                            woke=lambda: NOW - 10 * 60)                  # just woke
+    assert not followups.apple_mail_current(NOW, running=lambda: True, synced=lambda: woke - 60,
+                                            woke=lambda: woke)                           # no read since waking
+
+    def broken():
+        raise RuntimeError
+    assert not followups.apple_mail_current(NOW, running=broken, synced=lambda: NOW, woke=lambda: woke)
+
+
+def test_mail_waits_unless_its_sent_mail_is_known_current():
+    item = mail_item()
+    assert plan(item, apple_current=False)[1] == "sent mail not checked"
+    assert plan(item, apple_current=True, sent_fresh=False)[1] == "sent mail not checked"
+    assert plan(item, apple_current=False, gmail_current={ME})[0] is not None       # Google's own Sent is current
+
+    async def mailed():
+        return list(MAILED), True
+    assert _run([item], read_sent=mailed, apple=lambda _n: False)[0] == []
+    assert _run([item], read_sent=mailed, apple=lambda _n: False, gmail=lambda _n: ({ME}, set()))[0]
+
+
+def test_a_sleep_resets_the_awake_clock(monkeypatch):
+    clock = {"wall": 1000.0, "mono": 50.0}
+    monkeypatch.setattr(followups.time, "time", lambda: clock["wall"])
+    monkeypatch.setattr(followups.time, "monotonic", lambda: clock["mono"])
+    monkeypatch.setattr(followups, "_clock", {"offset": None, "awake_since": None})
+    assert followups.awake_since() == 1000.0
+    clock.update(wall=1600.0, mono=650.0)                                # awake: both clocks moved
+    assert followups.awake_since() == 1000.0
+    clock.update(wall=9600.0, mono=700.0)                                # slept: only the wall clock moved
+    assert followups.awake_since() == 9600.0
+
+
+def test_google_sent_rows_are_never_older_than_their_verdict(monkeypatch):
+    from service.mail_memory import bridge
+    from service.proactive import sources
+    reads = []
+
+    async def native(days, timeout=8.0):
+        reads.append(days)
+        return [{"ts": NOW, "to": ["n@x.y"]}], False
+    monkeypatch.setattr(bridge, "read_sent", native)
+    monkeypatch.setattr(sources, "sent_rows", lambda: [{"ts": 1, "to": "old@x.y"}])
+    first, _ = asyncio.run(followups.read_sent_fresh())
+    monkeypatch.setattr(sources, "sent_rows", lambda: [{"ts": 2, "to": "new@x.y"}])
+    second, fresh = asyncio.run(followups.read_sent_fresh())
+    assert reads == [31] and fresh is True
+    assert [r["to"] for r in second] == ["new@x.y", ["n@x.y"]]
+
+
+def test_undo_works_after_a_restart_through_the_gates_map(setting, store, monkeypatch):
+    monkeypatch.setitem(acting._HOME, "follow_up", "service.proactive.followups")
+    [fp] = step(store, [text_item()])["added"]
+    [card] = autoadd.done_cards(store, NOW + 60)
+    acting._undoers.pop("follow_up", None)                              # a fresh process: nothing registered
+    assert acting.undoer("follow_up") is followups.undo
+    deleted = []
+
+    async def delete_reminder(stored):
+        deleted.append(stored["source_id"])
+        return {"ok": True, "status": "succeeded"}
+    monkeypatch.setattr(autoadd, "delete_reminder", delete_reminder)
+    assert asyncio.run(autoadd.undo(card, store, now=NOW + 120))["ok"] is True and deleted == ["R-1"]
+
+
+def test_a_subject_ask_is_judged_by_the_threads_first_message():
+    mailed = MAILED
+    item = mail_item(subject="Can you review my poster draft?", body="(subject only)", user_wrote=False,
+                     subject_ts=NOW - 10 * D)
+    got, why = plan(item, sent=mailed, since_ts=NOW - 5 * D)
+    assert got is None and why == "arrived before the yes"
+    got, _ = plan(item, sent=mailed, since_ts=NOW - 12 * D)
+    assert got["consent_ts"] == NOW - 10 * D
+
+
+def test_mail_says_mail_and_not_messages():
+    got, _ = plan(mail_item())
+    assert "no reply in Mail." in got["why"] and "Messages" not in got["why"]
+
+
+def test_a_dismissal_in_whole_seconds_still_covers_the_same_ask():
+    asked = NOW - 26 * H + 0.4
+    item = text_item(received=asked)
+    got, why = plan(item, records=records(asked=asked), waved={item["id"]: int(asked)})
+    assert got is None and why == "its card was dismissed or acted on"
