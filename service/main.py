@@ -1503,6 +1503,32 @@ async def set_mode(request: Request, body: dict[str, Any]) -> dict[str, Any]:
     return {"read_only": read_only(), "full_access": full_access()}
 
 
+@app.get("/stage_mode")
+async def get_stage_mode() -> dict[str, Any]:
+    """Demo mode (service/stage_mode.py): on or off, and how long it has left."""
+    from service import stage_mode
+    return stage_mode.state()
+
+
+@app.put("/stage_mode")
+async def set_stage_mode(request: Request, body: dict[str, Any]) -> dict[str, Any]:
+    """The app's own switch. It lifts every power and memory saving, so turning it ON is the
+    Wisp app's alone (the same proof as widening /mode); off is open to the ordinary request.
+    Memory only: the app pushes it again when the service comes back."""
+    from service import stage_mode
+    on = body.get("enabled")
+    if type(on) is not bool:
+        raise HTTPException(status_code=422, detail="enabled must be true or false.")
+    if on:
+        _require_wisp_app(request, _APP_ONLY)
+        try:
+            from service import stage_warm     # registers the load-and-warm listener
+            stage_warm.install(client)
+        except Exception:  # noqa: BLE001 — the switch still works without the warm-up
+            pass
+    return stage_mode.set_active(on)
+
+
 @app.post("/voice/transcribe")
 async def voice_transcribe(body: dict[str, Any]) -> dict[str, Any]:
     """The words in a short spoken clip from the notch's voice input.
