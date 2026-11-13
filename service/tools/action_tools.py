@@ -719,7 +719,21 @@ def _resolve_recipient(name: str, *, want_email: bool = False) -> tuple[str, str
 
 def _is_handle(to: str) -> bool:
     """A literal address or number, as opposed to a contact name to resolve."""
-    return bool(_EMAIL_RE.match(to) or re.fullmatch(r"[+()\-.\s\d]{7,}", to))
+    return bool(_EMAIL_RE.match(to) or re.fullmatch(r"[+()\-.\s\d]{7,}", to) or _typed_short_code(to))
+
+
+def _typed_short_code(to: str) -> bool:
+    """A 3 to 6 digit number the person typed in their own message this turn:
+    a short code ("Text 22821: Wisp test 1" stopped at "no saved contact
+    matches '22821'", 2026-11-13, real Mac). One the model supplied and the
+    person never typed is still not a number."""
+    code = (to or "").strip()
+    if not re.fullmatch(r"\d{3,6}", code):
+        return False
+    from service.tools.self_send import turn_text
+    # Only where a recipient is named: before the message's own words begin.
+    head = re.split(r":|\b(?:saying|says|that|with\s+the\s+(?:text|message|body))\b", turn_text(), 1, flags=re.I)[0]
+    return bool(re.search(rf"(?<![\d.,/-]){code}(?![\d/-]|[.,]\d)", head))
 
 
 def _saved_name(handle: str) -> str:

@@ -210,3 +210,28 @@ def test_email_me_and_text_me_tell_the_model_who_the_recipient_is():
                    "text me: Wisp test", "Email myself a test with the subject Hello"):
         assert self_send.user_names_self(prompt), prompt
     assert 'to="me"' in mo.SELF_SEND_HINT and "Do not ask for an address" in mo.SELF_SEND_HINT
+
+
+# --- a short code the person typed is a number (real Mac, 2026-11-13) ---------------
+
+@pytest.mark.parametrize("turn", ["Text 22821: Wisp test 1",
+                                  "Send a text message to the number 22821 saying Wisp test 1"])
+async def test_a_typed_short_code_reaches_the_card_as_typed(world, turn):
+    self_send.mark_turn(turn)
+    args, problem = action_tools.prepare_send_recipient(TEXT, {"to": "22821", "text": "Wisp test 1"})
+    assert problem is None and args["to"] == "22821" and args["text"] == "Wisp test 1"
+    assert "22821" in action_tools.confirm_preview("send_message", args)
+    result = await registry.run_tool(TEXT, args)
+    assert not registry.is_tool_error(result)
+    assert world == [("send_message", {"to": "22821", "text": "Wisp test 1"})]
+
+
+async def test_a_short_number_the_person_never_typed_is_still_refused(world):
+    for turn in ("Text the bank: Wisp test 1", "Text Dana at 9:30 that I have 12345 points",
+                 "Text Dana the code 2212345"):
+        self_send.mark_turn(turn)
+        _, problem = action_tools.prepare_send_recipient(TEXT, {"to": "12345", "text": "Wisp test 1"})
+        assert problem is not None and "12345" in problem, turn
+        refused = await action_tools.send_message("12345", "Wisp test 1")
+        assert registry.is_tool_error(refused) or "sent to" not in refused
+    assert world == []
