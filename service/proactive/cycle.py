@@ -739,11 +739,12 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
             found = []
         # Hold time (autohold.py): once the person lets Wisp act for them, the slot is
         # pinned on Day without a tap and its "Wisp did this" card (step 4) replaces the
-        # tap card. Wisp-local, code only; not in a cycle that yielded to a turn.
+        # tap card. Wisp-local, code only; not in a cycle that yielded to a turn, and
+        # not in a light one: its done card is merged only by a full cycle (step 4).
         try:
             from service.proactive import autohold
             found = autohold.without_undone(found, store)
-            if not (yielded or abort()):
+            if not (light or yielded or abort()):
                 held = autohold.step(found, now=now, tz=tz, store=store, abort=abort)
                 found = [c for c in found if c["id"] not in held]
         except Exception:  # noqa: BLE001 — the tap cards stand as they were

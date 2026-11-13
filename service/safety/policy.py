@@ -1029,6 +1029,9 @@ def _credential_roots() -> list[Path]:
     for moe in dict.fromkeys((MOE_DIR, home / ".moe")):
         roots += [moe / "gmail.json", moe / "mcp.json", moe / "google_workspace",
                   moe / "grants.json", moe / "access_mode.json",
+                  # "Let Wisp act for me" (service/proactive/acting.py): writing it would give, or
+                  # backdate, the person's consent for Wisp to act without asking.
+                  moe / "act_for_me.json",
                   # /resetwisp's commit marker: its presence erases Wisp's data at the next start.
                   moe / ".reset-pending"]
     return roots
@@ -1037,7 +1040,7 @@ def _credential_roots() -> list[Path]:
 _SHELL_SECRET = [
     r"(?<![\w-])\.(?:ssh|aws|gnupg|netrc)(?![\w-])",
     r"\.config/(?:gh|gcloud)\b", r"\bkeychains?\b", r"\bsecurity\s+(?:find|dump|export)-",
-    r"\b(?:gmail|mcp|grants|access_mode)\.json\b", r"\bgoogle_workspace\b", r"\.reset-pending\b",
+    r"\b(?:gmail|mcp|grants|access_mode|act_for_me)\.json\b", r"\bgoogle_workspace\b", r"\.reset-pending\b",
 ]
 # The ~/.moe folder itself (not a file in it): moving or replacing it swaps
 # grants.json and access_mode.json without naming them (#409 audit). Any run

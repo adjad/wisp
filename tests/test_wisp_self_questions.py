@@ -600,6 +600,27 @@ def test_caught_for_you_live_adds_reminders(monkeypatch):
         assert CALENDAR_PROMISE not in text and "Calendar events" not in text
 
 
+def test_gate_on_caught_for_you_live_is_not_claimed(monkeypatch):
+    # one_path turns live into shadow while the gate is on: only the gate's sentence.
+    for attention in (LIVE, LIVE_EVENTS):
+        _access(monkeypatch, full=True, learning=False, attention=attention)
+        monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: True)
+        for text in (wisp_about.privacy(), wisp_about.overview()):
+            assert "Because you let me act for you" in text
+            assert "Caught for you" not in text and "Calendar events" not in text
+
+
+def test_gate_off_caught_for_you_live_is_claimed_gate_off_shadow_or_off_is_not(monkeypatch):
+    monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
+    _access(monkeypatch, full=True, learning=False, attention=LIVE)
+    assert "Caught for you" in wisp_about.privacy()
+    for attention in ('{"mode": "shadow"}', '{"mode": "off"}'):
+        _access(monkeypatch, full=True, learning=False, attention=attention)
+        text = wisp_about.privacy()
+        assert "Caught for you" not in text and "let me act for you" not in text
+        assert CALENDAR_PROMISE in text
+
+
 def test_caught_for_you_live_with_events_adds_calendar_events(monkeypatch):
     _access(monkeypatch, full=True, learning=False, attention=LIVE_EVENTS)
     monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)

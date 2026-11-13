@@ -61,12 +61,16 @@ by default), and your Brief and answers fit you.
   in `~/.moe/audit.jsonl`.
 - **It acts without being asked only if you say so.** **Let Wisp act for me** is off until you say
   yes, in setup or in Settings. On, Wisp adds an event or deadline you missed in a text or email to
-  Calendar or Reminders by itself. That is the one calendar change that does not wait for your
-  approval, and only for messages that arrive after your yes, from people you know, schools and
-  bookings. It also holds a free hour on your Day plan for work due in the next three days; that
-  hold lives in Wisp only, never on your calendar. At most 10 actions a day. Each one appears in
-  the Brief as "Wisp did this" with an Undo that takes back exactly what Wisp did. Wisp never
-  sends, replies, deletes or pays for anything by itself.
+  Calendar or Reminders by itself, without waiting for your approval. That applies only to
+  messages that arrive after your yes, from people you know, schools and bookings. It also holds
+  a free hour on your Day plan for work due today or in the next three days. A hold is for
+  deadlines already on your calendar or in Reminders, including ones that were there before you
+  said yes; it lives in Wisp only, never on your calendar. At most 10 actions a day. Each one
+  appears in the Brief as "Wisp did this" with an Undo that takes back exactly what Wisp did.
+  Separately, if you switched **Caught for you** to Live yourself in Today, it also adds
+  reminders on its own. While **Let Wisp act for me** is on, Caught for you stops creating, so a
+  message never becomes two reminders. Wisp never sends, replies, deletes or pays for anything by
+  itself.
 - **You can start over.** `/resetwisp` deletes everything Wisp has stored and revokes the access
   you gave it.
 
