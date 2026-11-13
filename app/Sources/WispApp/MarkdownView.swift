@@ -154,6 +154,40 @@ enum MarkdownLinks {
     ]
 }
 
+/// What a streaming answer shows while it is still being written.
+enum StreamingMarkdown {
+    /// A streaming answer without a bold marker still waiting for its pair:
+    /// "is **Worksheet 3 for" showed the raw asterisks until the closing pair
+    /// arrived, then flipped to bold. The words show plain until it does.
+    /// Markers inside `inline code` don't count, and neither do asterisks with
+    /// a space on both sides ("2 ** 3"), which can't open or close bold. Left
+    /// alone with a code fence in it, where ** can be code (**kwargs).
+    static func withoutOpenBold(_ text: String) -> String {
+        guard !text.contains("```") else { return text }
+        var inCode = false
+        var markers: [Range<String.Index>] = []
+        var i = text.startIndex
+        while i < text.endIndex {
+            let next = text.index(after: i)
+            if text[i] == "`" {
+                inCode.toggle()
+            } else if !inCode, text[i] == "*", next < text.endIndex, text[next] == "*" {
+                let end = text.index(after: next)
+                let spaceBefore = i == text.startIndex || text[text.index(before: i)].isWhitespace
+                let spaceAfter = end < text.endIndex && text[end].isWhitespace
+                if !(spaceBefore && spaceAfter) { markers.append(i..<end) }
+                i = end
+                continue
+            }
+            i = next
+        }
+        // An odd marker with a space after it closes nothing and opens nothing.
+        guard markers.count % 2 == 1, let last = markers.last,
+              last.upperBound == text.endIndex || !text[last.upperBound].isWhitespace else { return text }
+        return text.replacingCharacters(in: last, with: "")
+    }
+}
+
 // Markdown renderer with real block-level parsing: fenced code blocks become
 // monospaced cards, GFM tables render as an actual grid, lists get proper
 // bullets/numbers, and prose renders inline markdown (bold, italic, inline

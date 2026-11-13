@@ -1456,6 +1456,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func collapse() {
         // A delayed focus/hover callback from chat must not cancel Search.
         guard presentation.desired == .chat else { return }
+        // Closed, the panel holds nothing for the answer any more; if it opens
+        // again during the same answer, its hold starts over.
+        collapseHeldForAnswer = false
+        answerHeldSince = nil
         requestPresentation(.bar)
     }
 
@@ -1657,15 +1661,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + answerReadDelay, execute: work)
     }
 
-    /// Watches for the end of the answer a close is waiting on. @Published sends
-    /// before the value is stored, so this reads it on the next turn.
+    /// Watches for the end of the answer a close is waiting on. It follows the
+    /// values sent (@Published sends before it stores them), each in order, so
+    /// an answer that ends and a queued one that starts in the same turn of the
+    /// run loop still read as an end and a start: the queued one gets its own
+    /// hold, not what is left of the last one's.
     private func watchForAnswerEnding() {
         guard answerEnded == nil else { return }
-        answerEnded = model.$phase.map { _ in () }
-            .merge(with: model.$briefComposing.map { _ in () })
-            .receive(on: DispatchQueue.main).sink { [weak self] _ in
-                guard let self, !self.model.generating else { return }
-                self.answerSettled()
+        answerEnded = model.$phase.map(OverlayModel.inFlight)
+            .combineLatest(model.$briefComposing) { $0 || $1 }
+            .removeDuplicates()
+            .dropFirst()
+            .receive(on: DispatchQueue.main).sink { [weak self] generating in
+                guard let self else { return }
+                if generating { self.answerHeldSince = nil } else { self.answerSettled() }
             }
     }
 
@@ -2857,14 +2866,23 @@ extension AppDelegate {
         }
         // Done: it stays long enough to read, then closes; the pointer coming back keeps it.
         let reading = answering[2]
-        for delegate in [reading, failing, composing] {
+        // A queued turn that starts in the same run-loop turn as the last one ends
+        // gets a hold of its own, not what was left of the last one's.
+        let queued = answering[0]
+        let firstHold = queued.answerHeldSince
+        precondition(firstHold != nil, "A held answer records when its hold began")
+        for delegate in [reading, failing, composing, queued] {
             delegate.answerReadDelay = 0.3
             delegate.watchForAnswerEnding()
         }
         reading.model.phase = .done
         failing.model.phase = .error
         composing.model.qaSetBriefComposing(false)
+        queued.model.phase = .done
+        queued.model.phase = .routing
         try? await Task.sleep(for: .seconds(0.1))
+        precondition(!queued.collapseHeldForAnswer && queued.answerHeldSince == nil && queued.presentation.desired == .chat,
+                     "An answer ending lets its hold go even when the next starts at once")
         for (delegate, what) in [(reading, "A finished answer"), (failing, "A failed turn"), (composing, "A composed Brief")] {
             precondition(!delegate.collapseHeldForAnswer && delegate.presentation.desired == .chat,
                          "\(what) stays up to be read: the close timer starts again at the turn's end")
@@ -2873,11 +2891,16 @@ extension AppDelegate {
         for (delegate, what) in [(reading, "A finished answer"), (failing, "A failed turn"), (composing, "A composed Brief")] {
             precondition(delegate.presentation.desired == .bar, "\(what) doesn't hold the panel forever")
         }
+        precondition(queued.presentation.desired == .chat && queued.collapseHeldForAnswer
+                     && (queued.answerHeldSince ?? .distantPast) > firstHold!,
+                     "The queued turn holds the panel from its own start")
         // An explicit close still closes, and a window of Wisp's doesn't during an answer.
         let closing = answering[1]
         closing.collapse()
         precondition(closing.presentation.desired == .bar, "The chevron, Esc and the hotkey still close during an answer")
         precondition(closing.model.phase == .working, "Closing the notch mid-answer leaves the answer running")
+        precondition(!closing.collapseHeldForAnswer && closing.answerHeldSince == nil,
+                     "A close lets the answer's hold go, so opening again starts it over")
         // The hung turn: past its ceiling the usual close goes ahead, the turn untouched.
         try? await Task.sleep(for: .seconds(autoCollapseDelay + 0.6))
         precondition(hung.presentation.desired == .bar && hung.model.phase == .streaming,

@@ -13,6 +13,7 @@ and each costs tokens in every menu it appears in.
 """
 from __future__ import annotations
 
+import platform
 import subprocess
 
 from service.tools.registry import register
@@ -31,13 +32,31 @@ def _as_str(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+def _accessibility_names(mac_version: str | None = None) -> tuple[str, str]:
+    """The Accessibility permission's name in a sentence, and its pane's name.
+
+    macOS 27 renamed the Privacy & Security pane to "Device Control and Data
+    Access" (the same switch); the app says the same (PrivacyNames.swift).
+    """
+    version = platform.mac_ver()[0] if mac_version is None else mac_version
+    try:
+        major = int((version or "0").split(".")[0])
+    except ValueError:
+        major = 0
+    if major >= 27:
+        return ("Device Control and Data Access (called Accessibility before macOS 27)",
+                "Device Control and Data Access")
+    return "Accessibility access", "Accessibility"
+
+
 def _guard(p: subprocess.CompletedProcess) -> str | None:
     if p.returncode == 0:
         return None
     msg = (p.stderr or "").strip()
     if "-1719" in msg or "assistive" in msg.lower() or "not allowed" in msg.lower():
-        return ("(Wisp needs Accessibility access to control windows. Grant it in "
-                "System Settings > Privacy & Security > Accessibility, then try again.)")
+        sentence, pane = _accessibility_names()
+        return (f"(Wisp needs {sentence} to control windows. Grant it in "
+                f"System Settings > Privacy & Security > {pane}, then try again.)")
     if "-1728" in msg:
         return "(That app has no window open right now.)"
     return f"(error: {msg or 'unknown error'})"
