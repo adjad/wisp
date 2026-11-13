@@ -99,7 +99,7 @@ def _refused(view):
 # --- the reply recipient ----------------------------------------------------------------
 
 
-@pytest.mark.parametrize("extra", [{}, {"sender_address": "maya@friend.com"}])
+@pytest.mark.parametrize("extra", [{}, {"sender": "Maya Chen", "sender_address": "maya@friend.com"}])
 def test_an_ordinary_sender_is_replied_to_exactly_as_before(world, extra):
     world.state["rows"] = [{**ROW, **extra}]
     view = _draft(world)
@@ -185,8 +185,15 @@ def test_gmail_rows_carry_the_address_parsed_from_the_raw_from_header(raw_from, 
     # Header rows: the H2 address field is that address, and email_tools reads it back.
     header = E._parse_header_records(G.header_line(meta, "me@gmail.com", False))
     assert header and header[0]["sender_address"] == address
-    # Attachment rows are dicts with a sender: they carry it too.
-    assert G._attachment_message("me@gmail.com", message)["sender_address"] == address
+    # Attachment rows keep ONE shape: the full "Name <address>" string and no separate address
+    # field (a row with both reads as a name dressed up as an address). The address in that
+    # string is the one parsed from the raw From header.
+    attachment = G._attachment_message("me@gmail.com", message)
+    assert "sender_address" not in attachment
+    if address:
+        from service import mail_sender as _S
+        assert _S.real_address(attachment["sender"]) in (address, "")   # "" only for a posed or unreadable name
+        assert _S.real_address(attachment["sender"]) == address or _S.is_odd(attachment["sender"])
     # Body rows keep the sender string's format; the real address still reads correctly from it.
     body = E._parse_raw_text(G.raw_record(message, "me@gmail.com"))[0]
     if address and "=?" not in raw_from:
@@ -235,3 +242,55 @@ def test_broadcast_and_list_detection_ignore_a_posed_name():
 def test_this_file_is_in_the_simulation_manifest():
     manifest = (Path(__file__).resolve().parents[1] / "scripts" / "run_simulation_qa.py").read_text()
     assert '"tests/test_reply_recipient_sender.py"' in manifest
+
+
+# --- every real producer of a mail row gives an ordinary sender an ordinary shape -------------------
+
+def _produced(raw_from):
+    """The rows each real producer makes for one Gmail message: the header record (through the same
+    parser Apple Mail's records use), the body row, the attachment row, and the reply flow's own
+    header-only row."""
+    from service.assistant import email_reply_api as api
+    message = _gmail(raw_from)
+    meta = G.parse_metadata(message)
+    header = E._parse_header_records(G.header_line(meta, "me@gmail.com", False))[0]
+    body = E._parse_raw_text(G.raw_record(message, "me@gmail.com"))[0]
+    attachment = G._attachment_message("me@gmail.com", message)
+    original = api._header_rows
+    api._header_rows = lambda: [dict(header)]
+    try:
+        found = api._find_row({"message_id": header["message_id"], "account": header["account"],
+                               "account_id": header.get("account_id", "")})
+    finally:
+        api._header_rows = original
+    return {"header": header, "body": body, "attachment": attachment, "reply": found}
+
+
+@pytest.mark.parametrize("raw_from, address", [
+    ("Maya Chen <maya@friend.com>", "maya@friend.com"),
+    ('"Chen, Maya" <maya@friend.com>', "maya@friend.com"),
+    ("maya@friend.com", "maya@friend.com"),                                   # no display name
+    ("<maya@friend.com>", "maya@friend.com"),
+    ("=?utf-8?b?TWF5YSBDaGVu?= <maya@friend.com>", "maya@friend.com"),        # "Maya Chen", encoded
+])
+def test_no_real_producer_makes_an_ordinary_sender_look_dressed_up(raw_from, address):
+    from service import mail_sender
+    for name, row in _produced(raw_from).items():
+        assert row is not None, name
+        sender, parsed = row["sender"], row.get("sender_address", "")
+        assert mail_sender.is_odd(sender, parsed) is False, (name, sender, parsed)
+        assert mail_sender.real_address(sender, parsed) == address, (name, sender, parsed)
+
+
+@pytest.mark.parametrize("raw_from", [
+    '"Maya <maya@friend.com>" <x@evil.com>',
+    "=?utf-8?q?Maya_=3Cmaya=40friend=2Ecom=3E?= <x@evil.com>",
+])
+def test_every_real_producer_keeps_a_dressed_up_sender_readable_as_such(raw_from):
+    from service import mail_sender
+    for name, row in _produced(raw_from).items():
+        assert row is not None, name
+        sender, parsed = row["sender"], row.get("sender_address", "")
+        # Never the posed address; either flagged odd, or reduced to the real address alone.
+        assert mail_sender.real_address(sender, parsed) in (EVIL, ""), (name, sender, parsed)
+        assert mail_sender.is_odd(sender, parsed) or "maya@friend.com" not in sender, (name, sender, parsed)

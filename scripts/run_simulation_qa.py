@@ -485,6 +485,12 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_acting.py",
     # One strict reading of a mail From value: pure strings, no mail is read.
     "tests/test_mail_sender.py",
+    "tests/test_mail_history_regex.py",
+    # Mail acts only with proof: injected Sent rows, Contacts and fetched authentication results.
+    "tests/test_autoadd_mail_proof.py",
+    "tests/test_capture_mail_stays_a_card.py",
+    "tests/test_mail_auth.py",
+    "tests/test_mail_known.py",
     "tests/test_reply_recipient_sender.py",
     # Hold time for a deadline under the gate: fake holds and a fake Day store; no calendar, model or native write.
     "tests/test_autohold.py",

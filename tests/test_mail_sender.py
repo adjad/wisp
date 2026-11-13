@@ -15,7 +15,13 @@ EVIL = "x@evil.com"
     ("maya@friend.com", "", "maya@friend.com", False),
     ("<maya@friend.com>", "", "maya@friend.com", False),
     ("Maya Chen", "maya@friend.com", "maya@friend.com", False),          # header-only row: name and address apart
-    ("Maya Chen <maya@friend.com>", "maya@friend.com", "maya@friend.com", False),
+    ("maya@friend.com", "maya@friend.com", "maya@friend.com", False),       # no name: the field holds the address
+    ("<maya@friend.com>", "maya@friend.com", "maya@friend.com", False),
+    # Split fields (Mail.app, header records): the name field may carry NO address, even the same one,
+    # because the reader may have taken its address from inside the name.
+    ("Maya Chen <maya@friend.com>", "maya@friend.com", "maya@friend.com", True),
+    ("Priya <priya@school.edu>", "priya@school.edu", "priya@school.edu", True),
+    ("Priya (priya@school.edu)", "priya@school.edu", "priya@school.edu", True),
     ('"maya@friend.com" <maya@friend.com>', "", "maya@friend.com", False),   # the name IS the address: not odd
     ("MAYA@Friend.com", "", "maya@friend.com", False),
     ("Maya Chen", "", "", False),                                         # a name and no address: nothing to trust

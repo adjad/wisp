@@ -108,12 +108,30 @@ def key(source, identity):
 # message ---------", Apple's "Begin forwarded message:", Outlook's underscore rule
 # and its "From: …" line followed by "Sent:" (or "From: …@…" followed by
 # Date/To/Subject), and ">" quoting.
+# An attribution looks like one: on one line it names a day, month, date, time or
+# address ("On Mon, Bob wrote:"); wrapped, its first line holds a date, time or
+# address and ends without a full stop, and "wrote:" ends the last line, so prose
+# ("On Friday the team met.\nHere is what Sarah wrote:") is never cut. The
+# underscore rule is a line of underscores only (a fill-in "Name: ____" is not).
+# Every body Wisp reads passes through this, so it must stay linear on hostile
+# input: line starts take only [ \t] (possessively), no whitespace class crosses a
+# newline the pattern does not name, and every run that can span lines is bounded
+# (tests/test_mail_history_regex.py times it).
+_DAY_OR_MONTH = r"(?:mon|tue|wed|thu|fri|sat|sun|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*"
+_ATTRIBUTION_EVIDENCE = (r"(?:\b(?:19|20)\d\d\b|\b\d{1,2}:\d\d\b|\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b|[@<]|"
+                         r"\b" + _DAY_OR_MONTH + r"\.?,? \d{1,2}\b|\b\d{1,2}\.? " + _DAY_OR_MONTH + r"\b)")
+_WROTE = r"(?:wrote|a écrit ?|escribió|schrieb(?: [^\n:]{1,160})?):[ \t\r]*$"
 _QUOTED_HISTORY = re.compile(
-    r"(?im)^\s*(?:On .+wrote:|On [^\n]+(?:\n[^\n]*){1,2}?wrote:|"
-    r"(?:Am|Le|El) [^\n]+(?:\n[^\n]*){0,2}?(?:schrieb|a écrit|escribió)\s*:|"
-    r"[- ]*Original Message[- ]*|-{2,}\s*Forwarded message\s*-{2,}|Begin forwarded message:|_{20,}|"
-    r"\*{0,2}From:\*{0,2}[^\n]*\n\s*\*{0,2}Sent:[^\n]*|"
-    r"\*{0,2}From:\*{0,2}[^\n]*@[^\n]*\n\s*\*{0,2}(?:Date|To|Subject):[^\n]*|>.*)$")
+    r"(?im)^[ \t]*+(?:"
+    r"(?:On|Am|Le|El) (?=[^\n]{0,400}?(?:\b" + _DAY_OR_MONTH + r"\b|" + _ATTRIBUTION_EVIDENCE + r"))"
+    r"[^\n]{0,400}?" + _WROTE + "|"
+    r"(?:On|Am|Le|El) (?=[^\n]{0,400}?" + _ATTRIBUTION_EVIDENCE + r")[^\n]{0,400}[^\n.!?]\n"
+    r"(?:[^\n]{0,400}[^\n.!?]\n)?[^\n]{0,400}?" + _WROTE + "|"
+    r"-*+ *Original Message *-*[ \t\r]*$|-{2,}+ *Forwarded message *-{2,}[ \t\r]*$|"
+    r"Begin forwarded message:[ \t\r]*$|_{20,}+[ \t\r]*$|"
+    r"\*{0,2}From:\*{0,2}[^\n]*\n[ \t]*+\*{0,2}Sent:[^\n]*|"
+    r"\*{0,2}From:\*{0,2}[^\n@]*@[^\n]*\n[ \t]*+\*{0,2}(?:Date|To|Subject):[^\n]*|"
+    r">[^\n]*)")
 # Who wrote it and when, carried from a communication record to its attention
 # item so the notch can name the sender and order by recency; `replied` marks a
 # conversation the user has texted since. An email's model-written gist is

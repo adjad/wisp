@@ -1605,7 +1605,10 @@ def _parse_header_records(text: str, *, snapshot: str = "") -> list[dict]:
                 continue
             _, _, flag, account, account_id, name, address, message_id, subject = parts[:9]
             native_id = parts[9].strip() if len(parts) == 10 else ""
-            address = _normalized_address(address or name)
+            # The address is the address FIELD only. It is never taken from the name: a record
+            # with no address and a name that reads like one ("priya@school.edu" <>) would
+            # otherwise become both sender and sender_address, a name posing as its own proof.
+            address = _normalized_address(address)
             record = {"ts": ts, "account": account, "account_id": account_id,
                       "sender": name or address or "Unknown sender", "sender_address": address,
                       "message_id": message_id.strip(), "native_id": native_id,
