@@ -403,7 +403,7 @@ def test_auto_add_combines_with_routine_actions(monkeypatch):
     _access(monkeypatch, full=True, held=False)
     monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: True)
     text = wisp_about.privacy()
-    assert ("On my own I may add a time-sensitive event or deadline from an iMessage to your Calendar or Reminders, a reminder to reply to an email, and a held hour on my own Day plan "
+    assert ("On my own I may add a time-sensitive event or deadline from an iMessage to your Calendar or Reminders, a reminder to reply to an email in a Google account you linked, and a held hour on my own Day plan "
             "(you let me act for you); and reminders or Tentative holds in Wisp's own schedule, from your routine, "
             "and tell you "
             "each time.") in text

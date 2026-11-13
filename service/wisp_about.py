@@ -338,7 +338,7 @@ _SEND_OK = "Before anything is sent, I show it to you and wait for your OK."
 _CALENDAR_OK = "Before anything is sent, or your calendar changes, I show it to you and wait for your OK."
 _AUTO_ADD = ("Because you let me act for you, I may add a time-sensitive event or deadline from an iMessage with a "
              "saved contact to your Calendar or Reminders on my own, add a reminder to reply when someone you email "
-             "asked you something over a day ago, and hold a free hour on my own Day plan (never on your calendar) "
+             "asked you something by email over a day ago, in a Google account you linked, and hold a free hour on my own Day plan (never on your calendar) "
              "for work due soon, then tell you, with Undo. For a date in an email I show a card and wait for your tap.")
 _ROUTINE = {
     "held": ("For your first few days I only suggest reminders from your routine. After that I may "
@@ -364,7 +364,7 @@ def _automatic_adds() -> tuple[str, list[tuple[str, str, bool]]]:
     adds: list[tuple[str, str, bool]] = []
     if _auto_add_on():
         adds.append((_AUTO_ADD, "a time-sensitive event or deadline from an iMessage to your "
-                                "Calendar or Reminders, a reminder to reply to an email, and a held hour on my "
+                                "Calendar or Reminders, a reminder to reply to an email in a Google account you linked, and a held hour on my "
                                 "own Day plan (you let me act for you)", False))
     routine = _routine_state()
     if mode == "unknown" and routine != "off":
