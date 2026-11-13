@@ -380,6 +380,11 @@ async def lifespan(app: FastAPI):
     client = OMLXClient()
     profile = remote_only_profile()
     started_tasks = []
+    if is_bundled() and remote_only_profile() is None:
+        # Hash pinned downloads once, off the loop, so setup's cached checks know after a restart.
+        # Read-only; cancelled at shutdown (a hash already running finishes, a few seconds at most).
+        from service.engine.downloads import warm_checks
+        started_tasks.append(asyncio.create_task(asyncio.to_thread(warm_checks)))
     if profile is not None:
         try:
             await _prepare_remote_inference(client)
@@ -1330,6 +1335,23 @@ def _setup_roles() -> dict[str, dict[str, str]]:
     return roles
 
 
+def _without_failed_downloads(installed: list[str]) -> list[str]:
+    """Built-in engine only: a pinned catalogue model whose engine folder failed Wisp's
+    check (files missing, or not the files Wisp tested) is not installed as far as setup
+    goes. Uses only hashes already made (the downloads check, startup's warm_checks);
+    /setup/apply runs the full check. Runs in a worker thread (disk reads)."""
+    from service.engine.downloads import check_failed
+    kept = []
+    for model_id in installed:
+        try:
+            if check_failed(model_id, cached_only=True):
+                continue
+        except Exception:  # noqa: BLE001 — an unreadable folder is the engine's to report
+            pass
+        kept.append(model_id)
+    return kept
+
+
 @app.get("/setup/status")
 async def setup_status() -> dict[str, Any]:
     installed: list[str] = []
@@ -1350,6 +1372,7 @@ async def setup_status() -> dict[str, Any]:
         on_disk = [m for m in on_disk if m not in installed]
         if on_disk:
             installed, source = installed + on_disk, "disk"
+    installed = await asyncio.to_thread(_without_failed_downloads, installed)
     from service.config import tool_capable_models
     status = setup_guide.build_status(
         hardware=current_hardware(),
@@ -1424,6 +1447,12 @@ async def setup_apply(body: dict[str, Any]) -> dict[str, Any]:
     lowered = model.lower()
     if model not in available or "embedding" in lowered or "rerank" in lowered:
         raise HTTPException(status_code=400, detail="Choose a chat model that is installed in oMLX.")
+    # The engine lists a downloaded folder whether or not it passed Wisp's check; this is
+    # where a pinned model that failed it (missing files, or not the tested files) is refused.
+    from service.engine.downloads import check_failed
+    if await asyncio.to_thread(check_failed, model):
+        raise HTTPException(status_code=409, detail="That model's files aren't the ones Wisp was tested with, "
+                                                    "or some are missing. Download it again in setup.")
     with _local_provider_operation_lock:
         from service.config import ConfigurationPreconditionFailed
         assignments = {role: model for role in setup_guide.TEXT_ROLES}

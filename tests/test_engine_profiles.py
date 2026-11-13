@@ -9,6 +9,8 @@ from service.engine import profiles
 from service.setup import catalog
 
 GEMMA = catalog.GEMMA_E4B_MTP
+TUNED = catalog.GEMMA_E4B_WISP
+PRE = catalog.GEMMA_E4B_WISP_PRERELEASE
 
 
 def _entries(path):
@@ -17,7 +19,8 @@ def _entries(path):
 
 def test_fresh_engine_gets_gemma_profile(tmp_path):
     settings, record = tmp_path / "model_settings.json", tmp_path / "seeded.json"
-    assert profiles.seed(settings, record) == [GEMMA.id]
+    assert profiles.seed(settings, record) == [TUNED.id, GEMMA.id, PRE.id]
+    assert _entries(settings)[TUNED.id] == _entries(settings)[GEMMA.id] == _entries(settings)[PRE.id]
     entry = _entries(settings)[GEMMA.id]
     assert entry["temperature"] == 0.8 and entry["top_p"] == 0.95 and entry["top_k"] == 64
     assert entry["enable_thinking"] is True and entry["mtp_enabled"] is True
@@ -74,7 +77,7 @@ def test_push_body_sends_the_full_entry_filtered_by_schema():
 
 
 def test_only_models_with_a_profile_are_seeded():
-    assert [m.id for m in profiles.profiled_models()] == [GEMMA.id]
+    assert [m.id for m in profiles.profiled_models()] == [TUNED.id, GEMMA.id, PRE.id]   # kept models keep theirs
 
 
 # The push after a download finishes belongs to the backend, not to a setup
@@ -206,17 +209,17 @@ def _seeded_with_turboquant(tmp_path, kv_bits=6):
 
 def test_an_install_that_got_turboquant_has_it_removed_once(tmp_path):
     settings, record = _seeded_with_turboquant(tmp_path)
-    assert profiles.seed(settings, record) == [GEMMA.id]
+    assert profiles.seed(settings, record, [GEMMA]) == [GEMMA.id]
     entry = _entries(settings)[GEMMA.id]
     assert not any(key.startswith("turboquant_") for key in entry)
     assert entry["is_favorite"] is True and entry["max_context_window"] == 16384
     # The record now holds the current profile: nothing is written again.
-    assert profiles.seed(settings, record) == []
+    assert profiles.seed(settings, record, [GEMMA]) == []
 
 
 def test_turboquant_the_person_chose_themselves_is_kept(tmp_path):
     settings, record = _seeded_with_turboquant(tmp_path, kv_bits=4)   # retuned in the admin UI
-    profiles.seed(settings, record)
+    profiles.seed(settings, record, [GEMMA])
     entry = _entries(settings)[GEMMA.id]
     assert entry["turboquant_kv_enabled"] is True and entry["turboquant_kv_bits"] == 4
 
@@ -237,20 +240,20 @@ def _seeded_with_power_cap(tmp_path, watts=20, *, turboquant_done=False):
 
 def test_an_install_that_got_the_20_w_model_cap_has_it_removed_once(tmp_path):
     settings, record = _seeded_with_power_cap(tmp_path)
-    assert profiles.seed(settings, record) == [GEMMA.id]
+    assert profiles.seed(settings, record, [GEMMA]) == [GEMMA.id]
     assert "gpu_power_limit_w" not in _entries(settings)[GEMMA.id]
-    assert profiles.seed(settings, record) == []
+    assert profiles.seed(settings, record, [GEMMA]) == []
 
 
 def test_a_power_cap_the_person_chose_themselves_is_kept(tmp_path):
     settings, record = _seeded_with_power_cap(tmp_path, watts=15)
-    profiles.seed(settings, record)
+    profiles.seed(settings, record, [GEMMA])
     assert _entries(settings)[GEMMA.id]["gpu_power_limit_w"] == 15
 
 
 def test_the_power_cap_cleanup_runs_on_a_record_from_before_groups(tmp_path):
     settings, record = _seeded_with_power_cap(tmp_path, turboquant_done=True)
-    assert profiles.seed(settings, record) == [GEMMA.id]
+    assert profiles.seed(settings, record, [GEMMA]) == [GEMMA.id]
     assert "gpu_power_limit_w" not in _entries(settings)[GEMMA.id]
     marks = json.loads(record.read_text())[profiles.RETIRED_KEY][GEMMA.id]
     assert isinstance(marks, list) and len(marks) == 2
@@ -258,8 +261,8 @@ def test_the_power_cap_cleanup_runs_on_a_record_from_before_groups(tmp_path):
 
 def test_a_never_turboquant_install_is_left_alone(tmp_path):
     settings, record = tmp_path / "model_settings.json", tmp_path / "seeded.json"
-    profiles.seed(settings, record)
-    assert profiles.seed(settings, record) == []
+    profiles.seed(settings, record, [GEMMA])
+    assert profiles.seed(settings, record, [GEMMA]) == []
 
 
 def _turn_turboquant_on(settings):
@@ -270,7 +273,7 @@ def _turn_turboquant_on(settings):
 
 def test_the_turboquant_cleanup_never_fires_again_on_a_reseed(tmp_path):
     settings, record = _seeded_with_turboquant(tmp_path)
-    profiles.seed(settings, record)                       # the one cleanup
+    profiles.seed(settings, record, [GEMMA])                       # the one cleanup
     assert json.loads(record.read_text())[profiles.RETIRED_KEY][GEMMA.id]
     _turn_turboquant_on(settings)                         # the person turns it back on
     assert profiles.seed(settings, record, [GEMMA], force=[GEMMA.id]) == [GEMMA.id]
@@ -281,7 +284,7 @@ def test_the_turboquant_cleanup_never_fires_again_on_a_reseed(tmp_path):
 
 def test_a_fresh_install_marks_the_cleanup_done_too(tmp_path):
     settings, record = tmp_path / "model_settings.json", tmp_path / "seeded.json"
-    profiles.seed(settings, record)                       # nothing to remove, marked anyway
+    profiles.seed(settings, record, [GEMMA])                       # nothing to remove, marked anyway
     _turn_turboquant_on(settings)
     profiles.seed(settings, record, [GEMMA], force=[GEMMA.id])
     assert _entries(settings)[GEMMA.id]["turboquant_kv_bits"] == 6
@@ -289,7 +292,7 @@ def test_a_fresh_install_marks_the_cleanup_done_too(tmp_path):
 
 def test_a_profile_change_does_not_rerun_the_cleanup(tmp_path):
     settings, record = _seeded_with_turboquant(tmp_path)
-    profiles.seed(settings, record)
+    profiles.seed(settings, record, [GEMMA])
     _turn_turboquant_on(settings)
     changed = dataclasses.replace(GEMMA, engine_profile={**GEMMA.engine_profile, "top_k": 40})
     assert profiles.seed(settings, record, [changed]) == [GEMMA.id]

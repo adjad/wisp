@@ -16,6 +16,7 @@ from service.setup.hardware import Hardware
 from service.setup.local_models import catalogue_models_on_disk, weights_complete
 
 GEMMA = catalog.GEMMA_E4B_MTP.id
+TUNED = catalog.GEMMA_E4B_WISP.id
 LING = catalog.LING_Q6.id
 
 
@@ -170,12 +171,19 @@ def _check(status, name):
     return next(c for c in status["checks"] if c["id"] == name)
 
 
-def test_omlx_already_serving_gemma_is_ready_with_no_download(monkeypatch, tmp_path):
+def test_omlx_already_serving_gemma_is_ready_and_only_offered_the_tuned_one(monkeypatch, tmp_path):
     import service.main as main
     _fresh(monkeypatch, main, client=_FakeClient([GEMMA, LING]), bundled=False, model_dirs=[tmp_path])
     s = asyncio.run(main.setup_status())
     assert s["ready"] is True and s["omlx"]["bundled"] is False and s["omlx"]["running"] is True
-    assert s["models"]["use"] == GEMMA and s["models"]["download"] is None
+    assert s["models"]["use"] == GEMMA and s["models"]["download"]["model"] == TUNED
+
+
+def test_omlx_already_serving_the_tuned_gemma_is_ready_with_no_download(monkeypatch, tmp_path):
+    import service.main as main
+    _fresh(monkeypatch, main, client=_FakeClient([TUNED, GEMMA]), bundled=False, model_dirs=[tmp_path])
+    s = asyncio.run(main.setup_status())
+    assert s["models"]["use"] == TUNED and s["models"]["download"] is None
 
 
 def test_omlx_server_off_is_a_start_and_reads_no_folder(monkeypatch, tmp_path):
@@ -217,7 +225,7 @@ def test_built_in_engine_finds_a_copied_model_before_it_starts(monkeypatch, tmp_
     _fresh(monkeypatch, main, client=_FakeClient(fail=True), bundled=True, model_dirs=[engine_models])
     s = asyncio.run(main.setup_status())
     assert s["omlx"]["bundled"] is True and s["models"]["use"] == GEMMA
-    assert s["models"]["download"] is None
+    assert s["models"]["download"]["model"] == TUNED          # offered, never switched to
     assert _check(s, "engine")["action"] == "start_engine"
 
 
@@ -225,7 +233,7 @@ def test_no_model_anywhere_still_offers_the_download(monkeypatch, tmp_path):
     import service.main as main
     _fresh(monkeypatch, main, client=_FakeClient(fail=True), bundled=True, model_dirs=[tmp_path / "models"])
     s = asyncio.run(main.setup_status())
-    assert s["models"]["download"]["model"] == GEMMA
+    assert s["models"]["download"]["model"] == TUNED
 
 
 # -- starting the person's oMLX ---------------------------------------------------
