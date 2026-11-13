@@ -767,7 +767,13 @@ def text_records() -> list[tuple]:
     ("iMessage", "SMS", "RCS") come from the native record with the same
     timestamp (the V3 feed). Two native records at one timestamp that disagree
     give "" for both: nothing is guessed. unread is None when the cache has no
-    read state."""
+    read state.
+
+    The join is by timestamp only because the two rows share no other key: a
+    plain V2 row names its conversation by SQLite row id ("chat:12",
+    "handle:3", "message:9"), while a V3 record carries the chat GUID and the
+    message GUID and no row id. A proper join needs the reader to put one shared
+    key on both (the V2 conversationId, or the message GUID, on the V3 record)."""
     from service.tools import imessage_tools as im
     if im.messages_sync_state() != "ready":
         return []
@@ -801,6 +807,32 @@ def chat_handle(guids: set[str]) -> str:
     if not sep or not handle or handle.casefold().startswith("chat"):
         return ""
     return handle.strip()
+
+
+_SERVICES = ("iMessage", "SMS", "RCS")
+
+
+def text_origin(item: dict, count: int = 3) -> tuple[str, str]:
+    """(handle, service) of the last `count` quoted lines of a text item, the
+    lines a decider reads, only when EVERY one of them joined to the same
+    one-to-one chat and the same known delivery service; else ("", "").
+
+    Deciders (automatic adds, anything that trusts who sent a line) use this,
+    never item["handle"] or item["service"]: those summarize the whole window
+    for display and reply cards, and an older line must neither spoil nor
+    vouch for the newest ones."""
+    lines = list(item.get("lines") or [])
+    chats = list(item.get("line_chat") or [])
+    services = list(item.get("line_service") or [])
+    if item.get("group") or count <= 0 or not lines or not (len(lines) == len(chats) == len(services)):
+        return "", ""
+    chats, services = chats[-count:], services[-count:]
+    if any(not isinstance(c, str) or not c for c in chats) or len(set(chats)) != 1:
+        return "", ""
+    if any(s not in _SERVICES for s in services) or len(set(services)) != 1:
+        return "", ""
+    handle = chat_handle({chats[0]})
+    return (handle, services[0]) if handle else ("", "")
 
 
 _LITERAL_LABEL = re.compile(r"^[+\d(][\d() .+-]{2,}$|^\S+@\S+$")
@@ -859,7 +891,7 @@ def text_items(records: list[tuple], *, now: float, own: str | None = None,
     conversations: dict[str, list[tuple[float, str, str]]] = {}
     chats: dict[str, set[str]] = {}
     services: dict[str, set[str]] = {}       # every in-window line's delivery service ("" = not known)
-    unplaced: set[str] = set()               # conversations with an in-window line of no known chat
+    origins: dict[str, list[tuple[str, str]]] = {}  # (chat guid, service) per in-window row, parallel
     ever_sent: set[str] = set()
     raw_texts: dict[str, list[tuple[float, str, str]]] = {}
     unread_at: dict[tuple[str, float], bool | None] = {}
@@ -874,9 +906,10 @@ def text_items(records: list[tuple], *, now: float, own: str | None = None,
             raw_texts.setdefault(context, []).append((ts, context, text))
             if guid:
                 chats.setdefault(context, set()).add(guid)
-            else:
-                unplaced.add(context)
-            services.setdefault(context, set()).add(str(record[5]) if len(record) > 5 and record[5] else "")
+            service = str(record[5]) if len(record) > 5 and record[5] else ""
+            services.setdefault(context, set()).add(service)
+            origins.setdefault(context, []).append((guid if isinstance(guid, str) else "",
+                                                    service if service in _SERVICES else ""))
     items = []
     for context, rows in conversations.items():
         # A sender who is only a number or a short code that the user never
@@ -890,8 +923,11 @@ def text_items(records: list[tuple], *, now: float, own: str | None = None,
             if counts is not None:
                 tally(counts, own, filtered=1)
             continue
+        row_origins = origins.get(context, [])[-MAX_TEXT_LINES:]
         rows = rows[-MAX_TEXT_LINES:]
-        incoming = [r for r in rows if r[2].partition(":")[0].strip() != "Me"]
+        incoming = [(r, o) for r, o in zip(rows, row_origins) if r[2].partition(":")[0].strip() != "Me"]
+        incoming_origins = [o for _, o in incoming]
+        incoming = [r for r, _ in incoming]
         if not incoming:
             continue
         group = context.startswith("Group ")
@@ -902,12 +938,17 @@ def text_items(records: list[tuple], *, now: float, own: str | None = None,
         # line_ts: when each quoted line itself arrived, one per entry of `lines`. An item's
         # received_ts is only its NEWEST line; a rule about when something arrived (acting.allows)
         # must use the time of the line it is reading, never the conversation's latest.
-        quotes, line_ts = [], []
-        for stamp, _, line in incoming:
+        # line_chat / line_service: the chat GUID and delivery service of each quoted line
+        # ("" = not known), also one per entry of `lines`. Deciders read these through
+        # text_origin(), never the whole-conversation `handle` / `service` below.
+        quotes, line_ts, line_chat, line_service = [], [], [], []
+        for (stamp, _, line), (chat, service) in zip(incoming, incoming_origins):
             sender, _, body = line.partition(":")
             if body.strip():
                 quotes.append(clean(body, 300))
                 line_ts.append(float(stamp))
+                line_chat.append(chat)
+                line_service.append(service)
         # The incoming lines since the user's own last line: what a reply card is
         # about. An earlier ask the user already answered must not headline it.
         # Empty when the user hasn't written in this window: then every line is
@@ -920,16 +961,19 @@ def text_items(records: list[tuple], *, now: float, own: str | None = None,
         speaker = last_in[2].partition(":")[0].strip()
         who = label if not group else (f"{speaker} in {label}" if speaker else label)
         items.append(dict(id="messages:" + _digest(context), source="messages", account=own, raw_account="",
-                          who=who, title=label, text=text, lines=quotes, line_ts=line_ts, pending=pending,
+                          who=who, title=label, text=text, lines=quotes, line_ts=line_ts,
+                          line_chat=line_chat, line_service=line_service, pending=pending,
                           received_ts=last_in[0],
                           replied=replied, group=group, person=True, unread=unread_at.get((context, last_in[0])),
                           user_wrote=any(r[2].partition(":")[0].strip() == "Me" for r in rows),
-                          # The handle only when EVERY line in view belongs to that one chat: a line
-                          # whose chat is not known may be from anywhere.
-                          handle="" if group or context in unplaced else chat_handle(chats.get(context, set())),
+                          # Whom a reply goes to: the one one-to-one chat among the lines that
+                          # joined to a chat ("" for a group or a mix). For reply cards and display
+                          # only; a decider that trusts the sender uses text_origin(item).
+                          handle="" if group else chat_handle(chats.get(context, set())),
                           # How the conversation's lines were delivered: one service when every line
-                          # in view says the same, else "". Only an iMessage's sender is one Apple
-                          # verified; an SMS sender number can be forged (autoadd acts on iMessage only).
+                          # in view says the same, else "". Display/compatibility summary only:
+                          # deciders use text_origin(item), which reads the per-line lists (only an
+                          # iMessage's sender is one Apple verified; an SMS sender can be forged).
                           service=next(iter(services.get(context) or {""})) if len(services.get(context) or ()) == 1 else "",
                           # Read from the raw lines before redaction: Wisp's own
                           # "(private details omitted)" alone never withholds a chat.

@@ -714,8 +714,10 @@ def test_the_audit_line_names_no_one(setting, store, monkeypatch):
 
 
 def test_every_surface_says_what_follow_ups_do():
-    assert any("remind you to reply" in line.lower() or "reminds you to reply" in line.lower()
-               for line in acting.DOES)
+    # The line reads as something Wisp DOES (it adds a reminder), not as a notification.
+    assert any(line.startswith("Adds a “Reply to <name>” reminder to Reminders") and "by email" in line
+               and "Google accounts you linked" in line for line in acting.DOES)
+    assert acting.ACTIONS["follow_up"] in acting.DOES
 
 
 # --- review: Sent-only evidence through a cycle, bad input, edges ---------------------------

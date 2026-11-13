@@ -71,11 +71,12 @@ LANDED = ("added", "undone", "unknown", "undo_unknown")
 # it. Never widen what a key means without changing the key.
 ACTIONS: dict[str, str] = {
     "add": ("Adds an event or deadline you missed in a one-to-one iMessage from someone saved in your Contacts to "
-            "Calendar or Reminders. A green-bubble SMS or an email with a date shows a card and waits for your tap."),
+            "Calendar or Reminders. A green-bubble message (SMS or RCS) or an email with a date shows a card and waits "
+            "for your tap."),
     "hold": ("Holds a free hour on your Day plan for work due today or in the next three days "
              "(in Wisp only, never on your calendar)."),
-    "follow_up": ("Reminds you to reply when someone you email asked you something by email over a day ago and "
-                  "hasn't heard back (for now, only in Google accounts you linked in Wisp)."),
+    "follow_up": ("Adds a “Reply to <name>” reminder to Reminders when someone you email asked you something by "
+                  "email over a day ago and hasn't heard back (for now, only in Google accounts you linked in Wisp)."),
 }
 DOES: list[str] = list(ACTIONS.values())
 # Which action each recorded kind of thing (KINDS) belongs to.

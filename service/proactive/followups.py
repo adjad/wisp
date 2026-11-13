@@ -1010,6 +1010,10 @@ async def plans(items, *, now: float, tz: str, records, reminders=(), results=No
 KIND = "follow_up"
 ACTION = "follow_up"                    # the action a yes must have named (acting.ACTIONS)
 MAX_ATTEMPTS = 2
+# Recorded right before the native write and replaced by its outcome right after. One still
+# found at the start of a step means the write may have landed and was never confirmed (the
+# cycle timed out or was cancelled mid-write): it becomes "unknown" (`_settle_dispatching`).
+DISPATCHING = "dispatching"
 _REPLY_METHODS = ("text_reply", "email_reply", "read", "reminder", "add_to_day")
 
 
@@ -1040,13 +1044,19 @@ def _blocked(store, now: float) -> tuple[set[str], int, dict]:
     from service.proactive.prepare import card_id
     dismissed = set(store.decisions().get("dismissed") or [])
     blocked, mine = set(), {}
+    # A write in flight or never confirmed may have landed: it counts and blocks like "unknown"
+    # (normally `_settle_dispatching` has already turned it into one).
+    landed = tuple(acting.LANDED) + (DISPATCHING,)
+    pending = 0
     for record in acting.records(store, kind=KIND):
         fp = record.get("fingerprint")
         if not fp:
             continue
         mine.setdefault(fp, record)
         status = record.get("status")
-        if status in acting.LANDED or int(record.get("attempts") or 0) >= MAX_ATTEMPTS:
+        if status == DISPATCHING and float(record.get("at") or 0) >= now - DAY_S:
+            pending += 1
+        if status in landed or int(record.get("attempts") or 0) >= MAX_ATTEMPTS:
             blocked.add(fp)
         person = record.get("person")
         if not person:
@@ -1056,9 +1066,43 @@ def _blocked(store, now: float) -> tuple[set[str], int, dict]:
         if waved and now - float(record.get("undone_at") or record.get("at") or 0) <= PERSON_BLOCK_S:
             blocked.add(person)
         # One follow-up a week per person, whatever came of it: never a nag.
-        if status in acting.LANDED and now - float(record.get("at") or 0) <= PERSON_REST_S:
+        if status in landed and now - float(record.get("at") or 0) <= PERSON_REST_S:
             blocked.add(person)
-    return blocked, acting.done_since(store, now - DAY_S, kind=KIND), mine
+    return blocked, acting.done_since(store, now - DAY_S, kind=KIND) + pending, mine
+
+
+def _unsettled(store, now: float) -> int:
+    """This kind's writes in the last day still marked in flight: acting.room doesn't count
+    them (DISPATCHING isn't in acting.LANDED), so the shared cap is checked with them added."""
+    from service.proactive import acting
+    return sum(1 for r in acting.records(store, kind=KIND, statuses=(DISPATCHING,), since=now - DAY_S))
+
+
+def _room(store, now: float) -> int:
+    from service.proactive import acting
+    return acting.room(store, now) - _unsettled(store, now)
+
+
+def _settle_dispatching(store, now: float) -> None:
+    """A follow-up still "dispatching" at the start of a step was cut off between its write and
+    its outcome (a cycle timeout or a cancellation): the reminder may be in Reminders. It becomes
+    "unknown": it counts toward the caps, is never written again, and shows no card (no Undo:
+    nothing confirms which reminder it would delete). Never fails the step."""
+    from service.proactive import acting
+    try:
+        stale = acting.records(store, kind=KIND, statuses=(DISPATCHING,))
+    except Exception:  # noqa: BLE001 — unreadable: _blocked still treats them as landed
+        return
+    for record in stale:
+        fp = record.get("fingerprint")
+        if not isinstance(fp, str) or not fp:
+            continue
+        try:
+            store.auto_add_put(fp, {**record, "status": "unknown", "unconfirmed_at": float(now)})
+            acting.audit("proactive_act", kind=KIND, status="unknown", ok=False, fingerprint=fp,
+                         reason="write never confirmed")
+        except Exception:  # noqa: BLE001 — left as it is: _blocked treats it as landed
+            continue
 
 
 def _self_names() -> tuple[str, ...]:
@@ -1131,11 +1175,12 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
     from service.proactive import acting
     from service.proactive.prepare import card_id
     _register()
+    _settle_dispatching(store, now)
     since = acting.enabled_at(ACTION)
     if since is None:
         return {"added": []}
     blocked, today, recorded = _blocked(store, now)
-    if today >= MAX_PER_DAY or acting.room(store, now) <= 0:
+    if today >= MAX_PER_DAY or _room(store, now) <= 0:
         return {"added": []}
     # One message gets at most one thing done on its own: an item auto-add already
     # acted on (an event or deadline added, even if undone since) gets no follow-up.
@@ -1187,35 +1232,49 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
         previous = recorded.get(fp) if isinstance(recorded.get(fp), dict) else {}
         if not acting.allows(plan.get("consent_ts", plan["received_ts"]), ACTION):
             continue
-        if acting.still_ok(ACTION) is not None or acting.room(store, now) <= 0 or abort() \
+        if acting.still_ok(ACTION) is not None or _room(store, now) <= 0 or abort() \
                 or _in_quiet(quiet, now, tz):
+            break
+        tried = int(previous.get("attempts") or 0)
+        when = _when_phrase(plan["due_ts"], now, tz)
+
+        def keep(status: str, *, title: str, attempts: int, undo: dict | None = None) -> None:
+            acting.record(
+                store, fp, kind=KIND, status=status, now=now, title=title, quote=plan["quote"], who=plan["who"],
+                source=plan["source"], item_id=str(plan.get("item_id") or ""), received_ts=plan["received_ts"],
+                timezone=tz, account=plan.get("account", ""), person=plan["person_key"], attempts=attempts,
+                due_ts=plan["due_ts"], item_fingerprint=plan["item_fingerprint"],
+                card={"meta": "REMINDER", "title": guard.clean_title(f"Reminder to reply to {plan['who']}"),
+                      "did": f"No reply yet in Mail, so I'll remind you {when}. If you answer before then, "
+                             "check it off. Wisp can't see calls: if you already called, Undo."
+                             if plan["source"] == "mail" else
+                             f"No reply yet in Messages or Mail, so I'll remind you {when}. If you answer before "
+                             "then, check it off. Wisp can't see calls: if you already called, Undo."},
+                show_until=plan["due_ts"], undo=undo)
+
+        # In flight BEFORE the write: a timeout or cancellation between the write and its outcome
+        # leaves this, which the next step reads as "unknown" (never written again, counted). It
+        # shows no card: acting.shown wants "added". A step that can't record it doesn't write.
+        try:
+            keep(DISPATCHING, title=plan["title"], attempts=tried + 1)
+        except Exception:  # noqa: BLE001
             break
         try:
             outcome = await write(plan)
         except Exception as exc:  # noqa: BLE001 — after a possible dispatch the outcome is unknown
             outcome = {"ok": False, "status": "unknown", "error": type(exc).__name__}
+        # asyncio.CancelledError is not an Exception: it propagates, and the in-flight record stays.
         outcome = outcome if isinstance(outcome, dict) else {"ok": False, "status": "unknown"}
         source_id = str(outcome.get("source_id") or "").strip()
         verified = outcome.get("ok") is True and bool(source_id)
         status = "added" if verified else "unknown" if outcome.get("status") == "unknown" else \
             "blocked" if outcome.get("status") == "blocked" else "failed"
-        attempts = int(previous.get("attempts") or 0) + (0 if status == "blocked" else 1)
+        # Blocked: nothing was dispatched, so the try isn't counted and a later cycle may try again.
+        attempts = tried + (0 if status == "blocked" else 1)
         title = outcome.get("title") if verified and isinstance(outcome.get("title"), str) \
             and outcome["title"].strip() else plan["title"]
-        when = _when_phrase(plan["due_ts"], now, tz)
-        acting.record(
-            store, fp, kind=KIND, status=status, now=now, title=title, quote=plan["quote"], who=plan["who"],
-            source=plan["source"], item_id=str(plan.get("item_id") or ""), received_ts=plan["received_ts"],
-            timezone=tz, account=plan.get("account", ""), person=plan["person_key"], attempts=attempts,
-            due_ts=plan["due_ts"], item_fingerprint=plan["item_fingerprint"],
-            card={"meta": "REMINDER", "title": guard.clean_title(f"Reminder to reply to {plan['who']}"),
-                  "did": f"No reply yet in Mail, so I'll remind you {when}. If you answer before then, "
-                         "check it off. Wisp can't see calls: if you already called, Undo."
-                         if plan["source"] == "mail" else
-                         f"No reply yet in Messages or Mail, so I'll remind you {when}. If you answer before "
-                         "then, check it off. Wisp can't see calls: if you already called, Undo."},
-            show_until=plan["due_ts"],
-            undo={"source_id": source_id, "title": title, "due_ts": plan["due_ts"]} if verified else None)
+        keep(status, title=title, attempts=attempts,
+             undo={"source_id": source_id, "title": title, "due_ts": plan["due_ts"]} if verified else None)
         if verified:
             added.append(fp)
     return {"added": added}

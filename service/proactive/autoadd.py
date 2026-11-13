@@ -92,7 +92,7 @@ QUOTED_SHARE = 0.5
 # Records never block forever, but they outlive every source window (7 days of
 # mail and texts) many times over.
 KEEP_S = 90 * DAY_S
-_RECORD_STATES_BLOCKING = ("added", "undone", "unknown", "undo_unknown")
+_RECORD_STATES_BLOCKING = ("added", "undone", "unknown", "undo_unknown", "dispatching")
 
 
 def _digest(*parts) -> str:
@@ -264,8 +264,13 @@ _REGION_CODES = {"US": "1", "CA": "1", "GB": "44", "IE": "353", "AU": "61", "NZ"
 
 
 def _region_code() -> str:
-    """The user's country calling code from the process locale ("en_US" -> "1"), or "" if unknown."""
+    """The user's country calling code, or "" if unknown. From WISP_REGION, the region of the
+    Mac's own locale that the app passes to the service when it starts it (an app opened from
+    Finder has no LANG), else from the process locale ("en_US" -> "1")."""
     import os
+    region = (os.environ.get("WISP_REGION") or "").strip().upper()
+    if region in _REGION_CODES:
+        return _REGION_CODES[region]
     for name in ("LC_ALL", "LC_CTYPE", "LANG"):
         value = os.environ.get(name) or ""
         region = value.split(".")[0].rpartition("_")[2].upper()
@@ -278,11 +283,15 @@ def phones_match(handle: str, saved: str, region: str = "") -> bool:
     """A chat handle and a number as it is saved in Contacts are the SAME number.
 
     Full numbers, never "the last ten digits": +44 20 7946 0958 is not +1 207 946 0958.
-    `handle` is the chat's own handle, which Messages gives with its country code. A saved
-    number that carries a country code ("+…" or "00…") must equal it digit for digit. A
-    saved number with none is a national number: the handle must be that number (less a
-    trunk "0") behind a country code of one to three digits, and behind the user's own
-    country code when that is known."""
+    `handle` is the chat's own handle, which Messages gives with its country code.
+    - A saved number that carries a country code ("+…" or "00…") must equal it digit for digit.
+    - A saved number with none is a national number in the USER'S country. It matches only when
+      that country's code is known (`region`) and the handle is exactly that code followed by
+      the number (less a trunk "0"). The digits alone are never enough: (361) 234-5678 saved by
+      someone in the US is +1 361…, not Hungary's +36 1 234 5678.
+    - A saved number written with its country code but no "+" (15551234567) matches only when
+      it starts with the user's own country code.
+    - With the region unknown, only a saved number that carries its country code can match."""
     if not handle.strip().startswith("+"):
         return False
     want = re.sub(r"\D", "", handle)
@@ -294,17 +303,12 @@ def phones_match(handle: str, saved: str, region: str = "") -> bool:
         return digits == want
     if raw.startswith("00"):
         return digits[2:] == want
-    national = digits.lstrip("0") if digits.startswith("0") else digits
-    if len(national) < 7 or not want.endswith(national):
+    if not region:
         return False
-    prefix = want[:len(want) - len(national)]
-    if digits.startswith("0") and prefix == "1":
-        return False                                 # a trunk "0" is never a North American number
-    if digits == want and not region:
-        return True                                  # saved with its country code, just no "+"
-    if region:
-        return prefix == region or digits == want
-    return 1 <= len(prefix) <= 3
+    national = digits[1:] if digits.startswith("0") and region != "1" else digits
+    if len(national) >= 7 and want == region + national:
+        return True
+    return digits == want and digits.startswith(region) and len(digits) > len(region) + 6
 
 
 def strict_contact_name(handle: str, *, region: str | None = None) -> str:
@@ -339,6 +343,26 @@ def _contact_name(handle: str) -> str:
     return strict_contact_name(handle)
 
 
+def _plan_handle(item: dict, count: int = 3) -> str:
+    """The handle of the lines a plan reads (the last `count`, as _candidates does): every one
+    of them joined to the same known one-to-one chat, else "". Who the sender is does not
+    depend on how the message was delivered; that is _text_service's question."""
+    from service.proactive import sources
+    lines, chats = list(item.get("lines") or []), list(item.get("line_chat") or [])
+    if item.get("group") or not lines or len(chats) != len(lines):
+        return ""
+    used = set(chats[-count:])
+    if len(used) != 1 or "" in used:
+        return ""
+    return sources.chat_handle(used).strip()
+
+
+def _text_service(item: dict) -> str:
+    """How the lines this plan reads were delivered: one known service for all of them, else ""."""
+    from service.proactive import sources
+    return sources.text_origin(item)[1]
+
+
 def _own_handle(handle: str) -> bool:
     """The user's own address (a note-to-self chat): never a correspondent."""
     try:
@@ -370,7 +394,9 @@ def _saved_contact(item: dict) -> bool:
     is not a saved contact. Having answered someone does not make them one."""
     if item.get("source") != "messages" or item.get("group"):
         return False
-    handle = str(item.get("handle") or "").strip()
+    # The handle of the lines this plan reads (sources.text_origin): every one of them from
+    # the same known one-to-one chat. item["handle"] is the reply card's, on a looser rule.
+    handle = _plan_handle(item)
     if not _person_handle(handle) or _own_handle(handle):
         return False
     try:
@@ -1033,13 +1059,26 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
     gone = set(decided["dismissed"]) | set(decided["fired"])
     suppressed = set(decided["suppressed"])
     records = store.auto_added()
+    # A write an earlier cycle began and never finished recording (cancelled, timed out, crashed):
+    # it may have landed. It becomes "unknown", which counts toward the daily cap and is never
+    # written again; the person may find the event or reminder and remove it themselves.
+    for stale_fp, stale in list(records.items()):
+        if isinstance(stale, dict) and stale.get("status") == "dispatching" and stale.get("kind") in ("calendar", "reminder"):
+            try:
+                store.auto_add_put(stale_fp, {**stale, "status": "unknown"})
+                _audit("proactive_auto_add", source="proactive_auto_add", status="unknown", ok=False,
+                       args={"fingerprint": stale_fp, "reason": "a write was begun and never recorded"})
+            except Exception:  # noqa: BLE001 — it still blocks as "dispatching" below
+                pass
+    records = store.auto_added()
     # An undone add retires its whole thread: a later message with a nudged
     # time, or the same plan as a reminder, is never added again.
     retired = {r.get("item_id") for r in records.values()
                if isinstance(r, dict) and r.get("status") in ("undone", "undo_unknown") and r.get("item_id")}
     acted_elsewhere = {r.get("item_id") for r in records.values()
                        if isinstance(r, dict) and r.get("kind") not in ("calendar", "reminder", None)
-                       and r.get("status") in ("added", "undone", "unknown", "undo_unknown") and r.get("item_id")}
+                       and r.get("status") in ("added", "undone", "unknown", "undo_unknown", "dispatching")
+                       and r.get("item_id")}
     today = store.auto_added_since(now - DAY_S)
     from service.proactive.prepare import card_id
     tap, added = [], []
@@ -1063,8 +1102,10 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
             note(item, "undone before")
             continue
         if item.get("id") in acted_elsewhere:
-            # One message, at most one action of Wisp's own (a follow-up reminder is already on it).
-            note(item, "Wisp already acted on this message")
+            # One message, at most one action of Wisp's own (a follow-up reminder is already on
+            # it). Offering the date is not an action: the card the person taps stays.
+            tap.append(tap_card(plan, now))
+            note(item, "Wisp already acted on this message: tap to add")
             continue
         fp = plan["fingerprint"]
         record = records.get(fp) or {}
@@ -1083,7 +1124,7 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
         # Only a line that itself arrived after the person's yes is added without a tap:
         # the time of the sentence the date came from, never the conversation's latest line.
         fresh = on and allows(plan.get("line_ts"))
-        if on and fresh and plan["source"] == "messages" and item.get("service") != "iMessage":
+        if on and fresh and plan["source"] == "messages" and _text_service(item) != "iMessage":
             # Only an iMessage's sender handle is one Apple verified. An SMS (or a message whose
             # delivery is not known) can carry any sender number, a saved contact's included.
             tap.append(tap_card(plan, now))
@@ -1113,6 +1154,11 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
             break
         attempts += 1
         write = writers["calendar" if plan["kind"] == "calendar" else "reminder"]
+        # Recorded BEFORE the write: if this cycle is cancelled or times out while Calendar or
+        # Reminders is answering, the next one finds "dispatching", reads it as a write that may
+        # have landed (see the top of this function), and never writes it again.
+        store.auto_add_put(fp, {**_record(plan, now), "status": "dispatching",
+                                "attempts": int(record.get("attempts") or 0) + 1})
         try:
             outcome = await write(plan)
         except Exception as exc:  # noqa: BLE001 — after a possible dispatch the outcome is unknown
@@ -1145,8 +1191,11 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
         else:
             note(item, f"write {status}")
         store.auto_add_put(fp, entry)
+    # Only what auto-add itself put on Calendar or Reminders hides a message's own add-card: a
+    # reply reminder or a held hour on the same item does not make the date "already added".
     items = {r.get("item_id") for r in store.auto_added().values()
-             if isinstance(r, dict) and r.get("status") == "added" and r.get("item_id")}
+             if isinstance(r, dict) and r.get("status") == "added" and r.get("item_id")
+             and r.get("kind") in ("calendar", "reminder")}
     return {"tap": tap, "added": added, "items": {"autoadd:" + i for i in items} | items}
 
 

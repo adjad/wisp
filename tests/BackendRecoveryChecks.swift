@@ -138,6 +138,10 @@ enum BackendRecoveryChecks {
         )
         precondition(env["PYTHONUNBUFFERED"] == "1", "backend logs must stay unbuffered")
         precondition(env["PATH"] == "/usr/bin", "inherited environment must be preserved")
+        // The Mac's region reaches the service as a plain two-letter code, never an inherited value.
+        precondition(BackendManager.backendEnvironment(base: ["WISP_REGION": "ZZ"], region: "gb")["WISP_REGION"] == "GB")
+        precondition(BackendManager.backendEnvironment(base: ["WISP_REGION": "US"], region: nil)["WISP_REGION"] == nil)
+        precondition(BackendManager.backendEnvironment(base: [:], region: "en_US; rm")["WISP_REGION"] == nil)
         precondition(
             BackendManager.backendEnvironment(
                 base: ["PYTHONPYCACHEPREFIX": "/inside/Wisp.app"], home: "/tmp/wisp-home-fixture"

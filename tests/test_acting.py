@@ -570,8 +570,12 @@ def test_one_message_gets_at_most_one_action_of_wisps_own(store):
     out = asyncio.run(autoadd.step(T.survivors(item), {"calendar": [], "reminders": []}, now=T.NOW, tz=T.TZ,
                                    store=store, abort=lambda: False, writers=writers.table(),
                                    existing=lambda n: [], is_enabled=lambda: True, debug=notes))
-    assert writers.calls == [] and out["added"] == [] and out["tap"] == []
-    assert notes[-1]["auto_add"] == "Wisp already acted on this message"
+    assert writers.calls == [] and out["added"] == []
+    # Nothing more is DONE on that message, but its date is still offered as a card to tap, and the
+    # reply reminder does not make the Brief treat the date as already added.
+    assert [c["action"]["method"] for c in out["tap"]] == ["calendar_event"]
+    assert notes[-1]["auto_add"] == "Wisp already acted on this message: tap to add"
+    assert item["id"] not in out["items"]
     # A hold is about a calendar row, never a message, so it blocks nothing here.
     other = T.text("Sam Lee", "can you come to my recital Sun Nov 1 at 2pm?")
     acting.record(store, "hold:1", kind="hold", status="added", now=T.NOW - 60, title="x", item_id="cal:9")

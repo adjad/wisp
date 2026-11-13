@@ -883,7 +883,10 @@ async def _auto_add(cards_by_account: dict, accounts: list[str], own: str, survi
     done = autoadd.done_cards(store, now)
     added_items = set(auto.get("items") or set())
     for record in store.auto_added().values():
-        if isinstance(record, dict) and record.get("status") == "added" and record.get("item_id"):
+        # Only an event or reminder auto-add itself made hides the message's add-card. A reply
+        # reminder or a held hour on the same item leaves the date still to be offered.
+        if (isinstance(record, dict) and record.get("status") == "added" and record.get("item_id")
+                and record.get("kind") in ("calendar", "reminder")):
             added_items.add(record["item_id"])
     for acct in accounts:
         mine_done = [c for c in done if (c.get("account") or own) == acct]

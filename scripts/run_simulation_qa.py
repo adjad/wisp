@@ -482,6 +482,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_acting.py",
     # One strict reading of a mail From value: pure strings, no mail is read.
     "tests/test_mail_sender.py",
+    "tests/test_followups_cycle.py",
+    "tests/test_text_records_join.py",
     "tests/test_mail_history_regex.py",
     # Mail acts only with proof: injected Sent rows, Contacts and fetched authentication results.
     "tests/test_autoadd_mail_proof.py",

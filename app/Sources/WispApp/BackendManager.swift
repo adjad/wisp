@@ -622,17 +622,27 @@ final class BackendManager {
         base: [String: String] = ProcessInfo.processInfo.environment,
         home: String = NSHomeDirectory(),
         credentials: [String: String] = [:],
-        generation: String = "absent"
+        generation: String = "absent",
+        region: String? = Locale.current.region?.identifier
     ) -> [String: String] {
         // The bridge endpoint is chosen by the app for each launch; an inherited one is ignored.
-        BackendCredentials.injecting(credentials, into: base.filter {
+        var environment = BackendCredentials.injecting(credentials, into: base.filter {
             $0.key != "WISP_BROWSER_BRIDGE_CONTROL" && $0.key != BackendOwnership.nonceEnvironmentKey
+                && $0.key != "WISP_REGION"
         }).merging([
             "WISP_CREDENTIAL_GENERATION": generation,
             "PYTHONUNBUFFERED": "1",
             "PYTHONPYCACHEPREFIX": (home as NSString)
                 .appendingPathComponent(".moe/cache/pycache"),
         ]) { _, new in new }
+        // The Mac's own region ("US", "GB"), so the service can read a phone number saved in
+        // Contacts without a country code as a number in the person's own country. An app
+        // opened from Finder has no LANG to tell it. Only a plain two-letter code is passed;
+        // an inherited value is never trusted.
+        if let region, region.count == 2, region.allSatisfy({ $0.isASCII && $0.isLetter }) {
+            environment["WISP_REGION"] = region.uppercased()
+        }
+        return environment
     }
 
     nonisolated static func fileSize(at url: URL) -> UInt64 {

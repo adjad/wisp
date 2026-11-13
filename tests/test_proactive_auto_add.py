@@ -911,7 +911,8 @@ def test_a_line_whose_chat_is_not_known_leaves_the_conversation_without_a_handle
     records = [(NOW - 3600, "Maya Chen", "Maya Chen: hey", CHAT, True, "iMessage"),
                (NOW - 1800, "Maya Chen", f"Maya Chen: {DATED}", "", True, "")]      # joined to no native record
     [item] = sources.text_items(records, now=NOW, own=ME)
-    assert item["handle"] == "" and item["service"] == ""
+    assert sources.text_origin(item) == ("", "")                         # the lines the plan reads are not all placed
+    assert item["handle"] == SAVED                                       # the reply card's handle, on its own rule
     assert autoadd.plan_for(item, dict(OK), now=NOW, tz=TZ) == (None, "not a saved contact: tap to add")
 
 
@@ -935,24 +936,42 @@ def contacts(monkeypatch):
     return lambda mapping: im.cache_contacts(mapping)
 
 
-def test_a_london_contact_is_not_a_maine_stranger(contacts):
+def test_a_london_contact_is_not_a_maine_stranger(contacts, monkeypatch):
     contacts({"+44 20 7946 0958": "Priya Shah", "(555) 123-0001": "Maya Chen", "sam@friend.com": "Sam Lee",
-              "020 7946 0111": "Local Shop", "15551239999": "Dana Wu"})
+              "020 7946 0111": "Local Shop", "15551239999": "Dana Wu", "(361) 234-5678": "Tex Ranger",
+              "0036 1 555 0000": "Budapest Office"})
     from service.tools import imessage_tools as im
     assert im.contact_name_for_handle("+12079460958") == "Priya Shah"          # the loose match labels do use
-    assert autoadd.strict_contact_name("+12079460958") == ""                    # ...is not who may add
-    assert autoadd.strict_contact_name("+442079460958") == "Priya Shah"
-    assert autoadd.strict_contact_name("+15551230001") == "Maya Chen"           # saved without a country code
-    assert autoadd.strict_contact_name("+15551239999") == "Dana Wu"             # saved with one, no "+"
-    assert autoadd.strict_contact_name("+12079460111") == ""                    # a trunk 0 is never +1
-    assert autoadd.strict_contact_name("+442079460111") == "Local Shop"
-    assert autoadd.strict_contact_name("5551230001") == ""                      # a handle with no country code
-    assert autoadd.strict_contact_name("Sam@Friend.com") == "Sam Lee"
-    assert autoadd.strict_contact_name("sam@friend.co") == "" and autoadd.strict_contact_name("") == ""
-    # Knowing the user's own country code tightens a number saved without one.
-    assert autoadd.strict_contact_name("+15551230001", region="1") == "Maya Chen"
-    assert autoadd.strict_contact_name("+445551230001", region="1") == ""
-    assert autoadd.strict_contact_name("+445551230001") == "Maya Chen"          # unknown region: see phones_match
+    us = lambda handle: autoadd.strict_contact_name(handle, region="1")        # noqa: E731
+    assert us("+12079460958") == ""                                            # ...is not who may add
+    assert us("+442079460958") == "Priya Shah"                                 # saved with its country code
+    assert us("+15551230001") == "Maya Chen"                                   # saved without one: the user's country
+    assert us("+445551230001") == ""                                           # the same digits in another country
+    assert us("+15551239999") == "Dana Wu"                                     # saved with the code but no "+"
+    assert us("+13612345678") == "Tex Ranger"
+    assert us("+3612345678") == ""                                             # Hungary's +36 1 234 5678 is not Texas
+    assert us("+3615550000") == "Budapest Office"                              # "00" is a country code too
+    assert us("+12079460111") == "" and us("+442079460111") == ""              # a UK local number, in the US: no match
+    assert autoadd.strict_contact_name("+442079460111", region="44") == "Local Shop"   # ...and at home in the UK
+    assert us("5551230001") == ""                                              # a handle with no country code
+    assert us("Sam@Friend.com") == "Sam Lee" and us("sam@friend.co") == "" and us("") == ""
+    # Region unknown: only a number saved WITH its country code can match.
+    unknown = lambda handle: autoadd.strict_contact_name(handle, region="")    # noqa: E731
+    assert unknown("+442079460958") == "Priya Shah" and unknown("+3615550000") == "Budapest Office"
+    assert unknown("+15551230001") == "" and unknown("+15551239999") == "" and unknown("+13612345678") == ""
+
+
+@pytest.mark.parametrize("env, code", [
+    ({"WISP_REGION": "GB"}, "44"), ({"WISP_REGION": "us"}, "1"), ({"WISP_REGION": "ZZ", "LANG": "de_DE.UTF-8"}, "49"),
+    ({"LANG": "en_US.UTF-8"}, "1"), ({"LC_ALL": "fr_FR"}, "33"), ({"LANG": "C"}, ""), ({}, ""),
+    ({"WISP_REGION": "US; rm -rf"}, ""),
+])
+def test_the_region_comes_from_the_app_or_the_locale(monkeypatch, env, code):
+    for name in ("WISP_REGION", "LC_ALL", "LC_CTYPE", "LANG"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    assert autoadd._region_code() == code
 
 
 def test_contacts_not_synced_or_not_allowed_hold_nobody(contacts, monkeypatch):
@@ -983,6 +1002,64 @@ def test_the_users_own_address_is_never_a_correspondent(monkeypatch):
     from service.memory import identity
     monkeypatch.setattr(identity, "user_emails", lambda: ["me@icloud.com"])
     monkeypatch.setattr(autoadd, "_contact_name", lambda handle: "Me")
-    item = {"source": "messages", "group": False, "handle": "me@icloud.com", "service": "iMessage"}
-    assert autoadd._saved_contact(item) is False
-    assert autoadd._saved_contact({**item, "handle": SAVED}) is True
+    mine = _texts("Notes to self", [DATED], ["iMessage;-;me@icloud.com"])
+    assert sources.text_origin(mine) == ("me@icloud.com", "iMessage") and autoadd._saved_contact(mine) is False
+    assert autoadd._saved_contact(_texts("Maya Chen", [DATED], [CHAT])) is True
+
+
+# --- a write is recorded before it is made ----------------------------------------------------------
+
+def test_a_cycle_cut_off_during_the_write_never_writes_that_item_again(store):
+    item = text("Maya", RECITAL)
+    seen = []
+
+    class Hanging(Writers):
+        async def calendar(self, plan):
+            seen.append(dict(store.auto_added()[plan["fingerprint"]]))       # what is on record while it writes
+            raise asyncio.CancelledError()                                   # the cycle is cancelled mid-write
+
+    with pytest.raises(asyncio.CancelledError):
+        step(store, survivors(item), Hanging())
+    assert [r["status"] for r in seen] == ["dispatching"] and seen[0]["attempts"] == 1
+    [left] = store.auto_added().values()
+    assert left["status"] == "dispatching" and autoadd.done_cards(store, NOW) == []     # no card for a maybe
+    # The next cycle: it may have landed, so it is never written again, and it counts toward the day.
+    writers = Writers()
+    out = step(store, survivors(item), writers, now=NOW + 600)
+    assert writers.calls == [] and out["added"] == [] and out["tap"] == []
+    [after] = store.auto_added().values()
+    assert after["status"] == "unknown" and store.auto_added_since(NOW - 1) == 1
+    assert autoadd.done_cards(store, NOW + 600) == []
+
+
+def test_a_normal_write_leaves_no_dispatching_record_behind(store):
+    writers = Writers()
+    step(store, survivors(text("Maya", RECITAL)), writers)
+    assert [r["status"] for r in store.auto_added().values()] == ["added"]
+    blocked = Writers(outcome={"ok": False, "status": "blocked", "error": "The Wisp app isn't connected"})
+    other = ProactiveStore(store.base.parent / "blocked")
+    step(other, survivors(text("Maya", RECITAL)), blocked)
+    [left] = other.auto_added().values()
+    assert left["status"] == "blocked" and left["attempts"] == 0                      # may be tried again
+    step(other, survivors(text("Maya", RECITAL)), Writers(), now=NOW + 600)
+    assert [r["status"] for r in other.auto_added().values()] == ["added"]
+
+
+def test_an_old_sms_or_unplaced_line_does_not_spoil_a_later_imessage(store, yes):
+    yes(NOW - 2 * 3600)
+    lines = ["an old green one", "another", "hey", "are you around", DATED]            # the plan reads the last three
+    services = ("SMS", "", "iMessage", "iMessage", "iMessage")
+    chats = ["SMS;-;" + SAVED, "", CHAT, CHAT, CHAT]
+    records = [(NOW - 3600 + i, "Maya Chen", f"Maya Chen: {line}", chats[i], True, services[i])
+               for i, line in enumerate(lines)]
+    [item] = sources.text_items(records, now=NOW, own=ME)
+    assert item["service"] == "" and autoadd._plan_handle(item) == SAVED and autoadd._text_service(item) == "iMessage"
+    writers = Writers()
+    out, _ = production_step(store, survivors(item), writers)
+    assert [k for k, _ in writers.calls] == ["calendar"] and len(out["added"]) == 1
+    # One of the last three over SMS: a card, not an add.
+    records[3] = (records[3][0], "Maya Chen", "Maya Chen: are you around", "SMS;-;" + SAVED, True, "SMS")
+    [mixed] = sources.text_items(records, now=NOW, own=ME)
+    writers = Writers()
+    out, notes = production_step(ProactiveStore(store.base.parent / "mixed"), survivors(mixed), writers)
+    assert writers.calls == [] and out["added"] == []

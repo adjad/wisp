@@ -63,8 +63,8 @@ by default), and your Brief and answers fit you.
   yes, in setup or in Settings. On, Wisp adds an event or deadline you missed to Calendar or
   Reminders by itself, without waiting for your approval, from messages that arrive after your
   yes. A text counts when it is a one-to-one iMessage (a blue bubble) from the saved number or
-  address of someone in your Contacts; an SMS (a green bubble) shows a card, because an SMS
-  sender number can be forged. An email never adds an event or a deadline by itself, because an
+  address of someone in your Contacts; a green-bubble message (SMS or RCS) shows a card,
+  because its sender number can be forged. An email never adds an event or a deadline by itself, because an
   email's From line is not proof of who sent it: Wisp shows a card and waits for your tap. In a
   Google account you linked, it also adds a reminder to reply when someone
   in your Contacts whom you have written to before asked you something by email over a day ago
