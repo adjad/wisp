@@ -47,7 +47,10 @@ def test_a_quoted_delete_runs_the_decoded_words_without_a_shell(monkeypatch, hom
     cmd = f"rm -rf '{target}'"
     assert policy.decide("shell", {"cmd": cmd}, tool="run_shell").tier is Tier.CONFIRM
     builtin.run_shell(cmd)
-    assert seen == {"argv": ["/bin/rm", "-rf", "--", str(target)], "shell": False}
+    # Where a sandbox can be applied, the same words follow run_shell's write guard
+    # (service/safety/shell_sandbox.py).
+    assert seen["argv"][-4:] == ["/bin/rm", "-rf", "--", str(target)] and seen["shell"] is False
+    assert len(seen["argv"]) in (4, 7)
     assert not target.exists() and target.parent.exists()
 
 

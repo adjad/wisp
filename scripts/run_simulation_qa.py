@@ -201,6 +201,9 @@ PROFILE_TESTS = {
         "tests/test_execution_contract_loop.py",
         "tests/test_forced_step_withholding.py",
         "tests/test_shell_boundary.py",
+        # run_shell's write guard: a Wisp folder and a home in a temp dir. The real-process
+        # cases need to apply a sandbox, so they skip inside this profile's own sandbox.
+        "tests/test_shell_sandbox.py",
         "tests/test_shell_local_service_deny.py",
         # /resetwisp on a scratch home under pytest's temp dir; no Google, Keychain, TCC or live service.
         "tests/test_wisp_reset.py",
