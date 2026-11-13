@@ -275,6 +275,76 @@ def test_post_mode_takes_only_true_or_false(wisp, mode_file, value):
     assert wisp.get("/mode").json() == before and not mode_file.exists()
 
 
+# --- only the Wisp app can give Wisp more access --------------------------------------------
+
+@pytest.mark.parametrize("body", [{"full_access": True}, {"read_only": False},
+                                  {"full_access": True, "read_only": True}])
+def test_a_caller_that_is_not_the_wisp_app_cannot_widen_access(wisp, mode_file, body):
+    """Another program on this Mac (or a command the assistant runs) can reach this port. It must
+    not be able to turn Full access on, or view-only off, through the service."""
+    before = wisp.get("/mode").json()
+    response = wisp.post("/mode", json=body)
+    assert response.status_code == 403
+    assert response.json()["detail"] == ("Only the Wisp app can give Wisp more access. "
+                                         "Change this in Wisp's Settings.")
+    assert wisp.get("/mode").json() == before and not mode_file.exists()
+
+
+@pytest.mark.parametrize("body, key", [({"full_access": False}, "full_access"), ({"read_only": True}, "read_only")])
+def test_narrowing_access_never_needs_the_proof(wisp, mode_file, monkeypatch, body, key):
+    from service import main, wisp_reset
+
+    def never(*_a, **_k):
+        raise AssertionError("taking access back must not depend on proving the caller")
+    monkeypatch.setattr(wisp_reset, "caller_is_parent_app", never)
+    response = wisp.post("/mode", json=body)
+    assert response.status_code == 200 and response.json()[key] is body[key]
+    assert main is not None and wisp.get("/mode").status_code == 200      # and reading stays open
+
+
+def test_the_wisp_app_itself_can_turn_full_access_on(wisp, mode_file, monkeypatch):
+    from service import main
+    monkeypatch.setattr(main, "_require_wisp_app", lambda request, reason: None)   # the proof passed
+    wisp.post("/mode", json={"full_access": False})
+    response = wisp.post("/mode", json={"full_access": True})
+    assert response.status_code == 200 and response.json()["full_access"] is True
+    assert json.loads(mode_file.read_text())["full_access"] is True
+
+
+def test_the_proof_is_the_kernels_word_that_the_parent_app_holds_this_connection(monkeypatch):
+    from fastapi import HTTPException
+    from service import main, wisp_reset
+
+    class Call:
+        def __init__(self, client, server):
+            self.scope = {"client": client, "server": server}
+    asked = []
+
+    def proof(client, server):
+        asked.append((client, server))
+        return answer[0]
+    monkeypatch.setattr(wisp_reset, "caller_is_parent_app", proof)
+    answer = [True]
+    assert main._require_wisp_app(Call(("127.0.0.1", 50111), ("127.0.0.1", 8765)), "no") is None
+    assert asked == [(("127.0.0.1", 50111), ("127.0.0.1", 8765))]       # exactly this connection's two ends
+    refusals = [(("127.0.0.1", 50111), ("127.0.0.1", 8765), False),     # a local program that is not the app
+                (("127.0.0.1", 50111), ("127.0.0.1", 8765), 1),         # only True counts
+                (("192.168.1.9", 50111), ("127.0.0.1", 8765), True),    # not loopback
+                (("127.0.0.1", "50111"), ("127.0.0.1", 8765), True),    # not a real port
+                (None, ("127.0.0.1", 8765), True), (("testclient", 50000), ("testserver", 80), True)]
+    for client, server, said in refusals:
+        answer[0] = said
+        with pytest.raises(HTTPException) as refused:
+            main._require_wisp_app(Call(client, server), "plain reason")
+        assert refused.value.status_code == 403 and refused.value.detail == "plain reason"
+
+    def broken(*_a):
+        raise OSError("socket table unreadable")
+    monkeypatch.setattr(wisp_reset, "caller_is_parent_app", broken)
+    with pytest.raises(HTTPException):
+        main._require_wisp_app(Call(("127.0.0.1", 50111), ("127.0.0.1", 8765)), "no")   # unproven is refused
+
+
 def test_moving_wisp_s_folder_itself_asks_in_every_mode(monkeypatch):
     """#409 audit: moving ~/.moe aside and another folder into its place swaps in a
     forged access_mode.json without naming it, so a change to the folder itself asks."""

@@ -1453,15 +1453,40 @@ async def get_mode() -> dict[str, Any]:
     return {"read_only": read_only(), "full_access": full_access()}
 
 
+def _require_wisp_app(request: Request, reason: str) -> None:
+    """The caller is the Wisp app that launched this service, proven from the kernel's socket
+    table (wisp_reset.caller_is_parent_app), or 403 with `reason`. For a change that lets Wisp
+    do MORE without asking: another program on this Mac, or a command the assistant runs, must
+    not be able to make it through this service. A change that only tightens never asks for
+    this, so taking a permission back never depends on the proof succeeding."""
+    client, server = request.scope.get("client"), request.scope.get("server")
+    try:
+        from service.wisp_reset import caller_is_parent_app
+        proven = bool(client and server and len(client) == 2 and len(server) == 2
+                      and client[0] == "127.0.0.1" and server[0] == "127.0.0.1"
+                      and type(client[1]) is int and type(server[1]) is int
+                      and caller_is_parent_app((client[0], client[1]), (server[0], server[1])) is True)
+    except Exception:  # noqa: BLE001 — unproven is refused
+        proven = False
+    if not proven:
+        raise HTTPException(status_code=403, detail=reason)
+
+
 @app.post("/mode")
-async def set_mode(body: dict[str, Any]) -> dict[str, Any]:
+async def set_mode(request: Request, body: dict[str, Any]) -> dict[str, Any]:
     """The user's access choice. Saved (service/safety/policy.choose_mode), so it
-    survives a restart instead of falling back to policy.yaml's default."""
+    survives a restart instead of falling back to policy.yaml's default.
+
+    Turning Full access ON, or view-only OFF, lets Wisp do more without asking: only the
+    Wisp app itself may ask for that. Turning Full access off or view-only on is open to
+    the app's ordinary request, like every other route."""
     from service.safety import read_only, full_access, choose_mode
     chosen = {key: body[key] for key in ("read_only", "full_access") if key in body}
     if any(type(value) is not bool for value in chosen.values()):
         # bool("false") is True, and the choice is now saved across restarts.
         raise HTTPException(status_code=422, detail="read_only and full_access must be true or false.")
+    if chosen.get("full_access") is True or chosen.get("read_only") is False:
+        _require_wisp_app(request, "Only the Wisp app can give Wisp more access. Change this in Wisp's Settings.")
     try:
         choose_mode(chosen)
     except OSError:
@@ -4480,9 +4505,13 @@ async def get_permissions() -> dict[str, Any]:
     }
 
 
+_RULES_APP_ONLY = "Only the Wisp app can let Wisp act without asking. Change this in Wisp's Settings."
+
+
 @app.post("/permissions")
-async def set_permission(body: dict[str, Any]) -> dict[str, Any]:
-    """Add a standing grant without waiting to be asked mid-conversation."""
+async def set_permission(request: Request, body: dict[str, Any]) -> dict[str, Any]:
+    """Add a standing grant without waiting to be asked mid-conversation. An "Always allow"
+    only from the Wisp app itself; an "Always block" from the app's ordinary request."""
     from service.safety import grants
     tool = str(body.get("tool") or "")
     if not tool:
@@ -4490,13 +4519,25 @@ async def set_permission(body: dict[str, Any]) -> dict[str, Any]:
     decision = str(body.get("decision") or "allow")
     if decision not in ("allow", "deny"):
         return {"ok": False, "error": "decision must be allow or deny"}
+    if decision == "allow":
+        _require_wisp_app(request, _RULES_APP_ONLY)
     return grants.grant(tool, body.get("args") or {}, decision=decision,
                         scoped=bool(body.get("scoped", True)))
 
 
 @app.delete("/permissions/{tool}")
-async def revoke_permission(tool: str, scope: str | None = None) -> dict[str, Any]:
+async def revoke_permission(request: Request, tool: str, scope: str | None = None) -> dict[str, Any]:
+    """Remove a standing rule. Removing an "Always allow" only tightens; removing an "Always
+    block" lets the action through again, so that is the Wisp app's alone."""
     from service.safety import grants
+    try:
+        blocks = (grants.all_grants().get(tool) or {}).get("deny") or []
+        lifts_a_block = any(isinstance(rule, dict) and (scope is None or rule.get("scope", "") == scope)
+                            for rule in blocks)
+    except Exception:  # noqa: BLE001 — unreadable rules: assume it might
+        lifts_a_block = True
+    if lifts_a_block:
+        _require_wisp_app(request, _RULES_APP_ONLY)
     return {"ok": grants.revoke(tool, scope)}
 
 
