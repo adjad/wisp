@@ -12,6 +12,10 @@ from service.proactive.store import ProactiveStore
 
 NOW = 1_800_000_000.0
 
+# Texts in the shared helpers come from one saved contact's one-to-one chat (the autouse fixture
+# that says so lives with the helpers and applies here by being imported).
+from tests.test_proactive_auto_add import saved_contacts  # noqa: E402,F401
+
 
 @pytest.fixture
 def setting(tmp_path, monkeypatch):

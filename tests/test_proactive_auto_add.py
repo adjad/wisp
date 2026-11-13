@@ -32,14 +32,25 @@ def at(month, day, hour, minute=0):
     return datetime(2026, month, day, hour, minute, tzinfo=ZONE).timestamp()
 
 
-def text(who, line, ago_h=1.0, unread=True, mine=()):
-    records = [(NOW - ago_h * 3600, who, f"{who}: {line}", "", unread)]
-    records += [(NOW - ago_h * 3600 + 60 * (i + 1), who, f"Me: {m}", "", None) for i, m in enumerate(mine)]
+SAVED = "+15551230001"                     # the handle of a saved contact, in a one-to-one chat
+CHAT = "iMessage;-;" + SAVED
+
+
+@pytest.fixture(autouse=True)
+def saved_contacts(monkeypatch):
+    """Contacts holds exactly one handle, SAVED. Texts in these tests come from that one-to-one
+    chat unless a test says otherwise; nothing reads the real Contacts."""
+    monkeypatch.setattr(autoadd, "_contact_name", lambda handle: "Saved Contact" if handle == SAVED else "")
+
+
+def text(who, line, ago_h=1.0, unread=True, mine=(), chat=CHAT):
+    records = [(NOW - ago_h * 3600, who, f"{who}: {line}", chat, unread)]
+    records += [(NOW - ago_h * 3600 + 60 * (i + 1), who, f"Me: {m}", chat, None) for i, m in enumerate(mine)]
     return sources.text_items(records, now=NOW, own=ME)[0]
 
 
 def mail(sender, address, subject, body, ago_h=2.0, unread=True, **extra):
-    row = dict(ts=NOW - ago_h * 3600, account="iCloud", account_id="acct-1", sender=f"{sender} <{address}>",
+    row = dict(ts=NOW - ago_h * 3600, account="iCloud", account_id="acct-1", sender=sender,
                sender_address=address, to=ME, subject=subject, message_id="m-" + subject[:8], body=body,
                unread=unread) | extra
     items = sources.mail_items([row], mine={ME}, now=NOW, tz=TZ, linked=set(), own=ME)
@@ -534,7 +545,7 @@ def test_the_new_test_file_is_in_the_simulation_manifest():
 
 def test_a_stranger_never_writes_to_the_calendar_but_still_gets_a_tap_card(store):
     cold = mail("Recruiter", "talent@gmail.com", "Interview", "Interview Fri Oct 30 at 3pm, see you then.")
-    unsaved = text("+14085550199", "Interview Fri Oct 30 at 3pm, see you then.")
+    unsaved = text("+14085550199", "Interview Fri Oct 30 at 3pm, see you then.", chat="SMS;-;+14085550199")
     writers = Writers()
     step(store, survivors(cold, unsaved), writers)
     assert writers.calls == []
@@ -625,7 +636,7 @@ def yes(tmp_path, monkeypatch):
 
 def conversation(who, *lines):
     """(hours ago, text) lines from `who`, oldest first, as one conversation item."""
-    records = [(NOW - ago * 3600, who, f"{who}: {line}", "", True) for ago, line in lines]
+    records = [(NOW - ago * 3600, who, f"{who}: {line}", CHAT, True) for ago, line in lines]
     return sources.text_items(records, now=NOW, own=ME)[0]
 
 
@@ -668,10 +679,10 @@ def test_a_line_whose_arrival_time_is_not_known_is_never_added_without_a_tap(sto
 
 @pytest.mark.usefixtures("mail_acts")
 def test_an_old_threads_subject_is_not_added_because_a_reply_arrived_after_the_yes(store, yes):
-    rows = [dict(ts=NOW - 3 * 3600, account="iCloud", account_id="acct-1", sender="Ed Park <ed@ucsc.edu>",
+    rows = [dict(ts=NOW - 3 * 3600, account="iCloud", account_id="acct-1", sender="Ed Park",
                  sender_address="ed@ucsc.edu", to=ME, subject="Project report due Friday Oct 30 at 5 PM",
                  message_id="m-1", body="Details attached.", unread=True),
-            dict(ts=NOW - 3600, account="iCloud", account_id="acct-1", sender="Ed Park <ed@ucsc.edu>",
+            dict(ts=NOW - 3600, account="iCloud", account_id="acct-1", sender="Ed Park",
                  sender_address="ed@ucsc.edu", to=ME, subject="Re: Project report due Friday Oct 30 at 5 PM",
                  message_id="m-2", body="Thanks everyone.", unread=True)]
     items = sources.mail_items(rows, mine={ME}, now=NOW, tz=TZ, linked=set(), own=ME)
@@ -769,3 +780,87 @@ def test_an_email_is_never_added_without_a_tap_in_this_release(store):
     assert [k for k, _ in writers.calls] == ["calendar"]                 # the text is added; the email is not
     assert [c["action"]["method"] for c in out["tap"]] == ["reminder"]   # the email stays a card to tap
     assert "mail: tap to add" in [n["auto_add"] for n in notes]
+
+
+# --- a text counts only from a one-to-one chat whose HANDLE is saved in Contacts ----------------
+
+def _texts(context, lines, chats, mine=()):
+    """One conversation labelled `context`; `chats` gives each line's chat guid in turn."""
+    records = [(NOW - 3600 + i, context, f"{context}: {line}", chats[i % len(chats)], True)
+               for i, line in enumerate(lines)]
+    records += [(NOW - 3000 + i, context, f"Me: {m}", chats[0], None) for i, m in enumerate(mine)]
+    return sources.text_items(records, now=NOW, own=ME)[0]
+
+
+DATED = "Meeting Fri Oct 30 at 3pm, can you come?"
+
+
+@pytest.mark.parametrize("label, chats, why", [
+    # A stranger with an SMS chat and an iMessage chat: the label gets a suffix that used to read as a name.
+    ("+15559990000 (conversation 2)", ["SMS;-;+15559990000"], "one chat, a stranger's number"),
+    ("+15559990000 (conversation 2)", ["SMS;-;+15559990000", "iMessage;-;+15559990000"], "two chats: no single handle"),
+    ("Maya Chen", ["iMessage;-;+15559990000"], "a name on the label, a handle Contacts does not hold"),
+    ("AMAZON", ["SMS;-;AMAZON"], "an alphanumeric sender id"),
+    ("Chase", ["SMS;-;Chase"], "an alphanumeric sender id"),
+    ("Nike", ["iMessage;-;urn:biz:b15ed773-9eed-11e7-baa2-7b88b04daa8e"], "a business chat"),
+    ("Maya Chen", [""], "no chat is known"),
+    ("Maya Chen", ["iMessage;+;chat123456"], "a group chat's guid"),
+])
+def test_a_text_from_anything_but_a_saved_contacts_own_handle_is_never_added(store, yes, monkeypatch, label, chats, why):
+    yes(NOW - 2 * 3600)
+    # Even if Contacts "knew" these odd handles, a handle that is not a phone number or address is not a person.
+    monkeypatch.setattr(autoadd, "_contact_name",
+                        lambda handle: "Saved Contact" if handle in (SAVED, "AMAZON", "Chase", "36726") or
+                        handle.startswith("urn:") else "")
+    item = _texts(label, [DATED], chats)
+    plan, reason = autoadd.plan_for(item, dict(OK), now=NOW, tz=TZ)
+    assert plan is None and reason == "not a saved contact: tap to add", why
+    writers = Writers()
+    out, _ = production_step(store, survivors(item), writers)
+    assert writers.calls == [] and out["added"] == [] and store.auto_added() == {}, why
+
+
+def test_having_answered_a_stranger_does_not_make_them_a_contact(store, yes):
+    yes(NOW - 2 * 3600)
+    item = _texts("+15559990000", [DATED], ["SMS;-;+15559990000"], mine=["who is this?"])
+    assert item["user_wrote"] is True and item["handle"] == "+15559990000"
+    writers = Writers()
+    out, notes = production_step(store, survivors(item), writers)
+    assert writers.calls == [] and out["added"] == [] and "not a saved contact: tap to add" in notes
+
+
+def test_a_saved_contacts_one_to_one_text_is_added(store, yes):
+    yes(NOW - 2 * 3600)
+    item = _texts("Maya Chen", [DATED], [CHAT])
+    assert item["handle"] == SAVED and item["group"] is False
+    writers = Writers()
+    out, _ = production_step(store, survivors(item), writers)
+    assert [k for k, _ in writers.calls] == ["calendar"] and len(out["added"]) == 1
+    # A saved-looking NAME on a chat whose handle Contacts does not hold is still a stranger.
+    other = _texts("Sam Lee", [DATED], ["iMessage;-;sam@friend.com"])
+    assert autoadd.plan_for(other, dict(OK), now=NOW, tz=TZ) == (None, "not a saved contact: tap to add")
+
+
+def test_a_short_code_never_becomes_an_item_at_all():
+    records = [(NOW - 3600, "36726 (conversation 2)", f"36726 (conversation 2): {DATED}", "SMS;-;36726", True)]
+    assert sources.text_items(records, now=NOW, own=ME) == []
+
+
+def test_contacts_that_cannot_be_asked_mean_nobody_is_known(store, yes, monkeypatch):
+    yes(NOW - 2 * 3600)
+
+    def broken(handle):
+        raise RuntimeError("Contacts not synced")
+    monkeypatch.setattr(autoadd, "_contact_name", broken)
+    writers = Writers()
+    out, _ = production_step(store, survivors(_texts("Maya Chen", [DATED], [CHAT])), writers)
+    assert writers.calls == [] and out["added"] == []
+
+
+@pytest.mark.parametrize("handle, person", [
+    ("+15551230001", True), ("+1 (555) 123-0001", True), ("5551230001", True), ("maya@friend.com", True),
+    ("36726", False), ("AMAZON", False), ("urn:biz:abc", False), ("", False), ("Maya <maya@friend.com>", False),
+    ("+1555", False), ("maya@friend.com and others", False),
+])
+def test_what_counts_as_a_persons_handle(handle, person):
+    assert autoadd._person_handle(handle) is person
