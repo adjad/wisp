@@ -520,7 +520,7 @@ def _fix_greeting(draft: str, row: dict) -> str:
     if not match or not me or match.group(2).casefold() != me:
         return draft
     name = parseaddr(str(row.get("sender") or ""))[0].strip().split()
-    first = name[0] if name and "@" not in name[0] else ""
+    first = name[0] if name and "@" not in name[0] and not _reply_recipient(row)[1] else ""
     greeting = f"{match.group(1)} {first}{match.group(3) or ','}" if first else ""
     rest = draft[match.end():].lstrip()
     return f"{greeting}\n\n{rest}".strip() if greeting else rest
@@ -531,10 +531,32 @@ def _reply_subject(subject: str) -> str:
     return subject if re.match(r"^\s*re\s*:", subject, re.I) else f"Re: {subject}".strip()
 
 
+_UNSURE_SENDER = "Wisp couldn't tell who this email is really from, so it won't reply for you. Open it in Mail."
+
+
+def _reply_recipient(row: dict) -> tuple[str, bool]:
+    """(the address a reply goes back to, the sender is odd), from service.mail_sender.
+
+    The address is the one the mail was really sent from, never one written into the
+    display name ("" when there is none to trust). An ordinary sender keeps the
+    address as written (its case included); only which address is read changed."""
+    from service import mail_sender
+    sender, parsed = str(row.get("sender") or ""), str(row.get("sender_address") or "")
+    real = mail_sender.real_address(sender, parsed)
+    if not real:
+        return "", mail_sender.is_odd(sender, parsed)
+    written = (parsed or parseaddr(sender)[1]).strip()
+    return (written if written.casefold() == real else real), mail_sender.is_odd(sender, parsed)
+
+
 def _predicted_envelope(ref: dict, row: dict, identity: tuple[str, str]) -> dict | None:
-    """The reply as the cache row predicts it: back to the sender, "Re:" subject."""
-    sender = parseaddr(str(row.get("sender") or ""))[1].strip()
-    if "@" not in sender:
+    """The reply as the cache row predicts it: back to the sender, "Re:" subject.
+
+    None when Wisp can't trust who sent it: no real address, or a display name
+    dressed up as an address (the card could name one person while the reply went
+    to another), so nothing is sealed and the tap-to-send is refused."""
+    sender, odd = _reply_recipient(row)
+    if "@" not in sender or odd:
         return None
     account, account_id = identity
     return {"message_id": ref["message_id"], "account": account, "account_id": account_id,
@@ -543,7 +565,7 @@ def _predicted_envelope(ref: dict, row: dict, identity: tuple[str, str]) -> dict
 
 def _envelope_view(ref: dict, row: dict) -> dict:
     """Who/what the reply goes to and whether Wisp can send it; no model, no Mail."""
-    sender = parseaddr(str(row.get("sender") or ""))[1]
+    sender, _odd = _reply_recipient(row)
     out: dict[str, Any] = {
         "ok": True, "reply_ref": ref, "account": ref["account"],
         "to": [sender] if sender else [], "cc": [],
@@ -562,7 +584,7 @@ def _envelope_view(ref: dict, row: dict) -> dict:
     out.update(open_url=open_url(ref, gmail=False), open_label="Open in Mail")
     predicted = _predicted_envelope(ref, row, identity)
     if predicted is None:
-        out["reason"] = "Wisp couldn't tell who this email is from, so it can't reply here."
+        out["reason"] = _UNSURE_SENDER
         return out
     out.update(account=identity[0], to=predicted["to"], cc=[], subject=predicted["subject"],
                envelope=seal_envelope(predicted, verified=False),

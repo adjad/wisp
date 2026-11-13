@@ -971,12 +971,31 @@ _ESP_MESSAGE_ID = re.compile(
     r"cmail\d*\.com|createsend\w*\.com|exacttarget\.com|beehiiv\.com|substack\.com|convertkit\w*\.com)>?\s*$", re.I)
 
 
+# One clean addr-spec: no spaces, quotes, brackets, commas or a second "@".
+_CLEAN_ADDRESS = re.compile(r"[^\s<>@,;:\"'()\[\]\\]+@[^\s<>@,;:\"'()\[\]\\]+")
+_FINAL_ANGLE = re.compile(r"<([^<>]*)>\s*$")
+
+
+def _sender_real_address(sender: str, parsed: str = "") -> str:
+    """The address a row was really sent from, casefolded, or "" — never one written
+    into the display name. The same rule as service/mail_sender.real_address, kept
+    here because this module may not import it: the parsed field when it is one clean
+    address; else only the bracketed address at the very END of the From value."""
+    parsed = unicodedata.normalize("NFKC", str(parsed or "")).strip()
+    if parsed:
+        return parsed.casefold() if _CLEAN_ADDRESS.fullmatch(parsed) else ""
+    text = unicodedata.normalize("NFKC", str(sender or "")).strip()
+    final = _FINAL_ANGLE.search(text)
+    inside = final.group(1).strip() if final else text
+    return inside.casefold() if _CLEAN_ADDRESS.fullmatch(inside) else ""
+
+
 def is_broadcast(row: dict) -> bool:
     """Mail sent to a list, whatever name it carries."""
-    address = (row.get("sender_address", "") or "").strip().lower()
-    if not address:
-        found = re.search(r"<([^>]+@[^>]+)>", row.get("sender", "") or "")
-        address = found.group(1).lower() if found else ""
+    # The real address, never one written into the display name. As before, a bare
+    # From value with no parsed field and no brackets is not read.
+    sender, parsed = row.get("sender", "") or "", row.get("sender_address", "") or ""
+    address = _sender_real_address(sender, parsed) if parsed.strip() or "<" in sender else ""
     local, _, domain = address.partition("@")
     if domain:
         if _BROADCAST_LOCAL.match(local):
@@ -3465,10 +3484,13 @@ def _is_list_mail(row: dict) -> bool:
     sender, subject = row.get("sender") or "", row.get("subject") or ""
     if _MARKETING_SUBJECT.search(subject):
         return True
-    address = row.get("sender_address") or ""
-    if not address:
-        found = re.search(r"<([^>]+@[^>]+)>", sender)
-        address = found.group(1) if found else sender
+    # The real address, never one written into the display name. A sender with no
+    # address-like text keeps the old reading of its whole value; anything else with
+    # no real address reads as none, so a posed ".edu" address can't vouch for the mail.
+    address = _sender_real_address(sender, row.get("sender_address") or "")
+    if not address and not row.get("sender_address") and not re.search(
+            r"[@<>]", unicodedata.normalize("NFKC", sender)):
+        address = sender
     if _INSTITUTION_DOMAIN.search(address.strip().lower()):
         return False
     if (is_broadcast(row) or is_summary_noise(sender, subject)
