@@ -210,24 +210,23 @@ struct OverlayTransitionChecks {
             check(CGFloat(1 - p[p.count - 2]) * reach < 1.01, "An open arrives slowly: its last step is under a point")
         }
 
-        // Closing: a hold while the content fades, then into the bar and gone.
+        // Closing: NotchBox's own spring, as it is. No hold, aimed at the bar itself.
         let closing = RevealMotion.closing()
         let c = closing.progress
-        let held = Int((RevealMotion.closeHold / RevealMotion.step).rounded())
         check(c.first == 0 && c.last == 1, "A close starts on the panel and ends exactly on the bar")
-        check(c.prefix(held).allSatisfy { $0 == 0 } && c[held + 3] > 0, "A close holds its shape for the fade, then moves")
+        check(c[1] > 0, "A close moves from its first frame: there is no hold")
         check(c.allSatisfy { $0 <= 1 }, "A close never passes the bar")
         for i in 1..<c.count { check(c[i] >= c[i - 1], "A close only ever shrinks") }
-        check(closing.duration > 0.25 && closing.duration < 0.4, "A close takes about a third of a second: \(closing.duration)")
-        // Still moving when it reaches the bar, so no lip is left hanging under the notch:
-        // the last 5% of the travel takes a few frames, not the 200 ms a spring aimed at the bar takes.
-        let lastTwentieth = Double(c.count - 1 - c.firstIndex { $0 >= 0.95 }!) * RevealMotion.step
-        check(lastTwentieth < 0.09, "A close crosses its last 5% in under 90 ms: \(lastTwentieth)")
-        check((1 - c[c.count - 3]) / (2 * RevealMotion.step) > 0.2, "A close arrives at the bar still moving")
-        let unaimed = close.settleTime(tolerance: 0.002) - close.settleTime(tolerance: 0.05)
-        check(unaimed > 0.15, "Aimed at the bar itself, the same spring would creep for \(unaimed) s")
-        check(closing.duration < RevealMotion.opening(reach: 221).duration, "Closing is the quicker of the two")
-        print("PASS: an open lands softly without passing the panel; a close holds, then tucks into the bar and stops")
+        for i in 0..<(c.count - 1) {
+            check(abs(c[i] - close.position(at: Double(i) * RevealMotion.step)) < 1e-12, "A close is the spring itself, sample for sample")
+        }
+        check(closing.duration > 0.42 && closing.duration < 0.55, "A close takes about half a second: \(closing.duration)")
+        let halfway = Double(c.firstIndex { $0 >= 0.5 }!) * RevealMotion.step
+        check(halfway < 0.12, "A close is quick out of the panel: half way in \(halfway) s")
+        check(1 - c[c.count - 2] < 2 * RevealMotion.closeSettle, "A close has all but come to rest when its path ends")
+        let easing = close.settleTime(tolerance: RevealMotion.closeSettle) - close.settleTime(tolerance: 0.05)
+        check(easing > 0.15, "And eases into the notch for a long time: \(easing) s over its last 5%")
+        print("PASS: an open lands softly without passing the panel; a close follows NotchBox's spring into the bar")
     }
 
     #if WISP_MOTION_APP_DELEGATE_CHECKS
@@ -235,8 +234,8 @@ struct OverlayTransitionChecks {
     /// with the panel's own motion stood in for: no window, so it runs everywhere.
     @MainActor
     static func contentVeilChecks() async {
-        check(AppDelegate.closeFade <= RevealMotion.closeHold,
-              "The close's fade fits inside the hold: \(AppDelegate.closeFade) s in \(RevealMotion.closeHold) s")
+        check(AppDelegate.closeFade < OverlayPanel.contentHideDelay,
+              "The content has faded before its layers are taken out: \(AppDelegate.closeFade) s, then \(OverlayPanel.contentHideDelay) s")
         check(AppDelegate.openFadeDelay + AppDelegate.openFade < RevealMotion.opening(reach: 221).duration,
               "The open's fade is done before the shape lands")
         let model = OverlayModel(loadDebugMode: { false }, saveDebugMode: { _ in })
@@ -340,22 +339,24 @@ struct OverlayTransitionChecks {
         let closeStart = CACurrentMediaTime()
         panel.rollUp { compact = true; closed = true }
         check(panel.hasBarBacking == layout.barIsVisible, "A close backs the bar it is heading for, when there is one to draw")
-        // The lip, read off the animation the panel is really playing rather
-        // than timed by polling: from 5% out to the bar takes a few frames.
-        let nearBar = bar.height + 0.05 * (target.height - bar.height)
+        // The path, read off the animation the panel is really playing.
         let closeParts = ((mask.animation(forKey: "reveal") as? CAAnimationGroup)?.animations ?? [])
             .compactMap { $0 as? CAKeyframeAnimation }
         let heights = (closeParts.first { $0.keyPath == "bounds.size" }?.values ?? [])
             .compactMap { ($0 as? NSValue)?.sizeValue.height }
         check(heights.count > 20 && abs(heights[0] - target.height) < 0.5 && abs(heights[heights.count - 1] - bar.height) < 0.5,
               "The close's path runs from the panel to the bar: \(heights.count) steps")
-        if let firstNear = heights.firstIndex(where: { $0 <= nearBar }), let playing = closeParts.first {
-            let tail = Double(heights.count - 1 - firstNear) * playing.duration / Double(heights.count - 1)
-            check(tail < 0.09, "No lip hangs under the notch: \(tail) s from 5% out to the bar")
-        }
+        let playing = RevealMotion.closing()
+        check(heights.count == playing.progress.count && abs((closeParts.first?.duration ?? 0) - playing.duration) < 1e-9,
+              "The panel plays the close's own path: \(heights.count) steps over \(closeParts.first?.duration ?? 0) s")
+        let fullRate = (mask.animation(forKey: "reveal") as? CAAnimationGroup)?.preferredFrameRateRange.preferred
+        check(fullRate == 120, "The reveal asks for the display's full refresh rate: \(String(describing: fullRate))")
+        check(!panel.contentIsHidden, "The content is still there to fade when a close begins")
         var narrowest = target.width, shortest = target.height, lastWidth = target.width
+        var contentWentOut = false
         samples = 0
         while !closed {
+            contentWentOut = contentWentOut || panel.contentIsHidden
             if let live = mask.presentation() {
                 narrowest = min(narrowest, live.bounds.width)
                 shortest = min(shortest, live.bounds.height)
@@ -368,6 +369,8 @@ struct OverlayTransitionChecks {
         }
         let closedAt = CACurrentMediaTime()
         check(samples > 4, "The close was sampled through its travel: \(samples)")
+        check(contentWentOut == layout.barIsVisible, "Once faded, the content's layers are out of the picture while the shape travels")
+        check(!panel.contentIsHidden, "And back before the bar is swapped in")
         check(narrowest >= bar.width - 0.5 && shortest >= bar.height - 0.5,
               "A close never passes the bar: \(narrowest) x \(shortest) for \(bar)")
         // Generous: the path's own length is checked exactly above and in revealMotionChecks.
@@ -396,6 +399,7 @@ struct OverlayTransitionChecks {
         panel.dropOpen { opened = true }
         check(!panel.hasBarBacking, "An open drops the backing a close turned on")
         await waitUntil { opened }
+        check(!panel.contentIsHidden, "An open that cuts a close short has its content")
 
         // A display change in the middle of a close ends the close, but the
         // swap to the bar is still to come: the backing must outlast it.
@@ -404,6 +408,7 @@ struct OverlayTransitionChecks {
         check(panel.isRevealing && !cutShort, "The close is in flight")
         panel.applyDisplayChange()
         check(cutShort && !panel.isRevealing, "The display change ends the close")
+        check(!panel.contentIsHidden, "A close cut short brings the content back")
         check(panel.hasBarBacking == layout.barIsVisible, "A close cut short by a display change keeps the bar backed")
         panel.settleToBar()
         check(panel.hasBarBacking == layout.barIsVisible, "And through the swap to the bar")
