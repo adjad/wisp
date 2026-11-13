@@ -100,32 +100,46 @@ def act():
 async def set_act(request: Request):
     """The person's own answer to "Let Wisp act for me": their standing approval, or its end.
 
-    The app's own JSON request only. It changes one thing, `act_for_me` in the person's
-    settings file, and a yes records its time so only later messages are acted on. What
+    The app's own JSON request only, and a yes only from the app itself. It changes one
+    thing, the gate's own file, and a yes records its time so only later messages are acted on. What
     Wisp may do stays in each action's own code, which reads the setting again right
     before it writes. Off takes effect at once."""
     body = await _body(request, Act)
-    import yaml
+    if body.enabled:
+        # Giving consent takes more than "no Origin header": the caller must be the Wisp app
+        # that launched this service, proven from the kernel's socket table. Another program
+        # on this Mac cannot say yes for the person. Taking consent back stays open to the
+        # app's ordinary request, so off never depends on that proof succeeding.
+        _require_app(request)
     from service.proactive import acting
     try:
         acting.set_enabled(body.enabled)
-    except (ValueError, OSError, yaml.YAMLError) as exc:
-        # An unreadable config.yaml is never overwritten, and Wisp does nothing on its own while it is unreadable.
-        raise HTTPException(409, "Wisp can't save this setting because its settings file (~/.moe/config.yaml) "
-                                 "can't be read. Fix or remove that file and try again. Until then Wisp "
-                                 "does nothing on its own.") from exc
+    except (ValueError, OSError) as exc:
+        raise HTTPException(409, "Wisp couldn't save this setting (~/.moe/act_for_me.json). Until it can, "
+                                 "Wisp does nothing on its own.") from exc
     return _act_state()
+
+
+def _require_app(request: Request) -> None:
+    from service.wisp_reset import caller_is_parent_app
+    client, server = request.scope.get("client"), request.scope.get("server")
+    try:
+        proven = bool(client and server and client[0] == "127.0.0.1" and server[0] == "127.0.0.1"
+                      and caller_is_parent_app((client[0], int(client[1])), (server[0], int(server[1]))))
+    except Exception:  # noqa: BLE001 — unproven is refused
+        proven = False
+    if not proven:
+        raise HTTPException(403, "Only the Wisp app can turn this on.")
 
 
 @router.post("/act/asked")
 async def act_asked(request: Request):
     """The question was shown and put aside without a yes. It is not asked again."""
     await _body(request, Empty)
-    import yaml
     from service.proactive import acting
     try:
         acting.mark_asked()
-    except (ValueError, OSError, yaml.YAMLError):
+    except (ValueError, OSError):
         pass                                # it will simply be asked once more
     return _act_state()
 

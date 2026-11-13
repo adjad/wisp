@@ -14,14 +14,23 @@ NOW = 1_800_000_000.0
 
 
 @pytest.fixture
-def setting(monkeypatch):
-    saved: dict = {}
-    monkeypatch.setattr(config, "user_overlay_valid", lambda: True)
-    monkeypatch.setattr(config, "models_config", lambda: dict(saved))
-    monkeypatch.setattr(config, "_save_overlay", lambda patch: saved.update(patch))
+def setting(tmp_path, monkeypatch):
+    """The gate's own file, in this test's folder. Returns its path; `read(path)` is what is on disk."""
+    path = tmp_path / "home" / acting.FILE
+    monkeypatch.setattr(acting, "_path", lambda: path)
+    # These tests use a made-up clock (NOW); the file's real creation time has its own test.
+    monkeypatch.setattr(acting, "_born", lambda: 0.0)
     from service import idle
     monkeypatch.setattr(idle, "foreground_busy", lambda: False)
-    return saved
+    # Proving "the caller is the Wisp app" needs the real socket table; its own test replaces this.
+    from service.proactive import api
+    monkeypatch.setattr(api, "_require_app", lambda request: None)
+    return path
+
+
+def read(path):
+    import json
+    return json.loads(path.read_text()) if path.exists() else {}
 
 
 @pytest.fixture
@@ -31,11 +40,13 @@ def store(tmp_path):
 
 def test_off_until_a_yes_and_the_yes_is_dated(setting):
     assert acting.state() == {"enabled": False, "enabled_at": None, "asked": False, "per_day": acting.MAX_PER_DAY,
-                              "does": acting.DOES, "never": acting.NEVER}
+                              "does": acting.DOES, "never": acting.NEVER, "scope": acting.SCOPE}
+    assert "after you say yes" in acting.SCOPE and "already there" in acting.SCOPE
     assert acting.DOES and "never sends" in acting.NEVER
     assert not acting.allows(NOW) and acting.still_ok() == "Acting for you was turned off"
     acting.set_enabled(True, now=NOW)
-    assert setting["act_for_me"] == {"enabled": True, "enabled_at": NOW, "asked": True}
+    assert read(setting) == {"enabled": True, "enabled_at": NOW, "asked": True}
+    assert setting.stat().st_mode & 0o077 == 0                          # private to the person
     assert acting.enabled() and acting.enabled_at() == NOW and acting.asked() and acting.still_ok() is None
 
 
@@ -61,21 +72,56 @@ def test_off_stops_a_write_that_was_about_to_happen_and_so_does_a_turn(setting, 
     assert acting.still_ok() == "Acting for you was turned off" == autoadd._still_ok()
 
 
-def test_a_settings_file_that_cannot_be_read_means_off(setting, monkeypatch):
+def test_a_file_that_is_missing_damaged_or_the_wrong_shape_means_off(setting):
     acting.set_enabled(True, now=NOW)
-    monkeypatch.setattr(config, "user_overlay_valid", lambda: False)
-    assert not acting.enabled() and not acting.allows(NOW + 1) and acting.still_ok() is not None
-    for bad in (None, "yes", {"enabled": True}, {"enabled": 1, "enabled_at": NOW}, {"enabled": True, "enabled_at": "x"}):
-        monkeypatch.setattr(config, "user_overlay_valid", lambda: True)
-        monkeypatch.setattr(config, "models_config", lambda bad=bad: {"act_for_me": bad})
-        assert not acting.enabled()
+    assert acting.enabled()
+    for bad in ("not json", "[]", '"yes"', '{"enabled": true}', '{"enabled": 1, "enabled_at": 5}',
+                '{"enabled": true, "enabled_at": "x"}', '{"enabled": "true", "enabled_at": 5}'):
+        setting.write_text(bad)                                          # read from disk each time: no cache
+        assert not acting.enabled() and not acting.allows(NOW + 1) and acting.still_ok() is not None, bad
+    setting.unlink()
+    assert not acting.enabled() and acting.state()["enabled_at"] is None
     with pytest.raises(ValueError):
         acting.set_enabled("yes")
 
 
+def test_a_forged_file_cannot_backdate_the_yes(setting, monkeypatch):
+    import time
+    monkeypatch.undo()                                                   # the real creation-time check
+    monkeypatch.setattr(acting, "_path", lambda: setting)
+    setting.parent.mkdir(parents=True, exist_ok=True)
+    before = time.time()
+    setting.write_text('{"enabled": true, "enabled_at": 0, "asked": true}')   # "yes since 1970"
+    assert acting.enabled() and acting.enabled_at() >= before - 2           # counts from when it was written
+    assert not acting.allows(before - 3600) and not acting.allows(0.0)       # old mail stays out of reach
+    assert acting.allows(time.time() + 5)
+    # The switch's own write is unaffected: its time and the file's agree.
+    acting.set_enabled(True)
+    assert abs(acting.enabled_at() - time.time()) < 5
+
+
+def test_the_settings_file_cannot_turn_it_on_any_more(setting, monkeypatch):
+    # config.yaml is writable by the assistant's file tools under Full access, so nothing in it counts.
+    monkeypatch.setattr(config, "user_overlay_valid", lambda: True)
+    for value in ({"act_for_me": {"enabled": True, "enabled_at": 0}}, {"proactive_auto_add": True}):
+        monkeypatch.setattr(config, "models_config", lambda value=value: value)
+        assert not acting.enabled() and not acting.allows(NOW) and not config.proactive_auto_add_enabled()
+
+
 def test_put_aside_is_not_asked_again_and_never_turns_it_on(setting):
     acting.mark_asked()
-    assert acting.asked() and not acting.enabled() and setting["act_for_me"]["enabled"] is False
+    assert acting.asked() and not acting.enabled() and read(setting)["enabled"] is False
+
+
+def test_putting_the_question_aside_never_overwrites_a_yes(setting):
+    acting.set_enabled(True, now=NOW)                                    # a yes from another window
+    setting.write_text('{"enabled": true, "enabled_at": %r, "asked": false}' % NOW)
+    acting.mark_asked()                                                  # "Not now" lands a moment later
+    assert read(setting) == {"enabled": True, "enabled_at": NOW, "asked": True} and acting.allows(NOW + 1)
+    acting.set_enabled(False)
+    before = setting.read_text()
+    acting.mark_asked()
+    assert setting.read_text() == before                                 # already asked: nothing is rewritten
 
 
 # --- a new kind of action, start to finish (the interface a second module uses) --------------
@@ -174,7 +220,7 @@ def test_the_switch_is_the_apps_own_and_takes_only_a_real_boolean(setting):
     assert client.put(url, content='{"enabled": true}', headers={"Content-Type": "text/plain"}).status_code == 415
     for body in ({"enabled": "true"}, {"enabled": 1}, {}, {"enabled": True, "enabled_at": 0}, {"enabled": None}):
         assert client.put(url, json=body).status_code == 422
-    assert setting == {} and not acting.enabled()
+    assert not setting.exists() and not acting.enabled()
     on = client.put(url, json={"enabled": True}).json()
     assert on["enabled"] is True and on["enabled_at"] > 1_700_000_000 and on["per_day"] == 10 and on["per_cycle"] == 3
     off = client.put(url, json={"enabled": False}).json()
@@ -189,13 +235,62 @@ def test_the_question_can_be_put_aside_from_the_app_only(setting):
     assert reply["asked"] is True and reply["enabled"] is False
 
 
-def test_a_settings_file_that_cannot_be_saved_keeps_everything_off_and_says_so(setting, monkeypatch):
-    def refuse(_patch):
-        raise OSError("unreadable")
-    monkeypatch.setattr(config, "_save_overlay", refuse)
+def test_a_yes_that_cannot_be_saved_keeps_everything_off_and_says_so(setting, monkeypatch):
+    def refuse(_setting):
+        raise OSError("disk full")
+    monkeypatch.setattr(acting, "_write", refuse)
     reply = _client().put("/assistant/proactive/act", json={"enabled": True})
     assert reply.status_code == 409 and "does nothing on its own" in reply.json()["detail"]
     assert not acting.enabled()
+
+
+def test_only_the_wisp_app_itself_can_say_yes_and_anyone_local_can_say_no(setting, monkeypatch):
+    from service import wisp_reset
+    from service.proactive import api
+    monkeypatch.undo()                                                   # the real _require_app
+    monkeypatch.setattr(acting, "_path", lambda: setting)
+    proven = {"is_app": False}
+    monkeypatch.setattr(wisp_reset, "caller_is_parent_app", lambda client, server: proven["is_app"])
+    client, url = _client(), "/assistant/proactive/act"
+    # Another program on this Mac: no Origin, JSON, a clean boolean, and still refused.
+    refused = client.put(url, json={"enabled": True})
+    assert refused.status_code == 403 and "Only the Wisp app" in refused.json()["detail"] and not acting.enabled()
+
+    def broken(client, server):
+        raise RuntimeError("socket table unreadable")
+    monkeypatch.setattr(wisp_reset, "caller_is_parent_app", broken)
+    assert client.put(url, json={"enabled": True}).status_code == 403 and not acting.enabled()   # unproven is refused
+    assert api._require_app.__module__ == "service.proactive.api"
+    acting.set_enabled(True, now=NOW)
+    # Off never depends on that proof.
+    assert client.put(url, json={"enabled": False}).json()["enabled"] is False and not acting.enabled()
+
+
+def test_the_gates_file_is_protected_from_the_assistants_own_tools(setting, monkeypatch):
+    """A model must never be able to give or backdate the consent by writing a file or running a shell
+    command, whatever the access mode: the write asks (or is refused), and is never simply allowed."""
+    from service.paths import MOE_DIR
+    from service.safety import policy
+    target = MOE_DIR / acting.FILE
+    assert target in policy._credential_roots()
+    assert any(__import__("re").search(pattern, f"echo x > {target}") for pattern in policy._SHELL_SECRET)
+    assert any(__import__("re").search(pattern, "sed -i '' s/false/true/ ~/.moe/act_for_me.json")
+               for pattern in policy._SHELL_SECRET)
+    # The decision itself, in every access mode: a write to it is never simply allowed.
+    for full, view, expected in ((False, False, "CONFIRM"), (True, False, "CONFIRM"), (False, True, "DENY")):
+        monkeypatch.setattr(policy, "_FULL_ACCESS", full)
+        monkeypatch.setattr(policy, "_READ_ONLY", view)
+        assert policy.decide("fs_write", {"path": str(target), "content": "{}"}, tool="write_file").tier.name == expected
+        for cmd in (f"echo x > {target}", "echo x > ~/.moe/act_for_me.json",
+                    "sed -i '' s/false/true/ ~/.moe/act_for_me.json", f"mv /tmp/x {target}"):
+            assert policy.decide("shell", {"cmd": cmd}, tool="run_shell").tier.name == expected, (full, view, cmd)
+    # config.yaml, where the gate used to live, IS writable without a card under Full access: why it moved.
+    monkeypatch.setattr(policy, "_FULL_ACCESS", True)
+    monkeypatch.setattr(policy, "_READ_ONLY", False)
+    assert policy.decide("fs_write", {"path": str(MOE_DIR / "config.yaml"), "content": "x"},
+                         tool="write_file").tier.name == "ALLOW"
+    monkeypatch.undo()
+    assert acting._path() == __import__("service.paths", fromlist=["moe_dir"]).moe_dir() / acting.FILE
 
 
 def test_this_file_is_in_the_simulation_manifest():
@@ -235,3 +330,8 @@ def test_auto_add_never_adds_what_is_already_on_the_list(store):
     writers = T.Writers()
     out = T.step(store, T.survivors(item), writers, existing=lambda n: existing)
     assert writers.calls == [] and out["added"] == [] and out["tap"] == []
+
+
+def test_resetting_wisp_erases_the_yes():
+    from service import wisp_reset
+    assert acting.FILE not in wisp_reset.KEEP_ENTRIES          # everything outside KEEP_ENTRIES is deleted
