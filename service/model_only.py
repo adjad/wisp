@@ -885,16 +885,29 @@ _DIRECT_LEADS = (
     (re.compile(r"^(?:did|has|have)\s+" + _NOT_A_SENDER + r"[a-z][\w'.-]*(?:\s+[a-z][\w'.-]*){0,2}\s+e-?mail(?:ed)?\b"
                 r"|\b(?:any|new|unread|latest)\s+e-?mails?\s+from\b|\bgrade\s+updates?\b", re.I),
      ("view_emails", "summarize_emails")),
-    (re.compile(r"^(?:please\s+)?(?:can\s+you\s+|could\s+you\s+)?e-?mail\s+(?!me\b|address\b)[a-z][\w'.-]*\b", re.I),
-     ("send_email",)),
+    # "email <someone> ..." as an instruction. Never a question, and never
+    # "email from Dana", "email about the W-9", "email Dana sent yesterday" or
+    # "email addresses": those ask about mail, and send_email must not lead a read.
+    (re.compile(r"^(?:please\s+)?(?:can\s+you\s+|could\s+you\s+)?e-?mail\s+"
+                r"(?!(?:me|address(?:es)?|from|about|re|regarding|threads?|that|which|the|in|on|with|to|for|"
+                r"sent|and|or|is|was|of)\b)"
+                r"[a-z][\w'.-]*(?!\s+(?:sent|send|sends|wrote|emailed|forwarded|replied|said|got|received)\b)\b",
+                re.I),
+     ("send_email",), "instruction"),
     (re.compile(r"\b(?:set|start|put)\s+(?:a|an|the|another)?\s*(?:[\w-]+\s+){0,3}?timer\b"
                 r"|\btimer\s+for\b|\b(?:set|wake)\b.*\balarm\b|\balarm\s+(?:for|at)\b", re.I),
-     ("set_timer", "manage_timers")),
+     ("set_timer", "manage_timers"), "timer"),
     (re.compile(r"\b(?:do\s+i\s+have|any|show|list|what\s+are)\b.*\breminders?\b|\bwhat(?:'s|\s+is)\s+overdue\b", re.I),
      ("search_reminders",)),
-    (re.compile(r"\b(?:s\s*&\s*p(?:\s*500)?|s\s+and\s+p|dow(?:\s+jones)?|nasdaq|stock\s+market)\b", re.I),
-     ("get_stock_price", "web_search")),
+    # An index by name. The price tool only: a web search leads through
+    # web_first, which has the privacy checks this pattern does not.
+    (re.compile(r"\b(?:s\s*&\s*p(?:\s*500)?|s\s+and\s+p\s+500|dow\s+jones|the\s+dow|nasdaq)\b", re.I),
+     ("get_stock_price",)),
 )
+# A request worded as a question ("did I set an alarm for 7?", "email from
+# Dana?"): it reads, so a tool that sends or creates never leads it.
+_ASKS = re.compile(r"^(?:did|do|does|is|are|was|were|has|have|had|how|what|when|where|who|which|why|any|"
+                   r"can\s+i|could\s+i|should\s+i|will)\b|\?\s*$", re.I)
 
 
 def direct_leads(prompt: str) -> list[str]:
@@ -903,10 +916,16 @@ def direct_leads(prompt: str) -> list[str]:
     text = _ascii_text(normalize_day_words(prompt or "")).strip()
     if not text.isascii() or len(text.split()) > 24:
         return []
+    asks = bool(_ASKS.search(text))
     out: list[str] = []
-    for pattern, tools in _DIRECT_LEADS:
-        if pattern.search(text):
-            out.extend(n for n in tools if n not in out)
+    for pattern, tools, *kind in _DIRECT_LEADS:
+        if not pattern.search(text):
+            continue
+        if kind == ["instruction"] and asks:
+            continue                            # a question never leads with a send
+        if kind == ["timer"] and asks:
+            tools = ("manage_timers",)          # a question reads the timers; it sets none
+        out.extend(n for n in tools if n not in out)
     return out
 
 
@@ -1479,6 +1498,7 @@ order package delivery door window garage gate account appointment schedule flig
 assignment exam midterm quiz grade grades chat thread task tasks todo timer alarm brief
 deal deals project projects ticket tickets case cases application applications offer offers claim claims
 status issue issues bug bugs request requests position role job listing sale contract proposal
+budget budgets spreadsheet spreadsheets resume cv draft drafts plan report essay paper thesis
 enrollment registration poll survey invoice order orders pr
 """.split())
 # Relation words that are also ordinary words of a public question.

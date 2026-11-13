@@ -62,3 +62,48 @@ def test_long_or_non_ascii_text_gets_no_lead():
 def test_a_public_question_still_leads_with_the_search():
     assert main._ask_tool_rank("who is the president?")[0][:1] == ["web_search"]
     assert main._ask_tool_rank("what's on my calendar today")[0][:1] == ["get_upcoming"]
+
+
+# --- delta review of 4900581c: a question never leads with a tool that sends or creates ---
+
+@pytest.mark.parametrize("prompt", [
+    "email from Dana?", "email about the W-9 deadline?", "email Dana sent yesterday?",
+    "email addresses for the team", "email about the offer", "email Dana wrote last week",
+    "can you email Sam that I'm late?", "email to Sam",
+])
+def test_asking_about_mail_never_leads_with_send_email(prompt):
+    assert "send_email" not in mo.direct_leads(prompt)
+    assert main._ask_tool_rank(prompt)[0][:1] != ["send_email"]
+
+
+@pytest.mark.parametrize("prompt", ["email Dana the notes", "please email mom the schedule", "can you email Sam that I'm late"])
+def test_an_instruction_to_email_someone_still_leads_with_it(prompt):
+    assert mo.direct_leads(prompt) == ["send_email"]
+
+
+@pytest.mark.parametrize("prompt", [
+    "did I set an alarm for 7?", "is there a timer for the oven?", "how long is left on my timer for the pasta?",
+    "what alarm is set for tomorrow", "do I have a timer for the laundry",
+])
+def test_a_question_about_timers_reads_them_and_sets_none(prompt):
+    leads = mo.direct_leads(prompt)
+    assert "set_timer" not in leads
+    assert main._ask_tool_rank(prompt)[0][:1] != ["set_timer"]
+
+
+def test_the_index_lead_is_the_price_tool_alone_and_needs_the_index_by_name():
+    assert mo.direct_leads("how did the S&P 500 move today") == ["get_stock_price"]
+    assert mo.direct_leads("how is the dow doing") == ["get_stock_price"]
+    for prompt in ("did Dr Dow reply about my biopsy results?", "did Dana text me about the stock market"):
+        leads = mo.direct_leads(prompt)
+        assert "web_search" not in leads and "get_stock_price" not in leads, (prompt, leads)
+        assert "web_search" not in main._ask_tool_rank(prompt)[0][:2]
+    for prompt, _ in LEADS:
+        assert "web_search" not in mo.direct_leads(prompt), prompt
+
+
+def test_a_version_of_the_users_own_file_gets_no_web_lead():
+    for prompt in ("what's the latest version of the budget", "what's the latest version of the spreadsheet",
+                   "what is the latest version of the resume", "what's the newest version of the draft"):
+        assert not mo.web_first(prompt), prompt
+    assert mo.web_first("what's the latest version of macOS")
