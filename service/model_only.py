@@ -996,16 +996,28 @@ _EMAIL_WORD = re.compile(r"\be-?mail\w*|\bmail\b|\binbox\b", re.I)
 _TEXT_WORD = re.compile(r"\btext\w*|\bi?messag\w+|\bsms\b", re.I)
 
 
+NOTE_WRITERS = frozenset({"create_note", "append_note", "delete_note"})
+_IN_NOTES = re.compile(r"\b(?:in|to|into|from)\s+(?:my\s+|the\s+)?notes\b|\bnotes\s+app\b|\bmy\s+[\w\s]{0,30}note\b", re.I)
+
+
 def other_channel_sends(prompt: str) -> frozenset[str]:
     """The send and draft of the channel the person did NOT name: the text
     ones for "email Priya …", the email ones for "text Priya …". Empty when both or
     neither are named."""
     text = " ".join((prompt or "").split())
+    # "Email myself a note saying Wisp test 3" made a Notes note (2026-11-13,
+    # real Mac): after "email"/"text", "a note saying …" is the message.
+    notes = frozenset() if _IN_NOTES.search(text) else NOTE_WRITERS
     if _EMAIL_SOMEONE.search(text) and not _TEXT_WORD.search(text):
-        return frozenset({"send_message", "draft_message"})
+        return frozenset({"send_message", "draft_message"}) | notes
     if _TEXT_SOMEONE.search(text) and not _EMAIL_WORD.search(text):
-        return frozenset({"send_email", "draft_email"})
+        return frozenset({"send_email", "draft_email"}) | notes
     return frozenset()
+
+
+SELF_SEND_HINT = ("SEND TO THE USER: the user named themselves as the recipient. Call the send tool now with "
+                  "to=\"me\"; Wisp fills in their own address. Do not ask for an address or a number, and do not "
+                  "use any words of the message as the recipient. Text after a colon is the message itself.")
 
 
 def ask_forbidden_tools(prompt: str, registry: dict) -> frozenset[str]:

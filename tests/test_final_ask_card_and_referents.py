@@ -219,5 +219,17 @@ def test_a_move_that_only_read_the_calendar_cannot_end_on_im_moving(synthetic):
 ])
 def test_only_the_named_channels_send_is_offered(prompt, barred):
     registry = {"send_message": None, "send_email": None, "draft_message": None, "draft_email": None}
-    assert mo.other_channel_sends(prompt) == barred
+    assert mo.other_channel_sends(prompt) - mo.NOTE_WRITERS == barred
     assert mo.ask_forbidden_tools(prompt, registry) == barred
+
+
+@pytest.mark.parametrize("prompt,barred", [
+    ("Email myself a note saying Wisp test 3", True),      # real Mac, 2026-11-13: made a Notes note
+    ("Text Dana a note saying thanks", True),
+    ("Email Dana my packing list note", False),
+    ("Email Dana what is in my notes about the trip", False),
+    ("Make a note saying email Dana", False),
+])
+def test_after_email_or_text_a_note_saying_is_the_message(prompt, barred):
+    registry = {"create_note": None, "append_note": None, "send_email": None}
+    assert ("create_note" in mo.ask_forbidden_tools(prompt, registry)) is barred

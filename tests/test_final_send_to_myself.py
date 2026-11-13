@@ -189,3 +189,24 @@ async def test_an_address_i_typed_or_a_saved_contact_keeps_its_place(world):
     # Not a turn that names me: nothing is rewritten.
     self_send.mark_turn("Email pat@example.org the notes")
     assert action_tools._self_not_invented("someone@else.test") == "someone@else.test"
+
+
+# --- findings from a real Mac, 2026-11-13 ------------------------------------------
+
+async def test_the_body_passed_as_the_recipient_is_me(world):
+    # "Text myself: Wisp test" arrived as to="Wisp test", text="Wisp test".
+    self_send.mark_turn("Text myself: Wisp test")
+    args, problem = action_tools.prepare_send_recipient(TEXT, {"to": "Wisp test", "text": "Wisp test"})
+    assert problem is None and args["to"] == "me" and args["resolved_to"] == APPLE_ID
+    # Someone the person did name is still a contact on such a turn.
+    self_send.mark_turn("Text me and Dana: hi")
+    args, problem = action_tools.prepare_send_recipient(TEXT, {"to": "Dana", "text": "hi"})
+    assert problem is None and args["resolved_to"] == DANA
+
+
+def test_email_me_and_text_me_tell_the_model_who_the_recipient_is():
+    from service import model_only as mo
+    for prompt in ("Email me with the subject Wisp test 3 and the body hello", "Text myself: Wisp test",
+                   "text me: Wisp test", "Email myself a test with the subject Hello"):
+        assert self_send.user_names_self(prompt), prompt
+    assert 'to="me"' in mo.SELF_SEND_HINT and "Do not ask for an address" in mo.SELF_SEND_HINT

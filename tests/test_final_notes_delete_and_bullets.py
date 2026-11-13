@@ -81,6 +81,7 @@ def fake(monkeypatch):
     def install(notes=NOTES, **kw):
         f = FakeNotes(notes, **kw)
         monkeypatch.setattr(notes_write, "_osa", f)
+        monkeypatch.setattr(notes_write, "_VERIFY_WAIT_S", 0)
         return f
     return install
 
@@ -346,3 +347,45 @@ def test_a_sentence_several_lines_or_no_list_asked_for_are_left_alone(fake, said
     said("Make a note called Demo saying Alpha, Beta, Gamma")
     notes_write.create_note("Demo", "Alpha, Beta, Gamma")
     assert "Alpha, Beta, Gamma" in f.scripts[-1] and "<li>" not in f.scripts[-1]
+
+
+# ------------------------------------------ findings from a real Mac, 2026-11-13
+
+def test_the_title_the_person_typed_wins_over_a_shortened_one(fake, said):
+    # "Packing list" and "Packing list for Rome" both exist; the model dropped the end.
+    fake()
+    said("Delete the Packing list for Rome note")
+    bound, reason = notes_write.delete_note_card({"title": "Packing list"})
+    assert bound == {"title": "Packing list for Rome", "folder": "Notes"} and "“Packing list for Rome”" in reason
+    out = notes_write.delete_note("Packing list")
+    assert out.startswith("Deleted the note “Packing list for Rome”")
+    # What they typed names no note: the model's exact title stands.
+    said("Delete the Packing list for Paris note")
+    assert notes_write.delete_note_card({"title": "Packing list"})[0]["title"] == "Packing list"
+    said("Delete the Packing list note")
+    assert notes_write.delete_note_card({"title": "Packing list"})[0]["title"] == "Packing list"
+
+
+def test_a_check_that_runs_before_notes_settles_is_repeated(fake):
+    f = fake()
+    checks = []
+
+    def slow(script, _orig=f.__call__):
+        if '"LEFT:"' in script:
+            checks.append(script)
+            if len(checks) < 3:
+                return subprocess.CompletedProcess(["osascript"], 0, "STILL\n", "")
+        return _orig(script)
+    notes_write._osa = slow
+    assert notes_write.delete_note("Packing list").startswith("Deleted the note “Packing list”")
+    assert len(checks) == 3
+    # The moved note's container cannot stop the check.
+    assert "set still to false\n  try\n" in checks[0]
+
+
+def test_the_two_unconfirmed_results_say_which_it_was(fake):
+    fake(delete_works=False)
+    assert "Notes still lists “Packing list” in Notes." in notes_write.delete_note("Packing list")
+    fake(verify_fails=True)
+    out = notes_write.delete_note("Packing list")
+    assert "did not answer the check" in out and "Recently Deleted" in out

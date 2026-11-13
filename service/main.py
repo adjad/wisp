@@ -3283,6 +3283,10 @@ async def agent(body: dict[str, Any]):
                                                     email_reply_sender)
                     if that_title := chat_reminder(prompt, previous_prompt, last_assistant or ""):
                         synthesis_guidance.insert(1, chat_reminder_hint(that_title))
+                    from service.tools.self_send import user_names_self
+                    if user_names_self(prompt):
+                        from service.model_only import SELF_SEND_HINT
+                        synthesis_guidance.insert(1, SELF_SEND_HINT)
                     if reply_sender := email_reply_sender(prompt):
                         synthesis_guidance.insert(1, email_reply_hint(reply_sender))
                     if pure_writing(prompt):

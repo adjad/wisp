@@ -799,7 +799,7 @@ def _cc_addresses(cc: str) -> tuple[list[str], str]:
     return resolved, ""
 
 
-def _self_not_invented(to: str) -> str:
+def _self_not_invented(to: str, body: str = "") -> str:
     """`to` with every address or number the person did not type, and that is
     not their own, read as "me", on a turn where they named themselves as the
     recipient ("Email myself a test" reached a card addressed to an address
@@ -812,6 +812,9 @@ def _self_not_invented(to: str) -> str:
         own = {e.strip().casefold() for e in user_emails() or []}
     except Exception:  # noqa: BLE001 - no identity: nothing is known to be theirs
         own = set()
+    if not _is_handle(to) and "@" not in to and body and " ".join(to.split()).casefold() in body.casefold():
+        # "Text myself: Wisp test" arrived as to="Wisp test": the body, not a person.
+        return "me"
     parts = _split_recipients(to) if "@" in to else [to]
     kept = ["me" if (_is_handle(r) and r.casefold() not in own and not typed_this_turn(r)
                      and not _saved_name(r)) else r
@@ -840,7 +843,7 @@ def prepare_send_recipient(tool, args: dict) -> tuple[dict, str | None]:
         return args, None
     tool = name
     to = str(args.get("to") or "").strip()
-    if (mine := _self_not_invented(to)) != to:
+    if (mine := _self_not_invented(to, " ".join(str(args.get(k) or "") for k in ("text", "body", "subject")))) != to:
         to = mine
         args = {**args, "to": to}
     if not to and _own_recipient("me") is not None:

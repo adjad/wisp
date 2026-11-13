@@ -19,10 +19,13 @@ from __future__ import annotations
 
 import re
 import subprocess
+import time
 
 from service.tools.registry import not_done, register
 
 _TIMEOUT = 25
+_VERIFY_TRIES = 4
+_VERIFY_WAIT_S = 0.6
 
 
 def _osa(script: str) -> subprocess.CompletedProcess:
@@ -338,6 +341,28 @@ def _find_notes(title: str, folder: str):
     return hits
 
 
+_SAID_NOTE = re.compile(
+    r"\b(?:delete|remove|erase|trash|bin|get\s+rid\s+of)\s+(?:the|my|that|this)\s+"
+    r"(?:note\s+(?:called|titled|named)\s+)?[\"“']?(.+?)[\"”']?(?:\s+note)?\s*[.!?]*$", re.I)
+
+
+def _title_as_said(title: str, folder: str) -> str:
+    """The title in the person's own words when the model shortened it. With
+    "Wisp test note" and "Wisp test note 2" both in Notes, "Delete the Wisp
+    test note 2 note" reached the card as "Wisp test note" and the wrong note
+    was offered (2026-11-13, real Mac). Used only when what they typed
+    contains the model's title and is itself a note's exact title."""
+    from service.tools.self_send import turn_text
+    said = _SAID_NOTE.search(" ".join(turn_text().split()))
+    if not said:
+        return title
+    typed = said.group(1).strip()
+    if typed.casefold() == title.casefold() or title.casefold() not in typed.casefold():
+        return title
+    hits = _find_notes(typed, folder)
+    return typed if isinstance(hits, list) and hits else title
+
+
 def delete_note_card(args: dict) -> tuple[dict, str] | None:
     """For the confirmation card: the call bound to the one note's folder and
     a reason naming it, or None when there is not exactly one match (the tool
@@ -346,10 +371,11 @@ def delete_note_card(args: dict) -> tuple[dict, str] | None:
     folder = str(args.get("folder") or "").strip()
     if not title:
         return None
+    title = _title_as_said(title, folder)
     hits = _find_notes(title, folder)
     if not isinstance(hits, list) or len(hits) != 1:
         return None
-    return {**args, "folder": hits[0][2]}, delete_note_reason(hits[0][3], hits[0][2])
+    return {**args, "title": title, "folder": hits[0][2]}, delete_note_reason(hits[0][3], hits[0][2])
 
 
 @register(
@@ -374,6 +400,7 @@ def delete_note(title: str, folder: str = "") -> str:
         return not_done("(error: delete_note needs the exact `title` of the note.)",
                         question="Which note should I delete?")
 
+    title = _title_as_said(title, folder)
     hits = _find_notes(title, folder)
     if hits == "NOFOLDER":
         return not_done(f"(There's no Notes folder called {folder!r}. Nothing was deleted.)",
@@ -404,21 +431,44 @@ def delete_note(title: str, folder: str = "") -> str:
                 "Check Notes (and Recently Deleted) before trying again.")
 
     # Success only once a read-back shows the note has left that folder.
-    v = _osa(f'tell application "Notes"\n'
-             f'  if exists note id "{_esc(note_id)}" then\n'
-             f'    if (id of container of note id "{_esc(note_id)}") is "{_esc(folder_id)}" then return "STILL"\n'
-             f'  end if\n'
+    # On a real Mac the deletes worked and this check still said it could not
+    # confirm them (2026-11-13): it ran before Notes had moved the note, or
+    # stopped on the moved note's container. Reading the moved note's container
+    # may fail, so that part cannot stop the check, and the check is repeated
+    # while Notes settles. The folder listing decides.
+    check = (f'tell application "Notes"\n'
+             f'  set still to false\n'
+             f'  try\n'
+             f'    if exists note id "{_esc(note_id)}" then\n'
+             f'      if (id of container of note id "{_esc(note_id)}") is "{_esc(folder_id)}" then set still to true\n'
+             f'    end if\n'
+             f'  end try\n'
+             f'  if still then return "STILL"\n'
              f'  set out to ""\n'
              f'  repeat with n in (every note of folder id "{_esc(folder_id)}" whose name is "{_esc(name)}")\n'
              f'    set out to out & (name of n) & linefeed\n'
              f'  end repeat\n'
              f'  return "LEFT:" & out\n'
              f'end tell')
-    left = v.stdout.strip("\n") if v.returncode == 0 else ""
-    remaining = [n for n in left[5:].splitlines()
-                 if n.strip().casefold() == name.strip().casefold()] if left.startswith("LEFT:") else None
-    if remaining is None or remaining:
-        return (f"(couldn't confirm the delete: Notes still lists “{name}” in {folder_name} "
-                "or did not answer. Check Notes before trying again.)")
+    remaining = None
+    for attempt in range(_VERIFY_TRIES):
+        if attempt:
+            time.sleep(_VERIFY_WAIT_S)
+        v = _osa(check)
+        left = v.stdout.strip("\n") if v.returncode == 0 else ""
+        if left.startswith("LEFT:"):
+            remaining = [n for n in left[5:].splitlines() if n.strip().casefold() == name.strip().casefold()]
+        elif left.strip() == "STILL":
+            remaining = [name]
+        else:
+            remaining = None
+        if remaining == []:
+            break
+    if remaining is None:
+        return (f"(couldn't confirm the delete: Notes took the delete of “{name}” but did not answer "
+                "the check afterwards. It is probably in Recently Deleted; look in Notes before trying again.)")
+    if remaining:
+        return (f"(couldn't confirm the delete: Notes still lists “{name}” in {folder_name}. "
+                "Check Notes before trying again.)")
     return (f"Deleted the note “{name}” from {folder_name}. "
             "Notes keeps it in Recently Deleted for 30 days.")
