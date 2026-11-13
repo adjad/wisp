@@ -784,7 +784,8 @@ def test_an_email_without_proof_is_never_added_without_a_tap(store):
                                    debug=notes))
     assert [k for k, _ in writers.calls] == ["calendar"]                 # the text is added; the email is not
     assert [c["action"]["method"] for c in out["tap"]] == ["reminder"]   # the email stays a card to tap
-    assert "mail: tap to add (not from a Google account you linked)" in [n["auto_add"] for n in notes]
+    assert autoadd.MAIL_ACTS is False                                    # as shipped
+    assert "mail: tap to add (mail does not act)" in [n["auto_add"] for n in notes]
 
 
 # --- a text counts only from a one-to-one chat whose HANDLE is saved in Contacts ----------------

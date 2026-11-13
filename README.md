@@ -64,12 +64,9 @@ by default), and your Brief and answers fit you.
   Reminders by itself, without waiting for your approval, from messages that arrive after your
   yes. A text counts when it is a one-to-one iMessage (a blue bubble) from the saved number or
   address of someone in your Contacts; an SMS (a green bubble) shows a card, because an SMS
-  sender number can be forged. An email counts
-  only with proof, because an email's From line is not proof of who sent it: it must be in a
-  Google account you linked in Wisp, from an address that is in your Contacts or that you have
-  written to before, and Gmail itself must report the mail as really coming from that sender.
-  Any other email, including all mail Wisp sees only through Apple Mail, shows a card and waits
-  for your tap. In a Google account you linked, it also adds a reminder to reply when someone
+  sender number can be forged. An email never adds an event or a deadline by itself, because an
+  email's From line is not proof of who sent it: Wisp shows a card and waits for your tap. In a
+  Google account you linked, it also adds a reminder to reply when someone
   in your Contacts whom you have written to before asked you something by email over a day ago
   and has not heard back. It also holds
   a free hour on your Day plan for work due today or in the next three days. A hold is for

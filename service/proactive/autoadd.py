@@ -34,9 +34,11 @@ IMPORTANT rules:
   calendar_event/reminder).
 - One path per message: an item Caught for you already turned into a reminder
   or event (service/attention) is never added here as well.
-- Mail acts only with proof (default_mail_proof, MAIL_ACTS): a mail sender's
-  identity comes from an unauthenticated From header, so a qualifying mail item
-  is added without a tap only when it was fetched by Wisp's own Google sign-in,
+- Mail does not act in this release (MAIL_ACTS is False): a dated email always
+  stays a tap card. The proof it will need is built and tested behind that
+  switch (default_mail_proof): a mail sender's identity comes from an
+  unauthenticated From header, so a qualifying mail item would be added without
+  a tap only when it was fetched by Wisp's own Google sign-in,
   its sender is read strictly, that exact address is a saved contact's or one
   the user's own Sent mail went to before it arrived, the dated sentence is in
   that very message, and Gmail itself reports the mail as authenticated for the
@@ -75,7 +77,15 @@ MAX_ATTEMPTS = 2
 # is the fail-closed switch over all of it: False, and no mail is ever added without a tap,
 # whatever the proof says. Texts do not pass through here: a text's sender is a handle
 # matched to a saved contact (_saved_contact).
-MAIL_ACTS = True
+#
+# OFF in this release. An independent review found the proof not yet strong enough to act
+# on: a yes given before email was named would silently cover it; Gmail writes no result
+# for mail that did not arrive by SMTP (an IMAP append, an import), so a forged one could
+# stand alone; a pass could rest on SPF alone; and the evidence is keyed by Message-ID,
+# not Gmail's own id. The proof code and its tests stay, exercised with this flipped on.
+# Do not set it True without those fixed and re-reviewed, and without changing acting.DOES
+# and SCOPE in the same commit: every screen reads them.
+MAIL_ACTS = False
 # A body sentence counts as already said in an earlier message when at least this share
 # of its word 3-grams appear in that message (sources.quote_grams).
 QUOTED_SHARE = 0.5

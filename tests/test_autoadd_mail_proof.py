@@ -25,6 +25,14 @@ FAIL = "mx.google.com; dkim=fail header.i=@friend.com; spf=softfail smtp.mailfro
        "dmarc=fail (p=NONE) header.from=friend.com"
 
 
+@pytest.fixture(autouse=True)
+def mail_switch_on(monkeypatch):
+    """MAIL_ACTS ships False: no email is added without a tap. The proof behind it is built and is
+    tested here with the switch on, so it is ready and stays honest; the shipped default has its own
+    test at the end of this file."""
+    monkeypatch.setattr(autoadd, "MAIL_ACTS", True)
+
+
 def gmail_row(sender="Priya Shah", address=PRIYA, subject="Recital", body=INVITE, mid="m-1@friend.com",
               ago_h=1.0, account=GMAIL):
     # A Google-fetched row carries the linked address as its account AND its account id.
@@ -76,7 +84,7 @@ def test_the_row_really_is_a_google_fetched_one(world):
     # A Mail.app copy of the same message under the same address is NOT Google-fetched.
     copy = item_for({**gmail_row(), "account_id": "5A1C-MAIL-UUID", "native_id": "mail:123"})
     assert copy["google_fetched"] is False
-    assert item["odd_sender"] is False and item["person"] is True and autoadd.MAIL_ACTS is True
+    assert item["odd_sender"] is False and item["person"] is True
 
 
 def test_a_saved_contact_whose_mail_gmail_verified_is_added(store, world):
@@ -228,6 +236,13 @@ def test_an_organisation_or_a_roll_up_is_not_a_person(store, world):
     for item in items:
         wrote, out, _ = run(store, item)
         assert wrote == [] and out["added"] == []
+
+
+def test_as_shipped_even_fully_proven_mail_is_a_card(store, world, monkeypatch):
+    monkeypatch.undo()                                   # the real, shipped value of the switch
+    assert autoadd.MAIL_ACTS is False
+    import importlib
+    assert "MAIL_ACTS = False" in Path(importlib.import_module("service.proactive.autoadd").__file__).read_text()
 
 
 def test_this_file_is_in_the_simulation_manifest():
