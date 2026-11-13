@@ -1008,6 +1008,7 @@ async def plans(items, *, now: float, tz: str, records, reminders=(), results=No
 # --- acting: the background cycle's step ------------------------------------------------
 
 KIND = "follow_up"
+ACTION = "follow_up"                    # the action a yes must have named (acting.ACTIONS)
 MAX_ATTEMPTS = 2
 _REPLY_METHODS = ("text_reply", "email_reply", "read", "reminder", "add_to_day")
 
@@ -1130,7 +1131,7 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
     from service.proactive import acting
     from service.proactive.prepare import card_id
     _register()
-    since = acting.enabled_at()
+    since = acting.enabled_at(ACTION)
     if since is None:
         return {"added": []}
     blocked, today, recorded = _blocked(store, now)
@@ -1148,7 +1149,7 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
         item = survivor.get("item") if isinstance(survivor, dict) else None
         if not isinstance(item, dict) or item.get("source") not in ("mail", "messages"):
             continue
-        if not acting.allows(item.get("received_ts")):
+        if not acting.allows(item.get("received_ts"), ACTION):
             continue
         if str(item.get("id")) in acted:
             if debug is not None:
@@ -1184,9 +1185,9 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
     for plan in picked:
         fp = plan["fingerprint"]
         previous = recorded.get(fp) if isinstance(recorded.get(fp), dict) else {}
-        if not acting.allows(plan.get("consent_ts", plan["received_ts"])):
+        if not acting.allows(plan.get("consent_ts", plan["received_ts"]), ACTION):
             continue
-        if acting.still_ok() is not None or acting.room(store, now) <= 0 or abort() \
+        if acting.still_ok(ACTION) is not None or acting.room(store, now) <= 0 or abort() \
                 or _in_quiet(quiet, now, tz):
             break
         try:

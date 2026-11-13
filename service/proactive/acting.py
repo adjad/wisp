@@ -63,13 +63,23 @@ LANDED = ("added", "undone", "unknown", "undo_unknown")
 # What Wisp does on its own once the person says yes, in the words every surface shows
 # (setup, Settings, the one-time card, About). ONE list, so no surface can claim more than
 # is built: a module adds its line here in the same change that makes it act.
-DOES: list[str] = [
-    "Adds an event or deadline you missed in a one-to-one iMessage from someone saved in your Contacts to "
-    "Calendar or Reminders. A green-bubble SMS or an email with a date shows a card and waits for your tap.",
-    "Holds a free hour on your Day plan for work due today or in the next three days (in Wisp only, never on your calendar).",
-    "Reminds you to reply when someone you email asked you something by email over a day ago and hasn't heard "
-    "back (for now, only in Google accounts you linked in Wisp).",
-]
+#
+# Each line is ONE ACTION with a key. A yes covers exactly the actions that were named when it
+# was given (their keys are stored with it, each with its own time). An action added later, or
+# an action whose meaning grows (its key must then change, e.g. "add" -> "add+mail"), is not
+# covered by an older yes: it does nothing until the person is asked once more and says yes to
+# it. Never widen what a key means without changing the key.
+ACTIONS: dict[str, str] = {
+    "add": ("Adds an event or deadline you missed in a one-to-one iMessage from someone saved in your Contacts to "
+            "Calendar or Reminders. A green-bubble SMS or an email with a date shows a card and waits for your tap."),
+    "hold": ("Holds a free hour on your Day plan for work due today or in the next three days "
+             "(in Wisp only, never on your calendar)."),
+    "follow_up": ("Reminds you to reply when someone you email asked you something by email over a day ago and "
+                  "hasn't heard back (for now, only in Google accounts you linked in Wisp)."),
+}
+DOES: list[str] = list(ACTIONS.values())
+# Which action each recorded kind of thing (KINDS) belongs to.
+ACTION_OF = {"calendar": "add", "reminder": "add", "hold": "hold", "follow_up": "follow_up", "draft": "draft"}
 NEVER = "Wisp never sends, replies, deletes or pays for anything by itself."
 # The first line says exactly what autoadd does: a text must be an iMessage (Apple verifies
 # an iMessage's sender; an SMS sender number can be forged) from a saved contact's own
@@ -119,13 +129,35 @@ def _write(setting: dict[str, Any]) -> None:
     paths.private_write_bytes(_path(), json.dumps(setting).encode("utf-8"))
 
 
-def enabled() -> bool:
-    """The person said yes and has not taken it back. Read every time, never cached. An off this
-    process could not save (`_revoked`) counts, so enabled_at, allows and still_ok are off too."""
+def _covers(setting: dict[str, Any]) -> dict[str, float]:
+    """The actions the stored yes named, each with the time it was said yes to. A yes saved
+    before actions were recorded names none: it covers nothing until the person is asked again."""
+    covers = setting.get("covers")
+    if not isinstance(covers, dict):
+        return {}
+    return {k: float(v) for k, v in covers.items() if isinstance(k, str) and type(v) in (int, float)}
+
+
+def enabled(action: str | None = None) -> bool:
+    """The person said yes and has not taken it back; with `action`, also that their yes named
+    that action. Read every time, never cached. An off this process could not save (`_revoked`)
+    counts, so enabled_at, allows and still_ok are off too."""
     if _revoked:
         return False
     setting = _setting()
-    return setting.get("enabled") is True and type(setting.get("enabled_at")) in (int, float)
+    on = setting.get("enabled") is True and type(setting.get("enabled_at")) in (int, float)
+    if not on or action is None:
+        return on
+    return action in ACTIONS and action in _covers(setting)
+
+
+def pending() -> list[str]:
+    """The actions Wisp has now that the person's yes did not name (keys, in order). Empty while
+    the gate is off: then the whole question is still to be asked."""
+    if not enabled():
+        return []
+    covers = _covers(_setting())
+    return [key for key in ACTIONS if key not in covers]
 
 
 def _born() -> float:
@@ -139,35 +171,48 @@ def _born() -> float:
     return max(float(getattr(info, "st_birthtime", 0.0)), float(info.st_ctime))
 
 
-def enabled_at() -> float | None:
-    """The time the yes counts from: max(recorded time, creation time, inode change time) (see
-    `_born`), so never earlier than the file itself was written. So a file forged or edited by anything other than the switch cannot backdate
-    the yes to reach mail that arrived before it existed; it can only ever move it later."""
-    if not enabled():
+def enabled_at(action: str | None = None) -> float | None:
+    """The time the yes counts from; with `action`, the time the person said yes to THAT action
+    (later than the first yes when it was agreed to afterwards). Never earlier than the file
+    itself was written: max(recorded time, creation time, inode change time) (see `_born`). So
+    a file forged or edited by anything other than the switch cannot backdate the yes to reach
+    mail that arrived before it existed; it can only ever move it later."""
+    if not enabled(action):
         return None
     try:
-        return max(float(_setting()["enabled_at"]), _born())
-    except OSError:
+        setting = _setting()
+        said = float(setting["enabled_at"]) if action is None else _covers(setting)[action]
+        return max(said, float(setting["enabled_at"]), _born())
+    except (OSError, KeyError):
         return None
 
 
 def asked() -> bool:
-    """The question has been put to the person once (setup or the card), whatever they answered."""
-    return _setting().get("asked") is True or enabled()
+    """Nothing is waiting to be asked: the question was put to the person (setup or the card),
+    whatever they answered, and every action Wisp has now was named then or put aside since."""
+    setting = _setting()
+    if not (setting.get("asked") is True or enabled()):
+        return False
+    aside = setting.get("aside") if isinstance(setting.get("aside"), list) else []
+    return all(key in aside for key in pending())
 
 
-def allows(received_ts: Any) -> bool:
-    """Wisp may act on something that arrived at `received_ts`: on, and it arrived after the yes.
-    Pass the arrival time of the very line or message being acted on, never a conversation's
-    latest. A time that is not known is never allowed."""
-    since = enabled_at()
+def allows(received_ts: Any, action: str | None = None) -> bool:
+    """Wisp may act on something that arrived at `received_ts`: on, and it arrived after the yes
+    (with `action`: after the yes that named that action). Pass the arrival time of the very
+    line or message being acted on, never a conversation's latest. A time that is not known is
+    never allowed. Every writer passes its action; without one this only says the gate is on."""
+    since = enabled_at(action)
     return since is not None and type(received_ts) in (int, float) and float(received_ts) >= since
 
 
-def still_ok() -> str | None:
-    """Checked again right before every write: still on, and no turn of the person's is running."""
+def still_ok(action: str | None = None) -> str | None:
+    """Checked again right before every write: still on (and, with `action`, still agreed to),
+    and no turn of the person's is running."""
     if not enabled():
         return "Acting for you was turned off"
+    if action is not None and not enabled(action):
+        return "You haven't said yes to this yet"
     try:
         from service import idle
         if idle.foreground_busy():
@@ -217,7 +262,18 @@ def set_enabled(on: bool, *, now: float | None = None) -> dict[str, Any]:
     saved = True
     with _lock:
         try:
-            _write({"enabled": on, "enabled_at": stamp, "asked": True})
+            if on:
+                # A yes names every action there is NOW. One already agreed to under a yes that is
+                # still in force keeps its own time; anything else counts from this yes. The first
+                # yes's time is kept while the gate stays on, so agreeing to a new action never
+                # moves what was already agreed.
+                before = _setting() if enabled() else {}
+                had = _covers(before)
+                first = float(before["enabled_at"]) if before else stamp
+                _write({"enabled": True, "enabled_at": first, "asked": True,
+                        "covers": {key: had.get(key, stamp) for key in ACTIONS}})
+            else:
+                _write({"enabled": False, "enabled_at": None, "asked": True})
         except Exception:
             saved = False
             if not _unlink():
@@ -237,17 +293,28 @@ def mark_asked() -> None:
     changes: a yes given a moment earlier (another window, a race) is never overwritten."""
     with _lock:
         setting = _setting()
-        if setting.get("asked") is True:
-            return
         on = enabled()                       # honours an unsaved off (_revoked): never writes it back on
-        _write({"enabled": on,
-                "enabled_at": setting.get("enabled_at") if on else None,
-                "asked": True})
+        waiting = pending()
+        aside = [k for k in (setting.get("aside") if isinstance(setting.get("aside"), list) else []) if k in ACTIONS]
+        if setting.get("asked") is True and all(key in aside for key in waiting):
+            return
+        fresh = {"enabled": on, "enabled_at": setting.get("enabled_at") if on else None, "asked": True}
+        if on:
+            # New actions put aside stay off (they are not in `covers`) and are not asked about again.
+            fresh["covers"] = _covers(setting)
+            fresh["aside"] = sorted(set(aside) | set(waiting))
+        _write(fresh)
 
 
 def state() -> dict[str, Any]:
-    return {"enabled": enabled(), "enabled_at": enabled_at(), "asked": asked(), "per_day": MAX_PER_DAY,
-            "does": list(DOES), "never": NEVER, "scope": SCOPE}
+    waiting = pending()
+    on = enabled()
+    return {"enabled": on, "enabled_at": enabled_at(), "asked": asked(), "per_day": MAX_PER_DAY,
+            # What a yes would cover (everything Wisp does on its own now), and, while the gate is
+            # on, what the person HAS agreed to and what is new since: Wisp does only the former.
+            "does": list(DOES), "never": NEVER, "scope": SCOPE,
+            "agreed": [ACTIONS[k] for k in ACTIONS if on and k not in waiting],
+            "new": [ACTIONS[k] for k in waiting]}
 
 
 def audit(event: str, **fields) -> None:

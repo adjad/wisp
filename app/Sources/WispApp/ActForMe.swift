@@ -23,6 +23,10 @@ struct ActForMe: Equatable {
     let never: String
     /// What the yes reaches, in the service's words (messages after the yes; deadlines already there).
     let scope: String
+    /// While on: what the person's yes named, and what Wisp can do now that it did not name.
+    /// Wisp does only the first; the second waits for its own yes.
+    let agreed: [String]
+    let new: [String]
     let recent: [Done]
 
     static let title = "Let Wisp act for me"
@@ -36,6 +40,8 @@ struct ActForMe: Equatable {
         does = (json["does"] as? [String] ?? []).filter { !$0.isEmpty }
         never = json["never"] as? String ?? "Wisp never sends anything by itself."
         scope = json["scope"] as? String ?? "Adding covers only messages that arrive after you say yes."
+        agreed = (json["agreed"] as? [String] ?? []).filter { !$0.isEmpty }
+        new = (json["new"] as? [String] ?? []).filter { !$0.isEmpty }
         recent = (json["recent"] as? [[String: Any]] ?? []).enumerated().compactMap { index, row in
             guard let title = row["title"] as? String, !title.isEmpty else { return nil }
             return Done(id: index, title: title, who: row["who"] as? String ?? "",
@@ -45,10 +51,11 @@ struct ActForMe: Equatable {
 
     /// The one line under the title.
     var line: String {
-        enabled
-            ? "On. Wisp shows each thing it does in the Brief as “Wisp did this”, with an Undo. "
+        !enabled ? "Off. Wisp does none of this without your tap."
+            : (new.isEmpty ? "On. " : "On for what you agreed to; \(new.count == 1 ? "one newer action waits" : "\(new.count) newer actions wait") "
+                             + "for your yes (turn this off and on to review them). ")
+              + "Wisp shows each thing it does in the Brief as “Wisp did this”, with an Undo. "
               + "At most \(perDay) a day. " + never
-            : "Off. Wisp does none of this without your tap."
     }
 
     /// The confirmation for the notch row: compact, and explicit that a yes covers only what
@@ -185,6 +192,8 @@ struct ActForMeAskCard: View {
     @ObservedObject private var model = ActForMeModel.shared
     /// What the person just chose here, so the card can say so before it goes.
     @State private var answered: Bool?
+    /// The card was asking only about actions added since an earlier yes.
+    @State private var askedAboutNew = false
 
     static let question = "Let Wisp act for you?"
     static let yes = "Yes, let Wisp act"
@@ -200,18 +209,27 @@ struct ActForMeAskCard: View {
     }
 
     private func card(_ state: ActForMe) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text(Self.question).font(.wisp(size: place == .setup ? 13 : 14.5, weight: .semibold))
+        // An earlier yes named fewer actions than Wisp has now: ask about the new ones only.
+        // Wisp does none of them until this is answered with a yes.
+        let aboutNew = askedAboutNew || (state.enabled && !state.new.isEmpty)
+        return VStack(alignment: .leading, spacing: 7) {
+            Text(aboutNew ? "Wisp can do more by itself now" : Self.question)
+                .font(.wisp(size: place == .setup ? 13 : 14.5, weight: .semibold))
                 .foregroundStyle(Theme.textPrimary)
             if let answered, model.pending || model.problem == nil {
                 Text(model.pending ? "Saving…"
-                     : answered && state.enabled ? "On. Wisp shows each thing it does as “Wisp did this”, with an Undo."
+                     : answered && state.enabled && state.new.isEmpty
+                        ? "On. Wisp shows each thing it does as “Wisp did this”, with an Undo."
+                     : aboutNew ? "Wisp won't do these. It keeps doing what you agreed to before."
                      : "Off. You can turn it on in Settings whenever you like.")
                     .font(.wisp(size: 12)).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                Text("Without asking first, Wisp would:").font(.wisp(size: 12)).foregroundStyle(Theme.textSecondary)
-                ForEach(state.does, id: \.self) { line in
+                Text(aboutNew ? "You said yes before these existed, so Wisp hasn't done them. Without asking first, it would also:"
+                              : "Without asking first, Wisp would:")
+                    .font(.wisp(size: 12)).foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                ForEach(aboutNew && !state.new.isEmpty ? state.new : state.does, id: \.self) { line in
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text("•").foregroundStyle(Theme.textMuted).accessibilityHidden(true)
                         Text(line).fixedSize(horizontal: false, vertical: true)
@@ -223,13 +241,13 @@ struct ActForMeAskCard: View {
                     .font(.wisp(size: 11.5)).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 10) {
-                    Button { answered = true; model.set(true) } label: {
-                        Text(Self.yes).font(.wisp(size: 12.5, weight: .semibold)).foregroundStyle(Color.black)
+                    Button { askedAboutNew = aboutNew; answered = true; model.set(true) } label: {
+                        Text(aboutNew ? "Yes, these too" : Self.yes).font(.wisp(size: 12.5, weight: .semibold)).foregroundStyle(Color.black)
                             .padding(.horizontal, 13).padding(.vertical, 5)
                             .background(Capsule().fill(Color.white.opacity(0.92))).contentShape(Capsule())
                     }
                     .buttonStyle(.plain)
-                    Button { answered = false; model.putAside() } label: {
+                    Button { askedAboutNew = aboutNew; answered = false; model.putAside() } label: {
                         Text(Self.notNow).font(.wisp(size: 12, weight: .medium)).foregroundStyle(Theme.textSecondary)
                             .padding(.horizontal, 8).padding(.vertical, 5).contentShape(Rectangle())
                     }

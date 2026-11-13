@@ -252,7 +252,7 @@ def one_path(settings):
         return settings
     try:
         from service.proactive import acting
-        acting_on = acting.enabled()
+        acting_on = acting.enabled("add")     # only when Wisp's own adding is in force
     except Exception:  # noqa: BLE001 — unknown: do not let two writers run
         acting_on = True
     if not acting_on:
