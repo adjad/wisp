@@ -345,13 +345,15 @@ def _mail_address(item: dict) -> str:
 
 
 def _read_by_google(item: dict) -> bool:
-    """The thread came through Wisp's own Google sign-in, not Mail.app. sources files
-    every Mail.app row under the owner's bucket ("me", never an address) and a
-    Google-fetched row under its linked account's address; a thread is one bucket."""
+    """The thread came through Wisp's own Google sign-in, not Mail.app: the reader's
+    own `google_fetched` mark AND its bucket agree. sources files every Mail.app row
+    under the owner's bucket ("me", never an address) and a Google-fetched row under
+    its linked account's address; a thread is one bucket."""
     from service.proactive.sources import OWN
     account = str(item.get("account") or "").strip().casefold()
     raw = str(item.get("raw_account") or "").strip().casefold()
-    return bool(account) and account != OWN and account == raw and "@" in account
+    return (item.get("google_fetched") is True and bool(account) and account != OWN and account == raw
+            and "@" in account)
 
 
 def _automated_address(address: str) -> bool:

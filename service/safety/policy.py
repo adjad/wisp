@@ -1154,13 +1154,38 @@ def _grep_file_operands(cmd: str) -> str:
     return " ".join(files)
 
 
+# The protected files inside Wisp's own folder, by name. A wildcard that the shell could
+# expand to one of them names it just as surely as spelling it out.
+_MOE_PROTECTED_NAMES = ("gmail.json", "mcp.json", "grants.json", "access_mode.json", "act_for_me.json",
+                        ".reset-pending", "google_workspace")
+_SHELL_WORD_BREAK = re.compile(r"[\s'\";|&()<>]+")
+
+
+def _moe_glob_hit(form: str) -> str | None:
+    """A wildcard path inside Wisp's folder (`~/.moe/act_for*.json`, `~/.moe/*.json`,
+    `~/.moe/a[c]cess_mode.jso?`) that can expand to a protected file. Only words that name
+    Wisp's folder are looked at, so `ls *.json` elsewhere is untouched."""
+    import fnmatch
+    from service.paths import MOE_DIR
+    roots = {".moe/", str(MOE_DIR).rstrip("/") + "/"}
+    for word in _SHELL_WORD_BREAK.split(form):
+        if not any(mark in word for mark in "*?[") or not any(root in word for root in roots):
+            continue
+        tail = next(word.split(root, 1)[1] for root in roots if root in word)
+        first = tail.split("/", 1)[0]                # the entry directly inside the folder
+        if any(fnmatch.fnmatchcase(name, first) for name in _MOE_PROTECTED_NAMES):
+            return "a protected Wisp file (wildcard)"
+    return None
+
+
 def shell_secret_hit(args: dict) -> str | None:
     """The credential location a shell-category call names, or None."""
     cmd = str(args.get("cmd") or "")
     folder = not (not args.get("script") and _only_lists(cmd))
 
     def hit_in(form: str) -> str | None:
-        return _first_match(_SHELL_SECRET, form) or (_moe_folder_hit(form) if folder else None)
+        return (_first_match(_SHELL_SECRET, form) or _moe_glob_hit(form)
+                or (_moe_folder_hit(form) if folder else None))
 
     if not args.get("script") and len(cmd) <= SHELL_TEXT_LIMIT:
         if read_only_shell_argv(cmd) is not None:

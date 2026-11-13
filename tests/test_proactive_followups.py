@@ -1258,9 +1258,12 @@ def _google_row(sender, sender_address="", **kw):
 def test_while_apple_mail_senders_are_untrusted_only_google_fetched_mail_qualifies(monkeypatch):
     monkeypatch.setattr(followups, "APPLE_MAIL_SENDER_TRUSTED", False)
     assert plan(mail_item()) == (None, "sender not verified for Apple Mail yet")         # the "me" bucket
-    google = mail_item(account=ME, raw_account=ME)
+    google = mail_item(account=ME, raw_account=ME, google_fetched=True)
     got, why = plan(google, apple_current=False, gmail_current={ME})
     assert got is not None, why
+    # The bucket alone isn't enough: the reader must have marked it Google-fetched too.
+    assert plan(mail_item(account=ME, raw_account=ME), gmail_current={ME})[1] == \
+        "sender not verified for Apple Mail yet"
     assert plan(mail_item(account="me", raw_account=ME), gmail_current={ME})[1] == \
         "sender not verified for Apple Mail yet"
     assert plan(mail_item(account=ME, raw_account="other@school.edu"), gmail_current={ME})[1] == \
@@ -1274,24 +1277,40 @@ def test_through_the_reader_a_mail_app_copy_waits_and_a_google_copy_acts(monkeyp
     # The same account read through Mail.app: Mail's own account id, so still the "me" bucket.
     [mail_app_copy] = _items([_mail_row("Priya Shah", "priya@school.edu") | {"account": ME}], linked={ME})
     assert plan(mail_app_copy, gmail_current={ME})[1] == "sender not verified for Apple Mail yet"
-    [google] = _items([_google_row("Priya Shah <priya@school.edu>", "priya@school.edu")], linked={ME})
+    [google] = _items([_google_row("Priya Shah", "priya@school.edu")], linked={ME})
+    assert google["google_fetched"] is True and mail_app_copy["google_fetched"] is False
     got, why = plan(google, apple_current=False, gmail_current={ME})
     assert got is not None and got["title"] == "Reply to Priya Shah", why
 
 
-def test_the_shape_only_the_hand_check_can_settle_is_refused_while_untrusted(monkeypatch):
+def test_the_shape_only_the_hand_check_could_settle_is_now_odd_from_either_reader(monkeypatch):
     # Mail.app gives `extract name` as sender and `extract address` as sender_address. If it
-    # were fooled by "Priya <priya@school.edu>" <x@evil.com>, the row would look exactly like
-    # this, which is also what a genuine Gmail row looks like (gmail_source builds "Name <addr>").
+    # were fooled by "Priya <priya@school.edu>" <x@evil.com>, the row would look like this.
+    # The reader now marks any name carrying an address beside a parsed address as odd, and
+    # Google's producers give a plain name, so the shape is refused from both, switch or not.
     shape = dict(sender="Priya <priya@school.edu>", sender_address="priya@school.edu")
-    monkeypatch.setattr(followups, "APPLE_MAIL_SENDER_TRUSTED", False)
     [from_mail_app] = _items([_mail_row(**shape)], linked={ME})
-    assert plan(from_mail_app, lookup=lambda a: "Priya Shah", gmail_current={ME})[0] is None
     [from_google] = _items([_google_row(**shape)], linked={ME})
-    assert plan(from_google, lookup=lambda a: "Priya Shah", apple_current=False, gmail_current={ME})[0] is not None
-    # Once the hand check passes and the switch flips, Mail.app's reading is taken as it comes.
-    monkeypatch.setattr(followups, "APPLE_MAIL_SENDER_TRUSTED", True)
-    assert plan(from_mail_app, lookup=lambda a: "Priya Shah")[0] is not None
+    for trusted in (False, True):
+        monkeypatch.setattr(followups, "APPLE_MAIL_SENDER_TRUSTED", trusted)
+        assert plan(from_mail_app, lookup=lambda a: "Priya Shah", gmail_current={ME})[0] is None
+        assert plan(from_google, lookup=lambda a: "Priya Shah", apple_current=False,
+                    gmail_current={ME}) == (None, "the sender's name hides an address")
+    # The genuine Google shape (a plain name beside the address) still acts while untrusted.
+    monkeypatch.setattr(followups, "APPLE_MAIL_SENDER_TRUSTED", False)
+    [genuine] = _items([_google_row("Priya Shah", "priya@school.edu")], linked={ME})
+    assert plan(genuine, apple_current=False, gmail_current={ME})[0] is not None
+
+
+def test_my_reply_prefixes_agree_with_the_readers():
+    from service.proactive import sources
+    for prefix in ["WG: ", "TR: ", "RES: ", "Antw: ", "Re[2]: ", "RE[12]:", "回复：", "回复: ", "转发: ", "答复：",
+                   "VS: ", "R: ", "RV: ", "Aw: Wg: ", "Re：", "Ｒｅ: ", "SV:", "Re: ", "Fwd: ", "FW: "]:
+        subject = prefix + "Can you send me the slides?"
+        assert sources.is_reply_subject(subject), prefix
+        assert followups._bare(subject) != subject.strip(), prefix
+    for fresh in ["Can you review my poster draft?", "Trip: can you drive Friday?", "Results: can you check mine?"]:
+        assert not sources.is_reply_subject(fresh) and followups._bare(fresh) == fresh
 
 
 def test_the_switch_ships_off():

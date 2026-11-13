@@ -352,7 +352,12 @@ def _find_row(ref: dict) -> dict | None:
             row = dict(row, body="")
             name, address = str(row.get("sender") or "").strip(), str(row.get("sender_address") or "").strip()
             if "@" not in name and "@" in address:
+                # One shape, never both: the full "Name <address>" header with no separate
+                # address field. A row that carries BOTH is read as a name dressed up as an
+                # address (service/mail_sender.py) and gets no reply from Wisp. A name that
+                # itself holds "<" or ">" still ends up odd here, as it should.
                 row["sender"] = f"{name} <{address}>" if name else address
+                row.pop("sender_address", None)
             return row
     return None
 

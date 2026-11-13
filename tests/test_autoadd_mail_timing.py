@@ -12,6 +12,10 @@ from pathlib import Path
 import pytest
 
 import tests.test_proactive_auto_add as T
+
+# Texts in the shared helpers come from one saved contact's one-to-one chat (the autouse fixture
+# that says so lives with the helpers and applies here by being imported).
+from tests.test_proactive_auto_add import saved_contacts  # noqa: E402,F401
 from tests.test_proactive_auto_add import store, yes  # noqa: F401 — pytest fixtures
 from service.proactive import autoadd, sources
 
@@ -22,8 +26,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.fixture
 def mail_on(monkeypatch):
-    """Mail acting switched on, to test the timing rules it will need."""
+    """Mail acting with its proof granted, to test the timing rules on their own. The proof
+    (Google-fetched, known correspondent, authenticated) is tested in test_autoadd_mail_proof.py."""
     monkeypatch.setattr(autoadd, "MAIL_ACTS", True)
+
+    async def proven(item, plan, evidence):
+        return True, ""
+    monkeypatch.setattr(autoadd, "default_mail_proof", proven)
 
 
 def row(ago_h, subject, body, sender="Maya Chen <maya@ucsc.edu>", address="", mid=None, **extra):
@@ -204,13 +213,22 @@ def test_a_relative_date_with_no_known_time_is_never_used(store, yes):
 
 # --- MAIL_ACTS: mail stays a tap card in this release ---------------------------------------------
 
-def test_by_default_a_qualifying_mail_writes_nothing_but_a_text_still_does(store, yes):
-    assert autoadd.MAIL_ACTS is False
+def test_without_proof_or_with_the_switch_off_a_mail_writes_nothing_but_a_text_still_does(store, yes, monkeypatch):
     yes(NOW - 2 * H)
     item = thread(row(1, "Recital", INVITE))
+    # As shipped: this row came through Apple Mail, so there is no proof for it.
     writers, out, notes = run(store, item)
     assert writers.calls == [] and out["added"] == [] and store.auto_added() == {}
-    assert [c["action"]["method"] for c in out["tap"]] == ["calendar_event"] and notes == ["mail: tap to add"]
+    assert [c["action"]["method"] for c in out["tap"]] == ["calendar_event"]
+    assert notes == ["mail: tap to add (not from a Google account you linked)"]
+    # The fail-closed switch: off, and even granted proof adds nothing.
+
+    async def proven(item, plan, evidence):
+        return True, ""
+    monkeypatch.setattr(autoadd, "default_mail_proof", proven)
+    monkeypatch.setattr(autoadd, "MAIL_ACTS", False)
+    writers, out, notes = run(store, item)
+    assert writers.calls == [] and out["added"] == [] and notes == ["mail: tap to add (mail does not act)"]
     writers, out, _ = run(store, T.conversation("Maya Chen", (1.0, T.RECITAL)))
     assert [k for k, _ in writers.calls] == ["calendar"] and len(out["added"]) == 1
 
@@ -280,3 +298,23 @@ def test_an_ordinary_sender_is_unchanged(store, yes, mail_on):
 def test_the_new_test_file_is_in_the_simulation_manifest():
     manifest = (ROOT / "scripts/run_simulation_qa.py").read_text()
     assert '"tests/test_autoadd_mail_timing.py"' in manifest
+
+
+@pytest.mark.parametrize("subject, reply", [
+    ("Midterm Sun Nov 22 at 10am", False), ("Re: Midterm", True), ("RE[2]: Midterm", True), ("WG: Midterm", True),
+    ("TR: Midterm", True), ("RES: Midterm", True), ("Antw: Midterm", True), ("VS: Midterm", True), ("RV: Midterm", True),
+    ("Fw: Midterm", True), ("Re: Fwd: AW: Midterm", True), ("回复：Midterm", True), ("Re： Midterm", True),
+    ("Ｒｅ: Midterm", True), ("Review: Midterm", False), ("Reminder: Midterm", False), ("Results: Midterm", False),
+    ("", False),
+])
+def test_what_counts_as_a_reply_or_forward_subject(subject, reply):
+    assert T.sources.is_reply_subject(subject) is reply
+
+
+def test_a_wg_or_numbered_reply_alone_in_view_gives_the_subject_no_time():
+    for subject in ("WG: Midterm Sun Nov 22 at 10am", "Re[2]: Midterm Sun Nov 22 at 10am", "回复：Midterm Sun Nov 22 at 10am"):
+        rows = [dict(ts=T.NOW - 3600, account="iCloud", account_id="acct-1", sender="Ed Park",
+                     sender_address="ed@ucsc.edu", to=T.ME, subject=subject, message_id="m-" + subject[:4],
+                     body="See you there.", unread=True)]
+        [item] = T.sources.mail_items(rows, mine={T.ME}, now=T.NOW, tz=T.TZ, linked=set(), own=T.ME)
+        assert item["subject_ts"] is None, subject

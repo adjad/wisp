@@ -116,6 +116,17 @@ def account_of(raw: str | None, *, linked: set[str] | None = None, own: str | No
 # --- mail -----------------------------------------------------------------------
 
 _PREFIX = re.compile(r"^\s*(?:re|fwd?|aw|sv)\s*:\s*", re.I)
+# Any reply or forward marker, in the forms mail clients write ("Re[2]:", "WG:", "TR:", "RES:",
+# "Antw:", "VS:", "RV:", "回复：", a full-width colon), read after Unicode folding. Wider than
+# _PREFIX on purpose and used only to decide that a subject is NOT a thread's first message
+# (_subject_ts, _is_reply): a wrong yes here only means a tap card, while widening
+# bare_subject would change which threads are grouped together.
+_REPLY_PREFIX = re.compile(r"^\s*(?:(?:re|fwd?|fw|aw|sv|wg|tr|res|antw|vs|r|rv|回复|转发|答复)(?:\[\d+\])?\s*[:：]\s*)+", re.I)
+
+
+def is_reply_subject(subject) -> bool:
+    import unicodedata
+    return bool(_REPLY_PREFIX.match(unicodedata.normalize("NFKC", str(subject or ""))))
 
 
 def sent_rows() -> list[dict]:
@@ -518,15 +529,18 @@ MAX_GRAMS = 200            # per earlier message, from its start (its own words 
 MAX_EARLIER = 4            # earlier in-view messages kept per item
 # What is left of quoted history after the cut: a header line, an attribution, a
 # separator, a quote mark (also as HTML text). Any of these: the body's time is unknown.
+# Linear on hostile bodies, like _QUOTED_HISTORY: a line start takes only [ \t]
+# (possessively), and a header's value may sit on the next line, but only one.
 _HISTORY_HINT = re.compile(
-    r"(?im)^\s*(?:\*{0,2}(?:from|sent|von|de|da|envoyé|gesendet)\s*:\*{0,2}\s*\S.*(?:@|\[mailto:|\bsent\b)|"
-    r"\*{0,2}sent\s*:\*{0,2}\s*\S|"
-    r"(?:>|&gt;|\|)|-{2,}.*(?:forwarded|original|reply).*|_{8,}\s*$|"
-    r"(?:on|am|le|el)\b.*\b(?:wrote|schrieb|a écrit|escribió)\s*:?\s*$)"
-    r"|\b(?:wrote|schrieb|a écrit|escribió)\s*:\s*$")
-_HEADER_LINE = re.compile(r"(?im)^\s*\*{0,2}(?:from|sent|to|cc|date|subject)\s*:\*{0,2}\s*\S")
+    r"(?im)^[ \t]*+(?:\*{0,2}(?:from|sent|von|de|da|envoyé|gesendet)[ \t]*:\*{0,2}[ \t]*(?:\r?\n[ \t]*)?\S"
+    r"[^\n]*?(?:@|\[mailto:|\bsent\b)|"
+    r"\*{0,2}sent[ \t]*:\*{0,2}[ \t]*(?:\r?\n[ \t]*)?\S|"
+    r"(?:>|&gt;|\|)|--[^\n]*?(?:forwarded|original|reply)|_{8,}+[ \t\r]*$|"
+    r"(?:on|am|le|el)\b[^\n]*?\b(?:wrote|schrieb|a écrit|escribió)[ \t]*:?[ \t\r]*$)"
+    r"|\b(?:wrote|schrieb|a écrit|escribió)[ \t]*:[ \t\r]*$")
+_HEADER_LINE = re.compile(r"(?im)^[ \t]*+\*{0,2}(?:from|sent|to|cc|date|subject)[ \t]*:\*{0,2}[ \t]*(?:\r?\n[ \t]*)?\S")
 # Quoting anywhere in the raw body: the message is a reply or a forward.
-_QUOTING = re.compile(r"(?m)^\s*(?:>|&gt;)")
+_QUOTING = re.compile(r"(?m)^[ \t]*+(?:>|&gt;)")
 
 
 def quote_grams(text: str) -> list[str]:
@@ -553,14 +567,14 @@ def _history_unclear(row: dict, cut: str) -> bool:
 def _is_reply(row: dict) -> bool:
     """The message itself is a reply or a forward: its own subject has a prefix,
     or its raw body quotes something."""
-    return bool(_PREFIX.match(str(row.get("subject") or ""))) or bool(_QUOTING.search(str(row.get("body") or "")))
+    return is_reply_subject(row.get("subject")) or bool(_QUOTING.search(str(row.get("body") or "")))
 
 
 def _subject_ts(messages: list[dict]) -> float | None:
     """The arrival of the earliest in-view message whose own subject has no
     reply/forward prefix: when the subject's words were first written. None when
     every message in view is a "Re:"/"Fwd:" of something older."""
-    firsts = [float(m["ts"]) for m in messages if not _PREFIX.match(str(m.get("subject") or ""))]
+    firsts = [float(m["ts"]) for m in messages if not is_reply_subject(m.get("subject"))]
     return min(firsts) if firsts else None
 
 
@@ -716,6 +730,10 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
                           received_ts=float(last_in["ts"]), replied=replied, ref=ref, reply_ref=reply_ref,
                           # A sender name made to look like someone else's address (odd_sender).
                           odd_sender=odd,
+                          # The newest incoming message was fetched by Wisp's own Google sign-in
+                          # for a linked account (not a Mail.app copy): its sender and Message-ID
+                          # are gmail_source's own reading, and only such mail can carry proof.
+                          google_fetched=bool(fetched_by_gmail(last_in, linked or set())),
                           # A thread's subject is as old as the first message that carried it
                           # without a Re:/Fwd: prefix; None when no such message is in view
                           # (the original is older than the mail window, or was never seen).

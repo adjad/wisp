@@ -8,7 +8,8 @@ a mail sender's address, or decides whether a name can be shown, goes through he
 
 IMPORTANT rules:
 - The real address is the parsed field a reader supplies (`sender_address`) when that is one
-  clean address. Otherwise it is the ONE bracketed address at the very END of the From
+  clean address; `sender` is then the display NAME field and must carry no "@", "<" or ">"
+  at all, unless it is exactly that address (a sender with no name). Otherwise it is the ONE bracketed address at the very END of the From
   value, and only if what is inside the brackets is one clean address. Otherwise the whole
   value, if it is nothing but one clean address. Anything else has NO address ("") — never
   a guess, and never an address found elsewhere in the text.
@@ -64,9 +65,13 @@ def _split(sender, sender_address="") -> tuple[str, str, bool]:
     final = _FINAL_ANGLE.search(text)
     inside = _clean(final.group(1)) if final else ""
     if given:
-        # The reader parsed the address itself. The From value is then name (+ maybe that address).
-        name = text[:final.start()] if final and inside == given else ("" if _clean(text) == given else text)
-        return name, given, False
+        # The reader parsed the address itself (Mail's `extract address`, a header record's
+        # address field), so `sender` is the display NAME field, whole. It is never searched
+        # for a second address: a name of "Priya <priya@school.edu>" beside that same address
+        # is still a name carrying an address, because the reader may have taken its address
+        # from inside the name. Real readers store the bare name, or the address itself when
+        # there is no name (email_tools._parse_header_records).
+        return text, given, False
     if final and inside:
         return text[:final.start()], inside, False
     if _clean(text):
@@ -86,6 +91,8 @@ def is_odd(sender, sender_address="") -> bool:
     if malformed:
         return True
     bare = name.strip().strip("\"'").strip()
+    if bare.startswith("<") and bare.endswith(">"):
+        bare = bare[1:-1].strip()                    # a name that is just "<address>"
     if address and bare.casefold() == address:
         return False
     return any(mark in name for mark in "@<>")
@@ -97,6 +104,8 @@ def shown(sender, sender_address="", *, fallback: str = "Unknown sender") -> str
     if is_odd(sender, sender_address):
         return address or fallback
     plain = re.sub(r"\s+", " ", name).strip().strip("\"'").strip()
+    if address and plain.strip("<>").strip().casefold() == address:
+        return address
     return plain or address or fallback
 
 
