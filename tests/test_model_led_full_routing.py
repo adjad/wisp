@@ -757,9 +757,16 @@ def test_withheld_actions_are_explained_and_lifted_by_resolution(endpoint, monke
 def test_a_question_about_an_earlier_action_is_never_a_plain_read():
     about = ["did it send?", "did my email to Sam go through?", "was the forward sent?", "check that it sent",
              "what's the status?", "did that work?", "is it done?", "did Sam get it?", "has it been delivered",
-             "what happened to my email", "did the reply go out", "was it successful", "what was the result"]
+             "what happened to my email", "did the reply go out", "was it successful", "what was the result",
+             # Delta review: whether the other side has the user's own message.
+             "did Sam get my email?", "did Sam see my text?", "is my message out?",
+             "any word from the mail app?", "has Dana read my message", "did this work", "what is this"]
     plain = ["is there any email about class enrollment", "what's on my calendar today?", "any new texts",
-             "what did mom say", "show my reminders", "who emailed me today"]
+             "what did mom say", "show my reminders", "who emailed me today",
+             # Delta review: a date word after this/that, and "done" alone, are ordinary reads.
+             "what's on my calendar this week?", "what homework do I have to get done?",
+             "what's on my calendar that day", "show my reminders for this weekend",
+             "read my latest email", "what's in my email today"]
     assert not any(main._plain_read_request(text) for text in about)
     assert all(main._plain_read_request(text) for text in plain)
     # has_write_intent alone would have let most of these through.

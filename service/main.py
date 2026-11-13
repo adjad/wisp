@@ -1831,11 +1831,24 @@ _READ_QUESTION = re.compile(
 # answers it, and without it the model could say "yes, sent" of a send whose
 # outcome nobody knows. A bare "it" or "that" counts, since it most likely
 # points at the action.
+_TIME_WORD = (r"(?:week|weekend|month|year|morning|afternoon|evening|night|time|semester|quarter|term|summer|"
+              r"fall|winter|spring|monday|tuesday|wednesday|thursday|friday|saturday|sunday|day)s?")
+_SENT_THING = r"(?:e-?mail|mail|message|text|imessage|forward|reply|note)"
 _ABOUT_EARLIER_ACTION = re.compile(
-    r"\b(?:it|that|this|sen[dt]|sends|sending|go(?:es|ne)?\s+through|went\s+through|going\s+through|"
+    # A pronoun that most likely points at the action ("did it send?"), not a
+    # date ("this week", "that day").
+    r"\b(?:it|that|this)\b(?!\s+" + _TIME_WORD + r"\b)"
+    r"|\b(?:sen[dt]|sends|sending|go(?:es|ne)?\s+through|went\s+through|going\s+through|"
     r"deliver(?:ed|y|s)?|forward(?:ed|s|ing)?|repl(?:y|ied|ies)|respon[ds]e?d?|status|outcome|result|"
-    r"work(?:ed|s|ing)?|done|finish(?:ed)?|complete[d]?|happen(?:ed|s)?|fail(?:ed|s)?|succeed(?:ed)?|"
-    r"success(?:ful)?|receive[ds]?|arrive[ds]?|went\s+out|go\s+out|gone\s+out|earlier|last\s+(?:action|one))\b",
+    r"work(?:ed|s|ing)?|finish(?:ed)?|complete[d]?|happen(?:ed|s)?|fail(?:ed|s)?|succeed(?:ed)?|"
+    r"success(?:ful)?|receive[ds]?|arrive[ds]?|landed|went\s+out|go\s+out|gone\s+out|earlier|"
+    r"last\s+(?:action|one)|any\s+word|heard\s+(?:back|anything|from))\b"
+    # Whether the other side has the user's own message ("did Sam get my
+    # email?", "did Sam see my text?", "is my message out?").
+    r"|\b(?:get|got|gets|see|sees|saw|seen|read|reads|open(?:ed)?)\s+my\s+" + _SENT_THING + r"\b"
+    r"|\bmy\s+" + _SENT_THING + r"\s+(?:is\s+|was\s+|has\s+)?(?:out|gone|there|ok|okay|through|up)\b"
+    r"|\b(?:is|was|has)\s+my\s+" + _SENT_THING + r"\s+(?:out|gone|there|ok|okay|through)\b"
+    r"|\bthe\s+mail\s+app\b",
     re.I)
 
 
