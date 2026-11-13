@@ -188,3 +188,36 @@ def test_this_file_is_in_the_simulation_manifest():
     from pathlib import Path
     manifest = (Path(__file__).resolve().parents[1] / "scripts" / "run_simulation_qa.py").read_text()
     assert '"tests/test_acting.py"' in manifest
+
+
+# --- one path per message: Caught for you steps aside while Wisp acts for you --------------------
+
+def test_caught_for_you_stops_creating_while_wisp_acts_for_you(setting, monkeypatch):
+    from service.assistant import attention_runner as runner
+    from service.attention.live import Settings
+    live = Settings(mode="live", capture_events=True)
+    assert runner.one_path(live) == live                               # acting off: unchanged
+    for other in (Settings(mode="shadow"), Settings(mode="off")):
+        assert runner.one_path(other) == other
+    acting.set_enabled(True, now=NOW)
+    stepped = runner.one_path(live)
+    assert stepped.mode == "shadow" and stepped.capture_events is True and stepped.daily_cap == live.daily_cap
+    assert runner.one_path(Settings(mode="off")).mode == "off"          # off is never turned into anything else
+    acting.set_enabled(False)
+    assert runner.one_path(live) == live
+
+    def broken():
+        raise RuntimeError("unreadable")
+    monkeypatch.setattr(acting, "enabled", broken)
+    assert runner.one_path(live).mode == "shadow"                       # unknown never leaves two writers
+
+
+def test_auto_add_never_adds_what_is_already_on_the_list(store):
+    import tests.test_proactive_auto_add as T
+    item = T.text("Maya Chen", T.RECITAL)
+    plan, _ = autoadd.plan_for(item, dict(T.OK), now=T.NOW, tz=T.TZ)
+    # Caught for you (or the person) already made a reminder for it.
+    existing = [{"source": "reminders", "title": "Maya recital", "when_ts": plan["start_ts"] - 1800}]
+    writers = T.Writers()
+    out = T.step(store, T.survivors(item), writers, existing=lambda n: existing)
+    assert writers.calls == [] and out["added"] == [] and out["tap"] == []

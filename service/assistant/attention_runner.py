@@ -242,6 +242,25 @@ async def _publish(event: dict) -> None:
         await hub.publish(event, durable=False)
 
 
+def one_path(settings):
+    """One path per message. With "Let Wisp act for me" on (service/proactive/acting.py), the
+    Brief's auto-add is what puts a missed date on Calendar or Reminders, so Caught for you
+    stops creating and goes back to recording what it would have done (shadow). Without this
+    the same text could become two reminders. Auto-add covers the other direction itself: it
+    never adds what is already on Calendar or in Reminders (autoadd.already_there)."""
+    if settings.mode != "live":
+        return settings
+    try:
+        from service.proactive import acting
+        acting_on = acting.enabled()
+    except Exception:  # noqa: BLE001 — unknown: do not let two writers run
+        acting_on = True
+    if not acting_on:
+        return settings
+    from dataclasses import replace
+    return replace(settings, mode="shadow")
+
+
 async def run_tick(now: float | None = None) -> list:
     """One scheduler pass. Cheap when nothing changed; never raises into the scheduler."""
     global _last_fingerprint, _last_run
@@ -249,7 +268,7 @@ async def run_tick(now: float | None = None) -> list:
     if now - _last_run < MIN_INTERVAL_S:
         return []
     _last_run = now
-    settings = load_settings(settings_path(MOE_DIR))
+    settings = one_path(load_settings(settings_path(MOE_DIR)))
     ledger = get_ledger()
     try:
         # The words of a message are only needed inside the lookback; keep the id and the state.
@@ -477,6 +496,8 @@ def _capture_current(candidate, *, automatic: bool) -> bool:
         if read_only():
             return False
         latest = load_settings(settings_path(MOE_DIR))
+        if automatic:
+            latest = one_path(latest)       # re-read at the effect: acting for you may have just been turned on
         if latest.mode == 'off' or (automatic and (latest.mode != 'live' or not latest.capture_events)):
             return False
         if _policy_block():
