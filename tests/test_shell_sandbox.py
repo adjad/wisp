@@ -266,8 +266,41 @@ def test_the_service_port_follows_an_isolated_backend(monkeypatch):
     assert shell_sandbox.build_profile().endswith(
         '(deny network-outbound (remote ip "localhost:8765"))\n'
         '(deny network-outbound (remote ip "localhost:8775"))\n')
-    monkeypatch.setattr("service.identity.bind_port", lambda argv=None: None)
-    assert shell_sandbox.wisp_ports() == [8765]
+    # Nothing that is not a port reaches the profile: sandbox-exec would reject all of it.
+    for odd in (None, 0, 65536, 99999, -1, "8775", 8765):
+        monkeypatch.setattr("service.identity.bind_port", lambda argv=None, odd=odd: odd)
+        assert shell_sandbox.wisp_ports() == [8765], odd
+
+
+def test_a_packaged_app_is_protected_and_a_source_checkout_is_not(world, monkeypatch):
+    assert shell_sandbox.app_bundle() is None                    # these tests run from source
+    assert all(".app" not in str(root) for root in shell_sandbox.protected_roots())
+    bundle = _TOP / "elsewhere" / "Outer.app"
+    inner = bundle / "Contents" / "Helpers" / "Inner.app" / "Contents" / "Resources" / "backend"
+    monkeypatch.setattr(shell_sandbox, "__file__", str(inner / "service" / "safety" / "shell_sandbox.py"))
+    assert shell_sandbox.app_bundle() == bundle                  # the outermost one
+    lines = shell_sandbox.build_profile().splitlines()
+    for what in ("file-write*", "file-mount"):
+        assert f'(deny {what} (subpath "{bundle}"))' in lines
+        assert f'(deny {what} (literal "{bundle.parent}"))' in lines
+
+
+@real
+def test_the_packaged_apps_own_code_cannot_be_changed(world, monkeypatch):
+    """The service runs this code, unsandboxed, the next time it starts."""
+    bundle = _TOP / "elsewhere" / "Wisp.app"
+    backend = bundle / "Contents" / "Resources" / "backend"
+    (backend / "service" / "safety").mkdir(parents=True, exist_ok=True)
+    policy_file = backend / "service" / "safety" / "policy.py"
+    policy_file.write_text("ORIGINAL")
+    monkeypatch.setattr(shell_sandbox, "app_bundle", lambda: bundle)
+    for cmd in (f'n=pol; echo FORGED > "{backend}/service/safety/${{n}}icy.py"',
+                f'echo x > "{backend}/sitecustomize.py"',
+                f'mv "{bundle}" "{_TOP}/elsewhere/Gone.app"'):
+        out = builtin.run_shell(cmd)
+        assert policy_file.read_text() == "ORIGINAL" and bundle.is_dir(), (cmd, out)
+        assert not (backend / "sitecustomize.py").exists(), (cmd, out)
+    assert str(builtin.run_shell(f'cat "{policy_file}"')) == "ORIGINAL"     # reading is untouched
 
 
 def test_a_quote_in_a_path_cannot_end_the_profile_string(world, monkeypatch, tmp_path):

@@ -8,7 +8,8 @@ can read: a name built at run time (a shell variable, an interpreter, find's own
 `access_mode.json` with no card at all.
 
 So the command runs under macOS's `sandbox-exec` with three rules:
-- no writing inside Wisp's data folder or the Keychains folder;
+- no writing inside Wisp's data folder, the Keychains folder, or the Wisp app itself (its
+  bundle holds the code and the packaged policy this service runs at its next start);
 - no mounting a volume over those folders or a parent of them;
 - no connecting to Wisp's own local service.
 The kernel refuses the write whatever the path was spelled like, including through a symlink,
@@ -24,9 +25,10 @@ What was checked on macOS 27.0.1, and is pinned by tests/test_shell_sandbox.py:
   path; that stops the rename and does not stop files being made in the parent;
 - it does NOT stop a disk image being mounted over the folder (`hdiutil attach
   -mountpoint`), which swaps every file in it at once. Mounting is denied separately;
-- Wisp's service writes these files for the app. It tells a browser from a local program,
-  not the app from a script, on some routes (POST /mode, POST /permissions), so a script
-  the shell runs is refused the connection instead.
+- Wisp's service writes files in that folder for the app, and most of its routes that do
+  (setup, skills, MCP, Gmail connect, and until 0.5.0 the access mode and standing rules)
+  tell a browser from a local program, not the app from a script. A script the shell
+  runs is refused the connection instead, whatever the route.
 
 What this is NOT: a guarantee that nothing a shell command sets in motion can ever change
 these files. It covers the command's own processes. It does not cover work the command
@@ -37,7 +39,9 @@ hands to a process the shell did not start:
   text names one of these; when the name is built at run time, or sits in a script file,
   nothing asks on a turn that shows no card for shell commands;
 - other tools: AppleScript, Shortcuts and skill tools have their own rules and are not
-  run through here.
+  run through here;
+- a backend run from a source checkout: its code is ordinary files in a folder the person
+  works in, and is not protected. Only a packaged app's bundle is.
 It also costs two things:
 - a command that needs a sandbox of its own (`swift build` without `--disable-sandbox`,
   Homebrew builds from source, other agent CLIs) fails, because macOS does not nest
@@ -92,12 +96,21 @@ def usable() -> bool:
     return _usable
 
 
+def app_bundle() -> Path | None:
+    """The .app this service runs from when it is packaged (the outermost one), else None."""
+    bundles = [parent for parent in Path(__file__).resolve().parents if parent.suffix == ".app"]
+    return bundles[-1] if bundles else None
+
+
 def protected_roots() -> list[Path]:
     """The folders no shell command may change: Wisp's data folder (where WISP_HOME points,
-    and the standard one), and the login Keychains."""
+    and the standard one), the login Keychains, and the packaged app."""
     from service.paths import MOE_DIR
     home = Path.home()
-    return list(dict.fromkeys((Path(MOE_DIR), home / ".moe", home / "Library" / "Keychains")))
+    roots = [Path(MOE_DIR), home / ".moe", home / "Library" / "Keychains"]
+    if (bundle := app_bundle()) is not None:
+        roots.append(bundle)
+    return list(dict.fromkeys(roots))
 
 
 def _spellings(root: Path) -> list[Path]:
@@ -122,7 +135,9 @@ def wisp_ports() -> list[int]:
         own = bind_port()
     except (ValueError, OSError):
         own = None
-    return list(dict.fromkeys(port for port in (WISP_PORT, own) if port))
+    # A number that is not a port would make the whole profile invalid.
+    return list(dict.fromkeys(port for port in (WISP_PORT, own)
+                              if isinstance(port, int) and 1 <= port <= 65535))
 
 
 def build_profile() -> str:
