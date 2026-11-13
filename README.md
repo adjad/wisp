@@ -69,7 +69,9 @@ by default), and your Brief and answers fit you.
   Google account you linked in Wisp, from an address that is in your Contacts or that you have
   written to before, and Gmail itself must report the mail as really coming from that sender.
   Any other email, including all mail Wisp sees only through Apple Mail, shows a card and waits
-  for your tap. It also holds
+  for your tap. In a Google account you linked, it also adds a reminder to reply when someone
+  in your Contacts whom you have written to before asked you something by email over a day ago
+  and has not heard back. It also holds
   a free hour on your Day plan for work due today or in the next three days. A hold is for
   deadlines already on your calendar or in Reminders, including ones that were there before you
   said yes; it lives in Wisp only, never on your calendar. At most 10 actions a day. Each one
