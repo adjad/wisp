@@ -355,6 +355,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_rc2_sends_own_address.py",
     "tests/test_rc2_sessions_old_text.py",
     "tests/test_rc2_text_size_contract.py",
+    # 0.5.0 Ask dead ends: store-hours wordings and the search-first head start (pure Python).
+    "tests/test_final_ask_web_wordings.py",
     "tests/test_rc2_ask_web_possessive_egress.py",
     "tests/test_rc2_policy_audit_repairs.py",
     "tests/test_rc2_policy_audit_repairs_2.py",
