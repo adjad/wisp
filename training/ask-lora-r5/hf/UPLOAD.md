@@ -1,7 +1,7 @@
 # Hugging Face upload: r5 step 1800 (prepared 2026-11-12, NOT uploaded)
 
 **Proposed repo:** `Neo-Arid/gemma-4-E4B-it-r5-step-01800-oQ4e-mtp`. It must be public, because Wisp's setup downloads it.
-- The owner is a guess, taken from Wisp's Mellum repo (`Neo-Arid/...`). The user confirms the account.
+- The owner is confirmed by the user (2026-11-12, relayed by the coordinator): "use my account name for HF is Neo-Arid".
 - The repo name must stay equal to the model id: oMLX serves a download under its folder name, and Wisp's roles name that id.
 - A different owner is a one-line change in `service/setup/catalog.py` (`GEMMA_E4B_WISP.repo`) plus one test (`tests/test_setup_guide.py`).
 
