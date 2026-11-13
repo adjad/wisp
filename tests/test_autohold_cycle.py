@@ -207,16 +207,125 @@ def test_a_cycle_that_a_turn_interrupts_runs_neither(setting, store, monkeypatch
     assert calls == []
 
 
-def test_a_light_cycle_holds_nothing_and_the_tap_card_stays(setting, store, holds):
-    # A light cycle (between builds) never merges "Wisp did this" cards, so it must not
-    # hold: the tap card would vanish with no Undo until the next full build.
+def test_a_light_cycle_holds_the_hour_and_shows_its_card_at_once(setting, store, holds):
+    """Holding uses no model, and light cycles are the ones that run every few minutes: a person
+    who turned the switch on gets the held hour without waiting for the next build."""
     acting.set_enabled(True, now=NOW - 60)
     assert cycle_once(store, light=True)["status"] == "done"
+    assert holds == ["card:deadline1"]
+    assert [r["status"] for r in store.auto_added().values()] == ["added"]
+    cards = store.state()["cards"]
+    assert methods(store) == ["undo_add"] and cards[0]["meta"] == "DAY PLAN"        # its card, with Undo, now
+    # The next cycles, light or full, hold nothing again and keep the one card.
+    cycle_once(store, now=NOW + 300, light=True)
+    cycle_once(store, now=NOW + 600)
+    assert holds == ["card:deadline1"] and methods(store) == ["undo_add"]
+
+
+def test_a_light_cycle_with_the_switch_off_leaves_the_tap_card(setting, store, holds):
+    assert cycle_once(store, light=True)["status"] == "done"
+    assert holds == [] and store.auto_added() == {} and methods(store) == ["block_time"]
+
+
+def test_a_light_cycle_never_holds_while_a_turn_is_running(setting, store, holds):
+    acting.set_enabled(True, now=NOW - 60)
+    assert cycle_once(store, light=True, abort=lambda: True)["status"] in ("done", "yielded")
     assert holds == [] and store.auto_added() == {}
-    assert methods(store) == ["block_time"]
-    # The next full cycle holds it and shows its card.
-    cycle_once(store, now=NOW + 60)
-    assert holds == ["card:deadline1"] and "undo_add" in methods(store) and "block_time" not in methods(store)
+
+
+def test_a_light_cycle_keeps_tap_to_add_cards_and_other_cards_where_they_were(setting, store, holds):
+    """Only the "Wisp did this" cards are refreshed between builds: a tap-to-add card the last
+    build wrote must not vanish until the next one."""
+    acting.set_enabled(True, now=NOW - 60)
+    tap = {"id": "card:tap1", "meta": "TEXTS", "title": "Dinner with Maya", "body": "", "account": "",
+           "sources": [{"kind": "messages", "ref": "messages:1", "who": "Maya", "quote": ""}], "auto_add_tap": True,
+           "action": {"method": "calendar_event", "button": "Add to calendar?", "draft": "", "recipient": "", "event": None}}
+    other = {"id": "card:reply1", "meta": "MAIL", "title": "Reply to Priya", "body": "", "account": "",
+             "sources": [{"kind": "mail", "ref": "mail:1", "who": "Priya", "quote": ""}],
+             "action": {"method": "email_reply", "button": "Send?", "draft": "ok", "recipient": "p@x.test", "event": None}}
+    stale_done = {"id": "card:old-done", "meta": "DAY PLAN", "title": "Held earlier", "body": "", "account": "",
+                  "sources": [], "auto_added": True, "action": {"method": "undo_add", "record": "gone"}}
+    block = block_card()                                    # the tap card for the hour Wisp is about to hold
+    assert cycle_once(store, light=True)["status"] == "done" and holds == ["card:deadline1"]
+    by_account = {ME: [stale_done, other, block, tap]}
+    cycle._merge_done(by_account, [ME], ME, store, NOW)
+    ids = [c["id"] for c in by_account[ME]]
+    assert ids[1:] == ["card:reply1", "card:tap1"]          # the others, in the order they had
+    assert by_account[ME][0]["meta"] == "DAY PLAN" and by_account[ME][0]["action"]["method"] == "undo_add"
+    assert "card:old-done" not in ids and block["id"] not in ids      # the stale done card and the held hour's tap card go
+    # Nothing Wisp did and no earlier done card: the list is not touched at all.
+    fresh = {"other": [other, tap]}
+    cycle._merge_done(fresh, ["other"], ME, store, NOW)
+    assert fresh == {"other": [other, tap]}
+
+
+# --- Analyze now is never dropped -------------------------------------------------------------------
+
+@pytest.fixture
+def fake_cycles(monkeypatch):
+    """cycle.run_cycle replaced by a recorder whose answers the test scripts."""
+    calls, answers = [], []
+
+    async def run_cycle(**kw):
+        calls.append({k: kw.get(k) for k in ("light", "force", "patient", "account")})
+        return answers.pop(0) if answers else {"ok": True, "status": "done"}
+    monkeypatch.setattr(cycle, "run_cycle", run_cycle)
+    monkeypatch.setattr(cycle, "_task", None)
+    monkeypatch.setattr(cycle, "_rerun", None)
+    monkeypatch.setattr(cycle, "_running", False)
+    monkeypatch.setattr(cycle, "ANALYZE_BUSY_POLL_S", 0.0)
+    lines = []
+    monkeypatch.setattr(cycle, "_log", lines.append)
+    return calls, answers, lines
+
+
+def test_analyze_that_meets_a_running_cycle_waits_and_still_runs_its_full_cycle(fake_cycles):
+    """A light tick that started in the same moment makes run_cycle answer "busy". That used to end
+    Analyze now without a word; it must wait and run the full cycle that was asked for."""
+    calls, answers, lines = fake_cycles
+    answers += [{"ok": False, "status": "busy"}, {"ok": False, "status": "busy"}, {"ok": True, "status": "done"}]
+
+    async def press():
+        reply = cycle.analyze()
+        assert reply["queued"] is False
+        await cycle._task
+    asyncio.run(press())
+    assert calls == [{"light": None, "force": True, "patient": True, "account": None}] * 3
+    assert lines[0] == "analyze: starting" and "analyze: waiting for a running cycle to end" in lines
+
+
+def test_analyze_pressed_during_a_light_tick_ends_in_one_full_cycle(fake_cycles, monkeypatch):
+    calls, answers, lines = fake_cycles
+
+    async def go():
+        # A light tick is mid-run when the button is pressed: the request is queued, and said so.
+        monkeypatch.setattr(cycle, "_running", True)
+        reply = cycle.analyze("me@x.test")
+        assert reply["queued"] is True and cycle._rerun == {"account": "me@x.test"}
+        assert lines == ["analyze: queued behind a running cycle"] and calls == []
+        # The light tick finishes: the full cycle that was asked for runs right after it, once.
+        monkeypatch.setattr(cycle, "_running", False)
+        await cycle._light_tick()
+    asyncio.run(go())
+    assert calls == [{"light": True, "force": None, "patient": None, "account": None},
+                     {"light": None, "force": True, "patient": True, "account": "me@x.test"}]
+    assert cycle._rerun is None and "analyze: starting (it was queued)" in lines
+
+
+def test_a_hold_made_between_builds_joins_the_grouped_card(setting, store, holds):
+    from service.proactive import autoadd
+    acting.set_enabled(True, now=NOW - 60)
+    # Something Wisp did earlier today already has its card.
+    record = {"kind": "calendar", "title": "Dinner with Maya", "quote": "", "item_id": "m1", "source": "messages",
+              "who": "Maya Chen", "account": "", "received_ts": NOW - 400, "timezone": TZ, "fingerprint": "fp-1",
+              "item_fingerprint": "ifp-1", "at": NOW - 300, "status": "added", "attempts": 1, "source_id": "src-1",
+              "start_ts": NOW + 86400, "duration_min": 60, "day": "2027-01-16"}
+    store.auto_add_put("fp-1", record)
+    assert cycle_once(store, light=True)["status"] == "done"
+    assert sorted(methods(store)) == ["undo_add", "undo_add"]                # stored one per action
+    shown = autoadd.group_done(store.state()["cards"], store, NOW + 1, TZ)
+    assert len(shown) == 1 and shown[0]["title"] == "Wisp did 2 things today"
+    assert {m["meta"] for m in shown[0]["members"]} == {"DAY PLAN", "ADDED · CALENDAR"}
 
 
 def test_a_light_cycle_still_hides_an_undone_deadline(setting, store, holds):
