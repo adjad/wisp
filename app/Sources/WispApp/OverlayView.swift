@@ -44,6 +44,9 @@ struct OverlayView: View {
     @AppStorage(NotchBriefView.wideKey) private var briefWide = false
     // Which way the page change in flight slides (NotchPageSlide).
     @State private var pageSlide = NotchPageSlide()
+    // The panel's drawn height (followHeight): nil until the open panel's
+    // content is first measured, and again once it closes.
+    @State private var shownHeight: CGFloat?
     // The selected tab's white capsule, which glides from tab to tab.
     @Namespace private var tabSelection
 
@@ -87,6 +90,7 @@ struct OverlayView: View {
                 // and each tab back at its top, as before.
                 pageSlide.forget()
                 PanelScrollMemory.forgetAll()
+                shownHeight = nil
             }
             if !isCollapsed {
                 if model.tab.hasPrompt { focused = true }
@@ -156,6 +160,20 @@ struct OverlayView: View {
         // below it. A floating card just uses ordinary padding.
         .padding(EdgeInsets(top: layout.contentTopInset,
                             leading: 22, bottom: SurfaceLayout.panelBottomPadding, trailing: 22))
+        // The panel's surface follows its content's height on the panel's
+        // spring, whatever changed it: a page, a card or notice arriving, an
+        // answer streaming in, the Brief's columns. The content lays out at
+        // once (measured at its own height) and the surface glides to it,
+        // clipping what is still below its edge, so nothing inside a page
+        // has to animate for the panel to. Width is never animated: the
+        // Brief re-laid out at every width in between took most of a second.
+        .fixedSize(horizontal: false, vertical: true)
+        .background(GeometryReader { geo in
+            Color.clear
+                .onAppear { followHeight(geo.size.height, animated: false) }
+                .onChange(of: geo.size.height) { _, height in followHeight(height, animated: true) }
+        })
+        .frame(height: shownHeight, alignment: .top)
         // Re-fit the native window whenever the CONTENT height changes. The
         // window doesn't auto-size to SwiftUI — OverlayPanel sets its height
         // from host.fittingSize, and its bottom edge hard-CLIPS anything taller
@@ -190,6 +208,29 @@ struct OverlayView: View {
         // header's buttons. The window grows ahead of it and shrinks after it
         // (OverlayPanel.resizeToFit). Reduce Motion: an instant swap.
         .animation(Theme.Motion.panel(reduceMotion: reduceMotion), value: page)
+    }
+
+    /// Moves the panel's surface to the content's measured height: on the
+    /// panel's spring, or at once when the panel has just opened (the open
+    /// has its own motion) or with Reduce Motion. A spring already moving
+    /// is retargeted, so text streaming in grows the panel in one smooth run.
+    private func followHeight(_ height: CGFloat, animated: Bool) {
+        guard abs(height - (shownHeight ?? -1)) > 0.25 else { return }
+        if animated, shownHeight != nil, let spring = Theme.Motion.panel(reduceMotion: reduceMotion) {
+            withAnimation(spring) { shownHeight = height }
+        } else {
+            shownHeight = height
+        }
+    }
+
+    /// A streaming answer without a bold marker still waiting for its pair:
+    /// "is **Worksheet 3 for" showed the raw asterisks until the closing pair
+    /// arrived, then flipped to bold. The words show plain until it does.
+    /// Left alone with code in it, where ** can be code (**kwargs).
+    static func withoutOpenBold(_ text: String) -> String {
+        guard !text.contains("```"), text.components(separatedBy: "**").count % 2 == 0,
+              let last = text.range(of: "**", options: .backwards) else { return text }
+        return text.replacingCharacters(in: last, with: "")
     }
 
     /// What the page shows: the reset card, Getting to know you, a permission
@@ -1018,7 +1059,7 @@ struct OverlayView: View {
             .tint(Theme.textSecondary)
         }
         if !model.answer.isEmpty {
-            MarkdownView(text: model.answer)
+            MarkdownView(text: Self.withoutOpenBold(model.answer))
                 .frame(maxWidth: .infinity, alignment: .leading)
             // Once real text starts, isProcessing (and the "Thinking…" row) go
             // away by design — the growing text itself is the signal. But if

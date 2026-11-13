@@ -58,6 +58,24 @@ struct NotchDayView: View {
     /// How long the Undo bar stays after Remove.
     private static let removeUndoSeconds: UInt64 = 8
 
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    @Environment(\.reduceMotionOverride) private var reduceMotionOverride
+    private var reduceMotion: Bool { reduceMotionOverride ?? systemReduceMotion }
+
+    /// Which optional pieces of the tab are showing. Only these flags drive the
+    /// fade, never the plan's data, so a routine refresh doesn't animate.
+    private struct Showing: Equatable {
+        var notice, error, stale, removed, otherDay, loading, earlier, wholeAgenda, addRow: Bool
+    }
+
+    private var showing: Showing {
+        Showing(notice: model.transientNotice != nil, error: !today.error.isEmpty,
+                stale: today.staleNotice != nil, removed: lastRemoved != nil,
+                otherDay: !today.followsToday, loading: plan == nil,
+                earlier: showEarlier, wholeAgenda: showWholeAgenda,
+                addRow: addingTask || !model.todayTaskTitle.isEmpty)
+    }
+
     init(model: OverlayModel, today: TodayModel) {
         self.model = model
         self.today = today
@@ -67,7 +85,7 @@ struct NotchDayView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if let notice = model.transientNotice { NotchChrome.notice(notice) }
+            if let notice = model.transientNotice { NotchChrome.notice(notice).transition(.opacity) }
             if !today.error.isEmpty {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     NotchChrome.notice(today.error)
@@ -76,15 +94,17 @@ struct NotchDayView: View {
                     }
                     .disabled(today.busy)
                 }
+                .transition(.opacity)
             }
             if let stale = today.staleNotice {
                 // Reads keep failing: say how old the day on screen is, and hold
                 // back the buttons that would change it.
                 Text(stale).font(.wisp(size: 11.5)).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
+                    .transition(.opacity)
             }
-            if let removed = lastRemoved { removedRow(removed) }
-            if !today.followsToday { otherDayRow }
+            if let removed = lastRemoved { removedRow(removed).transition(.opacity) }
+            if !today.followsToday { otherDayRow.transition(.opacity) }
             if today.isShowingCurrentDay {
                 CheckInSection(model: checkIn, day: today.day, timezone: today.timezone,
                                clock: today.clock,
@@ -96,13 +116,17 @@ struct NotchDayView: View {
             if let plan {
                 dayContent(plan)
                     .disabled(today.planIsStale)
+                    .transition(.opacity)
             } else if today.error.isEmpty {
                 ProcessingRow(label: NotchBriefView.loadingLabel(today: today, starting: model.serviceStarting))
+                    .transition(.opacity)
             }
             ReportDraftCard(draft: today.report, title: "Report a problem with this plan",
                             detailsLabel: "Include planner details", save: { model.saveReport(today.report) })
             footer
         }
+        // Content fades in while the panel's height follows the same spring.
+        .animation(Theme.Motion.panel(reduceMotion: reduceMotion), value: showing)
         .environment(\.timeZone, today.timezone)
         .modifier(DayRefreshLoop(model: model, today: today))
         // A change anywhere (a sync, an answer from another place) refreshes the
@@ -321,7 +345,7 @@ struct NotchDayView: View {
         }
         let fit = stillToFit(plan)
         if !fit.isEmpty { fitSection(fit) }
-        if addingTask || !model.todayTaskTitle.isEmpty { addTaskRow }
+        if addingTask || !model.todayTaskTitle.isEmpty { addTaskRow.transition(.opacity) }
     }
 
     // MARK: Building the timeline
@@ -521,7 +545,7 @@ struct NotchDayView: View {
             VStack(alignment: .leading, spacing: 2) {
                 if !over.isEmpty {
                     earlierRow(over)
-                    if showEarlier { ForEach(over) { agendaRow($0) } }
+                    if showEarlier { ForEach(over) { agendaRow($0).transition(.opacity) } }
                 }
                 ForEach(live) { agendaRow($0) }
                 if isToday { nowRow(now) }
@@ -531,6 +555,7 @@ struct NotchDayView: View {
                     case .free(let start, let end): freeRow(start, end)
                     }
                 }
+                .transition(.opacity)
                 if agenda.thingsAhead > Self.agendaRows {
                     Button(showWholeAgenda ? "Show fewer" : "Show \(agenda.thingsAhead - Self.agendaRows) more") {
                         showWholeAgenda.toggle()

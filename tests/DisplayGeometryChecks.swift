@@ -478,25 +478,27 @@ struct DisplayGeometryChecks {
         check(tiny.pageContentCap(headerHeight: header) == SurfaceLayout.minTabScroll, "Floor on a tiny display")
     }
 
-    /// The overlay wraps Brief and Day, and only them, in the capped scroll.
+    /// The overlay wraps Brief, Day and Meet, and only them, in the capped scroll.
     static func tabScrollSourceChecks() {
         let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("app/Sources/WispApp")
         guard let overlay = try? String(contentsOf: app.appendingPathComponent("OverlayView.swift"), encoding: .utf8),
               let cards = try? String(contentsOf: app.appendingPathComponent("ProactiveCards.swift"), encoding: .utf8)
         else { preconditionFailure("tab scroll: read the overlay's source") }
-        check(overlay.contains("case .brief:\n                tabScroll { NotchBriefView(model: model, today: todayModel, wide: briefIsWide) }"),
+        check(overlay.contains("case .brief:\n            tabScroll { NotchBriefView(model: model, today: todayModel, wide: briefIsWide) }"),
               "Brief sits in the tab scroll")
-        check(overlay.contains("case .day:\n                tabScroll { NotchDayView(model: model, today: todayModel) }"),
+        check(overlay.contains("case .day:\n            tabScroll { NotchDayView(model: model, today: todayModel) }"),
               "Day sits in the tab scroll")
-        check(overlay.components(separatedBy: "tabScroll {").count - 1 == 2, "only Brief and Day scroll as a tab")
-        check(overlay.contains("CappedScroll(cap: layout.tabScrollCap(headerHeight: headerHeight), reveals: true)"),
+        check(overlay.contains("case .meet:\n            tabScroll { NotchMeetingView(model: MeetingModel.shared) }"),
+              "Meet sits in the tab scroll")
+        check(overlay.components(separatedBy: "tabScroll {").count - 1 == 3, "only Brief, Day and Meet scroll as a tab")
+        check(overlay.contains("CappedScroll(cap: layout.tabScrollCap(headerHeight: headerHeight), reveals: true,"),
               "the tab scroll is capped from the display's geometry")
         check(overlay.contains("bottom: SurfaceLayout.panelBottomPadding"), "the cap and the panel share one bottom padding")
         // Permissions and Settings are capped at the page limit and scroll inside themselves.
         check(overlay.contains("NotchPermissionsView(model: model, cap: layout.pageContentCap(headerHeight: headerHeight))"),
               "Permissions gets the page cap")
-        check(overlay.contains("QuickSettingsView(model: model, settings: settings,\n                                  cap: layout.pageContentCap(headerHeight: headerHeight))"),
+        check(overlay.contains("QuickSettingsView(model: model, settings: settings,\n                              cap: layout.pageContentCap(headerHeight: headerHeight))"),
               "Settings gets the page cap")
         for page in ["NotchPermissionsView.swift", "QuickSettingsView.swift"] {
             let text = (try? String(contentsOf: app.appendingPathComponent(page), encoding: .utf8)) ?? ""
@@ -504,7 +506,7 @@ struct DisplayGeometryChecks {
         }
         // The header is outside the scroll, so it stays put.
         let panel = overlay.components(separatedBy: "private var expandedPanel: some View {")[1]
-        check(panel.hasPrefix("\n        VStack(alignment: .leading, spacing: 0) {\n            header\n"), "header stays fixed")
+        check(panel.contains("return VStack(alignment: .leading, spacing: 0) {\n            header\n"), "header stays fixed")
         // Fits: no indicator, no bounce. Composer and draft scroll into sight, unanimated.
         check(cards.contains(".scrollIndicators(height > cap ? .automatic : .never)"), "no indicator while it fits")
         check(cards.contains(".scrollBounceBehavior(.basedOnSize)"), "no bounce while it fits")

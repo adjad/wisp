@@ -185,6 +185,11 @@ final class OverlayPanel: NSPanel {
         backgroundColor = .clear
         isOpaque = false
         hasShadow = false
+        // Everything in this panel is drawn on black (Theme.surface), so its
+        // system controls (text fields, toggles, pickers, spinners) take the
+        // dark look whatever the Mac's appearance; on a light Mac they drew
+        // light-style on the black panel.
+        appearance = NSAppearance(named: .darkAqua)
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         animationBehavior = .none
 

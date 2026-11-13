@@ -314,7 +314,7 @@ enum OutboundSender {
                 case -1743:
                     reason = "Messages Automation access isn't granted — allow it in System Settings › Privacy & Security › Automation"
                 case -25211, -1719:
-                    reason = "typing the draft needs Accessibility access — allow Wisp in System Settings › Privacy & Security › Accessibility"
+                    reason = "typing the draft needs \(PrivacyNames.accessibility) access — allow Wisp in \(PrivacyNames.accessibilityPath)"
                 default:
                     reason = err[NSAppleScript.errorMessage] as? String ?? "Messages refused the draft"
                 }

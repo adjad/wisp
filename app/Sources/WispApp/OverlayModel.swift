@@ -484,9 +484,12 @@ final class OverlayModel: ObservableObject {
     // (typed input, a message draft being edited, a reply being written in the
     // Brief), the setup card is open, or an answer is being written (the person
     // is waiting for it, and said so).
-    var holdsOpen: Bool {
-        answerInFlight
-            || pinned || pickingFile || !input.trimmingCharacters(in: .whitespaces).isEmpty || messageDraft?.isEditing == true
+    var holdsOpen: Bool { answerInFlight || holdsOpenBesidesAnswer }
+
+    /// Everything in `holdsOpen` but an Ask turn in flight: what the person is
+    /// doing, which no time limit lets the notch close over.
+    var holdsOpenBesidesAnswer: Bool {
+        pinned || pickingFile || !input.trimmingCharacters(in: .whitespaces).isEmpty || messageDraft?.isEditing == true
             || voice.isActive || speaker.speaking
             || (tab == .day && !todayTaskTitle.trimmingCharacters(in: .whitespaces).isEmpty)
             || (tab == .brief && ProactiveActions.shared.replyInProgress)
@@ -570,6 +573,17 @@ final class OverlayModel: ObservableObject {
     /// An answer is on its way, or waiting on the person's confirmation.
     var answerInFlight: Bool { [Phase.routing, .working, .streaming, .confirming].contains(phase) }
 
+    /// Wisp is writing something the person is waiting to read in the panel: an
+    /// Ask turn (thinking, running tools, streaming, or a card waiting for their
+    /// answer) or the Brief being composed. The notch's automatic close waits for
+    /// it (AppDelegate.scheduleCollapse). Both end on their own: done, an error,
+    /// a dropped stream, or the request's timeout.
+    var generating: Bool { answerInFlight || briefComposing }
+
+    #if WISP_MOTION_APP_DELEGATE_CHECKS
+    func qaSetBriefComposing(_ on: Bool) { briefComposing = on }
+    #endif
+
     /// False while a turn is in flight. The Wisp window and the chat switcher
     /// read the saved history, which the service writes only at the end of a turn.
     var conversationSettled: Bool {
@@ -584,7 +598,13 @@ final class OverlayModel: ObservableObject {
     }
 
     /// Slash commands the Ask field's text could still become. /corpus only in Debug Mode.
-    var commandSuggestions: [NotchCommand] { NotchCommand.suggestions(for: input, includeCorpus: debugMode, includeScreen: screenCommandAvailable) }
+    var commandSuggestions: [NotchCommand] {
+        // Nothing typed starts with "/" on almost every update: answer that
+        // without asking macOS about Screen Recording (screenCommandAvailable),
+        // a privacy-service call the panel made on every redraw.
+        guard input.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") else { return [] }
+        return NotchCommand.suggestions(for: input, includeCorpus: debugMode, includeScreen: screenCommandAvailable)
+    }
 
     /// Sources Wisp can't read right now ("calendar", "email"), refreshed each
     /// time the panel opens, so a starter never asks about a denied source. Nil

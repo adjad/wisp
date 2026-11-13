@@ -296,6 +296,18 @@ final class CallAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unche
     /// Screen Recording is on for Wisp, so the Mac's sound can be captured without a question.
     static var allowed: Bool { CGPreflightScreenCaptureAccess() }
 
+    /// `allowed` for text on screen, asked of macOS at most every 5 seconds:
+    /// the Meet tab's home reads it in every update, and each ask goes to the
+    /// privacy service. Starting a recording still asks `allowed` itself.
+    @MainActor static var allowedLately: Bool {
+        let now = ProcessInfo.processInfo.systemUptime
+        if let known = allowedMemo, now - known.at < 5 { return known.value }
+        let value = allowed
+        allowedMemo = (now, value)
+        return value
+    }
+    @MainActor private static var allowedMemo: (at: TimeInterval, value: Bool)?
+
     var onSamples: (Data) -> Void = { _ in }
     var onStopped: () -> Void = {}
 
@@ -406,7 +418,15 @@ final class MeetingModel: ObservableObject {
 
     var elapsedText: String { String(format: "%d:%02d", elapsed / 60, elapsed % 60) }
 
+    #if WISP_NOTCH_QA
+    /// True while a motion-harness fixture is shown; `refresh()` then leaves it alone.
+    private var qaPinned = false
+    #endif
+
     func refresh() async {
+        #if WISP_NOTCH_QA
+        if qaPinned { return }
+        #endif
         guard case .ok(let json) = await MeetingClient.send("GET", "meetings") else { return }
         past = (json["meetings"] as? [[String: Any]] ?? []).compactMap(Meeting.init)
             .filter { $0.status != "recording" }
@@ -593,6 +613,46 @@ final class MeetingModel: ObservableObject {
 
     func close() { current = nil; message = nil }
 
+    #if WISP_NOTCH_QA
+    enum QAState { case idle, earlier, notes, recording, writing }
+
+    /// Puts the Meet tab in a realistic state with no service. Pinned: the view's
+    /// on-appear `refresh()` returns early until `qaShow(.idle)` clears it.
+    func qaShow(_ state: QAState) {
+        func meeting(_ id: String, _ title: String, ago: Double, heard: Double,
+                     notes: [String: Any]? = nil) -> Meeting? {
+            var json: [String: Any] = [
+                "id": id, "status": "done", "title": title,
+                "started_at": Date().timeIntervalSince1970 - ago, "heard_s": heard, "missed_s": 0.0,
+                "transcript": "We agreed to meet Thursday and split the chapters between us."]
+            if let notes { json["notes"] = notes }
+            return Meeting(json)
+        }
+        qaPinned = state != .idle
+        phase = .idle; current = nil; past = []; message = nil
+        level = 0; elapsed = 0; heardSoFar = ""; missed = 0; hearsCall = false; busyAction = nil
+        switch state {
+        case .idle: break
+        case .earlier:
+            past = [meeting("qa-1", "Study group", ago: 86_400, heard: 1_680),
+                    meeting("qa-2", "Project check-in", ago: 3 * 86_400, heard: 840),
+                    meeting("qa-3", "Lab partners", ago: 6 * 86_400, heard: 2_100)].compactMap { $0 }
+        case .notes:
+            current = meeting("qa-1", "Study group", ago: 3_600, heard: 1_680, notes: [
+                "summary": "The group split the biology chapters and set a practice quiz for Thursday.",
+                "decisions": ["Meet in the library on Thursday at 4.", "Quiz each other on chapters 4 to 6."],
+                "action_items": [["task": "Make flashcards for chapter 5", "owner": "Maya", "due": "Wed"],
+                                 ["task": "Book a study room", "owner": "Sam", "due": "", "reminder": "Tue 9:00 AM"]],
+                "follow_up": "Thanks all. Thursday at 4 in the library; bring your notes for chapters 4 to 6."])
+        case .recording:
+            phase = .recording; elapsed = 754; level = 0.5; hearsCall = true
+            heardSoFar = "Okay, so for chapter five I can do the flashcards, and Sam, could you book a room?"
+        case .writing:
+            phase = .writing
+        }
+    }
+    #endif
+
     /// Write the notes again for a meeting whose transcript is saved.
     func writeAgain() {
         guard phase == .idle, let id = current?.id else { return }
@@ -638,6 +698,27 @@ final class MeetingModel: ObservableObject {
 struct NotchMeetingView: View {
     @ObservedObject var model: MeetingModel
     @State private var showingTranscript = false
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    @Environment(\.reduceMotionOverride) private var reduceMotionOverride
+    private var reduceMotion: Bool { reduceMotionOverride ?? systemReduceMotion }
+
+    /// Which branches show. Never the level, elapsed time or heard text: those change
+    /// continuously and must not animate the layout.
+    private struct Branches: Equatable {
+        var phase: MeetingModel.Phase
+        var open: String?
+        var hasNotes: Bool
+        var hasPast: Bool
+        var hasMessage: Bool
+        var missed: Bool
+        var transcript: Bool
+    }
+
+    private var branches: Branches {
+        Branches(phase: model.phase, open: model.current?.id, hasNotes: model.current?.notes != nil,
+                 hasPast: !model.past.isEmpty, hasMessage: model.message != nil,
+                 missed: model.missed >= 1, transcript: showingTranscript)
+    }
 
     private static let day: DateFormatter = {
         let formatter = DateFormatter()
@@ -648,16 +729,19 @@ struct NotchMeetingView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             switch model.phase {
-            case .recording: recording
-            case .writing: writing
+            case .recording: recording.transition(.opacity)
+            case .writing: writing.transition(.opacity)
             case .idle:
-                if let meeting = model.current { notes(meeting) } else { home }
+                if let meeting = model.current { notes(meeting).transition(.opacity) }
+                else { home.transition(.opacity) }
             }
             if let message = model.message {
                 Text(message).font(.wisp(.footnote)).foregroundStyle(Theme.warn)
                     .fixedSize(horizontal: false, vertical: true)
+                    .transition(.opacity)
             }
         }
+        .animation(Theme.Motion.panel(reduceMotion: reduceMotion), value: branches)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.bottom, 8)
         .task { await model.refresh() }
@@ -666,7 +750,7 @@ struct NotchMeetingView: View {
     private var home: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Meeting notes").font(.wisp(.headline, weight: .semibold)).foregroundStyle(Theme.textPrimary)
-            Text("Wisp listens through the microphone" + (CallAudioCapture.allowed
+            Text("Wisp listens through the microphone" + (CallAudioCapture.allowedLately
                     ? " and to the sound this Mac plays, so a call on headphones is heard too. It"
                     : ". To hear the other side of a call on headphones, turn on Screen Recording for Wisp first. It")
                  + " writes the words down on this Mac. "
@@ -676,7 +760,7 @@ struct NotchMeetingView: View {
                 .fixedSize(horizontal: false, vertical: true)
             pill("Start a meeting", icon: "record.circle", filled: true) { model.start() }
             if !model.past.isEmpty {
-                label("Earlier meetings").padding(.top, 4)
+                label("Earlier meetings").padding(.top, 4).transition(.opacity)
                 ForEach(model.past) { meeting in
                     Button { model.open(meeting) } label: {
                         HStack(alignment: .firstTextBaseline) {
@@ -689,6 +773,7 @@ struct NotchMeetingView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .transition(.opacity)
                 }
             }
         }
@@ -717,6 +802,7 @@ struct NotchMeetingView: View {
             if model.missed >= 1 {
                 Text("Missed about \(Meeting.span(model.missed)) while Wisp was busy.")
                     .font(.wisp(.caption)).foregroundStyle(Theme.warn)
+                    .transition(.opacity)
             }
             pill("Stop and write notes", icon: "stop.circle", filled: true) { model.stop() }
         }
@@ -799,6 +885,7 @@ struct NotchMeetingView: View {
                 Text(meeting.transcript).font(.wisp(.body)).foregroundStyle(Theme.textMuted)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
+                    .transition(.opacity)
             }
         }
     }

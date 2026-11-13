@@ -38,7 +38,7 @@ enum NotchPermissionPage {
         case .contacts: return "Contacts"
         case .notifications: return "Notifications"
         case .screenRecording: return "Screen Recording"
-        case .accessibility: return "Accessibility"
+        case .accessibility: return PrivacyNames.accessibility
         }
     }
 
@@ -143,7 +143,11 @@ enum NotchPermissionPage {
             }
         case .notAllowed:
             if FirstRunPermissions.isAddOnly(item, state, calendarAddOnly: calendarAddOnly) { return calendarAddOnlyNote }
-            let page = "Wisp is off in System Settings. In the page that opens, switch on Wisp."
+            // On macOS 27 the pane has a new name; say both so it is recognised.
+            let page = item == .accessibility && PrivacyNames.renamesAccessibility
+                ? "Wisp is off in System Settings, under \(PrivacyNames.accessibilityWithFormerName). "
+                    + "In the page that opens, switch on Wisp."
+                : "Wisp is off in System Settings. In the page that opens, switch on Wisp."
             if canStartOver(item, state) { return page + " " + startOverNote }
             return item == .fullDiskAccess || item == .screenRecording ? page + " " + relaunchNote : page
         }
