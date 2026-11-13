@@ -114,6 +114,19 @@ REVIEW_ROUTES = [
     "zsh -c 'echo x > ~/.moe/(gmail).json'",
     "zsh -c 'echo x > ~/.(moe|x)/act*'",
     "zsh -c 'echo x > ~/.moe/((act_for_me|y)|x).json'",
+    # Reading a group as "any text" must not hide a wildcard inside a subshell or `$(…)`.
+    "({cp,/tmp/f,~/.moe/act_for_me.js?n})",
+    "zsh -c '(cat>~/.moe/act_for_me.js?n)</tmp/f'",
+    "zsh -c '(tee>~/.moe/gr?nts.json)</tmp/f'",
+    "zsh -c '(cp</tmp/f>~/.moe/goog*/token.json)'",
+    "echo $(<~/.moe/act*)",
+    # A zsh group with a space or a quote in it.
+    "zsh -c 'echo x > ~/.moe/(act_for_me| x).json'",
+    "zsh -c 'echo x > ~/.moe/(x| act_for_me).json'",
+    "zsh -c 'echo x > ~/.moe/(act_for_me|x\\ y).json'",
+    """zsh -c 'echo x > ~/.moe/(act_for_me|"x y").json'""",
+    "zsh -c 'echo x > ~/.moe/(gmail| x).json'",
+    "zsh -c 'echo x > ~/.moe/(grants| a).json'",
     # "Not now" sits with the gate.
     "echo x > ~/.moe/act_for_me_asked.json",
     "echo x > ~/.moe/act_for_me_ask*",
@@ -136,6 +149,24 @@ STILL_UNTOUCHED = [
     "(ls) && cat sub/*/notes.json",
     "zsh -c 'ls ~/Documents/(a|b).json'",
 ]
+
+
+@pytest.mark.parametrize("cmd", PROTECTED)
+def test_what_asked_before_groups_were_read_still_asks_on_the_first_reading_alone(cmd):
+    """The second reading (groups as "any text") is only ever added to the first. Every command in
+    PROTECTED asked before that reading existed, and must still be caught without it."""
+    dotglob = bool(policy._SHELL_DOTGLOB.search(cmd))
+    assert policy._moe_glob_pass(cmd.casefold(), dotglob) is not None, cmd
+    assert _tier(cmd) in ("CONFIRM", "DENY"), cmd
+
+
+def test_the_group_reading_never_replaces_the_plain_one(monkeypatch):
+    # With the second reading taken away, a subshell's wildcard still asks; with only the
+    # second reading, it would not. So the first can never be dropped for the second.
+    cmd = "zsh -c '(cat>~/.moe/act_for_me.js?n)</tmp/f'"
+    assert policy._moe_glob_pass(cmd, False) is not None
+    assert policy._moe_glob_pass(policy._GLOB_GROUP.sub(policy._GLOB_ANY, cmd), False) is None
+    assert policy._moe_glob_hit(cmd) is not None
 
 
 @pytest.mark.parametrize("cmd", REVIEW_ROUTES)
