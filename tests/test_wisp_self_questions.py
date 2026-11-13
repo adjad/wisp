@@ -377,7 +377,7 @@ def test_view_only_promises_nothing_is_added(monkeypatch):
         monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: auto_add)
         for text in (wisp_about.privacy(), wisp_about.overview()):
             assert "In View Only, nothing is added to your calendar or reminders without your OK" in text
-            assert ROUTINE_ON_MY_OWN not in text and "auto-add is on" not in text
+            assert ROUTINE_ON_MY_OWN not in text and "you let me act for you" not in text
 
 
 def test_full_access_during_the_routine_hold(monkeypatch):
@@ -404,7 +404,7 @@ def test_auto_add_combines_with_routine_actions(monkeypatch):
     monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: True)
     text = wisp_about.privacy()
     assert ("On my own I may add a time-sensitive event or deadline to your Calendar or Reminders "
-            "(auto-add is on); and reminders or Tentative holds in Wisp's own schedule, from your routine, "
+            "(you let me act for you); and reminders or Tentative holds in Wisp's own schedule, from your routine, "
             "and tell you "
             "each time.") in text
     assert CALENDAR_PROMISE not in text
@@ -461,7 +461,7 @@ def test_with_learning_off_and_no_auto_add_calendar_changes_wait(monkeypatch):
     monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: True)
     for text in (wisp_about.privacy(), wisp_about.overview()):
         assert "change your calendar" not in text and "calendar changes" not in text
-        assert "auto-add is on" in text and "Undo" in text
+        assert "you let me act for you" in text and "Undo" in text
 
 
 # The models report (wisp_status) and the self-answers read one cloud_state(),

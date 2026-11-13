@@ -59,6 +59,12 @@ by default), and your Brief and answers fit you.
   your Mac. Turn Full access off in **Settings › Privacy & Access**, the notch's quick settings or
   the chat window, and risky actions pause for your confirmation. Every action Wisp takes is logged
   in `~/.moe/audit.jsonl`.
+- **It acts without being asked only if you say so.** **Let Wisp act for me** is off until you say
+  yes, in setup or in Settings. On, Wisp adds an event or deadline you missed in a text or email to
+  Calendar or Reminders by itself. That is the one calendar change that does not wait for your
+  approval, and only for messages that arrive after your yes, from people you know, schools and
+  bookings, at most 10 a day. Each one appears in the Brief as "Wisp did this" with an Undo that
+  removes exactly what Wisp added. Wisp never sends, replies, deletes or pays for anything by itself.
 - **You can start over.** `/resetwisp` deletes everything Wisp has stored and revokes the access
   you gave it.
 
