@@ -313,6 +313,10 @@ def schedule_tick() -> None:
     if idle.foreground_busy():
         _skip("foreground")
         return
+    from service import stage_mode
+    if stage_mode.holds_background():
+        _skip("demo_mode")              # Demo mode: text recognition waits; nothing is marked tried
+        return
     from service import brief_pace
     if not brief_pace.may_start("attachments"):
         _skip("foreground")             # the user is still chatting

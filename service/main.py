@@ -1522,6 +1522,12 @@ async def set_stage_mode(request: Request, body: dict[str, Any]) -> dict[str, An
     if on:
         _require_wisp_app(request, _APP_ONLY)
         try:
+            # A GPU cap already on a running request is lifted at once, not when it ends.
+            from service.inference import power_tier
+            stage_mode.on_change(power_tier.stage_mode_changed)
+        except Exception:  # noqa: BLE001 — the cap then ends with that request
+            pass
+        try:
             from service import stage_warm     # registers the load-and-warm listener
             stage_warm.install(client)
         except Exception:  # noqa: BLE001 — the switch still works without the warm-up

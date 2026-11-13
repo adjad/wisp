@@ -56,6 +56,13 @@ def validated_candidates(raw, source):
     return result
 
 
+
+def _demo_hold() -> bool:
+    """Demo mode (service/stage_mode.py) holds background extraction; asked every time."""
+    from service import stage_mode
+    return stage_mode.holds_background()
+
+
 class MemoryWorker:
     def __init__(self, sessions, facts):
         from service.memory.connections import ConnectionJobs
@@ -138,6 +145,9 @@ class MemoryWorker:
             if idle.foreground_busy() or any(idle._in_flight.values()):
                 self.state = 'waiting for foreground'
                 continue
+            if _demo_hold():
+                self.state = 'paused while Demo mode is on'   # jobs stay queued
+                continue
             job = investigation = None
             try:
                 # Investigation execution remains disabled unless separately
@@ -177,7 +187,8 @@ class MemoryWorker:
                     await asyncio.wait({self.generation}, timeout=0.1)
                     cancelled = (not self.facts.setting('investigations_enabled', False) or
                         any(j['id'] == investigation['id'] and j['status'] == 'cancelled' for j in self.connections.list())) if investigation else (not self.queue.enabled() or not self.queue.current(job))
-                    if idle.foreground_busy() or cancelled:
+                    # Demo mode turning on yields exactly like a turn: the job goes back to queued.
+                    if idle.foreground_busy() or _demo_hold() or cancelled:
                         self.generation.cancel()
                         await asyncio.gather(self.generation, return_exceptions=True)
                         interrupted = True

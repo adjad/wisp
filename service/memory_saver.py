@@ -40,6 +40,10 @@ IMPORTANT rules:
   Mac) doesn't park any sooner than PARK_AFTER_S. Either holds batch windows off.
 - Intent (the app opening Ask or the Wisp window, the Ask hotkeys) loads the
   model early so the reload hides behind typing, and holds it INTENT_HOLD_S.
+- Demo mode (service/stage_mode.py) reads Save memory as off without writing the
+  switch: no park, no batch window, and a window open when it starts becomes the
+  demo's. It loads nothing here (service/stage_warm.py does). Each tick while it is on
+  counts as use, so after it ends the park timer starts over (PARK_AFTER_S).
 - The "Save memory" switch (on by default) turns parking and batch windows off;
   the chat model then stays resident as before (the notch's X still unloads it,
   as it did before Save memory, but that no longer counts as parked).
@@ -199,6 +203,7 @@ class _State:
     omlx_block: str | None = None        # why Save memory can't act on it (None: it can)
     other_app_at: float | None = None    # when another app last used it (oMLX's wall clock)
     not_ours: set[str] = field(default_factory=set)  # resident on oMLX.app, not Wisp's doing
+    stage_at: float | None = None        # the last tick that saw Demo mode on
 
 
 _state = _State(started=time.monotonic(), started_wall=time.time())
@@ -472,13 +477,24 @@ def _since_intent(now: float) -> float:
     return float("inf") if _state.last_intent is None else now - _state.last_intent
 
 
+def _stage_mode() -> bool:
+    from service import stage_mode
+    return stage_mode.active()
+
+
+def _since_stage(now: float) -> float:
+    """Since the last tick that saw Demo mode on: it counts as use for the park timer."""
+    at = _state.stage_at
+    return float("inf") if at is None else max(0.0, now - at)
+
+
 def decide(*, now: float, loaded: bool, busy: bool, pressure: str, enabled: bool,
            last_used: float | None) -> str:
     """What to do with the chat model this tick. Pure apart from reading _state
-    and idle.last_turn(), so tests can drive it with a clock."""
-    if not enabled:
+    and idle.last_turn(), so tests can drive it with a clock. Demo mode leaves it."""
+    if not enabled or _stage_mode():
         return LEAVE
-    since_user = min(_since_turn(now), _since_intent(now))
+    since_user = min(_since_turn(now), _since_intent(now), _since_stage(now))
     # Warn keeps windows shut too. On a 16 GB Mac warn is routine, so there the
     # resident-only background work often waits for the next use of Wisp.
     tight = pressure in (WARN, CRITICAL)
@@ -494,7 +510,8 @@ def decide(*, now: float, loaded: bool, busy: bool, pressure: str, enabled: bool
             return KEEP
         if pressure == CRITICAL and since_user >= PRESSURE_GRACE_S:
             return PARK
-        if _since_turn(now) >= PARK_AFTER_S and _since_intent(now) >= INTENT_HOLD_S:
+        if (_since_turn(now) >= PARK_AFTER_S and _since_intent(now) >= INTENT_HOLD_S
+                and _since_stage(now) >= PARK_AFTER_S):
             return PARK
         return KEEP
     # Not resident. Only a model Wisp parked gets batch windows; one that was never
@@ -536,6 +553,10 @@ async def tick(client, now: float | None = None, *, pressure: str | None = None,
     window = _state.window_started
     if loaded and window is not None and min(_since_turn(now), _since_intent(now)) < now - window:
         _state.window_started = None   # the user came back during the window: theirs now
+    stage = _stage_mode()
+    if stage:
+        _state.stage_at = now
+        _state.window_started = None   # a window open when Demo mode began is the demo's now
     if loaded and _state.window_started is None:
         if _state.parked and (view is None or _user_since_park(now)):
             _note_unparked()           # someone is back: catch the Brief up if it went stale
@@ -545,6 +566,8 @@ async def tick(client, now: float | None = None, *, pressure: str | None = None,
         # Counts as busy, so it holds a park, a window closing and a window opening.
         wall = time.time() if wall is None else wall
         busy = _other_app_recent(model, view.row, wall) or busy
+    if stage:
+        return LEAVE                   # never park, close or open a window; stage_warm loads
     enabled = save_memory()
     if not enabled:
         # Off means resident as before: bring back a model Wisp parked.
@@ -629,8 +652,8 @@ async def prewarm(client) -> str:
         return "external"              # only a model Save memory parked comes back early there
     if idle.foreground_busy():
         return "busy"                  # the turn loads it
-    if pressure_level() == CRITICAL:
-        return "pressure"              # leave it to a turn
+    if pressure_level() == CRITICAL and not _stage_mode():
+        return "pressure"              # leave it to a turn (Demo mode loads anyway)
     if _prewarm_task is not None and not _prewarm_task.done():
         return "loading"
     model = role_to_model("fast")
@@ -704,4 +727,5 @@ def state() -> dict:
             "batch_window": _state.window_started is not None,
             "pressure": pressure_level(), "held": held(),
             "minutes_since_turn": round(_since_turn(now) / 60, 1),
-            "reason": _state.last_reason}
+            "reason": _state.last_reason,
+            "paused_by_demo": _stage_mode()}

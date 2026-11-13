@@ -490,6 +490,11 @@ ADDITIONAL_FULL_TESTS = {
     # One strict reading of a mail From value: pure strings, no mail is read.
     "tests/test_mail_sender.py",
     "tests/test_policy_moe_wildcards.py",
+    "tests/test_stage_mode.py",
+    "tests/test_stage_mode_menu.py",
+    "tests/test_stage_mode_overrides.py",
+    "tests/test_stage_mode_background.py",
+    "tests/test_stage_warm.py",
     "tests/test_followups_cycle.py",
     "tests/test_text_records_join.py",
     "tests/test_mail_history_regex.py",

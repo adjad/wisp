@@ -219,11 +219,13 @@ _UNSET = object()
 
 def busy_reason(model_key: str, *, power=_UNSET, now: float | None = None) -> str | None:
     """Why the walk is busy, as a reason code, or None: foreground (a user's turn),
-    in_flight (a call on the model), recent_use (someone else used it in the last
+    demo_mode (Demo mode is on: "Paused while Demo mode is on"), in_flight (a call on the model), recent_use (someone else used it in the last
     QUIET_AFTER_USE_S), low_power (Low Power Mode) or battery_low (under 30%).
     Battery alone is never a reason."""
     if idle.foreground_busy():
         return "foreground"
+    if _demo_hold():
+        return "demo_mode"
     if idle.in_flight(model_key) > 0:
         return "in_flight"
     now = time.monotonic() if now is None else now
@@ -263,8 +265,15 @@ def step_gap(lvl: str, power: tuple[bool, int | None, bool]) -> float:
 # --- the model call -----------------------------------------------------------------
 
 def _model_free(key: str) -> bool:
-    """No turn and no other call on the model right now."""
-    return not idle.foreground_busy() and idle.in_flight(key) == 0
+    """No turn, no Demo mode and no other call on the model right now."""
+    return not idle.foreground_busy() and not _demo_hold() and idle.in_flight(key) == 0
+
+
+def _demo_hold() -> bool:
+    """Demo mode (service/stage_mode.py) is on: the walk waits and comes back at its
+    next step. Nothing is marked read or failed. Asked every time, never cached."""
+    from service import stage_mode
+    return stage_mode.holds_background()
 
 
 async def _stand_down() -> str | None:
@@ -313,7 +322,7 @@ async def _reply(msgs: list[dict]) -> str | None:
     try:
         while not request.done():
             # Ours counts as one; anything more is a turn or another background caller.
-            if idle.foreground_busy() or idle.in_flight(key) > 1:
+            if idle.foreground_busy() or _demo_hold() or idle.in_flight(key) > 1:
                 request.cancel()
                 return None
             if time.monotonic() >= deadline:
@@ -783,6 +792,9 @@ def schedule_tick() -> None:
         return
     if idle.foreground_busy():
         note_skip("foreground")
+        return
+    if _demo_hold():
+        note_skip("demo_mode")       # "Paused while Demo mode is on"; the walk resumes after
         return
     from service import brief_pace
     if not brief_pace.may_start("mail_memory"):

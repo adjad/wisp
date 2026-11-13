@@ -377,6 +377,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // post again, and their launch-time posts went out before it was
                 // listening. Post them now, then load what was waiting.
                 self.resyncAllReaders()
+                StageMode.shared.pushIfOn()    // the service keeps Demo mode in memory only
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     await self.todayModel.refresh()
@@ -1272,6 +1273,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                            action: #selector(changeSetupFromMenu), keyEquivalent: "")
         changeSetupMenuItem?.isHidden = true
         menu.addItem(.separator())
+        // Demo mode (StageMode.swift): a checkmark while on, and one plain line under it.
+        demoModeMenuItem = menu.addItem(withTitle: StageMode.menuTitle,
+                                        action: #selector(toggleDemoModeFromMenu), keyEquivalent: "")
+        demoModeNoteItem = menu.addItem(withTitle: "", action: nil, keyEquivalent: "")
+        demoModeNoteItem?.isEnabled = false
+        refreshDemoModeMenuItems()
+        menu.addItem(.separator())
         menu.addItem(withTitle: "Report a Problem…", action: #selector(reportProblem), keyEquivalent: "")
         menu.addItem(withTitle: Self.exportDebugLogTitle, action: #selector(exportDebugLogFromMenu), keyEquivalent: "")
             .toolTip = SettingsView.debugLogPrivacyLine
@@ -1292,6 +1300,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.post(name: .wispExportDebugLog, object: nil)
     }
     private var changeSetupMenuItem: NSMenuItem?
+    private var demoModeMenuItem: NSMenuItem?
+    private var demoModeNoteItem: NSMenuItem?
+
+    @objc private func toggleDemoModeFromMenu() {
+        StageMode.shared.set(!StageMode.shared.isOn)
+    }
+
+    /// The checkmark and the line under it, current each time the menu opens.
+    private func refreshDemoModeMenuItems() {
+        let stage = StageMode.shared
+        demoModeMenuItem?.state = stage.isOn ? .on : .off
+        demoModeNoteItem?.title = StageMode.menuNote(on: stage.isOn, remaining: stage.remaining,
+                                                     problem: stage.problem)
+    }
 
     /// The setup window again at Permissions, for someone already set up. It never
     /// switches or tests their model (FirstRunSetup.drivesModel).
@@ -1349,6 +1371,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 setupMenuItem?.title = "Finish Setup…"
             }
+            refreshDemoModeMenuItems()
             statusItem.menu = menu
             statusItem.button?.performClick(nil)
             statusItem.menu = nil

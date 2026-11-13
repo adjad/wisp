@@ -867,14 +867,31 @@ def schedule_tick() -> asyncio.Task | None:
     if idle.foreground_busy():
         _stood_down("a turn is in progress")
         return None
+    if _demo_hold():
+        _stood_down("paused while Demo mode is on")
+        return None
     if not hub.has_subscribers:
         _stood_down("the app isn't connected to the event stream")
         return None
     if not brief_pace.may_start("gists"):
         _stood_down("the user was just chatting")
         return None
-    _task = asyncio.create_task(refresh())
+    _task = asyncio.create_task(refresh(abort=_scheduled_abort))
     return _task
+
+
+def _demo_hold() -> bool:
+    """Demo mode (service/stage_mode.py) holds this scheduled tick only. The proactive
+    cycle's own calls (refresh_all, refresh_changed, _resident_reply) never ask this."""
+    from service import stage_mode
+    return stage_mode.holds_background()
+
+
+def _scheduled_abort() -> bool:
+    """The scheduled tick's abort: a turn, or Demo mode turned on mid-call (the request
+    is cancelled at the next 0.5 s check, exactly as for a turn; the gist is due again)."""
+    from service import idle
+    return idle.foreground_busy() or _demo_hold()
 
 
 # --- what the Brief shows -----------------------------------------------------------
