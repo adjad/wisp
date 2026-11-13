@@ -756,6 +756,9 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
     # time, or the same plan as a reminder, is never added again.
     retired = {r.get("item_id") for r in records.values()
                if isinstance(r, dict) and r.get("status") in ("undone", "undo_unknown") and r.get("item_id")}
+    acted_elsewhere = {r.get("item_id") for r in records.values()
+                       if isinstance(r, dict) and r.get("kind") not in ("calendar", "reminder", None)
+                       and r.get("status") in ("added", "undone", "unknown", "undo_unknown") and r.get("item_id")}
     today = store.auto_added_since(now - DAY_S)
     from service.proactive.prepare import card_id
     tap, added = [], []
@@ -777,6 +780,10 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
         seen.add(item["id"])
         if item.get("id") in retired:
             note(item, "undone before")
+            continue
+        if item.get("id") in acted_elsewhere:
+            # One message, at most one action of Wisp's own (a follow-up reminder is already on it).
+            note(item, "Wisp already acted on this message")
             continue
         fp = plan["fingerprint"]
         record = records.get(fp) or {}

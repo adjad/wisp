@@ -205,7 +205,7 @@ def register_undoer(kind: str, undoer: Callable[[dict], Awaitable[dict]]) -> Non
 
 # The module that registers each kind's undoer, so Undo works in a process that has not
 # run that kind's step yet (after a restart, the card is still there).
-_HOME = {"hold": "service.proactive.autohold"}
+_HOME = {"hold": "service.proactive.autohold", "follow_up": "service.proactive.followups"}
 
 
 def undoer(kind: str):
