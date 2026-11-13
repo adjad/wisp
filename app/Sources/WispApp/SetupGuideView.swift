@@ -681,7 +681,8 @@ final class SetupGuideModel: ObservableObject {
                 body["automatic"] = true
                 body["expected_configuration"] = expectedConfiguration
             }
-            let next = try decode(try await call("POST", "setup/apply", body: body))
+            // Apply hashes a fresh Gemma Wisp download once (5.6 GB: seconds, up to ~30 s on a slow disk).
+            let next = try decode(try await call("POST", "setup/apply", body: body, timeout: 90))
             guard generation == statusGeneration, !monitoringStopped, !Task.isCancelled else { return }
             accept(next)
             message = "Wisp will use \(model) for chat, tools, coding, and reasoning."

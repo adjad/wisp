@@ -30,7 +30,7 @@ def wire(monkeypatch, tmp_path):
     monkeypatch.setattr(downloads.mode, "is_bundled", lambda: True)
     monkeypatch.setattr(downloads.runtime, "_manager", engine)
     state = SimpleNamespace(tasks=[], seen=[], starts=0, status=200, payload=None, login=True, cookie=True,
-                            delete_fails=False)
+                            delete_fails=False, active_after_delete=False)
 
     async def ensure():
         state.starts += 1
@@ -69,6 +69,9 @@ def wire(monkeypatch, tmp_path):
             state.tasks[state.tasks.index(task)] = {**task, "task_id": "task-2", "status": "pending", "created_at": 2}
         elif path.startswith("/admin/api/hf/task/") and request.method == "DELETE":
             if state.delete_fails:
+                if state.active_after_delete:         # the task restarted on its own: "still active"
+                    state.tasks[0] = {**state.tasks[0], "status": "downloading", "downloaded_size": 1,
+                                      "total_size": 10**10}
                 return httpx.Response(404, json={"detail": "Task not found or still active"})
             state.tasks = [t for t in state.tasks if t["task_id"] != path.rsplit("/", 1)[1]]
         else:
@@ -465,3 +468,104 @@ def test_downloads_land_where_wisp_checks_them():
         pytest.skip("oMLX.app isn't installed here")
     assert "model_dir=dir_list[0]" in (source / "server.py").read_text()
     assert "target_dir = self._model_dir / task.repo_id" in (source / "admin" / "hf_downloader.py").read_text()
+
+
+def _pinned_setup(wire, tmp_path, monkeypatch, disk):
+    files = {"config.json": b"{}", "model.safetensors": b"w" * 8}
+    model = _pinned(tmp_path, files)
+    real = downloads.catalog.by_id
+    monkeypatch.setattr(downloads.catalog, "by_id", lambda m: model if m == MODEL else real(m))
+    folder = _folder(tmp_path, model, disk)
+    wire.tasks = [row(status="completed", progress=100, downloaded_size=10**10, total_size=10**10)]
+    return model, folder
+
+
+def _tree(root):
+    return sorted(str(p.relative_to(root)) for p in root.rglob("*"))
+
+
+def test_an_extra_file_is_named_and_a_retry_removes_it(wire, tmp_path, monkeypatch):
+    _, folder = _pinned_setup(wire, tmp_path, monkeypatch,
+                              {"config.json": b"{}", "model.safetensors": b"w" * 8, "added_tokens.json": b"{}"})
+    task = request(wire, "GET", "/downloads").json()["tasks"][0]
+    assert task["reason"] == "mismatch" and "added_tokens.json" in task["message"]
+    assert (folder / "added_tokens.json").exists()                 # a poll never deletes
+    assert request(wire, "POST", "/downloads", json={"model": MODEL}).status_code == 200
+    assert not (folder / "added_tokens.json").exists()
+    assert (folder / "config.json").exists() and (folder / "model.safetensors").exists()
+
+
+def test_polls_and_the_startup_check_never_delete(wire, tmp_path, monkeypatch):
+    _, folder = _pinned_setup(wire, tmp_path, monkeypatch,
+                              {"config.json": b"{}", "model.safetensors": b"x" * 8, "extra.bin": b"1"})
+    before = _tree(folder)
+    for _ in range(3):
+        assert request(wire, "GET", "/downloads").json()["tasks"][0]["reason"] == "mismatch"
+    monkeypatch.setattr(downloads.catalog, "PRIMARY_MODELS", (downloads.catalog.by_id(MODEL),))
+    downloads.warm_checks()
+    assert _tree(folder) == before
+
+
+def test_folders_outside_wisps_download_are_never_touched(wire, tmp_path, monkeypatch):
+    # Base Gemma, the pre-release folder and a hand-placed copy have no task and no pins here.
+    models = tmp_path / "engine" / "models"
+    keep = {models / "Jundot" / downloads.catalog.GEMMA_E4B_MTP.id: b"x",
+            models / "local" / downloads.catalog.GEMMA_E4B_WISP_PRERELEASE.id: b"x",
+            tmp_path / "elsewhere" / "Gemma-Wisp": b"x"}
+    for folder, data in keep.items():
+        folder.mkdir(parents=True)
+        (folder / "model.safetensors").write_bytes(data)
+        (folder / "stray.txt").write_bytes(data)
+    _pinned_setup(wire, tmp_path, monkeypatch, {"config.json": b"{}", "model.safetensors": b"x" * 8})
+    assert request(wire, "POST", "/downloads", json={"model": MODEL}).status_code == 200
+    for folder in keep:
+        assert (folder / "model.safetensors").exists() and (folder / "stray.txt").exists()
+    for kept in (downloads.catalog.GEMMA_E4B_MTP.id, downloads.catalog.GEMMA_E4B_WISP_PRERELEASE.id):
+        assert downloads._deletion_plan(kept) == []
+
+
+def _victim(tmp_path):
+    other = tmp_path / "other-model"
+    other.mkdir()
+    for name in ("config.json", "model.safetensors", "notes.txt"):
+        (other / name).write_bytes(b"precious")
+    return other
+
+
+def test_a_symlinked_catalogue_folder_is_never_deleted_from(wire, tmp_path, monkeypatch):
+    files = {"config.json": b"{}", "model.safetensors": b"w" * 8}
+    model = _pinned(tmp_path, files)
+    real = downloads.catalog.by_id
+    monkeypatch.setattr(downloads.catalog, "by_id", lambda m: model if m == MODEL else real(m))
+    other = _victim(tmp_path)
+    owner = tmp_path / "engine" / "models" / model.repo.split("/")[0]
+    owner.mkdir(parents=True)
+    (owner / model.repo.split("/")[1]).symlink_to(other)          # the model folder itself is a link
+    assert downloads._deletion_plan(MODEL) == []
+    (owner / model.repo.split("/")[1]).unlink()
+    owner.rmdir()
+    owner.symlink_to(tmp_path)                                      # an ancestor is a link
+    (tmp_path / model.repo.split("/")[1]).symlink_to(other) if not (tmp_path / model.repo.split("/")[1]).exists() else None
+    assert downloads._deletion_plan(MODEL) == []
+    assert sorted(p.name for p in other.iterdir()) == ["config.json", "model.safetensors", "notes.txt"]
+
+
+def test_a_symlinked_pinned_file_or_metadata_folder_is_never_followed(wire, tmp_path, monkeypatch):
+    other = _victim(tmp_path)
+    _, folder = _pinned_setup(wire, tmp_path, monkeypatch, {"config.json": b"{}"})
+    (folder / "model.safetensors").symlink_to(other / "model.safetensors")   # a pinned name as a link
+    (folder / ".cache").symlink_to(other)                                    # hub's metadata folder as a link
+    for path in downloads._deletion_plan(MODEL):
+        assert not path.is_symlink() and path.resolve().parent == folder.resolve()
+    assert request(wire, "POST", "/downloads", json={"model": MODEL}).status_code == 200
+    assert sorted(p.name for p in other.iterdir()) == ["config.json", "model.safetensors", "notes.txt"]
+    assert (other / "model.safetensors").read_bytes() == b"precious"
+
+
+def test_a_still_active_task_is_never_downloaded_twice(wire, tmp_path, monkeypatch):
+    # oMLX answers 404 for "still active" too; Wisp looks again instead of posting a second download.
+    _pinned_setup(wire, tmp_path, monkeypatch, {"config.json": b"{}", "model.safetensors": b"x" * 8})
+    wire.delete_fails = wire.active_after_delete = True
+    response = request(wire, "POST", "/downloads", json={"model": MODEL})
+    assert response.status_code == 200 and response.json()["tasks"][0]["state"] == "downloading"
+    assert not any(r.url.path == "/admin/api/hf/download" for r in wire.seen)

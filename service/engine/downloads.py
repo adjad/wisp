@@ -247,6 +247,12 @@ _MESSAGES_AFTER_COMPLETION = {
 }
 
 
+def _named(names: list[str]) -> str:
+    """Up to three local file names, shortened and stripped to plain characters."""
+    shown = [re.sub(r"[^A-Za-z0-9._ -]", "?", n)[:40] for n in names[:3]]
+    return ", ".join(shown) + (f" and {len(names) - 3} more" if len(names) > 3 else "")
+
+
 def models_dir():
     """Where the engine's downloader writes: oMLX's HFDownloader gets model_dir=dir_list[0],
     the first of the engine's model_dirs, which manager.engine_settings makes Wisp's own
@@ -294,33 +300,73 @@ def _check_finished(tasks) -> list:
             continue      # unpinned: setup's "hasn't appeared" route covers it
         reason = verify_download(folder, known)
         if reason:
-            task.update(state="failed", reason=reason,
-                        message=_MESSAGES_AFTER_COMPLETION[reason].format(label=known.label, repo=known.repo))
+            message = _MESSAGES_AFTER_COMPLETION[reason].format(label=known.label, repo=known.repo)
+            from service.setup.local_models import extra_files
+            extras = extra_files(folder, known) if reason == "mismatch" else []
+            if extras:
+                message += f" It has files the tested model didn't: {_named(extras)}. Try again to remove them."
+            task.update(state="failed", reason=reason, message=message)
     return tasks
 
 
-def _drop_bad_pinned_files(model_id: str) -> list[str]:
-    """Delete, inside the catalogue folder only, each pinned file that fails its check and
-    hub's metadata for it, so the next download fetches it again."""
-    from service.setup.local_models import bad_pinned_files
+def _contained_folder(model: "catalog.CatalogModel"):
+    """The catalogue folder, only when nothing between the engine's models folder and it is
+    a symlink (so a deletion can't reach another model's files); else None."""
+    root = models_dir()
+    folder = _model_folder(model)
+    try:
+        if not folder.is_dir():
+            return None
+        rel = folder.relative_to(root)
+        step = root
+        for part in rel.parts:                      # Neo-Arid, then Gemma-Wisp
+            step = step / part
+            if step.is_symlink():
+                return None
+        if not folder.resolve().is_relative_to(root.resolve() / rel):
+            return None
+    except (OSError, ValueError):
+        return None
+    return folder
+
+
+def _deletion_plan(model_id: str) -> list:
+    """What a user's Retry removes before downloading again, worked out (and hashed) without
+    touching anything: each pinned file that fails its check, and each top-level file the
+    tested model didn't have, plus hub's metadata for them. Regular files only, never a
+    symlink, never outside the contained catalogue folder or its hub metadata folder."""
+    from service.setup.local_models import bad_pinned_files, extra_files
     known = catalog.by_id(model_id)
     if known is None or not known.pinned_files or not known.repo:
         return []
-    folder = _model_folder(known)
-    if not folder.is_dir():
+    folder = _contained_folder(known)
+    if folder is None:
         return []
-    root = folder.resolve()
-    dropped = []
-    for name in bad_pinned_files(folder, known):
-        for path in (folder / name, folder / ".cache" / "huggingface" / "download" / f"{name}.metadata"):
-            if path.resolve().parent not in (root, (root / ".cache" / "huggingface" / "download").resolve()):
-                continue
-            try:
+    meta = folder / ".cache" / "huggingface" / "download"
+    meta_ok = all(not p.is_symlink() for p in (folder / ".cache", folder / ".cache" / "huggingface", meta))
+    names = [*bad_pinned_files(folder, known), *extra_files(folder, known)]
+    plan = []
+    for name in names:
+        path = folder / name
+        if path.is_file() and not path.is_symlink() and path.parent == folder:
+            plan.append(path)
+        record = meta / f"{name}.metadata"
+        if meta_ok and record.is_file() and not record.is_symlink():
+            plan.append(record)
+    return plan
+
+
+def _delete(plan: list) -> list:
+    """Quick: unlink what the plan named (no hashing here)."""
+    gone = []
+    for path in plan:
+        try:
+            if path.is_file() and not path.is_symlink():
                 path.unlink()
-            except FileNotFoundError:
-                pass
-        dropped.append(name)
-    return dropped
+                gone.append(path.name)
+        except OSError:
+            pass
+    return gone
 
 
 async def _inventory() -> list:
@@ -471,11 +517,17 @@ async def download_model(request: Request):
                     # and download again, which fetches what is missing or changed. Hub skips a
                     # local file whose saved metadata matches the remote, without hashing it, so
                     # a pinned file damaged on disk is removed first or it would survive.
-                    await asyncio.to_thread(_drop_bad_pinned_files, model)
+                    # Hash first (slow, changes nothing); a timeout here leaves the disk as it was.
+                    plan = await asyncio.to_thread(_deletion_plan, model)
                     try:
                         await _call("DELETE", f"/admin/api/hf/task/{previous[0]}")
                     except DownloadError:
-                        pass   # the row is gone already (or can't go): the fresh download still starts
+                        # Gone already, or still active ("still active" is a 404 too): look again,
+                        # and never queue a second download beside an active one.
+                        tasks = await _inventory()
+                        if any(t["model"] == model and t["state"] in _ACTIVE for _, _, t in tasks):
+                            return _display(tasks)
+                    await asyncio.to_thread(_delete, plan)     # quick: unlinks only
                     await _call("POST", "/admin/api/hf/download", {"repo_id": _catalogue()[model]})
                 elif previous is not None and previous[1]["state"] in {"failed", "cancelled"}:
                     await _call("POST", f"/admin/api/hf/retry/{previous[0]}", {})

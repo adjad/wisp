@@ -157,6 +157,14 @@ def bad_pinned_files(folder: Path, model: "catalog.CatalogModel") -> list[str]:
     return bad
 
 
+def extra_files(folder: Path, model: "catalog.CatalogModel") -> list[str]:
+    """Top-level non-dot entries of a pinned model's folder that the tested model didn't have."""
+    if not model.pinned_files:
+        return []
+    allowed = {name for name, _, _ in model.pinned_files} | ALLOWED_EXTRA
+    return sorted(e.name for e in folder.iterdir() if not e.name.startswith(".") and e.name not in allowed)
+
+
 def verify_download(folder: Path, model: "catalog.CatalogModel", *, cached_only: bool = False) -> str | None:
     """None when `folder` holds a usable copy of `model`; else "incomplete" (weights
     missing or partial) or "mismatch" (a pinned file differs from what Wisp tested, or
@@ -164,14 +172,11 @@ def verify_download(folder: Path, model: "catalog.CatalogModel", *, cached_only:
     a file not hashed yet counts as matching."""
     if not weights_complete(folder):
         return "incomplete"
-    if model.pinned_files:
-        allowed = {name for name, _, _ in model.pinned_files} | ALLOWED_EXTRA
-        try:
-            extra = [e.name for e in folder.iterdir() if not e.name.startswith(".") and e.name not in allowed]
-        except OSError:
-            return "incomplete"
-        if extra:
+    try:
+        if extra_files(folder, model):
             return "mismatch"
+    except OSError:
+        return "incomplete"
     for name, sha256, size in model.pinned_files:
         path = folder / name
         try:

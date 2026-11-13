@@ -377,12 +377,14 @@ async def lifespan(app: FastAPI):
         # The client reads the engine's key from its settings file at construction.
         from service.engine.runtime import manager
         await asyncio.to_thread(manager().prepare)
-        # Hash pinned downloads once, off the loop, so setup's cached checks know after a restart.
-        from service.engine.downloads import warm_checks
-        asyncio.get_running_loop().run_in_executor(None, warm_checks)
     client = OMLXClient()
     profile = remote_only_profile()
     started_tasks = []
+    if is_bundled() and remote_only_profile() is None:
+        # Hash pinned downloads once, off the loop, so setup's cached checks know after a restart.
+        # Read-only; cancelled at shutdown (a hash already running finishes, a few seconds at most).
+        from service.engine.downloads import warm_checks
+        started_tasks.append(asyncio.create_task(asyncio.to_thread(warm_checks)))
     if profile is not None:
         try:
             await _prepare_remote_inference(client)
