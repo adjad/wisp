@@ -216,11 +216,16 @@ def test_a_relative_date_with_no_known_time_is_never_used(store, yes):
 def test_without_proof_or_with_the_switch_off_a_mail_writes_nothing_but_a_text_still_does(store, yes, monkeypatch):
     yes(NOW - 2 * H)
     item = thread(row(1, "Recital", INVITE))
-    # As shipped: this row came through Apple Mail, so there is no proof for it.
+    # As shipped: the switch is off, so no email is added without a tap.
+    assert autoadd.MAIL_ACTS is False
     writers, out, notes = run(store, item)
     assert writers.calls == [] and out["added"] == [] and store.auto_added() == {}
     assert [c["action"]["method"] for c in out["tap"]] == ["calendar_event"]
-    assert notes == ["mail: tap to add (not from a Google account you linked)"]
+    assert notes == ["mail: tap to add (mail does not act)"]
+    # With the switch on and no proof (this row came through Apple Mail), still a card.
+    monkeypatch.setattr(autoadd, "MAIL_ACTS", True)
+    writers, out, notes = run(store, item)
+    assert writers.calls == [] and notes == ["mail: tap to add (not from a Google account you linked)"]
     # The fail-closed switch: off, and even granted proof adds nothing.
 
     async def proven(item, plan, evidence):
