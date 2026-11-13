@@ -70,6 +70,32 @@ def test_the_service_is_never_started_trusting_proxy_headers():
     assert missing == [], missing
 
 
+def test_the_service_never_loads_python_code_from_outside_the_bundle():
+    """The bundled Python has no pyvenv.cfg, so by default it reads the per-user site-packages
+    (~/.local/lib/python3.x/site-packages), where a `.pth` file runs at start-up. The launch
+    environment turns that off and passes on no inherited variable that names a code path."""
+    source = _manager()
+    start = source.index("nonisolated static func backendEnvironment(")
+    body = source[start:source.index("nonisolated static func fileSize", start)]
+    assert re.search(r'"PYTHONNOUSERSITE":\s*"1"', body), "the service must start with PYTHONNOUSERSITE=1"
+    assert "!inheritedPythonPathKeys.contains($0.key)" in body
+    keys = re.search(r"inheritedPythonPathKeys: Set<String> = \[(?P<keys>[^\]]*)\]", source)
+    assert keys and {"PYTHONPATH", "PYTHONHOME"} <= set(re.findall(r'"([A-Z]+)"', keys.group("keys")))
+    # The app sets none of them on purpose anywhere (the one place it starts Python is the launch above).
+    app = ROOT / "app" / "Sources" / "WispApp"
+    setters = [path.name for path in sorted(app.glob("*.swift")) if path.name != "BackendManager.swift"
+               and re.search(r'"PYTHON(PATH|HOME)"', _code(path.read_text(encoding="utf-8")))]
+    assert setters == [], setters
+    # -I and -s are not used: the interpreter's own arguments are exactly "-m uvicorn ...".
+    assert _uvicorn_arguments()[:2] == ["-m", "uvicorn"]
+    # The setting is for the service itself: a command the person has Wisp run keeps its own Python.
+    from service import identity
+    assert identity.child_environment({"PYTHONNOUSERSITE": "1", "PATH": "/usr/bin"}) == {"PATH": "/usr/bin"}
+    # What the launch adds after this (the credential pipe, the nonce, extraEnvironment) names no code path.
+    launch = source[source.index("proc.environment = Self.backendEnvironment("):source.index("proc.standardInput = credentialPipe")]
+    assert "PYTHON" not in launch
+
+
 def test_the_launch_still_names_the_service_host_and_port_first():
     arguments = _uvicorn_arguments()
     assert arguments[:7] == ["-m", "uvicorn", "service.main:app", "--host", "127.0.0.1", "--port", "8765"]
