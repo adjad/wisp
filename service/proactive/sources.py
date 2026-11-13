@@ -759,28 +759,32 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
 # --- texts ----------------------------------------------------------------------
 
 
-def text_records() -> list[tuple[float, str, str, str, bool | None]]:
-    """(ts, conversation, "Sender: text", chat guid, unread) for every cached
-    message, oldest first. The chat guid comes from the native record with the
-    same timestamp (the V3 feed), "" when there is none; unread is None when
-    the cache has no read state."""
+def text_records() -> list[tuple]:
+    """(ts, conversation, "Sender: text", chat guid, unread, service) for every
+    cached message, oldest first. The chat guid and the delivery service
+    ("iMessage", "SMS", "RCS") come from the native record with the same
+    timestamp (the V3 feed). Two native records at one timestamp that disagree
+    give "" for both: nothing is guessed. unread is None when the cache has no
+    read state."""
     from service.tools import imessage_tools as im
     if im.messages_sync_state() != "ready":
         return []
-    guids: dict[float, set[str]] = {}
+    native: dict[float, set[tuple[str, str]]] = {}
     try:
         for record in im.structured_messages_snapshot().get("records") or []:
             stamp = record.get("timestamp")
             if isinstance(stamp, str):
                 stamp = datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
             if _finite(stamp) and isinstance(record.get("conversation"), str):
-                guids.setdefault(round(float(stamp), 3), set()).add(record["conversation"])
+                service = record.get("service") if isinstance(record.get("service"), str) else ""
+                native.setdefault(round(float(stamp), 3), set()).add((record["conversation"], service))
     except Exception:  # noqa: BLE001 — no native ids: no text replies, everything else stands
-        guids = {}
+        native = {}
     out = []
     for ts, _identity, context, text, unread in im._parse_records():
-        found = guids.get(round(float(ts), 3)) or set()
-        out.append((float(ts), context, text, next(iter(found)) if len(found) == 1 else "", unread))
+        found = native.get(round(float(ts), 3)) or set()
+        guid, service = next(iter(found)) if len(found) == 1 else ("", "")
+        out.append((float(ts), context, text, guid, unread, service))
     return sorted(out, key=lambda r: r[0])
 
 
@@ -852,6 +856,8 @@ def text_items(records: list[tuple], *, now: float, own: str | None = None,
     own = own_account() if own is None else own
     conversations: dict[str, list[tuple[float, str, str]]] = {}
     chats: dict[str, set[str]] = {}
+    services: dict[str, set[str]] = {}       # every in-window line's delivery service ("" = not known)
+    unplaced: set[str] = set()               # conversations with an in-window line of no known chat
     ever_sent: set[str] = set()
     raw_texts: dict[str, list[tuple[float, str, str]]] = {}
     unread_at: dict[tuple[str, float], bool | None] = {}
@@ -866,6 +872,9 @@ def text_items(records: list[tuple], *, now: float, own: str | None = None,
             raw_texts.setdefault(context, []).append((ts, context, text))
             if guid:
                 chats.setdefault(context, set()).add(guid)
+            else:
+                unplaced.add(context)
+            services.setdefault(context, set()).add(str(record[5]) if len(record) > 5 and record[5] else "")
     items = []
     for context, rows in conversations.items():
         # A sender who is only a number or a short code that the user never
@@ -913,7 +922,13 @@ def text_items(records: list[tuple], *, now: float, own: str | None = None,
                           received_ts=last_in[0],
                           replied=replied, group=group, person=True, unread=unread_at.get((context, last_in[0])),
                           user_wrote=any(r[2].partition(":")[0].strip() == "Me" for r in rows),
-                          handle="" if group else chat_handle(chats.get(context, set())),
+                          # The handle only when EVERY line in view belongs to that one chat: a line
+                          # whose chat is not known may be from anywhere.
+                          handle="" if group or context in unplaced else chat_handle(chats.get(context, set())),
+                          # How the conversation's lines were delivered: one service when every line
+                          # in view says the same, else "". Only an iMessage's sender is one Apple
+                          # verified; an SMS sender number can be forged (autoadd acts on iMessage only).
+                          service=next(iter(services.get(context) or {""})) if len(services.get(context) or ()) == 1 else "",
                           # Read from the raw lines before redaction: Wisp's own
                           # "(private details omitted)" alone never withholds a chat.
                           secret=_raw_secret("\n".join(r[2] for r in raw_texts.get(context, [])[-MAX_TEXT_LINES:])),

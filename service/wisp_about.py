@@ -337,7 +337,7 @@ def _attention_state() -> tuple[str, bool] | None:
 _SEND_OK = "Before anything is sent, I show it to you and wait for your OK."
 _CALENDAR_OK = "Before anything is sent, or your calendar changes, I show it to you and wait for your OK."
 _AUTO_ADD = ("Because you let me act for you, I may add a time-sensitive event or deadline to your Calendar or "
-             "Reminders on my own, from a text with a saved contact or from an email I can verify is from someone "
+             "Reminders on my own, from an iMessage with a saved contact or from an email I can verify is from someone "
              "you know, and hold a free hour on my own Day plan (never on your calendar) for work due soon, then "
              "tell you, with Undo. For any other email I show a card and wait for your tap.")
 _ROUTINE = {
@@ -363,7 +363,7 @@ def _automatic_adds() -> tuple[str, list[tuple[str, str, bool]]]:
     mode = _write_mode()
     adds: list[tuple[str, str, bool]] = []
     if _auto_add_on():
-        adds.append((_AUTO_ADD, "a time-sensitive event or deadline from a text or a verified email to your "
+        adds.append((_AUTO_ADD, "a time-sensitive event or deadline from an iMessage or a verified email to your "
                                 "Calendar or Reminders, and a held hour on my own Day plan "
                                 "(you let me act for you)", False))
     routine = _routine_state()

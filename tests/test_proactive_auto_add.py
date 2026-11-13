@@ -43,9 +43,9 @@ def saved_contacts(monkeypatch):
     monkeypatch.setattr(autoadd, "_contact_name", lambda handle: "Saved Contact" if handle == SAVED else "")
 
 
-def text(who, line, ago_h=1.0, unread=True, mine=(), chat=CHAT):
-    records = [(NOW - ago_h * 3600, who, f"{who}: {line}", chat, unread)]
-    records += [(NOW - ago_h * 3600 + 60 * (i + 1), who, f"Me: {m}", chat, None) for i, m in enumerate(mine)]
+def text(who, line, ago_h=1.0, unread=True, mine=(), chat=CHAT, service="iMessage"):
+    records = [(NOW - ago_h * 3600, who, f"{who}: {line}", chat, unread, service)]
+    records += [(NOW - ago_h * 3600 + 60 * (i + 1), who, f"Me: {m}", chat, None, service) for i, m in enumerate(mine)]
     return sources.text_items(records, now=NOW, own=ME)[0]
 
 
@@ -642,7 +642,7 @@ def yes(tmp_path, monkeypatch):
 
 def conversation(who, *lines):
     """(hours ago, text) lines from `who`, oldest first, as one conversation item."""
-    records = [(NOW - ago * 3600, who, f"{who}: {line}", CHAT, True) for ago, line in lines]
+    records = [(NOW - ago * 3600, who, f"{who}: {line}", CHAT, True, "iMessage") for ago, line in lines]
     return sources.text_items(records, now=NOW, own=ME)[0]
 
 
@@ -789,11 +789,12 @@ def test_an_email_without_proof_is_never_added_without_a_tap(store):
 
 # --- a text counts only from a one-to-one chat whose HANDLE is saved in Contacts ----------------
 
-def _texts(context, lines, chats, mine=()):
-    """One conversation labelled `context`; `chats` gives each line's chat guid in turn."""
-    records = [(NOW - 3600 + i, context, f"{context}: {line}", chats[i % len(chats)], True)
-               for i, line in enumerate(lines)]
-    records += [(NOW - 3000 + i, context, f"Me: {m}", chats[0], None) for i, m in enumerate(mine)]
+def _texts(context, lines, chats, mine=(), services=("iMessage",)):
+    """One conversation labelled `context`; `chats` and `services` give each line's chat guid and
+    delivery service in turn."""
+    records = [(NOW - 3600 + i, context, f"{context}: {line}", chats[i % len(chats)], True,
+                services[i % len(services)]) for i, line in enumerate(lines)]
+    records += [(NOW - 3000 + i, context, f"Me: {m}", chats[0], None, services[0]) for i, m in enumerate(mine)]
     return sources.text_items(records, now=NOW, own=ME)[0]
 
 
@@ -869,3 +870,114 @@ def test_contacts_that_cannot_be_asked_mean_nobody_is_known(store, yes, monkeypa
 ])
 def test_what_counts_as_a_persons_handle(handle, person):
     assert autoadd._person_handle(handle) is person
+
+
+# --- only an iMessage is added without a tap; an SMS, or a text of unknown delivery, is a card ----
+
+@pytest.mark.parametrize("chat, services, why", [
+    ("SMS;-;" + SAVED, ("SMS",), "an SMS: its sender number can be forged"),
+    ("any;-;" + SAVED, ("SMS",), "an SMS in a chat the system names any;-;"),
+    ("any;-;" + SAVED, ("",), "delivery not known"),
+    ("iMessage;-;" + SAVED, ("",), "the chat says iMessage but the message itself does not"),
+    ("any;-;" + SAVED, ("RCS",), "RCS"),
+    ("any;-;" + SAVED, ("iMessage", "SMS"), "a conversation with both: not all verified"),
+])
+def test_a_saved_contacts_number_over_sms_or_unknown_delivery_stays_a_card(store, yes, chat, services, why):
+    yes(NOW - 2 * 3600)
+    item = _texts("Maya Chen", ["hey", DATED], [chat], services=services)
+    assert item["handle"] == SAVED, why                              # it IS the saved contact's number
+    writers = Writers()
+    out, notes = production_step(store, survivors(item), writers)
+    assert writers.calls == [] and out["added"] == [] and store.auto_added() == {}, why
+    assert [c["action"]["method"] for c in out["tap"]] == ["calendar_event"], why
+    assert notes == ["not an iMessage: tap to add"], why
+
+
+def test_an_imessage_in_a_chat_the_system_names_any_is_added(store, yes):
+    yes(NOW - 2 * 3600)
+    item = _texts("Maya Chen", [DATED], ["any;-;" + SAVED], services=("iMessage",))
+    assert item["service"] == "iMessage" and item["handle"] == SAVED
+    writers = Writers()
+    production_step(store, survivors(item), writers)
+    assert [k for k, _ in writers.calls] == ["calendar"]
+
+
+def test_a_line_whose_chat_is_not_known_leaves_the_conversation_without_a_handle():
+    records = [(NOW - 3600, "Maya Chen", "Maya Chen: hey", CHAT, True, "iMessage"),
+               (NOW - 1800, "Maya Chen", f"Maya Chen: {DATED}", "", True, "")]      # joined to no native record
+    [item] = sources.text_items(records, now=NOW, own=ME)
+    assert item["handle"] == "" and item["service"] == ""
+    assert autoadd.plan_for(item, dict(OK), now=NOW, tz=TZ) == (None, "not a saved contact: tap to add")
+
+
+def test_older_five_field_records_read_as_unknown_delivery():
+    [item] = sources.text_items([(NOW - 3600, "Maya Chen", f"Maya Chen: {DATED}", CHAT, True)], now=NOW, own=ME)
+    assert item["service"] == "" and item["handle"] == SAVED
+
+
+# --- the Contacts match itself, on the real lookup (not the fixture's stand-in) --------------------
+
+@pytest.fixture
+def contacts(monkeypatch):
+    """Real Contacts maps, filled the way a sync fills them, with nothing persisted."""
+    from service.tools import imessage_tools as im
+    monkeypatch.setattr(im.cache_store, "save", lambda *a, **k: None)
+    monkeypatch.setattr(im, "_contacts", {})
+    monkeypatch.setattr(im, "_name_handles", {})
+    monkeypatch.setattr(im, "_contacts_privacy_current", True)
+    monkeypatch.setattr(im, "_contacts_not_allowed", False)
+    monkeypatch.setattr(autoadd, "_region_code", lambda: "")
+    return lambda mapping: im.cache_contacts(mapping)
+
+
+def test_a_london_contact_is_not_a_maine_stranger(contacts):
+    contacts({"+44 20 7946 0958": "Priya Shah", "(555) 123-0001": "Maya Chen", "sam@friend.com": "Sam Lee",
+              "020 7946 0111": "Local Shop", "15551239999": "Dana Wu"})
+    from service.tools import imessage_tools as im
+    assert im.contact_name_for_handle("+12079460958") == "Priya Shah"          # the loose match labels do use
+    assert autoadd.strict_contact_name("+12079460958") == ""                    # ...is not who may add
+    assert autoadd.strict_contact_name("+442079460958") == "Priya Shah"
+    assert autoadd.strict_contact_name("+15551230001") == "Maya Chen"           # saved without a country code
+    assert autoadd.strict_contact_name("+15551239999") == "Dana Wu"             # saved with one, no "+"
+    assert autoadd.strict_contact_name("+12079460111") == ""                    # a trunk 0 is never +1
+    assert autoadd.strict_contact_name("+442079460111") == "Local Shop"
+    assert autoadd.strict_contact_name("5551230001") == ""                      # a handle with no country code
+    assert autoadd.strict_contact_name("Sam@Friend.com") == "Sam Lee"
+    assert autoadd.strict_contact_name("sam@friend.co") == "" and autoadd.strict_contact_name("") == ""
+    # Knowing the user's own country code tightens a number saved without one.
+    assert autoadd.strict_contact_name("+15551230001", region="1") == "Maya Chen"
+    assert autoadd.strict_contact_name("+445551230001", region="1") == ""
+    assert autoadd.strict_contact_name("+445551230001") == "Maya Chen"          # unknown region: see phones_match
+
+
+def test_contacts_not_synced_or_not_allowed_hold_nobody(contacts, monkeypatch):
+    contacts({"+15551230001": "Maya Chen"})
+    from service.tools import imessage_tools as im
+    assert autoadd.strict_contact_name("+15551230001") == "Maya Chen"
+    monkeypatch.setattr(im, "_contacts_privacy_current", False)
+    assert autoadd.strict_contact_name("+15551230001") == ""
+    monkeypatch.setattr(im, "_contacts_privacy_current", True)
+    monkeypatch.setattr(im, "_contacts_not_allowed", True)
+    assert autoadd.strict_contact_name("+15551230001") == ""
+
+
+def test_the_real_lookup_through_the_production_step(store, yes, contacts, monkeypatch):
+    yes(NOW - 2 * 3600)
+    contacts({"+44 20 7946 0958": "Priya Shah"})
+    monkeypatch.setattr(autoadd, "_contact_name", autoadd.strict_contact_name)     # undo the stand-in
+    stranger = _texts("Priya Shah", [DATED], ["any;-;+12079460958"])                # Maine, posing by label
+    writers = Writers()
+    out, _ = production_step(store, survivors(stranger), writers)
+    assert writers.calls == [] and out["added"] == []
+    friend = _texts("Priya Shah", [DATED], ["any;-;+442079460958"])
+    production_step(store, survivors(friend), writers)
+    assert [k for k, _ in writers.calls] == ["calendar"]
+
+
+def test_the_users_own_address_is_never_a_correspondent(monkeypatch):
+    from service.memory import identity
+    monkeypatch.setattr(identity, "user_emails", lambda: ["me@icloud.com"])
+    monkeypatch.setattr(autoadd, "_contact_name", lambda handle: "Me")
+    item = {"source": "messages", "group": False, "handle": "me@icloud.com", "service": "iMessage"}
+    assert autoadd._saved_contact(item) is False
+    assert autoadd._saved_contact({**item, "handle": SAVED}) is True

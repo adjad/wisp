@@ -127,6 +127,22 @@ enum MessagesReaderRegression {
 
         let limited = reader.readRecentMessages(limit: 1)!
         precondition(limited.attempted == 1 && limited.structured.count == 1)
+        // How a message was delivered: unknown while the store has no such column, then the
+        // message's own value. The service acts on an iMessage only, so a guess here would matter.
+        precondition(source["service"] is NSNull, "No service column: the service is unknown")
+        sql("ALTER TABLE message ADD COLUMN service TEXT")
+        sql("UPDATE message SET service = 'iMessage'")
+        let delivered = reader.readRecentMessages()!
+        let deliveredRow = try JSONSerialization.jsonObject(
+            with: Data(delivered.structured[0].dropFirst(5).utf8)) as! [String: Any]
+        precondition((deliveredRow["source"] as! [String: Any])["service"] as? String == "iMessage",
+                     "The message's own service reaches the record")
+        sql("UPDATE message SET service = 'SMS'")
+        let overSMS = reader.readRecentMessages()!
+        let smsRow = try JSONSerialization.jsonObject(
+            with: Data(overSMS.structured[0].dropFirst(5).utf8)) as! [String: Any]
+        precondition((smsRow["source"] as! [String: Any])["service"] as? String == "SMS")
+        sql("UPDATE message SET service = NULL")
         let divergent = NSMutableAttributedString(string: "OLD: tap")
         divergent.addAttribute(.link, value: URL(string: "https://old.example.test/secret")!,
                                range: NSRange(location: 5, length: 3))
