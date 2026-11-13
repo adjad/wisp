@@ -199,12 +199,53 @@ def bare_subject(subject: str) -> str:
     return subject.strip()
 
 
+_ADDR_SPEC = re.compile(r"[^\s<>@,;:\"'()]+@[^\s<>@,;:\"'()]+")
+_ANGLE_ADDR = re.compile(r"<\s*([^<>\s]+@[^<>\s]+)\s*>")
+
+
 def _address(row: dict) -> str:
-    address = str(row.get("sender_address") or "").strip()
-    if not address:
-        found = re.search(r"<([^>]+@[^>]+)>", str(row.get("sender") or ""))
-        address = found.group(1) if found else (str(row.get("sender") or "") if "@" in str(row.get("sender") or "") else "")
-    return address.strip().casefold()
+    """The address a mail row was really sent from.
+
+    A sender chooses their own display name, and it may itself contain an
+    address: `"Maya <maya@friend.com>" <x@evil.com>` is from x@evil.com. In a
+    mailbox the real address is always the LAST angle-bracketed one, so that is
+    the one read, never the first. A reader's own parsed `sender_address` is
+    used only when it is one clean address; a bare sender counts only when the
+    whole of it is one address. Anything else has no address at all."""
+    given = str(row.get("sender_address") or "").strip()
+    if _ADDR_SPEC.fullmatch(given):
+        return given.casefold()
+    sender = str(row.get("sender") or "")
+    found = _ANGLE_ADDR.findall(sender)
+    if found:
+        return found[-1].strip().casefold()
+    bare = sender.strip()
+    return bare.casefold() if _ADDR_SPEC.fullmatch(bare) else ""
+
+
+def odd_sender(row: dict) -> bool:
+    """The display name carries an address or a bracket ("Maya <maya@friend.com>",
+    "me@school.edu"): a name dressed up to be read as someone else's address.
+    Such mail is shown by its real address and nothing is done on its strength
+    without a tap (autoadd.plan_for)."""
+    sender = str(row.get("sender") or "")
+    last = None
+    for last in _ANGLE_ADDR.finditer(sender):
+        pass
+    name = sender[:last.start()] if last else ("" if _ADDR_SPEC.fullmatch(sender.strip()) else sender)
+    given = str(row.get("sender_address") or "").strip()
+    return ("@" in name or "<" in name or ">" in name
+            or bool(given) and not _ADDR_SPEC.fullmatch(given)
+            or len(_ANGLE_ADDR.findall(sender)) > 1)
+
+
+def shown_sender(row: dict) -> str:
+    """Who a mail row is from, as shown: the name, or for an odd sender the real address alone."""
+    from service.assistant.daily_workspace import display_name
+    address = _address(row)
+    if odd_sender(row):
+        return address or "Unknown sender"
+    return display_name(row.get("sender"), address) or "Unknown sender"
 
 
 def reply_ref_for_row(row: dict) -> dict | None:
@@ -543,7 +584,8 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
                                        message_id=str(last_in.get("message_id") or ""), after=float(last_in["ts"]),
                                        sender=_address(last_in))
         raw_subject = redact_summary_codes(clean(last_in.get("subject"), 200))
-        who = display_name(last_in.get("sender"), _address(last_in)) or "Unknown sender"
+        who = shown_sender(last_in)
+        odd = any(odd_sender(m) for m in messages if _address(m) not in mine) or odd_sender(last_in)
         if reason == "doc_comment":
             who = _DOC_APP.sub("", who).strip() or who
         subject = shown_title(raw_subject, who, school=reason == "school" or school_mail(last_in))
@@ -586,7 +628,7 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
         blocks, quotes = [], [subject]
         for message in messages[-3:]:
             from_user = _address(message) in mine
-            speaker = "You (the user)" if from_user else (display_name(message.get("sender"), _address(message)) or "Unknown sender")
+            speaker = "You (the user)" if from_user else shown_sender(message)
             if not from_user and reason == "doc_comment":
                 speaker = _DOC_APP.sub("", speaker).strip() or speaker
             stamp = datetime.fromtimestamp(message["ts"], zone).strftime("%a %b %-d %-I:%M %p")
@@ -601,6 +643,8 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
         items.append(dict(id=item_id, source="mail", account=bucket,
                           raw_account=account, who=who, title=subject, text=text, lines=quotes,
                           received_ts=float(last_in["ts"]), replied=replied, ref=ref, reply_ref=reply_ref,
+                          # A sender name made to look like someone else's address (odd_sender).
+                          odd_sender=odd,
                           # A thread's subject is as old as its first message, whatever arrived last.
                           subject_ts=float(min(m["ts"] for m in messages)),
                           unread=last_in.get("unread"),
