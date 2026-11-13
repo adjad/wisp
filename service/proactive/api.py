@@ -114,9 +114,15 @@ async def set_act(request: Request):
     from service.proactive import acting
     try:
         acting.set_enabled(body.enabled)
-    except (ValueError, OSError) as exc:
-        raise HTTPException(409, "Wisp couldn't save this setting (~/.moe/act_for_me.json). Until it can, "
-                                 "Wisp does nothing on its own.") from exc
+    except Exception as exc:  # noqa: BLE001 — whatever failed, the reply says what is true now
+        # Every reply is the gate as it really is (_act_state reads it again), never what was
+        # asked for. A failed yes leaves the gate off (acting.set_enabled), so the words are true.
+        if acting.enabled():                 # unreachable by design (both paths leave it off); never claim off
+            raise HTTPException(409, "Wisp couldn't save this change. Letting Wisp act for you is still on.") from exc
+        if body.enabled:
+            raise HTTPException(409, "Wisp couldn't save your yes (~/.moe/act_for_me.json). Until it can, "
+                                     "Wisp does nothing on its own.") from exc
+        # An off that went wrong somewhere but is in fact off is a success.
     return _act_state()
 
 
@@ -124,8 +130,11 @@ def _require_app(request: Request) -> None:
     from service.wisp_reset import caller_is_parent_app
     client, server = request.scope.get("client"), request.scope.get("server")
     try:
-        proven = bool(client and server and client[0] == "127.0.0.1" and server[0] == "127.0.0.1"
-                      and caller_is_parent_app((client[0], int(client[1])), (server[0], int(server[1]))))
+        # Exactly the connection's own (host, port) pairs go to the check: loopback, real int ports.
+        proven = bool(client and server and len(client) == 2 and len(server) == 2
+                      and client[0] == "127.0.0.1" and server[0] == "127.0.0.1"
+                      and type(client[1]) is int and type(server[1]) is int
+                      and caller_is_parent_app((client[0], client[1]), (server[0], server[1])) is True)
     except Exception:  # noqa: BLE001 — unproven is refused
         proven = False
     if not proven:
@@ -139,9 +148,9 @@ async def act_asked(request: Request):
     from service.proactive import acting
     try:
         acting.mark_asked()
-    except (ValueError, OSError):
-        pass                                # it will simply be asked once more
-    return _act_state()
+    except Exception:  # noqa: BLE001 — it will simply be asked once more
+        pass
+    return _act_state()                     # the true state from disk, whatever happened above
 
 
 @router.get("")
