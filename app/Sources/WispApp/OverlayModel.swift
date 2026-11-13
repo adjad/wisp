@@ -571,7 +571,8 @@ final class OverlayModel: ObservableObject {
     }
 
     /// An answer is on its way, or waiting on the person's confirmation.
-    var answerInFlight: Bool { [Phase.routing, .working, .streaming, .confirming].contains(phase) }
+    var answerInFlight: Bool { Self.inFlight(phase) }
+    static func inFlight(_ phase: Phase) -> Bool { [Phase.routing, .working, .streaming, .confirming].contains(phase) }
 
     /// Wisp is writing something the person is waiting to read in the panel: an
     /// Ask turn (thinking, running tools, streaming, or a card waiting for their

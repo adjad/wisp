@@ -727,7 +727,7 @@ _HOWTO = (
      "Gmail and Calendar too."),
     (r"permission|access|allow|grant|privacy|calendar access|full disk",
      "**Let Wisp read more**: open **Settings → Privacy & Access**, choose **Permissions…**, "
-     "and click **Allow** next to what you want. Screen Recording and Accessibility are under "
+     "and click **Allow** next to what you want. Screen Recording and Device Control and Data Access (called Accessibility before macOS 27) are under "
      "**More Access…** next to it."),
     (r"problem|bug|broken|wrong|report|feedback",
      "**Something wrong?** Type **/report**, or right-click the menu bar icon and choose "
