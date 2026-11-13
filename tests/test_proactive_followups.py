@@ -516,6 +516,9 @@ def test_step_adds_one_verified_reminder_records_it_and_shows_its_card(setting, 
     assert plan["title"] == "Reply to Maya" and plan["kind"] == "reminder"
     record = store.auto_added()[fp]
     assert record["kind"] == "follow_up" and record["status"] == "added"
+    assert record["person"] == plan["person_key"]
+    assert [r["fingerprint"] for r in acting.records(store, kind="follow_up")] == [fp]
+    assert acting.done_since(store, NOW - acting.DAY_S, kind="follow_up") == 1
     assert record["undo"] == {"source_id": "R-1", "title": "Reply to Maya", "due_ts": plan["due_ts"]}
     [card] = autoadd.done_cards(store, NOW + 60)
     assert card["title"] == "Reminder to reply to Maya" and card["meta"] == "REMINDER"

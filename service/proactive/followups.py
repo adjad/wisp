@@ -630,31 +630,30 @@ def open_reminder_titles(sched: dict, store, now: float) -> list[str]:
 
 def _blocked(store, now: float) -> tuple[set[str], int, dict]:
     """(fingerprints and person keys never to plan again, follow-ups in the last
-    day, the records by fingerprint)."""
+    day that may have landed, this kind's records by fingerprint)."""
     from service.proactive import acting
     from service.proactive.prepare import card_id
-    records = store.auto_added()
     dismissed = set(store.decisions().get("dismissed") or [])
-    blocked, today = set(), 0
-    for fp, record in records.items():
-        if not isinstance(record, dict):
+    blocked, mine = set(), {}
+    for record in acting.records(store, kind=KIND):
+        fp = record.get("fingerprint")
+        if not fp:
             continue
+        mine.setdefault(fp, record)
         status = record.get("status")
         if status in acting.LANDED or int(record.get("attempts") or 0) >= MAX_ATTEMPTS:
             blocked.add(fp)
-        if record.get("kind") != KIND:
+        person = record.get("person")
+        if not person:
             continue
-        if status in acting.LANDED and float(record.get("at") or 0) >= now - DAY_S:
-            today += 1
-        person = record.get("person_key")
         # Undone, or its "Wisp did this" card waved away: leave that person alone.
         waved = card_id(fp, "undo_add") in dismissed or status in ("undone", "undo_unknown")
-        if person and waved and now - float(record.get("undone_at") or record.get("at") or 0) <= PERSON_BLOCK_S:
+        if waved and now - float(record.get("undone_at") or record.get("at") or 0) <= PERSON_BLOCK_S:
             blocked.add(person)
         # One follow-up a week per person, whatever came of it: never a nag.
-        if person and status in acting.LANDED and now - float(record.get("at") or 0) <= PERSON_REST_S:
+        if status in acting.LANDED and now - float(record.get("at") or 0) <= PERSON_REST_S:
             blocked.add(person)
-    return blocked, today, records
+    return blocked, acting.done_since(store, now - DAY_S, kind=KIND), mine
 
 
 def _when_phrase(due: float, now: float, tz: str) -> str:
@@ -711,9 +710,8 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
         return {"added": []}
     # One message gets at most one thing done on its own: an item auto-add already
     # acted on (an event or deadline added, even if undone since) gets no follow-up.
-    acted = {str(r.get("item_id")) for r in recorded.values()
-             if isinstance(r, dict) and r.get("kind") != KIND and r.get("status") in acting.LANDED
-             and r.get("item_id")}
+    acted = {str(r.get("item_id")) for r in acting.records(store, statuses=acting.LANDED)
+             if r.get("kind") != KIND and r.get("item_id")}
     decided = store.decisions()
     gone = set(decided.get("dismissed") or []) | set(decided.get("fired") or [])
     suppressed = set(decided.get("suppressed") or [])
@@ -776,7 +774,7 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
         acting.record(
             store, fp, kind=KIND, status=status, now=now, title=title, quote=plan["quote"], who=plan["who"],
             source=plan["source"], item_id=str(plan.get("item_id") or ""), received_ts=plan["received_ts"],
-            timezone=tz, account=plan.get("account", ""), person_key=plan["person_key"], attempts=attempts,
+            timezone=tz, account=plan.get("account", ""), person=plan["person_key"], attempts=attempts,
             due_ts=plan["due_ts"], item_fingerprint=plan["item_fingerprint"],
             card={"meta": "REMINDER", "title": guard.clean_title(f"Reminder to reply to {plan['who']}"),
                   "did": f"No reply yet in Messages or Mail, so I'll remind you {when}. "
