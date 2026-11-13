@@ -481,3 +481,126 @@ def test_a_decomposed_accent_reads_as_a_lookalike_known_over_block():
     # "cafe" + U+0301 + "s": the combining mark sits between a letter and s.
     assert mo.lookalike_possessive("best cafe\u0301s in Paris today")
     assert not mo.lookalike_possessive("best caf\u00e9s in Paris today")
+
+
+# ---- second delta review (of 66888f2c) ----------------------------------------
+
+# Blocker 1: the question may start any sentence or clause, behind a greeting,
+# a filler, a list marker, quotes, an emoji or a zero-width character.
+BEHIND_SOMETHING = [
+    "Hi, is Mom home yet?", "Hi Wisp, is Mom home yet?", "Quick question: is Mom ok today?",
+    "Also, is Mom home yet?", "Btw is Mom home yet?", "btw how's grandma today", "Morning! Is Dad up yet?",
+    "Hey Wisp! Is Dad home yet?", "I'm worried. Is Mom ok today?", "Sorry to bother you, is Grandma ok today?",
+    "Is, um, Mom home yet?", '"Is Mom home yet?"', "\U0001F642 Is Mom home yet?", "​Is Mom home yet?",
+    "- Is Mom home yet?", "1. Is Mom home yet?", "xyzzy plugh is mom ok today?", "siri is dad home",
+    "ok so anyway is grandma doing better today", "“Is Mom home yet?”",
+]
+# Blocker 2: words between the lead and the relative.
+WORDS_BETWEEN = ["How old is Mom", "How old is Grandma now", "Which hospital is Grandma at today?",
+                 "What hospital is Grandma in today?", "What time does Dad land tonight?"]
+SHOULD_FIX = [
+    "Mom feeling better today?", "mom doing ok today?", "Dad landed yet?",
+    "Are the kids home yet?", "Is the baby asleep yet?", "Is hubby home yet", "How is Pop doing today?",
+    "Is granddad okay today", "Is partner home yet",
+    "Is moms flight on time today", "is moms surgery today", "mom flight today", "dad surgery today",
+    "grandma hospital today", "check on mom", "check on grandma today",
+    "Is dinner with Dad still on tonight?", "Mom posted online today, what did she say?",
+]
+
+
+@pytest.mark.parametrize("prompt", BEHIND_SOMETHING + WORDS_BETWEEN + SHOULD_FIX)
+def test_the_question_about_a_relative_is_found_wherever_it_starts(prompt):
+    assert mo.personal_reference(prompt), prompt
+    forbidden = _model_led_forbidden(prompt)
+    assert {"web_search", "web_fetch", "wikipedia_summary"} <= forbidden, prompt
+
+
+@pytest.mark.parametrize("prompt", [p for p in BEHIND_SOMETHING + WORDS_BETWEEN + SHOULD_FIX if '"' not in p])
+def test_and_the_classifier_calls_it_private(prompt):
+    assert classify(prompt).provenance == Provenance.PRIVATE, prompt
+
+
+def test_random_words_in_front_do_not_hide_the_question():
+    import random
+    rng = random.Random(20261112)
+    letters = "abcdefghijklmnopqrstuvwxyz"
+    for _ in range(400):
+        prefix = " ".join("".join(rng.choice(letters) for _ in range(rng.randint(2, 8)))
+                          for _ in range(rng.randint(1, 4)))
+        prompt = f"{prefix} is mom ok today?"
+        assert mo.personal_reference(prompt), prompt
+        assert "web_search" in _model_led_forbidden(prompt), prompt
+
+
+@pytest.mark.parametrize("prompt", ["Hi, is Mom home yet?", "Quick question: is Mom ok today?", '"Is Mom home yet?"',
+                                    "How old is Grandma now", "Mom feeling better today?", "check on grandma today",
+                                    "xyzzy plugh is mom ok today?"])
+@pytest.mark.parametrize("history", [(), "private"])
+def test_the_loop_runs_no_web_tool_for_them_either(synthetic, prompt, history):
+    from tests.test_model_led_integration import PRIVATE_HISTORY
+    effects, register = synthetic
+    _egress_tools(register)
+    approval = Approval(False)
+    run([[call(DISCOVERY_TOOL, families=["public_web"], tools=["web_search", "web_fetch", "wikipedia_summary"])],
+        [call("web_search", query="mom home")], [call("wikipedia_summary", topic="Mom")],
+        [call("web_fetch", url="https://example.com")], "Synthetic reply."],
+        prompt=prompt, history=PRIVATE_HISTORY if history else (), approval=approval,
+        forbidden_tools=frozenset(_model_led_forbidden(prompt)))
+    assert not [name for name, _ in effects if name in PRIVATE_WEB_TOOLS], effects
+
+
+# The soft family words are people only when what follows says so.
+@pytest.mark.parametrize("prompt", ["Is baby formula recalled today?", "Are kids allowed at Costco today?",
+                                    "Is pop music dying?", "Is partner visa processing slow this year?",
+                                    "are twins more common now", "kids menu at Olive Garden today",
+                                    "How old is the president?", "Which team is winning today?",
+                                    "Hi, who is the president?", "gifts that are mom approved",
+                                    "Dinner ideas for Mom tonight", "Weather in Chicago for Mom today"])
+def test_public_questions_stay_public(prompt):
+    assert not mo.personal_reference(prompt), prompt
+    assert classify(prompt).provenance == Provenance.EXTERNAL
+    assert "web_search" not in _model_led_forbidden(prompt)
+
+
+# Accepted over-blocks of this round, pinned.
+@pytest.mark.parametrize("prompt", ["Is Uncle Julio's open today?", "which brand is brother better than",
+                                    "Brother printing problems today?"])
+def test_known_over_blocks_of_the_clause_rules(prompt):
+    assert {"web_search", "web_fetch"} <= _model_led_forbidden(prompt)
+
+
+# Holidays keep a search of the user's own words, with or without a time word.
+@pytest.mark.parametrize("prompt", ["When is Father's Day?", "Father's Day gifts 2026",
+                                    "Mother's Day brunch near me today", "Valentine's Day gift ideas",
+                                    "Is father's day a federal holiday?", "When is Mother's Day this year?"])
+def test_a_holiday_with_an_s_keeps_its_search(prompt):
+    assert mo.holiday_question(prompt)
+    request = classify(prompt)
+    assert request.provenance == Provenance.PRIVATE and request.public_possessive
+    forbidden = _model_led_forbidden(prompt)
+    assert "web_search" not in forbidden and {"web_fetch", "wikipedia_summary"} <= forbidden
+
+
+def test_a_holiday_does_not_excuse_a_relative_or_a_number():
+    for prompt in ("What should I get my mom for Mother's Day?", "Is Mom's flight on Father's Day?",
+                   "Father's Day gifts for order 4155550123", "When is Fatherʹs Day?"):
+        assert not mo.holiday_question(prompt), prompt
+
+
+def test_long_runs_are_judged_quickly():
+    import time
+    cases = ["'" * 5000, '"' * 5000, "is mom " * 800, "mom's " * 900, "hi, " * 1500, "how old is " * 500,
+             "is, um, mom home yet? " * 250, "a's" * 1700, "mom dad " * 700, "​" * 5000 + "is mom ok"]
+    for text in cases:
+        for check in (classify, lambda t: routing_guard_contract(t, model_led=True), mo.personal_reference,
+                      mo.personal_owner, mo.lookalike_possessive, mo.public_owner_request, mo.holiday_question):
+            start = time.thread_time()
+            check(text)
+            assert time.thread_time() - start < 1.0, text[:24]
+
+
+def test_cutting_a_quote_run_keeps_what_is_quoted_and_what_is_not():
+    from service.router.web_request import bounded_quotes
+    assert bounded_quotes("'" * 5000) == "'" * 8 and bounded_quotes("'" * 5001) == "'" * 7
+    assert bounded_quotes('say "hello" to them') == 'say "hello" to them'
+    assert bounded_quotes("it's 5 o'clock") == "it's 5 o'clock"
