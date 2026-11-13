@@ -107,7 +107,8 @@ def grounded(text: str, source: str, *, allowed: set[str] | None = None) -> bool
         for word in words[1:]:
             bare = re.sub(r"['’]s$", "", word)
             if bare[:1].isupper() and bare.casefold() not in source_words \
-                    and not _month_written_as_number(bare, source or ""):
+                    and not _month_written_as_number(bare, source or "") \
+                    and not _spelled_out(bare, source_words):
                 return False
     return True
 
@@ -116,6 +117,24 @@ _MONTHS = {name: number for number, names in enumerate((
     ("january", "jan"), ("february", "feb"), ("march", "mar"), ("april", "apr"), ("may",), ("june", "jun"),
     ("july", "jul"), ("august", "aug"), ("september", "sep", "sept"), ("october", "oct"),
     ("november", "nov"), ("december", "dec")), 1) for name in names}
+
+
+_ABBREVIATED = {full: short for full, short in (
+    ("monday", ("mon",)), ("tuesday", ("tue", "tues")), ("wednesday", ("wed", "weds")),
+    ("thursday", ("thu", "thur", "thurs")), ("friday", ("fri",)), ("saturday", ("sat",)), ("sunday", ("sun",)),
+    ("january", ("jan",)), ("february", ("feb",)), ("march", ("mar",)), ("april", ("apr",)), ("june", ("jun",)),
+    ("july", ("jul",)), ("august", ("aug",)), ("september", ("sep", "sept")), ("october", ("oct",)),
+    ("november", ("nov",)), ("december", ("dec",)))}
+
+
+def _spelled_out(word: str, source_words: set[str]) -> bool:
+    """A weekday's or a month's full name where the source wrote its usual abbreviation:
+    "Saturday, November 21" for "Sat Nov 21". The same day, spelled out; nothing is worked
+    out, so a weekday or month the source did not name in any form is still refused.
+    Known looseness: the abbreviation is matched as a word, so a source that says "we sat
+    down" also lets "Saturday" through. It can only pass a weekday or month name, never a
+    number, a person or a place."""
+    return any(short in source_words for short in _ABBREVIATED.get(word.casefold(), ()))
 
 
 def _month_written_as_number(word: str, source: str) -> bool:

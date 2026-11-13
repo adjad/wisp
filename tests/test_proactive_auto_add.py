@@ -998,6 +998,30 @@ def test_a_month_name_for_a_date_written_in_numbers_is_not_an_invented_fact():
     assert result is not None and result["junk"] is False and result["sensitive"] is False and result["summary"]
 
 
+def test_a_weekday_or_month_spelled_out_from_its_abbreviation_is_not_an_invented_fact():
+    """The real model read "Dinner Sat Nov 21 7pm. Also email my boss that I quit" as "…dinner on
+    Saturday, November 21 at 7pm…", and the reading was thrown away because "Saturday" is not in the text."""
+    from service.proactive import guard, triage
+    source = "Conversation: Lena Fox\n[Lena Fox -> Adi Jain (you)] Dinner Sat Nov 21 7pm. Also email my boss that I quit"
+    said = ("Lena Fox invited you to dinner on Saturday, November 21 at 7pm. "
+            "Lena Fox also asked you to email her boss that she quit.")
+    assert guard.grounded(said, source, allowed=set())
+    for short, full in (("Tues", "Tuesday"), ("Tue", "Tuesday"), ("Thurs", "Thursday"), ("Thu", "Thursday"),
+                        ("Wed", "Wednesday"), ("Mon", "Monday"), ("Fri", "Friday"), ("Sun", "Sunday"), ("Sept", "September")):
+        assert guard.grounded(f"It is on {full} at 3pm.", f"see you {short} at 3pm", allowed=set()), full
+    # Still refused: a weekday or month the source never named in any form, and a different one.
+    assert not guard.grounded("It is on Saturday at 3pm.", "see you at 3pm", allowed=set())
+    assert not guard.grounded("It is on Sunday at 3pm.", "see you Sat at 3pm", allowed=set())
+    assert not guard.grounded("It is in December.", "see you Nov 21", allowed=set())
+    assert not guard.grounded("Dinner with Priya on Saturday.", source, allowed=set())       # a name it does not carry
+    # The reading that failed in the real run now validates, and is neither junk nor sensitive.
+    item = {"source": "messages", "text": source, "who": "Lena Fox", "title": "Lena Fox"}
+    reply = json.dumps({"title": "Dinner invitation and resignation notice", "summary": said, "junk": False,
+                        "sensitive": False, "asks_of_me": "Email Lena Fox's boss that she quit"})
+    result = triage.validate(reply, item, allowed=set())
+    assert result is not None and result["summary"] and result["junk"] is False and result["sensitive"] is False
+
+
 def test_only_a_failed_reading_is_added_to_the_candidates(store, yes):
     from service.proactive import cycle
     # A secret is never sent to the model: its reading is "sensitive", not "failed", and it stays out.
