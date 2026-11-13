@@ -6856,9 +6856,10 @@ def routing_guard_contract(text: str, *, model_led: bool = False) -> tuple[froze
         # tool meanwhile; a model-led turn has no such step, and used to leave
         # every web tool open. It offers none now. An explicit "search the web
         # for ..." is not this case.
-        forbidden.update({"web_search", "web_fetch", "http_request"})
+        from service.router.model_led import UNOWNED_EGRESS_TOOLS
+        forbidden.update(UNOWNED_EGRESS_TOOLS)
     if web.opted_out or web.private:
-        forbidden.update({"web_fetch", "http_request"})
+        forbidden.update({"web_fetch", "http_request", "wikipedia_summary"})
         if not (model_led and web.public_possessive and not web.opted_out):
             forbidden.add("web_search")
         # "What are Costco's hours?" stays private: on a model-led turn only

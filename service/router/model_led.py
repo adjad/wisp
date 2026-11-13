@@ -33,7 +33,14 @@ PRIVATE_EGRESS_TOOLS = frozenset({
 })
 # Public-web egress that must not follow a private read unless the current
 # request explicitly asks for a public lookup.
-PRIVATE_WEB_TOOLS = frozenset({"web_search", "web_fetch", "http_request"})
+PRIVATE_WEB_TOOLS = frozenset({"web_search", "web_fetch", "http_request", "wikipedia_summary"})
+# Every built-in that sends words of the request off the Mac. A model-led turn
+# whose owner could not be told offers none of them (router.routing_guard_contract):
+# a place, route, weather or price lookup carries a name as readily as a search.
+# On a turn known to be private the last five stay: "drive time to Mom's"
+# needs the maps tools.
+UNOWNED_EGRESS_TOOLS = PRIVATE_WEB_TOOLS | frozenset({
+    "find_place", "travel_time", "route_to_arrive", "get_weather", "get_stock_price"})
 OPAQUE_OUTBOUND_TOOLS = frozenset({"run_shortcut", "run_shell", "run_applescript",
                                     "create_tool", "http_request", "place_call"})
 # Effects the legacy router admitted only for an exact ID the user typed (a

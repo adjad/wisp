@@ -2202,7 +2202,12 @@ async def run_agent(
 
     def private_web_problem(tool, args=None):
         """Turn-start private context: public egress needs explicit intent."""
-        from service.router.model_led import PRIVATE_WEB_TOOLS
+        from service.router.model_led import PRIVATE_WEB_TOOLS, UNOWNED_EGRESS_TOOLS
+        if unknown_owner_now and tool.name in UNOWNED_EGRESS_TOOLS:
+            # main's routing guard already withholds these from the turn; the
+            # loop holds the same line for any caller that did not apply it.
+            return ("It isn't clear whose this is, so nothing about it is looked up online. "
+                    "Answer from the user's own sources, or ask what they mean.")
         if (private_at_start and not private_read_in_turn and not searched_in_turn[0]
                 and not typed_hosts and (current_public_lookup or public_fact_text is not None)
                 and tool.name in {"web_fetch", "http_request"}
