@@ -165,7 +165,9 @@ def test_undo_removes_only_wisps_own_block_and_the_deadline_is_never_held_or_off
 
 def test_the_undoer_is_found_after_a_restart_and_the_words_say_what_is_true():
     acting._undoers.pop("hold", None)
-    assert acting.undoer("hold") is autohold.undo and acting.undoer("follow_up") is None
+    from service.proactive import followups
+    acting._undoers.pop("follow_up", None)
+    assert acting.undoer("hold") is autohold.undo and acting.undoer("follow_up") is followups.undo
     assert any("Day plan" in line and "never on your calendar" in line for line in acting.DOES)
 
 

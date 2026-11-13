@@ -857,8 +857,15 @@ def order_cards(cards: list[dict], deadline_cards: list[dict], limit: int = prep
 
 
 async def _default_autoadd(survivors, sched, *, now, tz, store, abort) -> dict:
-    from service.proactive import autoadd
-    return await autoadd.step(survivors, sched, now=now, tz=tz, store=store, abort=abort)
+    from service.proactive import autoadd, followups
+    auto = await autoadd.step(survivors, sched, now=now, tz=tz, store=store, abort=abort)
+    # Follow-up reminders (followups.py) stand behind the same gate and run after auto-add, so a
+    # message auto-add acted on is skipped there: one message, at most one action of Wisp's own.
+    try:
+        await followups.step(survivors, sched, now=now, tz=tz, store=store, abort=abort)
+    except Exception:  # noqa: BLE001 — no follow-ups this time; auto-add's result stands
+        traceback.print_exc()
+    return auto
 
 
 async def _auto_add(cards_by_account: dict, accounts: list[str], own: str, survivors: list[dict], sched: dict, *,

@@ -743,6 +743,8 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
                           **timing,
                           unread=last_in.get("unread"),
                           person=bool(people) or reason == "doc_comment", secret=secret,
+                          # The newest incoming message's To header ("" when the cache has none).
+                          to_header=str(last_in.get("to") or "")[:2000],
                           user_wrote=any(_is_mine(m, mine) for m in messages),
                           **({"recall": reason} if reason else {}),
                           hash=_digest(text, replied)))

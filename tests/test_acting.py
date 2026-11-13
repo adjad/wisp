@@ -555,6 +555,25 @@ def test_auto_add_never_adds_what_is_already_on_the_list(store):
     assert writers.calls == [] and out["added"] == [] and out["tap"] == []
 
 
+def test_one_message_gets_at_most_one_action_of_wisps_own(store):
+    import tests.test_proactive_auto_add as T
+    item = T.text("Maya Chen", T.RECITAL)
+    # A follow-up reminder already landed on this same message in an earlier cycle.
+    acting.record(store, "follow:1", kind="follow_up", status="added", now=T.NOW - 60, title="Answer Maya",
+                  item_id=item["id"])
+    writers, notes = T.Writers(), []
+    out = asyncio.run(autoadd.step(T.survivors(item), {"calendar": [], "reminders": []}, now=T.NOW, tz=T.TZ,
+                                   store=store, abort=lambda: False, writers=writers.table(),
+                                   existing=lambda n: [], is_enabled=lambda: True, debug=notes))
+    assert writers.calls == [] and out["added"] == [] and out["tap"] == []
+    assert notes[-1]["auto_add"] == "Wisp already acted on this message"
+    # A hold is about a calendar row, never a message, so it blocks nothing here.
+    other = T.text("Sam Lee", "can you come to my recital Sun Nov 1 at 2pm?")
+    acting.record(store, "hold:1", kind="hold", status="added", now=T.NOW - 60, title="x", item_id="cal:9")
+    T.step(store, T.survivors(other), writers)
+    assert [plan["who"] for _, plan in writers.calls] == ["Sam Lee"]
+
+
 def test_resetting_wisp_erases_the_yes():
     from service import wisp_reset
     assert acting.FILE not in wisp_reset.KEEP_ENTRIES          # everything outside KEEP_ENTRIES is deleted
