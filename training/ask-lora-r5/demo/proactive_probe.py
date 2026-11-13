@@ -707,6 +707,7 @@ def make_client(args):
 
 async def run(args, client=None) -> dict:
     P.load()
+    real = client is None and not getattr(args, "no_unload", False)
     client = client or make_client(args)
     models = parse_models(args.models)
     job_list = jobs()
@@ -715,6 +716,11 @@ async def run(args, client=None) -> dict:
                        "base_url": args.base_url, "jobs": {j["name"]: len(j["cases"]) for j in job_list}},
               "models": {}}
     for label, model in models:                       # all cases for one model before the next
+        if real:                                      # and only that model in memory (user, 2026-11-12)
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from one_model import only
+            if any(m != model for m in await asyncio.to_thread(only, model, args.base_url, log)):
+                raise SystemExit(f"another model stayed loaded beside {model}")
         result["models"][label] = await run_model(label, model, job_list, client, args.reps, log)
     if len(models) >= 2:
         base, cand = models[0][0], models[1][0]
@@ -734,6 +740,7 @@ def main(argv=None) -> None:
     ap.add_argument("--out")
     ap.add_argument("--repo", default=str(REPO), help="checkout whose service/ and scripts/ to import")
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--no-unload", action="store_true", help="don't unload other models before each model")
     args = ap.parse_args(argv)
     require_wisp_home()
     sys.path.insert(0, str(Path(args.repo).resolve()))

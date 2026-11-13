@@ -76,6 +76,8 @@ run_model() {  # $1 = model id, $2 = result file
   mkdir -p "$home" "$sbhome" || exit 1
   write_config "$home" "$model"
   echo "model: $model"
+  # One model in memory at a time (user, 2026-11-12): nothing else stays loaded beside this one.
+  "${PY:-python3}" -I "$(dirname "$0")/one_model.py" "$model" || { echo "another model stayed loaded"; exit 6; }
   echo "WISP_HOME: $home"
 
   ( cd "$REPO" || exit 1
