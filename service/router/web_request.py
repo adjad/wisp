@@ -371,7 +371,14 @@ def _clauses(text: str) -> tuple[Clause, ...]:
 def _explicit(text: str) -> bool:
     root = _lexical(text)
     command = _matches(r"^(?:" + _LOOKUP_CANONICAL + r"|web\s+search|do|perform|run|give|show|tell)\b", root)
-    return command and bool(re.search(r"\b" + _SOURCE_CUE + r"\b", _root(text), re.I))
+    # "online" as a state is not a source: "Tell me if Mom is online right
+    # now" and "show me who is online" ask nobody to search the web.
+    sourced = re.sub(r"\b(?:is|are|am|be|been|being|was|were|gets?|got|goes|went|came|comes?|back|still|"
+                     r"stays?|appears?|shows?(?:\s+up)?|who'?s|it'?s)\s+(?:[a-z]+\s+)?online\b"
+                     # "Mom's online", "Mom's still online": the 's is "is". Not "Dana's bakery online".
+                     r"|\b[a-z]+'s\s+(?:still\s+|back\s+|currently\s+|even\s+|now\s+)?online\b",
+                     " ", _root(text), flags=re.I)
+    return command and bool(re.search(r"\b" + _SOURCE_CUE + r"\b", sourced, re.I))
 
 
 def _governing_consent(text: str) -> bool:
@@ -1193,12 +1200,22 @@ def _parse_request(text: str, last_user: str | None = None, *,
             # public_fact_query_problem). Never ``allowed``.
             provenance, query, public_possessive = Provenance.PRIVATE, None, True
         else:
-            from service.model_only import personal_possessive_question
-            if personal_possessive_question(text):
-                # The same wording about someone of the user's own ("Is Mom's
-                # open on Sunday?"): private, with no flag and no question
-                # about which public topic was meant.
+            from service.model_only import (personal_owner, personal_possessive_question,
+                                            public_owner_request)
+            if personal_possessive_question(text) or personal_owner(text):
+                # The owner is someone of the user's own ("Is Mom's open on
+                # Sunday?", "What time is Mom's flight tomorrow?", "Is the
+                # doctor's office open on Monday?"): private, with no flag and
+                # no question about which public topic was meant.
                 provenance, query, clarification = Provenance.PRIVATE, None, ""
+            elif current and public_owner_request(text):
+                # An 's that is plainly public ("Who won Sunday's game?",
+                # "What's Apple's stock price today?"). A model-led turn no
+                # longer leaves unknown ownership open to the web (see
+                # router.routing_guard_contract), so these keep one thing:
+                # a search of the user's own words, as the store-hours
+                # questions above do.
+                provenance, query, public_possessive = Provenance.PRIVATE, None, True
     if provenance == Provenance.UNKNOWN:
         if (explicit or current or fragment or last_user) and not opted_out:
             clarification = "Which public topic should I look up? Is this source public or private/local?"
@@ -1225,6 +1242,26 @@ def _parse_request(text: str, last_user: str | None = None, *,
         # agent path active so an unverified model claim cannot stream or render.
         acknowledgement_without_offer = False
         provenance, query, clarification = Provenance.PRIVATE, None, None
+    names_the_web = explicit and bool(re.search(
+        r"\b(?:web|websites?|internet|google|bing|wikipedia|external\s+(?:sources?|requests?))\b"
+        r"|\b(?:look(?:ing)?\s*up|search(?:ing)?|find|research|check)\b.*\bonline\b", text, re.I))
+    if (provenance in (Provenance.EXTERNAL, Provenance.UNKNOWN) and not names_the_web and not opted_out
+            and not write_intent):
+        from service.model_only import lookalike_possessive, personal_reference
+        # Someone the request only names as a recipient ("email Mom the latest
+        # news; don't send it") is not its subject.
+        # Only at the start of the request, where it is an instruction:
+        # "Did the hospital call Mom today?" is about Mom.
+        about = re.sub(r"^\s*(?:(?:please|hey|ok|okay|wisp|can\s+you|could\s+you|would\s+you)[, ]+)*"
+                       r"(?:e-?mail|text|message|msg|tell|send|forward|notify|ping|call|remind|let)\s+"
+                       r"(?:to\s+)?(?:my\s+|our\s+)?(?!(?:if|whether|when|where|what|why|how|that|me|us)\b)"
+                       r"[A-Za-z]+\b", " ", text, count=1, flags=re.I)
+        if personal_reference(about) or lookalike_possessive(text):
+            # A question about someone in the user's life is not a public
+            # lookup, whatever time word it carries ("How is Grandma doing
+            # today?", "Is Mom home yet?"). Nor is one whose 's hides behind a
+            # lookalike apostrophe, which no ownership check above could read.
+            provenance, query, clarification = Provenance.PRIVATE, None, None
     return WebRequest(source, clauses, explicit, current, opted_out, provenance, public,
                       independent, inherited, scopes, delivery, query, continuations, write_intent, clarification,
                       acknowledgement_without_offer, cancelled, composed.presentations, pending_offer,

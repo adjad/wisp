@@ -358,6 +358,7 @@ ADDITIONAL_FULL_TESTS = {
     # 0.5.0 Ask dead ends: store-hours wordings and the search-first head start (pure Python).
     "tests/test_final_ask_direct_leads.py",
     "tests/test_final_ask_web_wordings.py",
+    "tests/test_final_web_ownership.py",
     "tests/test_rc2_ask_web_possessive_egress.py",
     "tests/test_rc2_policy_audit_repairs.py",
     "tests/test_rc2_policy_audit_repairs_2.py",

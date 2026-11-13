@@ -2140,6 +2140,7 @@ async def run_agent(
     # The current request's own words decide whether a public lookup was asked
     # for. Computed once from the incoming messages, never from tool output.
     current_public_lookup = False
+    unknown_owner_now = False
     public_fact_text: str | None = None
     if model_led_discovery:
         from service.router.web_request import classify as classify_public_lookup
@@ -2147,7 +2148,13 @@ async def run_agent(
                            if isinstance(m, dict) and m.get("role") == "user"
                            and isinstance(m.get("content"), str)), "")
         try:
-            current_public_lookup = bool(classify_public_lookup(_last_user).allowed)
+            _current_web = classify_public_lookup(_last_user)
+            current_public_lookup = bool(_current_web.allowed)
+            # Whose the request is could not be told ("Did Sam's package arrive
+            # today?") and the user did not ask for a search: the turn starts
+            # private for web egress, as main's routing guard already withholds
+            # the web tools from it (router.routing_guard_contract).
+            unknown_owner_now = bool(_current_web.provenance.name == "UNKNOWN" and not _current_web.explicit)
         except Exception:  # noqa: BLE001 — an unclassifiable request is not a lookup request
             current_public_lookup = False
         if not current_public_lookup and re.search(r"https?://\S+", _last_user or ""):
@@ -2195,7 +2202,12 @@ async def run_agent(
 
     def private_web_problem(tool, args=None):
         """Turn-start private context: public egress needs explicit intent."""
-        from service.router.model_led import PRIVATE_WEB_TOOLS
+        from service.router.model_led import PRIVATE_WEB_TOOLS, UNOWNED_EGRESS_TOOLS
+        if unknown_owner_now and tool.name in UNOWNED_EGRESS_TOOLS:
+            # main's routing guard already withholds these from the turn; the
+            # loop holds the same line for any caller that did not apply it.
+            return ("It isn't clear whose this is, so nothing about it is looked up online. "
+                    "Answer from the user's own sources, or ask what they mean.")
         if (private_at_start and not private_read_in_turn and not searched_in_turn[0]
                 and not typed_hosts and (current_public_lookup or public_fact_text is not None)
                 and tool.name in {"web_fetch", "http_request"}
@@ -2717,7 +2729,7 @@ async def run_agent(
     # Web egress treats only real private content as a turn-start signal:
     # history, or remembered facts. The identity block does not count.
     if model_led_discovery:
-        private_at_start = bool(history_private or memory_hint)
+        private_at_start = bool(history_private or memory_hint or unknown_owner_now)
 
     # Skills stay on the managed model. When this run talks to an external local
     # inference app (the unauthenticated loopback provider), none of their content

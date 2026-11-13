@@ -571,8 +571,7 @@ def test_explicit_public_lookup_without_private_read_needs_no_confirmation(synth
     assert not approval.calls
 
 
-@pytest.mark.parametrize("prompt", ["fetch https://example.com", "open https://example.com and summarize it",
-                                    "what's Apple's stock doing today"])
+@pytest.mark.parametrize("prompt", ["fetch https://example.com", "open https://example.com and summarize it"])
 def test_public_prompts_are_not_denied_on_a_fresh_model_led_turn(synthetic, monkeypatch, prompt):
     """N1: the identity block / messages being offered must not make a fresh turn private."""
     effects, register = synthetic
@@ -585,6 +584,24 @@ def test_public_prompts_are_not_denied_on_a_fresh_model_led_turn(synthetic, monk
     fetched = [e for e in events if e["type"] == "tool_call" and e["name"] == "web_fetch"]
     assert fetched and fetched[0]["decision"] != "deny"
     assert [name for name, _ in effects] == ["web_fetch"]
+    assert not approval.calls
+
+
+def test_an_unknown_owner_public_question_searches_its_own_words_and_fetches_nothing(synthetic, monkeypatch):
+    """0.5.0: "what's Apple's stock doing today" has an 's nobody can place.
+    A model-led turn used to leave every web tool open for it. It keeps one
+    thing: a search of the user's own words."""
+    effects, register = synthetic
+    _web_tools(register)
+    monkeypatch.setattr("service.memory.identity.identity_prompt_block",
+                        lambda **kwargs: "The user is Synthetic User <synthetic@example.invalid>.")
+    prompt = "what's Apple's stock doing today"
+    approval = Approval(False)
+    run([[call(DISCOVERY_TOOL, families=["public_web"], tools=["web_search", "web_fetch"])],
+        [call("web_fetch", url="https://example.com")],
+        [call("web_search", query="Apple stock today 4417 Elm Street Springfield")],
+        [call("web_search", query="Apple stock today")], "Synthetic reply."], prompt=prompt, approval=approval)
+    assert effects == [("web_search", {"query": "Apple stock today"})]
     assert not approval.calls
 
 
