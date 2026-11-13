@@ -2619,7 +2619,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.addButton(withTitle: "Not Now")
         } else {
             alert.messageText = "Wisp has all the access it can use"
-            alert.informativeText = "Screen Recording, Accessibility and Full Disk Access are on."
+            alert.informativeText = "Screen Recording, \(PrivacyNames.accessibility) and Full Disk Access are on."
             alert.addButton(withTitle: "OK")
         }
         NSApp.activate(ignoringOtherApps: true)

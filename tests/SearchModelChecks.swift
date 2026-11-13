@@ -119,7 +119,23 @@ enum SearchModelChecks {
         return index
     }
 
+    /// The Accessibility permission's name, which every screen takes from
+    /// PrivacyNames: renamed on macOS 27, its old name alongside where there is room.
+    static func privacyNamesFollowTheOS() {
+        check(PrivacyNames.accessibility(renamed: false) == "Accessibility", "before macOS 27 the pane is Accessibility")
+        check(PrivacyNames.accessibility(renamed: true) == "Device Control and Data Access",
+              "macOS 27 calls it Device Control and Data Access")
+        check(PrivacyNames.accessibilityWithFormerName(renamed: true)
+                == "Device Control and Data Access (called Accessibility before macOS 27)",
+              "with room, the new name says the old one")
+        check(PrivacyNames.accessibilityWithFormerName(renamed: false) == "Accessibility", "before macOS 27, no note")
+        check(PrivacyNames.accessibilityPath.hasPrefix("System Settings › Privacy & Security › ")
+                && PrivacyNames.accessibilityPath.hasSuffix(PrivacyNames.accessibility),
+              "the path names this Mac's pane")
+    }
+
     static func main() async {
+        privacyNamesFollowTheOS()
         await repeatedQueryRejectsOldEvents()
         await explicitGlobalRetiresDebounce()
         await editsResetAndCaptureRetireWork()

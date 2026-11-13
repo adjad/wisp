@@ -97,7 +97,7 @@ def test_screen_recording_and_accessibility_prompt_only_from_a_click():
     assert len(EXTRA_REQUESTS.findall(request)) == callers["FirstRunSetupView.swift"] == 2
     panel = sources["SearchPanel.swift"]
     assert callers["SearchPanel.swift"] == 1
-    assert len(EXTRA_REQUESTS.findall(_body(panel, 'Button("Open Accessibility Settings…")'))) == 1
+    assert len(EXTRA_REQUESTS.findall(_body(panel, 'Button("Open \\(PrivacyNames.accessibility) Settings…")'))) == 1
     wraps = {name for name, text in sources.items() if "Permissions.request(" in text}
     assert wraps == {"AppDelegate.swift"}, wraps
     more = _body(sources["AppDelegate.swift"], "private func grantMoreAccess()")
