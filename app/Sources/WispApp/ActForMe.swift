@@ -52,8 +52,10 @@ struct ActForMe: Equatable {
     /// The one line under the title.
     var line: String {
         !enabled ? "Off. Wisp does none of this without your tap."
-            : (new.isEmpty ? "On. " : "On for what you agreed to; \(new.count == 1 ? "one newer action waits" : "\(new.count) newer actions wait") "
-                             + "for your yes (turn this off and on to review them). ")
+            : (new.isEmpty ? "On. "
+               : (agreed.isEmpty ? "On, but nothing is agreed yet; " : "On for what you agreed to; ")
+                 + "\(new.count == 1 ? "one action waits" : "\(new.count) actions wait") "
+                 + "for your yes (turn this off and on to review them). ")
               + "Wisp shows each thing it does in the Brief as “Wisp did this”, with an Undo. "
               + "At most \(perDay) a day. " + never
     }
@@ -68,7 +70,11 @@ struct ActForMe: Equatable {
 
     /// What the person agrees to: the service's list, then the limits, then what never happens.
     var consent: String {
-        let list = does.map { "• " + $0 }.joined(separator: "\n")
+        // While on with actions still waiting, only what was agreed is said to be happening.
+        let waiting = enabled && !new.isEmpty
+        let bullets = { (lines: [String]) in lines.map { "• " + $0 }.joined(separator: "\n") }
+        let list = !waiting ? bullets(does)
+            : (agreed.isEmpty ? "• Nothing yet." : bullets(agreed)) + "\n\nWaiting for your yes:\n" + bullets(new)
         return "Without asking first, Wisp:\n" + list
             + "\n\n" + scope + " Never from group chats or promotions. "
             + "At most \(perDay) a day. Each one shows in the Brief as "
@@ -90,12 +96,15 @@ final class ActForMeModel: ObservableObject {
         if case .ok(let json) = await MeetingClient.send("GET", Self.path) { state = ActForMe(json) }
     }
 
-    func set(_ on: Bool) {
+    /// `onlyNew`: the yes on the card about new actions. It adds to a yes that is in force and
+    /// is refused if the person turned everything off meanwhile.
+    func set(_ on: Bool, onlyNew: Bool = false) {
         guard !pending else { return }
         pending = true
         problem = nil
         Task {
-            switch await MeetingClient.send("PUT", Self.path, body: ["enabled": on]) {
+            let body: [String: Any] = on && onlyNew ? ["enabled": true, "only_new": true] : ["enabled": on]
+            switch await MeetingClient.send("PUT", Self.path, body: body) {
             case .ok(let json): state = ActForMe(json)
             case .refused(let why):
                 problem = why
@@ -220,12 +229,12 @@ struct ActForMeAskCard: View {
                 Text(model.pending ? "Saving…"
                      : answered && state.enabled && state.new.isEmpty
                         ? "On. Wisp shows each thing it does as “Wisp did this”, with an Undo."
-                     : aboutNew ? "Wisp won't do these. It keeps doing what you agreed to before."
+                     : aboutNew ? "Wisp won't do these." + (state.agreed.isEmpty ? "" : " It keeps doing what you agreed to before.")
                      : "Off. You can turn it on in Settings whenever you like.")
                     .font(.wisp(size: 12)).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                Text(aboutNew ? "You said yes before these existed, so Wisp hasn't done them. Without asking first, it would also:"
+                Text(aboutNew ? "Wisp needs your yes for these. Without asking first, it would" + (state.agreed.isEmpty ? ":" : " also:")
                               : "Without asking first, Wisp would:")
                     .font(.wisp(size: 12)).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -241,7 +250,7 @@ struct ActForMeAskCard: View {
                     .font(.wisp(size: 11.5)).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 10) {
-                    Button { askedAboutNew = aboutNew; answered = true; model.set(true) } label: {
+                    Button { askedAboutNew = aboutNew; answered = true; model.set(true, onlyNew: aboutNew && state.enabled) } label: {
                         Text(aboutNew ? "Yes, these too" : Self.yes).font(.wisp(size: 12.5, weight: .semibold)).foregroundStyle(Color.black)
                             .padding(.horizontal, 13).padding(.vertical, 5)
                             .background(Capsule().fill(Color.white.opacity(0.92))).contentShape(Capsule())

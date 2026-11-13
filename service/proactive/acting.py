@@ -7,15 +7,19 @@ shared record of what Wisp did, and the one "Wisp did this" card with Undo.
 IMPORTANT rules:
 - Off until the person says yes (first-run setup, the one-time card, or the
   switch in Settings). The yes is stored with its time, `{enabled: true,
-  enabled_at: <unix time>, asked: true}`, in its own private file,
-  ~/.moe/act_for_me.json, read from disk on every check. A file that is
-  missing, damaged or of the wrong shape means off. It is not in config.yaml
-  on purpose: see `_path`.
-- Only what ARRIVES after the yes. `allows(received_ts)` is False for any
-  message received before `enabled_at`, so turning this on never reaches back
-  into old mail or texts. Turning it off and on again moves the line forward.
-- Off stops everything at once: every writer calls `still_ok()` again right
-  before it dispatches.
+  enabled_at: <unix time>, asked: true, covers: {action: <unix time>}}`, in
+  its own private file, ~/.moe/act_for_me.json, read from disk on every check.
+  A file that is missing, damaged or of the wrong shape means off. It is not
+  in config.yaml on purpose: see `_path`. That file is written ONLY by a yes
+  or a no; "Not now" is kept beside it (`_notes_path`), because every write of
+  the gate's file moves every action's time forward (see `_born`).
+- Only what ARRIVES after the yes. `allows(received_ts, action)` is False for
+  any message received before the yes that named that action, so turning this
+  on never reaches back into old mail or texts. Turning it off and on again
+  moves the line forward.
+- Off stops everything at once: every writer calls `still_ok(action)` again
+  right before it dispatches. Every check names its action: there is no
+  "the gate is on" answer for a writer to lean on.
 - Wisp never sends, replies, deletes or pays by itself. Nothing behind this
   gate is outbound. What an action may be is decided by its own module's code;
   message text never instructs, and recipients, times and methods never come
@@ -29,9 +33,9 @@ IMPORTANT rules:
 
 FOR A NEW KIND OF ACTION (the interface; see tests/test_acting.py):
     from service.proactive import acting
-    if not acting.allows(item["received_ts"]):       # the gate, per message
+    if not acting.allows(item["received_ts"], "follow_up"):   # the gate, per message, per action
         ...leave it as a tap card...
-    if acting.room(store, now) <= 0 or acting.still_ok() is not None:
+    if acting.room(store, now) <= 0 or acting.still_ok("follow_up") is not None:
         ...stop...                                    # right before the write
     acting.record(store, fingerprint, kind="follow_up", status="added", now=now,
                   title="Reply to Maya", quote="...", who="Maya Chen", source="messages",
@@ -42,7 +46,8 @@ FOR A NEW KIND OF ACTION (the interface; see tests/test_acting.py):
     acting.register_undoer("follow_up", my_async_undo)   # async (record) -> {"ok": bool, "status": str}
 `autoadd.done_cards` then shows the card, and the card's Undo reaches your undoer.
 Also name your module in `_HOME` below (it must expose `async def undo(record)`), so Undo
-still works after a restart, before your step has run.
+still works after a restart, before your step has run. Your action's key and its line go in
+`ACTIONS`, and your kind in `ACTION_OF`.
 """
 from __future__ import annotations
 
@@ -53,6 +58,7 @@ from typing import Any, Awaitable, Callable
 from service.proactive import guard
 
 FILE = "act_for_me.json"               # in Wisp's home; see _path()
+ASKED_FILE = "act_for_me_asked.json"   # "Not now", beside it; see _notes_path()
 MAX_PER_DAY = 10                       # every kind together, a rolling day
 DAY_S = 86400
 SHOWN_S = 3 * DAY_S                    # how long a "Wisp did this" card stays
@@ -130,13 +136,53 @@ def _write(setting: dict[str, Any]) -> None:
     paths.private_write_bytes(_path(), json.dumps(setting).encode("utf-8"))
 
 
+def _num(value: Any) -> float | None:
+    """A stored time as a float, or None for anything that is not an ordinary number: a bool,
+    text, NaN, an infinity, or an integer too large to be a time at all (float() would raise)."""
+    if type(value) not in (int, float):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if number == number and abs(number) != float("inf") else None
+
+
 def _covers(setting: dict[str, Any]) -> dict[str, float]:
     """The actions the stored yes named, each with the time it was said yes to. A yes saved
-    before actions were recorded names none: it covers nothing until the person is asked again."""
+    before actions were recorded names none: it covers nothing until the person is asked again.
+    A time that is not an ordinary number covers nothing."""
     covers = setting.get("covers")
     if not isinstance(covers, dict):
         return {}
-    return {k: float(v) for k, v in covers.items() if isinstance(k, str) and type(v) in (int, float)}
+    return {k: n for k, v in covers.items() if isinstance(k, str) and (n := _num(v)) is not None}
+
+
+def _notes_path():
+    """Where "Not now" is kept: that the question was shown, and which new actions were put
+    aside. NOT in the gate's own file, because writing that file moves every agreed action's
+    time forward (`_born`), and putting a question aside must change nothing about what was
+    agreed. Nothing here can turn anything on: at most it stops a question being shown again."""
+    return _path().with_name(ASKED_FILE)
+
+
+def _notes() -> dict[str, Any]:
+    import json
+    try:
+        value = json.loads(_notes_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _aside(setting: dict[str, Any], notes: dict[str, Any]) -> list[str]:
+    """The new actions the person put aside (also read from the gate's file, where an earlier
+    build kept them)."""
+    found: list[str] = []
+    for source in (notes.get("aside"), setting.get("aside")):
+        if isinstance(source, list):
+            found += [key for key in source if isinstance(key, str) and key in ACTIONS and key not in found]
+    return found
 
 
 def enabled(action: str | None = None) -> bool:
@@ -146,7 +192,7 @@ def enabled(action: str | None = None) -> bool:
     if _revoked:
         return False
     setting = _setting()
-    on = setting.get("enabled") is True and type(setting.get("enabled_at")) in (int, float)
+    on = setting.get("enabled") is True and _num(setting.get("enabled_at")) is not None
     if not on or action is None:
         return on
     return action in ACTIONS and action in _covers(setting)
@@ -164,6 +210,10 @@ def pending() -> list[str]:
 def _born() -> float:
     """The earliest time the gate's file can honestly have been written. Every save replaces the
     file with a fresh one (paths.private_write_bytes), so its creation time is the last write.
+    This is one time for the WHOLE file, so every write moves every action's time forward to
+    that write: a file cannot prove that part of it is older than the rest. That is why the
+    file is written only by a yes or a no, never by "Not now" (`_notes_path`), and why a yes
+    that changes nothing writes nothing (`set_enabled`).
     Creation time alone can be moved back from user code (touch -t, os.utime with an earlier
     time on APFS, cp -p, a restore), so this is the later of it and st_ctime, the inode's change
     time, which the kernel sets to now on every change and nothing in user space can set back.
@@ -182,37 +232,39 @@ def enabled_at(action: str | None = None) -> float | None:
         return None
     try:
         setting = _setting()
-        said = float(setting["enabled_at"]) if action is None else _covers(setting)[action]
-        return max(said, float(setting["enabled_at"]), _born())
-    except (OSError, KeyError):
+        first = _num(setting.get("enabled_at"))
+        said = first if action is None else _covers(setting)[action]
+        return max(said, first, _born())
+    except (OSError, KeyError, TypeError):
         return None
 
 
 def asked() -> bool:
     """Nothing is waiting to be asked: the question was put to the person (setup or the card),
     whatever they answered, and every action Wisp has now was named then or put aside since."""
-    setting = _setting()
-    if not (setting.get("asked") is True or enabled()):
+    setting, notes = _setting(), _notes()
+    if not (notes.get("asked") is True or setting.get("asked") is True or enabled()):
         return False
-    aside = setting.get("aside") if isinstance(setting.get("aside"), list) else []
+    aside = _aside(setting, notes)
     return all(key in aside for key in pending())
 
 
-def allows(received_ts: Any, action: str | None = None) -> bool:
-    """Wisp may act on something that arrived at `received_ts`: on, and it arrived after the yes
-    (with `action`: after the yes that named that action). Pass the arrival time of the very
-    line or message being acted on, never a conversation's latest. A time that is not known is
-    never allowed. Every writer passes its action; without one this only says the gate is on."""
+def allows(received_ts: Any, action: str) -> bool:
+    """Wisp may do `action` on something that arrived at `received_ts`: on, the yes named that
+    action, and it arrived after that yes. Pass the arrival time of the very line or message
+    being acted on, never a conversation's latest. A time that is not known is never allowed.
+    The action is required: a writer can never get by on "the gate is on"."""
     since = enabled_at(action)
-    return since is not None and type(received_ts) in (int, float) and float(received_ts) >= since
+    arrived = _num(received_ts)
+    return since is not None and arrived is not None and arrived >= since
 
 
-def still_ok(action: str | None = None) -> str | None:
-    """Checked again right before every write: still on (and, with `action`, still agreed to),
-    and no turn of the person's is running."""
+def still_ok(action: str) -> str | None:
+    """Checked again right before every write: still on, `action` still agreed to, and no turn
+    of the person's is running."""
     if not enabled():
         return "Acting for you was turned off"
-    if action is not None and not enabled(action):
+    if not enabled(action):
         return "You haven't said yes to this yet"
     try:
         from service import idle
@@ -232,8 +284,24 @@ def _unlink() -> bool:
         return False
 
 
-def set_enabled(on: bool, *, now: float | None = None) -> dict[str, Any]:
+class NotOn(RuntimeError):
+    """A yes to the new actions arrived after the gate went off; nothing was turned on."""
+
+
+def set_enabled(on: bool, *, now: float | None = None, only_new: bool = False) -> dict[str, Any]:
     """The person's answer. Yes records the time it was given; no clears it.
+
+    `only_new` is the yes on the card that asks about NEW actions ("Yes, these too"): it adds to
+    a yes that is in force and raises NotOn when there is none, so a tap that lands after the
+    person turned everything off (another window, a race) never turns it all back on.
+
+    What a yes does to times already agreed. Each action keeps the time it was said yes to
+    (`covers`), but the file is replaced by every write, and nothing acts on a message that
+    arrived before the file was written (`_born`, which user code cannot move back). So a yes
+    to a NEW action also moves the actions agreed earlier forward to this moment: messages
+    that arrived between the old yes and this one, and were not acted on yet, no longer will
+    be. That is the safe direction and cannot be avoided with one file. A yes that names
+    nothing new writes nothing, so it moves nothing.
 
     Off ALWAYS takes effect in this process and never raises for a failed save. A yes that can't
     be saved raises, and leaves the gate off.
@@ -249,8 +317,8 @@ def set_enabled(on: bool, *, now: float | None = None) -> dict[str, Any]:
       Keeping an earlier yes would mean a yes the person was just told failed is still in force,
       reaching from an older time; so the file is removed, and if that fails `_revoked` is set.
       Then the error is raised. The person sees "couldn't save your yes", and that is true:
-      nothing acts until a yes is saved. (Removing the file also forgets `asked`; the question
-      may be shown once more, which is the safe side.)
+      nothing acts until a yes is saved. (Removing the file also forgets its `asked`; unless
+      "Not now" was recorded beside it, the question may be shown once more, the safe side.)
     - yes, write succeeds: only then is `_revoked` cleared, so a yes saved after an unsaved off
       works again. A crash after the write keeps the saved yes, which is what the person said.
     `_revoked` lives only in this process: after a restart the file decides, and in the one
@@ -265,16 +333,23 @@ def set_enabled(on: bool, *, now: float | None = None) -> dict[str, Any]:
         try:
             if on:
                 # A yes names every action there is NOW. One already agreed to under a yes that is
-                # still in force keeps its own time; anything else counts from this yes. The first
-                # yes's time is kept while the gate stays on, so agreeing to a new action never
-                # moves what was already agreed.
+                # still in force keeps its recorded time; anything else counts from this yes. The
+                # recorded times are the earliest each could count from: the file's own write time
+                # is a later floor for all of them (see the docstring), so nothing is written
+                # when the yes names nothing new.
                 before = _setting() if enabled() else {}
+                if only_new and not before:
+                    raise NotOn("Letting Wisp act for you is off")
                 had = _covers(before)
-                first = float(before["enabled_at"]) if before else stamp
+                if before and all(key in had for key in ACTIONS):
+                    return state()
+                first = _num(before.get("enabled_at")) if before else stamp
                 _write({"enabled": True, "enabled_at": first, "asked": True,
                         "covers": {key: had.get(key, stamp) for key in ACTIONS}})
             else:
                 _write({"enabled": False, "enabled_at": None, "asked": True})
+        except NotOn:
+            raise
         except Exception:
             saved = False
             if not _unlink():
@@ -290,21 +365,20 @@ def set_enabled(on: bool, *, now: float | None = None) -> dict[str, Any]:
 
 
 def mark_asked() -> None:
-    """The question was shown and put aside without a yes; it is not asked again. Only `asked`
-    changes: a yes given a moment earlier (another window, a race) is never overwritten."""
+    """The question was shown and put aside without a yes; it is not asked again. The gate's own
+    file is never touched: a yes given a moment earlier (another window, a race) stays exactly
+    as it was, times included, and an off stays off. New actions put aside stay off (they are
+    not in `covers`) and are not asked about again."""
+    import json
+    from service import paths
     with _lock:
-        setting = _setting()
-        on = enabled()                       # honours an unsaved off (_revoked): never writes it back on
+        setting, notes = _setting(), _notes()
         waiting = pending()
-        aside = [k for k in (setting.get("aside") if isinstance(setting.get("aside"), list) else []) if k in ACTIONS]
-        if setting.get("asked") is True and all(key in aside for key in waiting):
+        aside = _aside(setting, notes)
+        if (notes.get("asked") is True or setting.get("asked") is True) and all(key in aside for key in waiting):
             return
-        fresh = {"enabled": on, "enabled_at": setting.get("enabled_at") if on else None, "asked": True}
-        if on:
-            # New actions put aside stay off (they are not in `covers`) and are not asked about again.
-            fresh["covers"] = _covers(setting)
-            fresh["aside"] = sorted(set(aside) | set(waiting))
-        _write(fresh)
+        paths.private_write_bytes(_notes_path(), json.dumps(
+            {"asked": True, "aside": sorted(set(aside) | set(waiting))}).encode("utf-8"))
 
 
 def state() -> dict[str, Any]:

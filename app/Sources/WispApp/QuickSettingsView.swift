@@ -370,7 +370,10 @@ struct QuickSettingsView: View {
             if let problem = acting.problem {
                 Text(problem)
             } else if let state {
-                Text(state.enabled ? "On · every action has an Undo" : "Off · none of this without your tap")
+                Text(!state.enabled ? "Off · none of this without your tap"
+                     : state.new.isEmpty ? "On · every action has an Undo"
+                     : state.new.count == 1 ? "On · one action waits for your yes"
+                     : "On · \(state.new.count) actions wait for your yes")
             } else {
                 Text("Wisp couldn't check this yet.")
             }

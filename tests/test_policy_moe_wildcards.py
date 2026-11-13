@@ -1,0 +1,123 @@
+"""A shell wildcard that can reach a protected file in Wisp's own folder (policy._moe_glob_hit)
+asks first, even under Full access; one that cannot reach the folder is left alone.
+
+Case does not matter (APFS is case-insensitive), braces are expanded over the whole word, and,
+as in the shell, `*`/`?`/`[...]` do not match a leading dot unless dotglob/GLOB_DOTS is on."""
+from __future__ import annotations
+
+import time
+from pathlib import Path
+
+import pytest
+
+from service import paths
+from service.safety import policy
+
+
+@pytest.fixture(autouse=True)
+def full_access(monkeypatch):
+    monkeypatch.setattr(policy, "_FULL_ACCESS", True)
+    monkeypatch.setattr(policy, "_READ_ONLY", False)
+    # The default folder, whatever WISP_HOME the test run has; nothing here touches the disk.
+    monkeypatch.setattr(paths, "MOE_DIR", Path.home() / ".moe")
+
+
+def _tier(cmd: str) -> str:
+    return policy.decide("shell", {"cmd": cmd}, tool="run_shell").tier.name
+
+
+PROTECTED = [
+    # Different case reaches the same folder and files on APFS.
+    "cp /tmp/forged ~/.MOE/act_for*", "echo x > ~/.Moe/*.json", "echo x > ~/.MOE/ACT_FOR*.JSON",
+    "cd ~/.MOE && cat act*", "echo x > ~/.moe/GR?NTS.json",
+    # Braces anywhere in the word, the folder included.
+    "echo x > ~/.{moe,x}/act*", "echo x > ~/.mo{e,}/act*", "echo x > ~/.{l..n}oe/act*",
+    "echo x > ~/{.moe,x}/gra*", "echo x > ~/.moe/{grants,act_for_me}.json",
+    # Wildcards in the folder name that start with a dot, as the shell needs.
+    "cat ~/.m?e/gra*", "cat ~/.*/access_mode*", "cat ~/.[m]oe/gmail*",
+    # A bare wildcard after the folder was named.
+    "cd ~/.moe; echo x > acc*.json", "cd ~/.moe && rm .reset*",
+    # dotglob / GLOB_DOTS: `*` matches a leading dot.
+    "shopt -s dotglob; cat ~/*/act_for*", "setopt globdots && cat ~/*/gra*", "setopt GLOB_DOTS; cat ~/*/mcp*",
+    "GLOBIGNORE=x; cat ~/*/act*",
+    # A hidden protected file needs a pattern that starts with a dot.
+    "echo x > ~/.moe/.reset-p*", "echo x > ~/.moe/.*",
+    # The folder's sub-folder google_workspace.
+    "cat ~/.moe/goog*/token.json", "cat ~/.moe/*/token.json",
+    # Every case in tests/test_acting.py's list.
+    "echo x > ~/.moe/act_for*.json", "echo x > ~/.moe/act_for_me.jso?", "cp /tmp/x ~/.moe/a[c]t_for_me.json",
+    "echo x > ~/.moe/*.json", "rm ~/.moe/*", "sed -i '' s/false/true/ ~/.moe/acc*", "echo x > ~/.moe/gr?nts.json",
+    "echo x > ~/.m?e/act*", "cp /tmp/x ~/.*/gra*", "echo x > ~/.[m]oe/act_for_me.jso?",
+    "echo x > ~/.moe/act_for_me.{json,bak}", "cd ~/.moe && cat act*",
+]
+
+# Spelled out in a different case: caught by the literal _SHELL_SECRET patterns (compiled
+# case-insensitively), so these never needed a wildcard rule.
+LITERAL = ["echo x > ~/.MOE/act_for_me.json", "echo x > ~/.moe/ACT_FOR_ME.JSON", "echo x > ~/.Moe/Grants.json",
+           "echo x > ~/.moe/Access_Mode.json", "cp /tmp/x ~/.MOE/GMAIL.JSON", "cp /tmp/x ~/.moe/MCP.json",
+           "touch ~/.MOE/.RESET-PENDING", "rm -r ~/.Moe/Google_Workspace"]
+
+UNTOUCHED = [
+    "cat */*.json", "jq . data/*/*.json", 'prettier --check "src/**/*.json"', "rg -g '**/*.json' foo",
+    "rm -rf ~/.cache/*/*", "ls *.json", "cat ~/Documents/act_for*.json", "cd ~/Documents && cat act*",
+    "cd ~/x.moe-old && ls *.json", "echo x > ~/.moe/notes*.txt", "echo x > ~/.moe/meetings/{a,b}.json",
+    "ls ~/.config/*/*.json", "echo x > ~/.moe/meetings/*.json", "cat ~/?moe/act*", "cat ~/[.]moe/act*",
+    "ls ~/.moe/*.txt", "cat ~/.moe/*-pending",
+]
+
+
+@pytest.mark.parametrize("cmd", PROTECTED)
+def test_a_wildcard_that_can_reach_a_protected_file_asks_first(cmd):
+    assert policy._moe_glob_hit(cmd) == "a protected Wisp file (wildcard)", cmd
+    assert _tier(cmd) in ("CONFIRM", "DENY"), cmd
+
+
+@pytest.mark.parametrize("cmd", LITERAL)
+def test_a_protected_file_spelled_in_another_case_asks_first(cmd):
+    assert policy.shell_secret_hit({"cmd": cmd}) is not None, cmd
+    assert _tier(cmd) in ("CONFIRM", "DENY"), cmd
+
+
+@pytest.mark.parametrize("cmd", UNTOUCHED)
+def test_a_wildcard_that_cannot_reach_wisps_folder_is_left_alone(cmd):
+    assert policy._moe_glob_hit(cmd) is None, cmd
+    assert policy.shell_secret_hit({"cmd": cmd}) is None, cmd
+
+
+def test_a_custom_wisp_folder_without_a_dot_can_be_matched_by_any_wildcard(monkeypatch):
+    # WISP_HOME=/tmp/wisphome: the shell's `*` CAN match "wisphome" (no leading dot), so a
+    # wildcard that fits that name reaches its protected files. A wildcard that cannot be the
+    # folder's name (`other*`) cannot reach them. The default ~/.moe stays protected as well.
+    monkeypatch.setattr(paths, "MOE_DIR", Path("/tmp/wisphome"))
+    for cmd in ("cat /tmp/wisph*/act*", "cat /tmp/*/gra*", "cat /tmp/WISPHOME/acc*",
+                "cd /tmp/wisphome && cat act*", "cat ~/.moe/act*"):
+        assert policy._moe_glob_hit(cmd) is not None, cmd
+        assert _tier(cmd) in ("CONFIRM", "DENY"), cmd
+    for cmd in ("cat /tmp/other*/act*", "cat /tmp/wisphome-old/act*", "cat /tmp/wisph*/notes*"):
+        assert policy._moe_glob_hit(cmd) is None, cmd
+
+
+@pytest.mark.parametrize("cmd", [
+    "echo " + "{a,b}" * 40,
+    "echo ~/.m" + "{a,b}" * 40 + "/act*",
+    "echo " + "{a}" * 1300,
+    "echo " + "a* " * 33_000,
+    "cat " + "x/" * 50_000 + "*",
+    "cd ~/.moe && ls " + " ".join(f"q{i}*" for i in range(12_000)),
+    "echo {1..100000000}/.moe/act*",
+    "cat " + "*a" * 50_000,
+])
+def test_a_pathological_command_is_judged_quickly(cmd):
+    started = time.process_time()
+    policy._moe_glob_hit(cmd)
+    assert time.process_time() - started < 2.0, len(cmd)
+
+
+def test_an_expansion_too_big_to_follow_that_could_be_the_folder_asks():
+    assert policy._moe_glob_hit("echo ~/.m" + "{a,b}" * 40 + "/act*") is not None
+    assert policy._moe_glob_hit("echo {1..100000000}/.moe/act*") is not None
+
+
+def test_this_file_is_in_the_simulation_manifest():
+    manifest = (Path(__file__).resolve().parents[1] / "scripts" / "run_simulation_qa.py").read_text()
+    assert '"tests/test_policy_moe_wildcards.py"' in manifest

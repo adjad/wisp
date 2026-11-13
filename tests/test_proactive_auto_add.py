@@ -669,6 +669,22 @@ def test_an_old_text_is_not_added_because_a_newer_line_arrived_after_the_yes(sto
     assert notes == ["arrived before the yes: tap to add"]
 
 
+def test_a_yes_that_did_not_name_adding_adds_nothing_and_the_card_waits(store, yes, tmp_path):
+    import json
+    from service.proactive import acting
+    item = conversation("Maya Chen", (3.0, "hey are you around this weekend"), (1.0, RECITAL))
+    at = NOW - 2 * 3600
+    (tmp_path / acting.FILE).write_text(json.dumps(
+        {"enabled": True, "enabled_at": at, "asked": True, "covers": {"hold": at, "follow_up": at}}))
+    writers = Writers()
+    out, _notes = production_step(store, survivors(item), writers)
+    assert writers.calls == [] and out["added"] == [] and store.auto_added() == {}
+    (tmp_path / acting.FILE).write_text(json.dumps(
+        {"enabled": True, "enabled_at": at, "asked": True, "covers": {"add": at}}))
+    out, _notes = production_step(store, survivors(item), writers)
+    assert len(writers.calls) == 1 and len(out["added"]) == 1               # the same message, once adding is agreed
+
+
 def test_a_dated_line_that_itself_arrived_after_the_yes_is_added(store, yes):
     item = conversation("Maya Chen", (3.0, "hey are you around this weekend"), (1.0, RECITAL))
     yes(NOW - 2 * 3600)

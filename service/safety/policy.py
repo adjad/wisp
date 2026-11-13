@@ -1158,7 +1158,63 @@ def _grep_file_operands(cmd: str) -> str:
 # expand to one of them names it just as surely as spelling it out.
 _MOE_PROTECTED_NAMES = ("gmail.json", "mcp.json", "grants.json", "access_mode.json", "act_for_me.json",
                         ".reset-pending", "google_workspace")
-_SHELL_WORD_BREAK = re.compile(r"[\s'\";|&()<>]+")
+_SHELL_WORD_BREAK = re.compile(r"[\s'\";|&()<>`]+")
+# Shell settings under which `*`, `?` and `[...]` also match a leading dot: bash's dotglob
+# (and GLOBIGNORE, which turns dotglob on), zsh's GLOB_DOTS (any case, any underscores)
+# and its per-pattern `(D)` qualifier, as in `*(D)` or `*(.D)`.
+_SHELL_DOTGLOB = re.compile(r"(?i:dotglob|glob_*dots|globignore)|[*?\]]\((?:#q)?[^()\s]*D")
+_GLOB_BRACE = re.compile(r"\{([^{}]*)\}")
+_GLOB_SEQUENCE = re.compile(r"^(-?\d+|[A-Za-z])\.\.(-?\d+|[A-Za-z])(?:\.\.-?\d+)?$")
+_GLOB_EXPANSIONS = 256          # brace alternatives looked at per word
+_GLOB_BUDGET = 100_000          # characters of brace expansion worked through per command
+_GLOB_WORD_CHARS = 4096         # a longer word is not expanded: judged by what it could name
+_GLOB_SEGMENT_CHARS = 1024      # a longer pattern segment is assumed to match
+_GLOB_BARE_WORDS = 1024         # distinct bare wildcards judged per command; more asks
+
+
+def _brace_options(word: str, budget: int) -> tuple[list[str], int] | None:
+    """`word` with `{a,b}` and `{a..c}` brace expansion applied over the whole word, as
+    the shell does before globbing, and the characters of work that took. None when it
+    grows past _GLOB_EXPANSIONS alternatives or `budget` characters (the caller then
+    judges the word by what it could name). A `{x}` with no comma is literal to the
+    shell; here it is opened too, which can only find more."""
+    options, done, spent = [word], [], 0
+    while options:
+        option = options.pop()
+        spent += len(option)
+        if spent > budget:
+            return None
+        found = _GLOB_BRACE.search(option)          # innermost group: no nested braces inside
+        if not found:
+            done.append(option)
+        else:
+            inner, parts = found.group(1), None
+            if (seq := _GLOB_SEQUENCE.match(inner)):
+                lo, hi = seq.group(1), seq.group(2)
+                if lo.lstrip("-").isdigit() and hi.lstrip("-").isdigit():
+                    a, b = int(lo), int(hi)
+                    if abs(b - a) >= _GLOB_EXPANSIONS:
+                        return None
+                    parts = [str(n) for n in range(min(a, b), max(a, b) + 1)]
+                elif lo.isalpha() and hi.isalpha():
+                    a, b = sorted((ord(lo), ord(hi)))
+                    parts = [chr(n) for n in range(a, b + 1)]       # A..z also covers [\]^_`
+            if parts is None:
+                parts = inner.split(",")
+            options += [option[:found.start()] + part + option[found.end():] for part in parts]
+        if len(options) + len(done) > _GLOB_EXPANSIONS:
+            return None
+    return done, spent
+
+
+def _glob_segment_matches(name: str, segment: str, dotglob: bool) -> bool:
+    """Whether one path segment of a glob (already casefolded) can match the file or folder
+    called `name` (casefolded). Like the shell, a name that starts with `.` is matched only
+    by a segment that starts with `.` too, unless dotglob is on."""
+    import fnmatch
+    if name.startswith(".") and not dotglob and not segment.startswith("."):
+        return False
+    return len(segment) > _GLOB_SEGMENT_CHARS or fnmatch.fnmatchcase(name, segment)
 
 
 def _moe_glob_hit(form: str) -> str | None:
@@ -1166,41 +1222,56 @@ def _moe_glob_hit(form: str) -> str | None:
 
     - a wildcard in the file name: `~/.moe/act_for*.json`, `~/.moe/*.json`, `~/.moe/a[c]t*`;
     - a wildcard in the FOLDER name too: `~/.m?e/act*`, `~/.*/gra*`;
-    - braces: `~/.moe/{grants,act_for_me}.json`, `~/.moe/act_for_me.{json,bak}`;
+    - braces, anywhere in the word: `~/.moe/{grants,act_for_me}.json`, `~/.{moe,x}/act*`;
     - a bare wildcard after the folder was named elsewhere in the command:
       `cd ~/.moe && cat act*`.
-    Only words that can reach Wisp's folder are looked at, so `ls *.json` elsewhere is
-    untouched. Errs toward a hit: a hit means "ask first", never "refuse"."""
-    import fnmatch
+    Case does not matter (APFS is case-insensitive by default: `~/.MOE/act*` is the same
+    folder). As in the shell, `*`, `?` and `[...]` do not match a leading dot unless the
+    command turns on dotglob/GLOB_DOTS, so `cat */*.json` and `rm -rf ~/.cache/*/*` cannot
+    reach ~/.moe and are untouched; a custom Wisp folder (WISP_HOME) whose name has no dot
+    can be matched by any wildcard. Errs toward a hit: a hit means "ask first", never "refuse"."""
     from service.paths import MOE_DIR
-    moe = str(MOE_DIR).rstrip("/")
-    folder_names = {".moe", moe.rsplit("/", 1)[-1]}
-    names_folder = any(root in form for root in (".moe", moe))
+    hit = "a protected Wisp file (wildcard)"
+    dotglob = bool(_SHELL_DOTGLOB.search(form))           # before casefolding: zsh's (D) is upper case
+    form = form.casefold()
+    folders = tuple(dict.fromkeys((".moe", str(MOE_DIR).rstrip("/").rsplit("/", 1)[-1].casefold())))
+    names = tuple(name.casefold() for name in _MOE_PROTECTED_NAMES)
+    # When a word cannot be expanded within the bounds, could it still be the folder?
+    unsure = dotglob or any(not folder.startswith(".") for folder in folders)
 
-    def expands(pattern: str) -> bool:
-        options = [pattern]
-        for _ in range(4):                                  # {a,b} alternatives, a few levels
-            grown = []
-            for option in options:
-                found = re.search(r"\{([^{}]*)\}", option)
-                if not found:
-                    grown.append(option)
-                    continue
-                grown += [option[:found.start()] + part + option[found.end():] for part in found.group(1).split(",")]
-            if grown == options:
-                break
-            options = grown[:64]
-        return any(fnmatch.fnmatchcase(name, option) for option in options for name in _MOE_PROTECTED_NAMES)
+    def is_folder(segment: str) -> bool:
+        return any(_glob_segment_matches(folder, segment, dotglob) for folder in folders)
 
+    def is_protected(segment: str) -> bool:
+        return any(_glob_segment_matches(name, segment, dotglob) for name in names)
+
+    budget, names_folder, bare = _GLOB_BUDGET, False, set()
     for word in _SHELL_WORD_BREAK.split(form):
         if not any(mark in word for mark in "*?[{"):
+            # A word with no wildcard can still name the folder for a later bare wildcard.
+            names_folder = names_folder or any(part in folders for part in word.split("/"))
             continue
-        parts = [part for part in word.split("/") if part not in ("", ".")]
-        for index, part in enumerate(parts[:-1]):
-            if any(fnmatch.fnmatchcase(folder, part) for folder in folder_names) and expands(parts[index + 1]):
-                return "a protected Wisp file (wildcard)"
-        if names_folder and "/" not in word.strip("./") and expands(word.lstrip("./")):
-            return "a protected Wisp file (wildcard)"       # a bare wildcard, the folder named elsewhere
+        if budget <= 0:
+            return hit                                     # a command this wildcard-heavy: ask
+        expanded = _brace_options(word, budget) if len(word) <= _GLOB_WORD_CHARS else None
+        if expanded is None:
+            if unsure or "." in word:
+                return hit                                 # too big to expand: ask
+            budget -= len(word)
+            continue
+        options, spent = expanded
+        budget -= spent
+        for option in options:
+            parts = [part for part in option.split("/") if part not in ("", ".")]
+            for index, part in enumerate(parts):
+                if is_folder(part):
+                    names_folder = True
+                    if index + 1 < len(parts) and is_protected(parts[index + 1]):
+                        return hit
+            if len(parts) == 1:
+                bare.add(parts[0])
+    if names_folder and (len(bare) > _GLOB_BARE_WORDS or any(is_protected(part) for part in bare)):
+        return hit                                         # a bare wildcard, the folder named elsewhere
     return None
 
 

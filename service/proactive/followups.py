@@ -1225,7 +1225,10 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
     if debug is not None:
         debug.extend({"item": k, "follow_up": v} for k, v in why.items())
     if write is None:
-        from service.proactive.autoadd import create_reminder as write
+        from functools import partial
+        from service.proactive.autoadd import create_reminder
+        # The write's own last check asks about THIS action, not auto-add's.
+        write = partial(create_reminder, action=ACTION)
     added = []
     for plan in picked:
         fp = plan["fingerprint"]

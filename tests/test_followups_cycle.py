@@ -43,9 +43,11 @@ class Native:
 
     def __init__(self):
         self.writes, self.deletes, self.gmail_sent, self.apple_sent, self.subprocess = [], [], [], [], []
+        self.actions = []
 
-    async def create_reminder(self, plan):
+    async def create_reminder(self, plan, *, action="add"):
         self.writes.append(plan)
+        self.actions.append(action)
         return {"ok": True, "status": "succeeded", "source_id": f"R-{len(self.writes)}", "title": plan["title"]}
 
     async def delete_reminder(self, stored):
@@ -136,6 +138,7 @@ def test_a_qualifying_mail_gets_its_reminder_record_and_wisp_did_this_card_in_th
     acting.set_enabled(True, now=NOW - 2 * D)              # the yes, before the mail arrived (NOW - 30 h)
     assert run(store)["status"] == "done"
     [plan] = native.writes
+    assert native.actions == ["follow_up"]                 # the write's last check asks about follow-ups, not adding
     assert plan["title"] == "Reply to Priya Shah" and plan["quote"] == "Can you review my section of the report?"
     [record] = follow_ups(store)
     assert record["status"] == "added" and record["undo"]["source_id"] == "R-1" and record["account"] == ME
@@ -158,6 +161,16 @@ def test_a_yes_that_named_only_add_and_hold_writes_no_follow_up(native, store, t
     assert acting.enabled("add") and not acting.enabled("follow_up")
     assert run(store)["status"] == "done"
     assert native.writes == [] and follow_ups(store) == [] and native.gmail_sent == []
+
+
+def test_a_yes_that_named_only_follow_ups_still_writes_them(native, store):
+    path = acting._path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"enabled": True, "enabled_at": NOW - 2 * D, "asked": True,
+                                "covers": {"follow_up": NOW - 2 * D}}), encoding="utf-8")
+    assert not acting.enabled("add") and acting.enabled("follow_up")
+    assert run(store)["status"] == "done"
+    assert len(native.writes) == 1 and native.actions == ["follow_up"] and len(follow_ups(store)) == 1
 
 
 def test_a_turn_starting_between_auto_add_and_follow_ups_stops_the_follow_up(native, store, monkeypatch):

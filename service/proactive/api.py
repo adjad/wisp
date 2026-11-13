@@ -74,6 +74,9 @@ def _item_id(item_id: str) -> str:
 class Act(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     enabled: bool
+    # "Yes, these too" on the card about new actions: add to a yes that is in force, never
+    # turn everything back on if the person switched it off meanwhile.
+    only_new: bool = False
 
 
 def _act_state() -> dict:
@@ -113,7 +116,10 @@ async def set_act(request: Request):
         _require_app(request)
     from service.proactive import acting
     try:
-        acting.set_enabled(body.enabled)
+        acting.set_enabled(body.enabled, only_new=body.enabled and body.only_new)
+    except acting.NotOn as exc:
+        raise HTTPException(409, "Letting Wisp act for you was turned off meanwhile, so nothing changed. "
+                                 "You can turn it on in Settings.") from exc
     except Exception as exc:  # noqa: BLE001 — whatever failed, the reply says what is true now
         # Every reply is the gate as it really is (_act_state reads it again), never what was
         # asked for. A failed yes leaves the gate off (acting.set_enabled), so the words are true.

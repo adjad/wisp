@@ -38,6 +38,16 @@ def read(path):
     return json.loads(path.read_text()) if path.exists() else {}
 
 
+def notes(setting):
+    """Where "Not now" is kept, beside the gate's file."""
+    return setting.with_name(acting.ASKED_FILE)
+
+
+def _write(setting, **fields):
+    setting.parent.mkdir(parents=True, exist_ok=True)
+    setting.write_text(__import__("json").dumps(fields))
+
+
 @pytest.fixture
 def store(tmp_path):
     return ProactiveStore(tmp_path / "proactive")
@@ -49,35 +59,35 @@ def test_off_until_a_yes_and_the_yes_is_dated(setting):
                               "agreed": [], "new": []}
     assert "after you say yes" in acting.SCOPE and "already there" in acting.SCOPE
     assert acting.DOES and "never sends" in acting.NEVER
-    assert not acting.allows(NOW) and acting.still_ok() == "Acting for you was turned off"
+    assert not acting.allows(NOW, "add") and acting.still_ok("add") == "Acting for you was turned off"
     acting.set_enabled(True, now=NOW)
     assert read(setting) == {"enabled": True, "enabled_at": NOW, "asked": True,
                              "covers": {key: NOW for key in acting.ACTIONS}}       # the yes names what it covers
     assert setting.stat().st_mode & 0o077 == 0                          # private to the person
     assert acting.state()["agreed"] == acting.DOES and acting.state()["new"] == []
-    assert acting.enabled() and acting.enabled_at() == NOW and acting.asked() and acting.still_ok() is None
+    assert acting.enabled() and acting.enabled_at() == NOW and acting.asked() and acting.still_ok("add") is None
 
 
 def test_only_what_arrives_after_the_yes(setting):
     acting.set_enabled(True, now=NOW)
-    assert acting.allows(NOW) and acting.allows(NOW + 60)
-    assert not acting.allows(NOW - 1) and not acting.allows(None) and not acting.allows("later")
+    assert acting.allows(NOW, "add") and acting.allows(NOW + 60, "add")
+    assert not acting.allows(NOW - 1, "add") and not acting.allows(None, "add") and not acting.allows("later", "add")
     # Off and on again moves the line forward: mail from the gap is not reached back for.
     acting.set_enabled(False, now=NOW + 100)
-    assert not acting.allows(NOW + 200) and acting.enabled_at() is None and acting.asked()
+    assert not acting.allows(NOW + 200, "add") and acting.enabled_at() is None and acting.asked()
     acting.set_enabled(True, now=NOW + 300)
-    assert not acting.allows(NOW + 200) and acting.allows(NOW + 301)
+    assert not acting.allows(NOW + 200, "add") and acting.allows(NOW + 301, "add")
 
 
 def test_off_stops_a_write_that_was_about_to_happen_and_so_does_a_turn(setting, monkeypatch):
     acting.set_enabled(True, now=NOW)
-    assert acting.still_ok() is None and autoadd._still_ok() is None
+    assert acting.still_ok("add") is None and autoadd._still_ok() is None
     from service import idle
     monkeypatch.setattr(idle, "foreground_busy", lambda: True)
-    assert "turn" in acting.still_ok()
+    assert "turn" in acting.still_ok("add")
     monkeypatch.setattr(idle, "foreground_busy", lambda: False)
     acting.set_enabled(False)
-    assert acting.still_ok() == "Acting for you was turned off" == autoadd._still_ok()
+    assert acting.still_ok("add") == "Acting for you was turned off" == autoadd._still_ok()
 
 
 def test_a_file_that_is_missing_damaged_or_the_wrong_shape_means_off(setting):
@@ -86,7 +96,7 @@ def test_a_file_that_is_missing_damaged_or_the_wrong_shape_means_off(setting):
     for bad in ("not json", "[]", '"yes"', '{"enabled": true}', '{"enabled": 1, "enabled_at": 5}',
                 '{"enabled": true, "enabled_at": "x"}', '{"enabled": "true", "enabled_at": 5}'):
         setting.write_text(bad)                                          # read from disk each time: no cache
-        assert not acting.enabled() and not acting.allows(NOW + 1) and acting.still_ok() is not None, bad
+        assert not acting.enabled() and not acting.allows(NOW + 1, "add") and acting.still_ok("add") is not None, bad
     setting.unlink()
     assert not acting.enabled() and acting.state()["enabled_at"] is None
     with pytest.raises(ValueError):
@@ -99,10 +109,10 @@ def test_a_forged_file_cannot_backdate_the_yes(setting, monkeypatch):
     monkeypatch.setattr(acting, "_path", lambda: setting)
     setting.parent.mkdir(parents=True, exist_ok=True)
     before = time.time()
-    setting.write_text('{"enabled": true, "enabled_at": 0, "asked": true}')   # "yes since 1970"
+    setting.write_text('{"enabled": true, "enabled_at": 0, "asked": true, "covers": {"add": 0}}')   # "yes since 1970"
     assert acting.enabled() and acting.enabled_at() >= before - 2           # counts from when it was written
-    assert not acting.allows(before - 3600) and not acting.allows(0.0)       # old mail stays out of reach
-    assert acting.allows(time.time() + 5)
+    assert not acting.allows(before - 3600, "add") and not acting.allows(0.0, "add")       # old mail stays out of reach
+    assert acting.allows(time.time() + 5, "add")
     # The switch's own write is unaffected: its time and the file's agree.
     acting.set_enabled(True)
     assert abs(acting.enabled_at() - time.time()) < 5
@@ -129,7 +139,7 @@ def test_backdating_the_files_own_times_cannot_backdate_the_yes(setting, monkeyp
         assert info.st_birthtime <= past + 1
     assert info.st_ctime >= before - 2                                   # ...but not the change time
     assert acting.enabled() and acting.enabled_at() >= before - 2
-    assert not acting.allows(before - 3600) and not acting.allows(past + 1)
+    assert not acting.allows(before - 3600, "add") and not acting.allows(past + 1, "add")
 
 
 # --- off always lands; a yes that can't be saved leaves it off -----------------------------------
@@ -144,7 +154,7 @@ def test_an_off_that_cannot_be_written_removes_the_file(setting, monkeypatch):
     reply = _client().put("/assistant/proactive/act", json={"enabled": False})
     assert reply.status_code == 200 and reply.json()["enabled"] is False and reply.json()["enabled_at"] is None
     assert not setting.exists() and not acting.enabled() and not acting._revoked     # missing file = off
-    assert not acting.allows(NOW + 1) and acting.still_ok() is not None
+    assert not acting.allows(NOW + 1, "add") and acting.still_ok("add") is not None
 
 
 def test_an_off_that_can_be_neither_written_nor_removed_is_still_off_in_this_process(setting, monkeypatch):
@@ -157,8 +167,8 @@ def test_an_off_that_can_be_neither_written_nor_removed_is_still_off_in_this_pro
         assert reply.status_code == 200 and reply.json()["enabled"] is False
         assert read(setting)["enabled"] is True                         # the disk still says yes...
         assert acting._revoked and not acting.enabled()                 # ...and it counts for nothing
-        assert acting.enabled_at() is None and not acting.allows(NOW + 1)
-        assert acting.still_ok() == "Acting for you was turned off"
+        assert acting.enabled_at() is None and not acting.allows(NOW + 1, "add")
+        assert acting.still_ok("add") == "Acting for you was turned off"
         assert _client().get("/assistant/proactive/act").json()["enabled"] is False
         acting.mark_asked()                                              # never writes the stale yes back
         assert not acting.enabled()
@@ -170,28 +180,28 @@ def test_an_off_that_can_be_neither_written_nor_removed_is_still_off_in_this_pro
         os.chmod(folder, 0o700)
     # Once a yes is actually saved, it works again.
     on = _client().put("/assistant/proactive/act", json={"enabled": True}).json()
-    assert on["enabled"] is True and not acting._revoked and acting.allows(on["enabled_at"] + 1)
+    assert on["enabled"] is True and not acting._revoked and acting.allows(on["enabled_at"] + 1, "add")
 
 
 def test_a_yes_that_cannot_be_saved_never_leaves_an_earlier_yes_in_force(setting, monkeypatch):
-    acting.set_enabled(True, now=NOW)                                    # an earlier yes, older time
+    _write(setting, enabled=True, enabled_at=NOW, asked=True, covers={"add": NOW})   # an earlier, narrower yes
     monkeypatch.setattr(acting, "_write", _refuse)
     reply = _client().put("/assistant/proactive/act", json={"enabled": True})
     assert reply.status_code == 409 and reply.json()["detail"].startswith("Wisp couldn't save your yes")
-    assert not setting.exists() and not acting.enabled() and not acting.allows(NOW + 1)
+    assert not setting.exists() and not acting.enabled() and not acting.allows(NOW + 1, "add")
     with pytest.raises(OSError):
         acting.set_enabled(True, now=NOW + 5)                            # the module raises; the gate is off
     assert not acting.enabled()
 
 
 def test_a_yes_that_cannot_be_saved_or_removed_is_off_by_the_flag(setting, monkeypatch):
-    acting.set_enabled(True, now=NOW)
+    _write(setting, enabled=True, enabled_at=NOW, asked=True, covers={"add": NOW})   # an earlier, narrower yes
     write, unlink = acting._write, acting._unlink
     monkeypatch.setattr(acting, "_write", _refuse)
     monkeypatch.setattr(acting, "_unlink", lambda: False)
     assert _client().put("/assistant/proactive/act", json={"enabled": True}).status_code == 409
     assert read(setting)["enabled"] is True and acting._revoked and not acting.enabled()
-    assert acting.still_ok() is not None and not acting.allows(NOW + 1)
+    assert acting.still_ok("add") is not None and not acting.allows(NOW + 1, "add")
     monkeypatch.setattr(acting, "_write", write)                         # the disk works again
     monkeypatch.setattr(acting, "_unlink", unlink)
     acting.set_enabled(True, now=NOW + 50)
@@ -218,25 +228,29 @@ def test_the_settings_file_cannot_turn_it_on_any_more(setting, monkeypatch):
     monkeypatch.setattr(config, "user_overlay_valid", lambda: True)
     for value in ({"act_for_me": {"enabled": True, "enabled_at": 0}}, {"proactive_auto_add": True}):
         monkeypatch.setattr(config, "models_config", lambda value=value: value)
-        assert not acting.enabled() and not acting.allows(NOW) and not config.proactive_auto_add_enabled()
+        assert not acting.enabled() and not acting.allows(NOW, "add") and not config.proactive_auto_add_enabled()
 
 
 def test_put_aside_is_not_asked_again_and_never_turns_it_on(setting):
     acting.mark_asked()
-    assert acting.asked() and not acting.enabled() and read(setting)["enabled"] is False
+    assert acting.asked() and not acting.enabled()
+    assert not setting.exists()                                          # the gate's own file is never written
+    assert read(notes(setting)) == {"asked": True, "aside": []}
+    assert notes(setting).stat().st_mode & 0o077 == 0
 
 
 def test_putting_the_question_aside_never_overwrites_a_yes(setting):
     acting.set_enabled(True, now=NOW)                                    # a yes from another window
     covers = dict(read(setting)["covers"])
     setting.write_text(__import__("json").dumps({"enabled": True, "enabled_at": NOW, "asked": False, "covers": covers}))
+    before = setting.read_text()
     acting.mark_asked()                                                  # "Not now" lands a moment later
-    assert read(setting) == {"enabled": True, "enabled_at": NOW, "asked": True, "covers": covers, "aside": []}
+    assert setting.read_text() == before and acting.asked()              # the yes is untouched, byte for byte
     assert acting.allows(NOW + 1, "add")
     acting.set_enabled(False)
-    before = setting.read_text()
+    before, noted = setting.read_text(), notes(setting).read_text()
     acting.mark_asked()
-    assert setting.read_text() == before                                 # already asked: nothing is rewritten
+    assert setting.read_text() == before and notes(setting).read_text() == noted   # already asked: nothing is rewritten
 
 
 # --- a new kind of action, start to finish (the interface a second module uses) --------------
@@ -612,11 +626,6 @@ def test_a_wildcard_that_can_expand_to_a_protected_file_is_never_simply_allowed(
 
 # --- a yes covers the actions that were named when it was given, and nothing added since -----------
 
-def _write(setting, **fields):
-    setting.parent.mkdir(parents=True, exist_ok=True)
-    setting.write_text(__import__("json").dumps(fields))
-
-
 def test_a_yes_from_before_actions_were_recorded_covers_nothing_and_is_asked_again(setting):
     _write(setting, enabled=True, enabled_at=NOW, asked=True)             # an earlier build's yes
     assert acting.enabled() is True                                         # the switch is on...
@@ -646,12 +655,123 @@ def test_an_action_added_after_the_yes_does_nothing_until_it_is_agreed_to(settin
 
 def test_putting_a_new_action_aside_keeps_it_off_and_is_not_asked_again(setting):
     _write(setting, enabled=True, enabled_at=NOW, asked=True, covers={"add": NOW, "hold": NOW})
+    before = setting.read_text()
     acting.mark_asked()                                                    # "Not now" on the re-ask
-    assert read(setting)["aside"] == ["follow_up"] and read(setting)["covers"] == {"add": NOW, "hold": NOW}
+    assert read(notes(setting)) == {"asked": True, "aside": ["follow_up"]} and setting.read_text() == before
     assert acting.asked() is True and not acting.enabled("follow_up") and acting.enabled("add")
     assert acting.state()["new"] == [acting.ACTIONS["follow_up"]]         # still shown as not agreed
     acting.set_enabled(True, now=NOW + 900)                                # the switch, flipped on again later
     assert acting.enabled("follow_up") and acting.allows(NOW + 901, "follow_up")
+
+
+def _real_clock(setting, monkeypatch):
+    """The real `_born` (the fixture replaces it with a made-up clock)."""
+    monkeypatch.undo()
+    monkeypatch.setattr(acting, "_path", lambda: setting)
+    monkeypatch.setattr(acting, "_revoked", False)
+
+
+def test_not_now_never_touches_the_gates_file_so_no_agreed_time_moves(setting, monkeypatch):
+    import time
+    _real_clock(setting, monkeypatch)
+    old = time.time() - 5000
+    _write(setting, enabled=True, enabled_at=old, asked=True, covers={"add": old, "hold": old})
+    info, text = setting.stat(), setting.read_text()
+    since = {key: acting.enabled_at(key) for key in ("add", "hold")}
+    acting.mark_asked()                                                    # "Not now" to the new action
+    after = setting.stat()
+    assert (after.st_ino, after.st_ctime_ns, after.st_mtime_ns) == (info.st_ino, info.st_ctime_ns, info.st_mtime_ns)
+    assert setting.read_text() == text
+    assert {key: acting.enabled_at(key) for key in ("add", "hold")} == since
+    assert acting.asked() and acting.pending() == ["follow_up"] and not acting.enabled("follow_up")
+    acting.mark_asked()                                                    # and again: still nothing
+    assert setting.stat().st_ctime_ns == info.st_ctime_ns
+
+
+def test_a_yes_that_names_nothing_new_writes_nothing(setting, monkeypatch):
+    _real_clock(setting, monkeypatch)
+    acting.set_enabled(True)
+    info, since = setting.stat(), acting.enabled_at("add")
+    assert acting.set_enabled(True, now=NOW * 2)["enabled"] is True        # the switch, confirmed once more
+    assert (setting.stat().st_ino, setting.stat().st_ctime_ns) == (info.st_ino, info.st_ctime_ns)
+    assert acting.enabled_at("add") == since
+
+
+def test_a_yes_to_a_new_action_moves_the_agreed_ones_forward_to_that_write(setting, monkeypatch):
+    """One file has one write time, and nothing acts on what arrived before it (`_born`). So saying
+    yes to a new action also moves the actions agreed earlier up to that moment: never back."""
+    import time
+    _real_clock(setting, monkeypatch)
+    old = time.time() - 5000
+    _write(setting, enabled=True, enabled_at=old, asked=True, covers={"add": old, "hold": old})
+    before = time.time()
+    acting.set_enabled(True, now=before + 9000)                            # "Yes, these too"
+    assert read(setting)["covers"] == {"add": old, "hold": old, "follow_up": before + 9000}   # what was said
+    assert before - 2 <= acting.enabled_at("add") <= time.time() + 2       # what counts: this write
+    assert not acting.allows(old + 60, "add") and acting.allows(time.time() + 5, "add")
+    assert acting.enabled_at("follow_up") == before + 9000
+    assert not acting.allows(time.time() + 5, "follow_up")
+
+
+def test_a_number_too_large_to_be_a_time_covers_nothing_and_never_breaks_the_reply(setting):
+    huge = 10 ** 400                                                       # float() of this raises
+    _write(setting, enabled=True, enabled_at=NOW, asked=True, covers={"add": huge, "hold": NOW})
+    assert not acting.enabled("add") and acting.enabled("hold") and not acting.allows(NOW + 1, "add")
+    assert acting.enabled_at("add") is None and acting.still_ok("add") == "You haven't said yes to this yet"
+    reply = _client().get("/assistant/proactive/act")
+    assert reply.status_code == 200 and acting.ACTIONS["add"] in reply.json()["new"]
+    _write(setting, enabled=True, enabled_at=huge, asked=True, covers={"add": NOW})
+    assert not acting.enabled() and acting.enabled_at() is None and not acting.allows(NOW + 1, "add")
+    assert _client().get("/assistant/proactive/act").json()["enabled"] is False
+    assert not acting.allows(huge, "add") and not acting.allows(float("nan"), "add")
+    setting.write_text('{"enabled": true, "enabled_at": 5, "covers": {"add": NaN, "hold": Infinity}}')
+    assert not acting.enabled("add") and not acting.enabled("hold")
+
+
+def test_yes_these_too_never_turns_everything_back_on_after_an_off(setting):
+    _write(setting, enabled=True, enabled_at=NOW, asked=True, covers={"add": NOW})
+    acting.set_enabled(False)                                              # another window: off
+    reply = _client().put("/assistant/proactive/act", json={"enabled": True, "only_new": True})
+    assert reply.status_code == 409 and "turned off" in reply.json()["detail"]
+    assert not acting.enabled() and read(setting)["enabled"] is False
+    with pytest.raises(acting.NotOn):
+        acting.set_enabled(True, only_new=True)
+    assert not acting._revoked and read(setting)["enabled"] is False       # the off on disk is untouched
+    # While it is on, the same tap adds the new actions.
+    _write(setting, enabled=True, enabled_at=NOW, asked=True, covers={"add": NOW})
+    reply = _client().put("/assistant/proactive/act", json={"enabled": True, "only_new": True})
+    assert reply.status_code == 200 and reply.json()["new"] == [] and acting.enabled("follow_up")
+    assert _client().put("/assistant/proactive/act", json={"enabled": False, "only_new": True}).json()["enabled"] is False
+
+
+def test_a_reminder_write_checks_its_callers_own_action_right_before_dispatch(setting, monkeypatch):
+    """A follow-up's reminder goes through autoadd.create_reminder; its last check must ask about
+    follow-ups, not about adding."""
+    from service.assistant import outbox
+    from service.proactive import executor
+    sent = []
+
+    async def request(kind, payload, before_dispatch=None):
+        sent.append((kind, before_dispatch() if before_dispatch else None))
+        return {"ok": True, "source_id": "R-1", "title": payload["title"]}
+    monkeypatch.setattr(outbox, "request", request)
+    monkeypatch.setattr(autoadd, "_app_connected_now", lambda: True)
+    monkeypatch.setattr(executor, "_reminder_problem", lambda: None)
+    plan = {"title": "Reply to Maya", "due_ts": NOW + 3600}
+    _write(setting, enabled=True, enabled_at=NOW, asked=True, covers={"follow_up": NOW})
+    assert asyncio.run(autoadd.create_reminder(plan, action="follow_up"))["ok"] is True
+    assert sent == [("create_reminder", None)]                             # allowed at dispatch too
+    blocked = asyncio.run(autoadd.create_reminder(plan))                   # adding was not agreed to
+    assert blocked["status"] == "blocked" and len(sent) == 1
+    _write(setting, enabled=True, enabled_at=NOW, asked=True, covers={"add": NOW})
+    assert asyncio.run(autoadd.create_reminder(plan, action="follow_up"))["status"] == "blocked" and len(sent) == 1
+    assert asyncio.run(autoadd.create_reminder(plan))["ok"] is True and len(sent) == 2
+
+
+def test_every_gate_check_needs_its_action():
+    for check in (acting.allows, acting.still_ok):
+        with pytest.raises(TypeError):
+            check(NOW) if check is acting.allows else check()
 
 
 def test_off_then_on_names_everything_from_the_new_yes(setting):
@@ -670,7 +790,7 @@ def test_an_unknown_action_or_a_malformed_list_covers_nothing(setting):
     assert set(acting.ACTION_OF.values()) - {"draft"} == set(acting.ACTIONS)
 
 
-def test_each_writer_names_its_own_action(setting, store, monkeypatch):
+def test_each_writer_names_its_own_action(setting, store, monkeypatch, tmp_path):
     from service.proactive import autohold, followups
     _write(setting, enabled=True, enabled_at=NOW, asked=True, covers={"hold": NOW})
     assert autoadd.enabled() is False and followups.ACTION == "follow_up"
@@ -682,7 +802,11 @@ def test_each_writer_names_its_own_action(setting, store, monkeypatch):
                          hold=lambda c: {"ok": True, "status": "succeeded", "task_id": "t1"})
     assert held == {"c1"}                                                   # holding was agreed to
     _write(setting, enabled=True, enabled_at=NOW, asked=True, covers={"add": NOW})
-    store2 = ProactiveStore(store._base.parent / "p2") if hasattr(store, "_base") else store
+    store2 = ProactiveStore(tmp_path / "another")                          # nothing recorded: only the gate stops it
     assert autohold.step([{**card, "id": "c2", "sources": [{"kind": "calendar", "ref": "cal:2"}]}], now=NOW, tz="UTC",
                          store=store2, abort=lambda: False, hours=lambda slot, tz: True,
                          hold=lambda c: {"ok": True, "status": "succeeded", "task_id": "t2"}) == set()
+    _write(setting, enabled=True, enabled_at=NOW, asked=True, covers={"hold": NOW})
+    assert autohold.step([{**card, "id": "c2", "sources": [{"kind": "calendar", "ref": "cal:2"}]}], now=NOW, tz="UTC",
+                         store=store2, abort=lambda: False, hours=lambda slot, tz: True,
+                         hold=lambda c: {"ok": True, "status": "succeeded", "task_id": "t2"}) == {"c2"}

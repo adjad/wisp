@@ -703,9 +703,15 @@ def _turn_running() -> bool:
         return True
 
 
-def _still_ok() -> str | None:
-    """Re-checked at dispatch: the setting is still on and no turn has started."""
-    if not enabled():
+def _still_ok(action: str = "add") -> str | None:
+    """Re-checked at dispatch: the setting is still on for `action` (the caller's own: a
+    follow-up reminder is not an add) and no turn has started."""
+    try:
+        from service.proactive import acting
+        on = enabled() if action == "add" else acting.enabled(action)
+    except Exception:  # noqa: BLE001 — a setting that can't be read writes nothing
+        on = False
+    if not on:
         return "Acting for you was turned off"
     if _turn_running():
         return "A turn started; auto-add waits for the background"
@@ -729,17 +735,20 @@ async def create_event(plan: dict) -> dict:
     return result if isinstance(result, dict) else {"ok": False, "status": "unknown", "error": "unreadable"}
 
 
-def _reminder_problem() -> str | None:
+def _reminder_problem(action: str = "add") -> str | None:
     from service.proactive.executor import _reminder_problem as policy
-    return _still_ok() or policy()
+    return _still_ok(action) or policy()
 
 
-async def create_reminder(plan: dict) -> dict:
+async def create_reminder(plan: dict, *, action: str = "add") -> dict:
     """The verified native reminder write the attention capture's live mode
-    uses: the outbox's create_reminder with a policy check just before dispatch."""
+    uses: the outbox's create_reminder with a policy check just before dispatch.
+    `action` is the acting.ACTIONS key the caller acts under: the check right before
+    dispatch asks whether THAT action is still agreed to (follow-ups pass their own)."""
     if not _app_connected_now():
         return {"ok": False, "status": "blocked", "error": "The Wisp app isn't connected"}
-    if problem := _reminder_problem():
+    check = _reminder_problem if action == "add" else (lambda: _reminder_problem(action))
+    if problem := check():
         return {"ok": False, "status": "blocked", "error": problem}
     from service.assistant.outbox import request
     made: list[dict] = []
@@ -747,7 +756,7 @@ async def create_reminder(plan: dict) -> dict:
     for when in plan.get("alerts") or [plan["due_ts"]]:
         result = await request("create_reminder", {"title": plan["title"][:200], "due_ts": float(when),
                                                    "commitment_kind": "reminder"},
-                               before_dispatch=_reminder_problem)
+                               before_dispatch=check)
         result = result if isinstance(result, dict) else {"ok": False, "status": "unknown", "error": "unreadable"}
         if result.get("ok") is not True or not str(result.get("source_id") or "").strip():
             # One that landed before this miss is still Wisp's: undo finds it.
