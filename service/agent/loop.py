@@ -7,6 +7,7 @@ engine and the audit log. Emits structured events for the frontend.
 """
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import json
 import hashlib
@@ -2674,6 +2675,17 @@ async def run_agent(
     guard_previous_user = _message_text(messages[_said[-2]]) if len(_said) > 1 else ""
     guard_last_assistant = next((_message_text(m) for m in reversed(messages[:_said[-1]] if _said else [])
                                  if m.get("role") == "assistant"), "")
+    # "Delete that reminder" after one was made in this chat, and "Reply to
+    # Dana's last email": what the person's own words point at is bound here,
+    # not left to the model's arguments.
+    _chat_reminder = _reply_sender = ""
+    if ask_quality:
+        from service.model_only import (ALL_REMINDER_CLEARERS, chat_reminder as _find_chat_reminder,
+                                        email_reply_sender as _find_reply_sender)
+        _chat_reminder = _find_chat_reminder(guard_prompt, guard_previous_user, guard_last_assistant)
+        if _chat_reminder:
+            forbidden_tools = frozenset(forbidden_tools) | ALL_REMINDER_CLEARERS
+        _reply_sender = _find_reply_sender(guard_prompt)
     # The model may choose stock arguments for a mixed delivery request. Keep
     # the user's negative clause at the execution boundary, including direct
     # calls supplied by the router, rather than trusting the proposed list.
@@ -5546,6 +5558,12 @@ async def run_agent(
                     _OUTBOUND_PREVIEW_TOOLS, human_reviewed_content,
                     outbound_content_problem)
 
+                if _chat_reminder and name == "cancel_event":
+                    # "that reminder" is the one made in this chat, by its title.
+                    args = {**args, "title": _chat_reminder}
+                elif _reply_sender and name == "view_emails":
+                    from service.model_only import reply_search_args
+                    args = reply_search_args(args, _reply_sender)
                 dec = tool_policy(tool, args)
                 await emit({"type": "tool_call", "id": cid, "name": name,
                             "args": args, "decision": dec.tier.value, "reason": dec.reason})
@@ -5676,7 +5694,12 @@ async def run_agent(
                         # Name the one matching note's folder on the card and bind
                         # the delete to that folder.
                         from service.tools.notes_write import delete_note_card
-                        _card = await asyncio.to_thread(delete_note_card, args)
+                        try:
+                            _card = await asyncio.to_thread(delete_note_card, args)
+                        except Exception:  # noqa: BLE001
+                            # A failed lookup never loses the card: it keeps the
+                            # policy's line, and the tool re-checks before deleting.
+                            _card = None
                         if _card is not None:
                             args, action["reason"] = _card
                             action["args"] = json.loads(json.dumps(args))

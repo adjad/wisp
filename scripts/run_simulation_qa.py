@@ -364,6 +364,7 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_final_ask_write_followups.py",
     "tests/test_final_notes_delete_and_bullets.py",
     "tests/test_final_send_to_myself.py",
+    "tests/test_final_ask_card_and_referents.py",
     "tests/test_final_ask_web_wordings.py",
     "tests/test_final_web_ownership.py",
     "tests/test_rc2_ask_web_possessive_egress.py",

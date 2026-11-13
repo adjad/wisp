@@ -536,6 +536,97 @@ def single_reminder_delete(prompt: str) -> bool:
     return bool(_ONE_REMINDER.search(text)) and not _MANY_REMINDERS.search(text)
 
 
+# --- "Delete that reminder", right after one was made in this chat -----------
+# 2026-11-13 real-model run: after "Remind me to call the dentist tomorrow at
+# 9am", "Delete that reminder" went to clear_reminders and then to cancel_event
+# with no usable title; nothing was removed. The reminder is found in the
+# store by what this chat just said, and cancel_event is bound to its title.
+_THAT_REMINDER = re.compile(
+    r"^\W*(?:(?:please|ok(?:ay)?|actually|wait|no|never\s*mind|hey\s+wisp|wisp)[,.\s]+)*"
+    r"(?:(?:can|could|would)\s+you\s+)?(?:delete|remove|cancel|erase|trash|get\s+rid\s+of|drop)\s+"
+    r"(?:that|this|the)\s+(?:last\s+|new\s+)?reminder"
+    r"(?:\s+(?:i|you|we)\s+just\s+(?:made|set|added|created))?(?:\s+please)?\W*$", re.I)
+ALL_REMINDER_CLEARERS = frozenset({"clear_past_reminders", "clear_reminders"})
+CHAT_REMINDER_WINDOW_S = 3600
+
+
+def _recent_reminders() -> list[dict]:
+    """Reminders first seen in the last hour, newest first. Read-only."""
+    import time
+    try:
+        from service.assistant.store import assistant_store
+        return [r for r in assistant_store.recently_added(time.time() - CHAT_REMINDER_WINDOW_S)
+                if r.get("kind") == "reminder"]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def chat_reminder(prompt: str, previous: str, last_assistant: str | None) -> str:
+    """The title of the reminder "delete that reminder" points at: the newest
+    reminder added in the last hour whose title this chat's previous exchange
+    names. "" when the message names a reminder itself or nothing matches."""
+    text = " ".join((prompt or "").replace("’", "'").split())
+    if not text or not _THAT_REMINDER.search(text):
+        return ""
+    said = set(re.findall(r"[a-z0-9]+", f"{previous or ''} {last_assistant or ''}".casefold()))
+    for row in _recent_reminders():
+        title = " ".join(str(row.get("title") or "").split())
+        words = [w for w in re.findall(r"[a-z0-9]+", title.casefold()) if len(w) > 2]
+        if words and all(w in said for w in words):
+            return title
+    return ""
+
+
+def chat_reminder_hint(title: str) -> str:
+    return (f"THAT REMINDER: the user means the reminder made earlier in this chat, \"{title[:120]}\". "
+            f"Call cancel_event with title=\"{title[:120]}\" now. Do not ask which one and do not use a "
+            "tool that clears many reminders.")
+
+
+# --- "Reply to Dana's last email and say yes" --------------------------------
+# Same run: only view_emails ran, searching for the instruction's own words
+# ("Reply to Dana"), and the answer was that nothing was found. The sender's
+# name is the search; the newest email from them is the one to answer.
+_REPLY_VERB = r"(?:reply|respond|write\s+back|answer)"
+_REPLY_WHO = (r"((?-i:[A-Z][\w.-]*(?:\s+[A-Z][\w.-]*)?)|(?:my\s+)?(?:mom|mum|dad|mother|father|sister|brother|"
+              r"boss|manager|professor|prof|teacher|landlord|roommate|wife|husband|partner|girlfriend|boyfriend))")
+_REPLY_NEWEST = r"(?:(?:last|latest|most\s+recent|recent|newest)\s+)?"
+_EMAIL_REPLY = re.compile(
+    rf"\b{_REPLY_VERB}\s+(?:to\s+)?{_REPLY_WHO}'s\s+{_REPLY_NEWEST}e-?mail\b"
+    rf"|\b{_REPLY_VERB}\s+(?:to\s+)?(?:the\s+|that\s+)?{_REPLY_NEWEST}e-?mail\s+from\s+{_REPLY_WHO}", re.I)
+_REPLY_WORDS = re.compile(r"\b(?:repl\w+|respon\w+|answer\w*|e-?mails?|last|latest|recent|newest|say\w*)\b", re.I)
+
+
+def email_reply_sender(prompt: str) -> str:
+    """Whose email a "reply to X's (last) email" instruction answers, else "".
+    Not a writing request ("Draft a reply to..."): reply_reads covers those."""
+    text = " ".join((prompt or "").replace("’", "'").split())
+    if not text or len(text) > 400 or _WRITING.match(text) or _COMPOSE.match(text):
+        return ""
+    found = _EMAIL_REPLY.search(text)
+    if not found:
+        return ""
+    name = (found.group(1) or found.group(2) or "").strip()
+    name = re.sub(r"^my\s+", "", name, flags=re.I)
+    return "" if name.casefold() in {"the", "that", "this", "my", "an", "a"} else name
+
+
+def reply_search_args(args: dict, sender: str) -> dict:
+    """view_emails arguments for a reply turn: the search is the sender's name
+    when the model searched for the instruction's words or for nothing."""
+    query = str((args or {}).get("query") or "")
+    if query and sender.casefold() in query.casefold() and not _REPLY_WORDS.search(query):
+        return args
+    return {**(args or {}), "query": sender}
+
+
+def email_reply_hint(sender: str) -> str:
+    return (f"REPLY TO AN EMAIL: first call view_emails with query=\"{sender}\" (the sender's name only, "
+            f"never the words of the instruction). The newest email from {sender} is the one to answer: "
+            "take its Message-ID and call reply_to_email with that message_id and the reply text in `body`, "
+            "written as the user would send it. Never say nothing was found before searching by the name.")
+
+
 # --- A tool call written as plain text in an answer -------------------------
 # "What's on my calendar tomorrow?" ended with `get_my_day_plan(day='tomorrow')`
 # printed in the reply. Only a registered tool's name followed by a call's
