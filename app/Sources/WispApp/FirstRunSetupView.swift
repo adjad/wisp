@@ -2141,7 +2141,7 @@ struct FirstRunSetupView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     permissionRow(.screenRecording, icon: "rectangle.dashed.badge.record", title: "Screen Recording",
                                   detail: FirstRunPermissions.screenRecordingDetail(permissions.state(.screenRecording)))
-                    permissionRow(.accessibility, icon: "accessibility", title: "Accessibility",
+                    permissionRow(.accessibility, icon: "accessibility", title: PrivacyNames.accessibility,
                                   detail: FirstRunPermissions.accessibilityDetail(permissions.state(.accessibility)))
                 }
             } label: {
@@ -2150,7 +2150,8 @@ struct FirstRunSetupView: View {
             }
             .padding(.top, 8)
             Text("Skipped one? Open Wisp's Settings and choose Permissions… under Privacy, any time. Screen "
-                 + "Recording and Accessibility, under More access, let Wisp look at your screen when you ask "
+                 + "Recording and \(PrivacyNames.accessibilityWithFormerName), under More access, let Wisp look "
+                 + "at your screen when you ask "
                  + "about it. Only the microphone, asked the first time you use voice, and macOS's questions "
                  + "about Wisp controlling another app wait until first use.")
                 .font(.system(size: 12)).foregroundStyle(Theme.textMuted).padding(.top, 8)

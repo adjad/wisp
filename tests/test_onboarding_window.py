@@ -346,11 +346,12 @@ def test_messages_has_its_own_permission_row():
     click, on a target list apart from Mail's."""
     setup = _sources()["FirstRunSetupView.swift"]
     step = _body(setup, "private var permissionsStep: some View")
-    rows = re.findall(r'permissionRow\(\.(\w+), icon: "[^"]+", title: "([^"]+)"', step)
+    # A title is a literal, or PrivacyNames for a permission macOS renamed.
+    rows = re.findall(r'permissionRow\(\.(\w+), icon: "[^"]+", title: "?([^",]+)"?,', step)
     assert rows == [("calendar", "Calendar"), ("reminders", "Reminders"), ("mail", "Mail & Notes"),
                     ("messages", "Messages"), ("fullDiskAccess", "Full Disk Access"),
                     ("notifications", "Notifications"), ("screenRecording", "Screen Recording"),
-                    ("accessibility", "Accessibility")], rows
+                    ("accessibility", "PrivacyNames.accessibility")], rows
     assert ('detail: "Sends the texts you approve in Ask. Opens Messages for a moment to ask, then closes it.")' in step)
     mail = step[step.index("permissionRow(.mail"):step.index("permissionRow(.messages")]
     assert "Opens Mail and Notes for a moment to ask, then closes them." in mail
