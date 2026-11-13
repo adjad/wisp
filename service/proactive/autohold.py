@@ -15,6 +15,9 @@ IMPORTANT rules:
   undid, is not held again, and is not offered as a tap card either.
 - At most MAX_PER_CYCLE a cycle, inside the shared daily cap (acting.room).
   The gate and a starting turn are checked again right before each hold.
+- Never outside the person's day: a slot that starts or ends in their quiet
+  hours, or outside their working hours (service/user_hours.py), is not held;
+  it stays a card they can tap. Hours that cannot be read mean no hold.
 - Undo removes exactly the Day task Wisp made, by the id in the store's
   record, and only while it is still where Wisp put it. A block the person
   moved or renamed is theirs: Undo leaves it and says so.
@@ -39,10 +42,29 @@ def without_undone(cards: list[dict], store) -> list[dict]:
             if (records.get(fingerprint(c)) or {}).get("status") not in ("undone", "undo_unknown")]
 
 
-def step(cards: list[dict], *, now: float, tz: str, store, abort, hold=None) -> set[str]:
+def inside_hours(slot: dict, tz: str) -> bool:
+    """The whole slot is in the person's working hours and outside their quiet hours."""
+    try:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from service import user_hours
+        zone = ZoneInfo(tz)
+        start, end = float(slot["start"]), float(slot["end"])
+        if not end > start:
+            return False
+        for ts in (start, end - 60):
+            moment = datetime.fromtimestamp(ts, zone)
+            if user_hours.in_quiet_hours(moment) or not user_hours.in_working_hours(moment):
+                return False
+        return True
+    except Exception:  # noqa: BLE001 — hours that can't be read: Wisp does not hold
+        return False
+
+
+def step(cards: list[dict], *, now: float, tz: str, store, abort, hold=None, hours=None) -> set[str]:
     """Hold the slot of each eligible block_time card. Returns the ids of the cards
     that were held, so the cycle drops them (their "Wisp did this" card takes over).
-    `hold` lets tests replace deadlines.hold."""
+    `hold` and `hours` let tests replace deadlines.hold and the working/quiet hours check."""
     held: set[str] = set()
     if not acting.enabled():
         return held
@@ -59,6 +81,8 @@ def step(cards: list[dict], *, now: float, tz: str, store, abort, hold=None) -> 
         record = records.get(fp) or {}
         if record.get("status") in acting.LANDED or int(record.get("attempts") or 0) >= MAX_ATTEMPTS:
             continue
+        if not (hours or inside_hours)(action.get("slot") or {}, tz):
+            continue                                  # outside their day: it stays a card to tap
         if attempts >= MAX_PER_CYCLE or acting.room(store, now) <= 0:
             break
         if abort() or acting.still_ok() is not None:

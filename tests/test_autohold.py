@@ -49,7 +49,7 @@ class Holds:
 
 
 def run(store, cards, holds, abort=lambda: False, now=NOW):
-    return autohold.step(cards, now=now, tz="UTC", store=store, abort=abort, hold=holds)
+    return autohold.step(cards, now=now, tz="UTC", store=store, abort=abort, hold=holds, hours=lambda slot, tz: True)
 
 
 def test_nothing_is_held_until_the_person_says_yes(setting, store):
@@ -162,3 +162,32 @@ def test_this_file_is_in_the_simulation_manifest():
     from pathlib import Path
     manifest = (Path(__file__).resolve().parents[1] / "scripts" / "run_simulation_qa.py").read_text()
     assert '"tests/test_autohold.py"' in manifest
+
+
+def test_a_slot_in_quiet_hours_or_outside_working_hours_is_never_held(setting, store, monkeypatch):
+    from datetime import datetime, timezone
+    from service import user_hours
+    acting.set_enabled(True, now=NOW - 60)
+    holds = Holds()
+    quiet, working = {"on": False}, {"on": True}
+    monkeypatch.setattr(user_hours, "in_quiet_hours", lambda moment=None: quiet["on"])
+    monkeypatch.setattr(user_hours, "in_working_hours", lambda moment=None: working["on"])
+    go = lambda: autohold.step([card(1)], now=NOW, tz="UTC", store=store, abort=lambda: False, hold=holds)   # noqa: E731
+    quiet["on"] = True
+    assert go() == set() and holds.calls == [] and store.auto_added() == {}
+    quiet["on"], working["on"] = False, False
+    assert go() == set() and holds.calls == []
+    # The END of the slot counts too: an hour that runs past the working day is not held.
+    edge = card(1)["action"]["slot"]["end"] - 60
+    monkeypatch.setattr(user_hours, "in_working_hours",
+                        lambda moment=None: moment.timestamp() < edge)
+    assert go() == set() and holds.calls == []
+
+    def broken(moment=None):
+        raise RuntimeError("hours unreadable")
+    monkeypatch.setattr(user_hours, "in_working_hours", broken)
+    assert go() == set() and holds.calls == []                       # unknown hours: no hold
+    monkeypatch.setattr(user_hours, "in_working_hours", lambda moment=None: True)
+    assert go() == {"card:deadline1"}
+    assert autohold.inside_hours({"start": 5.0, "end": 5.0}, "UTC") is False and autohold.inside_hours({}, "UTC") is False
+    assert isinstance(datetime.fromtimestamp(NOW, timezone.utc), datetime)
