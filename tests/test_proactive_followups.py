@@ -601,16 +601,16 @@ def test_a_write_blocked_before_dispatch_may_try_again(setting, store):
     assert step(store, [text_item()], now=NOW + 600)["added"]
 
 
-def test_two_a_day_and_the_shared_cap_both_hold(setting, store):
+def test_two_a_day_and_the_shared_cap_both_hold(setting, store, tmp_path):
     people = ["Maya", "Sam", "Ravi"]
     recs = sum((records(n) for n in people), [])
     added = [step(store, [text_item(n)], now=NOW + i * 600, recs=recs)["added"] for i, n in enumerate(people)]
     assert [len(a) for a in added] == [1, 1, 0]
-    store2 = ProactiveStore(store.root.parent / "other") if hasattr(store, "root") else None
-    if store2 is not None:
-        for i in range(acting.MAX_PER_DAY):
-            acting.record(store2, f"fp-{i}", kind="reminder", status="added", now=NOW - 60, title="x")
-        assert step(store2, [text_item()])["added"] == []
+    full = ProactiveStore(tmp_path / "full")
+    for i in range(acting.MAX_PER_DAY):
+        acting.record(full, f"fp-{i}", kind="reminder", status="added", now=NOW - 60, title="x")
+    write = Writer()
+    assert step(full, [text_item()], write=write)["added"] == [] and write.calls == []
 
 
 def test_a_waved_away_reply_card_means_no_follow_up(setting, store):
@@ -756,3 +756,18 @@ def test_due_time_without_readable_hours_or_zone_is_none():
     assert followups.due_time(NOW, TZ, flaky) is None
     assert followups.due_time(NOW, "Not/AZone", never_quiet) is None
     assert followups.due_time(float("nan"), TZ, never_quiet) is None
+
+
+def test_a_message_auto_add_acted_on_gets_no_follow_up_too(setting, store, tmp_path):
+    line = "Can you come to my recital Friday at 6?"
+    item = text_item(lines=(line,))
+    acting.record(store, "autoadd:recital", kind="calendar", status="added", now=NOW - 60, title="Recital",
+                  item_id=item["id"], received_ts=item["received_ts"])
+    write, debug = Writer(), []
+    assert step(store, [item], write=write, recs=records(ask=line), debug=debug)["added"] == []
+    assert write.calls == [] and {"item": item["id"], "follow_up": "auto-add acted on it"} in debug
+    # An add that never landed (blocked before dispatch) doesn't count.
+    other = ProactiveStore(tmp_path / "fresh")
+    acting.record(other, "autoadd:recital", kind="calendar", status="blocked", now=NOW - 60, title="Recital",
+                  item_id=item["id"], received_ts=item["received_ts"])
+    assert step(other, [item], recs=records(ask=line))["added"]

@@ -709,6 +709,11 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
     blocked, today, recorded = _blocked(store, now)
     if today >= MAX_PER_DAY or acting.room(store, now) <= 0:
         return {"added": []}
+    # One message gets at most one thing done on its own: an item auto-add already
+    # acted on (an event or deadline added, even if undone since) gets no follow-up.
+    acted = {str(r.get("item_id")) for r in recorded.values()
+             if isinstance(r, dict) and r.get("kind") != KIND and r.get("status") in acting.LANDED
+             and r.get("item_id")}
     decided = store.decisions()
     gone = set(decided.get("dismissed") or []) | set(decided.get("fired") or [])
     suppressed = set(decided.get("suppressed") or [])
@@ -718,6 +723,10 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
         if not isinstance(item, dict) or item.get("source") not in ("mail", "messages"):
             continue
         if not acting.allows(item.get("received_ts")):
+            continue
+        if str(item.get("id")) in acted:
+            if debug is not None:
+                debug.append({"item": item.get("id"), "follow_up": "auto-add acted on it"})
             continue
         # The user waved this item's card away, or already acted on it.
         item_fp = f"{item.get('id')}:{item.get('hash')}"
