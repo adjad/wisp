@@ -780,7 +780,8 @@ final class WispClient {
     }
 
     /// The same, plus the service's reason when it applied the change but
-    /// couldn't save it (a 500 whose detail says it won't survive a restart).
+    /// couldn't save it (a 500 whose detail says it won't survive a restart), or
+    /// when it refused to widen access for a caller it couldn't prove is this app (403).
     func requestFullAccessReporting(_ on: Bool) async -> (confirmed: Bool?, problem: String?) {
         var req = URLRequest(url: Self.baseURL.appendingPathComponent("mode"))
         req.httpMethod = "POST"
@@ -790,7 +791,9 @@ final class WispClient {
               let status = (response as? HTTPURLResponse)?.statusCode else { return (nil, nil) }
         if status == 200 { return (Self.fullAccessFlag(data), nil) }
         let detail = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["detail"] as? String
-        return (nil, status == 500 ? detail.flatMap { $0.isEmpty ? nil : $0 } : nil)
+        // 500: applied but not saved. 403: refused, because this request could not be shown to
+        // come from the Wisp app that started the service (a service started by hand, say).
+        return (nil, status == 500 || status == 403 ? detail.flatMap { $0.isEmpty ? nil : $0 } : nil)
     }
 
     /// The "Save power" switch (GET /power), or nil when it can't be read.
