@@ -11,10 +11,18 @@
 #   4. the demo flow on an isolated backend (8775 + sandbox 8766): Ask with tools, Brief, Day, look at screen, voice
 #   5. private toolbench, base and step 1800 in ONE run (the 84 vs 72 number was two runs), last because longest
 #
-# Code under test: r5-window-test, a LOCAL checkout: the 0.5.0 roster branch (origin/main e27dcd1b + 8a0a54ab)
-# merged with the r5 branch for the private toolbench and #499, never pushed. The step-1800 entry in
+# Code under test: r5-window-test, a LOCAL checkout, never pushed: the 0.5.0 roster branch (0a061418) merged
+# with the r5 branch for the private toolbench and #499, plus the toolbench harness fix 598deaaf (routing guard
+# asked with model_led=True, as the app's model-led turn does). Gate numbers from before that fix (77 vs 68,
+# 84 vs 72) used the old harness and are not comparable case for case on store-hours and own-event prompts. The step-1800 entry in
 # oMLX's per-model settings is set to exactly base's for the run, and the file is restored afterwards.
+#
+# Switches (environment):
+#   REOPEN_WISP=0      leave Wisp closed at the end (another run follows in the same quit); default 1
+#   SKIP_BACKGROUND=1  skip step 2's background_probe (already measured 2026-11-12: base = step 1800)
 setopt pipefail
+REOPEN_WISP="${REOPEN_WISP:-1}"
+SKIP_BACKGROUND="${SKIP_BACKGROUND:-0}"
 A=gemma-4-E4B-it-oQ4e-mtp
 B=gemma-4-E4B-it-r5-step-01800-oQ4e-mtp
 REPO=/Users/adijain/Desktop/MOE_Project/.claude/worktrees/r5-window-test
@@ -44,10 +52,12 @@ say "waiting for the heavy lock"
 until mkdir "$LOCK" 2>/dev/null; do sleep 30; done
 echo "0.5.0 r5 window checks pid $$ $(date)" > "$LOCK/owner" || { rmdir "$LOCK"; exit 2; }
 restore() {
+  "$PY" -I "$ONE" none >/dev/null 2>&1 && say "nothing left loaded"   # the next run starts from an empty engine
   [ -f "$RUN/model_settings.before.json" ] && cp "$RUN/model_settings.before.json" "$SETTINGS" && \
     curl -s -m60 -X POST http://127.0.0.1:8000/admin/api/reload >/dev/null; say "oMLX settings restored"
   rm -f "$LOCK/owner"; rmdir "$LOCK" 2>/dev/null
-  say "reopening Wisp"; open -a Wisp
+  if [ "$REOPEN_WISP" = 1 ]; then say "reopening Wisp"; open -a Wisp
+  else say "REOPEN_WISP=0: leaving Wisp closed for the next run"; fi
 }
 say "quitting Wisp"
 osascript -e 'quit app "Wisp"' 2>&1
@@ -72,6 +82,7 @@ only none
 
 say "2. background jobs: base and step 1800 on the same synthetic inputs"
 for M in "$A" "$B"; do
+  [ "$SKIP_BACKGROUND" = 1 ] && { say "SKIP_BACKGROUND=1: background probe skipped"; break; }
   same_server; only "$M"
   WH=$(mktemp -d "$RUN/wisphome.XXXX") || exit 2
   (cd "$REPO" && WISP_HOME="$WH" "$PY" training/ask-lora-r4/background_probe.py --model "$M" --reps 3 --out "$RUN/background-$M.json") \
