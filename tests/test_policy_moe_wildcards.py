@@ -98,6 +98,22 @@ REVIEW_ROUTES = [
     # An expansion over the cap in a word with no dot, the folder named elsewhere.
     "cd ~/.{moe,x} && tee act_for_me?json{,{0..300}} </tmp/f",
     "cd ~/.moe && tee act_for_me?json{,{0..300}} </tmp/f",
+    # A relative wildcard was judged only by its last segment.
+    "cd ~/.moe/cache && cp x ../*/token.json",
+    "cd ~/.moe/cache && cp x ../goog*/token.json",
+    "cd ~/.moe/cache; cd ..; cp x */token.json",
+    "pushd ~/.moe/cache; cp x ../g*/token.json",
+    "cd ~/.moe && cat g*/token.json",
+    # `~+` (the current folder) and `~-` (the previous one) were taken for absolute paths.
+    "cd ~/.moe/cache && cd .. && cp x ~+/act*",
+    "cd ~/.moe/cache && cd .. && cd /tmp && cp x ~-/act*",
+    "cd ~/.moe && cp x ~+/gr?nts.json",
+    # zsh reads (a|b) as alternatives with no option set; the word break used to cut it out.
+    "zsh -c 'echo x > ~/.moe/(act_for_me|x).json'",
+    "zsh -c 'echo x > ~/.moe/act_for_me.js(o)n'",
+    "zsh -c 'echo x > ~/.moe/(gmail).json'",
+    "zsh -c 'echo x > ~/.(moe|x)/act*'",
+    "zsh -c 'echo x > ~/.moe/((act_for_me|y)|x).json'",
     # "Not now" sits with the gate.
     "echo x > ~/.moe/act_for_me_asked.json",
     "echo x > ~/.moe/act_for_me_ask*",
@@ -114,6 +130,11 @@ STILL_UNTOUCHED = [
     "echo x{,{0..300}}",
     "echo x > ~/.moe/meetings/../notes*.txt",
     "ls ~/Documents/[[:alpha:]]*.json",
+    "cp x ../*/token.json",
+    "cp x ~+/act*",
+    "echo $(date) > out/(a|b).txt",
+    "(ls) && cat sub/*/notes.json",
+    "zsh -c 'ls ~/Documents/(a|b).json'",
 ]
 
 
@@ -150,8 +171,9 @@ BUILT_AT_RUN_TIME = [
 
 
 @pytest.mark.parametrize("cmd", BUILT_AT_RUN_TIME)
-def test_a_name_built_at_run_time_asks_in_the_default_mode_and_on_a_model_led_turn(cmd, monkeypatch):
-    # Default access mode: every shell command that is not a fixed read asks, with the command shown.
+def test_a_name_built_at_run_time_asks_with_full_access_off_and_on_a_model_led_turn(cmd, monkeypatch):
+    # Full access OFF (Ask mode; the packaged setting is Full access ON): every shell command that
+    # is not a fixed read asks, with the command shown.
     monkeypatch.setattr(policy, "_FULL_ACCESS", False)
     assert _tier(cmd) == "CONFIRM", cmd
     # Full access, the bare policy layer: allowed. This is the known limit of reading text.

@@ -1212,6 +1212,7 @@ def _brace_options(word: str, budget: int) -> tuple[list[str], int] | None:
 
 
 _GLOB_ANY = "\x00"             # stands for text this check could not read: it may be anything
+_GLOB_GROUP = re.compile(r"\([^()\s]*\)")
 
 
 def _glob_brackets(segment: str) -> str:
@@ -1290,8 +1291,14 @@ def _moe_glob_hit(form: str) -> str | None:
     - braces, anywhere in the word: `~/.moe/{grants,act_for_me}.json`, `~/.{moe,x}/act*`,
       also when quoting cut the group in pieces (`act_for_me.{json,"a b"}`);
     - through `..`: `~/.moe/cache/../act_for_me.js?n` (each spelling is normalized);
-    - a relative wildcard after the folder was named elsewhere in the command:
-      `cd ~/.moe && cat act*`, `cd ~/.moe/cache && cp f ../act_for_m?.json`.
+    - a relative wildcard after the folder was named elsewhere in the command, on ANY of its
+      segments: `cd ~/.moe && cat act*`, `cd ~/.moe/cache && cp f ../act_for_m?.json`,
+      `cd ~/.moe/cache && cp f ../goog*/token.json`. `~+/…` and `~-/…` (the current and the
+      previous folder) are relative too;
+    - a parenthesised group glued into a word, which zsh reads as alternatives with no option
+      set: `~/.moe/(act_for_me|x).json`, `act_for_me.js(o)n`. What it holds is not read: it
+      counts as any text. (bash's extglob `@(a|b)` and zsh's extendedglob operators need an
+      option turned on first; they are covered only as far as this same rule reaches.)
     Case does not matter (APFS is case-insensitive by default: `~/.MOE/act*` is the same
     folder). Every `[...]` is read as "any one character". As in the shell, `*` and `?` do
     not match a leading dot unless the command turns on dotglob/GLOB_DOTS, so `cat */*.json`
@@ -1308,6 +1315,12 @@ def _moe_glob_hit(form: str) -> str | None:
     hit = "a protected Wisp file (wildcard)"
     dotglob = bool(_SHELL_DOTGLOB.search(form))           # before casefolding: zsh's (D) is upper case
     form = form.casefold()
+    # A group in parentheses with no space in it may be part of a word: `(a|b)` in zsh. The
+    # word break below would cut it out and lose the wildcard, so it becomes "any text" first.
+    for _ in range(8):                                    # nested groups, innermost first
+        form, found = _GLOB_GROUP.subn(_GLOB_ANY, form)
+        if not found:
+            break
     folders = tuple(dict.fromkeys((".moe", str(MOE_DIR).rstrip("/").rsplit("/", 1)[-1].casefold())))
     names = tuple(name.casefold() for name in _MOE_PROTECTED_NAMES)
 
@@ -1319,7 +1332,7 @@ def _moe_glob_hit(form: str) -> str | None:
 
     budget, names_folder, skipped, tails = _GLOB_BUDGET, False, False, set()
     for word in _SHELL_WORD_BREAK.split(form):
-        if not any(mark in word for mark in "*?[{}"):
+        if not any(mark in word for mark in "*?[{}" + _GLOB_ANY):
             # A word with no wildcard can still name the folder for a later relative wildcard.
             names_folder = names_folder or any(part in folders for part in word.split("/"))
             continue
@@ -1347,12 +1360,17 @@ def _moe_glob_hit(form: str) -> str | None:
                         names_folder = names_folder or part.strip(_GLOB_ANY) != ""
                         if index + 1 < len(parts) and is_protected(parts[index + 1]):
                             return hit
-                # A relative path lands wherever the command stands, which may be the folder.
-                if parts and not spelling.startswith(("/", "~")):
-                    if len(tails) < _GLOB_BARE_WORDS:
-                        tails.add(parts[-1])
-                    else:
-                        skipped = True
+                # A relative path lands wherever the command stands, which may be the folder or
+                # a folder inside it: any of its segments may be the protected name. `~/…` and
+                # `/…` are absolute; `~+/…`, `~-/…` and anything else are not.
+                if parts and not spelling.startswith(("/", "~/")) and spelling != "~":
+                    for part in parts:
+                        if part == "..":
+                            continue
+                        if len(tails) < _GLOB_BARE_WORDS:
+                            tails.add(part)
+                        else:
+                            skipped = True
     if names_folder and (skipped or any(is_protected(part) for part in tails)):
         return hit                                         # a relative wildcard, the folder named elsewhere
     return None
