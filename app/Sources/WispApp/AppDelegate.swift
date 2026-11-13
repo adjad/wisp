@@ -137,11 +137,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var activityReader: ActivityReader?
     private var nativeSourceReadersStarted = false
     private static let autoCollapseDelay: TimeInterval = 2
-    /// The content's fade at the start of a close. The shape holds still for
-    /// the same length (RevealMotion.closeHold). SwiftUI can start the fade a
-    /// frame after the hold begins, so the first moving frame may still carry
-    /// a last trace of the content, never readable text.
-    static let closeFade: TimeInterval = RevealMotion.closeHold
+    /// The content's fade at the start of a close. The shape is already
+    /// moving (the close has no hold), slowly at first, so its edge crosses
+    /// the fading content for these first frames; the content's layers are
+    /// taken out soon after (OverlayPanel.contentHideDelay).
+    static let closeFade: TimeInterval = 0.05
     /// The content's fade at an open: it waits `openFadeDelay` while the shape
     /// grows out of the notch, then fades in as the shape nears full size, so
     /// the growing edge never wipes across live text.

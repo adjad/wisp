@@ -121,24 +121,22 @@ struct RevealMotion: Equatable {
         return RevealMotion(progress: progress)
     }
 
-    /// Closing holds its shape for this long, while the content fades
-    /// (AppDelegate.closeFade, the same length), so the content is gone, or
-    /// within a frame of it, when the edge starts to move.
-    static let closeHold = 0.05
-    /// Closing aims this far past the bar (a fraction of the travel) and stops
-    /// at the bar. A spring aimed at the bar itself spends its last 200 ms
-    /// creeping the final few points, which shows as a black lip hanging under
-    /// the notch; aimed past it, the shape is still moving when it reaches the
-    /// notch, so it tucks in and is gone.
-    static let closeTuck = 0.04
+    /// How near rest the closing spring is taken before the path ends, as a
+    /// fraction of the travel: under two points on the tallest panel.
+    static let closeSettle = 0.002
 
+    /// Closing is NotchBox's own closing spring, as that app plays it: no
+    /// hold, aimed at the bar itself, quick out of the panel and a long ease
+    /// into the notch, about half a second in all. It was chosen by eye on a
+    /// real screen from nine closes tried side by side (a shorter one that
+    /// stopped dead at the bar, timed glides, a snap, a dissolve, a soft
+    /// edge, a funnel and a roll-up among them).
     static func closing() -> RevealMotion {
-        var progress = [Double](repeating: 0, count: Int((closeHold / step).rounded()))
+        let end = NotchSpring.close.settleTime(tolerance: closeSettle)
+        var progress: [Double] = []
         var t = 0.0
-        while t < 2 {
-            let along = (1 + closeTuck) * NotchSpring.close.position(at: t)
-            if along >= 1 { break }
-            progress.append(along)
+        while t < end {
+            progress.append(NotchSpring.close.position(at: t))
             t += step
         }
         progress.append(1)
@@ -461,7 +459,23 @@ final class OverlayPanel: NSPanel {
         isRevealing = false
         pendingReveal = nil
         revealMask?.removeAllAnimations()
+        showContent()
     }
+
+    /// How long into a close the content's layers stay in the picture: its
+    /// fade (AppDelegate.closeFade) and a couple of frames for it to land.
+    static let contentHideDelay: TimeInterval = 0.08
+
+    /// Bring the content's layers back after a close took them out (see reveal).
+    private func showContent() {
+        if slide?.isHidden == true { slide?.isHidden = false }
+    }
+
+    /// Whether a close has taken the content's layers out for now (for tests).
+    var contentIsHidden: Bool { slide?.isHidden == true }
+
+    /// Ask for the display's full refresh rate while the shape moves.
+    static let revealFrameRate = CAFrameRateRange(minimum: 80, maximum: 120, preferred: 120)
 
     override func orderOut(_ sender: Any?) {
         cancelReveal()
@@ -557,6 +571,8 @@ final class OverlayPanel: NSPanel {
             guard let self, self.revealGeneration == token else { return }
             self.isRevealing = false
             self.pendingReveal = nil
+            // Before the caller swaps in the bar, which the content draws.
+            self.showContent()
             completion()
             // Coalesce height changes received while opening. A close keeps
             // its small mask until the caller has swapped in the compact bar.
@@ -589,10 +605,21 @@ final class OverlayPanel: NSPanel {
         let group = CAAnimationGroup()
         group.animations = [size, radius]
         group.duration = motion.duration
+        group.preferredFrameRateRange = Self.revealFrameRate
         CATransaction.begin()
         CATransaction.setCompletionBlock(finish)
         mask.add(group, forKey: "reveal")
         CATransaction.commit()
+        // Once the content has faded, a close is only the surface in the
+        // mask's shape. Its layers come out of the picture until the bar is
+        // swapped in, so each frame is one flat colour to draw. Only where
+        // the backing is there to show that surface.
+        if !opening, hasBarBacking {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.contentHideDelay) { [weak self] in
+                guard let self, self.revealGeneration == token, self.isRevealing else { return }
+                self.slide?.isHidden = true
+            }
+        }
         // Send the window's new frame, the shape and its motion to the screen
         // now. macOS applies a window's frame with the layer changes made
         // beside it, so they always land together, but left to the end of this
