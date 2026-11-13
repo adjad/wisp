@@ -352,6 +352,27 @@ def _contact_name(handle: str) -> str:
     return strict_contact_name(handle)
 
 
+def contacts_note() -> str:
+    """Why adding from texts can't work right now, in the person's words, or "" when it can.
+    Adding needs to know a sender is a saved contact (strict_contact_name); without Contacts
+    every text gets a card to tap, and Settings should say why. The same three states
+    strict_contact_name refuses on."""
+    try:
+        from service.tools import imessage_tools as im
+        if getattr(im, "_contacts_not_allowed", False):
+            return ("Wisp can't read Contacts, so it can't tell who is a saved contact: a text with a date gets a "
+                    "card to tap. Allow Contacts for Wisp in System Settings › Privacy & Security.")
+        if not getattr(im, "_contacts_privacy_current", False):
+            return ("Wisp hasn't read Contacts since it started, so for now a text with a date gets a card to "
+                    "tap. This clears by itself once Contacts has synced.")
+        if not (im._name_handles or {}):
+            return ("Wisp has no contacts to check senders against (Contacts is empty or turned off for Wisp), "
+                    "so a text with a date gets a card to tap.")
+    except Exception:  # noqa: BLE001 — a note is a courtesy
+        return ""
+    return ""
+
+
 def _plan_handle(item: dict, count: int | None = None) -> str:
     """The handle of the lines a plan reads (the last sources.ORIGIN_LINES, as _candidates
     does): every one of them joined to the same known one-to-one chat, else "". Who the sender

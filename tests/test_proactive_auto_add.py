@@ -984,6 +984,34 @@ def test_a_london_contact_is_not_a_maine_stranger(contacts, monkeypatch):
     assert unknown("+15551230001") == "" and unknown("+15551239999") == "" and unknown("+13612345678") == ""
 
 
+def test_settings_says_when_contacts_cannot_vouch_for_a_sender(contacts, monkeypatch, tmp_path):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from service import idle
+    from service.proactive import acting, api
+    from service.tools import imessage_tools as im
+    monkeypatch.setattr(acting, "_path", lambda: tmp_path / "home" / acting.FILE)
+    monkeypatch.setattr(acting, "_born", lambda: 0.0)
+    monkeypatch.setattr(idle, "foreground_busy", lambda: False)
+    app = FastAPI()
+    app.include_router(api.router)
+    note = lambda: TestClient(app).get("/assistant/proactive/act").json()["note"]     # noqa: E731
+    contacts({"+15551230001": "Maya Chen"})
+    assert autoadd.contacts_note() == "" and note() == ""
+    acting.set_enabled(True, now=NOW - 60)
+    assert note() == ""                                                   # on, and Contacts can vouch
+    monkeypatch.setattr(im, "_contacts_privacy_current", False)
+    assert "hasn't read Contacts" in note() and autoadd.strict_contact_name("+15551230001", region="1") == ""
+    monkeypatch.setattr(im, "_contacts_privacy_current", True)
+    monkeypatch.setattr(im, "_contacts_not_allowed", True)
+    assert "can't read Contacts" in note() and "System Settings" in note()
+    monkeypatch.setattr(im, "_contacts_not_allowed", False)
+    monkeypatch.setattr(im, "_name_handles", {})
+    assert "no contacts" in note()
+    acting.set_enabled(False)
+    assert note() == ""                                                   # off: nothing to explain
+
+
 @pytest.mark.parametrize("env, code", [
     ({"WISP_REGION": "GB"}, "44"), ({"WISP_REGION": "us"}, "1"), ({"WISP_REGION": "ZZ", "LANG": "de_DE.UTF-8"}, ""),
     ({"WISP_REGION": "FI", "LANG": "en_US.UTF-8"}, "358"), ({"WISP_REGION": "CA"}, "1"), ({"WISP_REGION": "IT"}, "39"),

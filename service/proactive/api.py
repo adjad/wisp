@@ -90,6 +90,11 @@ def _act_state() -> dict:
         state["recent"] = acting.recent(store(), time.time())
     except Exception:  # noqa: BLE001 — the list is a courtesy; the switch still works without it
         state["recent"] = []
+    # While adding from texts is agreed to, say when it can't work (Contacts off or not synced).
+    try:
+        state["note"] = autoadd.contacts_note() if acting.enabled("add") else ""
+    except Exception:  # noqa: BLE001
+        state["note"] = ""
     return state
 
 

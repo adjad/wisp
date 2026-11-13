@@ -29,6 +29,8 @@ struct ActForMe: Equatable {
     /// Wisp does only the first; the second waits for its own yes.
     let agreed: [String]
     let new: [String]
+    /// Not empty when something Wisp agreed to do can't work right now (Contacts off or not synced).
+    let note: String
     let recent: [Done]
 
     static let title = "Let Wisp act for me"
@@ -44,6 +46,7 @@ struct ActForMe: Equatable {
         scope = json["scope"] as? String ?? "Adding covers only messages that arrive after you say yes."
         agreed = (json["agreed"] as? [String] ?? []).filter { !$0.isEmpty }
         new = (json["new"] as? [String] ?? []).filter { !$0.isEmpty }
+        note = json["note"] as? String ?? ""
         recent = (json["recent"] as? [[String: Any]] ?? []).enumerated().compactMap { index, row in
             guard let title = row["title"] as? String, !title.isEmpty else { return nil }
             return Done(id: index, title: title, who: row["who"] as? String ?? "",
@@ -153,6 +156,11 @@ struct ActForMeSettingsRow: View {
                 .disabled(model.pending)
                 .accessibilityLabel(ActForMe.title)
                 .accessibilityHint(state.line)
+                if !state.note.isEmpty {
+                    Label(state.note, systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if let problem = model.problem {
                     Text(problem).font(.caption).foregroundStyle(.red)
                         .fixedSize(horizontal: false, vertical: true)
