@@ -35,7 +35,7 @@ struct ActForMe: Equatable {
         perDay = json["per_day"] as? Int ?? 10
         does = (json["does"] as? [String] ?? []).filter { !$0.isEmpty }
         never = json["never"] as? String ?? "Wisp never sends anything by itself."
-        scope = json["scope"] as? String ?? "Adding from texts and emails covers only messages that arrive after you say yes."
+        scope = json["scope"] as? String ?? "Adding from texts covers only messages that arrive after you say yes."
         recent = (json["recent"] as? [[String: Any]] ?? []).enumerated().compactMap { index, row in
             guard let title = row["title"] as? String, !title.isEmpty else { return nil }
             return Done(id: index, title: title, who: row["who"] as? String ?? "",
@@ -63,8 +63,8 @@ struct ActForMe: Equatable {
     var consent: String {
         let list = does.map { "• " + $0 }.joined(separator: "\n")
         return "Without asking first, Wisp:\n" + list
-            + "\n\n" + scope + " Adds come only from people you know, schools and bookings; "
-            + "never promotions or group chats. At most \(perDay) a day. Each one shows in the Brief as "
+            + "\n\n" + scope + " Adds come only from one-to-one texts with people saved in your Contacts, "
+            + "never group chats. At most \(perDay) a day. Each one shows in the Brief as "
             + "“Wisp did this” with an Undo. " + never + " You can turn this off at any time."
     }
 }
@@ -234,7 +234,7 @@ struct ActForMeAskCard: View {
                             .padding(.horizontal, 8).padding(.vertical, 5).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .help("Wisp keeps showing cards and waits for your tap. It won't ask again.")
+                    .help("Wisp does none of this without your tap, and it won't ask again. The switch stays in Settings.")
                 }
                 .disabled(model.pending)
                 .padding(.top, 2)
