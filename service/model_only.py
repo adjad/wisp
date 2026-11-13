@@ -1536,8 +1536,10 @@ fiance fiancee aunt auntie uncle cousin niece nephew bestie roommate landlord ba
 # The same words inside a public name.
 _KIN_PUBLIC = re.compile(
     r"\b(?:mother'?s\s+day|father'?s\s+day|uncle\s+sam|big\s+brother|papa\s+john'?s?|papa\s+murphy'?s?|"
-    r"auntie\s+anne'?s?|sister\s+act|mamma\s+mia|mama\s+mia|brother\s+printers?|son\s+of\s+\w+|"
-    r"father\s+of\s+the\s+bride|mother\s+teresa|mother\s+nature|father\s+time)\b")
+    r"auntie\s+anne'?s?|sister\s+act|sister\s+wives|mamma\s+mia|mama\s+mia|brother\s+printers?|"
+    r"son\s+of\s+\w+|son\s+heung-?min|father\s+of\s+the\s+bride|mother\s+of\s+the\s+bride|"
+    r"mother\s+teresa|mother\s+nature|father\s+time|dad'?s\s+army|daddy\s+yankee|papa\s+roach|"
+    r"big\s+mama|mama\s+june|father\s+christmas|mother\s+goose|brother\s+hl-?\w+|brother\s+mfc-?\w+)\b")
 # Owners of an 's that are a person in the user's life (the relation words
 # that are not pronouns or dates).
 _PERSON_OWNERS = frozenset(_RELATION_OWNERS - frozenset("""
@@ -1550,7 +1552,8 @@ _CONTRACTED = frozenset("what who it that there here he she how where when why l
 _LOOSE_APOSTROPHES = str.maketrans({c: "'" for c in "\u2018\u2019\u02bc\u02b9\u02bb\u2032\u00b4`\uff07\u055a\u07f4"})
 # An apostrophe lookalike before a possessive s: the public shapes do not read
 # it, so the request would pass as having no owner at all.
-_LOOKALIKE_POSSESSIVE = re.compile("\\w[\u02b9\u02bb\u2032\u00b4`\u055a\u07f4]s\\b", re.I)
+_LOOKALIKE_BACKTICK = re.compile(r"[A-Za-z]`s\b")
+_LOOKALIKE_SITE = re.compile(r"[A-Za-z]([^\x00-\x7f])s\b")
 _LOOSE_POSSESSIVE = re.compile(r"([a-z0-9][a-z0-9&.-]*)'s?(?=\s|$|[?.!,;:])")
 
 
@@ -1563,14 +1566,64 @@ def _loose_text(text: str) -> str:
     return plain.translate(_LOOSE_APOSTROPHES).lower()
 
 
+_KIN_ALT = "|".join(sorted(_KIN, key=len, reverse=True))
+# "my mom", "our landlord", "my little sister".
+_KIN_MINE = re.compile(rf"\b(?:my|our)\s+(?:[a-z]+\s+)?(?:{_KIN_ALT})\b")
+# The kin word as the subject of a question about how, where or what they are
+# or did: "How is Grandma doing", "Is Mom home yet", "Where is Dad right now",
+# "Did Dad call", "What did Mom say".
+_KIN_SUBJECT = re.compile(
+    rf"^(?:(?:so|and|hey|ok|okay|wisp|please)[, ]+)*"
+    rf"(?:how(?:'s|\s+is|\s+are|\s+was|\s+were|\s+has|\s+did)|where(?:'s|\s+is|\s+are|\s+was|\s+did)|"
+    rf"what(?:'s|\s+is|\s+did|\s+does|\s+has|\s+was)|what\s+time\s+(?:is|does|did|will)|"
+    rf"when\s+(?:is|does|did|will|are)|is|are|was|were|did|does|do|has|have|had|will|would|can|could|should)\s+"
+    rf"(?:the\s+)?(?:{_KIN_ALT})\b[\s,]*(?P<next>[a-z']*)")
+# What may follow the kin word for it to be a person and not the first word of
+# a name ("Is Brother printer ...", "Did Daddy Yankee ...", "Is Son Heung-min ...").
+_KIN_FOLLOW = frozenset("""
+doing home ok okay alright fine well sick better worse awake asleep up free busy coming going here
+there back around out in at on still yet now today tonight tomorrow right call called calling text
+texted texting message messaged email emailed reply replied say said saying arrive arrived land
+landed leave left leaving get got getting make made want wants wanted need needs needed feel feeling
+sleep sleeping eat eating work working visit visiting drive driving fly flying send sent know see
+ask asked like have has go come stay staying move moved moving plan planning pick picking mention
+mentioned write wrote tell told think thinks and or with up
+""".split())
+# The kin word as the one something was done to, in a question ("Did the
+# hospital call Mom today?", "Will they let Dad go home today?").
+_KIN_OBJECT = re.compile(
+    rf"^(?:did|does|do|has|have|had|will|would|can|could|should|is|are|was|were|when|why|how)\b.*\b"
+    rf"(?:call(?:ed|ing)?|text(?:ed|ing)?|let|see|seen|saw|visit(?:ed|ing)?|help(?:ed|ing)?|pick(?:ed|ing)?\s+up|"
+    rf"told|tell|ask(?:ed|ing)?|e-?mail(?:ed|ing)?|message[d]?|messaging|release[d]?|discharg(?:e|ed|ing)|"
+    rf"admit(?:ted)?|take|took|taking|bring|brought|drive|drove|driving|pay|paid|charge[d]?|evict(?:ed|ing)?)\s+"
+    rf"(?:the\s+)?(?:{_KIN_ALT})\b")
+# The same inside a clause: "Tell me if Mom is online right now", "do you know when Dad lands".
+_KIN_CLAUSE = re.compile(
+    rf"\b(?:if|whether|when|where|why|how|what|that)\s+(?:the\s+)?(?:{_KIN_ALT})\s+"
+    rf"(?:is|are|was|were|has|had|will|would|did|does|can|could|got|gets|said|says|wants|needs|called|"
+    rf"texted|arrived|arrives|landed|lands|left|leaves)\b")
+# News of them: "any news from mom", "what's the latest from Grandma".
+_KIN_FROM = re.compile(rf"\b(?:from|with)\s+(?:the\s+)?(?:{_KIN_ALT})\b\s*[?.!]*$")
+
+
 def personal_reference(prompt: str) -> bool:
-    """The request is about someone in the user's life, named by a kin word
-    ("How is Grandma doing today?", "Is Mom home yet?"). No ASCII or length
-    gate. A bare first name is not recognised here: reading the know-you
-    profile for every request would break the host's rule that routing loads
-    no saved context in test mode or when the user has opted out of it."""
-    loose = _KIN_PUBLIC.sub(" ", _loose_text(prompt))
-    return bool(_KIN.intersection(re.findall(r"[a-z0-9&-]+", loose)))
+    """The request is ABOUT someone in the user's life, named by a kin word:
+    with "my" or "our" ("my mom", "our landlord"), as the subject of a how,
+    where or what question ("How is Grandma doing today?", "Is Mom home
+    yet?", "Did Dad call?"), as the one something was done to in a question
+    ("Did the hospital call Mom today?"), or as whom news is from. A kin word
+    that merely appears is not one: "best gifts for dad", "husband pillow
+    reviews", "Brother printer", "Daddy Yankee tour dates" stay public. An 's
+    is personal_owner's. No ASCII or length gate. A bare first name is not
+    recognised: reading the know-you profile for every request would break
+    the host's rule that routing loads no saved context in test mode or when
+    the user has opted out of it."""
+    loose = _KIN_PUBLIC.sub(" ", _loose_text(prompt)).strip()
+    if (_KIN_MINE.search(loose) or _KIN_OBJECT.search(loose) or _KIN_FROM.search(loose)
+            or _KIN_CLAUSE.search(loose)):
+        return True
+    m = _KIN_SUBJECT.match(loose)
+    return bool(m and (not m.group("next") or m.group("next").strip("'") in _KIN_FOLLOW))
 
 
 def personal_owner(prompt: str) -> bool:
@@ -1589,28 +1642,55 @@ def personal_owner(prompt: str) -> bool:
 
 
 def lookalike_possessive(prompt: str) -> bool:
-    """An 's written with an apostrophe lookalike (U+02B9, a prime, a backtick)."""
-    return bool(_LOOKALIKE_POSSESSIVE.search(prompt or ""))
+    """An 's written with an apostrophe lookalike: a backtick, or any
+    non-ASCII character that is not an ordinary letter or a real apostrophe,
+    between an ASCII letter and "s" (U+02B9, a prime, the saltillo U+A78C,
+    U+02BD, U+02C8, U+2035). "caf\u00e9s" is a word, not a possessive."""
+    import unicodedata
+    text = prompt or ""
+    if _LOOKALIKE_BACKTICK.search(text):
+        return True
+    for mark in _LOOKALIKE_SITE.findall(text):
+        if mark in "\u2019\u2018\uff07":            # real apostrophes: read as one everywhere
+            continue
+        if mark in "\ua78c\ua78b" or unicodedata.category(mark) in {"Lm", "Sk", "Po", "Pf", "Pi", "Mn", "Mc", "Cf"}:
+            return True
+    return False
 
 
 # What an owner has that is the user's own business, whoever the owner is.
 _PERSONAL_HEADS = frozenset("""
 address addresses number numbers birthday anniversary flight flights package packages
 parcel appointment appointments schedule plans place house home apartment room car kids wedding party
-location whereabouts salary password diagnosis results health surgery visit trip itinerary reservation
-booking ticket tickets order orders delivery account accounts email emails mail text texts message
-messages call calls note notes file files folder document documents
+location whereabouts salary password diagnosis results result health surgery visit trip itinerary
+reservation booking ticket tickets order orders delivery account accounts email emails mail text texts
+message messages call calls note notes file files folder document documents fever recovery interview
+test tests exam treatment therapy medication pregnancy baby funeral divorce date dates
 """.split())
+# What an owner has that is public whoever the owner is. An 's of unknown
+# ownership reopens a search only with one of these: "Is Ben's fever down
+# today?" names none, and stays closed.
+_PUBLIC_HEADS = frozenset("""
+stock stocks share shares price prices market cap valuation earnings revenue sales profit dividend
+ipo game games match matches score scores standings record season playoffs final finals race
+album albums song songs single tour concert concerts show shows movie movies film films episode
+episodes series trailer premiere menu hours release launch event events keynote lineup roster
+ratio ratios ceo headquarters founder showing airing streaming playing
+""".split())
+# A holiday written with an 's: its date is public.
+_HOLIDAY = re.compile(r"\b(?:mother|father|valentine|st\.?\s+patrick|new\s+year|president|veteran)s?'?s?\s+(?:day|eve)\b")
+_FRESH_WORDS = frozenset("new newest latest current upcoming next".split())
 _OWNER_REQUEST_MAX_WORDS = 16
 
 
 def public_owner_request(prompt: str) -> bool:
     """A request with an 's of unknown ownership that is still plainly public:
     "Who won Sunday's game?", "What's Apple's stock price today?", "What is
-    Tesla's market cap right now?". Plain ASCII, short, no first person, no
-    person of the user's own, and nothing in it that is anyone's private
-    business (an address, a flight, a package). It reopens only a search of the
-    user's own words (see web_request._parse_request)."""
+    Tesla's market cap right now?", "What's Google's latest phone this year?".
+    Plain ASCII, short, no first person, nobody of the user's own, a public
+    noun (_PUBLIC_HEADS) or a "new"/"latest" thing, and nothing that is
+    anyone's private business (an address, a flight, a fever). It reopens only
+    a search of the user's own words (see web_request._parse_request)."""
     text = _ascii_text(prompt).strip()
     if not (text.isascii() and len(text.split()) <= _OWNER_REQUEST_MAX_WORDS
             and not _FIRST_PERSON.search(text)):
@@ -1620,7 +1700,10 @@ def public_owner_request(prompt: str) -> bool:
     words = set(re.findall(r"[a-z0-9&-]+", _KIN_PUBLIC.sub(" ", text.lower())))
     if words & _PERSONAL_HEADS or words & _WEB_FIRST_OWN or words & (_PERSON_OWNERS | _KIN):
         return False
-    if re.search(r"\d{4,}", text) and not re.search(r"\b(?:19|20)\d{2}\b", text):
+    if not (words & _PUBLIC_HEADS or words & _FRESH_WORDS or _HOLIDAY.search(text.lower())):
+        return False
+    # Every long number must itself be a year: one year does not excuse a phone number.
+    if any(not re.fullmatch(r"(?:19|20)\d{2}", run) for run in re.findall(r"\d{4,}", text)):
         return False
     return bool(re.search(r"[a-z0-9]'(?:s\b|(?=\s|$|[?.!,]))", text.lower()))
 

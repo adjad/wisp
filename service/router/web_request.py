@@ -371,7 +371,12 @@ def _clauses(text: str) -> tuple[Clause, ...]:
 def _explicit(text: str) -> bool:
     root = _lexical(text)
     command = _matches(r"^(?:" + _LOOKUP_CANONICAL + r"|web\s+search|do|perform|run|give|show|tell)\b", root)
-    return command and bool(re.search(r"\b" + _SOURCE_CUE + r"\b", _root(text), re.I))
+    # "online" as a state is not a source: "Tell me if Mom is online right
+    # now" and "show me who is online" ask nobody to search the web.
+    sourced = re.sub(r"\b(?:is|are|am|be|been|being|was|were|gets?|got|goes|went|came|comes?|back|still|"
+                     r"stays?|appears?|shows?(?:\s+up)?|who'?s|it'?s)\s+(?:[a-z]+\s+)?online\b",
+                     " ", _root(text), flags=re.I)
+    return command and bool(re.search(r"\b" + _SOURCE_CUE + r"\b", sourced, re.I))
 
 
 def _governing_consent(text: str) -> bool:
@@ -1240,8 +1245,11 @@ def _parse_request(text: str, last_user: str | None = None, *,
         from service.model_only import lookalike_possessive, personal_reference
         # Someone the request only names as a recipient ("email Mom the latest
         # news; don't send it") is not its subject.
-        about = re.sub(r"\b(?:e-?mail|text|message|msg|tell|send|forward|notify|ping|call|remind|let)\s+"
-                       r"(?:to\s+)?(?:my\s+)?[A-Za-z]+\b", " ", text, flags=re.I)
+        # Only at the start of the request, where it is an instruction:
+        # "Did the hospital call Mom today?" is about Mom.
+        about = re.sub(r"^\s*(?:(?:please|hey|ok|okay|wisp|can\s+you|could\s+you|would\s+you)[, ]+)*"
+                       r"(?:e-?mail|text|message|msg|tell|send|forward|notify|ping|call|remind|let)\s+"
+                       r"(?:to\s+)?(?:my\s+|our\s+)?[A-Za-z]+\b", " ", text, count=1, flags=re.I)
         if personal_reference(about) or lookalike_possessive(text):
             # A question about someone in the user's life is not a public
             # lookup, whatever time word it carries ("How is Grandma doing
