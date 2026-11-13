@@ -83,12 +83,33 @@ enum OutboundSender {
         }
     }
 
+    /// A short code (3 to 6 digits, like 22821) is never an iMessage address.
+    /// Messages accepts an iMessage send to one without an error and then
+    /// marks it Not Delivered, so the SMS fallback below never ran for it
+    /// (seen on the real app, 2026-11-13).
+    static func isShortCode(_ s: String) -> Bool {
+        let t = s.trimmingCharacters(in: .whitespaces)
+        return (3...6).contains(t.count) && t.allSatisfy(\.isNumber)
+    }
+
+    static let noTextRelay = "This Mac can't send SMS texts. On your iPhone, turn on Settings › Apps › Messages › Text Message Forwarding for this Mac."
+
     static func sendMessage(actionId: String, to: String, text: String) {
         DispatchQueue.global(qos: .userInitiated).async {
-            // Resolve the service first and fall back to SMS: `buddy ... of
-            // service ... iMessage` fails outright for a recipient who isn't on
-            // iMessage, which for a plain phone number is the common case.
-            let script = """
+            let shortCode = isShortCode(to)
+            // A short code goes by SMS only: iMessage cannot reach it, and an
+            // iMessage send to it does not fail here, it fails later in
+            // Messages. With no SMS account the script raises and nothing is
+            // sent. Everyone else: iMessage first, then SMS, because `buddy
+            // ... of service ... iMessage` fails outright for a recipient who
+            // isn't on iMessage.
+            let script = shortCode ? """
+            tell application "Messages"
+                set targetBuddy to "\(escape(to))"
+                set theService to 1st account whose service type = SMS
+                send "\(escape(text))" to participant targetBuddy of theService
+            end tell
+            """ : """
             tell application "Messages"
                 set targetBuddy to "\(escape(to))"
                 try
@@ -110,6 +131,7 @@ enum OutboundSender {
                 let code = err[NSAppleScript.errorNumber] as? Int ?? 0
                 let reason = code == -1743
                     ? "Messages Automation access isn't granted — allow it in System Settings › Privacy & Security › Automation"
+                    : shortCode ? noTextRelay
                     : (err[NSAppleScript.errorMessage] as? String ?? "Messages refused the send")
                 post(actionId: actionId, ok: false, error: reason, extra: refusal(code))
                 return

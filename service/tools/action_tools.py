@@ -1577,6 +1577,10 @@ async def forward_email(message_id: str, to: str, note: str = "") -> str:
     return f"Forwarded to {', '.join(_named(r) for r in resolved)}."
 
 
+
+MESSAGE_HANDED_OVER = ("Messages accepted it; delivery is not confirmed here, "
+                       "so do not say it was delivered.")
+
 @register(
     "send_message",
     "Send an iMessage/SMS NOW from the user's Messages. For 'text/message/tell X ...', send "
@@ -1658,6 +1662,9 @@ async def send_message(to: str, text: str, confirmed_self_send: bool = False,
                 "Message outcome unknown — sending was not confirmed. Check Messages before trying again; do not retry automatically.",
                 operation="send_message", action_id=res.get("action_id") or "")
         return _not_sent(f"(the message was NOT sent: {res.get('error') or 'unknown error'})")
-    return f"Message sent to {display}."
+    # The app only knows Messages accepted the text. Messages can still mark
+    # it Not Delivered afterwards (a short code with no SMS relay did, on the
+    # real app), so the receipt says what is known and no more.
+    return f"Message sent to {display}. {MESSAGE_HANDED_OVER}"
 
 
