@@ -245,11 +245,97 @@ def _resolve(sentence: str, arrival: float, tz: str):
         return None
 
 
+# Country calling codes by locale region, for a saved number that has none. Only used to
+# TIGHTEN a match; an unknown region never loosens one.
+_REGION_CODES = {"US": "1", "CA": "1", "GB": "44", "IE": "353", "AU": "61", "NZ": "64", "IN": "91", "DE": "49",
+                 "FR": "33", "ES": "34", "IT": "39", "NL": "31", "SE": "46", "NO": "47", "DK": "45", "CH": "41",
+                 "AT": "43", "BE": "32", "PT": "351", "BR": "55", "MX": "52", "JP": "81", "KR": "82", "SG": "65",
+                 "HK": "852", "CN": "86", "ZA": "27", "AE": "971", "IL": "972", "PL": "48"}
+
+
+def _region_code() -> str:
+    """The user's country calling code from the process locale ("en_US" -> "1"), or "" if unknown."""
+    import os
+    for name in ("LC_ALL", "LC_CTYPE", "LANG"):
+        value = os.environ.get(name) or ""
+        region = value.split(".")[0].rpartition("_")[2].upper()
+        if region in _REGION_CODES:
+            return _REGION_CODES[region]
+    return ""
+
+
+def phones_match(handle: str, saved: str, region: str = "") -> bool:
+    """A chat handle and a number as it is saved in Contacts are the SAME number.
+
+    Full numbers, never "the last ten digits": +44 20 7946 0958 is not +1 207 946 0958.
+    `handle` is the chat's own handle, which Messages gives with its country code. A saved
+    number that carries a country code ("+…" or "00…") must equal it digit for digit. A
+    saved number with none is a national number: the handle must be that number (less a
+    trunk "0") behind a country code of one to three digits, and behind the user's own
+    country code when that is known."""
+    if not handle.strip().startswith("+"):
+        return False
+    want = re.sub(r"\D", "", handle)
+    raw = saved.strip()
+    digits = re.sub(r"\D", "", raw)
+    if not (7 <= len(want) <= 15) or not digits:
+        return False
+    if raw.startswith("+"):
+        return digits == want
+    if raw.startswith("00"):
+        return digits[2:] == want
+    national = digits.lstrip("0") if digits.startswith("0") else digits
+    if len(national) < 7 or not want.endswith(national):
+        return False
+    prefix = want[:len(want) - len(national)]
+    if digits.startswith("0") and prefix == "1":
+        return False                                 # a trunk "0" is never a North American number
+    if digits == want and not region:
+        return True                                  # saved with its country code, just no "+"
+    if region:
+        return prefix == region or digits == want
+    return 1 <= len(prefix) <= 3
+
+
+def strict_contact_name(handle: str, *, region: str | None = None) -> str:
+    """The saved contact whose OWN number or address this handle is, or "".
+
+    Stricter than imessage_tools.contact_name_for_handle, which matches phone numbers
+    on their last ten digits (right for labelling a conversation, wrong for deciding who
+    may put something on the calendar). Here an email must be saved exactly (case aside)
+    and a phone number must be the same full number (phones_match). Contacts that were
+    not synced in this launch, or are not allowed, hold nobody."""
+    from service.tools import imessage_tools as im
+    if not getattr(im, "_contacts_privacy_current", False) or getattr(im, "_contacts_not_allowed", False):
+        return ""
+    h = (handle or "").strip()
+    if not h:
+        return ""
+    region = _region_code() if region is None else region
+    for name, handles in (im._name_handles or {}).items():
+        for saved in handles or ():
+            saved = str(saved or "")
+            if "@" in h or "@" in saved:
+                if "@" in h and "@" in saved and saved.strip().casefold() == h.casefold():
+                    return name.title() if name.islower() else name
+            elif phones_match(h, saved, region):
+                return name.title() if name.islower() else name
+    return ""
+
+
 def _contact_name(handle: str) -> str:
-    """The saved contact this exact handle belongs to, or "" (Contacts, as the app synced it).
-    Tests replace this; production asks imessage_tools."""
-    from service.tools.imessage_tools import contact_name_for_handle
-    return contact_name_for_handle(handle)
+    """The saved contact this handle belongs to, or "" (Contacts, as the app synced it), by
+    the strict match above. Tests replace this."""
+    return strict_contact_name(handle)
+
+
+def _own_handle(handle: str) -> bool:
+    """The user's own address (a note-to-self chat): never a correspondent."""
+    try:
+        from service.memory.identity import user_emails
+        return "@" in handle and handle.casefold() in {str(e).casefold() for e in user_emails() or []}
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _person_handle(handle: str) -> bool:
@@ -275,7 +361,7 @@ def _saved_contact(item: dict) -> bool:
     if item.get("source") != "messages" or item.get("group"):
         return False
     handle = str(item.get("handle") or "").strip()
-    if not _person_handle(handle):
+    if not _person_handle(handle) or _own_handle(handle):
         return False
     try:
         return bool(str(_contact_name(handle) or "").strip())
@@ -976,6 +1062,12 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
         # Only a line that itself arrived after the person's yes is added without a tap:
         # the time of the sentence the date came from, never the conversation's latest line.
         fresh = on and allows(plan.get("line_ts"))
+        if on and fresh and plan["source"] == "messages" and item.get("service") != "iMessage":
+            # Only an iMessage's sender handle is one Apple verified. An SMS (or a message whose
+            # delivery is not known) can carry any sender number, a saved contact's included.
+            tap.append(tap_card(plan, now))
+            note(item, "not an iMessage: tap to add")
+            continue
         if on and fresh and plan["source"] == "mail":
             # Checked only for a mail plan that would otherwise be written, so the evidence
             # (Sent mail, Contacts, the provider's verdict) is read at most once per cycle.

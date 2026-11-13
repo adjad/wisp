@@ -62,7 +62,9 @@ by default), and your Brief and answers fit you.
 - **It acts without being asked only if you say so.** **Let Wisp act for me** is off until you say
   yes, in setup or in Settings. On, Wisp adds an event or deadline you missed to Calendar or
   Reminders by itself, without waiting for your approval, from messages that arrive after your
-  yes. A text counts when it is one-to-one with someone saved in your Contacts. An email counts
+  yes. A text counts when it is a one-to-one iMessage (a blue bubble) from the saved number or
+  address of someone in your Contacts; an SMS (a green bubble) shows a card, because an SMS
+  sender number can be forged. An email counts
   only with proof, because an email's From line is not proof of who sent it: it must be in a
   Google account you linked in Wisp, from an address that is in your Contacts or that you have
   written to before, and Gmail itself must report the mail as really coming from that sender.

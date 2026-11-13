@@ -150,13 +150,18 @@ final class MessagesReader {
         let messageGUID = hasColumn(db, table: "message", name: "guid") ? "m.guid" : "NULL"
         let chatGUID = hasColumn(db, table: "chat", name: "guid") ? "c.guid" : "NULL"
         let dateEdited = hasColumn(db, table: "message", name: "date_edited") ? "m.date_edited" : "0"
+        // How each message was delivered ("iMessage", "SMS", "RCS"). A chat GUID no longer says:
+        // newer systems name every one-to-one chat "any;-;<handle>". An iMessage's sender handle
+        // is one Apple verified; an SMS's sender number can be forged. NULL when the store has no
+        // such column, which the service reads as unknown.
+        let messageService = hasColumn(db, table: "message", name: "service") ? "m.service" : "NULL"
         let sql = """
         SELECT m.date, m.text, m.attributedBody, m.is_from_me,
                h.id AS handle_id, c.display_name AS chat_name, c.chat_identifier,
                c.ROWID AS chat_id, COALESCE(m.is_read, 0) AS is_read,
                m.ROWID AS message_id, COALESCE(m.handle_id, 0) AS handle_row_id,
                \(messageGUID) AS message_guid, \(chatGUID) AS chat_guid,
-               \(dateEdited) AS date_edited
+               \(dateEdited) AS date_edited, \(messageService) AS service
         FROM message m
         LEFT JOIN handle h ON m.handle_id = h.ROWID
         LEFT JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
@@ -218,6 +223,7 @@ final class MessagesReader {
             let handleRowId = sqlite3_column_int64(stmt, 10)
             let messageGuid = columnText(stmt, 11)
             let chatGuid = columnText(stmt, 12)
+            let service = columnText(stmt, 14)
             // Namespace each SQLite table explicitly. Their ROWIDs are only
             // unique within one table, so a bare/negative number can merge an
             // orphan handle and an unrelated orphan message.
@@ -259,6 +265,8 @@ final class MessagesReader {
                 // A GUID is a read-only native locator. There is no supported
                 // Messages URL for opening an existing message by GUID.
                 "navigation_url": NSNull(),
+                // The message's own delivery service, as Messages recorded it.
+                "service": service as Any? ?? NSNull(),
             ]
             let wire = Self.wire([
                 "version": 1, "kind": "record", "record": record, "source": source,

@@ -64,21 +64,22 @@ LANDED = ("added", "undone", "unknown", "undo_unknown")
 # (setup, Settings, the one-time card, About). ONE list, so no surface can claim more than
 # is built: a module adds its line here in the same change that makes it act.
 DOES: list[str] = [
-    "Adds an event or deadline you missed to Calendar or Reminders: from a one-to-one text with someone saved "
-    "in your Contacts, or from an email in a Google account you linked in Wisp, when it is from someone you've "
+    "Adds an event or deadline you missed to Calendar or Reminders: from a one-to-one iMessage with someone saved "
+    "in your Contacts (a green-bubble SMS shows a card instead), or from an email in a Google account you linked in Wisp, when it is from someone you've "
     "written to or saved and Gmail confirms it really came from them. Any other email shows a card and waits "
     "for your tap.",
     "Holds a free hour on your Day plan for work due today or in the next three days (in Wisp only, never on your calendar).",
 ]
 NEVER = "Wisp never sends, replies, deletes or pays for anything by itself."
-# The first line says exactly what autoadd does: a text needs a saved contact's own handle
-# (autoadd._saved_contact); an email needs proof (autoadd.default_mail_proof), which exists
+# The first line says exactly what autoadd does: a text must be an iMessage (Apple verifies
+# an iMessage's sender; an SMS sender number can be forged) from a saved contact's own
+# handle (autoadd._saved_contact, strict_contact_name); an email needs proof (autoadd.default_mail_proof), which exists
 # only for mail Wisp fetched through a linked Google account. If autoadd.MAIL_ACTS is ever
 # set False, this line must go back to texts only.
 # What the yes reaches, said the same way everywhere. True for the list above: adds read
 # messages (acting.allows on the line's own arrival); a hold reads the person's own calendar
 # and reminders, where "arrived" has no meaning, so it covers deadlines already there.
-SCOPE = ("Adding from texts and emails covers only messages that arrive after you say yes, never older ones. "
+SCOPE = ("Adding from iMessages and emails covers only messages that arrive after you say yes, never older ones. "
          "Holding time is for deadlines on your calendar or in Reminders, including ones already there.")
 
 _undoers: dict[str, Callable[[dict], Awaitable[dict]]] = {}
