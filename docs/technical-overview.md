@@ -139,17 +139,18 @@ export instead of the headline. Debug Mode captures tool-internal model calls
 
 ### Which model for which Mac
 
-Fresh installs use **Gemma 4 E4B** (4-bit with multi-token prediction, `Jundot/gemma-4-E4B-it-oQ4e-mtp`,
-about 5.5 GB). It is the model the first-run window downloads, and the engine's per-model
+Fresh installs use **Gemma Wisp** (Gemma 4 E4B tuned for Wisp, 4-bit with multi-token prediction,
+`Neo-Arid/Gemma-Wisp`, about 5.6 GB). It is the model the first-run window downloads, and the engine's per-model
 settings for it (sampling, thinking, a 16k context window) are written by Wisp itself. The
 Ling 3.0 tiny builds below remain available in the detailed setup guide
 (**Settings → Models → Setup guide...**).
-Existing role overrides and working models are preserved. Mellum remains an optional choice,
+Existing role overrides and working models are preserved: a Mac that already has base Gemma 4 E4B
+(`gemma-4-E4B-it-oQ4e-mtp`) keeps using it, but Wisp no longer offers, downloads or repairs it. Mellum remains an optional choice,
 marked validation pending. The guide ranks memory fit separately from test status:
 
 | Memory | Recommended | Download | Notes |
 | --- | --- | --- | --- |
-| 16 GB or more | `gemma-4-E4B-it-oQ4e-mtp` | 5.5 GB from Hugging Face | The default. On 24 GB or more, `Ling-3.0-tiny-oQ6e` (6.6 GB) is the best-quality alternative; on 16 GB, `Ling-3.0-tiny-oQ4e` (4.6 GB) is the smaller one. Tool selection measured 10/10 at 4, 5 and 6 bits (on a 24 GB Mac; not yet re-measured on 16 GB hardware). |
+| 16 GB or more | `Gemma-Wisp` | 5.6 GB from Hugging Face | The default. On 24 GB or more, `Ling-3.0-tiny-oQ6e` (6.6 GB) is the best-quality alternative; on 16 GB, `Ling-3.0-tiny-oQ4e` (4.6 GB) is the smaller one. Tool selection measured 10/10 at 4, 5 and 6 bits (on a 24 GB Mac; not yet re-measured on 16 GB hardware). |
 | Under 16 GB | not supported for this release | | Setup doesn't offer a model. If you already run a smaller model in another app, such as Ollama or LM Studio, you can connect it in the detailed setup. |
 
 Sizes are the published files' sizes on Hugging Face
@@ -224,7 +225,7 @@ model id. `~/.moe/config.yaml` overlays that at runtime (Settings writes here).
 
 | Role | Model | Why |
 | --- | --- | --- |
-| `fast`, `router`, `coding`, `reasoning`, `agent`, `general` | `gemma-4-E4B-it-oQ4e-mtp` | one resident model for every text/tool role — no swap, no cold load, no routing decision that hinges on which model a request lands on |
+| `fast`, `router`, `coding`, `reasoning`, `agent`, `general` | `Gemma-Wisp` once setup applies it (the code defaults still name base `gemma-4-E4B-it-oQ4e-mtp`, so an install that never ran setup keeps working) | one resident model for every text/tool role — no swap, no cold load, no routing decision that hinges on which model a request lands on |
 | `research` | defaults to `coding`'s model unless overridden | Wisp Research's plan/query/extraction/synthesis calls; independently settable in Settings |
 | `embedding` | `Qwen3-Embedding-0.6B-4bit-DWQ` | Smart Search's T2 retrieval tier; small enough (320 MB) to co-fit with the chat model, so search never evicts it |
 | `reranker` | `Qwen3-Reranker-0.6B-mlx-6bit` | optional cross-encoder for tool retrieval; not the default, and it evicts the embedder before use so all three never sit resident together |

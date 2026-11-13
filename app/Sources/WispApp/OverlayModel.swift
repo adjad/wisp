@@ -3036,6 +3036,9 @@ final class OverlayModel: ObservableObject {
         let map = [
             "Agents-A1-4B-oQe6": "A1-4B",
             "gemma-4-E4B-it-qat-4bit": "G4-E4B",
+            "gemma-4-E4B-it-oQ4e-mtp": "G4-E4B",
+            "Gemma-Wisp": "G-Wisp",
+            "gemma-4-E4B-it-r5-step-01800-oQ4e-mtp": "G-Wisp",
             "Qwen3.6-27B-oQ3": "Q3.6-27B",
             "LFM2.5-2.6B-MLX-6bit": "LFM-2.6B",
         ]

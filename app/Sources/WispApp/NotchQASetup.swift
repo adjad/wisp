@@ -20,21 +20,21 @@ enum NotchQASetup {
         override func stopLoading() {}
     }
 
-    static let gemma = "gemma-4-E4B-it-oQ4e-mtp"
+    static let gemma = "Gemma-Wisp"   // 0.5.0: the only model setup offers
 
     static func status(ram: Int = 24, ready: Bool = false, bundled: Bool = true, installed: Bool = false,
                        fits: Bool = true) -> SetupStatus {
-        let label = "Gemma 4 E4B · 4-bit (oQ4e) + MTP"
+        let label = "Gemma Wisp · 4-bit (oQ4e) + MTP"
         let tooSmall = "Wisp's models need a Mac with at least 16 GB of memory, and this one has \(ram) GB. "
             + "If you already run a smaller model in another app, such as Ollama or LM Studio, you can connect it in the detailed setup."
         let models: [String: Any] = [
             "source": "engine",
-            "installed": installed ? [["id": gemma, "label": label, "size_gb": 5.5, "fit": "recommended",
+            "installed": installed ? [["id": gemma, "label": label, "size_gb": 5.6, "fit": "recommended",
                                        "tested": true, "note": ""]] : [],
             "recommended": gemma, "recommended_label": label,
             "use": installed ? gemma : NSNull(), "warning": fits ? NSNull() : tooSmall, "fits": fits,
-            "download": fits ? ["model": gemma, "label": label, "size_gb": 5.5, "repo": "Jundot/\(gemma)",
-                                "url": "", "command": "hf download Jundot/\(gemma)", "install_hf": ""] as [String: Any]
+            "download": fits ? ["model": gemma, "label": label, "size_gb": 5.6, "repo": "Neo-Arid/\(gemma)",
+                                "url": "", "command": "hf download Neo-Arid/\(gemma)", "install_hf": ""] as [String: Any]
                              : NSNull(),
             "embedding_download": NSNull(),
         ]

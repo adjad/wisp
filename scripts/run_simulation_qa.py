@@ -581,6 +581,10 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_bundled_attribution.py",
     "tests/test_bundled_engine_api.py",
     "tests/test_engine_downloads.py",
+    # 0.5.0 Gemma Wisp: the published layout from a JSON extract, and role repair over fake
+    # model lists; pure Python, no engine, download or network.
+    "tests/test_gemma_wisp_checkpoint.py",
+    "tests/test_stranded_roles.py",
     # Per-model engine settings seeded into a temp model_settings.json; no engine runs.
     "tests/test_engine_profiles.py",
     "tests/test_engine_memory_guard.py",

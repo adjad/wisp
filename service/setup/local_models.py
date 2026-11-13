@@ -14,8 +14,10 @@ config.json and complete weights.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import threading
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -32,7 +34,7 @@ _SHARD = re.compile(r"-(\d+)-of-(\d+)\.safetensors$")
 
 
 def catalogue_ids() -> tuple[str, ...]:
-    return tuple(m.id for m in (*catalog.PRIMARY_MODELS, catalog.EMBEDDING_MODEL))
+    return tuple(m.id for m in (*catalog.PRIMARY_MODELS, *catalog.KEPT_MODELS, catalog.EMBEDDING_MODEL))
 
 
 def _entries(folder: Path) -> list[Path]:
@@ -114,3 +116,81 @@ def catalogue_models_on_disk(model_dirs: Iterable[Path | str],
                 if child.name in targets and weights_complete(child):
                     found.add(child.name)
     return sorted(found)
+
+
+# (path, size, mtime_ns) -> sha256, so a status poll hashes a 5.6 GB download once. One lock per
+# file, so a poll checking a small file never waits behind another file's hash.
+_hashes: dict[tuple[str, int, int], str] = {}
+_hash_locks: dict[str, threading.Lock] = {}
+_locks_guard = threading.Lock()
+
+# Besides the pinned files, a downloaded folder may hold only these (and dot-entries such
+# as .gitattributes and hub's .cache): an added template or token file changes the model.
+ALLOWED_EXTRA = frozenset({"README.md"})
+
+
+def _sha256(path: Path, stat) -> str:
+    key = (str(path), stat.st_size, stat.st_mtime_ns)
+    with _locks_guard:
+        lock = _hash_locks.setdefault(str(path), threading.Lock())
+    with lock:
+        if key not in _hashes:
+            digest = hashlib.sha256()
+            with path.open("rb") as f:
+                for chunk in iter(lambda: f.read(8 << 20), b""):
+                    digest.update(chunk)
+            _hashes[key] = digest.hexdigest()
+        return _hashes[key]
+
+
+def bad_pinned_files(folder: Path, model: "catalog.CatalogModel") -> list[str]:
+    """Pinned file names in `folder` whose size or sha256 differs (hashes them if needed)."""
+    bad = []
+    for name, sha256, size in model.pinned_files:
+        path = folder / name
+        try:
+            stat = path.stat()
+            if stat.st_size != size or _sha256(path, stat) != sha256:
+                bad.append(name)
+        except OSError:
+            continue        # missing: a fresh download fetches it anyway
+    return bad
+
+
+def extra_files(folder: Path, model: "catalog.CatalogModel") -> list[str]:
+    """Top-level non-dot entries of a pinned model's folder that the tested model didn't have."""
+    if not model.pinned_files:
+        return []
+    allowed = {name for name, _, _ in model.pinned_files} | ALLOWED_EXTRA
+    return sorted(e.name for e in folder.iterdir() if not e.name.startswith(".") and e.name not in allowed)
+
+
+def verify_download(folder: Path, model: "catalog.CatalogModel", *, cached_only: bool = False) -> str | None:
+    """None when `folder` holds a usable copy of `model`; else "incomplete" (weights
+    missing or partial) or "mismatch" (a pinned file differs from what Wisp tested, or
+    the folder holds a file the tested model didn't have). `cached_only`: never hash;
+    a file not hashed yet counts as matching."""
+    if not weights_complete(folder):
+        return "incomplete"
+    try:
+        if extra_files(folder, model):
+            return "mismatch"
+    except OSError:
+        return "incomplete"
+    for name, sha256, size in model.pinned_files:
+        path = folder / name
+        try:
+            stat = path.stat()
+        except OSError:
+            return "incomplete"
+        if stat.st_size != size:
+            return "mismatch"
+        key = (str(path), stat.st_size, stat.st_mtime_ns)
+        if cached_only and key not in _hashes:
+            continue
+        try:
+            if _sha256(path, stat) != sha256:
+                return "mismatch"
+        except OSError:
+            return "incomplete"
+    return None

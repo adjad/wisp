@@ -543,6 +543,13 @@ enum FirstRunBrain: Equatable {
         return .needsDownload(model: model, label: label, sizeGb: status.models.download?.sizeGb)
     }
 
+    /// A failed download whose fix may lie outside Wisp (not on Hugging Face yet, needs a
+    /// sign-in, files missing or not the tested ones): first run also offers the detailed
+    /// setup, which links the model's page and gives the Terminal command.
+    static func needsAnotherRoute(_ reason: String?) -> Bool {
+        ["not_found", "gated", "incomplete", "mismatch"].contains(reason ?? "")
+    }
+
     /// A download the person stopped. Stop cancels the transfer; Resume starts it again.
     static let stoppedMessage = "You stopped the download. Choose Resume to start it again."
 
@@ -2046,7 +2053,13 @@ struct FirstRunSetupView: View {
         case .failed(let model, let label, let message, let paused):
             OnboardingCard(icon: "arrow.clockwise.circle", title: (paused ? "Download stopped" : "Download failed") + " · " + label,
                            detail: message) {
-                downloadButton(paused ? "Resume" : "Retry", model: model)
+                VStack(alignment: .trailing, spacing: 6) {
+                    downloadButton(paused ? "Resume" : "Retry", model: model)
+                    // Retry alone can't fix these: the detailed setup links the model's page and the hf command.
+                    if !paused, FirstRunBrain.needsAnotherRoute(setup.downloads.first { $0.model == model }?.reason) {
+                        Button("Open detailed setup") { openDetailedSetup() }.buttonStyle(FirstRunButtonStyle())
+                    }
+                }
             }
         case .waitingForEngine(let model, let label):
             if stuckDownload == model {
