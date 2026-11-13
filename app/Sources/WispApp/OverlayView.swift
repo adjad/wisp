@@ -223,6 +223,16 @@ struct OverlayView: View {
         }
     }
 
+    /// A streaming answer without a bold marker still waiting for its pair:
+    /// "is **Worksheet 3 for" showed the raw asterisks until the closing pair
+    /// arrived, then flipped to bold. The words show plain until it does.
+    /// Left alone with code in it, where ** can be code (**kwargs).
+    static func withoutOpenBold(_ text: String) -> String {
+        guard !text.contains("```"), text.components(separatedBy: "**").count % 2 == 0,
+              let last = text.range(of: "**", options: .backwards) else { return text }
+        return text.replacingCharacters(in: last, with: "")
+    }
+
     /// What the page shows: the reset card, Getting to know you, a permission
     /// page, quick settings, or the tab.
     @ViewBuilder private var pageBody: some View {
@@ -1049,7 +1059,7 @@ struct OverlayView: View {
             .tint(Theme.textSecondary)
         }
         if !model.answer.isEmpty {
-            MarkdownView(text: model.answer)
+            MarkdownView(text: Self.withoutOpenBold(model.answer))
                 .frame(maxWidth: .infinity, alignment: .leading)
             // Once real text starts, isProcessing (and the "Thinking…" row) go
             // away by design — the growing text itself is the signal. But if
