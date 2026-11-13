@@ -1155,6 +1155,13 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
         if debug is not None:
             debug.append({"who": item.get("who", ""), "item": item.get("id"), "auto_add": reason})
 
+    def offer(plan, survivor):
+        # A tap-to-add card, except for an item that is here only because its triage reading
+        # failed (cycle._add_candidates): that one may be added by the rules above or left
+        # alone, but it earns no card of any kind.
+        if not survivor.get("add_only"):
+            tap.append(tap_card(plan, now))
+
     for survivor in sorted(survivors, key=lambda s: -(s["item"].get("received_ts") or 0)):
         item, result = survivor["item"], survivor.get("result")
         plan, reason = plan_for(item, result, now=now, tz=tz)
@@ -1186,7 +1193,7 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
             # it). Offering the date is not an action: the card the person taps stays. Checked
             # after the lines above, so a card they dismissed or handled, or a date they already
             # put on Calendar themselves, does not come back.
-            tap.append(tap_card(plan, now))
+            offer(plan, survivor)
             note(item, "Wisp already acted on this message: tap to add")
             continue
         # Only a line that itself arrived after the person's yes is added without a tap:
@@ -1195,7 +1202,7 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
         if on and fresh and plan["source"] == "messages" and _text_service(item) != "iMessage":
             # Only an iMessage's sender handle is one Apple verified. An SMS (or a message whose
             # delivery is not known) can carry any sender number, a saved contact's included.
-            tap.append(tap_card(plan, now))
+            offer(plan, survivor)
             note(item, "not an iMessage: tap to add")
             continue
         if on and fresh and plan["source"] == "mail":
@@ -1209,11 +1216,11 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
                 except Exception as exc:  # noqa: BLE001 — proof that can't be had is no proof
                     proven, why = False, "proof unavailable: " + type(exc).__name__
             if proven is not True:
-                tap.append(tap_card(plan, now))
+                offer(plan, survivor)
                 note(item, "mail: tap to add (" + str(why) + ")")
                 continue
         if not fresh or attempts >= MAX_PER_CYCLE or today + attempts >= MAX_PER_DAY:
-            tap.append(tap_card(plan, now))
+            offer(plan, survivor)
             note(item, "tap to add" if not on else "arrived before the yes: tap to add" if not fresh
                  else "cap reached: tap to add")
             continue

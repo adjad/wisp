@@ -5,6 +5,7 @@ Fake EventKit/Reminders writers only: no native code, no live model, no
 writes outside a scratch WISP_HOME.
 """
 import asyncio
+import json
 import os
 import re
 import tempfile
@@ -901,6 +902,98 @@ def test_a_note_to_self_chat_under_the_users_own_name_is_never_a_correspondent(s
         raise OSError("no name")
     monkeypatch.setattr(identity, "user_name", broken)
     assert autoadd._saved_contact(item) is True
+
+
+# --- a triage reading that failed still lets the rules look at the item --------------------------
+
+def _cycle_with(store, items, reply, seen):
+    """One full cycle over `items` with a model whose every reply is `reply`; `seen` gets what
+    auto-add was handed."""
+    from service.proactive import cycle
+
+    async def model(system, material, abort, tokens):
+        return reply
+
+    async def capture(candidates, sched, *, now, tz, store, abort):
+        seen.extend(candidates)
+        return {"tap": [], "items": set()}
+    return asyncio.run(cycle.run_cycle(
+        now=NOW, tz=TZ, force=True, reply_fn=model, abort=lambda: False, collect=lambda n, z: list(items),
+        schedule_fn=lambda n, z: {"calendar": [], "reminders": []}, store=store, resolve=lambda i: None,
+        linked=set(), own=ME, allowed=set(), freeze=lambda ref: None, deadline_fn=None, autoadd_fn=capture))
+
+
+def test_a_dated_text_whose_triage_reading_failed_is_still_a_candidate_and_is_added(store, yes):
+    """With the model present a dated text used to be eligible only if the model's reading of it
+    validated; with no model every item got a rule result. A failed reading now gets the same
+    neutral result, for auto-add only."""
+    from service.proactive import cycle
+    # A plain dated statement: not an ask of the user, so a failed reading leaves it with no result.
+    item = text("Maya Chen", "Team meeting Sat Oct 31 at 3pm in the library.")
+    assert autoadd.plan_for(item, dict(OK), now=NOW, tz=TZ)[0] is not None
+    seen = []
+    assert _cycle_with(store, [item], "this is not the JSON that was asked for", seen)["status"] == "done"
+    entry = store.triage_get(item["id"], cycle._tkey(item))
+    assert entry["status"] == "failed" and entry["result"] is None
+    [candidate] = seen
+    assert candidate["item"]["id"] == item["id"] and candidate["add_only"] is True
+    assert candidate["result"] == {"junk": False, "sensitive": False, "title": "", "summary": "",
+                                   "asks_of_me": "", "fallback": True}
+    # It earned no card, thread summary or reply from the failed reading.
+    assert [c for c in store.state()["cards"] if item["id"] in json.dumps(c)] == []
+    # The rules decide as for any other item: a saved contact's iMessage after the yes is added...
+    yes(NOW - 2 * 3600)
+    writers = Writers()
+    out, _notes = production_step(store, [candidate], writers)
+    assert len(writers.calls) == 1 and len(out["added"]) == 1
+
+
+def test_a_failed_reading_never_earns_a_card_and_never_reaches_follow_ups(store, yes, monkeypatch):
+    from service.proactive import cycle, followups
+    yes(NOW - 2 * 3600)
+    # Not addable (a green-bubble text): an ordinary item gets a card to tap; an add-only one gets nothing.
+    sms = text("Maya Chen", RECITAL, service="SMS")
+    writers = Writers()
+    ordinary, _ = production_step(store, survivors(sms), writers)
+    assert [c["action"]["method"] for c in ordinary["tap"]] == ["calendar_event"]
+    only = [{**survivors(sms)[0], "add_only": True}]
+    out, _ = production_step(store, only, writers)
+    assert out["tap"] == [] and out["added"] == [] and writers.calls == []
+    # Follow-up reminders are handed the real survivors only.
+    got = []
+
+    async def fake_followups(candidates, sched, **_k):
+        got.extend(candidates)
+        return {"added": []}
+
+    async def fake_step(candidates, sched, **_k):
+        return {"tap": [], "added": [], "items": set()}
+    monkeypatch.setattr(followups, "step", fake_followups)
+    monkeypatch.setattr(autoadd, "step", fake_step)
+    asyncio.run(cycle._default_autoadd(survivors(sms) + only, {}, now=NOW, tz=TZ, store=store, abort=lambda: False))
+    assert len(got) == 1 and not got[0].get("add_only")
+
+
+def test_only_a_failed_reading_is_added_to_the_candidates(store, yes):
+    from service.proactive import cycle
+    # A secret is never sent to the model: its reading is "sensitive", not "failed", and it stays out.
+    secret = text("Maya Chen", "your code is 482913, and the recital is Sat Nov 21 at 6pm")
+    seen = []
+    _cycle_with(store, [secret], "not json", seen)
+    assert seen == [] and store.triage_get(secret["id"], cycle._tkey(secret))["status"] != "failed"
+    # An ask keeps its rule fallback (a real survivor with its card), not the add-only stand-in.
+    ask = text("Sam Lee", "can you send me the notes by Friday?", chat="iMessage;-;+15551230002")
+    seen.clear()
+    _cycle_with(store, [ask], "not json", seen)
+    assert [bool(c.get("add_only")) for c in seen] == [False]
+    # A reading that validated is a survivor as before.
+    fine = text("Maya Chen", RECITAL)
+    seen.clear()
+    _cycle_with(store, [fine], json.dumps({"junk": False, "sensitive": False, "title": "Recital",
+                                           "summary": "", "asks_of_me": ""}), seen)
+    assert [bool(c.get("add_only")) for c in seen] == [False]
+    # And plan_for still refuses a withheld item even if it were handed over as add-only.
+    assert autoadd.plan_for(secret, {"junk": False, "sensitive": False, "fallback": True}, now=NOW, tz=TZ)[0] is None
 
 
 def test_contacts_that_cannot_be_asked_mean_nobody_is_known(store, yes, monkeypatch):

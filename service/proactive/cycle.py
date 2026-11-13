@@ -279,6 +279,34 @@ def _survivor(item: dict, store, offline_results: dict) -> dict | None:
     return {"item": item, "result": result}
 
 
+def _add_candidates(items: list[dict], survivors: list[dict], store) -> list[dict]:
+    """What auto-add may look at: the survivors, plus every mail or text whose triage reading
+    FAILED (the model's reply could not be trusted) and so has no result at all.
+
+    Without this, a dated text was eligible only when the model's reading of it happened to
+    validate, while with no model every item got a rule result: the model path was the weaker
+    one. A failed reading gets the same neutral result the rule path gives (not junk, not
+    sensitive), marked `add_only`: it earns no card, summary or reply from this, only a look
+    by autoadd.plan_for, whose own code decides everything (saved contact, iMessage, an
+    explicit date in the sender's words, after the yes, the caps) and still refuses anything
+    withheld, secret or sensitive. A reading that came back "sensitive", a stand-down, or an
+    item never read yet is not included."""
+    have = {s["item"].get("id") for s in survivors}
+    extra = []
+    for item in items:
+        if item.get("id") in have or item.get("source") not in ("mail", "messages"):
+            continue
+        try:
+            entry = store.triage_get(item["id"], _tkey(item))
+        except Exception:  # noqa: BLE001 — unreadable: not a candidate
+            continue
+        if isinstance(entry, dict) and entry.get("status") == "failed" and entry.get("result") is None:
+            extra.append({"item": item, "add_only": True,
+                          "result": {"junk": False, "sensitive": False, "title": "", "summary": "",
+                                     "asks_of_me": "", "fallback": True}})
+    return survivors + extra
+
+
 def _key_items(survivors: list[dict]) -> list[str]:
     """The judge input's identity: each surviving item, its content and its
     triage reading."""
@@ -766,7 +794,8 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
     # on Calendar/Reminders through the verified writes, then a "Wisp did this"
     # card leads. Never once a turn has started; every write re-checks it.
     if not light:      # acting waits for a build; without it the cards stay as they are
-        await _auto_add(cards_by_account, accounts, own, survivors, sched, now=now, tz=tz, store=store,
+        await _auto_add(cards_by_account, accounts, own, _add_candidates(items, survivors, store), sched,
+                        now=now, tz=tz, store=store,
                         abort=abort, autoadd_fn=None if yielded or abort() else autoadd_fn)
     # What Wisp looked at, bulk mail it skipped included. An injected collect
     # (tests) reports nothing, so its items stand in.
@@ -867,6 +896,8 @@ def order_cards(cards: list[dict], deadline_cards: list[dict], limit: int = prep
 async def _default_autoadd(survivors, sched, *, now, tz, store, abort) -> dict:
     from service.proactive import autoadd, followups
     auto = await autoadd.step(survivors, sched, now=now, tz=tz, store=store, abort=abort)
+    # A failed triage reading is only ever a candidate for auto-add (cycle._add_candidates).
+    survivors = [s for s in survivors if not s.get("add_only")]
     # Follow-up reminders (followups.py) stand behind the same gate and run after auto-add, so a
     # message auto-add acted on is skipped there: one message, at most one action of Wisp's own.
     try:
