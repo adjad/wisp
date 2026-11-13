@@ -366,6 +366,20 @@ enum RoleModelChoices {
     /// Roles whose model no chat role can use.
     static let nonChatRoles = ["embedding", "reranker"]
 
+    /// Wisp's tuned Gemma, the first download for new installs since 0.5.0, and the
+    /// original Gemma it keeps one switch away (service/setup/catalog.py FALLBACK_FOR).
+    static let tunedDefault = "gemma-4-E4B-it-r5-step-01800-oQ4e-mtp"
+    static let originalGemma = bundledDefault
+    /// Settings › Models offers the original Gemma's download only to a Mac that has the
+    /// tuned one and not the original: otherwise there is nothing to switch back to.
+    static func offersOriginalGemma(installed: [String]) -> Bool {
+        installed.contains(tunedDefault) && !installed.contains(originalGemma)
+    }
+    static let originalGemmaTitle = "The original Gemma"
+    static let originalGemmaNote = "More cautious about acting than Wisp's tuned Gemma, but slower and less "
+        + "accurate on Wisp's tool tests. Download it in setup, then pick it above."
+    static let originalGemmaButton = "Download the original Gemma…"
+
     static func isChatModel(_ id: String, roles: [String: String] = [:]) -> Bool {
         let name = id.lowercased()
         if id.isEmpty || name.contains("embed") || name.contains("rerank") { return false }

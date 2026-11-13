@@ -1758,6 +1758,23 @@ struct SettingsView: View {
                             }
                             if role != loader.roleOrder.last { Divider() }
                         }
+                        if RoleModelChoices.offersOriginalGemma(installed: loader.installed) {
+                            Divider()
+                            HStack(alignment: .center) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(RoleModelChoices.originalGemmaTitle)
+                                        .font(.system(size: 14, weight: .medium))
+                                    Text(RoleModelChoices.originalGemmaNote)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                Spacer()
+                                Button(RoleModelChoices.originalGemmaButton) {
+                                    NotificationCenter.default.post(name: .wispOpenSetupGuide, object: nil)
+                                }
+                            }
+                        }
                         if let problem = loader.roleSaveProblem {
                             Text(problem)
                                 .font(.caption)

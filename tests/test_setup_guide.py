@@ -101,6 +101,37 @@ def test_packaged_lists_carry_the_tuned_gemma_wherever_they_carry_base():
                if role not in ("embedding", "reranker"))   # code roles stay on base (see models.yaml)
 
 
+def test_a_mac_with_the_tuned_gemma_is_offered_base_as_a_fallback_download():
+    # "Default, base as fallback": switching back must not need Terminal.
+    s = _status(ram=16, installed=[TUNED, EMBED], roles=_roles(TUNED))
+    assert s["ready"] and s["models"]["use"] == TUNED and s["models"]["download"] is None
+    fb = s["models"]["fallback_download"]
+    assert fb["model"] == GEMMA and fb["repo"] == "Jundot/gemma-4-E4B-it-oQ4e-mtp"
+    assert all(role["model"] == TUNED for role in s["roles"])     # an offer; roles are untouched
+    # Nothing to offer once base is there, or when the tuned Gemma isn't.
+    assert _status(ram=16, installed=[TUNED, GEMMA], roles=_roles(TUNED))["models"]["fallback_download"] is None
+    assert _status(ram=16, installed=[GEMMA], roles=_roles(GEMMA))["models"]["fallback_download"] is None
+    assert _status(ram=32, installed=[Q4], roles=_roles(Q4))["models"]["fallback_download"] is None
+    assert _status(ram=16, installed=[], roles=_roles(GEMMA))["models"]["fallback_download"] is None
+
+
+def test_settings_names_the_same_tuned_and_original_gemma_as_the_catalog():
+    import re
+    swift = (Path(__file__).resolve().parents[1] / "app/Sources/WispApp/QuickSettingsText.swift").read_text()
+    tuned = re.search(r'static let tunedDefault = "([^"]+)"', swift).group(1)
+    original = re.search(r'static let bundledDefault = "([^"]+)"', swift).group(1)
+    assert catalog.FALLBACK_FOR == {tuned: original}
+    assert "static let originalGemma = bundledDefault" in swift
+
+
+def test_the_fallback_is_a_model_the_built_in_engine_will_download():
+    from service.engine import downloads
+    assert catalog.fallback_download([TUNED]) is catalog.GEMMA_E4B_MTP
+    assert downloads._catalogue()[GEMMA] == "Jundot/gemma-4-E4B-it-oQ4e-mtp"
+    for tuned, base in catalog.FALLBACK_FOR.items():
+        assert catalog.by_id(tuned) and catalog.by_id(base) and catalog.by_id(base).repo
+
+
 def test_an_install_with_base_gemma_keeps_it_and_is_only_offered_the_tuned_one():
     # Existing installs are never moved: base stays in use, the tuned model is an offer.
     s = _status(ram=24, installed=[GEMMA, EMBED], roles=_roles(GEMMA))

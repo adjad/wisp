@@ -42,6 +42,8 @@ struct SetupStatus: Decodable {
         /// Absent from an older service, which never said.
         let fits: Bool?
         let download: Download?; let embeddingDownload: Download?
+        /// Base Gemma when this Mac has the tuned one but not base. Absent from an older service.
+        let fallbackDownload: Download?
     }
     struct RoleRow: Decodable, Identifiable {
         let role: String; let label: String; let model: String; let endpoint: String
@@ -981,6 +983,10 @@ struct SetupGuideView: View {
                 downloadCard(download, headline: s.models.use == nil
                              ? "Recommended for this Mac" : "A better fit for this Mac", tag: "main",
                              omlx: s.omlx)
+            }
+            if let fallback = s.models.fallbackDownload {
+                downloadCard(fallback, headline: "The original Gemma, one switch away",
+                             tag: "fallback", omlx: s.omlx)
             }
             if check?.action == "add_local_model" {
                 Text("This recommended model has no public download. Add its folder (\(recommendedName(s))) to your engine's model directory, then choose Check again and Use this model.")

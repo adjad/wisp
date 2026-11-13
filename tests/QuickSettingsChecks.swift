@@ -228,6 +228,17 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
           "with nothing reported, the menu holds the bundled Gemma")
     check(RoleModelChoices.fallbackModels == [gemma], "the fallback model is the bundled Gemma")
     check(RoleModelChoices.fallbackRoles == chatRoles, "every fallback role is the bundled Gemma")
+    let tuned = RoleModelChoices.tunedDefault
+    check(RoleModelChoices.originalGemma == gemma, "the original Gemma is the bundled Gemma")
+    check(RoleModelChoices.offersOriginalGemma(installed: [tuned, embedder]),
+          "a Mac with only the tuned Gemma is offered the original")
+    check(!RoleModelChoices.offersOriginalGemma(installed: [tuned, gemma]),
+          "nothing to offer once the original Gemma is installed")
+    check(!RoleModelChoices.offersOriginalGemma(installed: [gemma]) && !RoleModelChoices.offersOriginalGemma(installed: []),
+          "without the tuned Gemma there is nothing to switch back from")
+    check(RoleModelChoices.originalGemmaButton.hasPrefix("Download the original Gemma")
+          && RoleModelChoices.originalGemmaNote.contains("pick it above"),
+          "the Settings row says what it does and how to switch")
     check(RoleModelChoices.choices(installed: [], roles: shipped) == [gemma],
           "while the engine starts, the menu holds the saved model")
     check(RoleModelChoices.choices(installed: [], roles: ["general": "My-Own-Chat", "embedding": embedder])
