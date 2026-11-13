@@ -90,7 +90,8 @@ def store(tmp_path):
 def step(store, items, writers, *, sched=None, existing=None, on=True, abort=lambda: False, now=NOW):
     return asyncio.run(autoadd.step(list(items), sched or {"calendar": [], "reminders": []}, now=now, tz=TZ,
                                     store=store, abort=abort, writers=writers.table(),
-                                    existing=existing or (lambda n: []), is_enabled=lambda: on))
+                                    existing=existing or (lambda n: []), is_enabled=lambda: on,
+                                    allows=lambda arrived: True))
 
 
 RECITAL = "can you come to my recital Sat Oct 31 at 6pm?"
@@ -386,29 +387,29 @@ def test_with_the_flag_off_nothing_is_written_and_tap_cards_stand_in(store):
     assert event["start_ts"] == at(10, 31, 18) and event["duration_min"] == 60
 
 
-def test_the_config_flag_defaults_off_and_only_a_dated_yes_turns_it_on(monkeypatch):
+def test_it_is_off_by_default_and_only_a_dated_yes_in_the_gates_own_file_turns_it_on(tmp_path, monkeypatch):
     import service.config as config
+    from service.proactive import acting
+    path = tmp_path / acting.FILE
+    monkeypatch.setattr(acting, "_path", lambda: path)
+    assert config.proactive_auto_add_enabled() is False and autoadd.enabled() is False
+    # Nothing in config.yaml counts: the old key, or the gate's own shape written there.
     monkeypatch.setattr(config, "user_overlay_valid", lambda: True)
-    monkeypatch.setattr(config, "models_config", lambda: {})
-    assert config.proactive_auto_add_enabled() is False
-    # The old key carried no time of the yes, so it no longer turns anything on.
-    for value in ({"proactive_auto_add": True}, {"act_for_me": True}, {"act_for_me": {"enabled": True}},
-                  {"act_for_me": {"enabled": "true", "enabled_at": 5.0}},
-                  {"act_for_me": {"enabled": False, "enabled_at": 5.0}}):
+    for value in ({"proactive_auto_add": True}, {"act_for_me": {"enabled": True, "enabled_at": 5.0}}):
         monkeypatch.setattr(config, "models_config", lambda value=value: value)
         assert config.proactive_auto_add_enabled() is False and autoadd.enabled() is False
-    monkeypatch.setattr(config, "models_config", lambda: {"act_for_me": {"enabled": True, "enabled_at": 5.0}})
+    for text in ('{"enabled": true}', '{"enabled": "true", "enabled_at": 5.0}', '{"enabled": false, "enabled_at": 5.0}'):
+        path.write_text(text)
+        assert config.proactive_auto_add_enabled() is False and autoadd.enabled() is False
+    path.write_text('{"enabled": true, "enabled_at": 5.0}')
     assert config.proactive_auto_add_enabled() is True and autoadd.enabled() is True
-    monkeypatch.setattr(config, "user_overlay_valid", lambda: False)
-    assert config.proactive_auto_add_enabled() is False
 
 
-def test_a_fresh_install_gets_tap_cards_and_writes_nothing(store, monkeypatch):
-    """No `proactive_auto_add` in config: the production setting (not an
-    injected one) keeps every item a tap-to-add card."""
-    import service.config as config
-    monkeypatch.setattr(config, "user_overlay_valid", lambda: True)
-    monkeypatch.setattr(config, "models_config", lambda: {})
+def test_a_fresh_install_gets_tap_cards_and_writes_nothing(store, tmp_path, monkeypatch):
+    """No yes on file: the production setting (not an injected one) keeps every
+    item a tap-to-add card."""
+    from service.proactive import acting
+    monkeypatch.setattr(acting, "_path", lambda: tmp_path / "fresh-install" / acting.FILE)
     writers = Writers()
     out = asyncio.run(autoadd.step(survivors(text("Maya", RECITAL)), {"calendar": [], "reminders": []},
                                    now=NOW, tz=TZ, store=store, abort=lambda: False,
@@ -456,7 +457,8 @@ def test_the_background_cycle_adds_and_leads_with_the_done_card(store):
 
     async def auto(survivors_, sched, *, now, tz, store, abort):
         return await autoadd.step(survivors_, sched, now=now, tz=tz, store=store, abort=abort,
-                                  writers=writers.table(), existing=lambda n: [], is_enabled=lambda: True)
+                                  writers=writers.table(), existing=lambda n: [], is_enabled=lambda: True,
+                                  allows=lambda arrived: True)
 
     item = text("Maya", RECITAL)
     result = asyncio.run(cycle.run_cycle(
@@ -489,7 +491,8 @@ def test_a_cycle_that_yields_to_a_turn_writes_nothing(store):
 
     async def auto(survivors_, sched, *, now, tz, store, abort):
         return await autoadd.step(survivors_, sched, now=now, tz=tz, store=store, abort=abort,
-                                  writers=writers.table(), existing=lambda n: [], is_enabled=lambda: True)
+                                  writers=writers.table(), existing=lambda n: [], is_enabled=lambda: True,
+                                  allows=lambda arrived: True)
 
     asyncio.run(cycle.run_cycle(
         now=NOW, tz=TZ, force=True, reply_fn=model, abort=lambda: busy["on"], collect=lambda n, z: [text("Maya", RECITAL)],
@@ -595,3 +598,90 @@ def test_a_message_from_before_the_yes_stays_a_tap_card(store):
     assert [plan["who"] for _, plan in writers.calls] == ["Sam Lee"]          # only the one that arrived after
     assert len(out["tap"]) == 1 and out["tap"][0]["action"]["method"] == "calendar_event"
     assert len(out["added"]) == 1
+
+
+# --- the yes covers a LINE that arrived after it, through the production step (no seams) ---------
+
+@pytest.fixture
+def yes(tmp_path, monkeypatch):
+    """The real gate with its own file in tmp_path: yes(at) says yes at that time."""
+    from service import idle
+    from service.proactive import acting
+    path = tmp_path / acting.FILE
+    monkeypatch.setattr(acting, "_path", lambda: path)
+    monkeypatch.setattr(idle, "foreground_busy", lambda: False)
+    monkeypatch.setattr(acting, "_born", lambda: 0.0)        # a made-up clock; test_acting covers the real one
+    return lambda at: acting.set_enabled(True, now=at)
+
+
+def conversation(who, *lines):
+    """(hours ago, text) lines from `who`, oldest first, as one conversation item."""
+    records = [(NOW - ago * 3600, who, f"{who}: {line}", "", True) for ago, line in lines]
+    return sources.text_items(records, now=NOW, own=ME)[0]
+
+
+def production_step(store, items, writers):
+    notes = []
+    out = asyncio.run(autoadd.step(list(items), {"calendar": [], "reminders": []}, now=NOW, tz=TZ, store=store,
+                                   abort=lambda: False, writers=writers.table(), existing=lambda n: [], debug=notes))
+    return out, [n["auto_add"] for n in notes]
+
+
+def test_an_old_text_is_not_added_because_a_newer_line_arrived_after_the_yes(store, yes):
+    # 3 h ago Maya sends the date; 2 h ago the person says yes; 1 h ago Maya sends a thumbs up.
+    item = conversation("Maya Chen", (3.0, RECITAL), (1.0, "👍 see you"))
+    assert item["received_ts"] == NOW - 3600 and item["line_ts"] == [NOW - 3 * 3600, NOW - 3600]
+    yes(NOW - 2 * 3600)
+    writers = Writers()
+    out, notes = production_step(store, survivors(item), writers)
+    assert writers.calls == [] and out["added"] == [] and store.auto_added() == {}
+    assert [c["action"]["method"] for c in out["tap"]] == ["calendar_event"]     # still offered, for a tap
+    assert notes == ["arrived before the yes: tap to add"]
+
+
+def test_a_dated_line_that_itself_arrived_after_the_yes_is_added(store, yes):
+    item = conversation("Maya Chen", (3.0, "hey are you around this weekend"), (1.0, RECITAL))
+    yes(NOW - 2 * 3600)
+    writers = Writers()
+    out, _ = production_step(store, survivors(item), writers)
+    assert [k for k, _ in writers.calls] == ["calendar"] and len(out["added"]) == 1
+
+
+def test_a_line_whose_arrival_time_is_not_known_is_never_added_without_a_tap(store, yes):
+    item = conversation("Maya Chen", (1.0, RECITAL))
+    yes(NOW - 2 * 3600)
+    for broken in ({**item, "line_ts": []}, {k: v for k, v in item.items() if k != "line_ts"},
+                   {**item, "line_ts": [None]}, {**item, "line_ts": ["soon"]}):
+        writers = Writers()
+        out, _ = production_step(store, survivors(broken), writers)
+        assert writers.calls == [] and out["added"] == [] and store.auto_added() == {}
+
+
+def test_an_old_threads_subject_is_not_added_because_a_reply_arrived_after_the_yes(store, yes):
+    rows = [dict(ts=NOW - 3 * 3600, account="iCloud", account_id="acct-1", sender="Ed Park <ed@ucsc.edu>",
+                 sender_address="ed@ucsc.edu", to=ME, subject="Project report due Friday Oct 30 at 5 PM",
+                 message_id="m-1", body="Details attached.", unread=True),
+            dict(ts=NOW - 3600, account="iCloud", account_id="acct-1", sender="Ed Park <ed@ucsc.edu>",
+                 sender_address="ed@ucsc.edu", to=ME, subject="Re: Project report due Friday Oct 30 at 5 PM",
+                 message_id="m-2", body="Thanks everyone.", unread=True)]
+    items = sources.mail_items(rows, mine={ME}, now=NOW, tz=TZ, linked=set(), own=ME)
+    assert len(items) == 1 and items[0]["subject_ts"] == NOW - 3 * 3600 and items[0]["received_ts"] == NOW - 3600
+    yes(NOW - 2 * 3600)
+    writers = Writers()
+    out, _ = production_step(store, survivors(items[0]), writers)
+    assert writers.calls == [] and out["added"] == []
+    # The same subject on a thread that began after the yes is added.
+    fresh = sources.mail_items([{**rows[0], "ts": NOW - 1800, "message_id": "m-9",
+                                 "subject": "Lab report due Friday Oct 30 at 5 PM"}],
+                               mine={ME}, now=NOW, tz=TZ, linked=set(), own=ME)
+    writers = Writers()
+    out, _ = production_step(store, survivors(fresh[0]), writers)
+    assert [k for k, _ in writers.calls] == ["reminder"]
+
+
+def test_a_caller_that_replaces_the_setting_must_also_say_which_arrivals_it_covers(store):
+    writers = Writers()
+    out = asyncio.run(autoadd.step(survivors(text("Maya", RECITAL)), {"calendar": [], "reminders": []}, now=NOW,
+                                   tz=TZ, store=store, abort=lambda: False, writers=writers.table(),
+                                   existing=lambda n: [], is_enabled=lambda: True))      # no `allows` given
+    assert writers.calls == [] and out["added"] == [] and len(out["tap"]) == 1
