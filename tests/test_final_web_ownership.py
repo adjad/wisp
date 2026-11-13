@@ -78,7 +78,7 @@ def test_an_owner_nobody_can_place_stays_unknown_and_closed(prompt):
 SEARCH_ONLY = [
     "Who won Sunday's game?", "What's Apple's stock price today?", "what's Apple's stock doing today",
     "What is Tesla's market cap right now?", "What's McDonald's new burger this month?",
-    "Does McDonald's have breakfast all day today?", "What's the Warriors' score tonight?",
+    "What's the Warriors' score tonight?", "What's Dad's Army showing tonight?",
     "What's Dr Pepper's new flavor this year?", "what are these stocks' P/E ratios today",
     "What's Google's latest phone this year?", "When is Mother's Day this year?",
     "What are Costco's hours?", "Is Trader Joe's open on Thanksgiving?", "Is Papa John's open today?",
@@ -185,3 +185,186 @@ def test_the_loop_holds_a_public_owner_search_to_the_users_words(synthetic):
         prompt="Who won Sunday's game?", approval=approval)
     assert effects == [("web_search", {"query": "who won Sunday's game"})]
     assert not approval.calls
+
+
+# ---- review of cc372f2e ------------------------------------------------------
+
+from service.router.model_led import PRIVATE_WEB_TOOLS, UNOWNED_EGRESS_TOOLS  # noqa: E402
+from service.tools.registry import REGISTRY  # noqa: E402
+
+OTHER_EGRESS = ["wikipedia_summary", "find_place", "travel_time", "route_to_arrive", "get_weather", "get_stock_price"]
+
+
+def test_the_outbound_tool_sets_name_every_tool_that_sends_words_out():
+    assert PRIVATE_WEB_TOOLS == {"web_search", "web_fetch", "http_request", "wikipedia_summary"}
+    assert UNOWNED_EGRESS_TOOLS == PRIVATE_WEB_TOOLS | {"find_place", "travel_time", "route_to_arrive",
+                                                        "get_weather", "get_stock_price"}
+    import service.main  # noqa: F401  (registers the built-ins)
+    assert set(OTHER_EGRESS) <= set(REGISTRY)
+
+
+@pytest.mark.parametrize("tool", ["web_search", "web_fetch", "http_request", *OTHER_EGRESS])
+@pytest.mark.parametrize("prompt", ["Did Sam's package arrive today?", "What's Dana's address now?",
+                                    "Is Ben's fever down today?", "How did Priya's interview go today?"])
+def test_a_turn_of_unknown_ownership_offers_no_tool_that_sends_words_out(prompt, tool):
+    assert classify(prompt).provenance == Provenance.UNKNOWN
+    assert tool in _model_led_forbidden(prompt)
+
+
+@pytest.mark.parametrize("prompt", ["What time is Mom's flight tomorrow?", "How is Grandma doing today?",
+                                    "what's Mom's number", "What are Costco's hours?"])
+def test_a_private_turn_withholds_wikipedia_and_keeps_maps_weather_and_prices(prompt):
+    forbidden = _model_led_forbidden(prompt)
+    assert {"web_fetch", "http_request", "wikipedia_summary"} <= forbidden
+    # Known limit, on purpose: "drive time to Mom's" needs the maps tools, so a
+    # private turn still offers place, route, weather and price lookups.
+    assert not {"find_place", "travel_time", "route_to_arrive", "get_weather", "get_stock_price"} & forbidden
+
+
+def _egress_tools(register):
+    _web_tools(register)
+    for name in OTHER_EGRESS:
+        register(name, "web_tools", "web_read", parameters={"type": "object", "properties": {
+            "query": {"type": "string"}, "topic": {"type": "string"}, "location": {"type": "string"}}})
+
+
+@pytest.mark.parametrize("tool", ["web_search", "web_fetch", *OTHER_EGRESS])
+def test_the_loop_runs_none_of_them_on_a_turn_of_unknown_ownership(synthetic, tool):
+    effects, register = synthetic
+    _egress_tools(register)
+    approval = Approval(False)
+    args = {"url": "https://example.com"} if tool == "web_fetch" else {"query": "Dana address"}
+    run([[call(DISCOVERY_TOOL, families=["public_web"], tools=[tool])], [call(tool, **args)], "Synthetic reply."],
+        prompt="What's Dana's address now?", approval=approval)
+    assert not effects and not approval.calls
+
+
+@pytest.mark.parametrize("history", [(), "private"])
+def test_the_loop_refuses_wikipedia_on_a_private_turn_with_or_without_history(synthetic, history):
+    from tests.test_model_led_integration import PRIVATE_HISTORY
+    effects, register = synthetic
+    _egress_tools(register)
+    approval = Approval(False)
+    run([[call(DISCOVERY_TOOL, families=["public_web"], tools=["wikipedia_summary", "web_search"])],
+        [call("wikipedia_summary", topic="Grandma")], [call("web_search", query="Grandma health today")],
+        "Synthetic reply."], prompt="How is Grandma doing today?",
+        history=PRIVATE_HISTORY if history else (), approval=approval)
+    assert not effects and not approval.calls
+
+
+def test_with_private_history_a_public_owner_search_is_still_words_only(synthetic):
+    from tests.test_model_led_integration import PRIVATE_HISTORY
+    effects, register = synthetic
+    _egress_tools(register)
+    approval = Approval(False)
+    run([[call(DISCOVERY_TOOL, families=["public_web"], tools=["web_search", "web_fetch", "wikipedia_summary"])],
+        [call("web_search", query="Apple stock price today gate code 4471")],
+        [call("wikipedia_summary", topic="Apple gate code 4471")],
+        [call("web_search", query="Apple stock price today")], "Synthetic reply."],
+        prompt="What's Apple's stock price today?", history=PRIVATE_HISTORY, approval=approval)
+    assert effects == [("web_search", {"query": "Apple stock price today"})]
+
+
+# A kin word makes a request private only when it is whom the question is about.
+KIN_ABOUT = [
+    "How is Grandma doing today?", "Is Mom home yet?", "Where is Dad right now?", "Did Dad call?",
+    "Is my sister coming", "is my mom ok", "any news about our landlord today", "What did Mom say?",
+    "Did the hospital call Mom today?", "Will they let Dad go home today?", "any news from mom",
+    "Tell me if Mom is online right now", "do you know when Dad lands", "What time is Mom's flight tomorrow?",
+    "Has grandma arrived yet?", "When does Dad land tonight?",
+]
+KIN_MERELY_NAMED = [
+    "husband pillow reviews 2026", "best gifts for dad", "landlord tenant law changes this year",
+    "Daddy Yankee tour dates this year", "Brother HL-L2350DW driver", "Sister Wives new season",
+    "mother of the bride dresses", "Is Papa Roach touring this year?", "Is Son Heung-min playing today?",
+    "Is Brother printer support open today?", "best gift ideas for mom this year", "how to be a good dad",
+    "husband and wife comedy movies 2026", "uncle sam poster history", "what is a roommate agreement",
+]
+
+
+@pytest.mark.parametrize("prompt", KIN_ABOUT)
+def test_a_question_about_kin_is_private(prompt):
+    assert mo.personal_reference(prompt) or mo.personal_owner(prompt), prompt
+    assert classify(prompt).provenance == Provenance.PRIVATE
+    assert {"web_search", "web_fetch", "wikipedia_summary"} <= _model_led_forbidden(prompt)
+
+
+@pytest.mark.parametrize("prompt", KIN_MERELY_NAMED)
+def test_a_kin_word_that_merely_appears_leaves_the_request_public(prompt):
+    assert not mo.personal_reference(prompt) and not mo.personal_owner(prompt), prompt
+    assert classify(prompt).provenance == Provenance.EXTERNAL
+    assert "web_search" not in _model_led_forbidden(prompt)
+
+
+def test_dads_army_is_a_show_and_keeps_a_words_only_search():
+    request = classify("What's Dad's Army showing tonight?")
+    assert request.public_possessive and "web_search" not in _model_led_forbidden("What's Dad's Army showing tonight?")
+
+
+def test_online_as_a_state_is_not_a_request_to_search():
+    from service.router.web_request import _explicit
+    for prompt in ("Tell me if Mom is online right now", "show me who is online", "check if the site is back online"):
+        assert not _explicit(prompt), prompt
+    assert classify("Tell me if Mom is online right now").provenance == Provenance.PRIVATE
+    for prompt in ("search the web for Dana's bakery", "tell me the news online", "look up Costco hours online",
+                   "lookup current information about cities not online; save it in Notes"):
+        assert _explicit(prompt.split(";")[0]), prompt
+
+
+def test_a_recipient_is_skipped_only_at_the_start_of_the_request():
+    for prompt in ("Did the hospital call Mom today?", "Will they let Dad go home today?",
+                   "did anyone text mom about dinner today"):
+        assert classify(prompt).provenance == Provenance.PRIVATE, prompt
+    for prompt in ("text mom the bitcoin price right now", "please email Mom the latest Zorvia news; don't send it",
+                   "can you text dad the weather today"):
+        assert classify(prompt).provenance == Provenance.EXTERNAL, prompt
+
+
+# An unknown name reopens a search only with a public noun.
+@pytest.mark.parametrize("prompt", [
+    "Is Ben's fever down today?", "How did Priya's interview go today?", "How's Maya's recovery going today?",
+    "What's Sam's latest test result today?", "Is Dana's new baby home today?", "Does McDonald's have breakfast all day today?",
+    "What's Ben's status today?", "Where is Priya's team meeting today?",
+])
+def test_an_unknown_name_with_no_public_noun_stays_closed(prompt):
+    assert not mo.public_owner_request(prompt)
+    assert not classify(prompt).public_possessive
+    forbidden = _model_led_forbidden(prompt)
+    assert {"web_search", "web_fetch", "wikipedia_summary"} <= forbidden, prompt
+    if classify(prompt).provenance == Provenance.UNKNOWN:
+        assert set(UNOWNED_EGRESS_TOOLS) & set(REGISTRY) <= forbidden
+
+
+def test_papa_johns_before_and_after_on_purpose(monkeypatch):
+    """rc2 (e27dcd1b) classed "Is Papa John's open today?" UNKNOWN and a
+    model-led turn left every web tool open for it. bb539d87 closed it
+    entirely, because "papa" is a kin word: an over-block. It now gets what a
+    pizza chain's hours should: one search of the user's own words, no fetch."""
+    prompt = "Is Papa John's open today?"
+    request = classify(prompt)
+    assert request.provenance == Provenance.PRIVATE and request.public_possessive
+    forbidden = _model_led_forbidden(prompt)
+    assert "web_search" not in forbidden and {"web_fetch", "http_request", "wikipedia_summary"} <= forbidden
+    # The known-person check still runs on the owner's words.
+    monkeypatch.setattr(mo, "_known_people_tokens", lambda: {"john", "papa"})
+    assert not mo.public_possessive_question(prompt)
+    assert "web_search" in _model_led_forbidden(prompt)
+
+
+@pytest.mark.parametrize("mark", ["\ua78c", "\u02bd", "\u02c8", "\u2035", "\u02b9", "\u2032", "\u00b4", "`"])
+def test_any_apostrophe_lookalike_closes_the_request(mark):
+    prompt = f"Is Trader Joe{mark}s open today?"
+    assert mo.lookalike_possessive(prompt)
+    assert classify(prompt).provenance == Provenance.PRIVATE
+    assert {"web_search", "web_fetch"} <= _model_led_forbidden(prompt)
+
+
+def test_an_accented_word_ending_in_s_is_not_a_lookalike():
+    for prompt in ("best caf\u00e9s in Paris today", "Beyonc\u00e9s", "pi\u00f1atas for sale today"):
+        assert not mo.lookalike_possessive(prompt), prompt
+
+
+def test_one_year_does_not_excuse_another_long_number():
+    assert mo.public_owner_request("What's Acme's 2026 price today?")
+    assert not mo.public_owner_request("What's Acme's 2026 price for order 4155550123 today?")
+    assert not mo.public_owner_request("What's Acme's price for 20261 today?")
