@@ -427,7 +427,11 @@ def test_it_is_off_by_default_and_only_a_dated_yes_in_the_gates_own_file_turns_i
     for text in ('{"enabled": true}', '{"enabled": "true", "enabled_at": 5.0}', '{"enabled": false, "enabled_at": 5.0}'):
         path.write_text(text)
         assert config.proactive_auto_add_enabled() is False and autoadd.enabled() is False
-    path.write_text('{"enabled": true, "enabled_at": 5.0}')
+    path.write_text('{"enabled": true, "enabled_at": 5.0}')              # a yes that named no action
+    assert config.proactive_auto_add_enabled() is False and autoadd.enabled() is False
+    path.write_text('{"enabled": true, "enabled_at": 5.0, "covers": {"hold": 5.0}}')
+    assert config.proactive_auto_add_enabled() is False and autoadd.enabled() is False
+    path.write_text('{"enabled": true, "enabled_at": 5.0, "covers": {"add": 5.0}}')
     assert config.proactive_auto_add_enabled() is True and autoadd.enabled() is True
 
 

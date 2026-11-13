@@ -683,7 +683,12 @@ def _sender_field(meta: dict) -> str:
     address = meta.get("sender_address") or ""
     if meta["name"] and address:
         return f"{meta['name']} <{address}>"
-    return address or meta["name"]
+    if address:
+        return address
+    # No clean address: the name alone, unless the name itself reads like an address or a
+    # bracket, which would then pass for one. Such a sender has nothing to show.
+    name = str(meta["name"] or "")
+    return "" if any(mark in name for mark in "@<>") else name
 
 
 def _mid_key(message_id) -> str:

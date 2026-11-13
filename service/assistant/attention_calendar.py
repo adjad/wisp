@@ -90,6 +90,12 @@ async def create_calendar(plan: dict, *, approval: _Approval | None = None,
                 settings = load_settings(settings_path(MOE_DIR))
                 if settings.mode != "live" or getattr(settings, "capture_events", False) is not True:
                     return "Automatic Calendar capture has not been enabled"
+                # Checked here as well as by the caller's callback: only a plan read from a
+                # text may be written without a tap; mail waits for the person
+                # (service/attention/event_capture.MAIL_CAPTURES_ITSELF).
+                from service.attention import event_capture
+                if not str(plan["source_id"]).startswith("msg:") and not event_capture.MAIL_CAPTURES_ITSELF:
+                    return "A plan from email waits for you to review and add it"
             elif not (isinstance(approval, _Approval) and approval.seal is _SEAL and approval.digest == digest):
                 return "Review this exact event before adding it to Calendar"
             return None

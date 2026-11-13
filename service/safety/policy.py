@@ -1162,19 +1162,45 @@ _SHELL_WORD_BREAK = re.compile(r"[\s'\";|&()<>]+")
 
 
 def _moe_glob_hit(form: str) -> str | None:
-    """A wildcard path inside Wisp's folder (`~/.moe/act_for*.json`, `~/.moe/*.json`,
-    `~/.moe/a[c]cess_mode.jso?`) that can expand to a protected file. Only words that name
-    Wisp's folder are looked at, so `ls *.json` elsewhere is untouched."""
+    """A wildcard that can expand to a protected file in Wisp's folder.
+
+    - a wildcard in the file name: `~/.moe/act_for*.json`, `~/.moe/*.json`, `~/.moe/a[c]t*`;
+    - a wildcard in the FOLDER name too: `~/.m?e/act*`, `~/.*/gra*`;
+    - braces: `~/.moe/{grants,act_for_me}.json`, `~/.moe/act_for_me.{json,bak}`;
+    - a bare wildcard after the folder was named elsewhere in the command:
+      `cd ~/.moe && cat act*`.
+    Only words that can reach Wisp's folder are looked at, so `ls *.json` elsewhere is
+    untouched. Errs toward a hit: a hit means "ask first", never "refuse"."""
     import fnmatch
     from service.paths import MOE_DIR
-    roots = {".moe/", str(MOE_DIR).rstrip("/") + "/"}
+    moe = str(MOE_DIR).rstrip("/")
+    folder_names = {".moe", moe.rsplit("/", 1)[-1]}
+    names_folder = any(root in form for root in (".moe", moe))
+
+    def expands(pattern: str) -> bool:
+        options = [pattern]
+        for _ in range(4):                                  # {a,b} alternatives, a few levels
+            grown = []
+            for option in options:
+                found = re.search(r"\{([^{}]*)\}", option)
+                if not found:
+                    grown.append(option)
+                    continue
+                grown += [option[:found.start()] + part + option[found.end():] for part in found.group(1).split(",")]
+            if grown == options:
+                break
+            options = grown[:64]
+        return any(fnmatch.fnmatchcase(name, option) for option in options for name in _MOE_PROTECTED_NAMES)
+
     for word in _SHELL_WORD_BREAK.split(form):
-        if not any(mark in word for mark in "*?[") or not any(root in word for root in roots):
+        if not any(mark in word for mark in "*?[{"):
             continue
-        tail = next(word.split(root, 1)[1] for root in roots if root in word)
-        first = tail.split("/", 1)[0]                # the entry directly inside the folder
-        if any(fnmatch.fnmatchcase(name, first) for name in _MOE_PROTECTED_NAMES):
-            return "a protected Wisp file (wildcard)"
+        parts = [part for part in word.split("/") if part not in ("", ".")]
+        for index, part in enumerate(parts[:-1]):
+            if any(fnmatch.fnmatchcase(folder, part) for folder in folder_names) and expands(parts[index + 1]):
+                return "a protected Wisp file (wildcard)"
+        if names_folder and "/" not in word.strip("./") and expands(word.lstrip("./")):
+            return "a protected Wisp file (wildcard)"       # a bare wildcard, the folder named elsewhere
     return None
 
 
