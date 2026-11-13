@@ -113,6 +113,18 @@ struct ProactiveChecks {
               && ProactiveCard.Action(method: "read", button: "  ").label == "Got it", "fallback button words")
         check(ProactiveCard(id: "x", sources: [.init(kind: "messages")]).metaLine == "TEXTS"
               && ProactiveCard(id: "y").metaLine == "BEFORE YOU ASK", "fallback meta lines")
+        // A "Wisp did this" card says who acted, and its button is a plain Undo, not a question.
+        let did = try? JSONDecoder().decode(ProactiveCard.self, from: Data("""
+            {"id":"card:d","meta":"ADDED · CALENDAR","title":"Added Dinner with Maya to your calendar",
+             "action":{"method":"undo_add","button":"Undo?"}}
+            """.utf8))
+        check(did?.wispDidThis == true && did?.metaLine == "WISP DID THIS · CALENDAR"
+              && did?.action?.undoLabel == "Undo", "a done card's meta line: \(did?.metaLine ?? "")")
+        check(ProactiveCard.didThisLine("ADDED · REMINDER") == "WISP DID THIS · REMINDER"
+              && ProactiveCard.didThisLine("") == "WISP DID THIS"
+              && ProactiveCard.didThisLine("REMINDER") == "WISP DID THIS · REMINDER"
+              && ProactiveCard.didThisLine("done") == "WISP DID THIS"
+              && ProactiveCard(id: "z").wispDidThis == false, "done-card meta line fallbacks")
         check(ProactiveThread(id: "m", source: "mail", title: "Subject", replyRef: ["message_id": "r"]).canReply
               && !ProactiveThread(id: "m", source: "mail", replyRef: ["account": "a"]).canReply
               && ProactiveThread(id: "m", source: "mail", title: "Subject").line == "Subject", "threads")

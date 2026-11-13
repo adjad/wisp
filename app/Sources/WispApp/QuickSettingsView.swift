@@ -35,6 +35,9 @@ struct QuickSettingsView: View {
     @AppStorage(ReadAloudVoice.rateKey) private var voiceRate = 1.0
     /// The title and switcher's laid-out height, which grows with Text size.
     @State private var fixedHeight: CGFloat = 0
+    @ObservedObject private var acting = ActForMeModel.shared
+    /// The person flipped "Let Wisp act for me" on and has not confirmed yet.
+    @State private var confirmingAct = false
     /// Decides whether the Google row shows at all (new users only).
     @StateObject var google = NotchGoogleModel()
     @AppStorage(VoiceReplyMode.defaultsKey) private var voiceRepliesRaw = VoiceReplyMode.afterVoice.rawValue
@@ -176,6 +179,8 @@ struct QuickSettingsView: View {
             switch section {
             case .general:
                 fullAccessRow
+                hairline
+                actForMeRow
                 hairline
                 learningRow
                 hairline
@@ -337,6 +342,41 @@ struct QuickSettingsView: View {
                 .disabled(settings.fullAccessPending)
             }
         }
+    }
+
+    /// "Let Wisp act for me" (service/proactive/acting.py). On asks once more, in the row itself
+    /// (a dialog would cover the notch); off is immediate. Unknown state offers Check and Turn off.
+    private var actForMeRow: some View {
+        let state = acting.state
+        return row(ActForMe.title, help: state?.consent ?? "Wisp does a few things without asking, each with an Undo.") {
+            if let problem = acting.problem {
+                Text(problem)
+            } else if confirmingAct, let state {
+                Text("Wisp will act without asking, up to \(state.perDay) a day, each with an Undo. " + state.never)
+            } else if let state {
+                Text(state.enabled ? "On · every action has an Undo" : "Off · Wisp waits for your tap")
+            } else {
+                Text("Wisp couldn't check this yet.")
+            }
+        } control: {
+            if confirmingAct {
+                HStack(spacing: 6) {
+                    pillButton("Turn on", primary: true) { confirmingAct = false; acting.set(true) }
+                    pillButton("Cancel") { confirmingAct = false }
+                }
+            } else if let state {
+                Toggle(ActForMe.title, isOn: Binding(get: { state.enabled },
+                                                    set: { on in if on { confirmingAct = true } else { acting.set(false) } }))
+                    .toggleStyle(NotchSwitch())
+                    .disabled(acting.pending)
+            } else {
+                HStack(spacing: 6) {
+                    pillButton("Check") { Task { await acting.refresh() } }
+                    pillButton("Turn off") { acting.set(false) }
+                }
+            }
+        }
+        .task { await acting.refresh() }
     }
 
     private var learningRow: some View {

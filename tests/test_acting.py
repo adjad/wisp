@@ -134,6 +134,20 @@ def test_the_daily_cap_is_shared_by_every_kind(setting, store):
     assert acting.room(store, NOW + acting.DAY_S + 100) == acting.MAX_PER_DAY
 
 
+def test_a_module_can_read_its_own_records_and_count(setting, store):
+    _follow_up(store, now=NOW + 1, fp="f-1")
+    acting.record(store, "f-2", kind="follow_up", status="undone", now=NOW + 2, title="t", person="maya@x")
+    acting.record(store, "f-3", kind="follow_up", status="failed", now=NOW + 3, title="t")
+    acting.record(store, "h-1", kind="hold", status="added", now=NOW + 4, title="t")
+    assert [r["fingerprint"] for r in acting.records(store, kind="follow_up")] == ["f-3", "f-2", "f-1"]
+    undone = acting.records(store, kind="follow_up", statuses=("undone", "undo_unknown"))
+    assert [(r["fingerprint"], r["person"]) for r in undone] == [("f-2", "maya@x")]
+    assert acting.done_since(store, NOW, kind="follow_up") == 2 and acting.done_since(store, NOW) == 3
+    assert acting.done_since(store, NOW + 2.5, kind="follow_up") == 0
+    acting.records(store)[0]["status"] = "changed"                       # copies: the store is untouched
+    assert store.auto_added()["h-1"]["status"] == "added"
+
+
 def test_recent_lists_words_only(setting, store):
     _follow_up(store)
     [row] = acting.recent(store, NOW + 20)
@@ -188,3 +202,36 @@ def test_this_file_is_in_the_simulation_manifest():
     from pathlib import Path
     manifest = (Path(__file__).resolve().parents[1] / "scripts" / "run_simulation_qa.py").read_text()
     assert '"tests/test_acting.py"' in manifest
+
+
+# --- one path per message: Caught for you steps aside while Wisp acts for you --------------------
+
+def test_caught_for_you_stops_creating_while_wisp_acts_for_you(setting, monkeypatch):
+    from service.assistant import attention_runner as runner
+    from service.attention.live import Settings
+    live = Settings(mode="live", capture_events=True)
+    assert runner.one_path(live) == live                               # acting off: unchanged
+    for other in (Settings(mode="shadow"), Settings(mode="off")):
+        assert runner.one_path(other) == other
+    acting.set_enabled(True, now=NOW)
+    stepped = runner.one_path(live)
+    assert stepped.mode == "shadow" and stepped.capture_events is True and stepped.daily_cap == live.daily_cap
+    assert runner.one_path(Settings(mode="off")).mode == "off"          # off is never turned into anything else
+    acting.set_enabled(False)
+    assert runner.one_path(live) == live
+
+    def broken():
+        raise RuntimeError("unreadable")
+    monkeypatch.setattr(acting, "enabled", broken)
+    assert runner.one_path(live).mode == "shadow"                       # unknown never leaves two writers
+
+
+def test_auto_add_never_adds_what_is_already_on_the_list(store):
+    import tests.test_proactive_auto_add as T
+    item = T.text("Maya Chen", T.RECITAL)
+    plan, _ = autoadd.plan_for(item, dict(T.OK), now=T.NOW, tz=T.TZ)
+    # Caught for you (or the person) already made a reminder for it.
+    existing = [{"source": "reminders", "title": "Maya recital", "when_ts": plan["start_ts"] - 1800}]
+    writers = T.Writers()
+    out = T.step(store, T.survivors(item), writers, existing=lambda n: existing)
+    assert writers.calls == [] and out["added"] == [] and out["tap"] == []

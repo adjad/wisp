@@ -479,6 +479,10 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_proactive_auto_add.py",
     # Let Wisp act for me: the gate, the shared record and card. Fake config and store; no model, network or native write.
     "tests/test_acting.py",
+    # Hold time for a deadline under the gate: fake holds and a fake Day store; no calendar, model or native write.
+    "tests/test_autohold.py",
+    # The background cycle calling the hold step: injected fakes and a tmp store only.
+    "tests/test_autohold_cycle.py",
     "tests/test_proactive_clear.py",
     "tests/test_proactive_handled.py",
     "tests/test_proactive_sent_check.py",

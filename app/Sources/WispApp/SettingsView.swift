@@ -2186,6 +2186,10 @@ struct SettingsView: View {
 
                         Divider()
 
+                        ActForMeSettingsRow()
+
+                        Divider()
+
                         if loader.behaviorEnabled != nil {
                             Toggle(isOn: Binding(
                                 get: { loader.behaviorEnabled == true },

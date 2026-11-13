@@ -265,7 +265,8 @@ def cloud_state() -> tuple[str, str]:
 
 def _auto_add_on() -> bool:
     """Whether the Brief may add a time-sensitive event or deadline to Calendar
-    or Reminders on its own (service/proactive/autoadd.py). Off by default."""
+    or Reminders on its own (service/proactive/autoadd.py): only after the person's yes to
+    "Let Wisp act for me" (service/proactive/acting.py). Off by default."""
     try:
         from service.config import proactive_auto_add_enabled
         return proactive_auto_add_enabled()
@@ -335,7 +336,7 @@ def _attention_state() -> tuple[str, bool] | None:
 
 _SEND_OK = "Before anything is sent, I show it to you and wait for your OK."
 _CALENDAR_OK = "Before anything is sent, or your calendar changes, I show it to you and wait for your OK."
-_AUTO_ADD = ("Because auto-add is on, I may add a time-sensitive event or deadline to your Calendar "
+_AUTO_ADD = ("Because you let me act for you, I may add a time-sensitive event or deadline to your Calendar "
              "or Reminders on my own, then tell you, with Undo.")
 _ROUTINE = {
     "held": ("For your first few days I only suggest reminders from your routine. After that I may "
@@ -361,7 +362,7 @@ def _automatic_adds() -> tuple[str, list[tuple[str, str, bool]]]:
     adds: list[tuple[str, str, bool]] = []
     if _auto_add_on():
         adds.append((_AUTO_ADD, "a time-sensitive event or deadline to your Calendar or Reminders "
-                                "(auto-add is on)", False))
+                                "(you let me act for you)", False))
     routine = _routine_state()
     if mode == "unknown" and routine != "off":
         routine = "unknown"

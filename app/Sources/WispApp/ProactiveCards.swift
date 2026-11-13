@@ -503,6 +503,8 @@ struct ProactiveBriefSection: View {
             }
             .frame(height: Self.controlsHeaderHeight)
             if proactive.isWorking || actions.analyzePending() { progressRow }
+            // Asked once, for an install set up before Wisp could act on its own (ActForMe.swift).
+            ActForMeAskCard(place: .brief)
             if !actions.analyzeError.isEmpty {
                 Text(actions.analyzeError).font(.wisp(size: 11)).foregroundStyle(Theme.bad)
             }
@@ -608,9 +610,14 @@ struct ProactiveBriefSection: View {
         let hasDraft = !(action?.draft ?? "").isEmpty
         return VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
+                if card.wispDidThis {
+                    // Already done by Wisp: a tick and brighter ink set it apart from cards that ask.
+                    Image(systemName: "checkmark.circle.fill").font(.wisp(size: 10.5, weight: .semibold))
+                        .foregroundStyle(Theme.textSecondary).accessibilityHidden(true)
+                }
                 Text(card.metaLine)
                     .font(.wisp(size: 10, weight: .medium, design: .monospaced)).tracking(0.6)
-                    .foregroundStyle(Theme.textMuted).lineLimit(1)
+                    .foregroundStyle(card.wispDidThis ? Theme.textSecondary : Theme.textMuted).lineLimit(1)
                     .help(card.why)
                 Spacer(minLength: 4)
                 if actions.dismissing.contains(card.id) {
@@ -741,6 +748,24 @@ struct ProactiveBriefSection: View {
             .padding(.horizontal, 12).padding(.vertical, 5)
             .background(Capsule().fill(Theme.chipOn))
         default:
+            if action.method == "undo_add" {
+                // The add already happened, so Undo is the quiet button: an outline, not the white pill.
+                Button { Task { await actions.fire(card, today: today); model.onResize() } } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.uturn.backward").font(.wisp(size: 10, weight: .bold))
+                        Text(isFailed(fire) ? "Try again" : action.undoLabel).lineLimit(1)
+                    }
+                    .font(.wisp(size: 12.5, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+                    .padding(.horizontal, 12).padding(.vertical, 5)
+                    .background(Capsule().fill(Theme.chipFill))
+                    .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .fixedSize()
+                .help("Removes exactly what Wisp added, and Wisp won't add it again")
+                .accessibilityLabel("Undo: remove what Wisp added")
+            } else {
             let draftOpen = actions.openDrafts.contains(card.id)
             Button { Task { await actions.fire(card, today: today); model.onResize() } } label: {
                 Text(isFailed(fire) && (draftOpen || !action.sendsDraft) ? "Try again"
@@ -756,6 +781,7 @@ struct ProactiveBriefSection: View {
             .help(action.sendsDraft ? (draftOpen ? "Sends exactly the draft above, as it reads now"
                                                  : "Shows the draft first; nothing is sent until you tap Send")
                   : card.why)
+            }
         }
     }
 

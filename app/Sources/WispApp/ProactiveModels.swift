@@ -350,6 +350,9 @@ struct ProactiveCard: Decodable, Equatable, Identifiable {
             }
         }
 
+        /// A done card's button undoes something that already happened, so it is not a question.
+        var undoLabel: String { "Undo" }
+
         /// Whether the draft is something the person sends, so it opens editable.
         var sendsDraft: Bool { method == "email_reply" || method == "text_reply" }
 
@@ -410,7 +413,19 @@ struct ProactiveCard: Decodable, Equatable, Identifiable {
     var chipTitle: String { title.isEmpty ? metaLine.capitalized : title }
 
     /// The meta line, uppercased; built from the first source when the engine sent none.
+    /// A "Wisp did this" card: Wisp already added the event or reminder, and the button undoes it.
+    var wispDidThis: Bool { action?.method == "undo_add" }
+
+    /// The meta line of a "Wisp did this" card says who acted: "WISP DID THIS · CALENDAR".
+    static func didThisLine(_ meta: String) -> String {
+        // "ADDED · CALENDAR" names the place after the dot; a plain "REMINDER" is the place itself.
+        let parts = meta.split(separator: "·").map { $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() }
+        let place = parts.count > 1 ? parts.dropFirst().joined(separator: " · ") : (parts.first ?? "")
+        return place.isEmpty || place == "DONE" ? "WISP DID THIS" : "WISP DID THIS · " + place
+    }
+
     var metaLine: String {
+        if wispDidThis { return Self.didThisLine(meta) }
         let trimmed = meta.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { return trimmed.uppercased() }
         let kind = sources.first.map { DayTimeline.sourceName($0.kind) } ?? ""

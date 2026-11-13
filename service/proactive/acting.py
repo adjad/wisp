@@ -39,6 +39,8 @@ FOR A NEW KIND OF ACTION (the interface; see tests/test_acting.py):
                   show_until=due_ts, undo={...whatever your undoer needs...})
     acting.register_undoer("follow_up", my_async_undo)   # async (record) -> {"ok": bool, "status": str}
 `autoadd.done_cards` then shows the card, and the card's Undo reaches your undoer.
+Also name your module in `_HOME` below (it must expose `async def undo(record)`), so Undo
+still works after a restart, before your step has run.
 """
 from __future__ import annotations
 
@@ -59,6 +61,7 @@ LANDED = ("added", "undone", "unknown", "undo_unknown")
 # is built: a module adds its line here in the same change that makes it act.
 DOES: list[str] = [
     "Adds an event or deadline you missed in a text or email to Calendar or Reminders.",
+    "Holds a free hour on your Day plan for work due in the next three days (in Wisp only, never on your calendar).",
     "Reminds you to reply when someone you talk to often asked you something a day ago and hasn't heard back.",
 ]
 NEVER = "Wisp never sends, replies, deletes or pays for anything by itself."
@@ -146,9 +149,21 @@ def audit(event: str, **fields) -> None:
 
 # --- the record of what Wisp did --------------------------------------------------------------
 
-def done_since(store, since: float) -> int:
-    return sum(1 for v in store.auto_added().values()
-               if isinstance(v, dict) and v.get("status") in LANDED and float(v.get("at") or 0) >= since)
+def records(store, *, kind: str | None = None, statuses: tuple[str, ...] | None = None,
+            since: float | None = None) -> list[dict]:
+    """The stored actions, newest first, optionally of one kind, in given statuses, since a time.
+    Read-only copies. Each has "fingerprint", "kind", "status", "at", "item_id", "who" and
+    whatever its module stored (a follow-up's person key, say, passed to record() as **more)."""
+    rows = [dict(v) for v in store.auto_added().values() if isinstance(v, dict)
+            and (kind is None or v.get("kind") == kind)
+            and (statuses is None or v.get("status") in statuses)
+            and (since is None or float(v.get("at") or 0) >= since)]
+    return sorted(rows, key=lambda r: -float(r.get("at") or 0))
+
+
+def done_since(store, since: float, kind: str | None = None) -> int:
+    """Actions since `since` that may have changed something (LANDED), of every kind or one."""
+    return len(records(store, kind=kind, statuses=LANDED, since=since))
 
 
 def room(store, now: float) -> int:
@@ -188,7 +203,20 @@ def register_undoer(kind: str, undoer: Callable[[dict], Awaitable[dict]]) -> Non
     _undoers[kind] = undoer
 
 
+# The module that registers each kind's undoer, so Undo works in a process that has not
+# run that kind's step yet (after a restart, the card is still there).
+_HOME = {"hold": "service.proactive.autohold"}
+
+
 def undoer(kind: str):
+    if kind not in _undoers and kind in _HOME:
+        try:
+            import importlib
+            found = getattr(importlib.import_module(_HOME[kind]), "undo", None)
+            if callable(found):
+                _undoers[kind] = found
+        except Exception:  # noqa: BLE001 — no undoer: Undo says it can't, and nothing changes
+            pass
     return _undoers.get(kind)
 
 
