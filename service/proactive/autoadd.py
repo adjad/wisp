@@ -374,6 +374,10 @@ def plan_for(item: dict, result: dict | None, *, now: float, tz: str) -> tuple[d
             return None, "not a person, school or confirmation"
     elif not person:
         return None, "not a person"
+    # A sender whose display name carries an address or a bracket is posing as someone:
+    # nothing is added on its strength (sources.odd_sender).
+    if item.get("odd_sender"):
+        return None, "sender name carries an address"
     # A stranger never writes to the user's calendar: a person must be someone
     # the user has written to, or a saved contact (a text labelled by name).
     if person and not (item.get("user_wrote") or _saved_contact(item) or _same_org(item)):

@@ -685,3 +685,63 @@ def test_a_caller_that_replaces_the_setting_must_also_say_which_arrivals_it_cove
                                    tz=TZ, store=store, abort=lambda: False, writers=writers.table(),
                                    existing=lambda n: [], is_enabled=lambda: True))      # no `allows` given
     assert writers.calls == [] and out["added"] == [] and len(out["tap"]) == 1
+
+
+# --- a sender name dressed up as someone else's address ------------------------------------------
+
+def _row(sender, sender_address="", subject="Recital", body="Can you come to my recital Sat Oct 31 at 6pm?", **extra):
+    return dict(ts=NOW - 3600, account="iCloud", account_id="acct-1", sender=sender, sender_address=sender_address,
+                to=ME, subject=subject, message_id="m-" + subject, body=body, unread=True) | extra
+
+
+@pytest.mark.parametrize("sender, parsed, real", [
+    ('"Maya <maya@friend.com>" <x@evil.com>', "", "x@evil.com"),          # Apple Mail: the raw header
+    ("Maya <maya@friend.com> <x@evil.com>", "", "x@evil.com"),             # Gmail: quotes already dropped
+    (f'"{ME}" <x@evil.com>', "", "x@evil.com"),                            # posing as the user
+    (f"Me <{ME}> <x@evil.com>", "", "x@evil.com"),
+    ("Maya <maya@friend.com> <x@evil.com>", "x@evil.com", "x@evil.com"),   # the reader's own parsed field agrees
+    ("Maya Chen <maya@friend.com>", "", "maya@friend.com"),                # an ordinary sender is unchanged
+    ("maya@friend.com", "", "maya@friend.com"),
+    ("Maya Chen", "maya@friend.com", "maya@friend.com"),
+    ("Maya <maya@friend.com> and friends", "", "maya@friend.com"),
+    ("see maya@friend.com for details", "", ""),                           # not a mailbox: no address at all
+])
+def test_the_real_address_is_the_last_one_never_one_inside_the_name(sender, parsed, real):
+    assert sources._address({"sender": sender, "sender_address": parsed}) == real
+
+
+def test_a_stranger_posing_as_a_contact_or_as_the_user_gets_nothing_added(store, yes):
+    yes(NOW - 2 * 3600)
+    reached = 0
+    for sender in ('"Maya <maya@ucsc.edu>" <x@evil.com>', "Maya <maya@ucsc.edu> <x@evil.com>",
+                   f'"{ME}" <x@evil.com>', f"Me <{ME}> <x@evil.com>"):
+        assert sources.odd_sender(_row(sender)) is True
+        # Some of these are dropped outright by the mail filter (fine); any that become an item
+        # must be shown truthfully and must add nothing.
+        items = sources.mail_items([_row(sender)], mine={ME}, now=NOW, tz=TZ, linked=set(), own=ME)
+        if not items:
+            continue
+        reached += 1
+        [item] = items
+        assert item["odd_sender"] is True and item["who"] == "x@evil.com", sender       # shown by its real address
+        assert item["user_wrote"] is False and item["ref"]["to"] == "x@evil.com"        # not "from you", and a reply
+        assert "maya@ucsc.edu" not in item["text"] and "You (the user)" not in item["text"]   # would go to the real sender
+        plan, why = autoadd.plan_for(item, dict(OK), now=NOW, tz=TZ)
+        assert plan is None and why == "sender name carries an address"
+        writers = Writers()
+        out, _ = production_step(store, survivors(item), writers)
+        assert writers.calls == [] and out["added"] == [] and out["tap"] == []
+    assert reached >= 2                                   # the Gmail-shaped forms do become items
+    # The same message from the organisation's real address is still added.
+    [real] = sources.mail_items([_row("Ed Park <ed@ucsc.edu>", subject="Recital 2")], mine={ME}, now=NOW, tz=TZ,
+                                linked=set(), own=ME)
+    assert real["odd_sender"] is False and real["who"] == "Ed Park"
+    writers = Writers()
+    production_step(store, survivors(real), writers)
+    assert [k for k, _ in writers.calls] == ["calendar"]
+
+
+def test_an_address_in_the_name_can_no_longer_pass_for_the_users_own_organisation():
+    [posed] = sources.mail_items([_row("Dean <dean@ucsc.edu> <x@gmail.com>")], mine={ME}, now=NOW, tz=TZ,
+                                 linked=set(), own=ME)
+    assert autoadd._same_org(posed) is False and posed["ref"]["to"] == "x@gmail.com"
