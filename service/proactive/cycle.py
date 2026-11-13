@@ -774,13 +774,13 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
             traceback.print_exc()
             found = []
         # Hold time (autohold.py): once the person lets Wisp act for them, the slot is
-        # pinned on Day without a tap and its "Wisp did this" card (step 4) replaces the
-        # tap card. Wisp-local, code only; not in a cycle that yielded to a turn, and
-        # not in a light one: its done card is merged only by a full cycle (step 4).
+        # pinned on Day without a tap and its "Wisp did this" card replaces the tap card.
+        # Wisp-local, code only, so a light cycle holds too (its done card is merged just
+        # below, by _merge_done); never in a cycle that yielded to a turn or while one runs.
         try:
             from service.proactive import autohold
             found = autohold.without_undone(found, store)
-            if not (light or yielded or abort()):
+            if not (yielded or abort()):
                 held = autohold.step(found, now=now, tz=tz, store=store, abort=abort)
                 found = [c for c in found if c["id"] not in held]
         except Exception:  # noqa: BLE001 — the tap cards stand as they were
@@ -793,10 +793,14 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
     # 4. Auto-add (autoadd.py): a missed, time-sensitive event or deadline goes
     # on Calendar/Reminders through the verified writes, then a "Wisp did this"
     # card leads. Never once a turn has started; every write re-checks it.
-    if not light:      # acting waits for a build; without it the cards stay as they are
+    if not light:      # adding from mail and texts waits for a build
         await _auto_add(cards_by_account, accounts, own, _add_candidates(items, survivors, store), sched,
                         now=now, tz=tz, store=store,
                         abort=abort, autoadd_fn=None if yielded or abort() else autoadd_fn)
+    else:
+        # A light cycle adds nothing from mail or texts, but an hour it just held (step 3)
+        # must show its "Wisp did this" card with Undo now, not at the next build.
+        _merge_done(cards_by_account, accounts, own, store, now)
     # What Wisp looked at, bulk mail it skipped included. An injected collect
     # (tests) reports nothing, so its items stand in.
     if not looked:
@@ -905,6 +909,29 @@ async def _default_autoadd(survivors, sched, *, now, tz, store, abort) -> dict:
     except Exception:  # noqa: BLE001 — no follow-ups this time; auto-add's result stands
         traceback.print_exc()
     return auto
+
+
+def _merge_done(cards_by_account: dict, accounts: list[str], own: str, store, now: float) -> None:
+    """In a light cycle: put the current "Wisp did this" cards in each account's list in place
+    of the earlier ones, and drop a "Block time?" card for an hour Wisp now holds. Nothing else
+    moves: the tap-to-add cards and every other card the last build wrote stay as they are.
+    Never fails the cycle."""
+    try:
+        from service.proactive import autoadd
+        done = autoadd.done_cards(store, now)
+        held = autoadd.held_items(store)
+    except Exception:  # noqa: BLE001 — the cards stand as they were
+        traceback.print_exc()
+        return
+    for acct in accounts:
+        previous = cards_by_account.get(acct, [])
+        mine = [c for c in done if (c.get("account") or own) == acct]
+        if not mine and not any(c.get("auto_added") for c in previous):
+            continue
+        ref = lambda c: str(((c.get("sources") or [{}])[0] or {}).get("ref") or "")      # noqa: E731
+        rest = [c for c in previous if not c.get("auto_added")
+                and not (ref(c) in held and (c.get("action") or {}).get("method") in autoadd._HOLD_METHODS)]
+        cards_by_account[acct] = (mine + rest)[:prepare_mod.MAX_CARDS]
 
 
 async def _auto_add(cards_by_account: dict, accounts: list[str], own: str, survivors: list[dict], sched: dict, *,
@@ -1129,9 +1156,14 @@ async def _return_tick() -> None:
 
 async def _light_tick() -> None:
     """Between builds: the Brief kept current with no model call."""
-    global _next_tick_at
+    global _next_tick_at, _rerun
     await run_cycle(light=True)
     _next_tick_at = time.time() + IDLE_GAP_S
+    while _rerun is not None:
+        # Analyze now was pressed while this light cycle ran: the full cycle it asked for runs now.
+        request, _rerun = _rerun, None
+        _log("analyze: starting (it was queued)")
+        await run_cycle(force=True, patient=True, account=request.get("account"))
 
 
 async def _build_tick() -> None:
@@ -1176,6 +1208,7 @@ async def _tick() -> None:
     _next_tick_at = time.time() + (TICK_GAP_S if result.get("status") in ("yielded",) else IDLE_GAP_S)
     while _rerun is not None:
         request, _rerun = _rerun, None
+        _log("analyze: starting (it was queued)")
         await run_cycle(force=True, patient=True, account=request.get("account"))
 
 
@@ -1294,6 +1327,7 @@ def schedule_tick() -> asyncio.Task | None:
 
 ANALYZE_RETRIES = 3
 ANALYZE_RETRY_S = 15.0
+ANALYZE_BUSY_POLL_S = 0.5
 
 
 def analyze(account: str | None = None, **kwargs) -> dict:
@@ -1302,12 +1336,26 @@ def analyze(account: str | None = None, **kwargs) -> dict:
     global _task, _rerun
     if running():
         _rerun = {"account": account}
+        _log("analyze: queued behind a running cycle")
         return {"ok": True, "state": "working", "queued": True, "progress": _status["progress"]}
+
+    async def full(request_account):
+        # Never dropped: a cycle already running (a light tick that started in the same
+        # moment) answers "busy". Wait for it to end, then run the full cycle that was asked for.
+        result = await run_cycle(force=True, patient=True, account=request_account, **kwargs)
+        deadline = time.monotonic() + _PATIENT_WAIT_S
+        while isinstance(result, dict) and result.get("status") == "busy" and time.monotonic() < deadline:
+            _log("analyze: waiting for a running cycle to end")
+            while _running and time.monotonic() < deadline:
+                await asyncio.sleep(ANALYZE_BUSY_POLL_S)
+            result = await run_cycle(force=True, patient=True, account=request_account, **kwargs)
+        return result
 
     async def go():
         global _rerun
         retries = 0
-        result = await run_cycle(force=True, patient=True, account=account, **kwargs)
+        _log("analyze: starting")
+        result = await full(account)
         while True:
             if _rerun is None and isinstance(result, dict) and result.get("status") == "yielded" \
                     and retries < ANALYZE_RETRIES:
@@ -1318,7 +1366,7 @@ def analyze(account: str | None = None, **kwargs) -> dict:
             if _rerun is None:
                 break
             request, _rerun = _rerun, None
-            result = await run_cycle(force=True, patient=True, account=request.get("account"), **kwargs)
+            result = await full(request.get("account"))
 
     _status.update(state="working", phase="starting", account=account, progress={"done": 0, "total": 0})
     _task = asyncio.create_task(go())
