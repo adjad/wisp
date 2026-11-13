@@ -997,14 +997,14 @@ _TEXT_WORD = re.compile(r"\btext\w*|\bi?messag\w+|\bsms\b", re.I)
 
 
 def other_channel_sends(prompt: str) -> frozenset[str]:
-    """The send of the channel the person did NOT name: send_message for
-    "email Priya …", send_email for "text Priya …". Empty when both or
+    """The send and draft of the channel the person did NOT name: the text
+    ones for "email Priya …", the email ones for "text Priya …". Empty when both or
     neither are named."""
     text = " ".join((prompt or "").split())
     if _EMAIL_SOMEONE.search(text) and not _TEXT_WORD.search(text):
-        return frozenset({"send_message"})
+        return frozenset({"send_message", "draft_message"})
     if _TEXT_SOMEONE.search(text) and not _EMAIL_WORD.search(text):
-        return frozenset({"send_email"})
+        return frozenset({"send_email", "draft_email"})
     return frozenset()
 
 
