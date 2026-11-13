@@ -998,6 +998,124 @@ def test_a_month_name_for_a_date_written_in_numbers_is_not_an_invented_fact():
     assert result is not None and result["junk"] is False and result["sensitive"] is False and result["summary"]
 
 
+# --- what Wisp did, in at most two cards -------------------------------------------------------------
+
+def _did(store, n, *, days_ago=0.0, kind="calendar", status="added"):
+    """Record one thing Wisp did `days_ago` days back; returns its stored card (or None if it has none)."""
+    at = NOW - days_ago * 86400 - n * 60
+    record = {"kind": kind, "title": f"Thing {n}", "quote": "", "item_id": f"m{n}", "source": "messages",
+              "who": "Maya Chen", "account": "", "received_ts": at - 60, "timezone": TZ, "fingerprint": f"fp-{n}",
+              "item_fingerprint": f"ifp-{n}", "at": at, "status": status, "attempts": 1, "source_id": f"src-{n}",
+              "start_ts": NOW + 86400 + n * 3600, "duration_min": 60, "day": "2026-10-25", "due_ts": NOW + 86400 + n * 3600}
+    store.auto_add_put(record["fingerprint"], record)
+    return autoadd.done_card(record, NOW) if status == "added" else None
+
+
+def _other(n):
+    return {"id": f"card:other{n}", "meta": "TEXTS", "title": f"Reply to {n}", "body": "", "account": "",
+            "sources": [], "action": {"method": "text_reply", "button": "Send?", "draft": "hi"}}
+
+
+def test_one_thing_keeps_its_own_card_and_nothing_else_moves(store):
+    one = _did(store, 1)
+    cards = [one, _other(1), _other(2)]
+    assert autoadd.group_done(cards, store, NOW, TZ) == cards
+    assert autoadd.group_done([_other(1)], store, NOW, TZ) == [_other(1)]
+    assert autoadd.group_done([], store, NOW, TZ) == []
+
+
+def test_five_things_today_are_one_card_with_every_member_and_a_count_of_the_rest(store):
+    done = [_did(store, n) for n in range(1, 6)]
+    out = autoadd.group_done([_other(0)] + done + [_other(1)], store, NOW, TZ)
+    assert [c["id"] for c in out][0] == "card:other0" and out[-1]["id"] == "card:other1" and len(out) == 3
+    group = out[1]                                   # where the first done card stood
+    assert group["meta"] == "TODAY" and group["title"] == "Wisp did 5 things today" and group["auto_added"] is True
+    assert group["action"]["method"] == autoadd.GROUP_METHOD and "record" not in group["action"]
+    assert [m["id"] for m in group["members"]] == [c["id"] for c in done]            # newest first, all five
+    assert group["more"] == 1 and autoadd.GROUP_ROWS == 4 and group["notes"] == []
+    assert all(m["action"]["method"] == "undo_add" and m["action"]["record"] and m["when"] for m in group["members"])
+
+
+def test_today_and_earlier_are_two_cards_and_ten_things_are_still_two(store):
+    today = [_did(store, n) for n in range(1, 7)]
+    earlier = [_did(store, n, days_ago=1.5) for n in range(7, 11)]
+    out = autoadd.group_done(earlier[:2] + today + earlier[2:] + [_other(1)], store, NOW, TZ)
+    assert [c.get("meta") for c in out] == ["TODAY", "EARLIER", "TEXTS"]
+    assert out[0]["title"] == "Wisp did 6 things today" and out[0]["more"] == 2 and len(out[0]["members"]) == 6
+    assert out[1]["title"] == "Wisp did 4 things earlier" and out[1]["more"] == 0 and len(out[1]["members"]) == 4
+    assert len([c for c in out if c.get("auto_added")]) == 2                          # never more than two
+    # One thing earlier and several today: the lone earlier one keeps its own card.
+    lone = autoadd.group_done([today[0], today[1], earlier[0]], store, NOW, TZ)
+    assert [c.get("meta") for c in lone] == ["TODAY", earlier[0]["meta"]] and lone[1]["id"] == earlier[0]["id"]
+
+
+def test_undoing_a_row_takes_it_out_and_the_last_two_fall_back_to_one_card(store):
+    done = [_did(store, n) for n in range(1, 4)]
+    group = autoadd.group_done(done, store, NOW, TZ)[0]
+    assert len(group["members"]) == 3
+    # Undo fires the member's own stored card; once it is gone from the cards, the group shrinks...
+    left = autoadd.group_done(done[1:], store, NOW, TZ)
+    assert len(left) == 1 and [m["id"] for m in left[0]["members"]] == [c["id"] for c in done[1:]]
+    assert left[0]["id"] != group["id"] and left[0]["title"] == "Wisp did 2 things today"
+    # ...and with one left it is that thing's ordinary card again; with none, nothing.
+    assert autoadd.group_done(done[2:], store, NOW, TZ) == done[2:]
+    assert autoadd.group_done([], store, NOW, TZ) == []
+
+
+def test_a_write_wisp_could_not_confirm_is_a_plain_line_in_the_card_with_no_undo(store):
+    done = [_did(store, 1)]
+    _did(store, 2, status="unknown")
+    [group] = autoadd.group_done(done, store, NOW, TZ)
+    assert group["title"] == "Wisp did 2 things today" and len(group["members"]) == 1
+    assert group["notes"] == ["May have added “Thing 2”: check Calendar"]
+    # Only uncertain writes: still one card, at the top, with no members to undo.
+    store.auto_add_put("fp-1", {**store.auto_added()["fp-1"], "status": "undone"})
+    out = autoadd.group_done([_other(1)], store, NOW, TZ)
+    assert out[0]["title"] == "Wisp may have done something today" and out[0]["members"] == [] and out[1]["id"] == "card:other1"
+    # One older than the days a done card is kept is not mentioned.
+    _did(store, 3, days_ago=5, status="unknown")
+    assert len(autoadd.group_done([], store, NOW, TZ)[0]["notes"]) == 1
+
+
+def test_the_brief_serves_the_grouped_card_and_each_rows_undo_still_fires_its_own_stored_card(store):
+    done = [_did(store, n) for n in range(1, 4)]
+    state = store.state()
+    state["cards"], state["as_of"], state["timezone"] = list(done) + [_other(1)], NOW, TZ
+    store._write("state.json")
+    view = cycle.snapshot(now=NOW, tz=TZ, store=store, schedule_fn=lambda n, z: {"calendar": [], "reminders": []},
+                          own=ME, linked=set())
+    shown = view["cards"]
+    assert [c.get("meta") for c in shown][0] == "TODAY" and len([c for c in shown if c.get("auto_added")]) == 1
+    members = shown[0]["members"]
+    assert len(members) == 3 and all("fingerprints" not in m for m in members)
+    # The stored cards are untouched: one per action, found by the id a row's Undo fires.
+    assert [c["id"] for c in store.state()["cards"][:3]] == [c["id"] for c in done]
+    assert store.card(members[0]["id"])["action"]["record"] == "fp-1"
+    # Undo through the same path a single card uses (a stand-in for the Calendar delete).
+    async def gone(record):
+        return {"ok": True, "status": "succeeded"}
+    out = asyncio.run(autoadd.undo(store.card(members[0]["id"]), store, undoers={"calendar": gone}, now=NOW))
+    assert out["ok"] is True and store.auto_added()["fp-1"]["status"] == "undone"
+
+
+def test_the_app_draws_a_group_as_rows_with_each_rows_own_undo():
+    app = Path(__file__).resolve().parents[1] / "app" / "Sources" / "WispApp"
+    strip = lambda text: "\n".join(line.split("//", 1)[0] for line in text.splitlines())   # noqa: E731
+    models, cards = strip((app / "ProactiveModels.swift").read_text()), strip((app / "ProactiveCards.swift").read_text())
+    assert f'static let groupMethod = "{autoadd.GROUP_METHOD}"' in models
+    assert f"static let groupRows = {autoadd.GROUP_ROWS}" in models
+    assert "members = c.lenient(.members, LossyList<ProactiveCard>.self)?.items ?? []" in models
+    assert 'var wispDidThis: Bool { action?.method == "undo_add" || isGroup }' in models      # "WISP DID THIS · TODAY"
+    rows = cards[cards.index("func groupRows(_ card: ProactiveCard)"):cards.index("private func secondary(")]
+    assert "fireButton(member, action, fire)" in rows                # the member's own card is what Undo fires
+    assert "actions.hidden.contains($0.id)" in rows and "ProactiveCard.groupRows" in rows and "and \\(more) more" in rows
+    view = cards[cards.index("private func cardView("):cards.index("func groupRows(_ card: ProactiveCard)")]
+    assert "if card.isGroup { groupRows(card) }" in view
+    assert "if let action, !card.isGroup, !sendInDraft" in view      # the group itself has no button to fire
+    brief = cards[cards.index("func beforeYouAsk("):cards.index("private func otherCards(")]
+    assert "card.members.allSatisfy { actions.hidden.contains($0.id) }" in brief     # gone with its last row
+
+
 # --- a meal word settles a bare hour, in the same sentence only ------------------------------------
 
 def _planned(line):

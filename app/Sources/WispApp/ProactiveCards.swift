@@ -491,7 +491,11 @@ struct ProactiveBriefSection: View {
     /// Wisp's cards, under the Brief's tagline: what it got ready before you
     /// asked. Amber with a count while there are any (they need you).
     @ViewBuilder private func beforeYouAsk(_ shown: ProactiveState) -> some View {
-        let cards = shown.cards.filter { !actions.hidden.contains($0.id) }
+        // A grouped "Wisp did this" card goes once every one of its rows has been undone.
+        let cards = shown.cards.filter { card in
+            !actions.hidden.contains(card.id)
+                && !(card.isGroup && card.notes.isEmpty && card.members.allSatisfy { actions.hidden.contains($0.id) })
+        }
         let index = cards.firstIndex { $0.id == actions.heroID } ?? 0
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center, spacing: 6) {
@@ -625,7 +629,10 @@ struct ProactiveBriefSection: View {
                     .foregroundStyle(card.wispDidThis ? Theme.textSecondary : Theme.textMuted).lineLimit(1)
                     .help(card.why)
                 Spacer(minLength: 4)
-                if actions.dismissing.contains(card.id) {
+                if card.isGroup {
+                    // A group has no Dismiss: each row has its own Undo, and it leaves with its rows.
+                    EmptyView()
+                } else if actions.dismissing.contains(card.id) {
                     ProgressView().controlSize(.mini)
                 } else if fire != .sending, !isDone(fire) {
                     Button { Task { await actions.dismiss(card, today: today) } } label: {
@@ -640,6 +647,7 @@ struct ProactiveBriefSection: View {
             Text(card.title)
                 .font(.wisp(size: 15.5, weight: .semibold)).foregroundStyle(Theme.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
+            if card.isGroup { groupRows(card) }
             if !card.body.isEmpty {
                 // Two lines keep the card short; More opens the rest in place,
                 // so it isn't reachable only by hovering for the tooltip.
@@ -652,7 +660,7 @@ struct ProactiveBriefSection: View {
                 draftEditor(card, action, fire: fire, withSend: sendInDraft).revealInPanel("draft-\(card.id)")
             }
             HStack(alignment: .center, spacing: 12) {
-                if let action, !sendInDraft, !isUnconfirmed(fire) { fireButton(card, action, fire) }
+                if let action, !card.isGroup, !sendInDraft, !isUnconfirmed(fire) { fireButton(card, action, fire) }
                 if action?.method == "block_time" {
                     secondary("Pick another time") { model.tab = .day }
                         .help("Open Day to choose a different time")
@@ -706,6 +714,57 @@ struct ProactiveBriefSection: View {
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.cardStroke, lineWidth: 1))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(card.metaLine). \(card.title)")
+    }
+
+    /// The rows of a grouped "Wisp did this" card: what was done, the day and time it is for, and
+    /// that thing's own Undo (the member card's, fired exactly as a single card's is). Up to
+    /// `ProactiveCard.groupRows` rows, then how many more there are.
+    @ViewBuilder private func groupRows(_ card: ProactiveCard) -> some View {
+        let members = card.members.filter { !actions.hidden.contains($0.id) }
+        let shownMembers = Array(members.prefix(ProactiveCard.groupRows))
+        let shownNotes = Array(card.notes.prefix(ProactiveCard.groupRows - shownMembers.count))
+        let more = members.count + card.notes.count - shownMembers.count - shownNotes.count
+        VStack(alignment: .leading, spacing: 7) {
+            ForEach(shownMembers) { member in
+                let fire = actions.fires[member.id]
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .center, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(member.title).font(.wisp(size: 12.5, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            if !member.when.isEmpty {
+                                Text(member.when).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
+                            }
+                        }
+                        Spacer(minLength: 6)
+                        if let action = member.action, !isUnconfirmed(fire) { fireButton(member, action, fire) }
+                    }
+                    if case .failed(let reason) = fire {
+                        Text(reason).font(.wisp(size: 11)).foregroundStyle(Theme.bad)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if case .unconfirmed(let line) = fire {
+                        Text(line).font(.wisp(size: 11)).foregroundStyle(Theme.warn)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .accessibilityElement(children: .contain)
+            }
+            ForEach(shownNotes, id: \.self) { note in
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: "questionmark").font(.wisp(size: 9, weight: .bold)).foregroundStyle(Theme.textMuted)
+                        .accessibilityHidden(true)
+                    Text(note).font(.wisp(size: 12)).foregroundStyle(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .help("Wisp started this and was interrupted before it could confirm. If it is there and you don't want it, remove it there.")
+            }
+            if more > 0 {
+                Text("and \(more) more, listed under “Wisp is acting for you” above")
+                    .font(.wisp(size: 11.5)).foregroundStyle(Theme.textMuted)
+            }
+        }
+        .padding(.top, 1)
     }
 
     private func secondary(_ title: String, chevron: String? = nil, action: @escaping () -> Void) -> some View {

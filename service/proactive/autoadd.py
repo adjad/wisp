@@ -960,6 +960,9 @@ def done_card(record: dict, now: float) -> dict:
         "fingerprints": [],
         "due_ts": record.get("start_ts") if record["kind"] == "calendar" else record.get("due_ts"),
         "auto_added": True,
+        # For the grouped "Wisp did this" card (group_done): when Wisp did it, and the day and time it is for.
+        "did_at": float(record.get("at") or 0),
+        "when": when,
     }
 
 
@@ -1028,6 +1031,80 @@ def done_cards(store, now: float) -> list[dict]:
         if card["id"] not in gone:
             out.append(card)
     return out
+
+
+GROUP_ROWS = 4          # rows shown in one grouped "Wisp did this" card; the rest are "and N more"
+GROUP_METHOD = "wisp_did"
+
+
+def group_done(cards: list[dict], store, now: float, tz: str) -> list[dict]:
+    """The Brief's cards with everything Wisp did in at most TWO cards, for showing only.
+
+    Each thing Wisp did has its own stored "Wisp did this" card (method "undo_add"), and that
+    is still what Undo fires. Here, at the moment the Brief is served, they are gathered: one
+    card for what Wisp did today (local date), one for earlier (still inside the days a done
+    card is kept), each holding its cards as `members`, newest first, in the place the first
+    of them had. A write whose outcome was never recorded ("unknown") rides along as a plain
+    line in `notes`, with no Undo. A day with a single thing keeps its ordinary card. Nothing
+    is stored, and nothing about what Wisp does, records or limits changes."""
+    from zoneinfo import ZoneInfo
+    done = [c for c in cards if isinstance(c.get("action"), dict) and c["action"].get("method") == "undo_add"]
+    try:
+        zone = ZoneInfo(tz)
+        today = datetime.fromtimestamp(now, zone).date()
+        local_day = lambda ts: datetime.fromtimestamp(float(ts or 0), zone).date()      # noqa: E731
+    except Exception:  # noqa: BLE001 — an unreadable zone: the cards stand as they are
+        return cards
+    notes = {"today": [], "earlier": []}
+    try:
+        from service.proactive import acting
+        where = {"calendar": "Calendar", "reminder": "Reminders", "follow_up": "Reminders", "hold": "your Day plan"}
+        for record in acting.records(store, statuses=("unknown",), since=now - DONE_SHOWN_S):
+            title = guard.clean_title(str(record.get("title") or ""))
+            if title:
+                line = f"May have added “{title}”: check {where.get(record.get('kind'), 'Calendar and Reminders')}"
+                notes["today" if local_day(record.get("at")) == today else "earlier"].append(line)
+    except Exception:  # noqa: BLE001 — the notes are a courtesy
+        notes = {"today": [], "earlier": []}
+    buckets = {"today": [], "earlier": []}
+    for card in sorted(done, key=lambda c: -float(c.get("did_at") or 0)):
+        buckets["today" if local_day(card.get("did_at")) == today else "earlier"].append(card)
+    groups = {}
+    for name, members in buckets.items():
+        count = len(members) + len(notes[name])
+        if count == 0 or (len(members) == 1 and not notes[name]):
+            continue                                   # nothing, or one thing: its own card as before
+        if not members:
+            title = "Wisp may have done something" if count == 1 else f"Wisp may have done {count} things"
+        else:
+            title = f"Wisp did {count} things"
+        groups[name] = {
+            "id": "card:" + _digest("wisp-did", name, *sorted(m["id"] for m in members), *notes[name]),
+            "meta": "TODAY" if name == "today" else "EARLIER",
+            "title": title + (" today" if name == "today" else " earlier"),
+            "body": "",
+            "why": "You let Wisp act for you, so it did these. Each one has its own Undo.",
+            "account": members[0].get("account", "") if members else "",
+            "sources": [],
+            "action": {"method": GROUP_METHOD, "button": "", "draft": "", "recipient": "", "event": None,
+                       "envelope": {"kind": GROUP_METHOD}, "to": [], "cc": [], "subject": "", "reply_all": False,
+                       "reply_ref": None, "open_url": "", "open_label": ""},
+            "todo_id": None,
+            "fingerprints": [],
+            "auto_added": True,
+            "members": members,
+            "notes": notes[name],
+            "more": max(0, count - GROUP_ROWS),
+        }
+    if not groups:
+        return cards
+    grouped_ids = {m["id"] for g in groups.values() for m in g["members"]}
+    # Both groups go where the first "Wisp did this" card stood (the top, when there was none:
+    # only uncertain writes); a lone card of the other day keeps its own place after them.
+    first = next((i for i, c in enumerate(cards) if c in done), 0)
+    rest = [c for c in cards if c.get("id") not in grouped_ids]
+    before = len([c for c in cards[:first] if c.get("id") not in grouped_ids])
+    return rest[:before] + [groups[n] for n in ("today", "earlier") if n in groups] + rest[before:]
 
 
 _TAP_METHODS = ("calendar_event", "reminder", "add_to_day", "block_time")

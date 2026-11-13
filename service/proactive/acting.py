@@ -539,6 +539,8 @@ def did_card(record: dict, now: float) -> dict:
         "fingerprints": [],
         "due_ts": record.get("show_until"),
         "auto_added": True,
+        "did_at": float(record.get("at") or 0),
+        "when": "",
     }
 
 

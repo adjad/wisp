@@ -1540,8 +1540,18 @@ def snapshot(*, account: str | None = None, now: float | None = None, tz: str | 
         view_state = "ready"
     else:
         view_state = "unavailable"
+    # What Wisp did is shown in at most two cards (autoadd.group_done). Only here, as the Brief is
+    # served: the stored cards stay one per action, which is what each row's Undo fires.
+    shown = cards
+    try:
+        from service.proactive import autoadd
+        shown = autoadd.group_done(cards, store, now, tz)
+    except Exception:  # noqa: BLE001 — the cards are shown one by one, as before
+        traceback.print_exc()
     result = {"state": view_state, "as_of": state.get("as_of"), "progress": dict(_status["progress"]),
-              "accounts": accounts, "owner": {"id": own, "label": sources.owner_label()}, "summary": summary, "cards": [_public(c) for c in cards],
+              "accounts": accounts, "owner": {"id": own, "label": sources.owner_label()}, "summary": summary,
+              "cards": [{**_public(c), "members": [_public(m) for m in c["members"]]} if c.get("members") else _public(c)
+                        for c in shown],
               "todos": [_public(t) for t in todos], "threads": [{k: v for k, v in t.items() if k != "asks"} for t in threads],
               "lede": _lede(cards, todos, summary, now, tz), "stats": _stats(state, cards, todos, account),
               "updating": _updating()}

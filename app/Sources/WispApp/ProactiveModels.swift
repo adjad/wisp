@@ -387,8 +387,19 @@ struct ProactiveCard: Decodable, Equatable, Identifiable {
     var action: Action? = nil
     /// For a mail card: the thread's `{message_id, account, account_id}`, when the engine sent one.
     var replyRef: [String: String] = [:]
+    /// A grouped "Wisp did this" card (service/proactive/autoadd.py group_done): everything Wisp did
+    /// today, or earlier, as one card. Each member is that thing's own card, and its Undo fires it.
+    var members: [ProactiveCard] = []
+    /// Lines for writes Wisp could not confirm ("May have added …: check Calendar"). No Undo.
+    var notes: [String] = []
+    /// The day and time a done card is for ("Fri, Nov 13 at 7 PM"), shown on its row in a group.
+    var when = ""
 
-    private enum Keys: String, CodingKey { case id, meta, title, body, why, account, sources, action, reply_ref }
+    static let groupMethod = "wisp_did"
+    static let groupRows = 4
+    var isGroup: Bool { action?.method == Self.groupMethod }
+
+    private enum Keys: String, CodingKey { case id, meta, title, body, why, account, sources, action, reply_ref, members, notes, when }
 
     init(id: String, meta: String = "", title: String = "", body: String = "", why: String = "",
          account: String = "", sources: [Source] = [], action: Action? = nil) {
@@ -407,6 +418,9 @@ struct ProactiveCard: Decodable, Equatable, Identifiable {
         sources = c.lenient(.sources, LossyList<Source>.self)?.items ?? []
         action = c.lenient(.action, Action.self)
         replyRef = c.lenientRef(.reply_ref)
+        members = c.lenient(.members, LossyList<ProactiveCard>.self)?.items ?? []
+        notes = (c.lenient(.notes, LossyList<String>.self)?.items ?? []).filter { !$0.isEmpty }
+        when = c.lenientString(.when) ?? ""
     }
 
     /// The card's name on a chip under the one shown.
@@ -414,7 +428,7 @@ struct ProactiveCard: Decodable, Equatable, Identifiable {
 
     /// The meta line, uppercased; built from the first source when the engine sent none.
     /// A "Wisp did this" card: Wisp already added the event or reminder, and the button undoes it.
-    var wispDidThis: Bool { action?.method == "undo_add" }
+    var wispDidThis: Bool { action?.method == "undo_add" || isGroup }
 
     /// The meta line of a "Wisp did this" card says who acted: "WISP DID THIS · CALENDAR".
     static func didThisLine(_ meta: String) -> String {
