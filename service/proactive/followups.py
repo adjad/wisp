@@ -566,6 +566,9 @@ def plan_for(item: dict, *, now: float, tz: str, history: dict | None = None, se
             return None, "not a saved contact"
         # One-to-one for certain: the native chat is a single person's, not a group
         # the cache labelled by one member's name.
+        # BEFORE TEXTS ARE EVER TURNED ON HERE: item["handle"] summarizes the whole window on a
+        # looser rule. This must read sources.text_origin(item) (the handle AND delivery service
+        # of the very lines read), as autoadd._plan_handle does. Dormant while texts are off.
         if not str(item.get("handle") or "").strip():
             return None, "not a known one-to-one chat"
         entry = (history or {}).get(context)

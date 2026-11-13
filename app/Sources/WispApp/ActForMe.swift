@@ -13,6 +13,8 @@ struct ActForMe: Equatable {
         let who: String
         let at: Double
         let undone: Bool
+        /// Not empty when Wisp began this and never learned the outcome: where to look for it.
+        let check: String
     }
 
     let enabled: Bool
@@ -45,7 +47,8 @@ struct ActForMe: Equatable {
         recent = (json["recent"] as? [[String: Any]] ?? []).enumerated().compactMap { index, row in
             guard let title = row["title"] as? String, !title.isEmpty else { return nil }
             return Done(id: index, title: title, who: row["who"] as? String ?? "",
-                        at: row["at"] as? Double ?? 0, undone: row["undone"] as? Bool ?? false)
+                        at: row["at"] as? Double ?? 0, undone: row["undone"] as? Bool ?? false,
+                        check: row["check"] as? String ?? "")
         }
     }
 
@@ -159,10 +162,11 @@ struct ActForMeSettingsRow: View {
                         Text("Lately").font(.caption.weight(.medium)).foregroundStyle(.secondary)
                         ForEach(state.recent.prefix(6)) { done in
                             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                                Image(systemName: done.undone ? "arrow.uturn.backward" : "checkmark")
+                                Image(systemName: !done.check.isEmpty ? "questionmark" : done.undone ? "arrow.uturn.backward" : "checkmark")
                                     .font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary)
                                     .accessibilityHidden(true)
-                                Text(done.title + (done.undone ? " (undone)" : ""))
+                                Text(!done.check.isEmpty ? "May have added “\(done.title)”: check \(done.check)"
+                                     : done.title + (done.undone ? " (undone)" : ""))
                                     .font(.caption).strikethrough(done.undone)
                                     .foregroundStyle(done.undone ? .secondary : .primary).lineLimit(1)
                                 Spacer(minLength: 4)
@@ -170,6 +174,7 @@ struct ActForMeSettingsRow: View {
                                     .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
                             }
                             .accessibilityElement(children: .combine)
+                            .help(done.check.isEmpty ? "" : "Wisp started this and was interrupted before it could confirm. If it is there and you don't want it, remove it in \(done.check).")
                         }
                     }
                     .padding(.top, 2)

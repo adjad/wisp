@@ -239,7 +239,8 @@ def _candidates(item: dict) -> list[tuple[str, bool, float | None]]:
                [(s, True, _said_at(s, body_ts, item.get("mail_earlier"))) for s in _sentences(body)]
     every, stamps = list(item.get("lines") or []), list(item.get("line_ts") or [])
     known = len(stamps) == len(every)
-    lines, times = every[-3:], (stamps[-3:] if known else [None] * len(every[-3:]))
+    from service.proactive.sources import ORIGIN_LINES as n        # the same lines text_origin vouches for
+    lines, times = every[-n:], (stamps[-n:] if known else [None] * len(every[-n:]))
     out = []
     for index, line in enumerate(lines):
         newest = index == len(lines) - 1
@@ -260,17 +261,25 @@ def _resolve(sentence: str, arrival: float, tz: str):
 _REGION_CODES = {"US": "1", "CA": "1", "GB": "44", "IE": "353", "AU": "61", "NZ": "64", "IN": "91", "DE": "49",
                  "FR": "33", "ES": "34", "IT": "39", "NL": "31", "SE": "46", "NO": "47", "DK": "45", "CH": "41",
                  "AT": "43", "BE": "32", "PT": "351", "BR": "55", "MX": "52", "JP": "81", "KR": "82", "SG": "65",
-                 "HK": "852", "CN": "86", "ZA": "27", "AE": "971", "IL": "972", "PL": "48"}
+                 "HK": "852", "CN": "86", "ZA": "27", "AE": "971", "IL": "972", "PL": "48", "FI": "358", "IS": "354",
+                 "LU": "352", "GR": "30", "CZ": "420", "HU": "36", "RO": "40", "TR": "90", "UA": "380", "AR": "54",
+                 "CL": "56", "CO": "57", "PH": "63", "ID": "62", "MY": "60", "TH": "66", "VN": "84", "TW": "886",
+                 "SA": "966", "EG": "20", "NG": "234", "PK": "92", "SM": "378", "VA": "39"}
+# Where a national number's leading 0 is part of the number, not a trunk prefix to drop:
+# Italy and Vatican City (+39 06…), San Marino.
+_KEEPS_LEADING_ZERO = ("39", "378")
 
 
 def _region_code() -> str:
     """The user's country calling code, or "" if unknown. From WISP_REGION, the region of the
     Mac's own locale that the app passes to the service when it starts it (an app opened from
-    Finder has no LANG), else from the process locale ("en_US" -> "1")."""
+    Finder has no LANG), else from the process locale ("en_US" -> "1"). When the app said a
+    region, that is the answer even if it is one this table does not know (then ""): the
+    locale of whatever shell started the service is never a better guess than the Mac's own."""
     import os
     region = (os.environ.get("WISP_REGION") or "").strip().upper()
-    if region in _REGION_CODES:
-        return _REGION_CODES[region]
+    if region:
+        return _REGION_CODES.get(region, "")
     for name in ("LC_ALL", "LC_CTYPE", "LANG"):
         value = os.environ.get(name) or ""
         region = value.split(".")[0].rpartition("_")[2].upper()
@@ -305,7 +314,7 @@ def phones_match(handle: str, saved: str, region: str = "") -> bool:
         return digits[2:] == want
     if not region:
         return False
-    national = digits[1:] if digits.startswith("0") and region != "1" else digits
+    national = digits[1:] if digits.startswith("0") and region not in ("1",) + _KEEPS_LEADING_ZERO else digits
     if len(national) >= 7 and want == region + national:
         return True
     return digits == want and digits.startswith(region) and len(digits) > len(region) + 6
@@ -958,14 +967,26 @@ _TAP_METHODS = ("calendar_event", "reminder", "add_to_day", "block_time")
 _REPLY_METHODS = ("email_reply", "text_reply")
 
 
+_HOLD_METHODS = ("block_time", "add_to_day")
+
+
+def held_items(store) -> set[str]:
+    """The items Wisp is holding an hour for (autohold): their "Block time?" and "Add to Day?"
+    cards step aside, and only those; the date itself may still be offered."""
+    return {str(r["item_id"]) for r in store.auto_added().values()
+            if isinstance(r, dict) and r.get("kind") == "hold" and r.get("status") == "added" and r.get("item_id")}
+
+
 def merge_cards(done: list[dict], tap: list[dict], cards: list[dict], added_items: set[str],
-                limit: int) -> list[dict]:
+                limit: int, held: set[str] | frozenset = frozenset()) -> list[dict]:
     """Done cards first, ahead of alerts, counting toward the cap. A tap card
     for an item Wisp already added goes (the done card says it), and a tap card
-    of ours steps aside for a calendar/reminder card prepare already made."""
+    of ours steps aside for a calendar/reminder card prepare already made. A card
+    offering to block time for an item Wisp already holds an hour for (`held`) goes too."""
     def ref(card):
         return str(((card.get("sources") or [{}])[0] or {}).get("ref") or "")
-    kept = [c for c in cards if not (ref(c) in added_items and c["action"].get("method") in _TAP_METHODS)]
+    kept = [c for c in cards if not (ref(c) in added_items and c["action"].get("method") in _TAP_METHODS)
+            and not (ref(c) in held and c["action"].get("method") in _HOLD_METHODS)]
     taken = {ref(c) for c in kept if c["action"].get("method") in _TAP_METHODS}
     # A reply card that already offers the add ("Reply & add to calendar?") makes ours a second one.
     taken |= {ref(c) for c in kept if c["action"].get("method") in _REPLY_METHODS and c["action"].get("event")}
@@ -1110,12 +1131,6 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
         if item.get("id") in retired:
             note(item, "undone before")
             continue
-        if item.get("id") in acted_elsewhere:
-            # One message, at most one action of Wisp's own (a follow-up reminder is already on
-            # it). Offering the date is not an action: the card the person taps stays.
-            tap.append(tap_card(plan, now))
-            note(item, "Wisp already acted on this message: tap to add")
-            continue
         fp = plan["fingerprint"]
         record = records.get(fp) or {}
         if record.get("status") in _RECORD_STATES_BLOCKING or int(record.get("attempts") or 0) >= MAX_ATTEMPTS:
@@ -1129,6 +1144,14 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
             continue
         if (dup := already_there(plan, rows, tz)) is not None:
             note(item, f"already on {'Calendar' if dup.get('source') == 'calendar' else 'your list'}")
+            continue
+        if item.get("id") in acted_elsewhere:
+            # One message, at most one action of Wisp's own (a follow-up reminder is already on
+            # it). Offering the date is not an action: the card the person taps stays. Checked
+            # after the lines above, so a card they dismissed or handled, or a date they already
+            # put on Calendar themselves, does not come back.
+            tap.append(tap_card(plan, now))
+            note(item, "Wisp already acted on this message: tap to add")
             continue
         # Only a line that itself arrived after the person's yes is added without a tap:
         # the time of the sentence the date came from, never the conversation's latest line.

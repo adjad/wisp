@@ -96,6 +96,31 @@ def test_the_cycle_holds_the_slot_and_swaps_the_tap_card_for_a_wisp_did_this_car
     assert list(store.auto_added().values())[0]["status"] == "added"
 
 
+def test_a_held_hours_block_time_card_does_not_come_back_in_the_next_cycle(setting, store, holds):
+    acting.set_enabled(True, now=NOW - 60)
+    assert cycle_once(store)["status"] == "done"
+    assert cycle_once(store, now=NOW + 600)["status"] == "done"            # the same deadline, found again
+    assert holds == ["card:deadline1"] and "block_time" not in methods(store)
+    assert methods(store).count("undo_add") == 1
+
+
+def test_without_the_held_set_that_card_would_come_back(setting, store, holds, monkeypatch):
+    # The control for the test above: it is the held set, and nothing else, that keeps the card away.
+    from service.proactive import autoadd
+    acting.set_enabled(True, now=NOW - 60)
+    cycle_once(store)
+    monkeypatch.setattr(autoadd, "held_items", lambda store: set())
+    cycle_once(store, now=NOW + 600)
+    assert "block_time" in methods(store)
+
+
+def test_a_write_left_in_flight_is_settled_before_anything_holds(setting, store, holds):
+    acting.set_enabled(True, now=NOW - 60)
+    acting.record(store, "f-9", kind="follow_up", status="dispatching", now=NOW - 900, title="Reply to Sam", item_id="m9")
+    assert cycle_once(store)["status"] == "done"
+    assert store.auto_added()["f-9"]["status"] == "unknown"
+
+
 def test_with_the_gate_off_the_tap_card_stands_and_nothing_is_recorded(setting, store, holds):
     assert cycle_once(store)["status"] == "done"
     assert holds == [] and store.auto_added() == {}

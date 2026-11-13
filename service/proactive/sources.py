@@ -812,7 +812,10 @@ def chat_handle(guids: set[str]) -> str:
 _SERVICES = ("iMessage", "SMS", "RCS")
 
 
-def text_origin(item: dict, count: int = 3) -> tuple[str, str]:
+ORIGIN_LINES = 3      # the newest lines a decider reads, and so the lines whose origin must be known
+
+
+def text_origin(item: dict, count: int = ORIGIN_LINES) -> tuple[str, str]:
     """(handle, service) of the last `count` quoted lines of a text item, the
     lines a decider reads, only when EVERY one of them joined to the same
     one-to-one chat and the same known delivery service; else ("", "").

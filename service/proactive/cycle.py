@@ -742,7 +742,10 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
         # tap card. Wisp-local, code only; not in a cycle that yielded to a turn, and
         # not in a light one: its done card is merged only by a full cycle (step 4).
         try:
-            from service.proactive import autohold
+            from service.proactive import acting, autohold
+            # First, every kind's write that an earlier cycle began and never recorded becomes
+            # "unknown", so this cycle's caps and "already acted" checks all see it.
+            acting.settle(store, now)
             found = autohold.without_undone(found, store)
             if not (light or yielded or abort()):
                 held = autohold.step(found, now=now, tz=tz, store=store, abort=abort)
@@ -888,16 +891,21 @@ async def _auto_add(cards_by_account: dict, accounts: list[str], own: str, survi
         if (isinstance(record, dict) and record.get("status") == "added" and record.get("item_id")
                 and record.get("kind") in ("calendar", "reminder")):
             added_items.add(record["item_id"])
+    try:
+        held = autoadd.held_items(store)
+    except Exception:  # noqa: BLE001 — unreadable: the cards stand
+        held = set()
     for acct in accounts:
         mine_done = [c for c in done if (c.get("account") or own) == acct]
         mine_tap = [{**c, "auto_add_tap": True} for c in auto.get("tap") or [] if (c.get("account") or own) == acct]
         previous = cards_by_account.get(acct, [])
         refs = {str(((c.get("sources") or [{}])[0] or {}).get("ref") or "") for c in previous}
-        if not (mine_done or mine_tap or refs & added_items
+        if not (mine_done or mine_tap or refs & added_items or refs & held
                 or any(c.get("auto_added") or c.get("auto_add_tap") for c in previous)):
             continue
         rest = [c for c in previous if not c.get("auto_added") and not c.get("auto_add_tap")]
-        cards_by_account[acct] = autoadd.merge_cards(mine_done, mine_tap, rest, added_items, prepare_mod.MAX_CARDS)
+        cards_by_account[acct] = autoadd.merge_cards(mine_done, mine_tap, rest, added_items, prepare_mod.MAX_CARDS,
+                                                    held)
 
 
 def _default_deadlines(now: float, tz: str, skip: set[str], own: str, linked: set[str]) -> list[dict]:

@@ -327,7 +327,7 @@ def test_recent_lists_words_only(setting, store):
     _follow_up(store)
     [row] = acting.recent(store, NOW + 20)
     assert row == {"kind": "follow_up", "title": "Set a reminder to answer Maya", "who": "Maya Chen",
-                   "at": NOW + 10, "undone": False}
+                   "at": NOW + 10, "undone": False, "check": ""}
 
 
 # --- the switch's routes ------------------------------------------------------------------------
@@ -572,6 +572,47 @@ def test_auto_add_never_adds_what_is_already_on_the_list(store):
     writers = T.Writers()
     out = T.step(store, T.survivors(item), writers, existing=lambda n: existing)
     assert writers.calls == [] and out["added"] == [] and out["tap"] == []
+
+
+def test_a_date_already_on_calendar_does_not_come_back_as_a_card_after_a_reply_reminder(store):
+    """A follow-up on the message keeps the date's card offered, but not when the person already
+    put the date on Calendar themselves: tapping that card would make a second event."""
+    import tests.test_proactive_auto_add as T
+    item = T.text("Maya Chen", T.RECITAL)
+    plan, _ = autoadd.plan_for(item, dict(T.OK), now=T.NOW, tz=T.TZ)
+    acting.record(store, "follow:1", kind="follow_up", status="added", now=T.NOW - 60, title="Answer Maya",
+                  item_id=item["id"])
+    existing = [{"source": "calendar", "title": "Maya recital", "when_ts": plan["start_ts"]}]
+    writers, notes = T.Writers(), []
+    out = asyncio.run(autoadd.step(T.survivors(item), {"calendar": [], "reminders": []}, now=T.NOW, tz=T.TZ,
+                                   store=store, abort=lambda: False, writers=writers.table(),
+                                   existing=lambda n: existing, is_enabled=lambda: True, debug=notes))
+    assert writers.calls == [] and out["added"] == [] and out["tap"] == []
+    assert notes[-1]["auto_add"] == "already on Calendar"
+    # The same when they already handled or waved away that message's card.
+    store.mark_handled([plan["item_fingerprint"]])
+    notes.clear()
+    out = asyncio.run(autoadd.step(T.survivors(item), {"calendar": [], "reminders": []}, now=T.NOW, tz=T.TZ,
+                                   store=store, abort=lambda: False, writers=writers.table(),
+                                   existing=lambda n: [], is_enabled=lambda: True, debug=notes))
+    assert out["tap"] == [] and notes[-1]["auto_add"] == "dismissed or handled"
+
+
+def test_a_write_cut_off_mid_way_is_settled_for_every_kind_and_listed_as_uncertain(setting, store):
+    for fp, kind in (("a-1", "calendar"), ("f-1", "follow_up"), ("h-1", "hold")):
+        acting.record(store, fp, kind=kind, status="dispatching", now=NOW - 600, title=f"Thing {fp}", item_id=fp)
+    acting.record(store, "ok-1", kind="reminder", status="added", now=NOW - 700, title="Fine", item_id="ok")
+    assert acting.room(store, NOW) == acting.MAX_PER_DAY - 1                # in-flight ones are not counted yet
+    assert acting.settle(store, NOW) == 3 and acting.settle(store, NOW) == 0
+    assert {r["status"] for r in acting.records(store) if r["fingerprint"] != "ok-1"} == {"unknown"}
+    assert acting.room(store, NOW) == acting.MAX_PER_DAY - 4                # now every kind's cap sees them
+    rows = {r["title"]: r["check"] for r in acting.recent(store, NOW)}
+    assert rows == {"Thing a-1": "Calendar", "Thing f-1": "Reminders", "Thing h-1": "your Day plan", "Fine": ""}
+
+    class Broken:
+        def auto_added(self):
+            raise RuntimeError("unreadable")
+    assert acting.settle(Broken(), NOW) == 0                                # never fails a cycle
 
 
 def test_one_message_gets_at_most_one_action_of_wisps_own(store):

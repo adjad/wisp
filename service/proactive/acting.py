@@ -450,6 +450,31 @@ def record(store, fingerprint: str, *, kind: str, status: str, now: float, title
     return entry
 
 
+def settle(store, now: float) -> int:
+    """Every record still "dispatching" was cut off between its write and its outcome (a cycle
+    that timed out, was cancelled or crashed): the write may have landed. Each becomes
+    "unknown": counted toward the caps, never written again, no Undo (nothing confirms what it
+    would remove). Run at the start of a cycle, before any kind acts. Never raises; returns
+    how many it settled."""
+    settled = 0
+    try:
+        stale = records(store, statuses=("dispatching",))
+    except Exception:  # noqa: BLE001 — unreadable: each kind still treats "dispatching" as landed
+        return 0
+    for row in stale:
+        fp = row.get("fingerprint")
+        if not isinstance(fp, str) or not fp:
+            continue
+        try:
+            store.auto_add_put(fp, {**row, "status": "unknown"})
+            audit("proactive_act", kind=row.get("kind"), status="unknown", ok=False, fingerprint=fp,
+                  reason="a write was begun and never recorded")
+            settled += 1
+        except Exception:  # noqa: BLE001 — it still blocks as "dispatching"
+            pass
+    return settled
+
+
 def register_undoer(kind: str, undoer: Callable[[dict], Awaitable[dict]]) -> None:
     if kind not in KINDS:
         raise ValueError("unknown kind of action")
@@ -518,10 +543,16 @@ def did_card(record: dict, now: float) -> dict:
 
 
 def recent(store, now: float, limit: int = 20) -> list[dict]:
-    """What Wisp did lately, newest first, for the list in Settings. Words only: no identifiers."""
+    """What Wisp did lately, newest first, for the list in Settings. Words only: no identifiers.
+    A write whose outcome was never recorded ("unknown") is listed too, with where to look
+    (`check`): it may have landed, there is no Undo for it, and the person should know."""
     rows = [r for r in store.auto_added().values()
-            if isinstance(r, dict) and r.get("status") in ("added", "undone") and r.get("title")]
+            if isinstance(r, dict) and r.get("status") in ("added", "undone", "unknown") and r.get("title")]
     rows.sort(key=lambda r: -float(r.get("at") or 0))
-    return [{"kind": r.get("kind", ""), "title": guard.clean_title(str((r.get("card") or {}).get("title") or r["title"])),
-             "who": str(r.get("who") or ""), "at": float(r.get("at") or 0), "undone": r.get("status") == "undone"}
+    where = {"calendar": "Calendar", "reminder": "Reminders", "follow_up": "Reminders", "hold": "your Day plan"}
+    return [{"kind": r.get("kind", ""),
+             "title": guard.clean_title(str(r["title"] if r.get("status") == "unknown"
+                                            else (r.get("card") or {}).get("title") or r["title"])),
+             "who": str(r.get("who") or ""), "at": float(r.get("at") or 0), "undone": r.get("status") == "undone",
+             "check": where.get(r.get("kind"), "") if r.get("status") == "unknown" else ""}
             for r in rows[:limit]]

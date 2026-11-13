@@ -970,6 +970,13 @@ def test_a_london_contact_is_not_a_maine_stranger(contacts, monkeypatch):
     assert us("+12079460111") == "" and us("+442079460111") == ""              # a UK local number, in the US: no match
     assert autoadd.strict_contact_name("+442079460111", region="44") == "Local Shop"   # ...and at home in the UK
     assert us("5551230001") == ""                                              # a handle with no country code
+    assert not autoadd.phones_match("+15551230001", "(555) 123-0001 x22", "1")  # an extension is another line
+    # Italy keeps the leading 0 of a national number; elsewhere it is a trunk prefix that goes.
+    assert autoadd.phones_match("+390612345678", "06 1234 5678", "39")
+    assert not autoadd.phones_match("+39612345678", "06 1234 5678", "39")
+    assert autoadd.phones_match("+442079460111", "020 7946 0111", "44")
+    assert autoadd.phones_match("+14165550123", "(416) 555-0123", "1")           # Canada shares +1
+    assert autoadd.phones_match("+14155550123", "1 (415) 555-0123", "1")
     assert us("Sam@Friend.com") == "Sam Lee" and us("sam@friend.co") == "" and us("") == ""
     # Region unknown: only a number saved WITH its country code can match.
     unknown = lambda handle: autoadd.strict_contact_name(handle, region="")    # noqa: E731
@@ -978,7 +985,8 @@ def test_a_london_contact_is_not_a_maine_stranger(contacts, monkeypatch):
 
 
 @pytest.mark.parametrize("env, code", [
-    ({"WISP_REGION": "GB"}, "44"), ({"WISP_REGION": "us"}, "1"), ({"WISP_REGION": "ZZ", "LANG": "de_DE.UTF-8"}, "49"),
+    ({"WISP_REGION": "GB"}, "44"), ({"WISP_REGION": "us"}, "1"), ({"WISP_REGION": "ZZ", "LANG": "de_DE.UTF-8"}, ""),
+    ({"WISP_REGION": "FI", "LANG": "en_US.UTF-8"}, "358"), ({"WISP_REGION": "CA"}, "1"), ({"WISP_REGION": "IT"}, "39"),
     ({"LANG": "en_US.UTF-8"}, "1"), ({"LC_ALL": "fr_FR"}, "33"), ({"LANG": "C"}, ""), ({}, ""),
     ({"WISP_REGION": "US; rm -rf"}, ""),
 ])
