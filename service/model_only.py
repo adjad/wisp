@@ -1390,10 +1390,11 @@ def _known_people_tokens() -> set[str] | None:
 
 
 def _possessive_owner_is_known_person(owner: str) -> bool:
-    """Every word of the owner (titles aside) is a word of a name Wisp knows:
-    "Dana" or "Dr Patel" when Dana or a Patel is in the profile or contacts.
-    A failed lookup counts as known; no people data at all counts as unknown,
-    which leaves the words-only search rule as the only check."""
+    """The owner (titles aside) starts with, or is made only of, words of a
+    name Wisp knows: "Dana", "Dr Patel", and "Dana Lee" when a Dana Smith is in
+    the profile or contacts. "Trader Joe" is not, with a Joe known. A failed
+    lookup counts as known; no people data at all counts as unknown, which
+    leaves the words-only search rule as the only check."""
     words = [w for w in owner.lower().split() if w not in _OWNER_TITLES]
     if not words:
         return True
@@ -1401,7 +1402,7 @@ def _possessive_owner_is_known_person(owner: str) -> bool:
         tokens = _known_people_tokens()
     except Exception:  # noqa: BLE001 — an unreadable profile or cache fails closed
         return True
-    return bool(tokens) and all(w in tokens for w in words)
+    return bool(tokens) and (words[0] in tokens or all(w in tokens for w in words))
 
 
 def public_possessive_question(prompt: str) -> bool:
@@ -1435,9 +1436,15 @@ _WEB_FIRST = re.compile(
     r"|who(?:\s+is|'s|\s+are)\s+(?:the\s+)?(?:current\s+|new\s+|next\s+)?(?:us\s+|u\.s\.\s+)?"
     r"(?:president|vice\s+president|prime\s+minister|governor|mayor|senators?|chancellor|pope|king|queen|"
     r"secretary\s+of\s+[a-z ]+|speaker\s+of\s+the\s+house|ceo|chief\s+executive|chairman|head\s+coach)\b.*"
-    r"|(?:what(?:'s|\s+is)|which\s+is)\s+the\s+(?:latest|newest|most\s+recent)\s+.+"
-    r"|(?:what(?:'s|\s+is)\s+(?:the\s+|in\s+the\s+)?|any\s+|latest\s+|today'?s\s+|top\s+)?"
-    r"(?:news|headlines)\b.*"
+    # The newest of a product line, or of a named thing's versions: never "the
+    # latest on <a topic>", which may be a deal or a project of the user's own.
+    r"|(?:what(?:'s|\s+is)|which\s+is)\s+the\s+(?:latest|newest|most\s+recent)\s+(?:"
+    r"(?:version|release|update|model|generation)\s+of\s+[a-z0-9][a-z0-9 .+-]{1,30}"
+    r"|(?:apple\s+|samsung\s+|google\s+)?(?:iphone|ipad|macbook|imac|mac|macos|ios|ipados|watchos|apple\s+watch|"
+    r"airpods|pixel|galaxy|android|windows|playstation|xbox|kindle)\b[a-z0-9 .+-]{0,20})\s*[?.!]?"
+    # The day's news, with no topic: "any news on <x>" names a topic that may be private.
+    r"|(?:what(?:'s|\s+is)\s+(?:the\s+|in\s+the\s+)?|today'?s\s+|top\s+|latest\s+)?"
+    r"(?:news|headlines)(?:\s+(?:today|tonight|now|right\s+now|this\s+morning))?\s*[?.!]?"
     r")$", re.I)
 
 
@@ -1470,6 +1477,9 @@ email emails mail inbox message messages text texts imessage reminder reminders 
 meeting meetings class classes office ta note notes file files folder document documents doc docs
 order package delivery door window garage gate account appointment schedule flight trip homework
 assignment exam midterm quiz grade grades chat thread task tasks todo timer alarm brief
+deal deals project projects ticket tickets case cases application applications offer offers claim claims
+status issue issues bug bugs request requests position role job listing sale contract proposal
+enrollment registration poll survey invoice order orders pr
 """.split())
 # Relation words that are also ordinary words of a public question.
 _WEB_FIRST_PLAIN = frozenset("it that there here what who this these those today tomorrow tonight "

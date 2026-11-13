@@ -94,6 +94,10 @@ NOT_WEB_FIRST = [
     "what's the latest from Dana", "Is Dana open to it?", "what's on my calendar today",
     "What is the capital of France?", "how should i spend my day tomorrow",
     "Is Costco open on Sunday and can you text Sam the answer and remind me to go and buy milk there",
+    # Review of c32e4686: a topic of the user's own after "latest" or "news", or a thing that is "open".
+    "what's the latest on the Henderson deal", "any news on the job application?", "is the ticket still open?",
+    "is the deal closed?", "what's the latest on Project Falcon", "any news about the offer",
+    "is the case still open", "is the claim closed", "what is the latest status", "latest news about NVIDIA",
 ]
 
 
@@ -126,3 +130,30 @@ def test_mail_and_calendar_leads_still_win():
     for prompt in ("When is the W-9 due?", "When is the next meeting?"):
         preload, _ = main._ask_tool_rank(prompt)
         assert preload[:1] != ["web_search"], (prompt, preload)
+
+
+def test_the_classifier_does_not_protect_a_private_topic_so_the_pattern_must():
+    # classify() calls these external and leaves web_search allowed; only the
+    # narrow web_first pattern keeps the search from leading.
+    for prompt in ("what's the latest on the Henderson deal", "any news on the job application?",
+                   "is the ticket still open?", "is the deal closed?"):
+        request = classify(prompt)
+        assert request.provenance == Provenance.EXTERNAL and not request.private
+        assert not mo.web_first(prompt) and main._ask_tool_rank(prompt)[0][:1] != ["web_search"]
+
+
+def test_latest_and_news_lead_only_for_products_and_the_days_news():
+    for prompt in ("what is the latest iPhone", "what's the latest version of macOS", "what's the latest macbook",
+                   "What's the news today?", "top headlines", "what is the news"):
+        assert mo.web_first(prompt), prompt
+    for prompt in ("what's the latest", "what is the latest on that", "any news?", "news about the merger",
+                   "what's the latest version of the contract"):
+        assert not mo.web_first(prompt), prompt
+
+
+def test_a_known_first_name_makes_a_longer_owner_personal(monkeypatch):
+    monkeypatch.setattr(mo, "_known_people_tokens", lambda: {"dana", "smith", "joe"})
+    assert not mo.public_possessive_question("What are Dana Lee's hours?")       # a Dana is known
+    assert not mo.public_possessive_question("Is Dana Lee's open today?")
+    assert mo.public_possessive_question("What are Trader Joe's hours?")         # Joe known, but not first
+    assert mo.public_possessive_question("Is Costco's pharmacy open today?")
