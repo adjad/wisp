@@ -336,9 +336,9 @@ def _attention_state() -> tuple[str, bool] | None:
 
 _SEND_OK = "Before anything is sent, I show it to you and wait for your OK."
 _CALENDAR_OK = "Before anything is sent, or your calendar changes, I show it to you and wait for your OK."
-_AUTO_ADD = ("Because you let me act for you, I may add a time-sensitive event or deadline to your Calendar "
-             "or Reminders on my own, and hold a free hour on my own Day plan (never on your calendar) for work "
-             "due soon, then tell you, with Undo.")
+_AUTO_ADD = ("Because you let me act for you, I may add a time-sensitive event or deadline from a text to your "
+             "Calendar or Reminders on my own, and hold a free hour on my own Day plan (never on your calendar) "
+             "for work due soon, then tell you, with Undo. For one in an email I show a card and wait for your tap.")
 _ROUTINE = {
     "held": ("For your first few days I only suggest reminders from your routine. After that I may "
              "add a reminder or a Tentative hold in Wisp's own schedule on my own and tell you, with Undo."),
@@ -362,8 +362,8 @@ def _automatic_adds() -> tuple[str, list[tuple[str, str, bool]]]:
     mode = _write_mode()
     adds: list[tuple[str, str, bool]] = []
     if _auto_add_on():
-        adds.append((_AUTO_ADD, "a time-sensitive event or deadline to your Calendar or Reminders "
-                                "(you let me act for you)", False))
+        adds.append((_AUTO_ADD, "a time-sensitive event or deadline from a text to your Calendar or Reminders, "
+                                "and a held hour on my own Day plan (you let me act for you)", False))
     routine = _routine_state()
     if mode == "unknown" and routine != "off":
         routine = "unknown"

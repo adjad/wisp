@@ -60,9 +60,11 @@ by default), and your Brief and answers fit you.
   the chat window, and risky actions pause for your confirmation. Every action Wisp takes is logged
   in `~/.moe/audit.jsonl`.
 - **It acts without being asked only if you say so.** **Let Wisp act for me** is off until you say
-  yes, in setup or in Settings. On, Wisp adds an event or deadline you missed in a text or email to
+  yes, in setup or in Settings. On, Wisp adds an event or deadline you missed in a text to
   Calendar or Reminders by itself, without waiting for your approval. That applies only to
-  messages that arrive after your yes, from people you know, schools and bookings. It also holds
+  one-to-one texts with people saved in your Contacts that arrive after your yes. An email is
+  never added without your tap, because an email's From line is not proof of who sent it; Wisp
+  shows a card for it. It also holds
   a free hour on your Day plan for work due today or in the next three days. A hold is for
   deadlines already on your calendar or in Reminders, including ones that were there before you
   said yes; it lives in Wisp only, never on your calendar. At most 10 actions a day. Each one
