@@ -216,7 +216,7 @@ class Arm:
         })
         env.pop("WISP_MODEL_LED_ROUTING", None)
         self.backend = subprocess.Popen(
-            [self.python, "-m", "uvicorn", "service.main:app", "--port", str(self.port)],
+            [self.python, "-m", "uvicorn", "service.main:app", "--port", str(self.port), "--no-proxy-headers"],
             cwd=ROOT, env=env, stdout=(self.home / "backend.log").open("w"),
             stderr=subprocess.STDOUT)
         self._wait(f"{self.base}/mode", "backend")

@@ -51,6 +51,25 @@ def _engine_stop_grace() -> float:
     return float(found.group("s"))
 
 
+def test_the_service_is_never_started_trusting_proxy_headers():
+    """Uvicorn trusts X-Forwarded-For from 127.0.0.1 unless told not to, and reports the address
+    and port in it as the caller. The service proves "this is the Wisp app" from the caller's
+    port, so every launch of the backend turns that off."""
+    assert _uvicorn_arguments().count("--no-proxy-headers") == 1
+    assert "--proxy-headers" not in _uvicorn_arguments() and "--forwarded-allow-ips" not in _uvicorn_arguments()
+    launches = []
+    for folder, patterns in (("scripts", ("*.sh", "*.py")), ("sandbox", ("*.sh", "*.py")),
+                             ("build-support", ("*.sh", "*.py")), ("service", ("*.py",))):
+        for pattern in patterns:
+            for path in sorted((ROOT / folder).rglob(pattern)):
+                for number, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+                    if "uvicorn" in line and "service.main:app" in line and not line.lstrip().startswith("#"):
+                        launches.append((f"{path.relative_to(ROOT)}:{number}", line))
+    assert {where.split(":")[0] for where, _ in launches} >= {"scripts/run.sh", "sandbox/run.sh", "scripts/eval_arms.py"}
+    missing = [where for where, line in launches if "--no-proxy-headers" not in line]
+    assert missing == [], missing
+
+
 def test_the_launch_still_names_the_service_host_and_port_first():
     arguments = _uvicorn_arguments()
     assert arguments[:7] == ["-m", "uvicorn", "service.main:app", "--host", "127.0.0.1", "--port", "8765"]

@@ -1453,6 +1453,12 @@ async def get_mode() -> dict[str, Any]:
     return {"read_only": read_only(), "full_access": full_access()}
 
 
+# Shown in Wisp's own Settings when the app itself could not be confirmed, and returned to any
+# other program that tries: it says what to do in the first case and nothing useful in the second.
+_APP_ONLY = ("Wisp couldn't confirm this came from the Wisp app, so nothing changed. "
+             "Quit and reopen Wisp, then try again.")
+
+
 def _require_wisp_app(request: Request, reason: str) -> None:
     """The caller is the Wisp app that launched this service, proven from the kernel's socket
     table (wisp_reset.caller_is_parent_app), or 403 with `reason`. For a change that lets Wisp
@@ -1461,8 +1467,9 @@ def _require_wisp_app(request: Request, reason: str) -> None:
     this, so taking a permission back never depends on the proof succeeding."""
     client, server = request.scope.get("client"), request.scope.get("server")
     try:
-        from service.wisp_reset import caller_is_parent_app
-        proven = bool(client and server and len(client) == 2 and len(server) == 2
+        from service.wisp_reset import caller_is_parent_app, names_another_caller
+        # A forwarded-for header could stand in for the caller's address: never the app's own.
+        proven = bool(not names_another_caller(request) and client and server and len(client) == 2 and len(server) == 2
                       and client[0] == "127.0.0.1" and server[0] == "127.0.0.1"
                       and type(client[1]) is int and type(server[1]) is int
                       and caller_is_parent_app((client[0], client[1]), (server[0], server[1])) is True)
@@ -1486,7 +1493,7 @@ async def set_mode(request: Request, body: dict[str, Any]) -> dict[str, Any]:
         # bool("false") is True, and the choice is now saved across restarts.
         raise HTTPException(status_code=422, detail="read_only and full_access must be true or false.")
     if chosen.get("full_access") is True or chosen.get("read_only") is False:
-        _require_wisp_app(request, "Only the Wisp app can give Wisp more access. Change this in Wisp's Settings.")
+        _require_wisp_app(request, _APP_ONLY)
     try:
         choose_mode(chosen)
     except OSError:
@@ -4505,7 +4512,7 @@ async def get_permissions() -> dict[str, Any]:
     }
 
 
-_RULES_APP_ONLY = "Only the Wisp app can let Wisp act without asking. Change this in Wisp's Settings."
+_RULES_APP_ONLY = _APP_ONLY
 
 
 @app.post("/permissions")

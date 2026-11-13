@@ -483,8 +483,8 @@ def test_no_shell_command_may_write_the_gate_without_asking(monkeypatch, full, v
 # --- _require_app: what it hands to the socket-table proof -----------------------------------------
 
 class _Request:
-    def __init__(self, client, server):
-        self.scope = {"client": client, "server": server}
+    def __init__(self, client, server, headers=None):
+        self.scope, self.headers = {"client": client, "server": server}, dict(headers or {})
 
 
 def _real_require_app(monkeypatch, answer):

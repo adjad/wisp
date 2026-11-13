@@ -135,7 +135,7 @@ def test_a_new_choice_replaces_a_bad_file(tmp_path):
     path.parent.mkdir(parents=True)
     path.write_text("not json")
     _boot(tmp_path, {"full_access": True})
-    assert json.loads(path.read_text()) == {"full_access": True}
+    assert json.loads(path.read_text()) == {"read_only": False, "full_access": True}
     assert _boot(tmp_path)["full_access"] is True
 
 
@@ -152,16 +152,31 @@ def test_the_saved_file_is_0600_whatever_the_umask(mode_file):
     finally:
         os.umask(previous)
     assert stat.S_IMODE(mode_file.stat().st_mode) == 0o600
-    assert json.loads(mode_file.read_text()) == {"full_access": False}
+    assert json.loads(mode_file.read_text()) == {"read_only": policy.read_only(), "full_access": False}
     assert not leftover.exists()
 
 
-def test_choices_merge_and_only_chosen_keys_are_saved(mode_file):
+def test_every_choice_saves_both_modes_as_they_are_in_force(mode_file, monkeypatch):
+    monkeypatch.setattr(policy, "_READ_ONLY", False)
     policy.choose_mode({"full_access": False})
-    assert json.loads(mode_file.read_text()) == {"full_access": False}
+    assert json.loads(mode_file.read_text()) == {"read_only": False, "full_access": False}
     policy.choose_mode({"read_only": True})
     assert json.loads(mode_file.read_text()) == {"full_access": False, "read_only": True}
     assert (policy.read_only(), policy.full_access()) == (True, False)
+
+
+def test_choosing_one_mode_after_a_damaged_file_never_brings_full_access_back(tmp_path):
+    """A damaged file starts the service with Full access forced off. Choosing view-only then
+    used to save that one key, and the next start took Full access from policy.yaml's default."""
+    path = tmp_path / "moe" / "access_mode.json"
+    path.parent.mkdir(parents=True)
+    path.write_text("not json")
+    assert _boot(tmp_path)["full_access"] is False                    # forced off by the damage
+    path.write_text("not json")
+    after = _boot(tmp_path, {"read_only": True})
+    assert after["full_access"] is False
+    assert json.loads(path.read_text()) == {"read_only": True, "full_access": False}
+    assert _boot(tmp_path)["full_access"] is False                    # and it stays off at the next start
 
 
 def test_an_empty_choice_writes_nothing(mode_file):
@@ -252,7 +267,7 @@ def wisp():
 def test_post_mode_saves_the_choice(wisp, mode_file):
     response = wisp.post("/mode", json={"full_access": False})
     assert response.status_code == 200 and response.json()["full_access"] is False
-    assert json.loads(mode_file.read_text()) == {"full_access": False}
+    assert json.loads(mode_file.read_text())["full_access"] is False
     assert wisp.get("/mode").json()["full_access"] is False
 
 
@@ -285,8 +300,8 @@ def test_a_caller_that_is_not_the_wisp_app_cannot_widen_access(wisp, mode_file, 
     before = wisp.get("/mode").json()
     response = wisp.post("/mode", json=body)
     assert response.status_code == 403
-    assert response.json()["detail"] == ("Only the Wisp app can give Wisp more access. "
-                                         "Change this in Wisp's Settings.")
+    assert response.json()["detail"] == ("Wisp couldn't confirm this came from the Wisp app, so nothing changed. "
+                                         "Quit and reopen Wisp, then try again.")
     assert wisp.get("/mode").json() == before and not mode_file.exists()
 
 
@@ -316,8 +331,8 @@ def test_the_proof_is_the_kernels_word_that_the_parent_app_holds_this_connection
     from service import main, wisp_reset
 
     class Call:
-        def __init__(self, client, server):
-            self.scope = {"client": client, "server": server}
+        def __init__(self, client, server, headers=None):
+            self.scope, self.headers = {"client": client, "server": server}, dict(headers or {})
     asked = []
 
     def proof(client, server):
@@ -338,11 +353,125 @@ def test_the_proof_is_the_kernels_word_that_the_parent_app_holds_this_connection
             main._require_wisp_app(Call(client, server), "plain reason")
         assert refused.value.status_code == 403 and refused.value.detail == "plain reason"
 
+    # A header that can stand in for the caller's address refuses before the proof is even asked.
+    answer[0], asked[:] = True, []
+    for name in wisp_reset.FORWARDED_HEADERS:
+        with pytest.raises(HTTPException) as refused:
+            main._require_wisp_app(Call(("127.0.0.1", 50111), ("127.0.0.1", 8765), {name: "127.0.0.1:50111"}), "no")
+        assert refused.value.status_code == 403
+    assert asked == []
+
     def broken(*_a):
         raise OSError("socket table unreadable")
     monkeypatch.setattr(wisp_reset, "caller_is_parent_app", broken)
     with pytest.raises(HTTPException):
         main._require_wisp_app(Call(("127.0.0.1", 50111), ("127.0.0.1", 8765)), "no")   # unproven is refused
+
+
+# --- a forged X-Forwarded-For never stands in for the Wisp app --------------------------------
+
+APP_PORT, OTHER_PORT = 40444, 50001
+
+
+@pytest.fixture
+def behind_proxy_headers(mode_file, monkeypatch, tmp_path):
+    """The service as uvicorn serves it by DEFAULT (proxy headers trusted from 127.0.0.1), called
+    by a local program on OTHER_PORT while the Wisp app holds a connection on APP_PORT. The proof
+    is stubbed to what the kernel would say: only APP_PORT is the app's."""
+    from starlette.testclient import TestClient
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+    from service import idle, main, wisp_reset
+    from service.proactive import acting
+    from service.safety import grants
+    asked = []
+
+    def proof(client, server, **_kw):
+        asked.append(client)
+        return client == ("127.0.0.1", APP_PORT)
+    monkeypatch.setattr(wisp_reset, "caller_is_parent_app", proof)
+    monkeypatch.setattr(grants, "GRANTS_PATH", tmp_path / "grants.json")
+    monkeypatch.setattr(grants, "_CACHE", {})
+    monkeypatch.setattr(acting, "_path", lambda: tmp_path / "gate" / acting.FILE)
+    monkeypatch.setattr(acting, "_revoked", False)
+    monkeypatch.setattr(idle, "foreground_busy", lambda: False)
+    assert grants.grant("open_app", {}, decision="deny", scoped=False)["ok"] is True
+    monkeypatch.setattr(policy, "_FULL_ACCESS", False)
+    client = TestClient(ProxyHeadersMiddleware(main.app, trusted_hosts="127.0.0.1"),
+                        base_url="http://127.0.0.1:8765", client=("127.0.0.1", OTHER_PORT),
+                        raise_server_exceptions=False)
+    return client, asked
+
+
+def _widening_calls(client, headers):
+    from service import wisp_reset
+    return {
+        "mode": client.post("/mode", json={"full_access": True}, headers=headers),
+        "allow": client.post("/permissions", json={"tool": "run_shell", "scoped": False}, headers=headers),
+        "unblock": client.delete("/permissions/open_app?scope=", headers=headers),
+        "act": client.put("/assistant/proactive/act", json={"enabled": True}, headers=headers),
+        # No reset phrase: even if the caller check were passed, this body resets nothing (422).
+        "reset": client.post(wisp_reset.ROUTE, json={}, headers=headers),
+    }
+
+
+def _nothing_changed(mode_file, tmp_path):
+    from service.proactive import acting
+    from service.safety import grants
+    assert policy.full_access() is False and not mode_file.exists()
+    assert grants.check("run_shell", {"cmd": "ls"}) is None and grants.check("open_app", {"name": "Mail"}) == "deny"
+    assert not acting.enabled() and not (tmp_path / "gate" / acting.FILE).exists()
+
+
+def test_uvicorns_default_would_report_the_forged_port_as_the_caller():
+    """The premise: with proxy headers trusted, the header's host:port becomes scope["client"]."""
+    from starlette.testclient import TestClient
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+    async def echo(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": json.dumps(list(scope["client"])).encode()})
+    client = TestClient(ProxyHeadersMiddleware(echo, trusted_hosts="127.0.0.1"),
+                        base_url="http://127.0.0.1:8765", client=("127.0.0.1", OTHER_PORT))
+    assert client.get("/").json() == ["127.0.0.1", OTHER_PORT]
+    assert client.get("/", headers={"X-Forwarded-For": f"127.0.0.1:{APP_PORT}"}).json() == ["127.0.0.1", APP_PORT]
+
+
+@pytest.mark.parametrize("header", ["X-Forwarded-For", "Forwarded", "X-Real-IP", "X-Forwarded-Proto",
+                                    "X-Forwarded-Host", "X-Forwarded-Port"])
+def test_a_forged_forwarded_header_is_refused_on_every_app_only_route(behind_proxy_headers, mode_file, tmp_path, header):
+    client, asked = behind_proxy_headers
+    # Without the header the other program is simply not the app.
+    for name, reply in _widening_calls(client, {}).items():
+        assert reply.status_code == 403, (name, reply.status_code, reply.text)
+    assert asked and all(port == OTHER_PORT for _host, port in asked)
+    _nothing_changed(mode_file, tmp_path)
+    # With it, naming the port of the connection the app really holds: refused before the proof
+    # is asked at all, so the forged port never reaches it.
+    asked.clear()
+    value = f"for=127.0.0.1:{APP_PORT}" if header == "Forwarded" else f"127.0.0.1:{APP_PORT}"
+    for name, reply in _widening_calls(client, {header: value}).items():
+        assert reply.status_code == 403, (name, reply.status_code, reply.text)
+    assert asked == []
+    _nothing_changed(mode_file, tmp_path)
+
+
+def test_the_apps_own_request_still_passes_and_narrowing_ignores_the_header(mode_file, monkeypatch, tmp_path):
+    from starlette.testclient import TestClient
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+    from service import main, wisp_reset
+    monkeypatch.setattr(wisp_reset, "caller_is_parent_app",
+                        lambda client, server, **_k: client == ("127.0.0.1", APP_PORT))
+    monkeypatch.setattr(policy, "_FULL_ACCESS", False)
+    app = TestClient(ProxyHeadersMiddleware(main.app, trusted_hosts="127.0.0.1"),
+                     base_url="http://127.0.0.1:8765", client=("127.0.0.1", APP_PORT), raise_server_exceptions=False)
+    # The app sends no such header: accepted, on the real route, by the real check.
+    assert app.post("/mode", json={"full_access": True}).json()["full_access"] is True
+    # The app's request with the header added is refused too: the header alone decides.
+    assert app.post("/mode", json={"full_access": False}).status_code == 200
+    assert app.post("/mode", json={"full_access": True}, headers={"X-Forwarded-For": "127.0.0.1:1"}).status_code == 403
+    assert policy.full_access() is False
+    # Narrowing never needed the proof, so a header changes nothing there.
+    assert app.post("/mode", json={"read_only": True}, headers={"X-Forwarded-For": "10.0.0.1"}).status_code == 200
 
 
 def test_moving_wisp_s_folder_itself_asks_in_every_mode(monkeypatch):

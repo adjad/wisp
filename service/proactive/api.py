@@ -141,8 +141,10 @@ def _require_app(request: Request) -> None:
     from service.wisp_reset import caller_is_parent_app
     client, server = request.scope.get("client"), request.scope.get("server")
     try:
+        from service.wisp_reset import names_another_caller
         # Exactly the connection's own (host, port) pairs go to the check: loopback, real int ports.
-        proven = bool(client and server and len(client) == 2 and len(server) == 2
+        # A forwarded-for header could stand in for them: never the app's own request.
+        proven = bool(not names_another_caller(request) and client and server and len(client) == 2 and len(server) == 2
                       and client[0] == "127.0.0.1" and server[0] == "127.0.0.1"
                       and type(client[1]) is int and type(server[1]) is int
                       and caller_is_parent_app((client[0], client[1]), (server[0], server[1])) is True)
