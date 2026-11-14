@@ -208,6 +208,24 @@ class ValidatorRules(MediaBase):
             policy.remote_only_profile().validate_payload(payload)
         self.assertIn("too large for one cloud request", str(caught.exception))
 
+    def test_picture_and_recording_counts_span_the_whole_request(self):
+        clip = {"type": "input_audio", "input_audio": {"data": b64(wav()), "format": "wav"}}
+        payload = self.payload([clip])
+        payload["messages"].append({"role": "user", "content": [clip]})
+        with self.assertRaises(EndpointConfigurationError) as caught:
+            policy.remote_only_profile().validate_payload(payload)
+        self.assertIn("Too many recordings", str(caught.exception))
+        one = {"type": "image_url", "image_url": {"url": image_url()}}
+        payload = self.payload([one] * policy.REMOTE_IMAGES_PER_REQUEST)
+        payload["messages"].append({"role": "user", "content": [one]})
+        with self.assertRaises(EndpointConfigurationError) as caught:
+            policy.remote_only_profile().validate_payload(payload)
+        self.assertIn("Too many pictures", str(caught.exception))
+
+    def test_the_data_url_prefix_is_exact(self):
+        upper = "DATA:IMAGE/PNG;BASE64," + b64(png())
+        self.refused([{"type": "image_url", "image_url": {"url": upper}}], "never a link")
+
     def test_media_leave_the_transcript_budget_but_the_body_stays_bounded(self):
         # A small transcript budget still takes a 3 MiB screenshot: media are counted
         # against their own cap, not aggregate_bytes or request_bytes.
@@ -439,6 +457,10 @@ class MeetOnTheCloud(MediaBase):
         policy.remote_only_profile.cache_clear()
         self.assertEqual(self.api.audio_destination(), "OpenRouter")
         self.assertEqual(run(self.api.list_meetings())["audio_destination"], "OpenRouter")
+        # A model that can't hear: nothing will be sent, so the copy names no destination.
+        self.cfg["inference"]["remote_only"]["model_id"] = HAIKU
+        policy.remote_only_profile.cache_clear()
+        self.assertIsNone(self.api.audio_destination())
         self.legacy()
         self.assertIsNone(self.api.audio_destination())
 

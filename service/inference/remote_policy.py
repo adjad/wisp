@@ -128,7 +128,7 @@ REMOTE_CONTENT_PARTS = 32
 # the default model always reasons first, and its reasoning counts against max_tokens,
 # so the few hundred tokens a local model needs would end the reply before it starts.
 REMOTE_MEDIA_MIN_TOKENS = 4096
-_IMAGE_DATA_URL = re.compile(r"data:image/(?:png|jpeg|webp);base64,", re.IGNORECASE)
+_IMAGE_DATA_URL = re.compile(r"data:image/(?:png|jpeg|webp);base64,")
 _BASE64 = re.compile(r"[A-Za-z0-9+/]*={0,2}")
 
 
@@ -168,14 +168,17 @@ def _b64_size(data, cap: int) -> int:
     return size
 
 
-def _content_parts(parts, model_id: str) -> int:
-    """Check one user message's content parts; return the encoded media bytes in it."""
+def _content_parts(parts, model_id: str, counts: dict | None = None) -> int:
+    """Check one user message's content parts; return the encoded media bytes in it.
+    `counts` carries the picture and recording totals across the whole request."""
     if not remote_parity():
         _refuse("Remote-only inference accepts text and tool transcripts only")
     if type(parts) is not list or not 1 <= len(parts) <= REMOTE_CONTENT_PARTS:
         _refuse("Invalid remote-only content parts")
     accepts = remote_input_modalities(model_id)
-    media = images = audio = 0
+    counts = {"images": 0, "audio": 0} if counts is None else counts
+    media = 0
+    images, audio = counts["images"], counts["audio"]
     for part in parts:
         kind = part.get("type") if type(part) is dict else None
         if kind == "text":
@@ -210,6 +213,7 @@ def _content_parts(parts, model_id: str) -> int:
             media += len(inner["data"])
         else:
             _refuse("Unsupported remote-only content part")
+    counts["images"], counts["audio"] = images, audio
     return media
 
 
@@ -299,6 +303,7 @@ class RemoteOnlyProfile:
         if not isinstance(messages, list) or not 1 <= len(messages) <= self.messages:
             _refuse("Remote-only message budget exceeded")
         media_bytes = 0
+        media_counts = {"images": 0, "audio": 0}
         for row in messages:
             if not isinstance(row, dict) or not isinstance(row.get("role"), str):
                 _refuse("Invalid remote-only message")
@@ -308,7 +313,7 @@ class RemoteOnlyProfile:
             if row["role"] == "user" and isinstance(content, list):
                 # Pictures and recordings: cloud-everything mode, a model that takes
                 # them, data only, bounded (see REMOTE_INPUT_MODALITIES and the caps).
-                media_bytes += _content_parts(content, self.model_id)
+                media_bytes += _content_parts(content, self.model_id, media_counts)
                 if media_bytes > REMOTE_MEDIA_TOTAL_BYTES:
                     _refuse("The pictures and recordings are too large for one cloud request")
             elif not isinstance(content, str) and not (row["role"] == "assistant" and row.get("tool_calls") and content is None):

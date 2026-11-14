@@ -57,9 +57,9 @@ def audio_destination() -> str | None:
     """Who hears a meeting's audio besides this Mac: the remote-only profile's
     provider ("OpenRouter", or the server's host name), or None on a local engine."""
     from urllib.parse import urlsplit
-    from service.inference.remote_policy import remote_only_profile
+    from service.inference.remote_policy import cloud_media_allowed, remote_only_profile
     profile = remote_only_profile()
-    if profile is None:
+    if profile is None or not cloud_media_allowed("audio"):
         return None
     host = (urlsplit(profile.base_url).hostname or "").lower()
     return "OpenRouter" if host == "openrouter.ai" or host.endswith(".openrouter.ai") else (host or "your cloud provider")

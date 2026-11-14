@@ -255,8 +255,12 @@ def _linked() -> set[str]:
     from service import gmail_source
     from service.proactive import sources
     path = gmail_source.CONFIG_PATH
-    if path.exists():
-        data = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        text = None  # no settings file: nothing is linked (any other read error raises)
+    if text is not None:
+        data = json.loads(text)
         if not isinstance(data, dict):
             raise ValueError("Google sign-in settings are unreadable")
     return {a.casefold() for a in sources.gmail_accounts()}

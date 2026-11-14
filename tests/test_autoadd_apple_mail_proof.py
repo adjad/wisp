@@ -317,6 +317,21 @@ def test_an_unreadable_google_config_is_never_read_as_nothing_linked(store, worl
     assert wrote == ["calendar"]
 
 
+def test_a_google_config_that_cant_be_reached_is_never_read_as_nothing_linked(store, world, monkeypatch):
+    world["contacts"] = {PRIYA}
+    gmail_source.CONFIG_PATH.write_text("{}", encoding="utf-8")
+    real = type(gmail_source.CONFIG_PATH).read_text
+    def denied(self, *a, **k):
+        if self == gmail_source.CONFIG_PATH:
+            raise PermissionError("synthetic: folder not traversable")
+        return real(self, *a, **k)
+    monkeypatch.setattr(type(gmail_source.CONFIG_PATH), "read_text", denied)
+    monkeypatch.setattr(type(gmail_source.CONFIG_PATH), "exists", lambda self: False)
+    wrote, out, notes = run(store, apple_item(apple_row()))
+    assert wrote == [] and out["added"] == [] and store.auto_added() == {}
+    assert len(notes) == 1 and notes[0].startswith("mail: tap to add (proof unavailable: "), notes
+
+
 def test_gmail_addresses_compare_in_their_canonical_spelling(store, world):
     adi = "adi@gmail.com"
     assert {P.canonical(a) for a in ("a.di@gmail.com", "adi+x@gmail.com", "adi@googlemail.com", "A.Di+y@GoogleMail.com",
