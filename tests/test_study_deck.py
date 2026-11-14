@@ -302,7 +302,8 @@ def test_an_old_study_db_gains_the_deck_column(tmp_path):
     db.close()
     store = StudyStore(path)
     assert store.sources()[0] | {} == {"id": "src_old", "course_id": None, "kind": "drive", "title": "Old",
-                                       "url": "u", "chars": 1, "created_at": 1.0, "pages": 0, "deck_status": "none"}
+                                       "url": "u", "chars": 1, "created_at": 1.0, "pages": 0, "deck_status": "none",
+                                       "week": None, "topic": None, "summary": None}
 
 
 # --- Drive add with pages ---------------------------------------------------------------
