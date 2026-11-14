@@ -119,9 +119,11 @@ refused a start rather than admitted unchecked.
 Metal caps the threads of one threadgroup per compiled pipeline, and the cap
 depends on the GPU: a kernel that may use 1024 threads on an M5 may use 448 on
 an M1 Pro. MLX does not expose the cap and checks it only when the lazy graph
-is evaluated, so on 0.5.0 an oversized dispatch in the MTP verify path ended
-every reply on an M1 Pro ("Thread group size (512) is greater than the maximum
-allowed threads per threadgroup (448)").
+is evaluated, so no caller can fall back. With oMLX 0.7.3rc1 (Wisp 0.5.0-dev5
+to 0.5.0-rc2-beta2) the M1 verify kernel `omlx_m1_verify_mma5` asked for 512
+threads where its 5-bit bf16 pipeline allows 448 on M1 and M2, and every reply
+ended ("Thread group size (512) is greater than the maximum allowed threads per
+threadgroup (448)", upstream issue jundot/omlx#4913, fixed in oMLX 0.7.3).
 
 `engine_guard/kernel_guard.py` (installed as `omlx/wisp_kernel_guard.py`) wraps
 `mx.fast.metal_kernel`. The first dispatch of each pipeline at a new size is

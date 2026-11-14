@@ -2,8 +2,9 @@
 
 Every Ask reply on an M1 Pro ended with "Thread group size (512) is greater
 than the maximum allowed threads per threadgroup (448)": a custom kernel in the
-MTP verify path asked for more threads than that GPU's pipeline allows, MLX
-raised only when the lazy graph was evaluated, and nothing could fall back.
+MTP verify path (oMLX 0.7.3rc1's omlx_m1_verify_mma5, upstream issue #4913)
+asked for more threads than that GPU's pipeline allows, MLX raised only when
+the lazy graph was evaluated, and nothing could fall back.
 
 The guard logic is tested here against a fake MLX with a 448-thread cap (no
 MLX, no GPU, no model). The real kernels are exercised by
