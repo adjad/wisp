@@ -56,6 +56,9 @@ from service.proactive.prepare import todo_id
 JUDGE_EVERY_S = 30 * 60
 TICK_GAP_S = 120
 IDLE_GAP_S = 300
+# Between builds while "Let Wisp act for me" is on: a light cycle is what adds a dated text
+# (_light_add), so it runs this often and a text is acted on about a minute after it syncs.
+ACTING_GAP_S = 60
 MAX_THREADS = 30
 _MAIL_GIST_HOLD_S = 90
 _PATIENT_WAIT_S = 600
@@ -305,6 +308,59 @@ def _add_candidates(items: list[dict], survivors: list[dict], store) -> list[dic
                           "result": {"junk": False, "sensitive": False, "title": "", "summary": "",
                                      "asks_of_me": "", "fallback": True}})
     return survivors + extra
+
+
+def _light_candidates(items: list[dict], store) -> list[dict]:
+    """What a LIGHT cycle may add from: texts only, each with the model's stored reading of
+    this exact content when there is one, else the neutral reading a failed one gets.
+
+    IMPORTANT rules:
+    - Texts only. Email is added in a build: its proof reads Sent mail and the provider's result.
+    - A stored "sensitive" reading leaves the text out; a stored "junk" one is refused by
+      autoadd.plan_for. A text the model has not read yet has no such veto: plan_for's own code
+      decides (saved contact, an explicit date in the sender's words, after the yes, not withheld
+      or secret, no sensitive sentence), exactly as for a reading that failed (_add_candidates).
+    - Every one is `add_only`: it may be added or left alone, and earns no card from this."""
+    neutral = {"junk": False, "sensitive": False, "title": "", "summary": "", "asks_of_me": "", "fallback": True}
+    out = []
+    for item in items:
+        if item.get("source") != "messages":
+            continue
+        try:
+            entry = store.triage_get(item["id"], _tkey(item))
+        except Exception:  # noqa: BLE001 — unreadable: not a candidate
+            continue
+        if isinstance(entry, dict) and entry.get("status") == "sensitive":
+            continue
+        stored = entry.get("result") if isinstance(entry, dict) else None
+        out.append({"item": item, "add_only": True, "result": dict(stored) if isinstance(stored, dict) else dict(neutral)})
+    return out
+
+
+async def _light_add(items: list[dict], sched: dict, *, now: float, tz: str, store, abort) -> None:
+    """Auto-add in a light cycle (autoadd.step, texts only). Never fails the cycle."""
+    try:
+        from service.proactive import autoadd
+        if not autoadd.enabled():
+            return
+        candidates = _light_candidates(items, store)
+        if not candidates or abort():
+            return
+        out = await autoadd.step(candidates, sched, now=now, tz=tz, store=store, abort=abort)
+        added = len(out.get("added") or []) if isinstance(out, dict) else 0
+        if added:
+            _log(f"between builds: added {added} from texts")
+    except Exception:  # noqa: BLE001 — nothing added this time; the next cycle looks again
+        traceback.print_exc()
+
+
+def _light_gap() -> float:
+    """How long until the next light cycle: a minute while Wisp acts for the person, else IDLE_GAP_S."""
+    try:
+        from service.proactive import autoadd
+        return ACTING_GAP_S if autoadd.enabled() else IDLE_GAP_S
+    except Exception:  # noqa: BLE001
+        return IDLE_GAP_S
 
 
 def _key_items(survivors: list[dict]) -> list[str]:
@@ -798,8 +854,11 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
                         now=now, tz=tz, store=store,
                         abort=abort, autoadd_fn=None if yielded or abort() else autoadd_fn)
     else:
-        # A light cycle adds nothing from mail or texts, but an hour it just held (step 3)
-        # must show its "Wisp did this" card with Undo now, not at the next build.
+        # A light cycle adds from texts only (_light_add), by code alone; email waits for a
+        # build. What it added, and an hour it just held (step 3), show their "Wisp did this"
+        # card with Undo now, not at the next build.
+        if autoadd_fn is not None and not (yielded or abort()):
+            await _light_add(items, sched, now=now, tz=tz, store=store, abort=abort)
         _merge_done(cards_by_account, accounts, own, store, now)
     # What Wisp looked at, bulk mail it skipped included. An injected collect
     # (tests) reports nothing, so its items stand in.
@@ -1158,7 +1217,7 @@ async def _light_tick() -> None:
     """Between builds: the Brief kept current with no model call."""
     global _next_tick_at, _rerun
     await run_cycle(light=True)
-    _next_tick_at = time.time() + IDLE_GAP_S
+    _next_tick_at = time.time() + _light_gap()
     while _rerun is not None:
         # Analyze now was pressed while this light cycle ran: the full cycle it asked for runs now.
         request, _rerun = _rerun, None

@@ -28,7 +28,7 @@ IMPORTANT rules:
   `record()`. A card is built only from the record (`did_card`), never from a
   request. Undo runs the kind's registered undoer on the stored record.
 - No limit on how many a day (the owner's decision, 2026-11-13). Each kind keeps its
-  own limits (autoadd.MAX_PER_CYCLE a pass, a follow-up's own two a day).
+  own limits (autoadd.MAX_PER_CYCLE a pass, one follow-up a pass).
 - Every action and every undo writes an audit line (`audit`).
 
 FOR A NEW KIND OF ACTION (the interface; see tests/test_acting.py):

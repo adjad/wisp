@@ -78,7 +78,6 @@ MAX_AGE_S = 4 * DAY_S               # the texts window: older asks aren't seen w
 CONTACT_WINDOW_S = 30 * DAY_S
 MIN_TEXTS_OUT = 3                   # "talk to often": the user's own texts in the window...
 MIN_DAYS_OUT = 2                    # ...on at least this many different days
-MAX_PER_DAY = 2
 MAX_PER_CYCLE = 1
 PERSON_BLOCK_S = 30 * DAY_S         # after an Undo or dismiss, that person is left alone this long
 PERSON_REST_S = 7 * DAY_S           # after any follow-up, the next one for that person waits this long
@@ -707,12 +706,13 @@ def plan_for(item: dict, *, now: float, tz: str, history: dict | None = None, se
 
 def choose(plans, *, done_today: int, now: float) -> list[dict]:
     """The plans to act on this cycle: the longest-waiting first, at most one a
-    cycle and never past MAX_PER_DAY in a rolling day (`done_today`, counted by
-    the caller from its records), one per person."""
+    cycle, one per person. No limit per day (the owner's decision, 2026-11-13);
+    `done_today` is still counted by the caller and must be a number."""
     try:
-        room = max(0, min(MAX_PER_CYCLE, MAX_PER_DAY - int(done_today)))
+        int(done_today)
     except (TypeError, ValueError):
         return []
+    room = MAX_PER_CYCLE
     picked, people = [], set()
     valid = [p for p in plans or () if isinstance(p, dict) and p.get("person_key") and _finite(p.get("received_ts"))]
     for plan in sorted(valid, key=lambda p: p["received_ts"]):
@@ -932,7 +932,7 @@ async def plans(items, *, now: float, tz: str, records, reminders=(), results=No
         done_today = int(done_today)
     except (TypeError, ValueError):
         return [], {}
-    if not _finite(since_ts) or done_today >= MAX_PER_DAY:
+    if not _finite(since_ts):
         return [], {}
     history = text_history(records)
     results = results if isinstance(results, dict) else {}
@@ -1171,8 +1171,6 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
     if since is None:
         return {"added": []}
     blocked, today, recorded = _blocked(store, now)
-    if today >= MAX_PER_DAY:
-        return {"added": []}
     # One message gets at most one thing done on its own: an item auto-add already
     # acted on (an event or deadline added, even if undone since) gets no follow-up.
     acted = {str(r.get("item_id")) for r in acting.records(store, statuses=acting.LANDED)

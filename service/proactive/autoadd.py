@@ -17,7 +17,7 @@ IMPORTANT rules:
 - An event with a clock goes to Calendar (the default calendar, the stated
   length or an hour); a deadline goes to Reminders (its stated time, else 9 AM
   that day). Never both for one item.
-- At most 3 writes a cycle; no limit per day. Background cycle only: the
+- At most 10 writes a cycle; no limit per day. Background cycle only: the
   cycle's abort (a user's turn) is checked before every write, and again right
   before dispatch.
 - Every write goes through the verified native paths (attention_calendar's
@@ -67,7 +67,7 @@ from zoneinfo import ZoneInfo
 
 from service.proactive import guard
 
-MAX_PER_CYCLE = 3
+MAX_PER_CYCLE = 10
 DAY_S = 86400
 MIN_LEAD_S = 30 * 60
 MAX_AHEAD_S = 60 * DAY_S

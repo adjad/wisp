@@ -398,7 +398,7 @@ def test_the_switch_is_the_apps_own_and_takes_only_a_real_boolean(setting):
         assert client.put(url, json=body).status_code == 422
     assert not setting.exists() and not acting.enabled()
     on = client.put(url, json={"enabled": True}).json()
-    assert on["enabled"] is True and on["enabled_at"] > 1_700_000_000 and "per_day" not in on and on["per_cycle"] == 3
+    assert on["enabled"] is True and on["enabled_at"] > 1_700_000_000 and "per_day" not in on and on["per_cycle"] == 10
     off = client.put(url, json={"enabled": False}).json()
     assert off["enabled"] is False and off["enabled_at"] is None and off["asked"] is True
     assert autoadd._still_ok() == "Acting for you was turned off"

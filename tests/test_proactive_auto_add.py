@@ -257,10 +257,11 @@ def _many(n):
     return out
 
 
-def test_at_most_three_writes_a_cycle_and_the_rest_become_tap_cards(store):
+def test_at_most_ten_writes_a_cycle_and_the_rest_become_tap_cards(store):
+    assert autoadd.MAX_PER_CYCLE == 10
     writers = Writers()
-    out = step(store, survivors(*_many(5)), writers)
-    assert len(writers.calls) == 3 and len(out["added"]) == 3
+    out = step(store, survivors(*_many(12)), writers)
+    assert len(writers.calls) == 10 and len(out["added"]) == 10
     assert len(out["tap"]) == 2 and {c["action"]["method"] for c in out["tap"]} == {"calendar_event"}
 
 
@@ -581,11 +582,11 @@ def test_an_undone_thread_is_never_added_again_even_at_a_nudged_time(store):
 
 def test_unconfirmed_writes_count_toward_the_limit_for_one_pass(store):
     writers = Writers(outcome={"ok": False, "status": "unknown"})
-    step(store, survivors(*_many(5)), writers)
-    assert len(writers.calls) == autoadd.MAX_PER_CYCLE == 3            # an unknown outcome still used its turn
+    step(store, survivors(*_many(12)), writers)
+    assert len(writers.calls) == autoadd.MAX_PER_CYCLE == 10           # an unknown outcome still used its turn
     again = Writers()
-    step(store, survivors(*_many(5)), again)
-    assert len(again.calls) == 2                                       # the three unknown ones are never written twice
+    step(store, survivors(*_many(12)), again)
+    assert len(again.calls) == 2                                       # the ten unknown ones are never written twice
 
 
 def test_the_card_fire_route_is_denied_from_the_shell():
@@ -1681,3 +1682,120 @@ def test_the_app_turns_the_announcement_into_a_notification_and_does_nothing_els
     assert acting.ANNOUNCED == "wisp_did"
     assert 'Notifications.deliver(id: "wispdid:" + ev.str("record"), title: "Wisp did this"' in case
     assert "OutboundSender" not in case and "client." not in case      # it only shows; it never acts
+
+
+# --- between builds: a light cycle adds a dated text within about a minute (2026-11-13) ----------
+
+def _light_cycle(store, items, *, abort=lambda: False, now=NOW):
+    """One LIGHT cycle (no model call) over `items`, with production auto-add behind it."""
+    async def no_model(system, material, abort, tokens):
+        raise AssertionError("a light cycle never calls the model")
+
+    async def builds_only(candidates, sched, **_k):
+        raise AssertionError("a light cycle never runs the build's auto-add (it would read mail and follow-ups)")
+    return asyncio.run(cycle.run_cycle(
+        now=now, tz=TZ, force=True, reply_fn=no_model, abort=abort, collect=lambda n, z: list(items),
+        schedule_fn=lambda n, z: {"calendar": [], "reminders": []}, store=store, resolve=lambda i: None,
+        linked=set(), own=ME, allowed=set(), freeze=lambda ref: None, deadline_fn=None, autoadd_fn=builds_only,
+        light=True))
+
+
+@pytest.fixture
+def native(monkeypatch):
+    """Fake Calendar and Reminders behind the production step, and nothing already on them."""
+    writers = Writers()
+    monkeypatch.setattr(autoadd, "WRITERS", writers.table())
+    monkeypatch.setattr(autoadd, "default_existing", lambda now: [])
+    return writers
+
+
+PLAIN = "Team meeting Sat Oct 31 at 3pm in the library."
+
+
+def test_a_light_cycle_adds_a_saved_contacts_dated_text_and_announces_it_once(store, yes, native, heard, monkeypatch):
+    sent, _ = heard
+    said = []
+    monkeypatch.setattr(cycle, "_log", lambda line: said.append(line))
+    yes(NOW - 2 * 3600)
+    item = text("Maya Chen", PLAIN)
+    assert store.triage_get(item["id"], cycle._tkey(item)) is None            # the model has never read it
+    assert _light_cycle(store, [item])["status"] == "done"
+    assert [k for k, _ in native.calls] == ["calendar"] and native.calls[0][1]["start_ts"] == at(10, 31, 15)
+    assert [e["type"] for e, _ in sent] == ["wisp_did"]
+    assert "between builds: added 1 from texts" in said
+    cards = [c for c in store.state()["cards"] if c.get("auto_added")]
+    assert len(cards) == 1 and cards[0]["action"]["method"] == "undo_add"     # its card, with Undo, at once
+    assert [c for c in store.state()["cards"] if c["action"]["method"] == "calendar_event"] == []   # and no tap card
+    said.clear()
+    _light_cycle(store, [item], now=NOW + 60)                                  # a minute later: nothing again
+    assert len(native.calls) == 1 and len(sent) == 1 and not any("added" in line for line in said)
+
+
+@pytest.mark.parametrize("status, result", [
+    ("sensitive", None),
+    ("ok", {"junk": True, "sensitive": False, "title": "", "summary": "", "asks_of_me": ""}),
+    ("ok", {"junk": False, "sensitive": True, "title": "", "summary": "", "asks_of_me": ""}),
+])
+def test_a_stored_sensitive_or_junk_reading_still_vetoes_in_a_light_cycle(store, yes, native, status, result):
+    yes(NOW - 2 * 3600)
+    item = text("Maya Chen", PLAIN)
+    store.triage_put(item["id"], cycle._tkey(item), result, status=status, account=ME, now=NOW - 60)
+    _light_cycle(store, [item])
+    assert native.calls == [] and store.auto_added() == {}
+    # The same text with an ordinary stored reading is added.
+    clear = ProactiveStore(Path(tempfile.mkdtemp()) / "p")
+    clear.triage_put(item["id"], cycle._tkey(item), dict(OK), status="ok", account=ME, now=NOW - 60)
+    _light_cycle(clear, [item])
+    assert len(native.calls) == 1
+
+
+@pytest.mark.usefixtures("mail_acts")
+def test_a_light_cycle_never_touches_email(store, yes, native):
+    yes(NOW - 2 * 3600)
+    proven = mail("Ed Park", "ed@ucsc.edu", "CSE 20 homework", "Hi all, HW4 due Friday Oct 30 11:59 PM. Good luck!")
+    assert autoadd.plan_for(proven, dict(OK), now=NOW, tz=TZ)[0] is not None   # a build could add this one
+    assert cycle._light_candidates([proven, text("Maya Chen", PLAIN)], store)[0]["item"]["source"] == "messages"
+    assert len(cycle._light_candidates([proven, text("Maya Chen", PLAIN)], store)) == 1
+    _light_cycle(store, [proven])
+    assert native.calls == [] and store.auto_added() == {}
+
+
+def test_a_light_cycle_adds_nothing_during_a_turn_or_with_the_switch_off(store, yes, native, tmp_path):
+    item = text("Maya Chen", PLAIN)
+    _light_cycle(store, [item])                                                # never said yes
+    assert native.calls == [] and store.auto_added() == {}
+    assert [c for c in store.state()["cards"] if c["action"]["method"] == "calendar_event"] == []   # and no card from it
+    yes(NOW - 2 * 3600)
+    _light_cycle(store, [item], abort=lambda: True)                            # a turn is running
+    assert native.calls == [] and store.auto_added() == {}
+    _light_cycle(store, [item])                                                # the turn over: now it is added
+    assert len(native.calls) == 1
+
+
+def test_an_unknown_number_or_a_text_from_before_the_yes_is_not_added_in_a_light_cycle(store, yes, native):
+    yes(NOW - 1800)                                                            # the text below arrived an hour ago
+    _light_cycle(store, [text("Maya Chen", PLAIN)])
+    stranger = text("+15559990000", PLAIN, ago_h=0.1, chat="SMS;-;+15559990000", service="SMS")
+    _light_cycle(store, [stranger])
+    assert native.calls == [] and store.auto_added() == {}
+
+
+def test_light_cycles_come_every_minute_only_while_the_switch_is_on(yes, monkeypatch):
+    from service.proactive import acting
+    assert (cycle.ACTING_GAP_S, cycle.IDLE_GAP_S) == (60, 300)
+    assert cycle._light_gap() == 300                                           # off: the old pace
+    yes(NOW)
+    assert cycle._light_gap() == 60
+
+    async def one_light(**kw):
+        assert kw == {"light": True}
+        return {"status": "done"}
+    monkeypatch.setattr(cycle, "run_cycle", one_light)
+    monkeypatch.setattr(cycle, "_rerun", None)
+    monkeypatch.setattr(cycle.time, "time", lambda: 1000.0)
+    monkeypatch.setattr(cycle, "_next_tick_at", 0.0)
+    asyncio.run(cycle._light_tick())
+    assert cycle._next_tick_at == 1060.0
+    acting.set_enabled(False)
+    asyncio.run(cycle._light_tick())
+    assert cycle._next_tick_at == 1300.0

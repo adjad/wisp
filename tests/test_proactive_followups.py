@@ -483,9 +483,12 @@ def test_one_a_cycle_the_longest_waiting_first():
     assert [p["who"] for p in picked] == ["Ravi"]
 
 
-def test_two_a_day_at_most():
-    assert len(followups.choose(_plans("Maya"), done_today=1, now=NOW)) == 1
-    assert followups.choose(_plans("Maya"), done_today=2, now=NOW) == []
+def test_there_is_no_limit_per_day_only_one_a_cycle():
+    # The owner removed the two-a-day cap (2026-11-13): however many were done today, one more may be.
+    assert not hasattr(followups, "MAX_PER_DAY")
+    for done in (0, 1, 2, 20):
+        assert len(followups.choose(_plans("Maya", "Sam", "Ravi"), done_today=done, now=NOW)) == followups.MAX_PER_CYCLE == 1
+    assert followups.choose(_plans("Maya"), done_today="many", now=NOW) == []       # a count that is no number: nothing
 
 
 def test_the_audit_line_carries_no_message_text_or_name():
@@ -526,14 +529,15 @@ def test_a_cycle_plans_nothing_when_the_sent_read_failed():
     assert got == [] and why[text_item()["id"]] == "sent mail not checked"
 
 
-def test_a_cycle_honours_sent_mail_and_the_daily_cap():
+def test_a_cycle_honours_sent_mail_and_has_no_daily_cap():
     async def answered():
         return [sent("Maya Chen <maya.c@school.edu>", NOW - 3 * H)], True
 
     async def nothing():
         return [], True
     assert _run([text_item()], read_sent=answered)[0] == []
-    assert _run([text_item()], read_sent=nothing, done_today=2) == ([], {})
+    assert _run([text_item()], read_sent=nothing, done_today=2) == _run([text_item()], read_sent=nothing)
+    assert _run([text_item()], read_sent=nothing, done_today=2)[0] != []            # two done today: a third is planned
     assert _run([text_item()], read_sent=nothing, since_ts=None) == ([], {})
 
 
@@ -686,11 +690,11 @@ def test_a_write_blocked_before_dispatch_may_try_again(setting, store):
     assert step(store, [text_item()], now=NOW + 600)["added"]
 
 
-def test_two_a_day_holds_and_other_kinds_past_ten_do_not_block_a_follow_up(setting, store, tmp_path):
+def test_a_third_follow_up_in_a_day_and_other_kinds_past_ten_do_not_block_one(setting, store, tmp_path):
     people = ["Maya", "Sam", "Ravi"]
     recs = sum((records(n) for n in people), [])
     added = [step(store, [text_item(n)], now=NOW + i * 600, recs=recs)["added"] for i, n in enumerate(people)]
-    assert [len(a) for a in added] == [1, 1, 0]
+    assert [len(a) for a in added] == [1, 1, 1]           # one a cycle, and no limit per day
     full = ProactiveStore(tmp_path / "full")
     for i in range(20):                                   # other kinds past the old shared cap of ten
         acting.record(full, f"fp-{i}", kind="reminder", status="added", now=NOW - 60, title="x")

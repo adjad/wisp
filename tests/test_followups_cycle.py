@@ -291,13 +291,16 @@ def _dispatching(store, fp, person, at=NOW - 600):
                   person=person, attempts=1, card={"meta": "REMINDER", "title": "x", "did": "y"})
 
 
-def test_stale_dispatching_records_count_toward_the_daily_cap(native, store):
+def test_stale_dispatching_records_are_settled_as_unknown_and_stop_nobody_else(native, store):
     acting.set_enabled(True, now=NOW - 2 * D)
     _dispatching(store, "followup:a", "followup-person:a")
     _dispatching(store, "followup:b", "followup-person:b")
     write = F.Writer()
-    assert asyncio.run(step(store, write=write))["added"] == [] and write.calls == []
-    assert {r["status"] for r in follow_ups(store)} == {"unknown"}
+    out = asyncio.run(step(store, write=write))
+    stale = {r["fingerprint"]: r["status"] for r in follow_ups(store) if r["fingerprint"] in ("followup:a", "followup:b")}
+    assert stale == {"followup:a": "unknown", "followup:b": "unknown"}      # may have landed: never written again
+    # There is no daily cap any more (2026-11-13): two unsettled ones do not stop someone else's.
+    assert len(out["added"]) == len(write.calls) == 1
 
 
 def test_a_conversion_that_cant_be_saved_never_fails_the_step_and_still_blocks(native, store, monkeypatch):
