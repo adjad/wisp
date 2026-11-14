@@ -762,10 +762,23 @@ extension NotchQADriver {
             frame: CGRect(x: 0, y: 0, width: 1512, height: 982),
             visibleFrame: CGRect(x: 0, y: 0, width: 1512, height: 950),
             safeAreaTop: 32, auxLeftWidth: side, auxRightWidth: side, isBuiltIn: true))
-        func scene(_ name: String, state: [String: Any], opened: String? = nil,
+        func scene(_ name: String, state: [String: Any], opened: String? = nil, deck: Bool = false,
                    connector: Bool = false) -> (name: String, tab: NotchTab, view: () -> AnyView) {
             (name, .study, {
-                let study = StudyModel(transport: studyTransport(state: state, midnight: midnight), reader: { [] })
+                let base = studyTransport(state: state, midnight: midnight)
+                // The deck scene also answers the pages and settings routes, so a
+                // refresh in the view keeps the same deck and toggle.
+                let transport: StudyModel.Transport = deck ? { request in
+                    let path = request.url?.path ?? ""
+                    func reply(_ object: Any) throws -> (Data, URLResponse) {
+                        (try JSONSerialization.data(withJSONObject: object),
+                         HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+                    }
+                    if path.hasSuffix("/pages") { return try reply(["pages": studyDeckPages()]) }
+                    if path == "/study/settings" { return try reply(["auto_prepare": true]) }
+                    return try await base(request)
+                } : base
+                let study = StudyModel(transport: transport, reader: { [] })
                 let decoded = try? JSONDecoder().decode(StudyState.self, from: JSONSerialization.data(withJSONObject: state))
                 let material = opened.flatMap { id in
                     (try? JSONSerialization.data(withJSONObject: studyMaterial(id, midnight: midnight)))
@@ -774,6 +787,12 @@ extension NotchQADriver {
                 precondition(decoded != nil && (opened == nil || material != nil), "\(name): the Study fixture must decode")
                 study.show(state: decoded, opened: material)
                 study.showingConnector = connector
+                if deck, let source = decoded?.sources.first(where: { $0.id == "src-7" }) {
+                    let pages = (try? JSONSerialization.data(withJSONObject: ["pages": studyDeckPages()]))
+                        .flatMap { try? JSONDecoder().decode(StudyDeckPages.self, from: $0) }?.pages ?? []
+                    precondition(pages.count == 12, "\(name): the deck fixture must decode")
+                    study.show(deck: StudyOpenDeck(source: source, pages: pages, loading: false), autoPrepare: true)
+                }
                 return AnyView(VStack(alignment: .leading, spacing: 0) {
                     Text("HEADER (fixed) · 1512×982 pt · Study panel ≤ \(Int(layout.maxStudyPanelHeight))")
                         .font(.wisp(size: 11, design: .monospaced)).foregroundStyle(Theme.textMuted)
@@ -792,7 +811,35 @@ extension NotchQADriver {
             scene("study-guide", state: state, opened: "m-guide"),
             scene("study-lesson", state: state, opened: "m-lesson"),
             scene("study-setup", state: empty, connector: true),
+            scene("study-deck", state: studyDeckState(state, midnight: midnight), deck: true),
         ]
+    }
+
+    /// The Study state plus one Drive deck read as pages (made-up course data).
+    static func studyDeckState(_ state: [String: Any], midnight: Double) -> [String: Any] {
+        var withDeck = state
+        withDeck["sources"] = [[
+            "id": "src-7", "course_id": "qa:cs101", "kind": "drive", "title": "Lecture 7: Pointers",
+            "url": "https://docs.google.com/presentation/d/qa-lecture-7", "chars": 9400,
+            "created_at": midnight - 2 * 86400, "pages": 12, "deck_status": "ready",
+        ]]
+        return withDeck
+    }
+
+    /// Twelve pages of the made-up "Lecture 7: Pointers" deck.
+    static func studyDeckPages() -> [[String: Any]] {
+        let titles = ["Pointers", "Memory as boxes", "Addresses", "The & operator", "The * operator",
+                      "Null pointers", "Pointer arithmetic", "Arrays and pointers", "Passing by pointer",
+                      "Dangling pointers", "Common mistakes", "Summary"]
+        return titles.enumerated().map { index, title -> [String: Any] in
+            var page: [String: Any] = [
+                "page": index + 1, "title": title,
+                "points": ["\(title): the main idea in one line", "A short example in C"],
+                "topics": ["pointers"],
+            ]
+            if index == 0 { page["figure"] = "A box and arrow diagram" }
+            return page
+        }
     }
 
     /// Answers the routes the tab calls; a write is acknowledged and never kept.

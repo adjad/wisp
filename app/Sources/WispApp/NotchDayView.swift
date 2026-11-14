@@ -1413,7 +1413,8 @@ enum NotchChrome {
                 .frame(minHeight: 24)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        // No pressed look: a click must not flash the capsule.
+        .buttonStyle(StudyRowButtonStyle())
         .help(help)
         .accessibilityLabel(spoken ?? title)
         .fixedSize()
