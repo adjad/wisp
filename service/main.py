@@ -873,7 +873,8 @@ def _direct_generation_budget(target: Target) -> tuple[int, bool]:
 @app.get("/models")
 async def models() -> dict[str, Any]:
     installed = await client.models()
-    if installed:  # don't clobber the saved roster with a transient empty read
+    # A cloud provider's list (hundreds of ids) is not this Mac's roster: never saved.
+    if installed and remote_only_profile() is None:  # nor a transient empty read
         try:
             save_installed_models(installed)
         except ConfigurationOverlayDamaged:
@@ -898,7 +899,10 @@ async def _cloud_model_answers(probe, model_id: str, available: list[str]) -> bo
     """Whether the provider serves model_id. Gemini's OpenAI-compatible list
     names models "models/<id>" and can leave some out (Gemma), so an unlisted
     id gets one tiny completion before it is called missing."""
-    if model_id in available or f"models/{model_id}" in available:
+    # OpenRouter's model list is public: being listed proves nothing about the key.
+    # There, one tiny completion always runs, so a wrong key fails at Connect.
+    listed_proves_key = getattr(getattr(probe, "provider", None), "name", None) != "openrouter"
+    if listed_proves_key and (model_id in available or f"models/{model_id}" in available):
         return True
     try:
         response = await probe.chat(model_id, [{"role": "user", "content": "Reply with OK."}], max_tokens=16)
