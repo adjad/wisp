@@ -10,6 +10,8 @@ import math
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
+from service.study import match
+
 DONE = {"submitted", "graded"}
 TESTS = {"quiz", "exam"}
 BLOCK_SECONDS = 45 * 60
@@ -19,6 +21,13 @@ UPCOMING_DAYS = 7         # through the end of the local day this many days out
 WINDOW = (8, 22)          # study blocks only between 08:00 and 22:00
 LINE_LIMIT = 110
 _UNKNOWN_END = 60 * 60    # a busy block with no end time is treated as an hour
+REVIEW_MINUTES = 15
+MAX_READY = 4
+MAX_WEAK = 3
+READY_DAYS = 7
+WEAK_MIN = 2
+_NUMBER_WORDS = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine",
+                 10: "ten"}
 
 
 def _zone(timezone: str) -> ZoneInfo:
@@ -146,7 +155,16 @@ def day_summary(assignments: list[dict], *, now: float, timezone: str) -> dict:
     }
 
 
-def deadlines(assignments: list[dict], *, day: str, timezone: str) -> list[dict]:
+def _slide_fields(item: dict, found, *, review: bool) -> dict:
+    """``found`` is (slides, covers_text, review_pages) for this assignment, or None."""
+    slides, covers, pages = found if found else ([], None, [])
+    item.update(slides=slides, covers_text=covers)
+    if review and slides and pages:
+        item["review"] = {"minutes": REVIEW_MINUTES, "pages": pages}
+    return item
+
+
+def deadlines(assignments: list[dict], *, day: str, timezone: str, slides: dict | None = None) -> list[dict]:
     zone = _zone(timezone)
     lo, hi = _bounds(date.fromisoformat(day), zone)
     out = []
@@ -160,6 +178,8 @@ def deadlines(assignments: list[dict], *, day: str, timezone: str) -> list[dict]
                 "due_ts": due, "source": "study"}
         if a.get("all_day"):
             item.update(all_day=True, due_date=day)
+        if slides is not None:
+            _slide_fields(item, slides.get(a.get("id")), review=True)
         out.append(item)
     return out
 
@@ -180,7 +200,7 @@ def _busy(busy) -> list[tuple[float, float]]:
 
 
 def study_blocks(assignments: list[dict], busy: list[tuple[float, float]], *, now: float, timezone: str,
-                 day: str) -> list[dict]:
+                 day: str, slides: dict | None = None) -> list[dict]:
     zone = _zone(timezone)
     today = _local_day(now, zone)
     if date.fromisoformat(day) != today:
@@ -209,6 +229,94 @@ def study_blocks(assignments: list[dict], busy: list[tuple[float, float]], *, no
         block = {"id": f"study-block:{a.get('id')}", "title": f"Study: {(a.get('title') or '').strip()}",
                  "start": cursor, "end": cursor + BLOCK_SECONDS, "kind": "study", "task_id": None,
                  "warnings": []}
+        if slides is not None:
+            _slide_fields(block, slides.get(a.get("id")), review=False)
         blocks.append(block)
         taken.append((block["start"], block["end"]))
     return sorted(blocks, key=lambda b: (b["start"], b["id"]))
+
+
+# ---------------------------------------------------------------- slides: ready and weak
+
+def ready_items(assignments: list[dict], found: dict, materials: dict, *, now: float, timezone: str) -> list[dict]:
+    """Upcoming work the student's slides cover, soonest first (at most MAX_READY).
+
+    ``found``: {assignment_id: (matches, from_phrase, covers_text)}; ``materials``:
+    {assignment_id: {"material_id", "count", "prepared": bool, "from": str | None}} for a quiz
+    that is already made. Text: "CS 20 quiz Thursday. I made a 10-question quiz from weeks 5
+    and 6." / "PA 3 is due Friday. Lectures 7 and 8 cover it."."""
+    zone = _zone(timezone)
+    today = _local_day(now, zone)
+    end = now + READY_DAYS * 86400
+    out = []
+    for a in _sorted([a for a in assignments if isinstance(a, dict) and _open(a)]):
+        if len(out) >= MAX_READY:
+            break
+        due = _due(a)
+        hit = found.get(a.get("id"))
+        if not (now <= due <= end) or not hit or not hit[0]:
+            continue
+        matches, phrase, covers = hit
+        kind = a.get("kind") if a.get("kind") in TESTS else "assignment"
+        label = _label(a)
+        title = (a.get("title") or "").strip() or "Untitled"
+        when = _day_word(due, today, zone)
+        if kind in TESTS:
+            head = f"{label} {kind} {when}." if label else f"{title} is {when}."
+        else:
+            head = f"{title} is due {when}."
+        made = materials.get(a.get("id")) or {}
+        if made.get("material_id") and made.get("prepared"):
+            source = made.get("from") or phrase
+            tail = (f"I made a {made.get('count') or 10}-question quiz from {source}." if source
+                    else f"I made a {made.get('count') or 10}-question quiz.")
+        elif made.get("material_id"):
+            tail = "Your practice quiz is ready."
+        else:
+            tail = covers or ""
+        out.append({"id": f"ready:{a.get('id')}", "kind": kind, "assignment_id": a.get("id"),
+                    "course": label or (a.get("course_name") or ""), "title": title, "due_ts": due,
+                    "text": f"{head} {tail}".strip(), "material_id": made.get("material_id") or None,
+                    "slides": match.slides(matches)})
+    return out
+
+
+def weak_items(misses: list[dict], *, course_labels: dict, material_courses: dict, decks: dict,
+               now: float, since_days: int = 14) -> list[dict]:
+    """Topics missed WEAK_MIN or more times in the last two weeks (at most MAX_WEAK), most first:
+    "You missed 3 on pointers; here are those two slides again."."""
+    groups: dict[tuple, dict] = {}
+    for m in misses or ():
+        if not isinstance(m, dict):
+            continue
+        at = m.get("at")
+        if isinstance(at, (int, float)) and at < now - since_days * 86400:
+            continue
+        topic = (m.get("topic") or "").strip() if isinstance(m.get("topic"), str) else ""
+        if not topic:
+            continue
+        course_id = m.get("course_id") or material_courses.get(m.get("material_id"))
+        g = groups.setdefault((course_id, topic.casefold()), {"course_id": course_id, "topic": topic,
+                                                             "count": 0, "pages": {}})
+        g["count"] += 1
+        sid, page = m.get("source_id"), m.get("page")
+        if isinstance(sid, str) and isinstance(page, int) and not isinstance(page, bool):
+            g["pages"].setdefault(sid, set()).add(page)
+    out = []
+    for g in sorted(groups.values(), key=lambda g: (-g["count"], g["topic"].casefold())):
+        if g["count"] < WEAK_MIN or len(out) >= MAX_WEAK:
+            continue
+        slides = [{"source_id": sid, "deck": decks.get(sid) or "", "pages": sorted(pages)}
+                  for sid, pages in sorted(g["pages"].items())]
+        n = sum(len(s["pages"]) for s in slides)
+        if n == 1:
+            tail = "; here is that slide again."
+        elif n:
+            tail = f"; here are those {_NUMBER_WORDS.get(n, str(n))} slides again."
+        else:
+            tail = ". A quick review would help."
+        cid = g["course_id"]
+        out.append({"id": f"weak:{cid or 'none'}:{g['topic'].casefold()}", "course": course_labels.get(cid) or "",
+                    "topic": g["topic"], "count": g["count"],
+                    "text": f"You missed {g['count']} on {g['topic']}{tail}", "slides": slides})
+    return out
