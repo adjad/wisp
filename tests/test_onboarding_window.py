@@ -354,7 +354,7 @@ def test_messages_has_its_own_permission_row():
                     ("accessibility", "PrivacyNames.accessibility")], rows
     assert ('detail: "Sends the texts you approve in Ask. Opens Messages for a moment to ask, then closes it.")' in step)
     mail = step[step.index("permissionRow(.mail"):step.index("permissionRow(.messages")]
-    assert "Opens Mail and Notes for a moment to ask, then closes them." in mail
+    assert "Opens Mail and Notes to ask, then closes Notes." in mail and "Mail stays" in mail
     assert 'nonisolated static let automationTargets = ["com.apple.mail", "com.apple.Notes"]' in setup
     assert 'nonisolated static let messagesAutomationTargets = ["com.apple.MobileSMS"]' in setup
     request = _body(setup, "func request(_ item: Item) async")
@@ -582,6 +582,54 @@ def test_an_unanswered_automation_question_lets_its_row_go():
     assert "waiting = waiting.filter { !Self.isDecided(next[$0] ?? .checking) }" in refresh
     row = _body(setup, "private func permissionRow(")
     assert "permissions.waiting.contains(item)" in row and "FirstRunPermissions.automationWaitingNote" in row
+
+
+def test_one_click_on_allow_gets_macos_to_ask():
+    """2026-11-13, a tester on 0.5.0: Allow on Reminders and on Mail & Notes showed no
+    question until a restart. Three ways a click could end with nothing on screen:
+    a Calendar or Reminders ask with no time limit (stuck on "Asking…" behind another
+    question), one that came back unanswered and was not tried again, and a Mail or
+    Notes ask sent a fixed 1.5 s after Wisp started the app, before it could be asked."""
+    setup = _sources()["FirstRunSetupView.swift"]
+    request = _body(setup, "func request(_ item: Item) async")
+    ask = request[request.index("case .ask:"):request.index("case .contacts:")]
+    order = ["let patience = letGoIfUnanswered(item, token: token)", "eventStores[entity] = nil",
+             "NSApp.activate(ignoringOtherApps: true)", "let store = eventStore(entity)",
+             "requestFullAccessToReminders()", "after = EKEventStore.authorizationStatus(for: entity)",
+             "while Self.eventKitAsksAgain(before: before, after: after, tries: tries)",
+             "patience.cancel()", "waiting.remove(item)",
+             "unanswered[item] = Self.eventKitUnanswered(before: before, after: after)"]
+    at = [ask.index(part) for part in order]
+    assert at == sorted(at)
+    # No fixed wait before an Automation ask: Wisp waits until the app it started
+    # can be asked about, and says so when it never could.
+    assert "1_500_000_000" not in request
+    for case, end, targets in (("case .mail:", "case .messages:", "Self.automationTargets"),
+                               ("case .messages:", "case .fullDiskAccess:", "Self.messagesAutomationTargets")):
+        body = request[request.index(case):request.index(end)]
+        order = [f"if !launched.isEmpty {{ await Self.waitUntilReached({targets}) }}", "(ask: true)",
+                 f"await noteReach(item, {targets})", "Self.quitAfterAsking(launched)"]
+        at = [body.index(part) for part in order]
+        assert at == sorted(at), case
+    # After a yes Wisp leaves the Mail it opened running: the grant's first read
+    # scripts Mail, and found it closed. Messages is only sent through, so it closes.
+    mail = request[request.index("case .mail:"):request.index("case .messages:")]
+    keep = "launched.removeAll { Self.staysOpenAfterAsking($0.bundleIdentifier, item: item, answer: answer) }"
+    assert "let answer = await Self.automationState(ask: true)" in mail
+    assert mail.index(keep) < mail.index("Self.quitAfterAsking(launched)")
+    assert "staysOpenAfterAsking" not in request[request.index("case .messages:"):request.index("case .fullDiskAccess:")]
+    # Waiting and the after-check never show a question themselves.
+    for helper in ("private static func waitUntilReached(_ targets: [String]) async",
+                   "private func noteReach(_ item: Item, _ targets: [String]) async"):
+        body = _body(setup, helper)
+        assert "ask: false" in body and "ask: true" not in body
+    assert "notReached.remove(item)" in request
+    refresh = _body(setup, "func refresh() async")
+    assert "notReached = notReached.filter { !Self.isDecided(next[$0] ?? .checking) }" in refresh
+    row = _body(setup, "private func permissionRow(")
+    assert "FirstRunPermissions.rowNote(" in row and "permissions.notReached.contains(item)" in row
+    notch = _sources()["NotchPermissionsView.swift"]
+    assert "notReached: access.notReached.contains(item)" in notch
 
 
 def test_readers_post_again_when_the_service_comes_up():
