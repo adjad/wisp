@@ -13,5 +13,14 @@
   "uv_archive_url": "https://github.com/astral-sh/uv/releases/download/0.12.1/uv-aarch64-apple-darwin.tar.gz",
   "uv_archive_sha256": "77d2906988e8074fd43f2f329ec452ebbf9b0c257ba1c66451c71de70a6baf42",
   "python_archive_url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260728/cpython-3.13.14%2B20260728-aarch64-apple-darwin-install_only_stripped.tar.gz",
-  "python_archive_sha256": "aa2a054f5e04bde63ae199e3bb6bbb634e457423efd294842deeb1299e7e5932"
+  "python_archive_sha256": "aa2a054f5e04bde63ae199e3bb6bbb634e457423efd294842deeb1299e7e5932",
+  "updates": {
+    "sparkle_version": "2.10.1",
+    "sparkle_artifact_sha256": "4c2e48a3e50ebcc2c88a58a4c7264a1a99c3c31857ce754357afb9cdb323022a",
+    "feed_url": "https://raw.githubusercontent.com/adjad/wisp/appcast/appcast.xml",
+    "public_ed_key": "",
+    "channel": "beta",
+    "signing": "ad-hoc",
+    "self_signed_leaf_sha1": ""
+  }
 }

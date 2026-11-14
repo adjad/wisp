@@ -940,6 +940,7 @@ struct OverlayTransitionChecks {
         await chatArchiveChecks()
         await contentVeilChecks()
         await AppDelegate.checkMenuExportsDebugLog()
+        await AppDelegate.checkMenuChecksForUpdates()
         #endif
         if ProcessInfo.processInfo.environment["WISP_MOTION_NATIVE_CHECK"] == "1" {
             await nativeChecks()

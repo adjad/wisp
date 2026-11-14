@@ -98,6 +98,7 @@ def main():
             ("document-attachment", ["DocumentAttachment.swift", "MediaAttachment.swift", "VideoSampler.swift"],
              "DocumentAttachmentChecks.swift"),
             ("chat-debug-archive", ["ChatDebugArchive.swift"], "ChatDebugArchiveChecks.swift"),
+            ("software-update-ci", ["SoftwareUpdate.swift"], "SoftwareUpdateChecks.swift"),
         ):
             binary = str(build / (os.environ["WISP_BUILD_FIXTURE_PREFIX"] + "-" + name))
             result.extend([

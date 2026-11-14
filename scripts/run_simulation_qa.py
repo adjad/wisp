@@ -310,6 +310,8 @@ PROFILE_TESTS = {
 # is classified here; this prevents an innocently named live test from entering
 # an offline release gate without review.
 ADDITIONAL_FULL_TESTS = {
+    # In-app updates, release side: pure appcast, Ed25519 and fail-closed checks; no network or keys.
+    "tests/test_sparkle_updates.py",
     "tests/test_final_weather_place.py",
     "tests/test_final_emails_to_answer.py",
     # rc3 fix batch: one file per fixed area (pure Python, stub models, scratch stores, or source
@@ -906,6 +908,7 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/chat-logic-contract": "native/chat-logic-compile",
     "native/chat-store-contract": "native/chat-store-compile",
     "native/chat-debug-archive-contract": "native/chat-debug-archive-compile",
+    "native/software-update-contract": "native/software-update-compile",
     "native/notch-command-contract": "native/notch-command-compile",
     "native/screen-look-contract": "native/screen-look-compile",
     "native/read-aloud-voice-contract": "native/read-aloud-voice-compile",
@@ -1198,6 +1201,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     chat_logic = str(build_dir / "chat-logic")
     chat_store = str(build_dir / "chat-store")
     chat_debug_archive = str(build_dir / "chat-debug-archive")
+    software_update = str(build_dir / "software-update")
     reminders_policy = str(build_dir / "reminders-policy")
     reminder_action_ledger = str(build_dir / "reminder-action-ledger")
     calendar_move = str(build_dir / "calendar-move")
@@ -1423,6 +1427,16 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/chat-debug-archive-contract", [chat_debug_archive]),
+        (
+            "native/software-update-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/SoftwareUpdate.swift",
+                "tests/SoftwareUpdateChecks.swift", "-o", software_update,
+            ],
+        ),
+        ("native/software-update-contract", [software_update]),
         (
             "native/port-guard-compile",
             [
