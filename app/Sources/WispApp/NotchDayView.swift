@@ -688,50 +688,11 @@ struct NotchDayView: View {
     /// to two lines, what it is, and its actions. Nothing shares its width, so
     /// the title always shows.
     private func agendaRow(_ item: DayItem) -> some View {
-        let over = item.isOver(cancelActive: cancelActive(item))
-        let status = cancelStatus(item)
-        let time = DayTimeline.gutter(item, clock: today.clock)
+        let over: Bool = item.isOver(cancelActive: cancelActive(item))
         return HStack(alignment: .top, spacing: 10) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(time.top).font(.wisp(.body, weight: .semibold))
-                    .foregroundStyle(item.style == .overdue ? DayInk.now : Theme.textPrimary)
-                if !time.bottom.isEmpty {
-                    Text(time.bottom).font(.wisp(.footnote)).foregroundStyle(Theme.textMuted)
-                }
-            }
-            .monospacedDigit()
-            .padding(.top, 1)
-            .frame(width: timeColumn, alignment: .leading)
+            agendaGutter(item)
             HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(alignment: .firstTextBaseline, spacing: 5) {
-                        if !item.source.isEmpty {
-                            Image(systemName: DayTimeline.sourceSymbol(item.source)).font(.wisp(size: 10))
-                                .foregroundStyle(Theme.textSecondary)
-                        }
-                        Text(item.title).font(.wisp(.callout, weight: .semibold))
-                            .foregroundStyle(item.style == .usual ? Theme.textSecondary : Theme.textPrimary)
-                            .lineLimit(2).fixedSize(horizontal: false, vertical: true)
-                            .strikethrough(status != nil && !status!.failed)
-                    }
-                    Text(detail(item)).font(.wisp(.footnote))
-                        .foregroundStyle(status?.failed == true ? Theme.bad : DayInk.detail(item.style))
-                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
-                    // A school deadline's or study block's "Lectures 7 and 8 cover it.": one line.
-                    if let covers = schoolCovers(item) {
-                        Text(covers).font(.wisp(.footnote)).foregroundStyle(Theme.textMuted)
-                            .lineLimit(1).truncationMode(.tail)
-                    }
-                    // "Added to calendar", or why an add or undo didn't go: one line.
-                    if let line = calendarLine(item) {
-                        Text(line.text).font(.wisp(.footnote))
-                            .foregroundStyle(line.failed ? Theme.bad : Theme.textMuted)
-                            .lineLimit(1).truncationMode(.tail)
-                            .transition(.opacity)
-                    }
-                }
-                .animation(Theme.Motion.panel(reduceMotion: reduceMotion), value: calendarShow(item))
-                .frame(maxWidth: .infinity, alignment: .leading)
+                agendaText(item)
                 // What's over has nothing left to act on; a cancel still in its Undo
                 // window (or in flight) keeps the row live until it settles.
                 if !over { trailing(item) }
@@ -742,11 +703,81 @@ struct NotchDayView: View {
         .padding(.vertical, 5)
         .opacity(over ? 0.45 : 1)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel([item.title, spokenTime(item), detail(item), schoolCovers(item) ?? "",
-                             calendarLine(item)?.text ?? ""]
-                                .filter { !$0.isEmpty }.joined(separator: ", ")
-                            + (item.members.count > 1 ? ", covers " + item.members.map(\.title).joined(separator: "; ") : "")
-                            + (item.past ? ", already over" : ""))
+        .accessibilityLabel(spokenRow(item))
+    }
+
+    /// The agenda row's time column: when, and under it the end or the day.
+    @ViewBuilder private func agendaGutter(_ item: DayItem) -> some View {
+        let time: (top: String, bottom: String) = DayTimeline.gutter(item, clock: today.clock)
+        let ink: Color = item.style == .overdue ? DayInk.now : Theme.textPrimary
+        VStack(alignment: .leading, spacing: 1) {
+            Text(time.top).font(.wisp(.body, weight: .semibold)).foregroundStyle(ink)
+            if !time.bottom.isEmpty {
+                Text(time.bottom).font(.wisp(.footnote)).foregroundStyle(Theme.textMuted)
+            }
+        }
+        .monospacedDigit()
+        .padding(.top, 1)
+        .frame(width: timeColumn, alignment: .leading)
+    }
+
+    /// The agenda row's words: its title, what it is, what covers it and where
+    /// its calendar add stands.
+    @ViewBuilder private func agendaText(_ item: DayItem) -> some View {
+        let status: (text: String, failed: Bool)? = cancelStatus(item)
+        let struck: Bool = status != nil && status?.failed != true
+        let titleInk: Color = item.style == .usual ? Theme.textSecondary : Theme.textPrimary
+        let detailInk: Color = status?.failed == true ? Theme.bad : DayInk.detail(item.style)
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                if !item.source.isEmpty {
+                    Image(systemName: DayTimeline.sourceSymbol(item.source)).font(.wisp(size: 10))
+                        .foregroundStyle(Theme.textSecondary)
+                }
+                Text(item.title).font(.wisp(.callout, weight: .semibold))
+                    .foregroundStyle(titleInk)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                    .strikethrough(struck)
+            }
+            Text(detail(item)).font(.wisp(.footnote))
+                .foregroundStyle(detailInk)
+                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            // A school deadline's or study block's "Lectures 7 and 8 cover it.": one line.
+            if let covers = schoolCovers(item) {
+                Text(covers).font(.wisp(.footnote)).foregroundStyle(Theme.textMuted)
+                    .lineLimit(1).truncationMode(.tail)
+            }
+            // "Added to calendar", or why an add or undo didn't go: one line.
+            if let line = calendarLine(item) {
+                let lineInk: Color = line.failed ? Theme.bad : Theme.textMuted
+                Text(line.text).font(.wisp(.footnote))
+                    .foregroundStyle(lineInk)
+                    .lineLimit(1).truncationMode(.tail)
+                    .transition(.opacity)
+            }
+        }
+        .animation(Theme.Motion.panel(reduceMotion: reduceMotion), value: calendarShow(item))
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The agenda row in words, for VoiceOver: its title, time, detail, what
+    /// covers it and its calendar line, then what it covers and whether it's over.
+    private func spokenRow(_ item: DayItem) -> String {
+        var parts: [String] = []
+        if !item.title.isEmpty { parts.append(item.title) }
+        let time: String = spokenTime(item)
+        if !time.isEmpty { parts.append(time) }
+        let what: String = detail(item)
+        if !what.isEmpty { parts.append(what) }
+        if let covers = schoolCovers(item), !covers.isEmpty { parts.append(covers) }
+        if let line = calendarLine(item), !line.text.isEmpty { parts.append(line.text) }
+        var spoken: String = parts.joined(separator: ", ")
+        if item.members.count > 1 {
+            let titles: [String] = item.members.map(\.title)
+            spoken += ", covers " + titles.joined(separator: "; ")
+        }
+        if item.past { spoken += ", already over" }
+        return spoken
     }
 
     /// The time column in words, for VoiceOver.
