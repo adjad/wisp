@@ -128,6 +128,9 @@ SHORT: dict[str, str] = {
     "collect_task_evidence": "Internal: bounded cached evidence for priorities across calendar, mail, notes.",
     "daily_brief": "Briefing of today's calendar, reminders, mail, messages and weather.",
     "search_coverage": "Internal: how far back Wisp can search each source.",
+    # study (service/study/ask_tools.py)
+    "study_slides": "Search the student's lecture slides: deck, page, points, figure. Read-only.",
+    "study_make": "Make flash cards, a quiz or a guide from slide pages with the Study model.",
 }
 
 

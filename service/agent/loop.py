@@ -3178,7 +3178,7 @@ async def run_agent(
                     registered.category.endswith("read")
                     and registered.category != "web_read"
                     or registered.category == "screen" or shell_read
-                    or name in {"recall", "search_memory", "search_conversations"}):
+                    or name in {"recall", "search_memory", "search_conversations", "study_make"}):
                 private_shell_read_only = True
                 private_read_in_turn = True
             elif (not planned and not denied
