@@ -151,7 +151,8 @@ class BodyLimit:
             return
         message = _TOO_LARGE.get(scope.get("path", ""),
                                  "That's too large for Wisp to read. Try a smaller picture or a shorter clip.")
-        too_large = JSONResponse({"detail": message}, status_code=413)
+        # "message" too: the Study screens show a refusal's "message".
+        too_large = JSONResponse({"detail": message, "message": message}, status_code=413)
         declared = Headers(scope=scope).get("content-length")
         if declared is not None and declared.isdigit() and int(declared) > limit:
             await too_large(scope, receive, send)
