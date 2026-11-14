@@ -390,6 +390,31 @@ The selection (caps, more-counts, the Day's dedupe) is pure code in `NotchDay.sw
   in the first free gaps between now (rounded up to :00/:30) and the due time, inside 08:00–22:00,
   only for today, only for items due within 48 hours that are not submitted. Never overlaps a block.
 
+## Drive
+
+Study can add a Google Doc or Slides file as a source (kind `drive`), read-only, through the
+Google sign-in Wisp already has (Settings ▸ Google). No new sign-in or scope is asked for: the
+account needs `drive.readonly`, which the Workspace consent already requests.
+
+- Account: the first connected Google account whose sign-in granted `drive.readonly`
+  (preferring one whose sign-in has not expired). Study has no account picker, so the choice
+  follows the order the accounts were connected.
+- Only `https://www.googleapis.com` is contacted (`service/study/drive.py`); every call has a
+  10 s connect and 30 s total limit.
+- Listing (`GET /study/drive/files?q=&limit=`) asks for Docs and Slides that are not in the
+  trash, newest first, at most 25. The search word has `\` and `'` escaped and control
+  characters dropped before it joins the Drive query.
+- Adding (`POST /study/drive/add {"file_id", "course_id"}`, app-only) checks the file id
+  (`[A-Za-z0-9_-]{10,200}`), the course, then the file's type, and exports it as plain text.
+  The export is streamed and stops at `SOURCE_CHARS`; the rest is never downloaded.
+- The text is untrusted data: stored as-is and only ever placed inside generation's delimited
+  data block. Tokens and document text are never logged.
+- `GET /study/drive/status` → `{connected, drive, account, message}`.
+- Refusals: `google_missing` 409 (no account, no Drive scope, or an expired sign-in: reconnect
+  Google in Settings), `google_error` 502 (Google unreachable, timed out, or the Drive API is
+  off), `too_large` 413 (Google's export size limit), `not_found` 404 (file or course), and
+  `invalid` 422 (bad id, bad body, a file that is not a Doc or Slides, or an empty export).
+
 ## App (`app/Sources/WispApp/`)
 
 | file | owns |
