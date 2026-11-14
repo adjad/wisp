@@ -1532,6 +1532,86 @@ def _weather_forecast_rows(raw: object) -> list[dict]:
     category="web_read",
 )
 async def get_weather(location: str, period: str = "", include: list[str] | None = None) -> str:
+    return await _get_weather_impl(location, period, include)
+
+
+# 2026-11-13 real-app failures: the model sent the placeholder "home city,ST"
+# (wttr.in geocoded it to Fort Beaufort, South Africa) and "Chicago,IL" (wttr.in
+# picked Mccormickville, Illinois). Filler is refused; real cities are resolved
+# by the most populous exact-name geocoding match and queried by coordinates.
+_WEATHER_FILLER = frozenset({
+    "home", "home city", "my city", "city", "town", "here", "current", "current location",
+    "my location", "location", "local", "locally", "nearby", "outside", "weather", "forecast",
+    "today", "tomorrow", "now", "me", "my area", "area", "your city", "user location",
+    "city name", "unknown", "default",
+})
+_WEATHER_NOISE = re.compile(r"\b(?:weather|forecast|temperature|today|tomorrow|tonight)\b", re.I)
+_US_STATES = {
+    "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas", "CA": "California",
+    "CO": "Colorado", "CT": "Connecticut", "DE": "Delaware", "FL": "Florida", "GA": "Georgia",
+    "HI": "Hawaii", "ID": "Idaho", "IL": "Illinois", "IN": "Indiana", "IA": "Iowa",
+    "KS": "Kansas", "KY": "Kentucky", "LA": "Louisiana", "ME": "Maine", "MD": "Maryland",
+    "MA": "Massachusetts", "MI": "Michigan", "MN": "Minnesota", "MS": "Mississippi",
+    "MO": "Missouri", "MT": "Montana", "NE": "Nebraska", "NV": "Nevada", "NH": "New Hampshire",
+    "NJ": "New Jersey", "NM": "New Mexico", "NY": "New York", "NC": "North Carolina",
+    "ND": "North Dakota", "OH": "Ohio", "OK": "Oklahoma", "OR": "Oregon", "PA": "Pennsylvania",
+    "RI": "Rhode Island", "SC": "South Carolina", "SD": "South Dakota", "TN": "Tennessee",
+    "TX": "Texas", "UT": "Utah", "VT": "Vermont", "VA": "Virginia", "WA": "Washington",
+    "WV": "West Virginia", "WI": "Wisconsin", "WY": "Wyoming", "DC": "District of Columbia",
+}
+
+
+def _weather_clean_place(place: str) -> str:
+    """Drop weather/time words; return '' when only filler is left."""
+    cleaned = " ".join(_WEATHER_NOISE.sub(" ", place).split()).strip(" ,.")
+    parts = [p.strip() for p in cleaned.split(",") if p.strip()]
+    if not parts:
+        return ""
+    head = re.sub(r"^(?:in|for|at|the)\s+", "", parts[0], flags=re.I).strip().casefold()
+    if head in _WEATHER_FILLER:
+        return ""
+    return ", ".join([re.sub(r"^(?:in|for|at)\s+", "", parts[0], flags=re.I).strip(), *parts[1:]])
+
+
+async def _geocode_weather_place(place: str) -> tuple[str, str] | None:
+    """Best open-meteo match for 'City[, State]': exact name, state match, most people."""
+    parts = [p.strip() for p in place.split(",") if p.strip()]
+    if not parts or not re.fullmatch(r"[^\W\d_]+(?:[ .’'\-][^\W\d_]+)*", parts[0]):
+        return None
+    city, region = parts[0], (parts[1] if len(parts) > 1 else "")
+    # Only "City, <US state>" is geocoded here; other places keep the provider's lookup.
+    if region.strip(". ").upper() not in _US_STATES and region.strip(". ").title() not in _US_STATES.values():
+        return None
+    r = await _yahoo_get("https://geocoding-api.open-meteo.com/v1/search?count=10&language=en&format=json&name="
+                         + quote(city))
+    if isinstance(r, str) or getattr(r, "status_code", 500) >= 400:
+        return None
+    try:
+        results = [x for x in (r.json().get("results") or []) if isinstance(x, dict)]
+    except Exception:  # noqa: BLE001
+        return None
+    want = city.casefold()
+    exact = [x for x in results if str(x.get("name", "")).casefold() == want]
+    if region:
+        key = region.strip(". ").upper()
+        names = {region.strip(". ").casefold(), _US_STATES.get(key, "").casefold()} - {""}
+        exact = [x for x in exact if str(x.get("admin1", "")).casefold() in names
+                 or str(x.get("country", "")).casefold() in names
+                 or str(x.get("country_code", "")).casefold() in names]
+    elif exact:
+        pass
+    if not exact:
+        return None
+    best = max(exact, key=lambda x: x.get("population") or 0)
+    try:
+        lat, lon = float(best["latitude"]), float(best["longitude"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    label = ", ".join(str(x) for x in (best.get("name"), best.get("admin1"), best.get("country")) if x)
+    return f"{lat},{lon}", label
+
+
+async def _get_weather_impl(location: str, period: str = "", include: list[str] | None = None) -> str:
     from service.tools.ca_locations import normalize_weather_location, provider_area_matches
     from service.workflows.compiler import is_temporal_location
     if not isinstance(location, str) or len(location) > 200:
@@ -1553,6 +1633,10 @@ async def get_weather(location: str, period: str = "", include: list[str] | None
                 "weather for; do not guess one)")
     if _weather_location_has_time(place):
         return "(error: weather time constraint was included in the location; ask for a city and a supported whole-date range separately. Hourly/daypart forecasts are unsupported.)"
+    place = _weather_clean_place(place)
+    if not place:
+        return ("(error: no location given — ask the user which city they want the "
+                "weather for; do not guess one)")
     try:
         required = _weather_request_dates(period)
     except OverflowError as exc:
@@ -1563,7 +1647,12 @@ async def get_weather(location: str, period: str = "", include: list[str] | None
         requested = normalize_weather_location(place)
     except ValueError as exc:
         return f"(error: no unambiguous location — {exc}; do not guess one)"
-    r = await _yahoo_get(f"https://wttr.in/{quote(requested.provider_query)}?format=j1")
+    provider_query, geo_label = requested.provider_query, ""
+    if not requested.california_city:
+        geo = await _geocode_weather_place(place)
+        if geo:
+            provider_query, geo_label = geo
+    r = await _yahoo_get(f"https://wttr.in/{quote(provider_query)}?format=j1")
     if isinstance(r, str):
         problem = r.replace("Yahoo Finance", "the weather service")
         return problem if problem.startswith("(error") else f"(error: weather service lookup failed: {problem})"
@@ -1615,6 +1704,8 @@ async def get_weather(location: str, period: str = "", include: list[str] | None
     resolved = ", ".join(x for x in (area_name,
                                      _first(area, "region"),
                                      _first(area, "country")) if x)
+    if geo_label:
+        resolved = geo_label
     asked = f"asked for: {place}"
     label = _first(area, "areaName").strip()
     if requested.california_city and label and label.casefold() != area_name.casefold():

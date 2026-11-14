@@ -2176,6 +2176,17 @@ async def run_agent(
                 _lookup = classify_public_lookup(_last_user)
                 public_fact_text = (_last_user if _lookup.explicit_unknown_owner or _lookup.public_possessive or (
                     public_fact_question(_last_user) and not _lookup.private) else None)
+                if public_fact_text is None and len((_last_user or "").split()) <= 8:
+                    # A short follow-up ("And what about Monday?") continues the previous
+                    # typed question; both are the user's own words, same words-only rule.
+                    _prev = [m.get("content") for m in messages
+                             if isinstance(m, dict) and m.get("role") == "user"
+                             and isinstance(m.get("content"), str)][-2:-1]
+                    if _prev and not _lookup.private:
+                        _pl = classify_public_lookup(_prev[0])
+                        if _pl.explicit_unknown_owner or _pl.public_possessive or (
+                                public_fact_question(_prev[0]) and not _pl.private):
+                            public_fact_text = _prev[0] + " " + _last_user
             except Exception:  # noqa: BLE001 — unclassifiable means no exemption
                 public_fact_text = None
         # Hosts the user typed in this message. In a turn that starts private,
@@ -3296,6 +3307,12 @@ async def run_agent(
             # A missing receipt proves neither sent nor not sent. Stop before
             # the generic verifier can replace it with a definite negative.
             return uncertain[-1].text
+        if "BLOCKED by safety policy" in (text or ""):
+            # A denied tool's line is for the model, never the answer.
+            if ask_blocked & {"web_search", "web_fetch", "http_request"} or "Private data is in context" in text:
+                return ("I couldn't look that up on the web in this chat because it has your "
+                        "private mail or messages in it. Ask it in a new chat and I'll search.")
+            return "I couldn't do that: a safety rule stopped it."
         from service.agent.verification import verify_delivery_claims
         text = verify_delivery_claims(text, tool_outcomes)
         if (require_fresh_personal or fresh_personal_scope) and not fresh_personal_evidence and not test_mode:
@@ -5582,7 +5599,10 @@ async def run_agent(
                 if dec.tier is Tier.DENY:
                     result = f"BLOCKED by safety policy: {dec.reason}"
                     audit("deny", tool=name, args=args, reason=dec.reason)
-                    ask_blocked.add(name)
+                    # A query that only needs fewer words is fixable: the retry must run.
+                    if not str(dec.reason).startswith(
+                            "Private data is in context, so a public lookup may only search"):
+                        ask_blocked.add(name)
                 elif _no_recipient:
                     result = _no_recipient
                     audit("recipient_preflight", tool=name, args=args, reason=str(_no_recipient))

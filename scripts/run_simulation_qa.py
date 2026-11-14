@@ -309,8 +309,12 @@ PROFILE_TESTS = {
 # is classified here; this prevents an innocently named live test from entering
 # an offline release gate without review.
 ADDITIONAL_FULL_TESTS = {
+    "tests/test_final_weather_place.py",
+    "tests/test_final_emails_to_answer.py",
     # rc3 fix batch: one file per fixed area (pure Python, stub models, scratch stores, or source
     # contracts that read the Swift and service text; nothing live).
+    "tests/test_final_ask_headings.py",
+    "tests/test_final_public_web_lookup.py",
     "tests/test_rc3_app_lifecycle.py",
     "tests/test_rc3_audit_repairs.py",
     "tests/test_rc3_backend_launch.py",

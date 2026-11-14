@@ -630,6 +630,40 @@ def email_reply_sender(prompt: str) -> str:
     return "" if name.casefold() in {"the", "that", "this", "my", "an", "a"} else name
 
 
+# --- "Any emails I need to answer?" -----------------------------------------
+# The Brief's reply cards and the day plan's "waiting on a reply" rows come from
+# the Brief snapshot's threads (needs_reply). A bare mail search has no such
+# state and said there were none. These questions read the day plan instead.
+_OWE_REPLY = re.compile(
+    r"\b(?:any|which|what|are\s+there\s+any|do\s+i\s+have\s+any|have\s+i\s+got\s+any)\s+"
+    r"(?:unanswered\s+|new\s+|important\s+|urgent\s+)?(?:e-?mails?|messages?|mail)\b[^.?!]{0,40}?"
+    r"\b(?:need|needs|require|requires|waiting\s+(?:on|for))\b[^.?!]{0,20}?\b(?:answer\w*|repl\w+|respon\w+)\b"
+    r"|\b(?:any|which|what)\s+(?:e-?mails?|mail)\b[^.?!]{0,30}\b(?:i\s+(?:need|have|should|must|ought)\s+to|should\s+i)\s+"
+    r"(?:answer|repl\w+|respond)\b"
+    r"|\bdo\s+i\s+owe\s+(?:anyone|anybody|someone|people)\s+(?:a\s+|an\s+)?(?:repl\w+|answer|response|e-?mail)\b"
+    r"|\bwho\s+(?:is|are)\s+(?:waiting\s+(?:on|for)\s+(?:a\s+)?(?:repl\w+|response|answer)|"
+    r"(?:still\s+)?waiting\s+to\s+hear)\b"
+    r"|\bwho\s+(?:do|should)\s+i\s+(?:need\s+to\s+)?(?:repl\w+\s+to|respond\s+to|answer|write\s+back)\b"
+    r"|\b(?:e-?mails?|mail)\s+(?:that\s+)?(?:i\s+)?(?:still\s+)?(?:need|needs|have)\s+to\s+(?:be\s+)?(?:answer\w*|repl\w+|respon\w+)", re.I)
+
+
+def emails_to_answer_question(prompt: str) -> bool:
+    """"Any emails I need to answer?", "which emails need a reply?", "do I owe
+    anyone a reply?": a question about replies owed, not a request to reply."""
+    text = " ".join((prompt or "").replace("\u2019", "'").split())
+    if not text or len(text) > 200 or _WRITING.match(text) or _COMPOSE.match(text):
+        return False
+    return bool(_OWE_REPLY.search(text))
+
+
+EMAILS_TO_ANSWER_HINT = (
+    "EMAILS TO ANSWER: call get_my_day_plan(day='today') once and answer from its people-waiting-on-a-reply "
+    "items: those are the same emails the Brief marks as needing a reply. Name each sender and what they "
+    "asked, newest first. Do not answer from a plain mail search, which cannot tell what needs a reply; say "
+    "there are none only when the plan lists nobody waiting."
+)
+
+
 def reply_search_args(args: dict, sender: str) -> dict:
     """view_emails arguments for a reply turn: the search is the sender's name
     when the model searched for the instruction's words or for nothing."""
@@ -2308,6 +2342,7 @@ rate rates exchange convert conversion usd eur gbp jpy inr cad aud cny chf mxn
 dollar dollars euro euros pound pounds yen rupee rupees peso pesos franc francs yuan
 stock stocks share shares crypto cryptocurrency market
 hours open opens opening close closes closing closed time times store holiday menu return policy
+monday tuesday wednesday thursday friday saturday sunday
 """.split())
 # The only characters a public-fact search may contain, after NFKC folding:
 # anything else (Cyrillic, other scripts' digits) is invisible to a word check.

@@ -2162,6 +2162,10 @@ def _ask_tool_rank(prompt: str, previous: str = "") -> tuple[list[str], list[str
             # "Reply to Dana's last email and say yes": read her mail, then reply in its thread.
             lead_reply = ["view_emails", "reply_to_email"]
             head = [*lead_reply, *(n for n in head if n not in lead_reply)]
+        from service.model_only import emails_to_answer_question
+        if emails_to_answer_question(prompt) and DAY_PLAN_TOOL in REGISTRY:
+            # "Any emails I need to answer?" reads the Brief's needs-reply items, not a mail search.
+            head = [DAY_PLAN_TOOL, *(n for n in head if n != DAY_PLAN_TOOL)]
         from service.model_only import reply_reads
         if lead_reads := [n for n in reply_reads(prompt) if n in REGISTRY]:
             # A reply draft reads the conversation it answers before drafting.
@@ -2313,9 +2317,10 @@ async def agent(body: dict[str, Any]):
         fact_store.bind_source(req_id, sid, persisted_user_idx)
         return persisted_user_idx
 
-    from service.answer_text import AnswerEdgeTrimmer
+    from service.answer_text import AnswerEdgeTrimmer, HeadingFixer
     from service.tools.registry import DisplayOnlyToolResult as _DisplayOnly
     answer_edges = AnswerEdgeTrimmer()
+    answer_headings = HeadingFixer()
 
     async def emit(ev: dict):
         # No blank lines above or below the answer, however it is produced
@@ -2323,15 +2328,22 @@ async def agent(body: dict[str, Any]):
         # Whitespace inside the answer is left exactly as written.
         t = ev.get("type")
         if t == "delta" and isinstance(ev.get("text"), str):
-            piece = answer_edges.delta(ev["text"])
+            piece = answer_headings.feed(answer_edges.delta(ev["text"]))
             if not piece:
                 return
             ev = {**ev, "text": piece}
         elif t == "text" and isinstance(ev.get("text"), str) and not isinstance(
                 ev["text"], _DisplayOnly):
-            ev = {**ev, "text": AnswerEdgeTrimmer.whole(ev["text"])}
+            # Ask shows lists and bold labels only: "### Title" becomes "**Title**".
+            ev = {**ev, "text": HeadingFixer.whole(AnswerEdgeTrimmer.whole(ev["text"]))}
+            answer_headings.reset()
         elif t == "clear_answer":
             answer_edges.reset()
+            answer_headings.reset()
+        elif t == "done":
+            tail = answer_headings.flush()
+            if tail:
+                await emit({"type": "delta", "text": tail})
         if trace is not None:
             diagnostic_event = ({**ev, "name": tool_names_by_id.get(str(ev.get("id", "")), "")}
                                 if ev.get("type") == "tool_result" else ev)
@@ -3289,6 +3301,9 @@ async def agent(body: dict[str, Any]):
                         synthesis_guidance.insert(1, SELF_SEND_HINT)
                     if reply_sender := email_reply_sender(prompt):
                         synthesis_guidance.insert(1, email_reply_hint(reply_sender))
+                    from service.model_only import EMAILS_TO_ANSWER_HINT, emails_to_answer_question
+                    if emails_to_answer_question(prompt):
+                        synthesis_guidance.insert(1, EMAILS_TO_ANSWER_HINT)
                     if pure_writing(prompt):
                         synthesis_guidance.insert(1, ASK_COMPOSE_HINT)
                     from service.model_only import ASK_KNOWLEDGE_HINT, compose_only, knowledge_question
