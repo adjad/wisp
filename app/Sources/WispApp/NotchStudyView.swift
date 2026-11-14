@@ -1,5 +1,8 @@
 import SwiftUI
 import AppKit
+#if WISP_NOTCH_QA
+import Combine
+#endif
 
 /// The notch's Study tab: your courses and grades, what is due, and study
 /// material (guides, quizzes, lessons, flash cards) made from your real
@@ -46,6 +49,18 @@ struct NotchStudyView: View {
     /// or closing a material forgets it, so each starts at its top.
     private static let homeScroll = PanelScrollMemory.key(.study)
 
+    /// An opened material is one page deeper than the tab, so it slides as the
+    /// notch's own push does (NotchPage.motion). The home list always sits under
+    /// it and the material always over it, so each keeps one offset both ways:
+    /// the list `removal` (leaving on a push, returning on the way back), the
+    /// material `insertion` (arriving, and leaving the same way it came).
+    private static let push = NotchPage.motion(from: .tab(.study), to: .settings)
+
+    #if WISP_NOTCH_QA
+    /// The motion checks open and close a due row as a click does (`toggle`).
+    static let qaToggle = PassthroughSubject<String, Never>()
+    #endif
+
     init(model: OverlayModel, study: StudyModel, cap: CGFloat? = nil) {
         self.model = model
         self.study = study
@@ -81,12 +96,16 @@ struct NotchStudyView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        // An opened material is pushed over the home list the way the notch pushes a
+        // page: overlapping (a ZStack, so the two never stack while one leaves), the
+        // material in from the trailing edge, the list drifting a step to the leading
+        // edge; going back is the mirror.
+        ZStack(alignment: .topLeading) {
             if let material = study.opened {
                 StudyMaterialPage(study: study, material: material, cap: cap, onResize: model.onResize) {
                     notice
                 }
-                .transition(.opacity)
+                .transition(.studyPage(Self.push.insertion, reduceMotion: reduceMotion))
             } else {
                 CappedScroll(cap: cap, reveals: true, remembers: Self.homeScroll, showsMore: true) {
                     VStack(alignment: .leading, spacing: 8) {
@@ -95,16 +114,24 @@ struct NotchStudyView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .transition(.opacity)
+                .transition(.studyPage(Self.push.removal, reduceMotion: reduceMotion))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .animation(Theme.Motion.panel(reduceMotion: reduceMotion), value: showing)
         .onChange(of: showing) { _, _ in
             now = Date()
+            // As the Brief's tiles do: fit the window in this run-loop turn, before
+            // the first frame (a grow lands under content that is already there,
+            // which matters most with Reduce Motion, where the content swaps at
+            // once), and again once SwiftUI has laid the change out.
+            model.onResizeNow()
             model.onResize()
         }
         .onChange(of: study.opened?.id) { _, _ in PanelScrollMemory.forget(Self.homeScroll) }
+        #if WISP_NOTCH_QA
+        .onReceive(Self.qaToggle) { id in expanded = expanded == id ? nil : id }
+        #endif
         .onChange(of: topicFocused) { _, focused in study.editing = focused }
         .onChange(of: study.state?.courses.map(\.id) ?? []) { _, ids in
             // A course that left (a clear, a fresh read) is no longer a filter.
@@ -147,6 +174,7 @@ struct NotchStudyView: View {
             if !hasAccessibility { accessibilityHint }
             if let busy = study.busy {
                 StudyBusyRow(label: busy == .loading ? Copy.loadingSample : StudyText.busy(busy))
+                    .transition(.studyReveal(reduceMotion: reduceMotion))
             } else {
                 HStack(spacing: 8) {
                     StudyChrome.pill(StudyText.readButton, icon: "text.viewfinder", primary: true) { read() }
@@ -198,7 +226,7 @@ struct NotchStudyView: View {
                 }
             }
             if let busy = study.busy, busy != .loading {
-                StudyBusyRow(label: StudyText.busy(busy)).transition(.opacity)
+                StudyBusyRow(label: StudyText.busy(busy)).transition(.studyReveal(reduceMotion: reduceMotion))
             }
             if !state.courses.isEmpty { coursesRow(state) }
             dueSection(state)
@@ -302,7 +330,7 @@ struct NotchStudyView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(shown, id: \.item.id) { row in
                         StudyDueRow(item: row.item, courseLabel: courseLabel(row.item, state: state), now: now,
-                                    missing: row.missing,
+                                    missing: row.missing, reduceMotion: reduceMotion,
                                     expanded: expanded == row.item.id, busy: study.busy != nil,
                                     onToggle: { toggle(row.item) },
                                     onMake: { kind in make(kind, assignment: row.item, state: state) })
@@ -448,8 +476,10 @@ struct NotchStudyView: View {
                 Text(connectorLine(connector))
                     .font(.wisp(.caption)).foregroundStyle(ready ? Theme.textMuted : Theme.textSecondary)
                     .lineLimit(1)
-                Image(systemName: study.showingConnector ? "chevron.up" : "chevron.down")
+                // One chevron that turns with the card, on the tab's spring.
+                Image(systemName: "chevron.down")
                     .font(.wisp(size: 8, weight: .semibold)).foregroundStyle(Theme.textMuted)
+                    .rotationEffect(.degrees(study.showingConnector ? 180 : 0))
             }
             .frame(minHeight: 24)
             .contentShape(Rectangle())
@@ -573,6 +603,25 @@ extension View {
     }
 }
 
+// MARK: - Motion
+
+private extension AnyTransition {
+    /// A piece opening in place (a due row's make buttons, the writing row):
+    /// it fades in while settling one slide step down into its place, and
+    /// leaves the same way. With Reduce Motion it only fades, and the tab's
+    /// animation is nil then, so in practice it simply appears.
+    @MainActor static func studyReveal(reduceMotion: Bool) -> AnyTransition {
+        reduceMotion ? .opacity : .opacity.combined(with: .offset(y: -Theme.Motion.slideStep))
+    }
+
+    /// The home list or an opened material arriving and leaving, `steps` slide
+    /// steps along (NotchPageMotion: positive toward the trailing edge), and faded,
+    /// like the notch's own pages. With Reduce Motion: no slide.
+    @MainActor static func studyPage(_ steps: Double, reduceMotion: Bool) -> AnyTransition {
+        reduceMotion ? .opacity : .opacity.combined(with: .offset(x: CGFloat(steps) * Theme.Motion.slideStep))
+    }
+}
+
 // MARK: - Opened material
 
 /// A material full-tab: a back bar, its title and kind, then its player or reader.
@@ -590,23 +639,29 @@ private struct StudyMaterialPage<Notice: View>: View {
     private static var spacing: CGFloat { 10 }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Self.spacing) {
-            VStack(alignment: .leading, spacing: 8) {
-                topBar
-                titleBlock
-            }
-            .background(GeometryReader { geo in
-                Color.clear.onAppear { pinnedHeight = geo.size.height }
-                    .onChange(of: geo.size.height) { pinnedHeight = geo.size.height }
-            })
-            CappedScroll(cap: cap.map(scrollCap), showsMore: true) {
+        // The back row and title are measured a pass after the page first lays out,
+        // so on that first pass the scroll is given the whole cap. Held to the
+        // page's final bound from the start, the page reports its settled height at
+        // once, and the window fitted in the same turn (NotchStudyView) is right.
+        StudyHeightLimit(limit: cap.map { max($0, pinnedHeight + Self.spacing + SurfaceLayout.minTabScroll) }) {
+            VStack(alignment: .leading, spacing: Self.spacing) {
                 VStack(alignment: .leading, spacing: 8) {
-                    notice()
-                    materialBody.id(material.id)
+                    topBar
+                    titleBlock
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(GeometryReader { geo in
+                    Color.clear.onAppear { pinnedHeight = geo.size.height }
+                        .onChange(of: geo.size.height) { pinnedHeight = geo.size.height }
+                })
+                CappedScroll(cap: cap.map(scrollCap), showsMore: true) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        notice()
+                        materialBody.id(material.id)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .id(material.id)
             }
-            .id(material.id)
         }
         .studyReportsHeight(onResize)
         .onExitCommand { study.close() }
@@ -682,7 +737,31 @@ private struct StudyMaterialPage<Notice: View>: View {
     }
 }
 
+/// Lays out one view at its own size, reporting no more than `limit` tall (it
+/// is drawn in full, from the top). Nil: no limit.
+private struct StudyHeightLimit: Layout {
+    let limit: CGFloat?
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let page = subviews.first else { return .zero }
+        let size = page.sizeThatFits(proposal)
+        return CGSize(width: size.width, height: limit.map { min(size.height, $0) } ?? size.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let page = subviews.first else { return }
+        page.place(at: bounds.origin, anchor: .topLeading,
+                   proposal: ProposedViewSize(width: bounds.width, height: proposal.height))
+    }
+}
+
 // MARK: - Rows and controls
+
+/// A whole row as its button, with no pressed look: the label stays exactly as
+/// drawn (no dimming), so the row doesn't blink when clicked.
+private struct StudyRowButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View { configuration.label }
+}
 
 /// A course chip: short name and grade; white when picked.
 private struct StudyCourseChip: View {
@@ -747,6 +826,8 @@ private struct StudyDueRow: View {
     let courseLabel: String
     let now: Date
     let missing: Bool
+    /// The tab's Reduce Motion (the system's, or the motion checks' override).
+    let reduceMotion: Bool
     let expanded: Bool
     let busy: Bool
     let onToggle: () -> Void
@@ -755,15 +836,23 @@ private struct StudyDueRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
+            // Not `.plain`: on the Mac it dims the label while the mouse is down, so
+            // the row's own text blinked on every click. The row's fill, outline and
+            // chevron are its feedback; its icon, title and due text never fade.
             Button(action: onToggle) { summary }
-                .buttonStyle(.plain)
+                .buttonStyle(StudyRowButtonStyle())
                 .accessibilityLabel(spoken)
                 .accessibilityValue(expanded ? "Expanded" : "Collapsed")
                 .accessibilityHint("Shows what Study can make for it")
-            if expanded { actions.transition(.opacity) }
+            // The make buttons fade in and settle down from under the summary while
+            // the row's fill and outline ease in and the rows below glide, all on the
+            // tab's one spring (NotchStudyView's animation, keyed by `expanded`).
+            if expanded { actions.transition(.studyReveal(reduceMotion: reduceMotion)) }
         }
         .padding(.horizontal, 8).padding(.vertical, 2)
         .background(RoundedRectangle(cornerRadius: 8).fill(rowFill))
+        // Buttons leaving as the row closes stay inside it, not drawn over the next row.
+        .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(expanded ? Theme.hairline : Color.clear, lineWidth: 1))
         .onHover { hovering = $0 }
     }
@@ -797,8 +886,9 @@ private struct StudyDueRow: View {
                 .lineLimit(1)
                 .frame(width: 48, alignment: .trailing)
                 .accessibilityHidden(true)
-            Image(systemName: expanded ? "chevron.up" : "chevron.down")
+            Image(systemName: "chevron.down")
                 .font(.wisp(size: 8, weight: .semibold)).foregroundStyle(Theme.textMuted)
+                .rotationEffect(.degrees(expanded ? 180 : 0))
                 .opacity(hovering || expanded ? 1 : 0)
                 .accessibilityHidden(true)
         }

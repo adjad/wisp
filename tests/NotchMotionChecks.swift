@@ -333,6 +333,31 @@ enum Harness {
             try await run("permissions-done") { m.closePermissionPage() }
             try await run("gear-close") { m.showingQuickSettings = false }
 
+            // Study, on the QA fixture: the writing row arriving and leaving, and a
+            // material pushed over the home list and popped back. The tab's own
+            // refresh fails offline here (the QA transport) and leaves a notice,
+            // which each `prepare` clears by showing the fixture again.
+            let study = StudyModel.shared
+            let midnight = Calendar.current.startOfDay(for: Date()).timeIntervalSince1970
+            let fixture = try JSONDecoder().decode(StudyState.self, from: JSONSerialization.data(
+                withJSONObject: NotchQADriver.studyState(midnight: midnight)))
+            let guide = try JSONDecoder().decode(StudyMaterial.self, from: JSONSerialization.data(
+                withJSONObject: NotchQADriver.studyMaterial("m-guide", midnight: midnight)))
+            m.tab = .study
+            try await rig.settle()
+            try await run("study-writing", prepare: { study.show(state: fixture) }) {
+                study.show(state: fixture, busy: .making(.guide))
+            }
+            try await run("study-writing-done") { study.show(state: fixture) }
+            try await run("study-open-material") { study.show(state: fixture, opened: guide) }
+            try await run("study-back") { study.close() }
+            // A Coming-up row opening into its make buttons, a second row opening
+            // as the first closes (one change), then closing.
+            try await run("study-row-open") { NotchStudyView.qaToggle.send("qa:lab4") }
+            try await run("study-row-switch") { NotchStudyView.qaToggle.send("qa:pset6") }
+            try await run("study-row-close") { NotchStudyView.qaToggle.send("qa:pset6") }
+            try await run("study-to-ask") { m.tab = .ask }
+
             // An Ask answer streaming in, from the first question on an empty chat.
             let stream = try await streamCheck(rig, reduce: reduce, out: out)
             report += stream.lines.joined(separator: "\n") + "\n"
