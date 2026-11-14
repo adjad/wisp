@@ -69,7 +69,8 @@ def _course(course_id: str):
     course = next((c for c in store.courses() if c["id"] == course_id), None)
     if course is None:
         raise api.Refusal(404, "not_found", NO_COURSE)
-    return store, course
+    # A course read only from the Dashboard has no address: take it from its own assignments.
+    return store, find.with_address(course, store.assignments(), store.courses())
 
 
 @router.post("/find/resolve", dependencies=[Depends(native_only)])
