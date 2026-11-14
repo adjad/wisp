@@ -72,6 +72,9 @@ struct NotchStudyView: View {
     private struct Showing: Equatable {
         var loaded, hasData, sample: Bool
         var opened: String?
+        var deck: String?
+        var deckLoading: Bool
+        var autoPrepare: Bool
         var expanded: String?
         var course: String?
         var busy: StudyBusy?
@@ -88,7 +91,9 @@ struct NotchStudyView: View {
     private var showing: Showing {
         let state = study.state
         return Showing(loaded: state != nil, hasData: state?.hasData == true, sample: state?.sample == true,
-                       opened: study.opened?.id, expanded: expanded, course: courseID, busy: study.busy,
+                       opened: study.opened?.id, deck: study.openedDeck?.source.id,
+                       deckLoading: study.openedDeck?.loading == true, autoPrepare: study.autoPrepare != nil,
+                       expanded: expanded, course: courseID, busy: study.busy,
                        notice: study.notice != nil, connector: study.showingConnector,
                        showAll: showAllDue, showAllMade: showAllMade,
                        clearing: confirmingClear, deleting: confirmingDelete,
@@ -103,6 +108,11 @@ struct NotchStudyView: View {
         ZStack(alignment: .topLeading) {
             if let material = study.opened {
                 StudyMaterialPage(study: study, material: material, cap: cap, onResize: model.onResize) {
+                    notice
+                }
+                .transition(.studyPage(Self.push.insertion, reduceMotion: reduceMotion))
+            } else if let deck = study.openedDeck {
+                StudyDeckPagesPage(study: study, deck: deck, cap: cap, onResize: model.onResize) {
                     notice
                 }
                 .transition(.studyPage(Self.push.insertion, reduceMotion: reduceMotion))
@@ -129,6 +139,7 @@ struct NotchStudyView: View {
             model.onResize()
         }
         .onChange(of: study.opened?.id) { _, _ in PanelScrollMemory.forget(Self.homeScroll) }
+        .onChange(of: study.openedDeck?.source.id) { _, _ in PanelScrollMemory.forget(Self.homeScroll) }
         #if WISP_NOTCH_QA
         .onReceive(Self.qaToggle) { id in expanded = expanded == id ? nil : id }
         #endif
@@ -141,6 +152,7 @@ struct NotchStudyView: View {
         .task {
             now = Date()
             await study.refresh()
+            await study.loadSettings()
             model.onResize()
         }
     }
@@ -461,6 +473,9 @@ struct NotchStudyView: View {
                 }
             }
             if confirmingClear { clearConfirm.transition(.opacity) }
+            if let on = study.autoPrepare { StudyAutoPrepareRow(on: on, disabled: false) { next in
+                Task { await study.setAutoPrepare(next) }
+            } }
             if study.showingConnector {
                 // Opened at the foot of a scrolling tab: scrolled into sight.
                 StudyConnectorCard(study: study, onResize: model.onResize)
@@ -628,17 +643,19 @@ private extension AnyTransition {
 
 // MARK: - Opened material
 
-/// A material full-tab: a back bar, its title and kind, then its player or reader.
-private struct StudyMaterialPage<Notice: View>: View {
-    @ObservedObject var study: StudyModel
-    let material: StudyMaterial
+/// A page pushed over the Study home: a fixed back row and title, then its
+/// body scrolling under them inside the tab's cap.
+struct StudyPinnedPage<Badge: View, Title: View, Content: View>: View {
     /// The tab's room under the header; the back row and title stay above the scroll.
     let cap: CGFloat?
-    /// Refits the panel when the page grows or shrinks (an explanation, the
-    /// review list, the next lesson step, the finished deck).
+    /// Refits the panel when the page grows or shrinks.
     let onResize: () -> Void
-    /// The tab's notice, if any, at the top of the scrolled part.
-    @ViewBuilder let notice: () -> Notice
+    let onBack: () -> Void
+    /// Resets the scroll when it changes.
+    let scrollID: String
+    @ViewBuilder let badge: () -> Badge
+    @ViewBuilder let title: () -> Title
+    @ViewBuilder let content: () -> Content
     @State private var pinnedHeight: CGFloat = 0
     private static var spacing: CGFloat { 10 }
 
@@ -651,34 +668,31 @@ private struct StudyMaterialPage<Notice: View>: View {
             VStack(alignment: .leading, spacing: Self.spacing) {
                 VStack(alignment: .leading, spacing: 8) {
                     topBar
-                    titleBlock
+                    title()
                 }
                 .background(GeometryReader { geo in
                     Color.clear.onAppear { pinnedHeight = geo.size.height }
                         .onChange(of: geo.size.height) { pinnedHeight = geo.size.height }
                 })
                 CappedScroll(cap: cap.map(scrollCap), showsMore: true) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        notice()
-                        materialBody.id(material.id)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    content()
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .id(material.id)
+                .id(scrollID)
             }
         }
         .studyReportsHeight(onResize)
-        .onExitCommand { study.close() }
+        .onExitCommand { onBack() }
     }
 
-    /// What's left for the material under its fixed back row and title.
+    /// What's left for the body under its fixed back row and title.
     private func scrollCap(_ cap: CGFloat) -> CGFloat {
         max(cap - pinnedHeight - Self.spacing, SurfaceLayout.minTabScroll)
     }
 
     private var topBar: some View {
         HStack(alignment: .center, spacing: 8) {
-            Button { study.close() } label: {
+            Button { onBack() } label: {
                 HStack(spacing: 4) {
                     Image(systemName: "chevron.left").font(.wisp(size: 10, weight: .semibold))
                     Text(StudyText.tabTitle).font(.wisp(.footnote, weight: .medium))
@@ -691,16 +705,51 @@ private struct StudyMaterialPage<Notice: View>: View {
             .help("Back to Study (Esc)")
             .accessibilityLabel("Back to Study")
             Spacer(minLength: 8)
-            HStack(spacing: 4) {
-                Image(systemName: material.kind.symbol).font(.wisp(size: 9.5))
-                Text(material.kind.title.uppercased())
-                    .font(.wisp(size: 9.5, weight: .medium, design: .monospaced)).tracking(0.6)
+            badge()
+        }
+    }
+}
+
+/// The small capsule at the top right of a pushed page: a glyph and a word.
+struct StudyPageBadge: View {
+    let symbol: String
+    let title: String
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: symbol).font(.wisp(size: 9.5))
+            Text(title.uppercased())
+                .font(.wisp(size: 9.5, weight: .medium, design: .monospaced)).tracking(0.6)
+        }
+        .foregroundStyle(Theme.textSecondary)
+        .padding(.horizontal, 8).padding(.vertical, 3)
+        .background(Capsule().fill(Theme.chipFill))
+        .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
+        .fixedSize()
+    }
+}
+
+/// A material full-tab: a back bar, its title and kind, then its player or reader.
+private struct StudyMaterialPage<Notice: View>: View {
+    @ObservedObject var study: StudyModel
+    let material: StudyMaterial
+    let cap: CGFloat?
+    /// Refits the panel when the page grows or shrinks (an explanation, the
+    /// review list, the next lesson step, the finished deck).
+    let onResize: () -> Void
+    /// The tab's notice, if any, at the top of the scrolled part.
+    @ViewBuilder let notice: () -> Notice
+
+    var body: some View {
+        StudyPinnedPage(cap: cap, onResize: onResize, onBack: { study.close() }, scrollID: material.id) {
+            StudyPageBadge(symbol: material.kind.symbol, title: material.kind.title)
+        } title: {
+            titleBlock
+        } content: {
+            VStack(alignment: .leading, spacing: 8) {
+                notice()
+                materialBody.id(material.id)
             }
-            .foregroundStyle(Theme.textSecondary)
-            .padding(.horizontal, 8).padding(.vertical, 3)
-            .background(Capsule().fill(Theme.chipFill))
-            .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
-            .fixedSize()
         }
     }
 
@@ -725,14 +774,21 @@ private struct StudyMaterialPage<Notice: View>: View {
     @ViewBuilder private var materialBody: some View {
         switch material.body {
         case .quiz(let quiz):
-            StudyQuizView(quiz: quiz, onFinish: record)
+            StudyQuizView(quiz: quiz, slideLabel: slideLine) { correct, total, missed in
+                guard total > 0 else { return }
+                Task { await study.record(correct: correct, total: total, missed: missed) }
+            }
         case .flashcards(let deck):
             StudyFlashcardsView(deck: deck, onFinish: record)
         case .guide(let guide):
             StudyGuideView(guide: guide)
         case .lesson(let lesson):
-            StudyLessonView(lesson: lesson, onFinish: record)
+            StudyLessonView(lesson: lesson, slideLabel: slideLine, onFinish: record)
         }
+    }
+
+    private func slideLine(_ ref: StudySlideRef) -> String {
+        study.state?.slideLine(ref) ?? StudyText.slideLine(ref, deck: nil)
     }
 
     private func record(_ correct: Int, _ total: Int) {
@@ -763,7 +819,7 @@ private struct StudyHeightLimit: Layout {
 
 /// A whole row as its button, with no pressed look: the label stays exactly as
 /// drawn (no dimming), so the row doesn't blink when clicked.
-private struct StudyRowButtonStyle: ButtonStyle {
+struct StudyRowButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View { configuration.label }
 }
 

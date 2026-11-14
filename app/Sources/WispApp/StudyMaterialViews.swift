@@ -267,22 +267,42 @@ enum StudyScoreWords {
     }
 }
 
+// MARK: - Slide line
+
+/// "From Lecture 7 · p. 7": one muted line naming the slide a question came from.
+struct StudySlideLine: View {
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Image(systemName: "play.rectangle").font(.wisp(size: 9)).accessibilityHidden(true)
+            Text(text).font(.wisp(.caption)).lineLimit(1).truncationMode(.middle)
+        }
+        .foregroundStyle(Theme.textMuted)
+    }
+}
+
 // MARK: - Quiz
 
 /// The practice-quiz player: one question at a time, choices as rows, the
 /// reason after each answer, then a score ring and a review of every answer.
 struct StudyQuizView: View {
     let quiz: StudyQuiz
-    let onFinish: (Int, Int) -> Void
+    /// Right, total, and the 0-based indices of the questions answered wrong.
+    let onFinish: (Int, Int, [Int]) -> Void
+    /// "From Lecture 7 · p. 7" for a question made from a slide.
+    let slideLabel: (StudySlideRef) -> String
     @State private var run: QuizRun
     @State private var reported = false
     @State private var reviewing = false
     @FocusState private var focused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    init(quiz: StudyQuiz, onFinish: @escaping (Int, Int) -> Void) {
+    init(quiz: StudyQuiz, slideLabel: @escaping (StudySlideRef) -> String = { StudyText.slideLine($0, deck: nil) },
+         onFinish: @escaping (Int, Int, [Int]) -> Void) {
         self.quiz = quiz
         self.onFinish = onFinish
+        self.slideLabel = slideLabel
         _run = State(initialValue: QuizRun(quiz: quiz))
     }
 
@@ -305,7 +325,7 @@ struct StudyQuizView: View {
         .onChange(of: run.finished) { _, done in
             guard done, !reported else { return }
             reported = true
-            onFinish(run.correct, run.total)
+            onFinish(run.correct, run.total, run.missed)
         }
     }
 
@@ -381,6 +401,7 @@ struct StudyQuizView: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                 }
+                if let slide = question.slide { StudySlideLine(text: slideLabel(slide)) }
             }
         }
         .padding(10)
@@ -441,6 +462,9 @@ struct StudyQuizView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.leading, 18)
+            if let slide = question.slide {
+                StudySlideLine(text: slideLabel(slide)).padding(.leading, 18)
+            }
         }
         .textSelection(.enabled)
         .accessibilityElement(children: .combine)
@@ -787,6 +811,8 @@ struct StudyBullet: View {
 struct StudyLessonView: View {
     let lesson: StudyLesson
     let onFinish: (Int, Int) -> Void
+    /// "From Lecture 7 · p. 7" for a check made from a slide.
+    let slideLabel: (StudySlideRef) -> String
     @State private var step = 0
     /// The choice picked on each step's check, by step.
     @State private var picks: [Int: Int] = [:]
@@ -794,9 +820,11 @@ struct StudyLessonView: View {
     @State private var reported = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    init(lesson: StudyLesson, onFinish: @escaping (Int, Int) -> Void) {
+    init(lesson: StudyLesson, slideLabel: @escaping (StudySlideRef) -> String = { StudyText.slideLine($0, deck: nil) },
+         onFinish: @escaping (Int, Int) -> Void) {
         self.lesson = lesson
         self.onFinish = onFinish
+        self.slideLabel = slideLabel
     }
 
     private var steps: [StudyLessonStep] { lesson.steps }
@@ -899,6 +927,9 @@ struct StudyLessonView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .transition(.opacity)
+            }
+            if pick != nil, let slide = check.slide {
+                StudySlideLine(text: slideLabel(slide)).transition(.opacity)
             }
         }
     }
