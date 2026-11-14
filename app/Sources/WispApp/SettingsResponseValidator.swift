@@ -171,7 +171,8 @@ enum SettingsResponseValidator {
         guard string("provider") && string("provider_label")
             && string("credential_name") && bool("super_model_enabled")
             && string("super_model_router")
-            && roles.allSatisfy({ ["reasoning", "coding", "research"].contains($0) })
+            // "everything" (all of Wisp on the cloud model) is answered alone, never mixed.
+            && (roles.allSatisfy({ ["reasoning", "coding", "research"].contains($0) }) || roles == ["everything"])
         else { return false }
         // A live cloud endpoint with an empty identity is not safe to use for
         // Keychain reference checks, even when every field is present.
