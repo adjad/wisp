@@ -40,6 +40,8 @@ struct NotchDayView: View {
     // To-dos the proactive engine found (ProactiveCards.swift): check-offs and
     // Add to Day are shared with the Brief.
     @ObservedObject private var proactive = ProactiveActions.shared
+    // "Add to calendar" on study blocks: where each add stands this session.
+    @ObservedObject private var studyAdds = StudyBlockAdds.shared
 
     /// The agenda's time column. It grows with the Text size setting so
     /// "12:30 PM" keeps its room.
@@ -720,7 +722,15 @@ struct NotchDayView: View {
                         Text(covers).font(.wisp(.footnote)).foregroundStyle(Theme.textMuted)
                             .lineLimit(1).truncationMode(.tail)
                     }
+                    // "Added to calendar", or why an add or undo didn't go: one line.
+                    if let line = calendarLine(item) {
+                        Text(line.text).font(.wisp(.footnote))
+                            .foregroundStyle(line.failed ? Theme.bad : Theme.textMuted)
+                            .lineLimit(1).truncationMode(.tail)
+                            .transition(.opacity)
+                    }
                 }
+                .animation(Theme.Motion.panel(reduceMotion: reduceMotion), value: calendarShow(item))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 // What's over has nothing left to act on; a cancel still in its Undo
                 // window (or in flight) keeps the row live until it settles.
@@ -732,7 +742,8 @@ struct NotchDayView: View {
         .padding(.vertical, 5)
         .opacity(over ? 0.45 : 1)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel([item.title, spokenTime(item), detail(item), schoolCovers(item) ?? ""]
+        .accessibilityLabel([item.title, spokenTime(item), detail(item), schoolCovers(item) ?? "",
+                             calendarLine(item)?.text ?? ""]
                                 .filter { !$0.isEmpty }.joined(separator: ", ")
                             + (item.members.count > 1 ? ", covers " + item.members.map(\.title).joined(separator: "; ") : "")
                             + (item.past ? ", already over" : ""))
@@ -816,9 +827,63 @@ struct NotchDayView: View {
         return SchoolSlidesText.covers(block.covers_text)
     }
 
+    /// A study block's "Add to calendar" state, or `.none` for every other row.
+    private func calendarShow(_ item: DayItem) -> StudyBlockCalendar.Show {
+        guard item.kind == "study", let id = item.blockID,
+              let block = plan?.displayBlocks.first(where: { $0.id == id }) else { return .none }
+        return studyAdds.ledger.show(block.calendarAddFacts, now: today.now.timeIntervalSince1970)
+    }
+
+    /// The one extra line under a study block: what went wrong, or that it's added.
+    private func calendarLine(_ item: DayItem) -> (text: String, failed: Bool)? {
+        switch calendarShow(item) {
+        case .none: return nil
+        case .add(_, let error): return error.map { ($0, true) }
+        case .added(_, _, let error): return error.map { ($0, true) } ?? (StudyBlockCalendar.addedText, false)
+        }
+    }
+
+    @ViewBuilder private func calendarAction(_ item: DayItem) -> some View {
+        switch calendarShow(item) {
+        case .none:
+            EmptyView()
+        case .add(let busy, _):
+            if busy {
+                ProgressView().controlSize(.small).accessibilityLabel("Adding \(item.title) to your calendar")
+            } else {
+                NotchChrome.action("Add to calendar", help: "Put this study block on your calendar",
+                                   spoken: "Add \(item.title) to your calendar") { studyCalendar(.add, item) }
+            }
+        case .added(let undo, let busy, _):
+            if busy {
+                ProgressView().controlSize(.small).accessibilityLabel("Removing \(item.title) from your calendar")
+            } else if undo {
+                NotchChrome.action("Undo", help: "Take this study block off your calendar",
+                                   spoken: "Undo adding \(item.title) to your calendar") { studyCalendar(.undo, item) }
+            }
+        }
+    }
+
+    /// Sends the add or undo; the service books it through the calendar bridge.
+    /// Success reads the day again, so `added` comes from the service.
+    private func studyCalendar(_ operation: StudyBlockCalendar.Operation, _ item: DayItem) {
+        guard let id = item.blockID, studyAdds.ledger.begin(operation, id) else { return }
+        model.onResize()
+        Task {
+            let outcome = await today.studyBlockCalendar(operation, blockID: id)
+            studyAdds.ledger.finish(operation, id, outcome)
+            model.onResize()
+            guard case .succeeded = outcome else { return }
+            await today.refresh(afterMutation: true)
+            studyAdds.ledger.settle(id, snapshotAdded: today.currentPlan?.displayBlocks.first { $0.id == id }?.added)
+            model.onResize()
+        }
+    }
+
     /// The block's main action as a button, and everything else in one ⋯ menu.
     @ViewBuilder private func actions(_ item: DayItem) -> some View {
         HStack(spacing: 4) {
+            calendarAction(item)
             if let deadline = schoolDeadline(item), let review = deadline.review, review.offered {
                 NotchChrome.action(review.label, help: "Make flash cards from the slides that cover this, in Study",
                                    spoken: "\(review.label) for \(deadline.title)") {
@@ -1364,6 +1429,14 @@ enum SchoolActions {
             await StudyModel.shared.makeFromPages(.flashcards, pages: chosen, count: StudyBriefCard.reviewCount, title: title)
         }
     }
+}
+
+/// Where each study block's "Add to calendar" stands, for the whole session,
+/// so a tab switch never loses an add in flight or a missing route.
+@MainActor
+final class StudyBlockAdds: ObservableObject {
+    static let shared = StudyBlockAdds()
+    @Published var ledger = StudyBlockCalendar.Ledger()
 }
 
 /// Small controls shared by the notch's Brief and Day tabs.
