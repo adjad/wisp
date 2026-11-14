@@ -194,8 +194,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Intel preview only, once: clear an earlier Wisp before anything else looks at
         // running copies, the port or saved state (no-op elsewhere).
         IntelFirstLaunch.runIfNeeded()
-        // Meet transcribes with the on-device engine's model: hidden where there is none.
-        NotchTab.meetHidden = IntelCloudPreset.compiledForIntel && !IntelFirstLaunch.engineBundled
+        // Meet stays in the strip on every build. With no on-device engine the chosen
+        // cloud model hears the meeting; when it can't hear audio, starting one answers
+        // with the service's 409 reason on the Meet tab, so the strip never goes stale
+        // when the model is changed in Settings.
+        NotchTab.meetHidden = false
         // One Wisp at a time. A second launch used to terminate the first one's
         // backend and race it for the port; now it hands over to the running app.
         let selfPID = ProcessInfo.processInfo.processIdentifier

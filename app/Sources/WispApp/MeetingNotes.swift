@@ -5,7 +5,8 @@ import ScreenCaptureKit
 import SwiftUI
 
 // Meeting notes: Wisp listens to a meeting through the microphone, the Ask model
-// writes the words down on this Mac, and when the meeting ends it writes a
+// writes the words down (on this Mac, or, with no on-device engine, the chosen cloud
+// model, and the tab says so), and when the meeting ends it writes a
 // summary, the decisions, the action items and a follow-up (service/meetings.py).
 //
 // The microphone is open only while a meeting is recording, and macOS shows its
@@ -400,6 +401,8 @@ final class MeetingModel: ObservableObject {
     /// The meeting whose notes are open.
     @Published private(set) var current: Meeting?
     @Published private(set) var past: [Meeting] = []
+    /// Who hears the audio besides this Mac (the cloud provider), nil on the on-device engine.
+    @Published private(set) var audioDestination: String?
     @Published private(set) var busyAction: Int?
     /// The meeting being recorded also hears the sound this Mac plays (a call on headphones).
     @Published private(set) var hearsCall = false
@@ -430,6 +433,7 @@ final class MeetingModel: ObservableObject {
         guard case .ok(let json) = await MeetingClient.send("GET", "meetings") else { return }
         past = (json["meetings"] as? [[String: Any]] ?? []).compactMap(Meeting.init)
             .filter { $0.status != "recording" }
+        audioDestination = json["audio_destination"] as? String
     }
 
     func start() {
@@ -750,12 +754,8 @@ struct NotchMeetingView: View {
     private var home: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Meeting notes").font(.wisp(.headline, weight: .semibold)).foregroundStyle(Theme.textPrimary)
-            Text("Wisp listens through the microphone" + (CallAudioCapture.allowedLately
-                    ? " and to the sound this Mac plays, so a call on headphones is heard too. It"
-                    : ". To hear the other side of a call on headphones, turn on Screen Recording for Wisp first. It")
-                 + " writes the words down on this Mac. "
-                 + "When you stop, it writes a summary, the decisions, the action items and a follow-up. "
-                 + "No audio is kept and nothing leaves your Mac.")
+            Text(MeetingCopy.home(hearsCallAudio: CallAudioCapture.allowedLately,
+                                  cloudProvider: model.audioDestination))
                 .font(.wisp(.body)).foregroundStyle(Theme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             pill("Start a meeting", icon: "record.circle", filled: true) { model.start() }

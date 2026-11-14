@@ -13,10 +13,12 @@ enum NotchTab: Int, CaseIterable, Equatable {
     /// The tabs shown in the strip, in order, with ⌘1 to ⌘4.
     static var strip: [NotchTab] { meetHidden ? [.ask, .brief, .day] : [.ask, .brief, .day, .meet] }
 
-    /// Set once at launch on a build with no on-device engine (the Intel preview):
-    /// meeting notes transcribe with the engine's model, so Meet leaves the strip.
+    /// Takes Meet out of the strip. Nothing sets it today: on a build with no
+    /// on-device engine (the Intel preview) meetings are heard by the chosen cloud
+    /// model, and when that model can't hear audio the service refuses the start
+    /// with a plain reason, which the Meet tab shows (AppDelegate, at launch).
     nonisolated(unsafe) static var meetHidden = false
-    static let meetHiddenReason = "Meeting notes need Wisp's on-device engine, which this Mac doesn't have."
+    static let meetHiddenReason = "Meeting notes need a model that can hear audio: Wisp's on-device engine, or a cloud model that takes audio."
 
     var title: String {
         switch self {
@@ -41,6 +43,23 @@ enum NotchTab: Int, CaseIterable, Equatable {
 
     /// Ask and Research have the prompt field; the cursor goes there when they open.
     var hasPrompt: Bool { self == .ask || self == .research }
+}
+
+/// The Meet tab's opening paragraph. `cloudProvider` is who hears the audio besides
+/// this Mac (GET /meetings `audio_destination`), nil on the on-device engine.
+enum MeetingCopy {
+    static func home(hearsCallAudio: Bool, cloudProvider: String?) -> String {
+        let source = hearsCallAudio
+            ? "Wisp listens through the microphone and to the sound this Mac plays, so a call on headphones is heard too. It"
+            : "Wisp listens through the microphone. To hear the other side of a call on headphones, turn on Screen Recording for Wisp first. It"
+        let after = "When you stop, it writes a summary, the decisions, the action items and a follow-up. "
+        guard let provider = cloudProvider, !provider.isEmpty else {
+            return source + " writes the words down on this Mac. " + after
+                + "No audio is kept and nothing leaves your Mac."
+        }
+        return source + " sends the audio to \(provider), where the model you chose writes the words down. " + after
+            + "The audio and the transcript are sent to \(provider); Wisp keeps no audio, only the text."
+    }
 }
 
 /// What fills the open panel under its header. Tabs sit side by side, in strip

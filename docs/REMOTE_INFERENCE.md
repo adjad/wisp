@@ -112,6 +112,19 @@ Settings. It denies writes here exactly as it does with local models.
   exported in Debug Mode or stored in history, and they are dropped when the
   turn ends. History is never
   trimmed silently: an oversized turn fails instead.
+- **Pictures and recordings (cloud-everything mode only).** With
+  `remote_parity` on, a user message may be a list of content parts, each
+  checked against the profile's model in `REMOTE_INPUT_MODALITIES`
+  (`remote_policy.py`; a model not listed is text only): `text`; `image_url`
+  with a `data:image/(png|jpeg|webp);base64,` URL only, never a link, at most
+  5 MiB decoded each and 9 per request; `input_audio` in `wav` or `mp3`, base64,
+  at most 10 MiB decoded and one per request. Every picture and recording in a
+  request together is at most 16 MiB encoded; those bytes are left out of
+  `aggregate_bytes`, and the whole body stays under `request_bytes` plus
+  replayed reasoning plus that media cap. Without parity, or for a model that
+  does not take the input, the request is refused. Pictures in Ask,
+  look-at-screen, voice questions and Meet use this; their bytes are never
+  logged or exported in Debug Mode.
 - **No local models.** oMLX is never started or loaded, there is no local
   fallback, and Settings cannot add a local, provider or cloud target.
   Embeddings, rerank, vision and the cloud Super Model are unavailable.

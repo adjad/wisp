@@ -7,8 +7,11 @@ ends, the same model writes a summary, the decisions, the action items and a
 follow-up message from the transcript.
 
 IMPORTANT rules:
-- Nothing leaves the Mac. Windows go only to the local managed engine
-  (voice._resolve refuses any other binding), and so does the write-up.
+- Windows go to exactly one model, and so does the write-up: the local managed
+  engine (nothing leaves the Mac), or, in cloud-everything mode with a model that
+  takes audio, the chosen cloud model (voice._resolve refuses any other binding).
+  In that mode each window's audio and the transcript are sent to the provider;
+  the app says so on the Meet tab (`audio_destination` in GET /meetings).
 - No audio is kept. A window lives in its request only; what is stored is the
   transcript text and the notes, in a private file under ~/.moe/meetings/.
 - The transcript is other people's words, so it is untrusted text. It reaches
@@ -246,6 +249,10 @@ async def _ask(client, model: str, system: str, material: str, max_tokens: int, 
     left = deadline - time.monotonic()
     if left <= 1:
         raise TimeoutError("model busy")
+    if voice._is_cloud(client):
+        # The cloud model reasons before it answers, inside the same max_tokens.
+        from service.inference.remote_policy import cloud_media_budget
+        max_tokens = cloud_media_budget(max_tokens)
     idle.begin_foreground()
     try:
         with power_tier(CHAT):

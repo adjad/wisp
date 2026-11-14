@@ -1432,14 +1432,18 @@ struct FirstRunSetupChecks {
         check(IntelCloudPreset.provider == "openrouter" && IntelCloudPreset.baseURL == "https://openrouter.ai"
               && IntelCloudPreset.apiPrefix == "/api/v1" && IntelCloudPreset.contextWindow == 32_000
               && IntelCloudPreset.roles == ["everything"]
-              && IntelCloudPreset.modelID == "anthropic/claude-haiku-5.5",
-              "The preset is exactly OpenRouter, /api/v1, 32000 tokens, everything, Claude Haiku 5.5")
-        check(IntelCloudPreset.models.map(\.id) == ["anthropic/claude-haiku-5.5", "openai/gpt-6-luna",
-                                                    "google/gemini-3.8-flash", "anthropic/claude-sonnet-5.5",
+              && IntelCloudPreset.modelID == "google/gemini-3.8-flash",
+              "The preset is exactly OpenRouter, /api/v1, 32000 tokens, everything, Gemini 3.8 Flash")
+        check(IntelCloudPreset.models.map(\.id) == ["google/gemini-3.8-flash", "anthropic/claude-haiku-5.5",
+                                                    "openai/gpt-6-luna", "anthropic/claude-sonnet-5.5",
                                                     "google/gemini-4-carbon", "google/gemini-4-argon"]
               && IntelCloudPreset.models.first?.id == IntelCloudPreset.modelID
-              && IntelCloudPreset.models.first?.label == "Claude Haiku 5.5 (default)",
-              "Four models, the default first")
+              && IntelCloudPreset.models.first?.label == "Gemini 3.8 Flash (default)"
+              && IntelCloudPreset.models[1].label == "Claude Haiku 5.5",
+              "Six models, the default (it hears audio) first, Haiku second")
+        check(IntelCloudPreset.disclosure.contains("screenshots, pictures and recorded audio")
+              && IntelCloudPreset.disclosure.contains("sent to OpenRouter"),
+              "The key card says pictures and recordings go to OpenRouter too")
         for model in IntelCloudPreset.models {
             check(model.id.range(of: "^\(IntelCloudPreset.backendModelIDPattern)$", options: .regularExpression) != nil,
                   "\(model.id) passes the backend's model-id rule")

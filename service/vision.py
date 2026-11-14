@@ -13,9 +13,12 @@ through the agent loop: no tools are offered, and the context estimator never
 sees the base64.
 
 Rules:
-- IMPORTANT: the picture itself never leaves your Mac. It runs only when the Ask role is
-  bound to the local managed engine and no remote-only profile is active; any
-  other binding answers `unavailable` and sends nothing.
+- IMPORTANT: the picture goes to exactly one model. On a Mac with an engine, the
+  local managed engine only. With a remote-only profile, only in cloud-everything
+  mode (remote_parity, the owner's choice) and only when the profile's model takes
+  pictures (remote_policy.REMOTE_INPUT_MODALITIES): then the picture is sent to that
+  chosen cloud model as base64 image parts, through the same validated client as
+  every other request. Any other binding answers `unavailable` and sends nothing.
 - IMPORTANT: only a model that provably has a vision tower gets the image.
   A text-only model would describe nothing and invent a plausible answer. The
   engine's own status row must call it a VLM, and its checkpoint must declare
@@ -28,9 +31,10 @@ Rules:
   confirmation card. Nothing in the picture picks a tool or its arguments
   beyond those fields.
 - IMPORTANT: a foreground turn, never concurrent with another call on the same
-  model, bounded by a deadline, thinking OFF, temperature 0.
-- Wisp keeps no copy of the picture and the picture itself never leaves your
-  Mac: the image, frames, audio and transcript live in this request only. The
+  local model, bounded by a deadline, thinking OFF, temperature 0 (the cloud model
+  has no thinking switch; it gets a larger output budget for its reasoning).
+- Wisp keeps no copy of the picture, and on a local engine the picture itself never
+  leaves your Mac: the image, frames, audio and transcript live in this request only. The
   ANSWER is an ordinary assistant turn, saved in the chat like any other, so a
   description of the picture can reach later turns (and a cloud model, if one
   is on); never claim more than "the picture itself". Best effort at the engine, the request
@@ -287,12 +291,16 @@ def checkpoint_has_vision(model_path: str) -> bool:
     return found
 
 
-def _resolve():
-    """(client, model) for the Ask turn's own local model, or raise VisionUnavailable."""
+def _resolve(need: str = "image"):
+    """(client, model) for the Ask turn's own model, or raise VisionUnavailable.
+
+    The local managed engine, or, in cloud-everything mode, the chosen cloud model
+    when it takes `need` ("image"; "text" for a document's extracted text)."""
     from service.config.endpoints import role_target
     from service.inference.remote_policy import remote_only_profile
-    if remote_only_profile() is not None:
-        raise VisionUnavailable("Wisp reads pictures only with a model on this Mac.")
+    profile = remote_only_profile()
+    if profile is not None:
+        return _cloud(profile, need)
     target = role_target("agent")
     if not (target.endpoint.managed and target.endpoint.name == "local"):
         raise VisionUnavailable("Wisp reads pictures only with a model on this Mac.")
@@ -300,7 +308,68 @@ def _resolve():
     return _c(), target.model
 
 
+CLOUD_NO_PICTURES = ("The cloud model you chose ({model}) can't read pictures. Choose one that can, "
+                     "like Gemini 3.8 Flash, in Settings > Models > Cloud.")
+
+
+def _cloud(profile, need: str = "image"):
+    """(client, model) for the cloud model in cloud-everything mode, or raise VisionUnavailable."""
+    from service.inference.remote_policy import remote_input_modalities, remote_parity
+    if not remote_parity():
+        raise VisionUnavailable("Wisp reads pictures only with a model on this Mac.")
+    if need not in remote_input_modalities(profile.model_id):
+        raise VisionUnavailable(CLOUD_NO_PICTURES.format(model=profile.model_id))
+    from service.tools.imessage_tools import _c
+    return _c(), profile.model_id
+
+
+def is_cloud(client) -> bool:
+    """The client talks to the remote-only profile's server, not this Mac's engine."""
+    return getattr(client, "managed", True) is not True
+
+
+def _check_cloud_images(images: list[str]) -> None:
+    """The cloud request's own picture limits, as a plain sentence before anything is sent."""
+    from service.inference.remote_policy import (REMOTE_IMAGE_MAX_BYTES, REMOTE_IMAGES_PER_REQUEST,
+                                                 REMOTE_MEDIA_TOTAL_BYTES)
+    if len(images) > REMOTE_IMAGES_PER_REQUEST:
+        raise ValueError(f"Wisp can send at most {REMOTE_IMAGES_PER_REQUEST} pictures to the cloud model at once.")
+    if (any(len(decode_image(url)) > REMOTE_IMAGE_MAX_BYTES for url in images)
+            or sum(len(url) for url in images) > REMOTE_MEDIA_TOTAL_BYTES):
+        raise ValueError("That picture is too large to send to the cloud model. Try a smaller one.")
+
+
+def chat_options(client, max_tokens: int) -> dict:
+    """The keyword arguments for one no-tools picture, recording or document call.
+
+    This Mac's engine: thinking off and its prompt cache off. The cloud model has
+    neither knob (the payload validator refuses them), and its reasoning counts
+    against max_tokens, so it gets the larger cloud budget."""
+    if is_cloud(client):
+        from service.inference.remote_policy import cloud_media_budget
+        return {"temperature": 0, "max_tokens": cloud_media_budget(max_tokens)}
+    return {"temperature": 0, "max_tokens": max_tokens, "engine_headers": dict(_NO_CACHE_STORE),
+            "chat_template_kwargs": {"enable_thinking": False}}
+
+
+async def wait_for_engine(client, model: str, deadline: float) -> None:
+    """Wait until nothing else is in flight on this Mac's model, by `deadline`.
+    A cloud model serves calls side by side, so it never waits."""
+    if is_cloud(client):
+        return
+    while idle.in_flight(client.activity_key(model)) > 0:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("model busy")
+        await asyncio.sleep(_IDLE_POLL_S)
+
+
 async def _require_vision(client, model: str) -> None:
+    if is_cloud(client):
+        from service.inference.remote_policy import cloud_media_allowed, remote_only_profile
+        profile = remote_only_profile()
+        if profile is None or model != profile.model_id or not cloud_media_allowed("image"):
+            raise VisionUnavailable(CLOUD_NO_PICTURES.format(model=model))
+        return
     try:
         status = await client.status()
     except Exception:  # noqa: BLE001 — an engine that can't say is not proof of a vision tower
@@ -512,16 +581,13 @@ async def _answer(prompt, images, transcript, video_seconds, client, model,
     """The call itself, without the foreground gate (the caller holds it)."""
     from service import debug_capture
     await _require_vision(client, model)
+    if is_cloud(client):
+        _check_cloud_images(images)
     deadline = time.monotonic() + _TIMEOUT_S + (_SECTION_SECONDS * (len(images) - 1) if sections else 0.0)
-    while idle.in_flight(client.activity_key(model)) > 0:
-        if time.monotonic() >= deadline:
-            raise TimeoutError("model busy")
-        await asyncio.sleep(_IDLE_POLL_S)
+    await wait_for_engine(client, model, deadline)
     request = _messages(prompt, images, transcript, video_seconds, scanned_document, sections)
     response = await asyncio.wait_for(
-        client.chat(model, request, temperature=0, max_tokens=_SECTIONS_MAX_TOKENS if sections else _MAX_TOKENS,
-                    engine_headers=_NO_CACHE_STORE,
-                    chat_template_kwargs={"enable_thinking": False}),
+        client.chat(model, request, **chat_options(client, _SECTIONS_MAX_TOKENS if sections else _MAX_TOKENS)),
         timeout=max(0.5, deadline - time.monotonic()))
     debug_capture.record("model_call", model=model, request=_redacted(request), response=response)
     choice = (response.get("choices") or [{}])[0]
@@ -824,14 +890,13 @@ async def _read(prompt, images, what, client, model, sections: bool = False, lim
                 describe_only: bool = False) -> str:
     from service import debug_capture
     await _require_vision(client, model)
+    if is_cloud(client):
+        _check_cloud_images(images)
     deadline = time.monotonic() + _TIMEOUT_S + (_SECTION_SECONDS * (len(images) - 1) if sections else 0.0)
     if limit is not None:
         deadline = min(deadline, limit)
-    while idle.in_flight(client.activity_key(model)) > 0:
-        if time.monotonic() >= deadline:
-            raise TimeoutError("model busy")
-        await asyncio.sleep(_IDLE_POLL_S)
-    text = ("The person's request, for context only (do not answer it): "
+    await wait_for_engine(client, model, deadline)
+    text =("The person's request, for context only (do not answer it): "
             + json.dumps((prompt or "").strip()[:500], ensure_ascii=False)
             + ("\n\nWrite the DESCRIPTION section for this image." if describe_only
                else "\n\nWrite the TEXT and DESCRIPTION sections for this image."))
@@ -843,11 +908,9 @@ async def _read(prompt, images, what, client, model, sections: bool = False, lim
                {"role": "user", "content": [*({"type": "image_url", "image_url": {"url": u}} for u in images),
                                             {"type": "text", "text": text}]}]
     response = await asyncio.wait_for(
-        client.chat(model, request, temperature=0,
-                    max_tokens=(DESCRIBE_MAX_TOKENS if describe_only
-                                else READ_SECTIONS_MAX_TOKENS if sections else READ_MAX_TOKENS),
-                    engine_headers=_NO_CACHE_STORE,
-                    chat_template_kwargs={"enable_thinking": False}),
+        client.chat(model, request, **chat_options(
+            client, DESCRIBE_MAX_TOKENS if describe_only
+            else READ_SECTIONS_MAX_TOKENS if sections else READ_MAX_TOKENS)),
         timeout=max(0.5, deadline - time.monotonic()))
     debug_capture.record("model_call", model=model, request=_redacted(request), response=response)
     choice = (response.get("choices") or [{}])[0]

@@ -7,9 +7,11 @@ answered with ONE dedicated model call, like service/vision.py does for
 pictures: no tools, thinking off, the foreground gate, never the agent loop.
 
 Rules:
-- IMPORTANT: the document itself never leaves your Mac. It is read only when
-  the Ask role is bound to the local managed engine (vision._resolve); any
-  other binding answers plainly and sends nothing.
+- IMPORTANT: the document goes to exactly one model: the local managed engine
+  (vision._resolve), where it never leaves your Mac, or, in cloud-everything mode
+  (remote_parity, the owner's choice), the chosen cloud model, which gets the
+  extracted text (and a scan's pages only if it takes pictures). Any other binding
+  answers plainly and sends nothing.
 - IMPORTANT: a document's text is UNTRUSTED. It is quoted to the model as data,
   the call has no tools, and the only thing that can come out of it is the
   same typed event/reminder proposal a picture can make, offered through the
@@ -299,7 +301,14 @@ def _redacted(messages: list[dict]) -> list[dict]:
 
 
 def local_model():
-    """(client, model) for the Ask turn's own local model, or raise vision.VisionUnavailable."""
+    """(client, model) for the Ask turn's own model, or raise vision.VisionUnavailable.
+
+    The local managed engine, or, in cloud-everything mode, the chosen cloud model:
+    extracted text needs no picture input, so any model in the profile reads it."""
+    from service.inference.remote_policy import remote_only_profile, remote_parity
+    profile = remote_only_profile()
+    if profile is not None and remote_parity():
+        return vision._cloud(profile, "text")
     try:
         return vision._resolve()
     except vision.VisionUnavailable:
@@ -319,16 +328,11 @@ async def local_chat(client, model: str, messages: list[dict], max_tokens: int, 
     idle.begin_foreground()
     try:
         from service import debug_capture
-        while idle.in_flight(client.activity_key(model)) > 0:
-            if time.monotonic() >= deadline:
-                raise TimeoutError("model busy")
-            await asyncio.sleep(0.1)
+        await vision.wait_for_engine(client, model, deadline)
         from service.inference.power_tier import CHAT, power_tier
         with power_tier(CHAT):
             response = await asyncio.wait_for(
-                client.chat(model, messages, temperature=0, max_tokens=max_tokens,
-                            engine_headers={"X-oMLX-Cache-Store": "off"},
-                            chat_template_kwargs={"enable_thinking": False}),
+                client.chat(model, messages, **vision.chat_options(client, max_tokens)),
                 timeout=max(0.5, deadline - time.monotonic()))
         debug_capture.record("model_call", model=model, request=_redacted(messages), response=response)
     finally:

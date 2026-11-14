@@ -4,8 +4,9 @@ import AppKit
 // Voice input for Ask: hold a short spoken question, then hand its words to the
 // Ask box like typed text. The microphone is open only while the meter shows;
 // the clip is sent to Wisp's own service on this Mac (POST /voice/transcribe),
-// which lets the Ask model hear it there or refuses (service/voice.py). Nothing
-// is saved: the clip lives in memory until its words come back.
+// which lets the Ask model hear it there (or, with no on-device engine, sends it to
+// the chosen cloud model when that model takes audio) or refuses (service/voice.py).
+// Nothing is saved: the clip lives in memory until its words come back.
 
 @MainActor
 final class VoiceInput: ObservableObject {

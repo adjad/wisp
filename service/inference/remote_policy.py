@@ -99,6 +99,134 @@ REPLAY_REASONING_MODELS = frozenset({
 REASONING_REPLAY_TOO_LARGE = ("This model's reasoning is too large to continue the answer; "
                               "try a shorter request or another model")
 
+# What each offered cloud model takes as input, from OpenRouter's public model list
+# (input_modalities, read 2026-11-13). The one place Wisp decides whether a picture
+# or a recording may go to the chosen model; a model not listed is text only.
+REMOTE_INPUT_MODALITIES = {
+    "google/gemini-3.8-flash": frozenset({"text", "image", "video", "file", "audio"}),
+    "google/gemini-4-carbon": frozenset({"text", "image", "video", "file", "audio"}),
+    "google/gemini-4-argon": frozenset({"text", "image", "video", "file", "audio"}),
+    "anthropic/claude-haiku-5.5": frozenset({"text", "image", "file"}),
+    "anthropic/claude-sonnet-5.5": frozenset({"text", "image", "file"}),
+    "openai/gpt-6-luna": frozenset({"text", "image", "file"}),
+}
+_TEXT_ONLY = frozenset({"text"})
+# Pictures and recordings in a request (cloud-everything mode only, see
+# validate_payload). Each picture is a base64 data URL of a PNG, JPEG or WebP, never
+# a link; each recording is base64 WAV or MP3. Their encoded bytes are left out of
+# the transcript budget (aggregate_bytes) and counted against REMOTE_MEDIA_TOTAL_BYTES
+# instead, so a screenshot never crowds out the conversation and the whole body stays
+# below request_bytes + replayed reasoning (response_bytes) + REMOTE_MEDIA_TOTAL_BYTES.
+REMOTE_IMAGE_MAX_BYTES = 5 * 1024 * 1024        # decoded, per picture
+REMOTE_IMAGES_PER_REQUEST = 9                   # a large screen: overview plus 8 sections
+REMOTE_AUDIO_MAX_BYTES = 10 * 1024 * 1024       # decoded, per recording (30 s WAV is ~1 MB)
+REMOTE_AUDIO_PER_REQUEST = 1
+REMOTE_AUDIO_FORMATS = frozenset({"wav", "mp3"})
+REMOTE_MEDIA_TOTAL_BYTES = 16 * 1024 * 1024     # encoded, every picture and recording together
+REMOTE_CONTENT_PARTS = 32
+# The least output a picture, recording or document call asks the cloud model for:
+# the default model always reasons first, and its reasoning counts against max_tokens,
+# so the few hundred tokens a local model needs would end the reply before it starts.
+REMOTE_MEDIA_MIN_TOKENS = 4096
+_IMAGE_DATA_URL = re.compile(r"data:image/(?:png|jpeg|webp);base64,", re.IGNORECASE)
+_BASE64 = re.compile(r"[A-Za-z0-9+/]*={0,2}")
+
+
+def remote_input_modalities(model_id) -> frozenset:
+    """What `model_id` takes as input; text only for a model not in the table."""
+    return REMOTE_INPUT_MODALITIES.get(model_id, _TEXT_ONLY) if isinstance(model_id, str) else _TEXT_ONLY
+
+
+def cloud_media_allowed(kind: str) -> bool:
+    """Whether a `kind` ("image" or "audio") may go to the cloud model right now:
+    a remote-only profile is active, the owner chose cloud-everything mode
+    (remote_parity) and the profile's model takes that input."""
+    profile = remote_only_profile()
+    return (profile is not None and remote_parity()
+            and kind in remote_input_modalities(profile.model_id))
+
+
+def cloud_media_budget(asked: int) -> int:
+    """max_tokens for a picture, recording or document call on the cloud model."""
+    profile = remote_only_profile()
+    if profile is None:
+        return asked
+    return min(profile.max_tokens, max(asked, REMOTE_MEDIA_MIN_TOKENS))
+
+
+def _b64_size(data, cap: int) -> int:
+    """Decoded size of strict base64 `data` (at most `cap`), or refuse. Never logs it."""
+    if type(data) is not str or not data or len(data) % 4:
+        _refuse("Invalid remote-only media part")
+    if len(data) > (cap * 4) // 3 + 4:
+        _refuse("A picture or recording is too large for the cloud model")
+    if not _BASE64.fullmatch(data):
+        _refuse("Invalid remote-only media part")
+    size = len(data) // 4 * 3 - (len(data) - len(data.rstrip("=")))
+    if not 0 < size <= cap:
+        _refuse("A picture or recording is too large for the cloud model")
+    return size
+
+
+def _content_parts(parts, model_id: str) -> int:
+    """Check one user message's content parts; return the encoded media bytes in it."""
+    if not remote_parity():
+        _refuse("Remote-only inference accepts text and tool transcripts only")
+    if type(parts) is not list or not 1 <= len(parts) <= REMOTE_CONTENT_PARTS:
+        _refuse("Invalid remote-only content parts")
+    accepts = remote_input_modalities(model_id)
+    media = images = audio = 0
+    for part in parts:
+        kind = part.get("type") if type(part) is dict else None
+        if kind == "text":
+            if set(part) != {"type", "text"} or type(part["text"]) is not str:
+                _refuse("Invalid remote-only content parts")
+        elif kind == "image_url":
+            if "image" not in accepts:
+                _refuse("The chosen cloud model can't read pictures")
+            inner = part.get("image_url")
+            if (set(part) != {"type", "image_url"} or type(inner) is not dict
+                    or set(inner) != {"url"} or type(inner["url"]) is not str):
+                _refuse("Invalid remote-only content parts")
+            head = _IMAGE_DATA_URL.match(inner["url"])
+            if head is None:
+                _refuse("Remote-only pictures must be PNG, JPEG or WebP data, never a link")
+            images += 1
+            if images > REMOTE_IMAGES_PER_REQUEST:
+                _refuse("Too many pictures for one cloud request")
+            _b64_size(inner["url"][head.end():], REMOTE_IMAGE_MAX_BYTES)
+            media += len(inner["url"])
+        elif kind == "input_audio":
+            if "audio" not in accepts:
+                _refuse("The chosen cloud model can't hear audio")
+            inner = part.get("input_audio")
+            if (set(part) != {"type", "input_audio"} or type(inner) is not dict
+                    or set(inner) != {"data", "format"} or inner.get("format") not in REMOTE_AUDIO_FORMATS):
+                _refuse("Invalid remote-only content parts")
+            audio += 1
+            if audio > REMOTE_AUDIO_PER_REQUEST:
+                _refuse("Too many recordings for one cloud request")
+            _b64_size(inner["data"], REMOTE_AUDIO_MAX_BYTES)
+            media += len(inner["data"])
+        else:
+            _refuse("Unsupported remote-only content part")
+    return media
+
+
+def _without_media(row: dict) -> dict:
+    """`row` with every picture and recording payload emptied, for the transcript budget."""
+    content = row.get("content")
+    if type(content) is not list:
+        return row
+    out = []
+    for part in content:
+        if part.get("type") == "image_url":
+            part = {"type": "image_url", "image_url": {"url": ""}}
+        elif part.get("type") == "input_audio":
+            part = {"type": "input_audio", "input_audio": {"data": "", "format": part["input_audio"]["format"]}}
+        out.append(part)
+    return {**row, "content": out}
+
 
 def reasoning_option(model_id: str) -> dict | None:
     """The `reasoning` option for this model, or None when it gets none."""
@@ -170,13 +298,20 @@ class RemoteOnlyProfile:
         messages = payload.get("messages")
         if not isinstance(messages, list) or not 1 <= len(messages) <= self.messages:
             _refuse("Remote-only message budget exceeded")
+        media_bytes = 0
         for row in messages:
             if not isinstance(row, dict) or not isinstance(row.get("role"), str):
                 _refuse("Invalid remote-only message")
             if row["role"] not in {"system", "user", "assistant", "tool"}:
                 _refuse("Unsupported remote-only message role")
             content = row.get("content")
-            if not isinstance(content, str) and not (row["role"] == "assistant" and row.get("tool_calls") and content is None):
+            if row["role"] == "user" and isinstance(content, list):
+                # Pictures and recordings: cloud-everything mode, a model that takes
+                # them, data only, bounded (see REMOTE_INPUT_MODALITIES and the caps).
+                media_bytes += _content_parts(content, self.model_id)
+                if media_bytes > REMOTE_MEDIA_TOTAL_BYTES:
+                    _refuse("The pictures and recordings are too large for one cloud request")
+            elif not isinstance(content, str) and not (row["role"] == "assistant" and row.get("tool_calls") and content is None):
                 _refuse("Remote-only inference accepts text and tool transcripts only")
             if REPLAY_REASONING_KEY in row:
                 _refuse("Invalid remote-only message")
@@ -204,11 +339,12 @@ class RemoteOnlyProfile:
         # Replayed reasoning has its own cap (response_bytes: it is one reply's worth
         # of provider output) and is left out of the transcript budget, so a turn
         # that fits is never refused only because the model reasoned at length. The
-        # whole body stays bounded: request_bytes plus at most response_bytes.
+        # whole body stays bounded: request_bytes plus at most response_bytes. The
+        # same for pictures and recordings, capped above by REMOTE_MEDIA_TOTAL_BYTES.
         try:
             reasoning_bytes = replay_reasoning_bytes(messages)
-            transcript = [{k: v for k, v in row.items() if k != "reasoning_details"}
-                          if "reasoning_details" in row else row for row in messages]
+            transcript = [_without_media({k: v for k, v in row.items() if k != "reasoning_details"}
+                                         if "reasoning_details" in row else row) for row in messages]
             wire = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
             aggregate = json.dumps({"messages": transcript, "tools": tools}, ensure_ascii=False,
                                    separators=(",", ":"), allow_nan=False).encode("utf-8")
@@ -216,7 +352,8 @@ class RemoteOnlyProfile:
             _refuse("Invalid bounded remote-only payload")
         if reasoning_bytes > self.response_bytes:
             _refuse(REASONING_REPLAY_TOO_LARGE)
-        if len(wire) > self.request_bytes + reasoning_bytes or len(aggregate) > self.aggregate_bytes:
+        if (len(wire) > self.request_bytes + reasoning_bytes + media_bytes
+                or len(aggregate) > self.aggregate_bytes):
             _refuse("Remote-only transcript/schema byte budget exceeded")
 
 

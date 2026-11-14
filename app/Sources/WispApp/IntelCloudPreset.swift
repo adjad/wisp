@@ -10,17 +10,21 @@ enum IntelCloudPreset {
     static let apiPrefix = "/api/v1"
     static let contextWindow = 32_000
     static let roles = ["everything"]
-    /// The default model. Fallback if it is ever withdrawn: openai/gpt-6-luna.
-    static let modelID = "anthropic/claude-haiku-5.5"
+    /// The default model: it takes text, pictures and audio, so Ask with pictures,
+    /// look-at-screen, voice and Meet all work. Its inputs are listed in the backend's
+    /// REMOTE_INPUT_MODALITIES (service/inference/remote_policy.py).
+    static let modelID = "google/gemini-3.8-flash"
     /// The short list offered beside the key, default first.
     static let models: [(id: String, label: String)] = [
-        (modelID, "Claude Haiku 5.5 (default)"),
+        (modelID, "Gemini 3.8 Flash (default)"),
+        ("anthropic/claude-haiku-5.5", "Claude Haiku 5.5"),
         ("openai/gpt-6-luna", "GPT-6 Luna"),
-        ("google/gemini-3.8-flash", "Gemini 3.8 Flash"),
         ("anthropic/claude-sonnet-5.5", "Claude Sonnet 5.5"),
         ("google/gemini-4-carbon", "Gemini 4 Carbon"),
         ("google/gemini-4-argon", "Gemini 4 Argon"),
     ]
+    /// What the key card says goes off this Mac.
+    static let disclosure = "In this build Wisp's AI runs on OpenRouter. What you ask, the mail, texts, calendar and notes Wisp reads to answer, and any screenshots, pictures and recorded audio (voice questions and meetings) are sent to OpenRouter and the model you choose."
     /// Mirrors the backend's model-id rule (service/inference/remote_policy.py `_MODEL_ID`).
     static let backendModelIDPattern = "[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}"
 
@@ -143,7 +147,7 @@ struct IntelKeyCard: View {
     @State private var key = ""
     @State private var modelID = IntelCloudPreset.modelID
 
-    static let disclosure = "In this build Wisp's AI runs on OpenRouter, so what you ask, and the mail, texts, calendar and notes Wisp reads to answer, are sent to OpenRouter."
+    static let disclosure = IntelCloudPreset.disclosure
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {

@@ -25,6 +25,18 @@ struct NotchTabChecks {
               && NotchTab.day.shortcutDigit == "3", "no engine: the strip reads Ask, Brief, Day")
         NotchTab.meetHidden = false
         check(NotchTab.strip.last == .meet, "Meet is back once the flag is clear")
+        check(NotchTab.meetHiddenReason.contains("cloud model that takes audio"),
+              "the hidden-Meet reason names the cloud route too")
+        // Meet's opening paragraph: local says nothing leaves; cloud names the provider.
+        let local = MeetingCopy.home(hearsCallAudio: false, cloudProvider: nil)
+        check(local.contains("on this Mac") && local.hasSuffix("nothing leaves your Mac."),
+              "on-device Meet says nothing leaves the Mac")
+        let cloud = MeetingCopy.home(hearsCallAudio: true, cloudProvider: "OpenRouter")
+        check(cloud.contains("sends the audio to OpenRouter") && !cloud.contains("nothing leaves")
+              && cloud.contains("sound this Mac plays"),
+              "cloud Meet says the audio goes to the provider and never claims it stays")
+        check(MeetingCopy.home(hearsCallAudio: false, cloudProvider: "") == local,
+              "an empty provider reads as on-device")
         check(NotchTab.research.stripTab == .ask && NotchTab.day.stripTab == .day, "Research shows as Ask in the strip")
         check(NotchTab.brief.showsDay && NotchTab.day.showsDay && !NotchTab.ask.showsDay && !NotchTab.research.showsDay,
               "Brief and Day show the day; Ask and Research take a prompt")

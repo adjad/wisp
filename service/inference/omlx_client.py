@@ -333,6 +333,36 @@ def without_replay_reasoning(value):
     return value
 
 
+# About one prompt token per 300 base64 characters of 16 kHz, 16-bit mono WAV
+# (32 tokens a second of audio at the provider), with a floor for the part itself.
+_AUDIO_B64_CHARS_PER_TOKEN = 300
+_AUDIO_TOKEN_FLOOR = 16
+
+
+def _audio_estimates(messages):
+    """`messages` itself when no message carries a recording; else a copy in which each
+    recording's base64 is replaced by text of about its token cost, for measuring the
+    window only. The copy is never sent."""
+    if not isinstance(messages, list) or not any(
+            isinstance(m, dict) and isinstance(m.get("content"), list)
+            and any(isinstance(p, dict) and p.get("type") == "input_audio" for p in m["content"])
+            for m in messages):
+        return messages
+    out = []
+    for m in messages:
+        if isinstance(m, dict) and isinstance(m.get("content"), list):
+            parts = []
+            for p in m["content"]:
+                if isinstance(p, dict) and p.get("type") == "input_audio":
+                    data = (p.get("input_audio") or {}).get("data")
+                    tokens = (len(data) if isinstance(data, str) else 0) // _AUDIO_B64_CHARS_PER_TOKEN
+                    p = {"type": "text", "text": "a" * (4 * (tokens + _AUDIO_TOKEN_FLOOR))}
+                parts.append(p)
+            m = {**m, "content": parts}
+        out.append(m)
+    return out
+
+
 def _split_inline_thought(message: dict) -> None:
     content = message.get("content")
     if not isinstance(content, str) or _ThoughtSplitter.OPEN not in content:
@@ -1430,19 +1460,27 @@ class OMLXClient:
         fit_options = ({"min_output_tokens": 1}
                        if self.endpoint_name == "local_provider" else {})
         original_messages = messages
+        # A recording's base64 is not prompt text: the window is measured with it
+        # stood in for by its rough token cost, and the real request is sent.
+        estimated = _audio_estimates(messages)
         messages, fitted_tools, max_tokens = _fit_window(
-            messages, tools or [], max_tokens, model, None,
+            estimated, tools or [], max_tokens, model, None,
             context_window=self.target.context_window,
-            protected_prefix_count=next((i for i, m in enumerate(messages)
-                                         if m.get("role") != "system"), len(messages)),
+            protected_prefix_count=next((i for i, m in enumerate(estimated)
+                                         if m.get("role") != "system"), len(estimated)),
             **fit_options)
-        if remote_profile is not None and messages != original_messages:
+        if estimated is not original_messages and messages != estimated:
+            # A request carrying a recording is sent whole or not at all.
+            raise EndpointConfigurationError("Request cannot fit the target context window")
+        if remote_profile is not None and messages != estimated:
             raise EndpointConfigurationError("Remote-only context cannot discard selected messages or tool results")
         # Never silently drop required tool schemas or send an overfull prompt.
         if len(fitted_tools) != len(tools or []):
             raise EndpointConfigurationError("Target context is too small for the requested tools")
         cost = sum(_est_tokens(m.get("content") or "") + _est_tokens(m.get("tool_calls") or [])
                    for m in messages) + _est_tokens(fitted_tools)
+        if estimated is not original_messages:
+            messages = original_messages
         if remote_profile is None and use_remaining_context and not self.managed and self.endpoint_name != "local_provider":
             # Direct cloud answers should not inherit Wisp's historical fixed
             # 8k generation ceiling. After fitting the prompt, offer the model

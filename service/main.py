@@ -1581,7 +1581,8 @@ async def voice_transcribe(body: dict[str, Any]) -> dict[str, Any]:
     """The words in a short spoken clip from the notch's voice input.
 
     `audio` is a base64 16-bit PCM WAV of at most 30 s. The Ask model hears it on
-    this Mac, or nothing does (service/voice.py). 409 says, for the person, why
+    this Mac, or, in cloud-everything mode with a model that takes audio, the
+    chosen cloud model does; otherwise nothing does (service/voice.py). 409 says, for the person, why
     voice can't run with the current model; 503 means the model stayed busy.
     """
     from service import voice
@@ -2008,9 +2009,21 @@ def _managed_local_agent(client, target=None) -> bool:
 
 
 # A picture turn whose request ends up off this Mac's managed engine (Super
-# Model cloud, a remote or unmanaged endpoint) never carries the reading.
+# Model cloud, a remote or unmanaged endpoint) never carries the reading, except
+# in cloud-everything mode with a model that reads pictures (_cloud_reads_pictures):
+# there the same chosen cloud model made the reading and answers the turn.
 PICTURE_LOCAL_ONLY_NOTICE = ("Pictures are only read on your Mac's local model, so this one wasn't used. "
                              "Nothing was done with it.")
+
+
+def _cloud_reads_pictures(target) -> bool:
+    """The turn runs on the remote-only profile's model, in cloud-everything mode,
+    and that model takes pictures (remote_policy.cloud_media_allowed)."""
+    from service.inference.remote_policy import cloud_media_allowed
+    profile = remote_only_profile()
+    return (profile is not None and cloud_media_allowed("image")
+            and getattr(target, "model", None) == profile.model_id
+            and getattr(getattr(target, "endpoint", None), "name", None) == profile.endpoint_name)
 
 
 def _model_only_turn(get_client) -> bool:
@@ -3054,8 +3067,9 @@ async def agent(body: dict[str, Any]):
                 decision.route_source = skill_turn
                 decision.reason = (f"{decision.reason}; "
                                    f"{'active skill' if active_skill else 'skill'} stays on this Mac")
-            if picture_reading is not None and (super_model_cloud or not target.endpoint.managed):
-                # A picture's reading never leaves this Mac. Say so, before any
+            if picture_reading is not None and (super_model_cloud or (
+                    not target.endpoint.managed and not _cloud_reads_pictures(target))):
+                # A picture's reading goes only to the model that made it. Say so, before any
                 # per-turn transport opens, instead of running the request
                 # without the picture it was about.
                 await emit({"type": "text", "text": PICTURE_LOCAL_ONLY_NOTICE})
@@ -3369,9 +3383,11 @@ async def agent(body: dict[str, Any]):
                                         style_hint=style_hint or None,
                                         public_web_synthesis=super_model_cloud,
                                         model_led_discovery=model_led_turn,
-                                        # A picture's reading never leaves this Mac.
+                                        # A picture's reading goes only to the model that made it.
                                         picture_reading=(picture_reading if not super_model_cloud
-                                                         and target.endpoint.managed else None),
+                                                         and (target.endpoint.managed
+                                                              or _cloud_reads_pictures(target))
+                                                         else None),
                                         picture_label=picture_label,
                                         model_led_preload=(ask_preload if ask_quality
                                                            else _model_led_preload(prompt)

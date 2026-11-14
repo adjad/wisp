@@ -9,9 +9,15 @@ weights: a 5 s question transcribed verbatim (names and punctuation right) in
 kept resident.
 
 Rules:
-- IMPORTANT: the clip never leaves the Mac. Transcription runs only when the
-  Ask role is bound to the local managed engine and no remote-only profile is
-  active; any other binding answers `unavailable` and sends nothing.
+- IMPORTANT: the clip goes to exactly one model. On a Mac with an engine, the
+  local managed engine only, and the clip never leaves the Mac. With a remote-only
+  profile, only in cloud-everything mode (remote_parity, the owner's choice) and
+  only when the profile's model takes audio (remote_policy.REMOTE_INPUT_MODALITIES):
+  then the clip is sent to that chosen cloud model as one base64 WAV `input_audio`
+  part with the same prompt, through the same validated client as every other
+  request. Any other binding answers `unavailable` and sends nothing. The cloud
+  model has no thinking switch and reasons first, so it gets a larger output
+  budget, and a reply cut off by that budget is a failed transcript, never silence.
 - IMPORTANT: only a model that provably has an audio encoder gets the clip. A
   text-only or vision-only model would answer the clip with a made-up
   "transcript" (it never heard anything) and Ask would then send that as the
@@ -24,8 +30,9 @@ Rules:
   flight, instead of making the question wait up to that job's own timeout.
   The gate stays up `_HANDOFF_S` after a transcript, so no background tick
   lands between the words coming back and the app sending them to /agent.
-- IMPORTANT: never concurrent with another call on the same model. Waits until
-  nothing is in flight on it, bounded by the same deadline as the call.
+- IMPORTANT: never concurrent with another call on the same local model. Waits
+  until nothing is in flight on it, bounded by the same deadline as the call. A
+  cloud model serves calls side by side and is not waited for.
 - Thinking OFF and temperature 0: a transcript is not an answer. The prompt
   says to write down the words, not respond to them, because a spoken question
   is exactly what the model is otherwise trained to answer.
@@ -37,7 +44,9 @@ Rules:
   otherwise write the prompt's KV to disk). The bundled oMLX 0.7.0 has no such
   header, and oMLX's memory-requeue path ignores it, so there the engine may
   cache the prompt's KV on this Mac like any other Ask prompt. Never claim
-  more than "Wisp keeps no recording and never sends it off the Mac".
+  more than "Wisp keeps no recording and never sends it off the Mac" on a local
+  engine, or more than "Wisp keeps no recording" in cloud-everything mode (what
+  the provider keeps is the provider's policy).
 - The transcript is the person's own words, so it is treated exactly like typed
   text once it reaches Ask; nothing here acts on it.
 """
@@ -173,12 +182,25 @@ def _is_audio_weight(name: str) -> bool:
     return name.startswith(("audio_tower.", "embed_audio.", "audio_encoder."))
 
 
+CLOUD_NO_AUDIO = ("The cloud model you chose ({model}) can't hear audio. Voice needs one that can, "
+                  "like Gemini 3.8 Flash: choose it in Settings > Models > Cloud.")
+
+
 def _resolve():
-    """(client, model) for the Ask turn's own local model, or raise VoiceUnavailable."""
+    """(client, model) for the Ask turn's own model, or raise VoiceUnavailable.
+
+    The local managed engine, or, in cloud-everything mode, the chosen cloud model
+    when it takes audio (remote_policy.REMOTE_INPUT_MODALITIES)."""
     from service.config.endpoints import role_target
-    from service.inference.remote_policy import remote_only_profile
-    if remote_only_profile() is not None:
-        raise VoiceUnavailable("Voice works only with a model on this Mac.")
+    from service.inference.remote_policy import remote_input_modalities, remote_only_profile, remote_parity
+    profile = remote_only_profile()
+    if profile is not None:
+        if not remote_parity():
+            raise VoiceUnavailable("Voice works only with a model on this Mac.")
+        if "audio" not in remote_input_modalities(profile.model_id):
+            raise VoiceUnavailable(CLOUD_NO_AUDIO.format(model=profile.model_id))
+        from service.tools.imessage_tools import _c
+        return _c(), profile.model_id
     target = role_target("agent")
     if not (target.endpoint.managed and target.endpoint.name == "local"):
         raise VoiceUnavailable("Voice works only with a model on this Mac.")
@@ -186,7 +208,17 @@ def _resolve():
     return _c(), target.model
 
 
+def _is_cloud(client) -> bool:
+    return getattr(client, "managed", True) is not True
+
+
 async def _require_audio(client, model: str) -> None:
+    if _is_cloud(client):
+        from service.inference.remote_policy import cloud_media_allowed, remote_only_profile
+        profile = remote_only_profile()
+        if profile is None or model != profile.model_id or not cloud_media_allowed("audio"):
+            raise VoiceUnavailable(CLOUD_NO_AUDIO.format(model=model))
+        return
     try:
         status = await client.status()
     except Exception:  # noqa: BLE001 — an engine that can't say is not proof of an audio encoder
@@ -239,7 +271,9 @@ async def _transcribe(data: bytes, client, model: str | None) -> str:
 async def _ask_model(data: bytes, client, model: str, deadline: float) -> str:
     """Wait for a free engine, then one transcription call; both end by `deadline` (time.monotonic())."""
     from service import debug_capture
-    while idle.in_flight(client.activity_key(model)) > 0:
+    cloud = _is_cloud(client)
+    # A cloud model serves calls side by side; only this Mac's engine is waited for.
+    while not cloud and idle.in_flight(client.activity_key(model)) > 0:
         if time.monotonic() >= deadline:
             raise TimeoutError("model busy")
         await asyncio.sleep(_IDLE_POLL_S)
@@ -248,12 +282,18 @@ async def _ask_model(data: bytes, client, model: str, deadline: float) -> str:
                                                  "format": "wav"}},
         {"type": "text", "text": _PROMPT},
     ]}]
-    # Stated explicitly rather than through thinking_kwargs: the clip only goes
-    # to a local Gemma-class model, and a transcript must never wait on a think block.
+    if cloud:
+        # No thinking switch or engine cache there (the payload validator refuses
+        # both), and the model's reasoning counts against max_tokens.
+        from service.inference.remote_policy import cloud_media_budget
+        options = {"max_tokens": cloud_media_budget(_MAX_TOKENS)}
+    else:
+        # Stated explicitly rather than through thinking_kwargs: a transcript must
+        # never wait on a think block.
+        options = {"max_tokens": _MAX_TOKENS, "engine_headers": _NO_CACHE_STORE,
+                   "chat_template_kwargs": {"enable_thinking": False}}
     response = await asyncio.wait_for(
-        client.chat(model, request, temperature=0, max_tokens=_MAX_TOKENS,
-                    engine_headers=_NO_CACHE_STORE,
-                    chat_template_kwargs={"enable_thinking": False}),
+        client.chat(model, request, temperature=0, **options),
         timeout=max(0.5, deadline - time.monotonic()))
     debug_capture.record("model_call", model=model,
                          request=[{"role": "user", "content": [{"type": "input_audio", "omitted": True},
@@ -261,6 +301,9 @@ async def _ask_model(data: bytes, client, model: str, deadline: float) -> str:
                          response=response)
     choice = (response.get("choices") or [{}])[0]
     text = (choice.get("message") or {}).get("content")
+    if cloud and choice.get("finish_reason") == "length" and not (isinstance(text, str) and text.strip()):
+        # Its reasoning used the whole budget: that is a failed transcript, not silence.
+        raise RuntimeError("the cloud model ran out of room before the transcript")
     if not isinstance(text, str):
         return ""
     return clean_transcript(text)
