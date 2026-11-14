@@ -113,9 +113,10 @@ async def add_block(block_id: str, request: Request):
         block = next((b for b in snap.get("blocks") or [] if isinstance(b, dict) and b.get("id") == block_id
                       and b.get("kind") == "study" and not b.get("added")), None)
         if block is None:
+            _audit("study_block_calendar_add", tool="add_calendar_event", block=block_id, ok=False, status="gone")
             return _fail("blocked", GONE)
         start, end = float(block["start"]), float(block["end"])
-        plan = {"capture_key": f"capture:study:{block_id}:{int(start)}", "source_id": f"study:{block_id}",
+        plan = {"capture_key": f"capture:study:{block_id}:{body.day}", "source_id": f"study:{block_id}",
                 "title": str(block.get("title") or "Study").strip()[:200], "day": body.day,
                 "timezone": body.timezone, "start_ts": start, "duration_min": max(1, round((end - start) / 60)),
                 "all_day": False, "automatic": False}
@@ -158,6 +159,7 @@ async def undo_block(block_id: str):
         return {"ok": True, "status": "succeeded", "block_id": block_id}
     except Exception as exc:  # noqa: BLE001
         log.info("Study block undo failed (%s)", type(exc).__name__)
+        _audit("study_block_calendar_undo", tool="cancel_calendar_event", block=block_id, ok=False, status="unknown")
         return _fail("unknown", "Wisp couldn't confirm the event was removed. Check Calendar.")
     finally:
         _in_flight.discard(block_id)

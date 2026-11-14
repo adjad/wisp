@@ -46,6 +46,7 @@ def test_add_books_exactly_the_shown_block_and_records_it(env):
     assert got == {"ok": True, "status": "succeeded", "block_id": BID, "source_id": "EVT-1"}
     plan = calls["create"][0]
     assert plan["title"] == "Study: Problem set 4" and plan["start_ts"] == BLOCK["start"]
+    assert plan["capture_key"] == f"capture:study:{BID}:{DAY}"     # a moved retry can't book twice
     assert plan["duration_min"] == 45 and plan["automatic"] is False and plan["day"] == DAY
     assert store.meta(blocks_api.META)[BID]["source_id"] == "EVT-1"
     again = client.post(f"/study/blocks/{BID}/add", json={"day": DAY, "timezone": TZ}).json()
