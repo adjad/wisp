@@ -2026,6 +2026,10 @@ struct FirstRunSetupView: View {
         VStack(alignment: .leading, spacing: 0) {
             OnboardingHeading(title: "Welcome to Wisp",
                               subtitle: FirstRunBrain.welcomeSubtitle(remoteOnly: setup.status?.remoteOnly == true))
+            if let note = IntelFirstLaunch.onboardingNote(backup: UserDefaults.standard.string(forKey: IntelFirstLaunch.backupKey)) {
+                Text(note).font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true).padding(.top, 4)
+            }
             if let hw = setup.status?.hardware {
                 OnboardingCard(icon: "cpu", title: "Picked for your Mac",
                                detail: "\(hw.chip) · \(hw.ramGb > 0 ? "\(hw.ramGb) GB memory" : "memory unknown")") {

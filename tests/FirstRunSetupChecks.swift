@@ -1447,5 +1447,32 @@ struct FirstRunSetupChecks {
         check(credentialName.range(of: "^cloud-[0-9a-f]{32}$", options: .regularExpression) != nil
               && credentialName.range(of: "^[A-Za-z][A-Za-z0-9_-]{0,63}$", options: .regularExpression) != nil,
               "The key's Keychain name is the Cloud form's and passes the backend's rule")
+
+        // Intel first-launch cleanup: the gate, the backup name, the backend recognizer.
+        check(IntelFirstLaunch.shouldRun(compiledForIntel: true, engineBundled: false, alreadyDone: false),
+              "Intel, no engine, not done: runs")
+        check(!IntelFirstLaunch.shouldRun(compiledForIntel: false, engineBundled: false, alreadyDone: false),
+              "Apple silicon never runs it")
+        check(!IntelFirstLaunch.shouldRun(compiledForIntel: true, engineBundled: true, alreadyDone: false),
+              "A build with an engine never runs it")
+        check(!IntelFirstLaunch.shouldRun(compiledForIntel: true, engineBundled: false, alreadyDone: true),
+              "Once done, never again")
+        let stamp = Date(timeIntervalSince1970: 1_800_000_000)
+        check(IntelFirstLaunch.backupName(for: stamp).range(of: "^\\.moe-backup-[0-9]{8}-[0-9]{6}$",
+                                                            options: .regularExpression) != nil,
+              "The backup folder is .moe-backup-yyyyMMdd-HHmmss")
+        check(IntelFirstLaunch.isWispBackend(executablePath: "/Applications/Wisp.app/Contents/Resources/backend/.venv/bin/python3.13"),
+              "An installed Wisp's backend python is recognized")
+        check(IntelFirstLaunch.isWispBackend(executablePath: "/private/var/folders/ab/cd/T/AppTranslocation/0F5A2C1E-1111-2222-3333-444455556666/d/Wisp.app/Contents/Resources/backend/.venv/bin/python3.13"),
+              "A translocated Wisp's backend python is recognized")
+        for other in ["/usr/bin/python3", "/opt/homebrew/bin/python3",
+                      "/Applications/Other.app/Contents/Resources/backend/.venv/bin/python3.13",
+                      "/Applications/Wisp.app/Contents/MacOS/Wisp",
+                      "/Applications/Wisp.app/Contents/Resources/backend/../../../x/python3", ""] {
+            check(!IntelFirstLaunch.isWispBackend(executablePath: other), "\(other) is not a Wisp backend")
+        }
+        check(IntelFirstLaunch.onboardingNote(backup: nil) == nil
+              && IntelFirstLaunch.onboardingNote(backup: ".moe-backup-20261113-101500")?.contains("~/.moe-backup-20261113-101500") == true,
+              "The first step says so only when data was moved")
     }
 }

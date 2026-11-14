@@ -191,6 +191,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Intel preview only, once: clear an earlier Wisp before anything else looks at
+        // running copies, the port or saved state (no-op elsewhere).
+        IntelFirstLaunch.runIfNeeded()
+        // Meet transcribes with the on-device engine's model: hidden where there is none.
+        NotchTab.meetHidden = IntelCloudPreset.compiledForIntel && !IntelFirstLaunch.engineBundled
         // One Wisp at a time. A second launch used to terminate the first one's
         // backend and race it for the port; now it hands over to the running app.
         let selfPID = ProcessInfo.processInfo.processIdentifier
