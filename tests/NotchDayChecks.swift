@@ -556,6 +556,50 @@ func dayChecks(_ check: (Bool, String) -> Void) {
           && WispClock.hour(0, locale: WispClock.fixedLocale) == "12 AM", "hour labels follow the locale")
     check(WispClock.time(at(15.5), zone: utc, locale: gb) == "15:30" && WispClock.time(at(15.5), zone: utc, locale: WispClock.fixedLocale) == "3:30 PM",
           "clock times follow the locale")
+
+    // Study (docs/STUDY_TAB.md): a study block is drawn as your own plan, never as
+    // a Calendar event; a school deadline is due at its time; SCHOOL follows CAL.
+    let studied = window([DayBlockInput(id: "study-block:canvas:1:2", title: "Study: Lab 5", start: at(15), end: at(15.75),
+                                        kind: "study")],
+                         now: now, needs: [DayNeedInput(id: "study:canvas:1:2", title: "Lab 5 · CSE 20", source: "study",
+                                                        due: at(23 + 59.0 / 60))])
+    let studyBlock = studied.items.first { $0.id == "block:study-block:canvas:1:2" }
+    check(studyBlock?.style == .task && studyBlock?.detail == "Study block · 45 min" && studyBlock?.taskID == nil,
+          "a study block is a plan row, not a calendar event: \(studyBlock?.detail ?? "missing")")
+    check(studyBlock.map { DayTimeline.agendaDetail($0, now: now, isToday: true, clock: clock) } == "Study block · 45 min",
+          "a study block's agenda line names it")
+    let studyDue = studied.items.first { $0.id == "need:study:canvas:1:2" }
+    check(studyDue?.style == .needsYou && studyDue?.detail == "Due 23:59 · Needs you" && studyDue?.due == at(23 + 59.0 / 60),
+          "a school deadline is due at its time: \(studyDue?.detail ?? "missing")")
+    let schoolLines = DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: []), texts: (ready: true, needing: []),
+                                             soon: .nothing, school: " 2 due today: Lab 5 (CSE 20), Essay draft ")
+    check(schoolLines.map(\.tag) == ["CAL", "SCHOOL", "MAIL", "TEXTS", "SOON"]
+          && schoolLines[1].text == "2 due today: Lab 5 (CSE 20), Essay draft" && !schoolLines[1].muted,
+          "SCHOOL follows CAL when school work is due: \(schoolLines.map(\.tag))")
+    check(DayTimeline.briefLines(calendar: light, mail: nil, texts: nil, soon: .nothing, school: "  ").map(\.tag)
+            == ["CAL", "MAIL", "TEXTS", "SOON"], "no school line when nothing is due")
+    let schoolGlance = BriefTiles.glance(schoolLines, mailProse: nil)
+    check(schoolGlance.map(\.leading) == ["School", "Mail", "Texts"] && schoolGlance.first?.id == "glance-SCHOOL",
+          "the default Brief view lists School over Mail and Texts: \(schoolGlance.map(\.leading))")
+
+    // The `study` object of /assistant/today, tolerant of missing and odd fields.
+    let studyJSON = #"""
+    {"due_today": [{"id": "canvas:1:2", "title": "Lab 5", "course_name": "CSE 20", "due_ts": 1794700740.0,
+                    "all_day": false, "kind": "assignment", "status": "upcoming"},
+                   {"id": "x", "title": "Essay draft", "course_name": null, "due_ts": null}],
+     "due_tomorrow_count": 1, "due_week_count": 4, "missing_count": 0,
+     "next_test": {"id": "canvas:1:9", "title": "Midterm", "course_name": "CSE 20", "due_ts": 1794900000.0},
+     "line": "2 due today: Lab 5 (CSE 20), Essay draft", "sample": false, "brand_new": [1, 2]}
+    """#
+    let summary = try? JSONDecoder().decode(StudyDaySummary.self, from: Data(studyJSON.utf8))
+    check(summary?.dueToday.map(\.title) == ["Lab 5", "Essay draft"] && summary?.dueToday.first?.courseName == "CSE 20"
+          && summary?.dueToday.first?.dueTS == 1794700740.0 && summary?.dueToday.last?.courseName == ""
+          && summary?.dueToday.last?.dueTS == nil, "study due items decode, nulls as defaults")
+    check(summary?.dueTomorrowCount == 1 && summary?.dueWeekCount == 4 && summary?.missingCount == 0
+          && summary?.nextTest?.title == "Midterm" && summary?.briefLine == "2 due today: Lab 5 (CSE 20), Essay draft"
+          && summary?.sample == false, "the study summary's counts, next test and line")
+    let bare = try? JSONDecoder().decode(StudyDaySummary.self, from: Data(#"{"line": "", "next_test": null}"#.utf8))
+    check(bare == StudyDaySummary() && bare?.briefLine == nil, "an empty study summary says nothing")
 }
 
 /// To-dos from the proactive engine on the Day tab: timed ones on the hour
@@ -772,48 +816,4 @@ func firstDayChecks(_ check: (Bool, String) -> Void, dayStart: Double, dayEnd: D
             .contains("Pin") == false, "the all-day warning never asks the notch user to pin")
     check(DayTimeline.afterHoursLine(start: 540, end: 1080) == "It's after your working hours (9 AM–6 PM), so nothing new is placed today.",
           "after-hours line names the hours")
-
-    // Study (docs/STUDY_TAB.md): a study block is drawn as your own plan, never as
-    // a Calendar event; a school deadline is due at its time; SCHOOL follows CAL.
-    let studied = window([DayBlockInput(id: "study-block:canvas:1:2", title: "Study: Lab 5", start: at(15), end: at(15.75),
-                                        kind: "study")],
-                         now: now, needs: [DayNeedInput(id: "study:canvas:1:2", title: "Lab 5 · CSE 20", source: "study",
-                                                        due: at(23 + 59.0 / 60))])
-    let studyBlock = studied.items.first { $0.id == "block:study-block:canvas:1:2" }
-    check(studyBlock?.style == .task && studyBlock?.detail == "Study block · 45 min" && studyBlock?.taskID == nil,
-          "a study block is a plan row, not a calendar event: \(studyBlock?.detail ?? "missing")")
-    check(studyBlock.map { DayTimeline.agendaDetail($0, now: now, isToday: true, clock: clock) } == "Study block · 45 min",
-          "a study block's agenda line names it")
-    let studyDue = studied.items.first { $0.id == "need:study:canvas:1:2" }
-    check(studyDue?.style == .needsYou && studyDue?.detail == "Due 23:59 · Needs you" && studyDue?.due == at(23 + 59.0 / 60),
-          "a school deadline is due at its time: \(studyDue?.detail ?? "missing")")
-    let schoolLines = DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: []), texts: (ready: true, needing: []),
-                                             soon: .nothing, school: " 2 due today: Lab 5 (CSE 20), Essay draft ")
-    check(schoolLines.map(\.tag) == ["CAL", "SCHOOL", "MAIL", "TEXTS", "SOON"]
-          && schoolLines[1].text == "2 due today: Lab 5 (CSE 20), Essay draft" && !schoolLines[1].muted,
-          "SCHOOL follows CAL when school work is due: \(schoolLines.map(\.tag))")
-    check(DayTimeline.briefLines(calendar: light, mail: nil, texts: nil, soon: .nothing, school: "  ").map(\.tag)
-            == ["CAL", "MAIL", "TEXTS", "SOON"], "no school line when nothing is due")
-    let schoolGlance = BriefTiles.glance(schoolLines, mailProse: nil)
-    check(schoolGlance.map(\.leading) == ["School", "Mail", "Texts"] && schoolGlance.first?.id == "glance-SCHOOL",
-          "the default Brief view lists School over Mail and Texts: \(schoolGlance.map(\.leading))")
-
-    // The `study` object of /assistant/today, tolerant of missing and odd fields.
-    let studyJSON = #"""
-    {"due_today": [{"id": "canvas:1:2", "title": "Lab 5", "course_name": "CSE 20", "due_ts": 1794700740.0,
-                    "all_day": false, "kind": "assignment", "status": "upcoming"},
-                   {"id": "x", "title": "Essay draft", "course_name": null, "due_ts": null}],
-     "due_tomorrow_count": 1, "due_week_count": 4, "missing_count": 0,
-     "next_test": {"id": "canvas:1:9", "title": "Midterm", "course_name": "CSE 20", "due_ts": 1794900000.0},
-     "line": "2 due today: Lab 5 (CSE 20), Essay draft", "sample": false, "brand_new": [1, 2]}
-    """#
-    let summary = try? JSONDecoder().decode(StudyDaySummary.self, from: Data(studyJSON.utf8))
-    check(summary?.dueToday.map(\.title) == ["Lab 5", "Essay draft"] && summary?.dueToday.first?.courseName == "CSE 20"
-          && summary?.dueToday.first?.dueTS == 1794700740.0 && summary?.dueToday.last?.courseName == ""
-          && summary?.dueToday.last?.dueTS == nil, "study due items decode, nulls as defaults")
-    check(summary?.dueTomorrowCount == 1 && summary?.dueWeekCount == 4 && summary?.missingCount == 0
-          && summary?.nextTest?.title == "Midterm" && summary?.briefLine == "2 due today: Lab 5 (CSE 20), Essay draft"
-          && summary?.sample == false, "the study summary's counts, next test and line")
-    let bare = try? JSONDecoder().decode(StudyDaySummary.self, from: Data(#"{"line": "", "next_test": null}"#.utf8))
-    check(bare == StudyDaySummary() && bare?.briefLine == nil, "an empty study summary says nothing")
 }
