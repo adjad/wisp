@@ -77,13 +77,45 @@ struct StudyFindTarget: Equatable, Sendable {
     /// `StudyCourse.id`, sent as `course_id`.
     let courseID: String
 
-    init?(course: StudyCourse) {
-        guard !course.sample, let raw = course.url, let parts = Self.parts(raw) else { return nil }
+    /// The course's own Canvas address, else one taken from links Study already
+    /// holds for that course (its assignments' Canvas URLs). The fallback is used
+    /// only when every such link names the same host and `/courses/<n>`.
+    init?(course: StudyCourse, canvasLinks: [String] = []) {
+        guard !course.sample else { return nil }
+        let found: (host: String, id: String)?
+        if let raw = course.url, let own = Self.courseRef(raw) {
+            found = own
+        } else {
+            let refs = canvasLinks.compactMap(Self.courseRef)
+            if let first = refs.first, refs.allSatisfy({ $0 == first }) { found = first } else { found = nil }
+        }
+        guard let found else { return nil }
+        host = found.host
+        canvasID = found.id
+        courseID = course.id
+    }
+
+    /// The Canvas links Study already holds for `course` (its assignments' URLs),
+    /// kept only when the host is a Canvas host: one of the hosts of the courses'
+    /// own stored Canvas URLs, `*.instructure.com`, or a host with a `canvas`
+    /// label. Gradescope, Ed and other school sites that also use `/courses/<n>`
+    /// are never taken for Canvas.
+    static func canvasLinks(for course: StudyCourse, in state: StudyState) -> [String] {
+        guard course.url.flatMap(courseRef) == nil else { return [] }
+        let known = Set(state.courses.compactMap { $0.url.flatMap(courseRef)?.host })
+        return state.assignments(in: course).compactMap(\.url).filter { raw in
+            guard let host = courseRef(raw)?.host else { return false }
+            return known.contains(host) || host.hasSuffix(".instructure.com")
+                || host.split(separator: ".").contains("canvas")
+        }
+    }
+
+    /// Host and `/courses/<n>` id of an https Canvas course URL.
+    private static func courseRef(_ raw: String) -> (host: String, id: String)? {
+        guard let parts = Self.parts(raw) else { return nil }
         let segments = parts.segments
         guard segments.count >= 2, segments[0] == "courses", Self.isDigits(segments[1]) else { return nil }
-        host = parts.host
-        canvasID = segments[1]
-        courseID = course.id
+        return (parts.host, segments[1])
     }
 
     init(host: String, canvasID: String, courseID: String) {
@@ -1499,13 +1531,14 @@ final class StudyFindRun: ObservableObject {
 /// The "Find materials" pill for one course plus its card underneath.
 struct StudyFindMaterialsSection: View {
     let course: StudyCourse
+    var canvasLinks: [String] = []
     let onFinished: () async -> Void
     var onResize: () -> Void = {}
 
     var body: some View {
-        if let target = StudyFindTarget(course: course) {
+        if let target = StudyFindTarget(course: course, canvasLinks: canvasLinks) {
             StudyFindMaterialsHost(run: StudyFindRun.shared(for: target), course: course,
-                                   onFinished: onFinished, onResize: onResize)
+                                   canvasLinks: canvasLinks, onFinished: onFinished, onResize: onResize)
                 .id(course.id)
         }
     }
@@ -1514,16 +1547,17 @@ struct StudyFindMaterialsSection: View {
 private struct StudyFindMaterialsHost: View {
     @ObservedObject var run: StudyFindRun
     let course: StudyCourse
+    let canvasLinks: [String]
     let onFinished: () async -> Void
     let onResize: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                StudyFindMaterialsButton(course: course, onFinished: onFinished)
+                StudyFindMaterialsButton(course: course, canvasLinks: canvasLinks, onFinished: onFinished)
                 Spacer(minLength: 0)
             }
-            StudyFindMaterialsView(course: course, onFinished: onFinished, onResize: onResize)
+            StudyFindMaterialsView(course: course, canvasLinks: canvasLinks, onFinished: onFinished, onResize: onResize)
         }
         .studyReportsHeight(onResize)
         .onChange(of: run.visible) { _, _ in onResize() }
@@ -1533,13 +1567,14 @@ private struct StudyFindMaterialsHost: View {
 /// The pill, styled like "Whole course". It opens or closes the course's card.
 struct StudyFindMaterialsButton: View {
     let course: StudyCourse
+    var canvasLinks: [String] = []
     var onFinished: () async -> Void = {}
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
     @Environment(\.reduceMotionOverride) private var reduceMotionOverride
     private var reduceMotion: Bool { reduceMotionOverride ?? systemReduceMotion }
 
     var body: some View {
-        let target = StudyFindTarget(course: course)
+        let target = StudyFindTarget(course: course, canvasLinks: canvasLinks)
         StudyChrome.pill(StudyFindText.button, icon: "doc.text.magnifyingglass") {
             guard let target else { return }
             let run = StudyFindRun.shared(for: target)
@@ -1563,11 +1598,12 @@ struct StudyFindMaterialsButton: View {
 /// home screen's capped scroll.
 struct StudyFindMaterialsView: View {
     let course: StudyCourse
+    var canvasLinks: [String] = []
     let onFinished: () async -> Void
     var onResize: () -> Void = {}
 
     var body: some View {
-        if let target = StudyFindTarget(course: course) {
+        if let target = StudyFindTarget(course: course, canvasLinks: canvasLinks) {
             StudyFindCard(run: StudyFindRun.shared(for: target), course: course,
                           onFinished: onFinished, onResize: onResize)
         }
