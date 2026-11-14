@@ -683,4 +683,36 @@ func studySourceChecks(_ check: (Bool, String) -> Void, now: Date, calendar: Cal
           "an unknown code keeps today's behaviour")
     check(StudyRefusal.message(code: "missing", said: "The saved key could not be read from the Keychain.", status: 409)
           .contains("Keychain"), "a Keychain problem keeps the server's words")
+
+    // MARK: Deck status on a source
+
+    func statusSource(_ fields: String) -> StudySource? {
+        decode(StudySource.self, #"{"id": "s1", "kind": "drive", "title": "Lecture 7", "#
+               + #""url": "https://docs.google.com/presentation/d/1AbC-d_9/edit", "chars": 900"# + fields + "}")
+    }
+    check(statusSource("")?.deckState == StudySource.DeckState.none, "no deck_status: nothing about pages")
+    check(statusSource(#", "deck_status": "reading""#)?.deckState == .reading, "reading decodes")
+    check(statusSource(#", "deck_status": "ready", "pages": 12"#)?.deckState == .ready(pages: 12), "ready with pages")
+    check(statusSource(#", "deck_status": "ready", "pages": 0"#)?.deckState == StudySource.DeckState.none,
+          "ready without pages shows nothing")
+    check(statusSource(#", "deck_status": "sideways", "pages": 3"#)?.deckState == .ready(pages: 3),
+          "an unknown status falls back to the pages")
+    let deckFailedSrc = statusSource(#", "deck_status": "failed", "deck_error": "  Too many pages.  ""#)
+    check(deckFailedSrc?.deckState == .failed && deckFailedSrc?.deckError == "Too many pages.", "failed keeps the reason, trimmed")
+    check(statusSource(#", "deck_status": "failed", "deck_message": "Google said no""#)?.deckError == "Google said no",
+          "deck_message is read too")
+    check(statusSource(#", "deck_status": "failed", "deck_error": "", "deck_message": "Fallback""#)?.deckError == "Fallback",
+          "an empty deck_error falls to deck_message")
+    check(statusSource(#", "deck_status": "failed", "deck_error": 7"#)?.deckError == nil, "a non-string reason is nil")
+    check(deckFailedSrc?.driveFileID == "1AbC-d_9" && deckFailedSrc?.canRetryDeck == true, "a failed Drive deck can be read again")
+    check(statusSource(#", "deck_status": "reading""#)?.canRetryDeck == false, "only a failed deck offers Try again")
+    let deckPageSrc = decode(StudySource.self, #"{"id": "p1", "kind": "page", "title": "Home", "url": "https://canvas.example/d/x", "deck_status": "failed"}"#)
+    check(deckPageSrc?.driveFileID == nil && deckPageSrc?.canRetryDeck == false, "a school page is never re-added")
+    let deckNoLink = decode(StudySource.self, #"{"id": "d1", "kind": "drive", "title": "T", "url": "https://docs.google.com/x", "deck_status": "failed"}"#)
+    check(deckNoLink?.driveFileID == nil && deckNoLink?.canRetryDeck == false, "a link without /d/ has no file to re-add")
+    check(StudyText.deckFailure(nil) == "Couldn't read the slides"
+          && StudyText.deckFailure("  \n ") == "Couldn't read the slides", "no reason: fixed copy")
+    check(StudyText.deckFailure("Too\nlarge") == "Couldn't read the slides: Too large", "a reason stays on one line")
+    let deckLong = StudyText.deckFailure(String(repeating: "a", count: 400))
+    check(deckLong.hasSuffix("…") && deckLong.count == "Couldn't read the slides: ".count + 160, "a long reason is cut to 160")
 }

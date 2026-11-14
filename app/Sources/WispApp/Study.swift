@@ -996,18 +996,53 @@ struct StudySource: Decodable, Equatable, Identifiable {
     let createdAt: Double
     /// Pages read from the deck; 0 when it was not read as pages.
     var pages: Int = 0
-    /// "none", "ready" or "failed" (others kept as sent).
+    /// "none", "reading", "ready" or "failed" (others kept as sent).
     var deckStatus: String = "none"
+    /// Why the deck could not be read, when the service says (`deck_error`,
+    /// or `deck_message`); nil otherwise.
+    var deckError: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case id, kind, title, url, chars, pages
         case courseID = "course_id"
         case createdAt = "created_at"
         case deckStatus = "deck_status"
+        case deckError = "deck_error"
+        case deckMessage = "deck_message"
     }
 
     /// Whether its deck pages can be opened.
     var hasPages: Bool { pages > 0 }
+
+    /// What the sources row shows about the deck.
+    enum DeckState: Equatable {
+        /// Nothing about pages: not a deck, never read, or an unknown status.
+        case none
+        case reading
+        case ready(pages: Int)
+        case failed
+    }
+
+    var deckState: DeckState {
+        switch deckStatus {
+        case "reading": return .reading
+        case "failed": return .failed
+        default: return hasPages ? .ready(pages: pages) : .none
+        }
+    }
+
+    /// The Drive file id in its Drive link (`…/d/<id>/…`), for reading it again
+    /// through the same add; nil for a school page or a link without one.
+    var driveFileID: String? {
+        guard kind == "drive", let url, let range = url.range(of: "/d/") else { return nil }
+        let id = url[range.upperBound...].prefix { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
+        guard !id.isEmpty, id.count <= 200, id.allSatisfy({ $0.isASCII }) else { return nil }
+        return String(id)
+    }
+
+    /// "Try again" re-adds the same Drive file, which reads its slides again and
+    /// keeps the source's id (same kind and link).
+    var canRetryDeck: Bool { deckState == .failed && driveFileID != nil }
 
     /// A Slides deck, told by its Drive link.
     var isSlides: Bool { kind == "drive" && (url ?? "").contains("/presentation/") }
@@ -1031,6 +1066,9 @@ extension StudySource {
         createdAt = c.studyDouble(.createdAt) ?? 0
         pages = max(0, c.studyInt(.pages))
         deckStatus = c.studyString(.deckStatus, "none")
+        let reason = [c.studyOptionalString(.deckError), c.studyOptionalString(.deckMessage)]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }.first { !$0.isEmpty }
+        deckError = reason
     }
 }
 
@@ -1576,6 +1614,22 @@ enum StudyText {
     static let deckPagesLoading = "Reading the pages…"
     static let deckPagesEmpty = "No pages to show."
     static let deckAllPages = "Uses every page"
+    static let deckReading = "Reading slides…"
+    static let deckFailed = "Couldn't read the slides"
+    static let deckRetry = "Try again"
+    /// The most of the service's reason the failed line shows.
+    static let deckReasonLimit = 160
+
+    /// "Couldn't read the slides", then the service's reason when it gave one
+    /// (one line, cut to 160 characters).
+    static func deckFailure(_ reason: String?) -> String {
+        let flat = (reason ?? "").split(whereSeparator: \.isNewline).joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !flat.isEmpty else { return deckFailed }
+        let cut = flat.count > deckReasonLimit
+            ? String(flat.prefix(deckReasonLimit - 1)).trimmingCharacters(in: .whitespaces) + "…" : flat
+        return deckFailed + ": " + cut
+    }
 
     /// "1 page", "12 pages".
     static func pagesCount(_ n: Int) -> String { n == 1 ? "1 page" : "\(n) pages" }
