@@ -599,3 +599,63 @@ def test_module_item_reasons():
     links = [{"url": f"{HOST}/courses/4242/modules/items/{n}", "title": t, "type": h}
              for n, (t, h) in enumerate([("Lab", "ExternalTool"), ("HW 2", "Assignment"), ("Notes", None)])]
     assert [i["reason"] for i in find.resolve(links, course=c, sources=[])] == ["tool", "assignment", "unknown"]
+
+
+C = {"id": "canvas:4242", "url": f"{HOST}/courses/4242"}
+
+
+@pytest.mark.parametrize("title, path, reason", [
+    ("Midterm 1 Review Quiz", "/pages/week-5", "quiz"),
+    ("WEEK 3 QUIZ", "/pages/week-3", "quiz"),
+    ("Practice Test", "/pages/p", "quiz"),
+    ("Final Exam info", "/pages/f", "quiz"),
+    ("Unit test 2", "/discussion_topics/4", "quiz"),
+    ("Notes", "/pages/midterm-2-study-guide", "quiz"),
+    ("Notes", "/pages/final_exam_logistics", "quiz"),
+    ("Course Evaluation", "/pages/eval", "survey"),
+    ("End of term survey", "/pages/s", "survey"),
+    ("Proctored session rules", "/pages/r", "graded"),
+    ("Submit your lab", "/pages/lab", "submission"),
+    ("Upload here", "/files/9", "submission"),
+    ("Start attempt", "/pages/x", "start"),
+    ("Resume", "/pages/y", "start"),
+    ("Timed reading", "/pages/z", "timed"),
+    ("Pay lab fee", "/pages/fee", "payment"),
+    ("Enrollment", "/pages/e", "payment"),
+    ("Join Zoom lecture", "/pages/live", "meeting"),
+    ("Office hours", "/pages/zoom-link", "meeting"),
+    ("Account settings", "/pages/a", "account"),
+])
+def test_rule_one_tests_quizzes_and_important_items_are_never_opened(title, path, reason):
+    for t in (title, title.lower(), title.upper()):
+        got = find.classify({"url": f"{HOST}/courses/4242{path}", "title": t, "type": None}, C)
+        assert (got["via"], got["kind"], got["reason"]) == ("none", "other", reason)
+
+
+@pytest.mark.parametrize("title, typ", [("Week 2 notes", "Page"), ("Quiz 2", "Page"), ("Exam prep", "Discussion")])
+def test_rule_one_applies_to_module_items_whatever_their_type(title, typ):
+    got = find.classify({"url": f"{HOST}/courses/4242/modules/items/7", "title": title, "type": typ}, C)
+    assert (got["via"] == "none") == (title != "Week 2 notes")
+
+
+@pytest.mark.parametrize("url, title", [
+    ("https://news.example.org/how-to-take-the-test", "Article"),
+    ("https://zoom.us/j/123456", "Lecture link"),
+    ("https://accounts.example.com/x", "Read"),
+    ("https://shop.example.org/checkout?item=book", "Textbook"),
+    ("https://forms.example.org/s/abc", "Course survey"),
+])
+def test_rule_one_on_web_links(url, title):
+    assert find.classify({"url": url, "title": title}, C)["via"] == "none"
+
+
+def test_rule_one_on_drive_and_plain_material_still_readable():
+    assert find.classify({"url": f"https://docs.google.com/document/d/{DOC_ID}/edit", "title": "Exam 2 answers"}, C)["via"] == "none"
+    assert find.classify({"url": f"https://docs.google.com/document/d/{DOC_ID}/edit", "title": "Lecture 4"}, C)["via"] == "drive"
+    assert find.classify({"url": f"{HOST}/courses/4242/pages/week-4-photosynthesis", "title": "Week 4"}, C)["via"] == "browser"
+    assert find.classify({"url": "https://news.example.org/rivers", "title": "Rivers"}, C)["via"] == "web"
+
+
+def test_rule_one_items_are_listed_as_cant_open_and_add_refuses_them():
+    items = find.resolve([{"url": f"{HOST}/courses/4242/pages/quiz-3", "title": "Quiz 3"}], course=C, sources=[])
+    assert [(i["via"], i["reason"]) for i in items] == [("none", "quiz")]
