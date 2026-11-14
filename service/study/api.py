@@ -3,7 +3,8 @@
 IMPORTANT rules:
 - Every change is the app's own JSON request (`native_only`), never a web page's.
 - Page text from the app is untrusted data: it only ever reaches canvas_parse and,
-  inside a delimited data block, generate.extract_school_data.
+  inside a delimited data block, generate.extract_school_data. Saved sources (Drive
+  files, school pages) reach the model only inside generate.make's data block.
 - Errors are {"detail": code, "message": gentle sentence}; the key never appears.
 """
 from __future__ import annotations
@@ -11,12 +12,12 @@ from __future__ import annotations
 import asyncio
 import functools
 import time
-from typing import Literal
+from typing import Annotated, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, ValidationError
 
 from service.memory_saver_api import native_only
 from service.study import canvas_parse, connector, generate
@@ -37,6 +38,14 @@ IMPORT_POSTS = 6            # paid POSTs per import, across those pages and thei
 IMPORT_MODEL_S = 75.0       # all of one import's model work
 GENERATE_S = 100.0          # one /study/generate (its POSTs are capped by generate.MAX_POSTS)
 STOP_READING = ("missing", "rejected", "busy", "unreachable")   # no more pages go to the model
+# Long context (connector.long_context: the active Study model is Gemini). Same 120 s app
+# timeout; the model reads every school page it could not parse, 4 at a time.
+LONG_MODEL_PAGES = MAX_PAGES
+LONG_IMPORT_POSTS = 2 * MAX_PAGES
+LONG_IMPORT_MODEL_S = 100.0
+LONG_CONCURRENCY = 4
+MAX_SOURCE_IDS = 20
+WHOLE_COURSE_CONTEXT = 100_000   # assignment descriptions of a whole course (long context)
 
 _HTTP = {"missing": 409, "rejected": 502, "busy": 502, "unreachable": 502, "bad_reply": 502}
 NOT_FOUND = "Wisp couldn't find that in Study. It may have been cleared."
@@ -91,6 +100,9 @@ class GenerateBody(_Strict):
     assignment_id: StrictStr | None = Field(default=None, max_length=300)
     topic: StrictStr | None = Field(default=None, max_length=300)
     count: StrictInt | None = Field(default=None, ge=1, le=30)
+    source_ids: list[Annotated[StrictStr, Field(max_length=100)]] | None = Field(
+        default=None, max_length=MAX_SOURCE_IDS)
+    whole_course: StrictBool = False
 
 
 class AttemptBody(_Strict):
@@ -150,7 +162,7 @@ def _visible(item: dict, now: float) -> bool:
 
 def _empty_state(connector_state: dict) -> dict:
     return {"connector": connector_state, "sample": False, "last_import": None,
-            "courses": [], "assignments": [], "materials": []}
+            "courses": [], "assignments": [], "materials": [], "sources": []}
 
 
 def _existing_store():
@@ -200,6 +212,7 @@ def state(now: float | None = None, *, connector_state: dict | None = None) -> d
                          "sample": bool(a.get("sample"))}
                         for a in rows if _visible(a, now)],
         "materials": store.materials(),
+        "sources": store.sources(),
     }
 
 
@@ -225,42 +238,132 @@ async def import_pages(request: Request):
     body = await _body(request, ImportBody)
     zone = _timezone(body.timezone)
     now = time.time()
-    ready = None
-    model_pages = 0
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + IMPORT_MODEL_S
+    pages = body.pages
+    parsed = [canvas_parse.parse_page(p.url, p.title, p.text, now=now, timezone=zone) for p in pages]
+    unread = [i for i, (p, got) in enumerate(zip(pages, parsed))
+              if got.kind == "other" and canvas_parse.is_school_url(p.url)]
+    # One status read either way: with no page for the model it is also the reply's connector.
+    status = await connector.status_async()
+    ready = bool(status.get("ready"))
+    long_context = ready and bool(status.get("long_context"))
+    if long_context:
+        read = await _read_pages_together(pages, parsed, unread, now=now, zone=zone)
+    else:
+        read = set()
+        await _read_pages_in_turn(pages, parsed, unread, ready, now=now, zone=zone)
     results, courses, assignments = [], [], []
-    with connector.post_budget(IMPORT_POSTS):
-        for page in body.pages:
-            parsed = canvas_parse.parse_page(page.url, page.title, page.text, now=now, timezone=zone)
-            if parsed.kind == "other" and canvas_parse.is_school_url(page.url):
-                if ready is None:
-                    ready = bool((await connector.status_async()).get("ready"))
-                remaining = deadline - loop.time()
-                if (ready and model_pages < MODEL_PAGES and remaining > 0
-                        and connector.posts_left() > 0):
-                    model_pages += 1
-                    try:
-                        parsed = await asyncio.wait_for(
-                            generate.extract_school_data(page.url, page.title, page.text,
-                                                         now=now, timezone=zone),
-                            remaining)
-                    except TimeoutError:
-                        ready = False   # the import's model time is spent
-                    except connector.StudyConnectorError as exc:
-                        if exc.code in STOP_READING:
-                            ready = False   # a refused key or a busy model fails the next page too
-                    except ValueError:
-                        pass   # this page stays unrecognised; the others still count
-            results.append(_page_result(page, parsed, courses, assignments))
+    for page, got in zip(pages, parsed):
+        results.append(_page_result(page, got, courses, assignments))
     counts = (0, 0)
+    store = None
     if any(r["recognized"] for r in results):
         store = study_store()
         store.clear_sample()
         counts = store.import_rows(courses, assignments)   # one row per course and per assignment
         store.set_meta("last_import", now)
+    if long_context:
+        keep = [i for i, r in enumerate(results)
+                if i in read or (r["recognized"] and canvas_parse.is_school_url(pages[i].url))]
+        if keep:
+            store = store or study_store()
+            _save_page_sources(store, [(pages[i], parsed[i]) for i in keep])
+    if store is not None:
         await _changed()
-    return {"courses": counts[0], "assignments": counts[1], "pages": results, "state": await _state()}
+    final = await _state() if unread else state(connector_state=status)
+    return {"courses": counts[0], "assignments": counts[1], "pages": results, "state": final}
+
+
+async def _read_pages_in_turn(pages, parsed: list, unread: list[int], ready: bool, *, now: float,
+                              zone: str) -> None:
+    """The ordinary import: at most MODEL_PAGES pages, one after another, within
+    IMPORT_POSTS and IMPORT_MODEL_S. Fills ``parsed`` in place."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + IMPORT_MODEL_S
+    model_pages = 0
+    with connector.post_budget(IMPORT_POSTS):
+        for i in unread:
+            page = pages[i]
+            remaining = deadline - loop.time()
+            if not (ready and model_pages < MODEL_PAGES and remaining > 0 and connector.posts_left() > 0):
+                continue
+            model_pages += 1
+            try:
+                parsed[i] = await asyncio.wait_for(
+                    generate.extract_school_data(page.url, page.title, page.text, now=now, timezone=zone),
+                    remaining)
+            except TimeoutError:
+                ready = False   # the import's model time is spent
+            except connector.StudyConnectorError as exc:
+                if exc.code in STOP_READING:
+                    ready = False   # a refused key or a busy model fails the next page too
+            except ValueError:
+                pass   # this page stays unrecognised; the others still count
+
+
+async def _read_pages_together(pages, parsed: list, unread: list[int], *, now: float, zone: str) -> set[int]:
+    """The long-context import: up to LONG_MODEL_PAGES pages, LONG_CONCURRENCY at a time,
+    within LONG_IMPORT_POSTS and LONG_IMPORT_MODEL_S. Fills ``parsed`` in place (so the
+    results keep the request's order) and returns the indexes the model read."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + LONG_IMPORT_MODEL_S
+    gate = asyncio.Semaphore(LONG_CONCURRENCY)
+    stop = False
+    read: set[int] = set()
+
+    async def one(i: int) -> None:
+        nonlocal stop
+        async with gate:
+            remaining = deadline - loop.time()
+            if stop or remaining <= 0 or connector.posts_left() <= 0:
+                return
+            page = pages[i]
+            try:
+                got = await asyncio.wait_for(
+                    generate.extract_school_data(page.url, page.title, page.text, now=now, timezone=zone,
+                                                 long_context=True),
+                    remaining)
+            except TimeoutError:
+                stop = True   # the import's model time is spent
+                return
+            except connector.StudyConnectorError as exc:
+                if exc.code in STOP_READING:
+                    stop = True   # pages not yet started are not sent
+                return
+            except ValueError:
+                return
+            parsed[i] = got
+            read.add(i)
+
+    # Tasks copy this context, so they all share the one request-wide POST budget.
+    with connector.post_budget(LONG_IMPORT_POSTS):
+        await asyncio.gather(*(one(i) for i in unread[:LONG_MODEL_PAGES]))
+    return read
+
+
+def _save_page_sources(store, items: list) -> None:
+    """Each kept school page becomes a "page" source, tied to its course when the page
+    names exactly one course this import saved."""
+    from service.study.store import merge_key
+    stored = [c for c in store.courses() if not c.get("sample")]
+    ids = {c["id"] for c in stored}
+    by_key = {}
+    for c in stored:
+        by_key.setdefault(c.get("merge_key") or merge_key(c.get("name")), set()).add(c["id"])
+    for page, got in items:
+        found: set[str] = set()
+        for c in got.courses:
+            cid = c.get("id")
+            if cid in ids:
+                found.add(cid)
+            else:
+                match = by_key.get(merge_key(c.get("name")), set())
+                if len(match) == 1:
+                    found |= match
+        for a in got.assignments:
+            if a.get("course_id") in ids:
+                found.add(a["course_id"])
+        store.save_source({"kind": "page", "url": page.url, "title": page.title or page.url,
+                           "text": page.text, "course_id": next(iter(found)) if len(found) == 1 else None})
 
 
 def _page_result(page, parsed, courses: list, assignments: list) -> dict:
@@ -294,6 +397,38 @@ def _context(assignment: dict | None, course: dict | None, assignments: list[dic
     return "\n\n".join(parts)[:CONTEXT_MAX]
 
 
+def _chosen_sources(store, source_ids: list[str] | None, course_id: str | None) -> list[dict]:
+    """The sources one material is made from: the ids asked for (an unknown one is 404), then,
+    for a whole course, every source of that course. Full rows, each id once."""
+    wanted = list(dict.fromkeys(source_ids or []))
+    if (wanted or course_id) and store is None:
+        if wanted:
+            raise Refusal(404, "not_found", NOT_FOUND)
+        return []
+    if course_id:
+        wanted += [s["id"] for s in store.sources(course_id) if s["id"] not in wanted]
+    out = []
+    for sid in wanted:
+        row = store.source(sid)
+        if row is None:
+            raise Refusal(404, "not_found", NOT_FOUND)
+        out.append(row)
+    return out
+
+
+def _course_context(course: dict | None, assignments: list[dict], long_context: bool) -> str:
+    """A whole course: every assignment of it with its description."""
+    cap = WHOLE_COURSE_CONTEXT if long_context else CONTEXT_MAX
+    parts = []
+    for a in assignments:
+        if not course or a.get("course_id") != course.get("id") or not a.get("title"):
+            continue
+        details = (a.get("details") or "").strip()
+        parts.append(f"- {a['title']}" + (f"\n{details}" if details else ""))
+    text = "Work in this course:\n" + "\n".join(parts) if parts else ""
+    return text[:cap]
+
+
 @router.post("/generate", dependencies=[Depends(native_only)])
 @_answer
 async def make_material(request: Request):
@@ -311,14 +446,24 @@ async def make_material(request: Request):
     if body.course_id and course is None:
         raise Refusal(404, "not_found", NOT_FOUND)
     topic = (body.topic or "").strip() or None
-    if course is None and assignment is None and topic is None:
+    if body.whole_course and not body.course_id:
+        raise Refusal(422, "invalid", "Pick a course to study the whole course.")
+    sources = _chosen_sources(existing, body.source_ids, course_id if body.whole_course else None)
+    if course is None and assignment is None and topic is None and not sources:
         raise Refusal(422, "invalid", "Pick a course, an assignment or a topic to study.")
     if assignment is not None:
         assignment = assignment | {"course_name": (course or {}).get("name") or ""}
+    extra = {}
+    long_context = False
+    if sources or body.whole_course:
+        long_context = bool((await connector.status_async()).get("long_context"))
+        extra = {"sources": sources, "long_context": long_context}
+    context = (_course_context(course, rows, long_context) if body.whole_course
+               else _context(assignment, course, rows))
     try:
         made = await asyncio.wait_for(
             generate.make(body.kind, course=course, assignment=assignment, topic=topic,
-                          count=body.count, context=_context(assignment, course, rows)),
+                          count=body.count, context=context, **extra),
             GENERATE_S)
     except TimeoutError as exc:
         raise connector.StudyConnectorError("unreachable") from exc
@@ -349,6 +494,15 @@ async def delete_material(material_id: str):
     if store is None or not store.delete_material(material_id):
         raise Refusal(404, "not_found", NOT_FOUND)
     return {"deleted": True}
+
+
+@router.delete("/sources/{source_id}", dependencies=[Depends(native_only)])
+@_answer
+async def delete_source(source_id: str):
+    store = _existing_store()
+    if store is None or not store.delete_source(source_id):
+        raise Refusal(404, "not_found", NOT_FOUND)
+    return {"state": await _state()}
 
 
 @router.post("/materials/{material_id}/attempt", dependencies=[Depends(native_only)])

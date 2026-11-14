@@ -538,6 +538,25 @@ def test_cloud_fallback_key_failure_is_missing_and_status_stays_defensive(monkey
     assert C.status()["source"] == "none"
 
 
+@pytest.mark.parametrize("model_id,expected", [
+    ("gemini-3.8-flash", True), ("google/gemini-3.8-flash", True), ("google/gemini-3.9-pro", True),
+    ("gpt-5", False), ("openai/gpt-5", False), ("anthropic/gemini-x", False), ("google/gemma-4", False),
+    ("Gemini-3.8-flash", False), ("xgemini-3", False), ("", False), (None, False), (3, False),
+])
+def test_long_context_is_only_for_gemini_models(model_id, expected):
+    assert C.long_context(model_id) is expected
+
+
+def test_status_reports_long_context_from_the_active_model(monkeypatch):
+    C._exists_cache["openrouter"] = (False, 1e18)
+    monkeypatch.setattr(C, "_cloud_cache", (None, 1e18))
+    assert C.status()["long_context"] is False                 # not ready
+    C._exists_cache["openrouter"] = (True, 1e18)
+    assert C.status()["long_context"] is True                  # google/gemini-3.8-flash
+    monkeypatch.setattr(C, "choice", lambda: ("openrouter", "openai/gpt-5"))
+    assert C.status()["long_context"] is False
+
+
 def test_this_file_is_in_the_simulation_manifest():
     from pathlib import Path
     manifest = (Path(__file__).resolve().parents[1] / "scripts" / "run_simulation_qa.py").read_text()

@@ -1,4 +1,5 @@
-"""School data on this Mac: courses, assignments, study materials, quiz attempts.
+"""School data on this Mac: courses, assignments, study materials, quiz attempts and
+sources (text the student chose to study from: Google Drive files and school pages).
 
 Its own SQLite file under MOE_DIR/study/ (dir 0700, file 0600), like the attention
 ledger, so school pages never mix with assistant.db and "Clear" can drop all of it.
@@ -28,6 +29,10 @@ _ASSIGNMENT_FIELDS = ("course_id", "title", "kind", "due_ts", "all_day", "points
                       "status", "details", "url", "source", "sample")
 _BOOL_FIELDS = ("all_day", "sample")
 DETAILS_MAX = 4000
+SOURCE_CHARS = 400_000      # a source's text is cut to this before it is saved
+SOURCE_KINDS = ("drive", "page")
+_SOURCE_TITLE = 300
+_SOURCE_URL = 4000
 _NUMERIC_ID = re.compile(r"[a-z]+:(\d+)")
 _WS = re.compile(r"\s+")
 
@@ -165,6 +170,18 @@ class StudyStore:
             );
             CREATE INDEX IF NOT EXISTS attempts_material ON attempts(material_id);
             CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS sources (
+                id         TEXT PRIMARY KEY,
+                course_id  TEXT,
+                kind       TEXT NOT NULL,
+                title      TEXT NOT NULL DEFAULT '',
+                url        TEXT,
+                text       TEXT NOT NULL DEFAULT '',
+                chars      INTEGER NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL,
+                UNIQUE (kind, url)
+            );
+            CREATE INDEX IF NOT EXISTS sources_course ON sources(course_id);
         """)
         self._migrate()
 
@@ -331,6 +348,7 @@ class StudyStore:
     def _retire_course(self, old: str, canonical: str) -> None:
         self._db.execute("UPDATE assignments SET course_id=? WHERE course_id=?", (canonical, old))
         self._db.execute("UPDATE materials SET course_id=? WHERE course_id=?", (canonical, old))
+        self._db.execute("UPDATE sources SET course_id=? WHERE course_id=?", (canonical, old))
         self._db.execute("DELETE FROM courses WHERE id=?", (old,))
 
     def _twin(self, course_id, title, aid: str):
@@ -427,6 +445,56 @@ class StudyStore:
                 (material_id,)).fetchone()
         return row[0]
 
+    # --- sources ----------------------------------------------------------------
+
+    def save_source(self, source: dict) -> dict:
+        """Save text the student chose to study from. The same kind and url again replaces
+        its text, title and course (and refreshes created_at) but keeps its id. Returns the
+        summary (no text). The text is untrusted data: stored as-is, cut to SOURCE_CHARS."""
+        kind = source.get("kind")
+        if kind not in SOURCE_KINDS:
+            raise ValueError("unknown source kind")
+        text = source.get("text")
+        text = text.replace("\x00", "")[:SOURCE_CHARS] if isinstance(text, str) else ""
+        title = source.get("title")
+        title = title.strip()[:_SOURCE_TITLE] if isinstance(title, str) else ""
+        url = source.get("url")
+        url = (url.strip()[:_SOURCE_URL] or None) if isinstance(url, str) else None
+        course_id = source.get("course_id")
+        course_id = course_id if isinstance(course_id, str) and course_id else None
+        now = time.time()
+        with self._lock:
+            old = (self._db.execute("SELECT id FROM sources WHERE kind=? AND url=?", (kind, url)).fetchone()
+                   if url is not None else None)
+            sid = old["id"] if old else "src_" + secrets.token_hex(6)
+            self._db.execute(
+                "INSERT OR REPLACE INTO sources(id,course_id,kind,title,url,text,chars,created_at)"
+                " VALUES (?,?,?,?,?,?,?,?)", (sid, course_id, kind, title, url, text, len(text), now))
+            row = self._db.execute(_SOURCE_SELECT + " WHERE id=?", (sid,)).fetchone()
+        return dict(row)
+
+    def sources(self, course_id: str | None = None) -> list[dict]:
+        """Summaries (no text), newest first; course_id filters, None means all."""
+        with self._lock:
+            if course_id is None:
+                rows = self._db.execute(_SOURCE_SELECT + " ORDER BY created_at DESC, id").fetchall()
+            else:
+                rows = self._db.execute(_SOURCE_SELECT + " WHERE course_id=? ORDER BY created_at DESC, id",
+                                        (course_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def source(self, source_id: str) -> dict | None:
+        """The full row, with "text"."""
+        with self._lock:
+            row = self._db.execute(_SOURCE_SELECT.replace(" FROM", ", text FROM") + " WHERE id=?",
+                                   (source_id,)).fetchone()
+        return dict(row) if row else None
+
+    def delete_source(self, source_id: str) -> bool:
+        with self._lock:
+            cur = self._db.execute("DELETE FROM sources WHERE id=?", (source_id,))
+        return cur.rowcount > 0
+
     # --- meta and clearing ------------------------------------------------------
 
     def meta(self, key: str, default=None):
@@ -446,10 +514,10 @@ class StudyStore:
     def clear(self) -> None:
         with self._lock:
             self._db.executescript("BEGIN; DELETE FROM courses; DELETE FROM assignments; DELETE FROM materials;"
-                                   " DELETE FROM attempts; DELETE FROM meta; COMMIT;")
+                                   " DELETE FROM attempts; DELETE FROM meta; DELETE FROM sources; COMMIT;")
 
     def clear_sample(self) -> None:
-        """Only the built-in sample: real courses and anything made from them stay."""
+        """Only the built-in sample: real courses, sources and anything made from them stay."""
         with self._lock:
             self._db.executescript(
                 "BEGIN;"
@@ -483,6 +551,9 @@ _MATERIAL_SELECT = (
     "SELECT m.id, m.kind, m.title, m.course_id, m.assignment_id, m.created_at, m.model, m.sample, m.count,"
     " m.body, (SELECT MAX(CAST(a.correct AS REAL)/a.total) FROM attempts a WHERE a.material_id=m.id)"
     " AS best_score FROM materials m")
+
+
+_SOURCE_SELECT = "SELECT id, course_id, kind, title, url, chars, created_at FROM sources"
 
 
 def _count(kind: str, body: dict) -> int:

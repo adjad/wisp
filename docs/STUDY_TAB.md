@@ -17,11 +17,15 @@ serves and what the app decodes.
 - Zero footprint: reading never creates anything. `GET /study/state`, the Day hook and the
   connector status on a Mac that never used Study return an empty state and leave no
   `study/` folder; only a route that saves something (import with a recognised page,
-  sample, generate, connector choice) creates it.
+  sample, generate, connector choice, Drive add) creates it.
 - Wisp only reads school pages. It never submits, posts, clicks or changes
   anything on a school site, and never types a password.
 - Page text is untrusted data. It is never treated as instructions, and it is
   passed to a model only inside a clearly delimited data block.
+- Sources (Google Drive Docs/Slides the student adds, and school pages saved by a
+  long-context import) live in the same `study.db`. Their text is untrusted data too: stored
+  as-is, never executed or followed, and sent only to the Study model inside the data block.
+  Only the Drive file the student picks is read. "Clear" drops sources with everything else.
 - Study material is written by the **Study connector**: a cloud model reached
   with a key that is used for Study and nothing else. Nothing else in Wisp uses
   that key, and Study never uses the local chat model's cloud settings, with one
@@ -69,18 +73,45 @@ the two rows above. Its key comes from the endpoint's own `api_key()`
 
 The app's own request timeout is 120 s, so the server always stops first.
 
+### Long context
+
+`connector.long_context(model_id)` is true for a Gemini model: bare `gemini-…` (Gemini API)
+or `google/gemini-…` (OpenRouter). The state's `connector.long_context` is that test applied
+to `active_model_id` (false when not ready). Only then do these bounds replace the ones above;
+every other model keeps the table above exactly (same limits, same sequential flow, no page
+sources saved).
+
+| bound | long context | ordinary |
+| --- | --- | --- |
+| pages per import read by the model | 12 (`api.LONG_MODEL_PAGES` = `MAX_PAGES`), 4 at a time (`LONG_CONCURRENCY`); results keep the request's order | 3, one after another |
+| POSTs per import | 24 (`api.LONG_IMPORT_POSTS`), one budget shared by the concurrent reads | 6 |
+| model time per import | 100 s (`api.LONG_IMPORT_MODEL_S`) | 75 s |
+| page text read per page | 200k chars (`generate.LONG_EXTRACT_CHARS`; the app sends at most 150k) | 24k (`EXTRACT_CHARS`) |
+| stop reading | after a `missing` / `rejected` / `busy` / `unreachable` or the deadline, no new page starts (up to 4 already running finish or fail) | as above |
+| data block per material | 600k chars (`generate.LONG_CONTEXT_CHARS`) | 12k (`CONTEXT_CHARS`) |
+| whole-course assignment text | 100k chars (`api.WHOLE_COURSE_CONTEXT`) | 6k (`CONTEXT_MAX`) |
+| POSTs / time per `/study/generate` | unchanged: 3 POSTs, 100 s | 3 POSTs, 100 s |
+
+Worst-case cost: one long-context import is at most 24 paid requests carrying up to ~200k
+chars of page text each; one long-context material is at most 3 requests carrying up to
+~600k chars (about 150k tokens) each. A source is stored up to 400k chars (`store.SOURCE_CHARS`).
+Source text is cleaned with at most 8 tag-stripping passes (`generate.SOURCE_PASSES`); text
+still changing after that loses every bracket look-alike, so a hostile file of nested fake
+tags cannot hold a worker. Prompt building with sources runs on a worker thread.
+
 ## Backend (`service/study/`)
 
 | file | owns |
 | --- | --- |
-| `store.py` | sqlite store: courses, assignments, materials, attempts, meta |
+| `store.py` | sqlite store: courses, assignments, materials, attempts, meta, sources |
 | `canvas_parse.py` | pure: captured page text -> courses and assignments |
 | `plan.py` | pure: what is due, study-block suggestions |
 | `day_hook.py` | `attach(result, now=, timezone=)` for `/assistant/today` |
 | `connector.py` | Study connector: choice, key read, JSON completion |
 | `generate.py` | prompts + strict validation for the four material kinds, and model-assisted page extraction |
 | `sample.py` | built-in sample courses, assignments and one material of each kind |
-| `api.py` | FastAPI router, prefix `/study` |
+| `api.py` | FastAPI router, prefix `/study`; exports `Refusal`, `_answer`, `_state` for `drive_api.py` |
+| `drive.py`, `drive_api.py` | Google Drive list/export through the existing read-only Google sign-in; router `/study/drive` |
 
 ### Python interfaces (exact)
 
@@ -102,8 +133,15 @@ class StudyStore:
     def record_attempt(self, material_id: str, correct: int, total: int) -> float | None  # best score 0..1
     def meta(self, key: str, default=None); def set_meta(self, key: str, value) -> None
     def has_sample(self) -> bool
-    def clear_sample(self) -> None                            # only sample rows and their materials
-    def clear(self) -> None                                   # everything
+    def save_source(self, source: dict) -> dict               # {"kind","url","title","text","course_id"} ->
+    #   the summary (no text); assigns id ("src_" + 12 hex) and created_at. The same (kind, url) again
+    #   replaces text/title/course, refreshes created_at and keeps the id. Text cut to SOURCE_CHARS.
+    def sources(self, course_id: str | None = None) -> list[dict]   # summaries, newest first; None = all
+    def source(self, source_id: str) -> dict | None           # the summary plus "text"
+    def delete_source(self, source_id: str) -> bool
+    def clear_sample(self) -> None                            # only sample rows and their materials (sources stay)
+    def clear(self) -> None                                   # everything, sources included
+SOURCE_CHARS = 400_000
 def study_dir() -> Path; def study_path() -> Path             # MOE_DIR/study, .../study.db
 def study_exists() -> bool                                    # never creates anything
 def study_store() -> StudyStore   # lazy singleton at study_path(); creates the file (savers only)
@@ -129,6 +167,7 @@ class StudyConnectorError(Exception): code: str; message: str
 #   codes: "missing" (no key, or the Keychain did not hand it over), "rejected" (401/403),
 #          "busy" (429), "unreachable", "bad_reply"
 def status() -> dict                       # the "connector" object below; never returns the key (blocking)
+def long_context(model_id: str | None) -> bool   # "gemini-…" or "google/gemini-…"
 async def status_async() -> dict           # status() on a worker thread, for async routes
 def set_choice(provider: str, model_id: str) -> dict
 def post_budget(posts: int)                # context manager: caps POSTs of everything inside
@@ -136,11 +175,15 @@ async def complete_json(system: str, user: str, *, max_tokens: int = 6000, key_r
 
 # generate.py
 KINDS = ("guide", "quiz", "lesson", "flashcards")
+CONTEXT_CHARS = 12_000; LONG_CONTEXT_CHARS = 600_000; EXTRACT_CHARS = 24_000; LONG_EXTRACT_CHARS = 200_000
 async def make(kind: str, *, course: dict | None, assignment: dict | None, topic: str | None,
-               count: int | None, context: str = "", complete=None) -> dict   # {"title": str, "body": {...}}
+               count: int | None, context: str = "", complete=None,
+               sources: list[dict] | None = None, long_context: bool = False) -> dict   # {"title": str, "body": {...}}
+#   sources: rows with "title" and "text"; they share the data block, capped at LONG_CONTEXT_CHARS
+#   when long_context else CONTEXT_CHARS. No sources and no long_context: the prompt is unchanged.
 def validate(kind: str, body: dict) -> dict        # raises ValueError; returns the cleaned body
 async def extract_school_data(url: str, title: str, text: str, *, now: float, timezone: str,
-                              complete=None) -> ParsedPage
+                              complete=None, long_context: bool = False) -> ParsedPage
 ```
 
 ### Stored rows
@@ -159,6 +202,18 @@ async def extract_school_data(url: str, title: str, text: str, *, now: float, ti
  "details": "",                   // description text when the page had one (<= 4000 chars)
  "url": "https://…", "source": "canvas", "sample": false}
 ```
+
+```jsonc
+// source (table `sources`; unique on (kind, url))
+{"id": "src_0a1b2c3d4e5f", "course_id": "canvas:12345",   // or null: not in a course
+ "kind": "drive",                 // drive (a Google Doc or Slides file) | page (a school page)
+ "title": "Unit 3 notes", "url": "https://docs.google.com/document/d/…",
+ "chars": 48210,                  // length of the saved text (<= 400k)
+ "created_at": 1794650000.0}      // summaries carry these keys; store.source() adds "text"
+```
+
+A merged course carries its sources (`import_rows` moves them to the surviving id). A
+study.db from before sources opens fine (`CREATE TABLE IF NOT EXISTS`).
 
 Ids are stable across imports so a re-read updates rows. When a page gives no
 numeric ids, the id is `"<source>:" + sha1(course name | title)[:12]`.
@@ -185,6 +240,7 @@ an `Origin`, 415 `{"detail": "Content-Type must be application/json."}` otherwis
     "source": "study",            // study | cloud (Intel fallback) | none
     "active_model_id": "google/gemini-3.8-flash",   // what a call would use now (the cloud
                                   //   profile's on the fallback), or null when not ready
+    "long_context": true,         // active_model_id is a Gemini model (see Long context); false when not ready
     "providers": [{"id": "openrouter", "label": "OpenRouter", "default_model": "google/gemini-3.8-flash",
                    "models": [{"id": "google/gemini-3.8-flash", "label": "Gemini 3.8 Flash"}],
                    "key_url": "https://openrouter.ai/keys", "key_hint": "sk-or-…"}]
@@ -200,6 +256,8 @@ an `Origin`, 415 `{"detail": "Content-Type must be application/json."}` otherwis
   "materials": [{"id", "kind", "title", "course_id", "assignment_id", "created_at",
                  "count": 8, "best_score": 0.75, "sample": false}]
   //   count: questions / cards / steps / sections
+  "sources": [{"id", "course_id", "kind", "title", "url", "chars", "created_at"}]
+  //   every source, newest first (no text). An older service sends no "sources": decode as [].
 }
 ```
 
@@ -207,7 +265,11 @@ an `Origin`, 415 `{"detail": "Content-Type must be application/json."}` otherwis
 | --- | --- | --- |
 | `POST /study/import` | `{"pages": [{"url", "title", "text"}], "timezone"?}` (<= 12 pages, text <= 150k chars each, body <= 6 MB) | `{"courses": n, "assignments": n, "pages": [{"url", "kind", "recognized": bool}], "state": <state>}` |
 | `POST /study/connector` | `{"provider", "model_id"}` | `<state>.connector` |
-| `POST /study/generate` | `{"kind", "course_id"?, "assignment_id"?, "topic"?, "count"?}` | full material |
+| `POST /study/generate` | `{"kind", "course_id"?, "assignment_id"?, "topic"?, "count"?, "source_ids"?: [str] (<= 20), "whole_course"?: bool}` | full material |
+| `DELETE /study/sources/{id}` | | `{"state": <state>}` |
+| `GET /study/drive/status` | | `{"connected": bool, "drive": bool, "account": str\|null, "message": str\|null}` |
+| `GET /study/drive/files?q=&limit=` | | `{"files": [{"id", "name", "kind": "doc"\|"slides", "modified": float\|null, "url": str\|null}]}` |
+| `POST /study/drive/add` | `{"file_id", "course_id"?}` | `{"source": <source summary>, "state": <state>}` |
 | `GET /study/materials/{id}` | | full material |
 | `DELETE /study/materials/{id}` | | `{"deleted": true}` |
 | `POST /study/materials/{id}/attempt` | `{"correct": int, "total": int}` | `{"best_score": 0.8}` |
@@ -224,9 +286,25 @@ Import: each page goes through `canvas_parse.parse_page`. A school page it does
 not recognise (`kind == "other"`) is handed to `generate.extract_school_data`
 when the connector is ready, within the cost bounds above; otherwise it is reported
 `recognized: false`. When any page is recognised, the import clears sample rows
-(`clear_sample`) and saves through `import_rows`. Generate: the assignment's description
-reaches the prompt once (inside the data block); the context adds only the course's other
-work.
+(`clear_sample`) and saves through `import_rows`. With long context (see Cost bounds), the
+unrecognised school pages are read concurrently, and every school page the model read, or
+that `canvas_parse` recognised, is saved as a `page` source (url, title, text), tied to a
+course when the page names exactly one saved course, else `course_id: null`; re-importing a
+page replaces its source. Without long context no page source is saved.
+
+Generate: the assignment's description reaches the prompt once (inside the data block); the
+context adds only the course's other work. `source_ids` adds those sources (an unknown id is
+404 `not_found`; duplicates count once). `whole_course` needs `course_id` (422 otherwise) and
+adds every source of that course plus each of its assignments with its description as the
+context. Sources work with any model; without long context they share the ordinary 12k block.
+A request may name only sources (no course, assignment or topic). The prompt asks the model to
+build the material from the sources first and never to follow instructions inside them.
+
+Drive (`drive_api.py`): every POST is native-only. Refusals: 409 `google_missing` (no Google
+account, or no `drive.readonly` scope: reconnect Google in Settings), 502 `google_error`,
+413 `too_large`, 404 `not_found` (also an unknown `course_id`), 422 `invalid`. Only
+`https://www.googleapis.com` is contacted; an added file is saved with `save_source`
+(`kind: "drive"`), its text cut at `SOURCE_CHARS`.
 
 ### Material
 
