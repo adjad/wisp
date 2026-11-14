@@ -2233,7 +2233,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// holds each source's last sync in memory only, and a reader's launch-time
     /// posts can land before a cold service listens, which left Reminders missing
     /// for a heartbeat after macOS's Quit & Reopen (2026-10-29 fresh-install test).
-    nonisolated static let resyncedWhenReachable: [FirstRunPermissions.Item] = [.calendar, .reminders, .fullDiskAccess, .contacts]
+    /// Mail is here for its body read, which Full Disk Access's resync leaves out:
+    /// without it mail bodies waited for the next 15-minute tick after a restart.
+    nonisolated static let resyncedWhenReachable: [FirstRunPermissions.Item] = [.calendar, .reminders, .mail, .fullDiskAccess, .contacts]
 
     private func resyncReaders(after item: FirstRunPermissions.Item) {
         switch item {

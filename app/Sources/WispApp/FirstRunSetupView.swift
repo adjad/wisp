@@ -1022,10 +1022,14 @@ final class FirstRunPermissions: ObservableObject {
             if !launched.isEmpty { await Self.waitUntilReached(Self.automationTargets) }
             NSApp.activate(ignoringOtherApps: true)
             let patience = letGoIfUnanswered(item, token: token)
-            _ = await Self.automationState(ask: true)
+            let answer = await Self.automationState(ask: true)
             patience.cancel()
             waiting.remove(item)
             await noteReach(item, Self.automationTargets)
+            // Without Full Disk Access Wisp reads Mail only while Mail is open, so
+            // closing it right after a yes left mail empty until the person opened
+            // Mail themselves. Notes still closes.
+            launched.removeAll { Self.staysOpenAfterAsking($0.bundleIdentifier, item: item, answer: answer) }
             Self.quitAfterAsking(launched)
         case .messages:
             // The same for Messages, on its own target list: its answer never
@@ -1399,6 +1403,13 @@ final class FirstRunPermissions: ObservableObject {
     /// prompt was up. Anything they opened or began using stays open.
     nonisolated static func quitsAfterAsking(launchedByWisp: Bool, isHidden: Bool, isActive: Bool) -> Bool {
         launchedByWisp && isHidden && !isActive
+    }
+
+    /// Pure: an app Wisp opened to ask that it then leaves running. Only Mail, and
+    /// only after a yes: the grant's first read (AppDelegate.resyncReaders) and
+    /// every later one script Mail, which needs it open.
+    nonisolated static func staysOpenAfterAsking(_ bundleID: String?, item: Item, answer: State) -> Bool {
+        item == .mail && bundleID == "com.apple.mail" && answer == .allowed
     }
 
     /// Closes what Wisp opened to ask, politely: the app saves and quits like any
@@ -2239,7 +2250,8 @@ struct FirstRunSetupView: View {
                               state: permissions.state(.reminders), unanswered: permissions.unanswered[.reminders] == true))
             permissionRow(.mail, icon: "envelope", title: "Mail & Notes",
                           detail: "Emails that need a reply, and your notes, while those apps are open. "
-                              + "Opens Mail and Notes for a moment to ask, then closes them.")
+                              + "Opens Mail and Notes to ask, then closes Notes. If you allow it, Mail stays "
+                              + "open in the background so Wisp can read it.")
             permissionRow(.messages, icon: "message", title: "Messages",
                           detail: "Sends the texts you approve in Ask. Opens Messages for a moment to ask, then closes it.")
             permissionRow(.fullDiskAccess, icon: "internaldrive", title: "Full Disk Access",

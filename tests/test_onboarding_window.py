@@ -354,7 +354,7 @@ def test_messages_has_its_own_permission_row():
                     ("accessibility", "PrivacyNames.accessibility")], rows
     assert ('detail: "Sends the texts you approve in Ask. Opens Messages for a moment to ask, then closes it.")' in step)
     mail = step[step.index("permissionRow(.mail"):step.index("permissionRow(.messages")]
-    assert "Opens Mail and Notes for a moment to ask, then closes them." in mail
+    assert "Opens Mail and Notes to ask, then closes Notes." in mail and "Mail stays" in mail
     assert 'nonisolated static let automationTargets = ["com.apple.mail", "com.apple.Notes"]' in setup
     assert 'nonisolated static let messagesAutomationTargets = ["com.apple.MobileSMS"]' in setup
     request = _body(setup, "func request(_ item: Item) async")
@@ -611,6 +611,13 @@ def test_one_click_on_allow_gets_macos_to_ask():
                  f"await noteReach(item, {targets})", "Self.quitAfterAsking(launched)"]
         at = [body.index(part) for part in order]
         assert at == sorted(at), case
+    # After a yes Wisp leaves the Mail it opened running: the grant's first read
+    # scripts Mail, and found it closed. Messages is only sent through, so it closes.
+    mail = request[request.index("case .mail:"):request.index("case .messages:")]
+    keep = "launched.removeAll { Self.staysOpenAfterAsking($0.bundleIdentifier, item: item, answer: answer) }"
+    assert "let answer = await Self.automationState(ask: true)" in mail
+    assert mail.index(keep) < mail.index("Self.quitAfterAsking(launched)")
+    assert "staysOpenAfterAsking" not in request[request.index("case .messages:"):request.index("case .fullDiskAccess:")]
     # Waiting and the after-check never show a question themselves.
     for helper in ("private static func waitUntilReached(_ targets: [String]) async",
                    "private func noteReach(_ item: Item, _ targets: [String]) async"):

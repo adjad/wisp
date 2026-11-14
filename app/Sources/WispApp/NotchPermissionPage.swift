@@ -137,7 +137,8 @@ enum NotchPermissionPage {
             case .screenRecording:
                 return "Wisp tucks away so you can answer macOS. " + relaunchNote
             case .mail:
-                return "Wisp tucks away so you can answer macOS. Mail and Notes open for a moment to ask, then close."
+                return "Wisp tucks away so you can answer macOS. Mail and Notes open to ask, then Notes closes. "
+                    + "If you allow it, Mail stays open in the background so Wisp can read it."
             case .messages:
                 return "Wisp tucks away so you can answer macOS. Messages opens for a moment to ask, then closes."
             default:

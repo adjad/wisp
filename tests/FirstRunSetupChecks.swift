@@ -967,6 +967,15 @@ struct FirstRunSetupChecks {
               && Set(FirstRunPermissions.automationTargets).isDisjoint(with: FirstRunPermissions.messagesAutomationTargets),
               "Mail & Notes' targets are unchanged and never include Messages")
         // Asking opens the apps only for a moment: closed again unless the person was handed them.
+        // 2026-11-13: after Allow, Wisp closed the Mail it had opened, and the grant's
+        // first read then found Mail closed. Mail stays open after a yes; nothing else does.
+        check(FirstRunPermissions.staysOpenAfterAsking("com.apple.mail", item: .mail, answer: .allowed)
+              && !FirstRunPermissions.staysOpenAfterAsking("com.apple.Notes", item: .mail, answer: .allowed)
+              && !FirstRunPermissions.staysOpenAfterAsking("com.apple.mail", item: .mail, answer: .notAllowed)
+              && !FirstRunPermissions.staysOpenAfterAsking("com.apple.mail", item: .mail, answer: .notAsked)
+              && !FirstRunPermissions.staysOpenAfterAsking("com.apple.MobileSMS", item: .messages, answer: .allowed)
+              && !FirstRunPermissions.staysOpenAfterAsking(nil, item: .mail, answer: .allowed),
+              "Only Mail stays open after asking, and only after a yes")
         check(FirstRunPermissions.quitsAfterAsking(launchedByWisp: true, isHidden: true, isActive: false),
               "Opened by Wisp, still hidden and not in use: closed after asking")
         check(!FirstRunPermissions.quitsAfterAsking(launchedByWisp: false, isHidden: true, isActive: false),
@@ -1378,7 +1387,7 @@ struct FirstRunSetupChecks {
 
         // Reminders after macOS's Quit & Reopen: every reading source re-posts when the
         // service comes up, since it keeps their last sync in memory only.
-        check(Set(AppDelegate.resyncedWhenReachable).isSuperset(of: [.calendar, .reminders, .fullDiskAccess]),
+        check(Set(AppDelegate.resyncedWhenReachable).isSuperset(of: [.calendar, .reminders, .mail, .fullDiskAccess]),
               "Calendar, Reminders and the Full Disk Access readers re-post on reconnect")
         check(!AppDelegate.resyncedWhenReachable.contains(where: \.isExtra),
               "Nothing that only sends or looks at the screen")
