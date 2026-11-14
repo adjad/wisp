@@ -60,6 +60,8 @@ enum NotchQADriver {
         // The same day with school work from the Study tab: study blocks, school
         // deadlines and the Brief's SCHOOL line (only the "-study" scenes).
         let schoolDay = dayModel(.ready, study: true)
+        // The Brief from before the proactive engine, with the same school work.
+        let schoolLegacy = dayModel(.none, study: true)
         // First-day states: a new user's empty day, the same day with Calendar,
         // Reminders, Mail and Messages unreadable, and the service still starting.
         func variantModel(_ variant: DayVariant) -> TodayModel {
@@ -143,6 +145,7 @@ enum NotchQADriver {
             ("day-starting", .day, { AnyView(NotchDayView(model: startingModel, today: starting)) }),
             ("brief-study", .brief, { AnyView(NotchBriefView(model: model, today: schoolDay, actions: state())) }),
             ("day-study", .day, { AnyView(NotchDayView(model: model, today: schoolDay)) }),
+            ("brief-legacy-study", .brief, { AnyView(NotchBriefView(model: model, today: schoolLegacy, open: nil)) }),
         ] + NotchQASetup.scenes() + panelScenes(model: model, today: today, state: state)
             + studyScenes(model: model)
         for scene in scenes {
@@ -177,6 +180,12 @@ enum NotchQADriver {
                 await variant.refreshStoredBrief()
             }
             await starting.refresh()
+            // The "-study" scenes' days load like the rest (they rendered "Starting Wisp…" before).
+            for school in [schoolDay, schoolLegacy] {
+                await school.refresh()
+                await school.refreshUpcoming()
+                await school.refreshStoredBrief()
+            }
             let deadline = Date().addingTimeInterval(5)
             @MainActor func populated() -> Bool {
                 today.currentPlan?.workspace?.proactive?.cards.count == 3 && today.upcomingReply != nil && today.storedBriefChecked &&
@@ -185,7 +194,9 @@ enum NotchQADriver {
                 dayOne.currentPlan != nil && blocked.currentPlan?.unreadSources.count == 4 &&
                 blockedProactive.currentPlan?.workspace?.proactive?.hasReadNothing == true &&
                 starting.currentPlan == nil && starting.error.isEmpty &&
-                attention.items.count == 1 && stale.asks.count == 2
+                attention.items.count == 1 && stale.asks.count == 2 &&
+                schoolDay.currentPlan?.study?.upcoming.isEmpty == false &&
+                schoolLegacy.currentPlan?.study?.upcoming.isEmpty == false
             }
             while !populated() && Date() < deadline {
                 try? await Task.sleep(for: .milliseconds(20))
@@ -605,19 +616,37 @@ enum NotchQADriver {
             block("study-block:qa:lab5", "Study: Lab 5: Lists", 16.5, 17.25, "study"),
         ]
         let studyDeadlines: [[String: Any]] = [
-            ["id": "study:qa:pset6", "title": "Problem set 6 · MATH 19A", "due_ts": at(17), "source": "study"],
-            ["id": "study:qa:lab5", "title": "Lab 5: Lists · CSE 20", "due_ts": at(night), "source": "study"],
+            ["id": "study:qa:pset6", "title": "Problem set 6 · MATH 110", "due_ts": at(17), "source": "study"],
+            ["id": "study:qa:lab5", "title": "Lab 5: Lists · CS 101", "due_ts": at(night), "source": "study"],
         ]
         let study: [String: Any] = [
             "due_today": [
-                ["id": "qa:pset6", "title": "Problem set 6", "course_name": "MATH 19A", "due_ts": at(17),
+                ["id": "qa:pset6", "title": "Problem set 6", "course_name": "MATH 110", "due_ts": at(17),
                  "all_day": false, "kind": "assignment", "status": "upcoming"],
-                ["id": "qa:lab5", "title": "Lab 5: Lists", "course_name": "CSE 20", "due_ts": at(night),
+                ["id": "qa:lab5", "title": "Lab 5: Lists", "course_name": "CS 101", "due_ts": at(night),
                  "all_day": false, "kind": "assignment", "status": "upcoming"],
             ],
             "due_tomorrow_count": 2, "due_week_count": 6, "missing_count": 1,
-            "next_test": ["id": "qa:quiz3", "title": "Quiz 3: Loops", "course_name": "CSE 20", "due_ts": at(24 + 10)],
-            "line": "2 due today: Problem set 6 (MATH 19A), Lab 5: Lists (CSE 20)", "sample": false,
+            "next_test": ["id": "qa:quiz3", "title": "Quiz 3: Loops", "course_name": "CS 101", "due_ts": at(24 + 10)],
+            "line": "2 due today: Problem set 6 (MATH 110), Lab 5: Lists (CS 101)", "sample": false,
+            // This week's open work, soonest first (today's two among it): the
+            // Brief lists three, Day lists what isn't due today. One course has
+            // no short label, so its row names the course.
+            "upcoming": [
+                ["id": "qa:pset6", "title": "Problem set 6", "course_name": "MATH 110", "course_label": "MATH 110",
+                 "due_ts": at(17), "all_day": false, "kind": "assignment", "status": "upcoming"],
+                ["id": "qa:lab5", "title": "Lab 5: Lists", "course_name": "CS 101", "course_label": "CS 101",
+                 "due_ts": at(night), "all_day": false, "kind": "assignment", "status": "upcoming"],
+                ["id": "qa:quiz3", "title": "Quiz 3: Loops", "course_name": "CS 101", "course_label": "CS 101",
+                 "due_ts": at(24 + 10), "all_day": false, "kind": "quiz", "status": "upcoming"],
+                ["id": "qa:reading4", "title": "Reading response 4: Ways of seeing", "course_name": "Writing and Rhetoric: Voices and Global Perspectives",
+                 "course_label": "", "due_ts": at(24 + night), "all_day": false, "kind": "reading", "status": "upcoming"],
+                ["id": "qa:pset7", "title": "Problem set 7", "course_name": "MATH 110", "course_label": "MATH 110",
+                 "due_ts": at(24 * 3), "all_day": true, "kind": "assignment", "status": "upcoming"],
+                ["id": "qa:proposal", "title": "Project proposal", "course_name": "CS 101", "course_label": "CS 101",
+                 "due_ts": at(24 * 5 + 12), "all_day": false, "kind": "project", "status": "upcoming"],
+            ],
+            "upcoming_more": 1,
         ]
         var payload: [String: Any] = [
             "day": day, "timezone": zone.identifier, "generated_at": at(13.1), "revision": 3, "provisional": false,
@@ -783,13 +812,13 @@ extension NotchQADriver {
         func at(_ days: Double, _ hour: Double) -> Double { midnight + days * 86400 + hour * 3600 }
         let night = 23 + 59.0 / 60
         let courses: [[String: Any]] = [
-            ["id": "qa:cse20", "name": "Beginning Programming in Python", "code": "CSE 20", "grade": "A-", "score": 91.2,
+            ["id": "qa:cs101", "name": "Introduction to Programming", "code": "CS 101", "grade": "B+", "score": 87.5,
              "url": "https://canvas.example.edu/courses/101", "due_count": 3, "sample": false],
-            ["id": "qa:math19a", "name": "Calculus for Science, Engineering and Mathematics", "code": "MATH 19A",
+            ["id": "qa:math110", "name": "Calculus I", "code": "MATH 110",
              "grade": "B+", "score": 88.4, "url": "https://canvas.example.edu/courses/102", "due_count": 2, "sample": false],
-            ["id": "qa:writ2", "name": "Rhetoric and Inquiry", "code": "WRIT 2", "grade": "A", "score": 95.0,
+            ["id": "qa:writ100", "name": "Writing and Rhetoric", "code": "WRIT 100", "grade": "A", "score": 95.0,
              "url": "https://canvas.example.edu/courses/103", "due_count": 2, "sample": false],
-            ["id": "qa:phys5a", "name": "Introduction to Physics I", "code": "PHYS 5A", "grade": "B", "score": 84.1,
+            ["id": "qa:phys120", "name": "Introduction to Physics I", "code": "PHYS 120", "grade": "B", "score": 84.1,
              "url": "https://canvas.example.edu/courses/104", "due_count": 1, "sample": false],
         ]
         func item(_ id: String, _ course: String, _ courseName: String, _ title: String, kind: String = "assignment",
@@ -799,24 +828,24 @@ extension NotchQADriver {
              "url": "https://canvas.example.edu/assignments/" + id, "sample": false]
         }
         let assignments: [[String: Any]] = [
-            item("lab4", "qa:cse20", "Beginning Programming in Python", "Lab 4: Strings", due: at(-2, night), points: 20,
+            item("lab4", "qa:cs101", "Introduction to Programming", "Lab 4: Strings", due: at(-2, night), points: 20,
                  status: "missing"),
-            item("pset6", "qa:math19a", "Calculus for Science, Engineering and Mathematics", "Problem set 6",
+            item("pset6", "qa:math110", "Calculus I", "Problem set 6",
                  due: at(0, 17), points: 30),
-            item("lab5", "qa:cse20", "Beginning Programming in Python", "Lab 5: Lists", due: at(0, night), points: 20),
-            item("quiz3", "qa:cse20", "Beginning Programming in Python", "Quiz 3: Loops", kind: "quiz",
+            item("lab5", "qa:cs101", "Introduction to Programming", "Lab 5: Lists", due: at(0, night), points: 20),
+            item("quiz3", "qa:cs101", "Introduction to Programming", "Quiz 3: Loops", kind: "quiz",
                  due: at(1, 10), points: 10),
-            item("essay", "qa:writ2", "Rhetoric and Inquiry", "Essay draft: rhetorical analysis", due: at(1, night),
+            item("essay", "qa:writ100", "Writing and Rhetoric", "Essay draft: rhetorical analysis", due: at(1, night),
                  points: 50),
-            item("midterm", "qa:phys5a", "Introduction to Physics I", "Midterm 1", kind: "exam", due: at(3, 14),
+            item("midterm", "qa:phys120", "Introduction to Physics I", "Midterm 1", kind: "exam", due: at(3, 14),
                  points: 100),
-            item("reading7", "qa:math19a", "Calculus for Science, Engineering and Mathematics", "Reading: Section 3.4",
+            item("reading7", "qa:math110", "Calculus I", "Reading: Section 3.4",
                  kind: "reading", due: at(4, night), points: 0),
-            item("post5", "qa:writ2", "Rhetoric and Inquiry", "Discussion post 5", kind: "discussion",
+            item("post5", "qa:writ100", "Writing and Rhetoric", "Discussion post 5", kind: "discussion",
                  due: at(5, night), points: 5),
         ]
         func summary(_ id: String, _ kind: String, _ title: String, count: Int, best: Double?, hoursAgo: Double) -> [String: Any] {
-            ["id": id, "kind": kind, "title": title, "course_id": "qa:cse20", "assignment_id": "qa:lab5",
+            ["id": id, "kind": kind, "title": title, "course_id": "qa:cs101", "assignment_id": "qa:lab5",
              "created_at": midnight + 10 * 3600 - hoursAgo * 3600, "count": count,
              "best_score": best.map { $0 as Any } ?? (NSNull() as Any), "sample": false]
         }
@@ -830,7 +859,7 @@ extension NotchQADriver {
                 "courses": courses, "assignments": assignments, "materials": materials]
     }
 
-    /// One full material of each kind, written for CSE 20's Lab 5.
+    /// One full material of each kind, written for CS 101's Lab 5.
     static func studyMaterial(_ id: String, midnight: Double) -> [String: Any] {
         let body: [String: Any]
         let kind: String
@@ -931,7 +960,7 @@ extension NotchQADriver {
                 ["front": "Why not remove items while looping over a list?", "back": "The list shifts under the loop and items get skipped. Loop over a copy or build a new list."],
             ]]
         }
-        return ["id": id, "kind": kind, "title": title, "course_id": "qa:cse20", "assignment_id": "qa:lab5",
+        return ["id": id, "kind": kind, "title": title, "course_id": "qa:cs101", "assignment_id": "qa:lab5",
                 "created_at": midnight + 9 * 3600, "model": "google/gemini-3.8-flash", "sample": false,
                 "best_score": id == "m-quiz" ? (0.83 as Any) : (NSNull() as Any), "body": body]
     }

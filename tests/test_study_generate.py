@@ -11,7 +11,7 @@ import pytest
 
 from service.study import connector, generate as G
 
-COURSE = {"id": "canvas:1", "name": "Intro to Python", "code": "CSE 20", "grade": "A-"}
+COURSE = {"id": "canvas:1", "name": "Intro to Python", "code": "CS 101", "grade": "B+"}
 ASSIGNMENT = {"id": "canvas:1:5", "title": "Lab 5: Lists and loops", "kind": "assignment",
               "details": "Write loops over lists."}
 
@@ -313,7 +313,7 @@ NOW = datetime(2026, 11, 14, 9, 0, tzinfo=ZoneInfo("America/Los_Angeles")).times
 
 def test_extract_school_data(parsed_page):
     reply = {"kind": "assignments", "courses": [
-        {"name": "Intro to Python", "code": "CSE 20", "grade": "A-", "score": "91.2%",
+        {"name": "Intro to Python", "code": "CS 101", "grade": "B+", "score": "87.5%",
          "url": "/courses/123", "evil": 1},
         {"name": ""},
     ], "assignments": [
@@ -331,8 +331,8 @@ def test_extract_school_data(parsed_page):
     user = fake.calls[0][1]
     assert user.lower().count("school_data") == 2 and "2026-11-14" in user
     course = page.courses[0]
-    assert course == {"id": "canvas:123", "name": "Intro to Python", "code": "CSE 20", "grade": "A-",
-                      "score": 91.2, "url": "https://school.instructure.com/courses/123",
+    assert course == {"id": "canvas:123", "name": "Intro to Python", "code": "CS 101", "grade": "B+",
+                      "score": 87.5, "url": "https://school.instructure.com/courses/123",
                       "source": "canvas", "sample": False}
     history_id = "canvas:" + hashlib.sha1(b"History").hexdigest()[:12]
     assert [c["id"] for c in page.courses] == ["canvas:123", history_id]

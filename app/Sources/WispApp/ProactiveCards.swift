@@ -342,8 +342,10 @@ struct ProactiveBriefSection: View {
     var coverage: [SourceAccess] = []
     /// Two columns, for the wider panel.
     var wide = false
-    /// School work due today or tomorrow (StudyDaySummary.line); empty hides the row.
+    /// School work due today or tomorrow (StudyDaySummary.briefHeadline); empty hides the row.
     var school: String = ""
+    /// This week's school work under that line, one row each (StudyDaySummary.briefUpcoming).
+    var schoolRows = StudyUpcomingRows()
 
     private var unread: [SourceAccess] { proactive.unreadSources(coverage) }
 
@@ -934,25 +936,61 @@ struct ProactiveBriefSection: View {
         .help("The rest of today, hour by hour (⌘3)")
     }
 
-    /// "2 due today: Lab 5 (CSE 20), Essay draft", then Study ›.
+    /// "2 due today: Lab 5 (CS 101), Essay draft", then Study ›; under it,
+    /// this week's work one line each and "+N more in Study". All of it opens Study.
     private var schoolRow: some View {
-        Button { model.tab = .study } label: {
-            HStack(alignment: .firstTextBaseline, spacing: 9) {
-                Image(systemName: "graduationcap").font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).frame(width: 15)
-                Text(school).font(.wisp(size: 13)).foregroundStyle(Theme.textPrimary)
-                    .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
-                HStack(spacing: 2) {
-                    Text("Study")
-                    Image(systemName: "chevron.right").font(.wisp(size: 8, weight: .bold))
+        let calendar = schoolCalendar
+        return Button { model.tab = .study } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: 9) {
+                    Image(systemName: "graduationcap").font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).frame(width: 15)
+                    Text(school).font(.wisp(size: 13)).foregroundStyle(Theme.textPrimary)
+                        .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                    HStack(spacing: 2) {
+                        Text("Study")
+                        Image(systemName: "chevron.right").font(.wisp(size: 8, weight: .bold))
+                    }
+                    .font(.wisp(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary).fixedSize()
                 }
-                .font(.wisp(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary).fixedSize()
+                .padding(.bottom, schoolRows.isEmpty ? 0 : 2)
+                ForEach(Array(schoolRows.items.enumerated()), id: \.offset) { _, item in
+                    schoolItem(item, calendar: calendar)
+                }
+                if let more = schoolRows.moreLine {
+                    Text(more).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
+                        .padding(.leading, 24)
+                }
             }
             .padding(.vertical, 8)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help("Your school work (⌘5)")
-        .accessibilityLabel("School: " + school)
+        .accessibilityLabel("School: " + school
+            + (schoolRows.isEmpty ? "" : ". " + StudyText.upcomingSpoken(schoolRows, now: today.now, calendar: calendar)))
+        .accessibilityHint("Opens Study")
+    }
+
+    /// One assignment due this week: title, course, and when, in a right-hand column.
+    private func schoolItem(_ item: StudyDaySummary.Due, calendar: Calendar) -> some View {
+        let assignment = item.assignment
+        return HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(assignment.title).font(.wisp(size: 12.5)).foregroundStyle(Theme.textSecondary)
+                .lineLimit(1).layoutPriority(1)
+            Text(item.course).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
+            Spacer(minLength: 8)
+            Text(StudyText.dueShort(assignment, now: today.now, calendar: calendar))
+                .font(.wisp(size: 11.5)).monospacedDigit().foregroundStyle(Theme.textMuted)
+                .lineLimit(1).fixedSize()
+        }
+        .padding(.leading, 24)
+    }
+
+    /// Due times in the day's own time zone, as the rest of the Brief.
+    private var schoolCalendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = today.timezone
+        return calendar
     }
 
     /// Two columns: the rest of today, one row an event, the next one lit

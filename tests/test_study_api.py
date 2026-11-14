@@ -83,8 +83,8 @@ def client(fakes):
     return TestClient(app)
 
 
-def course(cid="canvas:1", name="Beginning Programming in Python", **values):
-    return {"id": cid, "name": name, "code": "CSE 20", "grade": "A-", "score": 91.2,
+def course(cid="canvas:1", name="Introduction to Programming", **values):
+    return {"id": cid, "name": name, "code": "CS 101", "grade": "B+", "score": 87.5,
             "url": None, "source": "canvas", "sample": False} | values
 
 
@@ -277,7 +277,7 @@ def test_making_material_from_an_assignment(client, fakes):
     assert material["model"] == "google/gemini-3.8-flash" and material["sample"] is False
     assert material["best_score"] is None and material["count"] == 3
     call = fakes.made[0]
-    assert call["course"]["id"] == "canvas:1" and call["assignment"]["course_name"].startswith("Beginning")
+    assert call["course"]["id"] == "canvas:1" and call["assignment"]["course_name"].startswith("Introduction")
     # The description travels once, on the assignment (generate.make puts it in the block),
     # never duplicated into the context.
     assert call["count"] == 5 and "Write three list functions." not in call["context"]
@@ -298,13 +298,13 @@ def test_import_converges_a_course_seen_on_the_dashboard_and_its_course_page(cli
     now = time.time()
     dash, page_url = "https://school.instructure.com/", "https://school.instructure.com/courses/12345/assignments"
     fakes.parsed[dash] = SimpleNamespace(kind="dashboard", courses=[
-        course("canvas:hash1", "Beginning Programming in Python", grade=None, score=None,
-               merge_key="beginning programming in python")],
+        course("canvas:hash1", "Introduction to Programming", grade=None, score=None,
+               merge_key="introduction to programming")],
         assignments=[item("canvas:hashA", now + DAY, course_id="canvas:hash1", title="Lab 5: Lists",
                           points=None)])
     fakes.parsed[page_url] = SimpleNamespace(kind="assignments", courses=[
-        course("canvas:12345", "Beginning Programming in Python", grade=None, score=None,
-               url="https://school.instructure.com/courses/12345", merge_key="beginning programming in python")],
+        course("canvas:12345", "Introduction to Programming", grade=None, score=None,
+               url="https://school.instructure.com/courses/12345", merge_key="introduction to programming")],
         assignments=[item("canvas:12345:abc", now + DAY, course_id="canvas:12345", title="Lab 5: Lists",
                           points=20.0)])
     first = client.post("/study/import", json={"pages": [page(dash)]}).json()

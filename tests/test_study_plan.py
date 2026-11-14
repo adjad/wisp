@@ -29,9 +29,9 @@ def item(id_, title, due, *, kind="assignment", status="upcoming", course_code=N
 def test_summary_due_today_line_and_counts():
     now = at(9, 10)
     rows = [
-        item("a", "Lab 5", at(23, 59), course_code="CSE 20", course_name="Beginning Programming in Python"),
-        item("b", "Essay draft", at(17), course_name="Academic Literacy and Ethos: International"),
-        item("c", "Worksheet 5", at(23, 59, d=17)),
+        item("a", "Lab 5", at(23, 59), course_code="CS 101", course_name="Introduction to Programming"),
+        item("b", "Essay draft", at(17), course_name="Writing and Rhetoric: Voices"),
+        item("c", "Worksheet 2", at(23, 59, d=17)),
         item("d", "Old lab", at(23, 59, d=13), status="missing"),
         item("e", "HW4", at(12), status="submitted"),
         item("f", "Chapter 6 Quiz", at(10, d=19), kind="quiz", course_name="Statistics"),
@@ -45,15 +45,15 @@ def test_summary_due_today_line_and_counts():
     assert s["next_test"] == {"id": "f", "title": "Chapter 6 Quiz", "course_name": "Statistics",
                               "due_ts": at(10, d=19)}
     # The long name gets no brackets; a test within 3 days is appended.
-    assert s["line"] == "2 due today: Essay draft, Lab 5 (CSE 20). Quiz Thursday: Chapter 6 Quiz"
+    assert s["line"] == "2 due today: Essay draft, Lab 5 (CS 101). Quiz Thursday: Chapter 6 Quiz"
     assert len(s["line"]) <= 110
     assert s["sample"] is False
 
 
 def test_summary_tomorrow_only_and_empty():
     now = at(8)
-    s = plan.day_summary([item("c", "Worksheet 5", at(23, 59, d=17))], now=now, timezone=TZ)
-    assert s["line"] == "Nothing due today. 1 due tomorrow: Worksheet 5"
+    s = plan.day_summary([item("c", "Worksheet 2", at(23, 59, d=17))], now=now, timezone=TZ)
+    assert s["line"] == "Nothing due today. 1 due tomorrow: Worksheet 2"
     assert s["due_today"] == [] and s["next_test"] is None
 
     empty = plan.day_summary([item("z", "Far away", at(23, 59, d=30)),
@@ -83,7 +83,7 @@ def test_summary_test_alone_and_sample_flag():
 # ---------------------------------------------------------------- deadlines
 
 def test_deadlines_for_the_day():
-    rows = [item("a", "Lab 5", at(23, 59), course_code="CSE 20"),
+    rows = [item("a", "Lab 5", at(23, 59), course_code="CS 101"),
             item("b", "Essay", at(9), course_name="Writing"),
             item("c", "Done", at(12), status="submitted"),
             item("d", "Tomorrow", at(9, d=17)),
@@ -94,7 +94,7 @@ def test_deadlines_for_the_day():
         {"id": "study:b", "title": "Essay · Writing", "due_ts": at(9), "source": "study"},
         {"id": "study:e", "title": "No course", "due_ts": at(10), "source": "study", "all_day": True,
          "due_date": DAY},
-        {"id": "study:a", "title": "Lab 5 · CSE 20", "due_ts": at(23, 59), "source": "study"},
+        {"id": "study:a", "title": "Lab 5 · CS 101", "due_ts": at(23, 59), "source": "study"},
     ]
     assert all(isinstance(d["due_ts"], float) for d in out)
 
@@ -175,16 +175,16 @@ def test_attach_adds_study_without_mutating_planner_lists(tmp_path, monkeypatch)
     rows = [{"id": "canvas:1:aa", "course_id": "canvas:1", "title": "Lab 5", "kind": "assignment",
              "due_ts": at(23, 59), "all_day": False, "points": 20.0, "score": None, "status": "upcoming",
              "url": None, "source": "canvas", "sample": False}]
-    courses = [{"id": "canvas:1", "name": "Beginning Programming in Python", "code": "CSE 20"}]
+    courses = [{"id": "canvas:1", "name": "Introduction to Programming", "code": "CS 101"}]
     monkeypatch.setattr(day_hook, "study_store", lambda: FakeStore(courses, rows))
     result = snapshot(at(9, 5))
     planner_blocks, planner_deadlines = result["blocks"], result["deadlines"]
     day_hook.attach(result, now=at(9, 5), timezone=TZ)
-    assert result["study"]["line"] == "1 due today: Lab 5 (CSE 20)"
-    assert result["study"]["due_today"][0]["course_name"] == "Beginning Programming in Python"
+    assert result["study"]["line"] == "1 due today: Lab 5 (CS 101)"
+    assert result["study"]["due_today"][0]["course_name"] == "Introduction to Programming"
     assert len(planner_blocks) == 1 and len(planner_deadlines) == 1    # untouched
     assert [d["id"] for d in result["deadlines"]] == ["rem:1", "study:canvas:1:aa"]
-    assert result["deadlines"][1]["title"] == "Lab 5 · CSE 20"
+    assert result["deadlines"][1]["title"] == "Lab 5 · CS 101"
     assert [b["id"] for b in result["blocks"]] == ["cal:1", "study-block:canvas:1:aa"]
     assert result["blocks"][1]["start"] == at(10, 30)
 
@@ -221,9 +221,9 @@ def test_attach_with_the_real_store(tmp_path, monkeypatch):
     store_mod = pytest.importorskip("service.study.store")
     db = tmp_path / "study" / "study.db"
     store = store_mod.StudyStore(db)
-    store.upsert_courses([{"id": "canvas:9", "name": "Statistics", "code": "STAT 5", "grade": None,
+    store.upsert_courses([{"id": "canvas:9", "name": "Statistics", "code": "STAT 101", "grade": None,
                            "score": None, "url": None, "source": "canvas", "sample": False}])
-    store.upsert_assignments([{"id": "canvas:9:bb", "course_id": "canvas:9", "title": "HW5", "kind": "assignment",
+    store.upsert_assignments([{"id": "canvas:9:bb", "course_id": "canvas:9", "title": "HW2", "kind": "assignment",
                                "due_ts": at(23, 59, d=17), "all_day": False, "points": 20.0, "score": None,
                                "status": "upcoming", "details": "", "url": None, "source": "canvas",
                                "sample": False}])
@@ -231,7 +231,7 @@ def test_attach_with_the_real_store(tmp_path, monkeypatch):
     monkeypatch.setattr(day_hook, "study_store", lambda: store)
     result = snapshot(at(9))
     day_hook.attach(result, now=at(9), timezone=TZ)
-    assert result["study"]["line"] == "Nothing due today. 1 due tomorrow: HW5 (STAT 5)"
+    assert result["study"]["line"] == "Nothing due today. 1 due tomorrow: HW2 (STAT 101)"
     assert [d["id"] for d in result["deadlines"]] == ["rem:1"]          # nothing due on this day
     assert [b["id"] for b in result["blocks"]] == ["cal:1", "study-block:canvas:9:bb"]
 
@@ -242,14 +242,14 @@ def test_attach_after_a_merged_import_and_with_a_missing_course_row(tmp_path, mo
     store_mod = pytest.importorskip("service.study.store")
     db = tmp_path / "study" / "study.db"
     store = store_mod.StudyStore(db)
-    name, key = "Beginning Programming in Python", "beginning programming in python"
+    name, key = "Introduction to Programming", "introduction to programming"
     row = {"kind": "assignment", "all_day": False, "points": None, "score": None, "status": "upcoming",
            "details": "", "url": None, "source": "canvas", "sample": False}
     store.import_rows([{"id": "canvas:0a1b2c3d4e5f", "name": name, "merge_key": key}],
                       [row | {"id": "canvas:dddddddddddd", "course_id": "canvas:0a1b2c3d4e5f",
                               "title": "Lab 5: Lists", "due_ts": at(23, 59)}])
-    store.import_rows([{"id": "canvas:12345", "name": "CSE 20: " + name, "code": "CSE 20",
-                        "merge_key": "cse 20 " + key, "url": "https://canvas.example.edu/courses/12345"}],
+    store.import_rows([{"id": "canvas:12345", "name": "CS 101: " + name, "code": "CS 101",
+                        "merge_key": "cs 101 " + key, "url": "https://canvas.example.edu/courses/12345"}],
                       [row | {"id": "canvas:12345:eeeeeeeeeeee", "course_id": "canvas:12345",
                               "title": "Lab 5: Lists", "due_ts": at(23, 59), "points": 20.0},
                        row | {"id": "canvas:12345:ffffffffffff", "course_id": "canvas:12345",
@@ -262,11 +262,11 @@ def test_attach_after_a_merged_import_and_with_a_missing_course_row(tmp_path, mo
     result = snapshot(at(9))
     day_hook.attach(result, now=at(9), timezone=TZ)
     due = {d["title"]: d["course_name"] for d in result["study"]["due_today"]}
-    assert due == {"Quiz 3": "CSE 20: " + name, "Orphan": "", "Lab 5: Lists": "CSE 20: " + name}
-    assert result["study"]["next_test"]["course_name"] == "CSE 20: " + name
+    assert due == {"Quiz 3": "CS 101: " + name, "Orphan": "", "Lab 5: Lists": "CS 101: " + name}
+    assert result["study"]["next_test"]["course_name"] == "CS 101: " + name
     titles = {d["id"]: d["title"] for d in result["deadlines"] if d["source"] == "study"}
-    assert titles == {"study:canvas:dddddddddddd": "Lab 5: Lists · CSE 20",
-                      "study:canvas:12345:ffffffffffff": "Quiz 3 · CSE 20",
+    assert titles == {"study:canvas:dddddddddddd": "Lab 5: Lists · CS 101",
+                      "study:canvas:12345:ffffffffffff": "Quiz 3 · CS 101",
                       "study:canvas:404:aa": "Orphan"}
 
 
@@ -275,7 +275,7 @@ def test_attach_after_a_merged_import_and_with_a_missing_course_row(tmp_path, mo
 def test_upcoming_window_edges_and_order():
     now = at(9, 10)
     rows = [
-        item("early", "Earlier today", at(0), course_code="CSE 20"),            # start of today: in
+        item("early", "Earlier today", at(0), course_code="CS 101"),            # start of today: in
         item("late", "Still open", at(8), course_name="Statistics"),             # earlier today, open: in
         item("yday", "Yesterday", at(23, 59, d=15)),                            # before today: out
         item("d7", "Day 7", at(23, 59, d=23)),                                  # end of day+7: in
@@ -290,13 +290,13 @@ def test_upcoming_window_edges_and_order():
 
 def test_upcoming_item_shape_and_labels():
     now = at(9)
-    rows = [item("a", "Lab 5", at(23, 59), course_code="CSE 20", course_name="Programming"),
+    rows = [item("a", "Lab 5", at(23, 59), course_code="CS 101", course_name="Programming"),
             item("b", "Essay", at(23, 59, d=17), course_name="Statistics"),
-            item("c", "Reading", at(23, 59, d=18), course_name="Academic Literacy and Ethos: International"),
+            item("c", "Reading", at(23, 59, d=18), course_name="Writing and Rhetoric: Voices"),
             item("d", "Notes", at(23, 59, d=19)),
             item("e", "Reflection", at(0, d=20), all_day=True, kind="discussion")]
     ups = {u["id"]: u for u in plan.day_summary(rows, now=now, timezone=TZ)["upcoming"]}
-    assert ups["a"] == {"id": "a", "title": "Lab 5", "course_name": "Programming", "course_label": "CSE 20",
+    assert ups["a"] == {"id": "a", "title": "Lab 5", "course_name": "Programming", "course_label": "CS 101",
                         "due_ts": at(23, 59), "all_day": False, "kind": "assignment", "status": "upcoming"}
     assert ups["b"]["course_label"] == "Statistics"
     assert ups["c"]["course_label"] == "" and ups["d"]["course_label"] == ""

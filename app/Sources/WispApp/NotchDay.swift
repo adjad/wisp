@@ -1524,11 +1524,14 @@ enum WispClock {
 /// school work is due, for the Brief's SCHOOL line. Every field is optional on
 /// the wire, so an older or partial service never blanks the Brief.
 struct StudyDaySummary: Decodable, Equatable {
-    /// An assignment due today.
+    /// An open assignment: one due today (`due_today`), or one due from today
+    /// through a week out (`upcoming`, which also carries `course_label`).
     struct Due: Decodable, Equatable, Identifiable {
         var id = ""
         var title = ""
         var courseName = ""
+        /// The course's short code ("CS 101"); empty when it has none.
+        var courseLabel = ""
         var dueTS: Double? = nil
         var allDay = false
         var kind = ""
@@ -1536,13 +1539,13 @@ struct StudyDaySummary: Decodable, Equatable {
 
         private enum CodingKeys: String, CodingKey {
             case id, title, kind, status
-            case courseName = "course_name", dueTS = "due_ts", allDay = "all_day"
+            case courseName = "course_name", courseLabel = "course_label", dueTS = "due_ts", allDay = "all_day"
         }
 
-        init(id: String = "", title: String = "", courseName: String = "", dueTS: Double? = nil,
-             allDay: Bool = false, kind: String = "", status: String = "") {
-            self.id = id; self.title = title; self.courseName = courseName; self.dueTS = dueTS
-            self.allDay = allDay; self.kind = kind; self.status = status
+        init(id: String = "", title: String = "", courseName: String = "", courseLabel: String = "",
+             dueTS: Double? = nil, allDay: Bool = false, kind: String = "", status: String = "") {
+            self.id = id; self.title = title; self.courseName = courseName; self.courseLabel = courseLabel
+            self.dueTS = dueTS; self.allDay = allDay; self.kind = kind; self.status = status
         }
 
         init(from decoder: Decoder) throws {
@@ -1550,10 +1553,24 @@ struct StudyDaySummary: Decodable, Equatable {
             id = (try? c.decodeIfPresent(String.self, forKey: .id)) ?? ""
             title = (try? c.decodeIfPresent(String.self, forKey: .title)) ?? ""
             courseName = (try? c.decodeIfPresent(String.self, forKey: .courseName)) ?? ""
+            courseLabel = (try? c.decodeIfPresent(String.self, forKey: .courseLabel)) ?? ""
             dueTS = try? c.decodeIfPresent(Double.self, forKey: .dueTS)
             allDay = (try? c.decodeIfPresent(Bool.self, forKey: .allDay)) ?? false
             kind = (try? c.decodeIfPresent(String.self, forKey: .kind)) ?? ""
             status = (try? c.decodeIfPresent(String.self, forKey: .status)) ?? ""
+        }
+
+        /// The course as a one-line row names it: the short label, else the
+        /// course's name (the row truncates a long one).
+        var course: String {
+            let label = courseLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+            return label.isEmpty ? courseName.trimmingCharacters(in: .whitespacesAndNewlines) : label
+        }
+
+        /// The title a row shows; "Untitled" for a blank one.
+        var shownTitle: String {
+            let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            return t.isEmpty ? "Untitled" : t
         }
     }
 
@@ -1587,20 +1604,27 @@ struct StudyDaySummary: Decodable, Equatable {
     var dueWeekCount = 0
     var missingCount = 0
     var nextTest: Test? = nil
-    /// "2 due today: Lab 5 (CSE 20), Essay draft"; empty when nothing is due today or tomorrow.
+    /// "2 due today: Lab 5 (CS 101), Essay draft"; empty when nothing is due today or tomorrow.
     var line = ""
     var sample = false
+    /// Up to eight open assignments due from the start of today through the
+    /// end of the seventh day after it, soonest first (today's among them).
+    var upcoming: [Due] = []
+    /// How many more the service left out of `upcoming`.
+    var upcomingMore = 0
 
     private enum CodingKeys: String, CodingKey {
-        case line, sample
+        case line, sample, upcoming
         case dueToday = "due_today", dueTomorrowCount = "due_tomorrow_count", dueWeekCount = "due_week_count"
-        case missingCount = "missing_count", nextTest = "next_test"
+        case missingCount = "missing_count", nextTest = "next_test", upcomingMore = "upcoming_more"
     }
 
     init(dueToday: [Due] = [], dueTomorrowCount: Int = 0, dueWeekCount: Int = 0, missingCount: Int = 0,
-         nextTest: Test? = nil, line: String = "", sample: Bool = false) {
+         nextTest: Test? = nil, line: String = "", sample: Bool = false,
+         upcoming: [Due] = [], upcomingMore: Int = 0) {
         self.dueToday = dueToday; self.dueTomorrowCount = dueTomorrowCount; self.dueWeekCount = dueWeekCount
         self.missingCount = missingCount; self.nextTest = nextTest; self.line = line; self.sample = sample
+        self.upcoming = upcoming; self.upcomingMore = max(0, upcomingMore)
     }
 
     init(from decoder: Decoder) throws {
@@ -1614,10 +1638,68 @@ struct StudyDaySummary: Decodable, Equatable {
         line = ((try? c.decodeIfPresent(String.self, forKey: .line)) ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         sample = (try? c.decodeIfPresent(Bool.self, forKey: .sample)) ?? false
+        // An older service sends neither: no rows, and the SCHOOL line as before.
+        upcoming = (try? c.decodeIfPresent([Due].self, forKey: .upcoming)) ?? []
+        upcomingMore = max(0, (try? c.decodeIfPresent(Int.self, forKey: .upcomingMore)) ?? 0)
     }
 
     /// The Brief's SCHOOL line, or nil when there is nothing to say.
     var briefLine: String? { line.isEmpty ? nil : line }
+
+    /// The Brief's SCHOOL rows show this many before "+N more in Study".
+    static let briefUpcomingLimit = 3
+    /// The Day tab's "School this week" shows this many before "+N more in Study".
+    static let dayUpcomingLimit = 4
+    /// The SCHOOL headline when nothing is due today or tomorrow but work is due later this week.
+    static let quietHeadline = "Nothing due today or tomorrow"
+
+    /// The Brief's SCHOOL headline: the service's line; with none, but work due
+    /// later this week, says nothing is due sooner (the rows below name it).
+    /// Empty hides the row, as before.
+    var briefHeadline: String {
+        if !line.isEmpty { return line }
+        return upcoming.isEmpty ? "" : Self.quietHeadline
+    }
+
+    /// The rows under the Brief's SCHOOL headline: the soonest three and how
+    /// many more Study holds. None when the one item due this week is the one
+    /// the headline already names.
+    var briefUpcoming: StudyUpcomingRows {
+        if upcoming.count + upcomingMore <= 1 && !line.isEmpty { return StudyUpcomingRows() }
+        return Self.rows(upcoming, extra: upcomingMore, limit: Self.briefUpcomingLimit)
+    }
+
+    /// The Day tab's "School this week" for the day shown: what is due this
+    /// week but not on that day (those are its own deadlines, by time or by
+    /// `shownIDs`), the soonest four, and how many more Study holds.
+    func dayUpcoming(dayStart: Double, dayEnd: Double, shownIDs: Set<String> = []) -> StudyUpcomingRows {
+        let rest = upcoming.filter { item in
+            if !item.id.isEmpty && shownIDs.contains(item.id) { return false }
+            guard let due = item.dueTS, due.isFinite else { return true }
+            return !(due >= dayStart && due < dayEnd)
+        }
+        return Self.rows(rest, extra: upcomingMore, limit: Self.dayUpcomingLimit)
+    }
+
+    /// The Study assignment ids behind the Day's school deadlines ("study:<id>").
+    static func deadlineIDs(_ ids: [String]) -> Set<String> {
+        Set(ids.compactMap { $0.hasPrefix("study:") ? String($0.dropFirst("study:".count)) : nil })
+    }
+
+    static func rows(_ items: [Due], extra: Int, limit: Int) -> StudyUpcomingRows {
+        let shown = Array(items.prefix(max(0, limit)))
+        return StudyUpcomingRows(items: shown, more: items.count - shown.count + max(0, extra))
+    }
+}
+
+/// School work a Brief or Day row lists, and how many more are only in Study.
+struct StudyUpcomingRows: Equatable {
+    var items: [StudyDaySummary.Due] = []
+    var more = 0
+
+    var isEmpty: Bool { items.isEmpty && more == 0 }
+    /// "+3 more in Study", or nil.
+    var moreLine: String? { more > 0 ? "+\(more) more in Study" : nil }
 }
 
 private extension String {
