@@ -127,7 +127,15 @@ struct TodayPlan: Decodable {
     let unscheduled: [TodayUnscheduled]
     let workspace: DailyWorkspace?
     let workspace_error: String?
-    var displayBlocks: [TodayBlock] { workspace?.proposed_plan.blocks ?? blocks }
+    /// School work due, from the Study tab's store (service/study/day_hook.py);
+    /// nil when the service sent none.
+    let study: StudyDaySummary?
+    var displayBlocks: [TodayBlock] {
+        guard let planned = workspace?.proposed_plan.blocks else { return blocks }
+        // Study blocks ride on the plan's own list; keep them beside the workspace's.
+        let ids = Set(planned.map(\.id))
+        return planned + blocks.filter { $0.kind == "study" && !ids.contains($0.id) }
+    }
     var displayUnscheduled: [TodayUnscheduled] { workspace?.proposed_plan.unscheduled ?? unscheduled }
     var displayWarnings: [String] { workspace?.proposed_plan.warnings ?? warnings }
 
@@ -180,7 +188,7 @@ struct TodayPlan: Decodable {
 extension TodayPlan {
     private enum CodingKeys: String, CodingKey {
         case day, timezone, generated_at, trace_id, revision, provisional, warnings, preferences, sources,
-             tasks, blocks, deadlines, all_day, unscheduled, workspace, workspace_error
+             tasks, blocks, deadlines, all_day, unscheduled, workspace, workspace_error, study
     }
 
     /// What the Brief shows when the service's workspace was there but couldn't be read.
@@ -217,6 +225,7 @@ extension TodayPlan {
         let present = (try? c.decodeNil(forKey: .workspace)) == false
         workspace_error = c.lenient(.workspace_error, String.self)
             ?? (present && workspace == nil ? Self.unreadableWorkspace : nil)
+        study = c.lenient(.study, StudyDaySummary.self)
     }
 }
 

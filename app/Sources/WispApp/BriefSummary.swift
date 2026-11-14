@@ -763,10 +763,12 @@ enum BriefTiles {
     /// line; the row style cuts each to two lines, and the tiles hold the rest.
     static func glance(_ lines: [DayTimeline.BriefLine], mailProse: String?) -> [BriefDetail.Line] {
         let prose = mailProse?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return lines.filter { $0.tag == "MAIL" || $0.tag == "TEXTS" }.map { line in
+        // SCHOOL, when school work is due, comes first (briefLines puts it after CAL).
+        return lines.filter { $0.tag == "MAIL" || $0.tag == "TEXTS" || $0.tag == "SCHOOL" }.map { line in
             let text = line.tag == "MAIL" && !line.muted && !prose.isEmpty ? prose
                 : line.trailing.isEmpty ? line.text : "\(line.text) · \(line.trailing)"
-            return BriefDetail.Line(id: "glance-" + line.tag, leading: line.tag == "MAIL" ? "Mail" : "Texts",
+            return BriefDetail.Line(id: "glance-" + line.tag,
+                                    leading: line.tag == "MAIL" ? "Mail" : line.tag == "SCHOOL" ? "School" : "Texts",
                                     text: text, muted: line.muted)
         }
     }

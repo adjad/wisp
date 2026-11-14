@@ -152,6 +152,13 @@ def snapshot(day, timezone, *, debug=False):
                 proactive_cycle.attach(result["workspace"], now=now)
             except Exception:  # noqa: BLE001
                 pass
+        try:
+            # School deadlines and study blocks from the Study tab (service/study).
+            # Never fatal; a Mac that never used Study is left untouched.
+            from service.study import day_hook
+            day_hook.attach(result, now=now, timezone=timezone)
+        except Exception:  # noqa: BLE001
+            pass
         if debug:
             # Returned only on explicit opt-in; never journaled. Fixed clock and
             # exact inputs make a replay independent of current state/sources.

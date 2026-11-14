@@ -501,7 +501,7 @@ struct DisplayGeometryChecks {
         check(tiny.pageContentCap(headerHeight: header) == SurfaceLayout.minTabScroll, "Floor on a tiny display")
     }
 
-    /// The overlay wraps Brief, Day and Meet, and only them, in the capped scroll.
+    /// The overlay wraps Brief, Day, Meet and Study, and only them, in the capped scroll.
     static func tabScrollSourceChecks() {
         let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("app/Sources/WispApp")
@@ -514,7 +514,9 @@ struct DisplayGeometryChecks {
               "Day sits in the tab scroll")
         check(overlay.contains("case .meet:\n            tabScroll { NotchMeetingView(model: MeetingModel.shared) }"),
               "Meet sits in the tab scroll")
-        check(overlay.components(separatedBy: "tabScroll {").count - 1 == 3, "only Brief, Day and Meet scroll as a tab")
+        check(overlay.contains("case .study:\n            tabScroll { NotchStudyView(model: model, study: StudyModel.shared) }"),
+              "Study sits in the tab scroll")
+        check(overlay.components(separatedBy: "tabScroll {").count - 1 == 4, "only Brief, Day, Meet and Study scroll as a tab")
         check(overlay.contains("CappedScroll(cap: layout.tabScrollCap(headerHeight: headerHeight), reveals: true,"),
               "the tab scroll is capped from the display's geometry")
         check(overlay.contains("bottom: SurfaceLayout.panelBottomPadding"), "the cap and the panel share one bottom padding")

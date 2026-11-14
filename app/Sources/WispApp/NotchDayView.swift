@@ -362,7 +362,7 @@ struct NotchDayView: View {
             DayCaughtInput(id: $0.source_id, title: $0.title ?? "", when: $0.event_ts ?? $0.due_ts, state: $0.state)
         }
         return DayTimeline.build(
-            blocks: blocks, allDay: plan.all_day.map(\.title), needs: plan.dayNeeds, caught: caught,
+            blocks: blocks, allDay: plan.all_day.map(\.title), needs: plan.dayNeeds + plan.studyNeeds, caught: caught,
             now: today.now.timeIntervalSince1970, dayStart: dayStart, dayEnd: bounds.end.timeIntervalSince1970,
             workStart: dayStart + Double(plan.preferences.start_minute * 60),
             workEnd: dayStart + Double(plan.preferences.end_minute * 60),
@@ -1135,6 +1135,14 @@ extension TodayPlan {
     var dayNeeds: [DayNeedInput] {
         (workspace?.attention ?? []).map {
             DayNeedInput(id: $0.id, title: $0.title, source: $0.source, due: $0.due_ts, allDay: $0.all_day == true)
+        }
+    }
+
+    /// School work due that day (deadlines from service/study/day_hook.py), for
+    /// the agenda only: "Due 11:59 PM". Not counted in the badge.
+    var studyNeeds: [DayNeedInput] {
+        deadlines.filter { $0.source == "study" }.map {
+            DayNeedInput(id: $0.id, title: $0.title, source: "study", due: $0.due_ts, allDay: $0.all_day == true)
         }
     }
 }

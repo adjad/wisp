@@ -144,7 +144,8 @@ struct NotchBriefView: View {
                     ProactiveBriefSection(proactive: proactive, model: model, today: today, actions: actions,
                                           events: restOfToday(plan),
                                           scrollCap: uncapped ? nil : Self.proactiveCap,
-                                          coverage: Self.coverage(plan), wide: wide)
+                                          coverage: Self.coverage(plan), wide: wide,
+                                          school: plan.study?.briefLine ?? "")
                     MailMemorySection(memory: MailMemoryCards.model, onResize: { model.onResize() })
                     HStack(spacing: 12) {
                         askChip(plan)
@@ -696,7 +697,9 @@ struct BriefContent {
         // overdue), then the Day tab's tasks, each once.
         let reminders: [BriefTodo] = needs.filter { ["reminders", "wisp"].contains($0.source) && ($0.due_ts ?? .nan).isFinite }
             .map { BriefTodo(id: $0.id, title: $0.title, due: $0.due_ts, allDay: $0.all_day == true) }
-        let deadlines: [BriefTodo] = plan.deadlines.map { BriefTodo(id: $0.id, title: $0.title, due: $0.due_ts, allDay: $0.all_day == true) }
+        // School deadlines (source "study") have their own SCHOOL line, so
+        // they are not to-dos as well.
+        let deadlines: [BriefTodo] = plan.deadlines.filter { $0.source != "study" }.map { BriefTodo(id: $0.id, title: $0.title, due: $0.due_ts, allDay: $0.all_day == true) }
         let dated = reminders + deadlines
         let active = plan.tasks.filter { $0.status == "active" && $0.day == plan.day }
         let datedTasks = active.filter { ($0.due_ts ?? .nan).isFinite }
@@ -750,7 +753,8 @@ struct BriefContent {
                                           textsNeedAccess: textsBlocked,
                                           mailAccess: mailTile?.access, textsAccess: coverage("messages")?.access,
                                           mailOverview: plan.workspace?.mail_overview?.text,
-                                          textsOverview: plan.workspace?.texts_overview?.text, soon: .unknown)
+                                          textsOverview: plan.workspace?.texts_overview?.text, soon: .unknown,
+                                          school: isToday ? plan.study?.briefLine ?? "" : "")
         glance = BriefTiles.glance(rows, mailProse: isToday ? plan.workspace?.mail_summary?.text : nil)
         summary = composed?.keeping ?? []
         intro = composed?.intro ?? []

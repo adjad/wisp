@@ -651,6 +651,8 @@ from service.assistant.hours_api import router as hours_router
 app.include_router(hours_router)
 from service.proactive.api import router as proactive_router
 app.include_router(proactive_router)
+from service.study.api import router as study_router
+app.include_router(study_router)
 app.include_router(__import__("service.engine.api", fromlist=["router"]).router)
 
 OMLX_CLI = "/Applications/oMLX.app/Contents/MacOS/omlx-cli"

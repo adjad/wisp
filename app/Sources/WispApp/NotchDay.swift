@@ -314,6 +314,12 @@ struct DayTimeline: Equatable {
             case "behavior_away":
                 style = .usual
                 detail = "Usually away · not on your calendar"
+            case "study":
+                // A study block (service/study/day_hook.py): drawn like your own
+                // plan, never as a Calendar event, so it offers no Open in
+                // Calendar, Move or Cancel.
+                style = .task
+                detail = "Study block · \(duration(minutes))"
             default:
                 style = block.taskID == nil ? .calendar : .task
                 detail = style == .task ? "Your plan · \(duration(minutes))" : clock(block.start) + " – " + clock(end)
@@ -909,7 +915,8 @@ struct DayTimeline: Equatable {
         }
     }
 
-    /// Always four rows, CAL, MAIL, TEXTS and SOON, so the Brief keeps its shape.
+    /// Always four rows, CAL, MAIL, TEXTS and SOON, so the Brief keeps its shape,
+    /// and SCHOOL after CAL when school work is due today or tomorrow.
     /// A source Wisp can't read yet shows a dim row saying so instead of disappearing.
     static func briefLines(calendar: DayLoad?, calendarUnsynced: Bool = false, calendarAccess: SourceAccess? = nil,
                            mail: (ready: Bool, needing: [BriefNeed])?,
@@ -917,7 +924,7 @@ struct DayTimeline: Equatable {
                            textsNeedAccess: Bool = false,
                            mailAccess: SourceAccess? = nil, textsAccess: SourceAccess? = nil,
                            mailOverview: String? = nil, textsOverview: String? = nil,
-                           soon: Soon) -> [BriefLine] {
+                           soon: Soon, school: String = "") -> [BriefLine] {
         var lines: [BriefLine] = []
         if let calendar {
             lines.append(BriefLine(tag: "CAL", text: calendar.summary, trailing: calendar.next ?? "", source: .calendar))
@@ -925,6 +932,12 @@ struct DayTimeline: Equatable {
             let unread = calendarAccess.flatMap { $0.readable ? nil : $0 }
             lines.append(BriefLine(tag: "CAL", text: unread?.headline ?? (calendarUnsynced ? "Reading your calendar…" : "Nothing on your calendar"),
                                    trailing: "", source: .calendar, muted: calendarUnsynced || unread != nil))
+        }
+        // School work due today or tomorrow (StudyDaySummary.line), only when
+        // there is some: Study is optional, so the row never says "nothing due".
+        let school = school.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !school.isEmpty {
+            lines.append(BriefLine(tag: "SCHOOL", text: school, trailing: "", source: .reminders))
         }
         // No coverage entry means the workspace couldn't be read: unknown, not off.
         if let mail, mail.ready, let mailOverview {
@@ -1505,6 +1518,106 @@ enum WispClock {
         }()
         return f.string(from: Date(timeIntervalSince1970: t))
     }
+}
+
+/// The `study` object of `/assistant/today` (service/study/day_hook.py): what
+/// school work is due, for the Brief's SCHOOL line. Every field is optional on
+/// the wire, so an older or partial service never blanks the Brief.
+struct StudyDaySummary: Decodable, Equatable {
+    /// An assignment due today.
+    struct Due: Decodable, Equatable, Identifiable {
+        var id = ""
+        var title = ""
+        var courseName = ""
+        var dueTS: Double? = nil
+        var allDay = false
+        var kind = ""
+        var status = ""
+
+        private enum CodingKeys: String, CodingKey {
+            case id, title, kind, status
+            case courseName = "course_name", dueTS = "due_ts", allDay = "all_day"
+        }
+
+        init(id: String = "", title: String = "", courseName: String = "", dueTS: Double? = nil,
+             allDay: Bool = false, kind: String = "", status: String = "") {
+            self.id = id; self.title = title; self.courseName = courseName; self.dueTS = dueTS
+            self.allDay = allDay; self.kind = kind; self.status = status
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = (try? c.decodeIfPresent(String.self, forKey: .id)) ?? ""
+            title = (try? c.decodeIfPresent(String.self, forKey: .title)) ?? ""
+            courseName = (try? c.decodeIfPresent(String.self, forKey: .courseName)) ?? ""
+            dueTS = try? c.decodeIfPresent(Double.self, forKey: .dueTS)
+            allDay = (try? c.decodeIfPresent(Bool.self, forKey: .allDay)) ?? false
+            kind = (try? c.decodeIfPresent(String.self, forKey: .kind)) ?? ""
+            status = (try? c.decodeIfPresent(String.self, forKey: .status)) ?? ""
+        }
+    }
+
+    /// The next quiz or exam within a week.
+    struct Test: Decodable, Equatable {
+        var id = ""
+        var title = ""
+        var courseName = ""
+        var dueTS: Double? = nil
+
+        private enum CodingKeys: String, CodingKey {
+            case id, title
+            case courseName = "course_name", dueTS = "due_ts"
+        }
+
+        init(id: String = "", title: String = "", courseName: String = "", dueTS: Double? = nil) {
+            self.id = id; self.title = title; self.courseName = courseName; self.dueTS = dueTS
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = (try? c.decodeIfPresent(String.self, forKey: .id)) ?? ""
+            title = (try? c.decodeIfPresent(String.self, forKey: .title)) ?? ""
+            courseName = (try? c.decodeIfPresent(String.self, forKey: .courseName)) ?? ""
+            dueTS = try? c.decodeIfPresent(Double.self, forKey: .dueTS)
+        }
+    }
+
+    var dueToday: [Due] = []
+    var dueTomorrowCount = 0
+    var dueWeekCount = 0
+    var missingCount = 0
+    var nextTest: Test? = nil
+    /// "2 due today: Lab 5 (CSE 20), Essay draft"; empty when nothing is due today or tomorrow.
+    var line = ""
+    var sample = false
+
+    private enum CodingKeys: String, CodingKey {
+        case line, sample
+        case dueToday = "due_today", dueTomorrowCount = "due_tomorrow_count", dueWeekCount = "due_week_count"
+        case missingCount = "missing_count", nextTest = "next_test"
+    }
+
+    init(dueToday: [Due] = [], dueTomorrowCount: Int = 0, dueWeekCount: Int = 0, missingCount: Int = 0,
+         nextTest: Test? = nil, line: String = "", sample: Bool = false) {
+        self.dueToday = dueToday; self.dueTomorrowCount = dueTomorrowCount; self.dueWeekCount = dueWeekCount
+        self.missingCount = missingCount; self.nextTest = nextTest; self.line = line; self.sample = sample
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        // Each field decodes on its own; a bad one falls back to its default.
+        dueToday = (try? c.decodeIfPresent([Due].self, forKey: .dueToday)) ?? []
+        dueTomorrowCount = (try? c.decodeIfPresent(Int.self, forKey: .dueTomorrowCount)) ?? 0
+        dueWeekCount = (try? c.decodeIfPresent(Int.self, forKey: .dueWeekCount)) ?? 0
+        missingCount = (try? c.decodeIfPresent(Int.self, forKey: .missingCount)) ?? 0
+        nextTest = try? c.decodeIfPresent(Test.self, forKey: .nextTest)
+        line = ((try? c.decodeIfPresent(String.self, forKey: .line)) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        sample = (try? c.decodeIfPresent(Bool.self, forKey: .sample)) ?? false
+    }
+
+    /// The Brief's SCHOOL line, or nil when there is nothing to say.
+    var briefLine: String? { line.isEmpty ? nil : line }
 }
 
 private extension String {

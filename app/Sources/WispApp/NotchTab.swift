@@ -2,16 +2,17 @@ import Foundation
 
 /// The notch panel's tabs. Ask is the conversation; Brief is what's going on,
 /// read only; Day is the rest of today, hour by hour; Meet listens to a meeting
-/// and writes its notes. Research is not in the
+/// and writes its notes; Study keeps school work and makes study material.
+/// Research is not in the
 /// strip: it is a mode of Ask (`/research`, a job opened from the window, New
 /// research), reached through `.research` and left by choosing a tab.
 ///
 /// Pure logic, checked by tests/NotchTabChecks.swift without the app.
 enum NotchTab: Int, CaseIterable, Equatable {
-    case ask, brief, day, research, meet
+    case ask, brief, day, research, meet, study
 
-    /// The tabs shown in the strip, in order, with ⌘1 to ⌘4.
-    static var strip: [NotchTab] { meetHidden ? [.ask, .brief, .day] : [.ask, .brief, .day, .meet] }
+    /// The tabs shown in the strip, in order, with ⌘1 to ⌘5 (⌘4 for Study while Meet is hidden).
+    static var strip: [NotchTab] { meetHidden ? [.ask, .brief, .day, .study] : [.ask, .brief, .day, .meet, .study] }
 
     /// Takes Meet out of the strip. Nothing sets it today: on a build with no
     /// on-device engine (the Intel preview) meetings are heard by the chosen cloud
@@ -27,13 +28,14 @@ enum NotchTab: Int, CaseIterable, Equatable {
         case .day: return "Day"
         case .research: return "Research"
         case .meet: return "Meet"
+        case .study: return "Study"
         }
     }
 
     /// The strip tab drawn as selected. Research is a mode of Ask.
     var stripTab: NotchTab { self == .research ? .ask : self }
 
-    /// ⌘1 to ⌘4 while the panel has focus; Research has none.
+    /// ⌘1 to ⌘5 while the panel has focus; Research has none.
     var shortcutDigit: Character? {
         Self.strip.firstIndex(of: self).map { Character(String($0 + 1)) }
     }

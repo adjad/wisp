@@ -15,16 +15,16 @@ struct NotchTabChecks {
         }
 
         // Tabs, in strip order, with ⌘1 to ⌘3. Research is a mode of Ask, not a tab.
-        check(NotchTab.strip == [.ask, .brief, .day, .meet], "the strip reads Ask, Brief, Day, Meet")
-        check(NotchTab.strip.map(\.shortcutDigit) == ["1", "2", "3", "4"], "⌘1 to ⌘4 follow the strip")
-        check(NotchTab.strip.map(\.title) == ["Ask", "Brief", "Day", "Meet"], "tab titles")
+        check(NotchTab.strip == [.ask, .brief, .day, .meet, .study], "the strip reads Ask, Brief, Day, Meet, Study")
+        check(NotchTab.strip.map(\.shortcutDigit) == ["1", "2", "3", "4", "5"], "⌘1 to ⌘5 follow the strip")
+        check(NotchTab.strip.map(\.title) == ["Ask", "Brief", "Day", "Meet", "Study"], "tab titles")
         check(!NotchTab.strip.contains(.research) && NotchTab.research.shortcutDigit == nil, "Research is out of the strip")
         // A build with no on-device engine: Meet leaves the strip, the rest keep their keys.
         NotchTab.meetHidden = true
-        check(NotchTab.strip == [.ask, .brief, .day] && NotchTab.meet.shortcutDigit == nil
-              && NotchTab.day.shortcutDigit == "3", "no engine: the strip reads Ask, Brief, Day")
+        check(NotchTab.strip == [.ask, .brief, .day, .study] && NotchTab.meet.shortcutDigit == nil
+              && NotchTab.day.shortcutDigit == "3", "no engine: the strip reads Ask, Brief, Day, Study")
         NotchTab.meetHidden = false
-        check(NotchTab.strip.last == .meet, "Meet is back once the flag is clear")
+        check(NotchTab.strip.contains(.meet) && NotchTab.strip.last == .study, "Meet is back once the flag is clear")
         check(NotchTab.meetHiddenReason.contains("cloud model that takes audio"),
               "the hidden-Meet reason names the cloud route too")
         // Meet's opening paragraph: local says nothing leaves; cloud names the provider.
@@ -42,6 +42,9 @@ struct NotchTabChecks {
               "Brief and Day show the day; Ask and Research take a prompt")
         check(NotchTab.ask.hasPrompt && NotchTab.research.hasPrompt && !NotchTab.meet.hasPrompt && !NotchTab.day.hasPrompt,
               "Meet has no prompt field and shows as itself")
+        check(!NotchTab.study.showsDay && !NotchTab.study.hasPrompt && NotchTab.study.stripTab == .study
+              && NotchTab.meet.rawValue == 4 && NotchTab.study.rawValue == 5,
+              "Study is its own tab, last, with no prompt field; earlier raw values keep")
 
         // Opening: ⌥Space always Ask; hover the last tab for ten minutes after closing.
         let closed = Date(timeIntervalSince1970: 1_000_000)
@@ -137,6 +140,7 @@ struct NotchTabChecks {
         quickSettingsChecks(check)
         staleReminderChecks(check)
         needsYouActionChecks(check)
+        studyChecks(check)
 
         print("\(count) notch tab, day, quick settings and stale reminder checks passed.")
     }
