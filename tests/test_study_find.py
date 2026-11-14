@@ -483,3 +483,11 @@ def test_a_plain_module_item_is_still_browsed():
     got = F.classify({"url": "https://school.instructure.com/courses/123/modules/items/78",
                       "title": "Week 3 guided notes", "type": "Page"}, course)
     assert got["via"] == "browser" and got["kind"] == "page"
+
+
+def test_assignment_typed_module_items_are_not_browsed():
+    from service.study import find as F
+    course = {"id": "canvas:123", "url": "https://school.instructure.com/courses/123"}
+    got = F.classify({"url": "https://school.instructure.com/courses/123/modules/items/79",
+                      "title": "Problem set 2", "type": "Assignment"}, course)
+    assert got["via"] == "none"
