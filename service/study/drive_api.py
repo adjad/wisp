@@ -108,8 +108,8 @@ async def drive_add(request: Request):
                                  "text": text, "course_id": course_id})
     if pages:
         store.save_pages(summary["id"], pages)
-    elif deck_status == "failed":
-        store.set_deck_status(summary["id"], "failed")
+    elif deck_status == "failed" and not store.pages(summary["id"]):
+        store.set_deck_status(summary["id"], "failed")   # a failed re-read keeps the earlier pages and status
     summary = next((s for s in store.sources() if s["id"] == summary["id"]), summary)
     return {"source": summary, "state": await api._state()}
 

@@ -117,6 +117,16 @@ def test_rejected_and_busy(gemini_choice):
     with pytest.raises(deck.DeckError) as err:
         read(Gemini(httpx.Response(429)))
     assert err.value.code == "busy"
+    with pytest.raises(deck.DeckError) as err:
+        read(Gemini(httpx.Response(403, json={"error": {"message": "API key not valid"}})))
+    assert err.value.code == "rejected"
+    with pytest.raises(deck.DeckError) as err:   # a model or region refusal is not the key's fault
+        read(Gemini(httpx.Response(403, json={"error": {"message": "Model not available in your region"}})))
+    assert err.value.code == "bad_reply"
+
+
+def test_a_flat_outputs_reply_is_read():
+    assert deck.reply_text({"status": "completed", "outputs": [{"type": "text", "text": "{}"}]}) == "{}"
 
 
 def test_the_key_is_never_logged_or_in_an_error(gemini_choice, caplog):
