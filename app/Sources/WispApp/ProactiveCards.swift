@@ -346,6 +346,8 @@ struct ProactiveBriefSection: View {
     var school: String = ""
     /// This week's school work under that line, one row each (StudyDaySummary.briefUpcoming).
     var schoolRows = StudyUpcomingRows()
+    /// What Study got ready and the topics to look at again (StudyDaySummary.briefCards), under the school line.
+    var studyCards = StudyBriefCards()
 
     private var unread: [SourceAccess] { proactive.unreadSources(coverage) }
 
@@ -392,8 +394,13 @@ struct ProactiveBriefSection: View {
                 Rectangle().fill(Theme.hairline).frame(height: 1)
                 dayRow
                 Rectangle().fill(Theme.hairline).frame(height: 1)
-                if !school.isEmpty {
-                    schoolRow
+                if !school.isEmpty || !studyCards.isEmpty {
+                    if !school.isEmpty { schoolRow }
+                    if !studyCards.isEmpty {
+                        StudyBriefCardsView(cards: studyCards, model: model,
+                                            showsMore: school.isEmpty || schoolRows.moreLine == nil)
+                            .padding(.top, school.isEmpty ? 8 : 0).padding(.bottom, 8)
+                    }
                     Rectangle().fill(Theme.hairline).frame(height: 1)
                 }
                 expandingRow("todos", icon: "checklist", text: shown.todoLine(unread: unread),
@@ -420,7 +427,13 @@ struct ProactiveBriefSection: View {
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 VStack(alignment: .leading, spacing: 18) {
                     todayList
-                    if !school.isEmpty { schoolRow }
+                    if !school.isEmpty || !studyCards.isEmpty {
+                        VStack(alignment: .leading, spacing: 0) {
+                            if !school.isEmpty { schoolRow }
+                            if !studyCards.isEmpty { StudyBriefCardsView(cards: studyCards, model: model,
+                                                showsMore: school.isEmpty || schoolRows.moreLine == nil) }
+                        }
+                    }
                     attention(shown)
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -972,6 +985,7 @@ struct ProactiveBriefSection: View {
     }
 
     /// One assignment due this week: title, course, and when, in a right-hand column.
+    /// (The study cards under the school line are StudyBriefCardsView, shared with the plain Brief.)
     private func schoolItem(_ item: StudyDaySummary.Due, calendar: Calendar) -> some View {
         let assignment = item.assignment
         return HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -1612,5 +1626,61 @@ struct ClampedText: View {
 
     private func styled(_ t: Text) -> some View {
         t.font(.wisp(size: 12.5)).foregroundStyle(Theme.textSecondary).lineSpacing(1.5)
+    }
+}
+
+/// The Brief's study cards, under its school line (both Briefs): Study's line
+/// on up to two lines, the slides it is about in one muted line, and one small
+/// action; then "+N more in Study". Display only.
+struct StudyBriefCardsView: View {
+    let cards: StudyBriefCards
+    let model: OverlayModel
+    /// Lines the cards up under the school line's text.
+    var leading: CGFloat = 24
+    /// False when the school rows above already end in "+N more in Study", so
+    /// the same line doesn't show twice in a row.
+    var showsMore = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(cards.cards) { card in row(card) }
+            if showsMore, let more = cards.moreLine {
+                Text(more).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
+            }
+        }
+        .padding(.leading, leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Ready in Study")
+    }
+
+    private func row(_ card: StudyBriefCard) -> some View {
+        let slides = SchoolSlidesText.line(card.slides, pagesText: StudyText.slidePages)
+        // One line: Study's sentence, then the slides muted after it; the tail
+        // truncates and the whole line is in the tooltip.
+        let line = Text(card.text).font(.wisp(size: 12.5)).foregroundColor(Theme.textPrimary)
+            + Text(slides.map { "  " + $0 } ?? "").font(.wisp(size: 11)).foregroundColor(Theme.textMuted)
+        return HStack(alignment: .center, spacing: 8) {
+            line
+                .lineLimit(1).truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .help(card.text + (slides.map { "\n" + $0 } ?? ""))
+                .accessibilityLabel(card.text + (slides.map { ". Slides: " + $0 } ?? ""))
+            if let action = card.action, let title = card.actionTitle {
+                NotchChrome.action(title, help: action.help, spoken: title + ": " + card.text) {
+                    SchoolActions.run(action, model: model)
+                }
+            }
+        }
+        .frame(minHeight: 24)
+    }
+}
+
+private extension StudyBriefCard.Action {
+    var help: String {
+        switch self {
+        case .open: return "Open it in Study (⌘5)"
+        case .review: return "Make flash cards from these slides, in Study (⌘5)"
+        }
     }
 }
