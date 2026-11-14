@@ -90,6 +90,10 @@ def google(tmp_path, monkeypatch):
     monkeypatch.setattr(gmail_source, "access_token", token)
     monkeypatch.setattr(drive, "_transport", httpx.MockTransport(g.handler))
 
+    async def no_pages():   # these tests are the text-only add; tests/test_study_deck.py reads pages
+        return False
+    monkeypatch.setattr(drive_api.deck, "available_async", no_pages)
+
     store = FakeStore(StudyStore(tmp_path / "study" / "study.db"))
     g.store = store
     for module in (api, drive_api):
@@ -166,7 +170,7 @@ def test_the_search_word_is_escaped(client, google):
     client.get("/study/drive/files", params={"q": "it's a\\b", "limit": 5})
     params = google.requests[0].url.params
     assert params["q"].endswith(" and name contains 'it\\'s a\\\\b'")
-    assert params["q"].startswith(f"(mimeType='{drive.DOC}' or mimeType='{drive.SLIDES}') and trashed=false")
+    assert params["q"].startswith(f"(mimeType='{drive.DOC}' or mimeType='{drive.SLIDES}' or mimeType='{drive.PDF}') and trashed=false")
     assert params["pageSize"] == "5"
 
 
@@ -237,7 +241,7 @@ def test_googles_export_limit_is_too_large(client, google):
 
 @pytest.mark.parametrize("status,reason,code,http", [
     (403, "insufficientPermissions", "google_missing", 409), (401, "authError", "google_missing", 409),
-    (403, "accessNotConfigured", "google_error", 502), (500, "backendError", "google_error", 502),
+    (403, "accessNotConfigured", "drive_off", 409), (500, "backendError", "google_error", 502),
     (404, "notFound", "not_found", 404),
 ])
 def test_export_failures_map_to_refusals(client, google, status, reason, code, http):
@@ -265,6 +269,90 @@ def test_a_timeout_is_a_google_error(client, google):
     drive._transport = httpx.MockTransport(slow)
     got = add(client)
     assert got.status_code == 502 and got.json()["detail"] == "google_error"
+    assert got.json()["message"] == drive.TIMED_OUT
+
+
+def test_no_connection_says_so(client, google):
+    def down(request):
+        raise httpx.ConnectError("no route", request=request)
+    drive._transport = httpx.MockTransport(down)
+    got = client.get("/study/drive/files")
+    assert got.status_code == 502 and got.json() == {"detail": "google_error", "message": drive.UNREACHABLE}
+
+
+DRIVE_OFF_BODIES = [
+    {"error": {"code": 403, "errors": [{"reason": "accessNotConfigured"}]}},
+    {"error": {"code": 403, "status": "PERMISSION_DENIED",
+               "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "SERVICE_DISABLED"}]}},
+    {"error": {"code": 403, "message": "Google Drive API has not been used in project 123456 before or it is"
+                                       " disabled. Enable it by visiting https://console.developers.google.com"}},
+    {"error": {"code": 403, "errors": [{"reason": "forbidden", "message": "The API is disabled."}]}},
+]
+
+
+@pytest.mark.parametrize("body", DRIVE_OFF_BODIES)
+def test_drive_api_off_is_drive_off_when_listing(client, google, body, monkeypatch):
+    monkeypatch.setattr(google, "handler", lambda request: httpx.Response(403, json=body))
+    drive._transport = httpx.MockTransport(google.handler)
+    got = client.get("/study/drive/files")
+    assert got.status_code == 409 and got.json() == {"detail": "drive_off", "message": drive.DRIVE_OFF}
+
+
+def test_drive_api_off_is_drive_off_when_adding(client, google):
+    google.export = httpx.Response(403, json=DRIVE_OFF_BODIES[1])
+    got = add(client)
+    assert got.status_code == 409 and got.json()["detail"] == "drive_off" and google.store.saved == []
+
+
+@pytest.mark.parametrize("status,body,message", [
+    (403, {"error": {"errors": [{"reason": "forbidden"}]}}, drive.REFUSED),
+    (403, {"error": {"errors": [{"reason": "userRateLimitExceeded"}]}}, drive.RATE_LIMITED),
+    (429, {"error": {"errors": [{"reason": "rateLimitExceeded"}]}}, drive.RATE_LIMITED),
+    (500, {"error": {"errors": [{"reason": "backendError"}]}}, drive.GOOGLE_DOWN),
+    (503, None, drive.GOOGLE_DOWN),
+    (400, {"error": {"errors": [{"reason": "badRequest"}]}}, drive.ODD_REPLY),
+])
+def test_each_google_error_has_its_own_message(client, google, status, body, message):
+    google.export = httpx.Response(status, json=body) if body is not None else httpx.Response(status, text="down")
+    got = add(client)
+    assert got.status_code == 502 and got.json() == {"detail": "google_error", "message": message}
+
+
+def test_a_listing_that_is_not_json_is_an_odd_reply(client, google, monkeypatch):
+    monkeypatch.setattr(google, "handler", lambda request: httpx.Response(200, text="<html>"))
+    drive._transport = httpx.MockTransport(google.handler)
+    assert client.get("/study/drive/files").json() == {"detail": "google_error", "message": drive.ODD_REPLY}
+
+
+def test_a_drive_failure_logs_one_line_with_only_status_and_reason(client, google, caplog):
+    import logging
+    caplog.set_level(logging.INFO, logger="service.study.drive")
+    google.meta = google.meta | {"name": "Secret plans"}
+    google.export = httpx.Response(403, json={"error": {
+        "message": "Google Drive API has not been used in project 99 before or it is disabled. test-token",
+        "errors": [{"reason": "accessNotConfigured", "message": "Secret plans test-token"}]}})
+    add(client)
+    lines = [r.getMessage() for r in caplog.records if r.name == "service.study.drive"]
+    assert lines == ["Study Drive call failed: status=403 reasons=accessnotconfigured -> drive_off"]
+    for secret in ("test-token", "Secret plans", FILE_ID, "project 99"):
+        assert secret not in caplog.text
+
+    caplog.clear()
+    def slow(request):
+        raise httpx.ReadTimeout("slow", request=request)
+    drive._transport = httpx.MockTransport(slow)
+    add(client)
+    lines = [r.getMessage() for r in caplog.records if r.name == "service.study.drive"]
+    assert lines == ["Study Drive call failed: status=timeout reasons=- -> google_error"]
+
+
+def test_a_reason_that_is_not_a_plain_code_is_never_logged(client, google, caplog):
+    import logging
+    caplog.set_level(logging.INFO, logger="service.study.drive")
+    google.export = httpx.Response(500, json={"error": {"errors": [{"reason": "Secret plans: test-token"}]}})
+    add(client)
+    assert "Secret" not in caplog.text and "test-token" not in caplog.text
+    assert "status=500 reasons=- -> google_error" in caplog.text
 
 
 @pytest.mark.parametrize("file_id", ["short", "../../etc/passwd_x", "a" * 201, "abc def ghij", "abcdefghij?x=1"])

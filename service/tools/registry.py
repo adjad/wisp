@@ -165,6 +165,7 @@ _NOT_DONE_TOOLS = {
     "delete_note": "service.tools.notes_write",
     "remember": "service.tools.memory_tools",
     "save_email_attachment": "service.tools.attachment_actions",
+    "study_make": "service.study.ask_tools",
 }
 
 
