@@ -360,6 +360,7 @@ enum MessagesReaderRegression {
                      && bounded.truncated >= 27 + literalCases.count,
                      "Structured carrier has an explicit row cap and partial coverage")
         try checkTypedStream(root: root)
+        checkDelivery(root: root)
         checkBackendRetry()
         print("MessagesReader: synthetic read-only regression passed")
     }
@@ -504,6 +505,72 @@ enum MessagesReaderRegression {
     }
 
     /// Only "nothing is listening" is retried, on a bounded, growing schedule.
+    // What the app reads back after handing Messages a text.
+    static func checkDelivery(root: URL) {
+        let path = root.appendingPathComponent("delivery.db").path
+        typealias Check = MessageDeliveryCheck
+        precondition(Check.read(dbPath: path, to: "22821", text: "hi", sinceNs: 0).state == .unknown,
+                     "A store that can't be opened is unknown")
+        var db: OpaquePointer?
+        precondition(sqlite3_open(path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        func sql(_ statement: String) {
+            precondition(sqlite3_exec(db, statement, nil, nil, nil) == SQLITE_OK,
+                         "Fixture SQL failed: \(statement)")
+        }
+        sql("CREATE TABLE message (date INTEGER, text TEXT, attributedBody BLOB, is_from_me INTEGER, " +
+            "handle_id INTEGER, is_sent INTEGER, is_delivered INTEGER, error INTEGER, service TEXT)")
+        sql("CREATE TABLE handle (id TEXT)")
+        sql("INSERT INTO handle VALUES ('22821'), ('+16505550100'), ('pat@example.test')")
+        let now = Check.storeDate(Date())
+        let since = now - 5_000_000_000
+        func state(_ to: String, _ text: String) -> Check.State {
+            Check.read(dbPath: path, to: to, text: text, sinceNs: since).state
+        }
+        precondition(state("22821", "Wisp test 1") == .unknown, "No row is unknown")
+        // What the real app hit: accepted, then Not Delivered.
+        sql("INSERT INTO message VALUES (\(now), 'Wisp test 1', NULL, 1, 1, 0, 0, 22, 'iMessage')")
+        let failed = Check.read(dbPath: path, to: "22821", text: "Wisp test 1 ", sinceNs: since)
+        precondition(failed == Check.Reading(state: .failed, service: "iMessage"), "An error on the row is a failure")
+        precondition(Check.settle(dbPath: path, to: "22821", text: "Wisp test 1", sinceNs: since,
+                                  window: 1, step: 0.2) == failed, "A failure ends the wait at once")
+        precondition(state("22821", "Some other text") == .unknown, "Another text is not this message")
+        precondition(state("22822", "Wisp test 1") == .unknown, "Another short code is not this recipient")
+        precondition(Check.read(dbPath: path, to: "22821", text: "Wisp test 1", sinceNs: now + 1).state == .unknown,
+                     "A row from before the send is not this message")
+        // Country code or not, and the display form, name the same number.
+        sql("INSERT INTO message VALUES (\(now), 'pending', NULL, 1, 2, 0, 0, 0, 'SMS')")
+        sql("INSERT INTO message VALUES (\(now), 'sent', NULL, 1, 2, 1, 0, 0, 'SMS')")
+        sql("INSERT INTO message VALUES (\(now), 'delivered', NULL, 1, 2, 1, 1, 0, 'iMessage')")
+        sql("INSERT INTO message VALUES (\(now), 'both', NULL, 1, 2, 1, 1, 4, 'iMessage')")
+        sql("INSERT INTO message VALUES (\(now), 'theirs', NULL, 0, 2, 1, 1, 0, 'iMessage')")
+        precondition(state("(650) 555-0100", "pending") == .pending)
+        precondition(state("+1 650 555 0100", "sent") == .sent)
+        precondition(state("6505550100", "delivered") == .delivered)
+        precondition(state("6505550100", "both") == .failed, "An error wins over the flags")
+        precondition(state("6505550100", "theirs") == .unknown, "A message from them is not ours")
+        precondition(state("0100", "sent") == .unknown, "A few trailing digits name no one")
+        // Still pending when the window ends is unknown; a plain sent stays sent.
+        precondition(Check.settle(dbPath: path, to: "6505550100", text: "pending", sinceNs: since,
+                                  window: 0.6, step: 0.2).state == .unknown)
+        precondition(Check.settle(dbPath: path, to: "6505550100", text: "sent", sinceNs: since,
+                                  window: 0.6, step: 0.2, sentGrace: 0.2)
+                     == Check.Reading(state: .sent, service: "SMS"))
+        sql("INSERT INTO message VALUES (\(now), 'mail handle', NULL, 1, 3, 1, 1, 0, 'iMessage')")
+        precondition(state("Pat@Example.test", "mail handle") == .delivered)
+        precondition(state("at@example.test", "mail handle") == .unknown)
+        // A body kept only as a typedstream is read; one that can't be read is not taken.
+        var stmt: OpaquePointer?
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        precondition(sqlite3_prepare_v2(db, "INSERT INTO message VALUES (\(now), NULL, ?, 1, 1, 1, 0, 0, 'SMS')",
+                                        -1, &stmt, nil) == SQLITE_OK)
+        let junk = Data("not a typedstream".utf8)
+        _ = junk.withUnsafeBytes { sqlite3_bind_blob(stmt, 1, $0.baseAddress, Int32(junk.count), transient) }
+        precondition(sqlite3_step(stmt) == SQLITE_DONE)
+        sqlite3_finalize(stmt)
+        precondition(state("22821", "not a typedstream") == .unknown)
+    }
+
     static func checkBackendRetry() {
         typealias R = NativeBackendRetry
         precondition(R.isBackendUnreachable(URLError(.cannotConnectToHost)))

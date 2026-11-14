@@ -1579,6 +1579,8 @@ async def forward_email(message_id: str, to: str, note: str = "") -> str:
 
 
 MESSAGE_HANDED_OVER = "Messages accepted it; delivery isn't confirmed here."
+TEXT_FORWARDING_HINT = ("To send SMS texts from this Mac, turn on Text Message Forwarding for it "
+                        "on your iPhone: Settings › Apps › Messages › Text Message Forwarding.")
 
 @register(
     "send_message",
@@ -1661,9 +1663,23 @@ async def send_message(to: str, text: str, confirmed_self_send: bool = False,
                 "Message outcome unknown — sending was not confirmed. Check Messages before trying again; do not retry automatically.",
                 operation="send_message", action_id=res.get("action_id") or "")
         return _not_sent(f"(the message was NOT sent: {res.get('error') or 'unknown error'})")
-    # The app only knows Messages accepted the text. Messages can still mark
-    # it Not Delivered afterwards (a short code with no SMS relay did, on the
-    # real app), so the receipt says what is known and no more.
+    # Messages accepting a text is not the text going out: a short code with
+    # no SMS relay was accepted and then marked Not Delivered on the real app.
+    # The app reads the message's own row back from Messages and says which.
+    delivery = res.get("delivery")
+    by_sms = bool(re.fullmatch(r"\d{3,6}", to)) or res.get("delivery_service") in ("SMS", "RCS")
+    if delivery == "no_sms_account":
+        # The app's script stopped before any send.
+        return _not_sent(f"(the text to {display} was NOT sent: this Mac can't send SMS texts. "
+                         f"{TEXT_FORWARDING_HINT})")
+    if delivery == "failed":
+        return (f"The text to {display} was not delivered: Messages shows it as Not Delivered."
+                + (f" {TEXT_FORWARDING_HINT}" if by_sms else "")
+                + " Check Messages before trying again; do not retry automatically.")
+    if delivery == "delivered":
+        return f"Message sent to {display}. Messages shows it as delivered."
+    if delivery == "sent":
+        return f"Message sent to {display}."
     return f"Message sent to {display}. {MESSAGE_HANDED_OVER}"
 
 

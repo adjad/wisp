@@ -106,7 +106,35 @@ def test_a_sent_text_is_not_reported_as_delivered():
     from service.tools import action_tools
     source = (ROOT / "service/tools/action_tools.py").read_text(encoding="utf-8")
     assert 'return f"Message sent to {display}. {MESSAGE_HANDED_OVER}"' in source
+    assert 'if delivery == "failed":' in source and 'if delivery == "no_sms_account":' in source
     assert action_tools.MESSAGE_HANDED_OVER == "Messages accepted it; delivery isn't confirmed here."
     from service.tools.registry import classify_tool_outcome
     receipt = "Message sent to 22821. " + action_tools.MESSAGE_HANDED_OVER
     assert classify_tool_outcome("send_message", receipt).status == "succeeded"
+
+
+READER = (ROOT / "app/Sources/WispApp/MessagesReader.swift").read_text(encoding="utf-8")
+
+
+def test_the_app_reads_the_text_back_from_messages_before_answering():
+    # tests/MessagesReaderRegression.swift runs the same read against a
+    # synthetic store; this pins the query and the wiring.
+    check = READER[READER.index("enum MessageDeliveryCheck"):READER.index("enum TypedStreamText")]
+    query = check[check.index("static let query"):check.index("/// One look at the store.")]
+    assert "WHERE m.is_from_me = 1 AND m.date >= ?" in query
+    assert "JOIN handle h ON m.handle_id = h.ROWID" in query
+    for column in ("m.is_sent", "m.is_delivered", "m.error", "m.service"):
+        assert column in query
+    assert "SQLITE_OPEN_READONLY" in check
+    # An error on the row wins over any sent or delivered flag.
+    assert check.index("!= 0 ? .failed") < check.index("? .delivered") < check.index("? .sent : .pending")
+    body = _function(SENDER, "sendMessage")
+    since = body.index("MessageDeliveryCheck.storeDate(")
+    run = body.index("s.executeAndReturnError(&err)")
+    settle = body.index("MessageDeliveryCheck.settle(to: to, text: text, sinceNs: since)")
+    assert since < run < settle
+    assert '"delivery": seen.state.rawValue, "delivery_service": seen.service' in body
+    # With no SMS account the short-code script stops before its send line.
+    short = body[body.index("let script"):body.index('""" : """')]
+    assert short.index('return "\\(noSMSAccount)"') < short.index("send ")
+    assert 'static let noSMSAccount = "no_sms_account"' in SENDER
