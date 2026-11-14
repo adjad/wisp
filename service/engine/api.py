@@ -52,14 +52,26 @@ def _save_selected_mode(value: str) -> None:
         _write_mode(value)
 
 
+def _default_is_only_a_fallback() -> bool:
+    """External only because this Mac cannot run the built-in engine, with no oMLX to use.
+
+    Nobody chose that, and saving it would outlive its cause: after a macOS update the
+    built-in engine would work and Wisp would still be set to an app that is not there.
+    Left unsaved, the choice is made again at each launch.
+    """
+    return (mode.MODE == mode.EXTERNAL and mode.unsupported_reason() is not None
+            and not mode.external_omlx_installed())
+
+
 def persist_default() -> None:
     """Store the import-time first choice once, outside mode's import path.
 
     Recheck the overlay so a settings request made since startup wins. The
     existing writer preserves all unrelated settings and refuses corrupt files.
+    A fallback nobody chose (see `_default_is_only_a_fallback`) is never stored.
     """
     global _default_persisted
-    if _default_persisted or not mode.selection_unset():
+    if _default_persisted or not mode.selection_unset() or _default_is_only_a_fallback():
         return
     try:
         with _selection_transaction():

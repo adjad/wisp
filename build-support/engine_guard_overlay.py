@@ -13,10 +13,14 @@ from pathlib import Path
 import stat
 
 ROOT = Path(__file__).resolve().parent / "engine_guard"
-TARGETS = {"omlx/process_memory_enforcer.py", "omlx/engine_pool.py", "omlx/server.py", "omlx/engine/vlm.py"}
+TARGETS = {"omlx/process_memory_enforcer.py", "omlx/engine_pool.py", "omlx/server.py", "omlx/engine/vlm.py",
+           # Threadgroup-limit guard and the MTP fallback (omlx/wisp_kernel_guard.py).
+           "omlx/__init__.py", "omlx/patches/gemma4_verify_kernel.py",
+           "omlx/patches/gemma4_verify_attention.py", "omlx/patches/mlx_lm_mtp/batch_generator.py"}
 ADDITION = "omlx/wisp_guard.py"
 # Whole new engine files: installed path -> overlay source.
-ADDITIONS = {ADDITION: "proof.py", "omlx/wisp_encoders.py": "encoders.py"}
+ADDITIONS = {ADDITION: "proof.py", "omlx/wisp_encoders.py": "encoders.py",
+             "omlx/wisp_kernel_guard.py": "kernel_guard.py"}
 
 
 class OverlayError(RuntimeError):

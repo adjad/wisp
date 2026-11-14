@@ -1000,9 +1000,14 @@ final class FirstRunPermissions: ObservableObject {
                     after = EKEventStore.authorizationStatus(for: entity)
                 } while Self.eventKitAsksAgain(before: before, after: after, tries: tries)
                 patience.cancel()
-                waiting.remove(item)
-                unanswered[item] = Self.eventKitUnanswered(before: before, after: after)
-                if unanswered[item] == true {
+                // After the let-go a newer click may own the row: this late answer
+                // must not overwrite what that one shows.
+                let ownsRow = askTokens[item] == token || askTokens[item] == nil
+                if ownsRow {
+                    waiting.remove(item)
+                    unanswered[item] = Self.eventKitUnanswered(before: before, after: after)
+                }
+                if Self.eventKitUnanswered(before: before, after: after) {
                     // Kept for a debug export: how fast macOS came back says whether
                     // its question was ever on screen.
                     let seconds = String(format: "%.1f", Date().timeIntervalSince(started))

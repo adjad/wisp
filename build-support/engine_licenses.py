@@ -259,7 +259,7 @@ def notice_text(records: list[dict], reviewed: dict, omlx_version: str | None) -
         f"- Licence: {omlx['license']}",
         f"- Version: {omlx_version or 'unknown'}",
         f"- Licence text: `{LICENSES_DIR}/oMLX-LICENSE.txt`",
-        "- Wisp removes unused optional packages and applies a pinned memory-guard evidence overlay. "
+        "- Wisp removes unused optional packages and applies a pinned overlay (memory-guard evidence, on-demand encoders, Metal threadgroup guard). "
         "Upstream source identity and the derived overlay hashes are recorded separately in ENGINE.json.",
         "- Wisp modifications and reproducible patch source: "
         "https://github.com/adjad/wisp/tree/main/build-support/engine_guard/ "
