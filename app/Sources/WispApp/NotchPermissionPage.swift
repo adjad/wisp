@@ -117,7 +117,8 @@ enum NotchPermissionPage {
     /// `calendarAddOnly` is macOS's answer for Calendar (FirstRunPermissions.isAddOnly):
     /// nil reads it from this Mac.
     static func next(_ item: Item, _ state: State, waiting: Bool = false, reset: Bool = false,
-                     unanswered: Bool = false, contactsWait: Bool = false, calendarAddOnly: Bool? = nil) -> String {
+                     unanswered: Bool = false, notReached: Bool = false, contactsWait: Bool = false,
+                     calendarAddOnly: Bool? = nil) -> String {
         if item == .contacts && contactsWait {
             return "It's useful once Full Disk Access lets Wisp read Messages, so it waits for that."
         }
@@ -127,6 +128,7 @@ enum NotchPermissionPage {
         case .notOnThisMac: return "Nothing on this Mac needs it yet."
         case .notAsked:
             if waiting { return FirstRunPermissions.automationWaitingNote }
+            if notReached { return FirstRunPermissions.automationNotReachedNote(item) }
             if reset { return FirstRunPermissions.automationResetNote }
             if unanswered { return "macOS didn't show its question. Quit and reopen Wisp, then click Allow again." }
             switch item {

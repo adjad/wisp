@@ -584,6 +584,47 @@ def test_an_unanswered_automation_question_lets_its_row_go():
     assert "permissions.waiting.contains(item)" in row and "FirstRunPermissions.automationWaitingNote" in row
 
 
+def test_one_click_on_allow_gets_macos_to_ask():
+    """2026-11-13, a tester on 0.5.0: Allow on Reminders and on Mail & Notes showed no
+    question until a restart. Three ways a click could end with nothing on screen:
+    a Calendar or Reminders ask with no time limit (stuck on "Asking…" behind another
+    question), one that came back unanswered and was not tried again, and a Mail or
+    Notes ask sent a fixed 1.5 s after Wisp started the app, before it could be asked."""
+    setup = _sources()["FirstRunSetupView.swift"]
+    request = _body(setup, "func request(_ item: Item) async")
+    ask = request[request.index("case .ask:"):request.index("case .contacts:")]
+    order = ["let patience = letGoIfUnanswered(item, token: token)", "eventStores[entity] = nil",
+             "NSApp.activate(ignoringOtherApps: true)", "let store = eventStore(entity)",
+             "requestFullAccessToReminders()", "after = EKEventStore.authorizationStatus(for: entity)",
+             "while Self.eventKitAsksAgain(before: before, after: after, tries: tries)",
+             "patience.cancel()", "waiting.remove(item)",
+             "unanswered[item] = Self.eventKitUnanswered(before: before, after: after)"]
+    at = [ask.index(part) for part in order]
+    assert at == sorted(at)
+    # No fixed wait before an Automation ask: Wisp waits until the app it started
+    # can be asked about, and says so when it never could.
+    assert "1_500_000_000" not in request
+    for case, end, targets in (("case .mail:", "case .messages:", "Self.automationTargets"),
+                               ("case .messages:", "case .fullDiskAccess:", "Self.messagesAutomationTargets")):
+        body = request[request.index(case):request.index(end)]
+        order = [f"if !launched.isEmpty {{ await Self.waitUntilReached({targets}) }}", "(ask: true)",
+                 f"await noteReach(item, {targets})", "Self.quitAfterAsking(launched)"]
+        at = [body.index(part) for part in order]
+        assert at == sorted(at), case
+    # Waiting and the after-check never show a question themselves.
+    for helper in ("private static func waitUntilReached(_ targets: [String]) async",
+                   "private func noteReach(_ item: Item, _ targets: [String]) async"):
+        body = _body(setup, helper)
+        assert "ask: false" in body and "ask: true" not in body
+    assert "notReached.remove(item)" in request
+    refresh = _body(setup, "func refresh() async")
+    assert "notReached = notReached.filter { !Self.isDecided(next[$0] ?? .checking) }" in refresh
+    row = _body(setup, "private func permissionRow(")
+    assert "FirstRunPermissions.rowNote(" in row and "permissions.notReached.contains(item)" in row
+    notch = _sources()["NotchPermissionsView.swift"]
+    assert "notReached: access.notReached.contains(item)" in notch
+
+
 def test_readers_post_again_when_the_service_comes_up():
     """2026-10-29 fresh-install test: Reminders, allowed in setup, was missing after
     macOS's Quit & Reopen for Full Disk Access. The service keeps each source's last

@@ -300,6 +300,22 @@ struct FirstRunSetupChecks {
               && !FirstRunPermissions.eventKitUnanswered(before: .denied, after: .denied),
               "An ask that leaves macOS with no answer is reported; a Don't Allow is an answer")
         // An Automation question nobody answers: "Asking…" while it is new, then Ask again.
+        // 2026-11-13, a tester on 0.5.0: one click on Allow for Reminders showed no
+        // question. An ask macOS leaves unanswered is made once more by the same
+        // click, and an answer of any kind is never asked over.
+        check(FirstRunPermissions.eventKitAsksAgain(before: .notDetermined, after: .notDetermined, tries: 1)
+              && !FirstRunPermissions.eventKitAsksAgain(before: .notDetermined, after: .notDetermined,
+                                                        tries: FirstRunPermissions.eventKitTries)
+              && !FirstRunPermissions.eventKitAsksAgain(before: .notDetermined, after: .fullAccess, tries: 1)
+              && !FirstRunPermissions.eventKitAsksAgain(before: .notDetermined, after: .denied, tries: 1)
+              && !FirstRunPermissions.eventKitAsksAgain(before: .notDetermined, after: .writeOnly, tries: 1),
+              "An unanswered Calendar or Reminders ask is made once more, an answered one never")
+        // A Calendar or Reminders question still up lets its row go like Mail & Notes.
+        check(FirstRunPermissions.allowTitle(.reminders, asking: false, waiting: true) == "Ask again"
+              && FirstRunPermissions.allowTitle(.calendar, asking: true, waiting: false) == "Asking…"
+              && NotchPermissionPage.action(.reminders, .notAsked, waiting: true) == .askAgain
+              && NotchPermissionPage.next(.reminders, .notAsked, waiting: true) == FirstRunPermissions.automationWaitingNote,
+              "A Reminders question that is still up can be asked again and says where it is")
         check(FirstRunPermissions.allowTitle(.mail, asking: true, waiting: false) == "Asking…"
               && FirstRunPermissions.allowTitle(.mail, asking: true, waiting: true) == "Asking…"
               && FirstRunPermissions.allowTitle(.mail, asking: false, waiting: true) == "Ask again"
@@ -964,6 +980,41 @@ struct FirstRunSetupChecks {
         check(FirstRunPermissions.automationRead([noProc, noProc]) == .unknown
               && FirstRunPermissions.automationRead([noErr, noProc]) == .unknown
               && FirstRunPermissions.automationRead([]) == .unknown, "A closed app can't be read")
+        // The same tester's Mail & Notes click: the ask went out 1.5 s after Wisp
+        // started Mail, before Mail could be asked about. macOS shows nothing then
+        // (procNotFound), and the row stayed "Not set" with nothing to say.
+        let needsConsent = OSStatus(errAEEventWouldRequireUserConsent), refused = OSStatus(errAEEventNotPermitted)
+        check(!FirstRunPermissions.automationReached([noProc, noProc])
+              && !FirstRunPermissions.automationReached([needsConsent, noProc])
+              && !FirstRunPermissions.automationReached([noProc, noErr])
+              && !FirstRunPermissions.automationReached([])
+              && !FirstRunPermissions.automationReached([OSStatus(-1712)]),
+              "An app that is closed or still starting can't be asked about")
+        check(FirstRunPermissions.automationReached([needsConsent, needsConsent])
+              && FirstRunPermissions.automationReached([noErr, needsConsent])
+              && FirstRunPermissions.automationReached([refused, noErr])
+              && FirstRunPermissions.automationReached([noErr]),
+              "Any answer macOS can give means the app was reached")
+        let couldNotAsk = FirstRunPermissions.automationNotReachedNote(.mail)
+        check(couldNotAsk.contains("Open both yourself") && couldNotAsk.contains("click Allow again")
+              && FirstRunPermissions.automationNotReachedNote(.messages).contains("Open Messages yourself")
+              && !couldNotAsk.contains("Quit"),
+              "An ask that reached no app says to open it, not to restart Wisp")
+        check(FirstRunPermissions.rowNote(.mail, .notAsked, waiting: false, notReached: true, reset: false) == couldNotAsk
+              && FirstRunPermissions.rowNote(.mail, .notAsked, waiting: false, notReached: true, reset: true) == couldNotAsk
+              && FirstRunPermissions.rowNote(.mail, .notAsked, waiting: true, notReached: true, reset: false)
+                  == FirstRunPermissions.automationWaitingNote
+              && FirstRunPermissions.rowNote(.mail, .allowed, waiting: false, notReached: true, reset: false) == nil
+              && FirstRunPermissions.rowNote(.mail, .notAllowed, waiting: false, notReached: true, reset: false) == nil
+              && FirstRunPermissions.rowNote(.mail, .notAsked, waiting: false, notReached: false, reset: true)
+                  == FirstRunPermissions.automationResetNote
+              && FirstRunPermissions.rowNote(.reminders, .notAsked, waiting: false, notReached: false, reset: false) == nil,
+              "The row says it couldn't ask only while it can still ask, and after any question still up")
+        check(NotchPermissionPage.next(.mail, .notAsked, notReached: true) == couldNotAsk
+              && NotchPermissionPage.next(.mail, .notAsked, waiting: true, notReached: true)
+                  == FirstRunPermissions.automationWaitingNote
+              && NotchPermissionPage.next(.mail, .allowed, notReached: true) != couldNotAsk,
+              "The notch's permission page says the same")
         check(FirstRunPermissions.automationRead([noErr, noErr]) == .granted
               && FirstRunPermissions.automationRead([noErr]) == .granted, "Every target answering allowed is granted")
         check(FirstRunPermissions.automationRead([noErr, OSStatus(errAEEventNotPermitted)]) == .denied
