@@ -172,6 +172,24 @@ struct StudyFindTarget: Equatable, Sendable {
         return Self.sectionPaths.contains(Array(s.dropFirst(2)))
     }
 
+    /// An outside tool in the course's own menu: exactly
+    /// `/courses/<id>/external_tools/<n>` on this host, with no query (a tool
+    /// linked from inside a page or module carries one, or is a module item).
+    /// The clean launch address, or nil.
+    func navToolURL(_ raw: String) -> URL? {
+        guard let parts = Self.parts(raw), parts.host == host,
+              URLComponents(url: parts.url, resolvingAgainstBaseURL: false)?.query == nil
+        else { return nil }
+        let s = parts.segments
+        guard s.count == 4, s[0] == "courses", s[1] == canvasID, s[2] == "external_tools", Self.isDigits(s[3])
+        else { return nil }
+        var c = URLComponents()
+        c.scheme = "https"
+        c.host = host
+        c.path = "/courses/\(canvasID)/external_tools/\(s[3])"
+        return c.url
+    }
+
     /// A page on the course that launches a tool, LTI, quiz or assignment item.
     /// A section list page (the Assignments list, the Syllabus) is not one.
     func isLaunchPage(_ raw: String) -> Bool {
@@ -900,14 +918,16 @@ struct StudyFindAddResult: Equatable, Sendable {
 enum StudyFindText {
     static let button = "Find materials"
     static let help = "Opens this course's Canvas pages in your browser and finds its slides, docs and readings"
-    static let consentKey = "study.findMaterials.consented.v3"  // v3: the course's sections too
+    static let consentKey = "study.findMaterials.consented.v4"  // v4: sections and the course menu's outside tools
     static let consent = "Wisp will open this course's Modules page and its sections (Home, Announcements, Syllabus, "
         + "Assignments, Pages, Discussions, Files, Grades) in your browser, read the links on them and on up "
         + "to 100 of the course's own pages, and show you what it found. Each page opens as a tab you close yourself. "
         + "Nothing is added until you choose. "
         + "Linked Google files are read with your Drive sign-in; public articles are fetched without your cookies. "
         + "Opening an item may count as viewing it in Canvas. Course pages may load tools embedded in them, such as "
-        + "video players. Wisp never opens quizzes, assignments or outside tools."
+        + "video players. It also opens the outside tools in the course's menu (such as Ed Discussion, Gradescope or "
+        + "YuJa), signed in as you, and reads only their links. Wisp never opens quizzes, assignments, tools inside "
+        + "modules, meetings (Zoom), course surveys, badges or exam proctoring."
     static let noCanvasLink = "Wisp doesn't have a Canvas link for this course yet. Read your school tabs first."
     static let needsAddress = "Find materials: open this course in Canvas and press Read again so Wisp knows its address."
     static let openingModules = "Opening the Modules page in your browser"
@@ -915,6 +935,25 @@ enum StudyFindText {
     static func sorting(_ n: Int) -> String { "Sorting \(n) \(n == 1 ? "link" : "links")" }
     static func readingPage(_ i: Int, of n: Int) -> String { "Reading course page \(i) of \(n)" }
     static func readingSection(_ name: String, _ i: Int, of n: Int) -> String { "Reading \(name) (\(i) of \(n))" }
+    static func readingTool(_ name: String) -> String { "Reading the links in \(name)" }
+    static let outsideTool = "Outside tool"
+    /// The course menu's outside tools and what happened to each.
+    static func toolsLine(_ tools: [StudyFindTool]) -> String {
+        var done: [String] = []
+        var notOpened: [String] = []
+        for tool in tools {
+            switch tool.status {
+            case .read(let links): done.append("\(tool.name) (\(links) \(links == 1 ? "link" : "links"))")
+            case .couldntRead: done.append("\(tool.name) (couldn't read)")
+            case .skipped(let why): notOpened.append("\(tool.name) (\(why))")
+            case .waiting: notOpened.append("\(tool.name) (time limit)")
+            }
+        }
+        var parts: [String] = []
+        if !done.isEmpty { parts.append("Outside tools: " + done.joined(separator: ", ")) }
+        if !notOpened.isEmpty { parts.append("Not opened: " + notOpened.joined(separator: ", ")) }
+        return parts.joined(separator: " · ")
+    }
     /// One line of counts on the found card, so a run can be judged without seeing
     /// the page. Counts only: no titles or addresses.
     static func summary(_ c: StudyFindCounts) -> String {
@@ -1025,6 +1064,36 @@ struct StudyFindCounts: Equatable, Sendable {
     var truncated = 0
 }
 
+/// An outside tool from the course's menu (Ed Discussion, Gradescope, YuJa…).
+/// The owner asked for these to be opened ("add any outside source"); some are
+/// never opened because they start something or hold no course material.
+struct StudyFindTool: Equatable, Identifiable, Sendable {
+    enum Status: Equatable, Sendable {
+        case waiting
+        case read(links: Int)
+        case couldntRead
+        case skipped(String)
+    }
+    /// Its clean launch address.
+    let id: String
+    let name: String
+    var status: Status
+
+    /// Why a tool is never opened, from its menu name, or nil.
+    static func skipReason(_ name: String) -> String? {
+        let n = name.lowercased()
+        if n.contains("zoom") || n.contains("webex") || n.contains("teams meeting") { return "can start a meeting" }
+        if n.range(of: #"\bsets\b"#, options: .regularExpression) != nil || n.contains("evaluation")
+            || n.contains("survey") || n.contains("feedback") { return "course survey" }
+        if n.contains("badge") || n.contains("parchment") || n.contains("credential") { return "badges, no course material" }
+        if n.contains("proctor") || n.contains("honorlock") || n.contains("respondus") || n.contains("lockdown") {
+            return "exam proctoring"
+        }
+        if n.contains("attendance") || n.contains("check in") || n.contains("check-in") { return "records attendance" }
+        return nil
+    }
+}
+
 /// One course's Find materials run. Kept per course across view rebuilds (the
 /// notch can close and reopen mid-run), so the walk carries on and the card
 /// shows where it is when it comes back.
@@ -1049,6 +1118,7 @@ final class StudyFindRun: ObservableObject {
     @Published private(set) var note: String?
     @Published private(set) var result: StudyFindAddResult?
     @Published private(set) var counts: StudyFindCounts?
+    @Published private(set) var tools: [StudyFindTool] = []
 
     let target: StudyFindTarget
     private let transport: Transport
@@ -1065,7 +1135,9 @@ final class StudyFindRun: ObservableObject {
     /// the cap (5 minutes plus 9 s a page: 20 minutes at 100), and Wisp pauses
     /// `openPause` between page opens so the course site isn't hammered.
     static let maxVisits = 100
-    static let runSeconds: TimeInterval = 300 + TimeInterval(maxVisits) * 9
+    static let maxTools = 10
+    static let toolWait: TimeInterval = 25
+    static let runSeconds: TimeInterval = 300 + TimeInterval(maxVisits + maxTools + StudyFindTarget.sections.count) * 9
     static let openPause: UInt64 = 1_500_000_000
     static let modulesWait: TimeInterval = 60
     static let pageWait: TimeInterval = 20
@@ -1136,6 +1208,7 @@ final class StudyFindRun: ObservableObject {
         note = nil
         result = nil
         counts = nil
+        tools = []
         tabsOpened = 0
     }
 
@@ -1181,6 +1254,7 @@ final class StudyFindRun: ObservableObject {
         result = nil
         tabsOpened = 0
         counts = nil
+        tools = []
         titlesByURL = [:]
         sentTypes = [:]
         phase = .working
@@ -1375,7 +1449,54 @@ final class StudyFindRun: ObservableObject {
             }
         }
 
-        // 5. Classify what those pages link to, then show it all. Nothing
+        // 5. Outside tools in the course's own menu (the owner asked for them),
+        //    one level, read-only: Wisp opens the Canvas launch address, reads
+        //    only the links on the tab(s) the launch opened, and opens nothing
+        //    from them. Never: meetings, surveys, badges, proctoring, attendance.
+        var menuTools: [StudyFindTool] = []
+        var seenTools = Set<String>()
+        for link in (modulesPage?.links ?? []) + sectionLinks {
+            guard menuTools.count < Self.maxTools, let url = t.navToolURL(link.url),
+                  !seenTools.contains(url.absoluteString) else { continue }
+            seenTools.insert(url.absoluteString)
+            let name = link.title.isEmpty ? StudyFindText.outsideTool : link.title
+            menuTools.append(StudyFindTool(id: url.absoluteString, name: name,
+                                             status: StudyFindTool.skipReason(name).map { .skipped($0) } ?? .waiting))
+        }
+        tools = menuTools
+        for i in menuTools.indices where menuTools[i].status == .waiting {
+            guard live(gen) else { return }
+            if Date() >= runDeadline {
+                note = StudyFindText.timeCap
+                break
+            }
+            // Re-checked here: this course's own menu entry, nothing else.
+            guard let url = t.navToolURL(menuTools[i].id) else { continue }
+            step = StudyFindText.readingTool(menuTools[i].name)
+            try? await Task.sleep(nanoseconds: Self.openPause)
+            guard live(gen) else { return }
+            let snapshot = await StudyFindReader.tabs()
+            guard live(gen) else { return }
+            guard let before = snapshot, await open(url) else {
+                menuTools[i].status = .couldntRead
+                tools = menuTools
+                continue
+            }
+            guard live(gen) else { return }
+            let read = await landTool(before: before, gen: gen,
+                                      until: min(runDeadline, Date().addingTimeInterval(Self.toolWait)))
+            guard live(gen) else { return }
+            if let read {
+                menuTools[i].status = .read(links: read.links.count)
+                deeper += read.links
+                deeperFrames += read.frames
+            } else {
+                menuTools[i].status = .couldntRead
+            }
+            tools = menuTools
+        }
+
+        // 6. Classify what those pages link to, then show it all. Nothing
         //    from this round is opened.
         let second = Self.links(deeper, frames: deeperFrames, except: &sent)
         if !second.isEmpty, live(gen), Date() < runDeadline {
@@ -1496,6 +1617,30 @@ final class StudyFindRun: ObservableObject {
         }
         if let latest { return .course(latest) }
         return nil
+    }
+
+    /// The tab(s) an outside tool's launch opened: only tabs new since `before`
+    /// (Wisp's own), at most two, in a complete scan. Links only, never text,
+    /// read once their count is steady (at least 4 s in, for the launch's redirects).
+    private func landTool(before: [StudyFindTab], gen: Int, until: Date) async -> (links: [StudyFindLink], frames: [String])? {
+        let started = Date()
+        var lastCount: Int?
+        var latest: [StudyFindPage] = []
+        while Date() < until {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard live(gen) else { return nil }
+            let scan = await StudyFindReader.scan(text: false, known: before) { isNew, _ in isNew ? .walk : .skip }
+            guard live(gen) else { return nil }
+            let fresh = scan.pages.filter(\.isNew)
+            guard scan.complete, (1...2).contains(fresh.count) else { continue }
+            let count = fresh.reduce(0) { $0 + $1.links.count + $1.frames.count }
+            let cut = fresh.contains(where: \.truncated)
+            latest = fresh
+            if Date().timeIntervalSince(started) >= 4, !cut, count > 0, lastCount == count { break }
+            lastCount = cut ? nil : count
+        }
+        guard !latest.isEmpty else { return nil }
+        return (latest.flatMap(\.links), latest.flatMap(\.frames))
     }
 
     private func open(_ url: URL) async -> Bool {
@@ -1938,6 +2083,10 @@ private struct StudyFindCard: View {
             }
             if let counts = run.counts {
                 Text(StudyFindText.summary(counts)).font(.wisp(.caption)).foregroundStyle(Theme.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if !run.tools.isEmpty {
+                Text(StudyFindText.toolsLine(run.tools)).font(.wisp(.caption)).foregroundStyle(Theme.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if run.items.isEmpty {
