@@ -140,6 +140,8 @@ def attach(result: dict, *, now: float, timezone: str) -> None:
         blocks = plan.study_blocks(rows, _busy(current), now=now, timezone=timezone, day=day, slides=slides)
         try:
             from service.study import blocks_api
+            if not blocks_api.ENABLED:
+                raise LookupError("study calendar off")
             booked = store.meta(blocks_api.META, {}) if hasattr(store, "meta") else {}
             if isinstance(booked, dict) and booked:
                 blocks, current = blocks_api.mark(blocks, current, day, booked)
