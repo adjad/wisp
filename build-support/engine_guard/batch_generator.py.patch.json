@@ -1,0 +1,27 @@
+{
+  "path": "omlx/patches/mlx_lm_mtp/batch_generator.py",
+  "input_sha256": "979d9b64e8f8d2f5b2e602c6860ee70c9a0f83ac512545e03ce5c0251b304269",
+  "output_sha256": "92d6e67f5c6cd025fa99d0a02fb288915e27f27a736cfc9af87f4c982dc8c181",
+  "edits": [
+    {
+      "old": "from omlx.prefill_progress import get_prefill_tracker\n",
+      "new": "from omlx.prefill_progress import get_prefill_tracker\n# Modified by Wisp: an MTP failure costs speed, never the reply.\nfrom omlx import wisp_kernel_guard as _wisp_kernel_guard\n",
+      "count": 1
+    },
+    {
+      "old": "    if not hasattr(gen_batch, \"model\"):\n        return False\n    drafter = _drafter_for(gen_batch.model)\n",
+      "new": "    if not hasattr(gen_batch, \"model\"):\n        return False\n    # Modified by Wisp: a batch or model that already failed in MTP stays\n    # on plain decoding.\n    if _wisp_kernel_guard.mtp_blocked(gen_batch):\n        return False\n    drafter = _drafter_for(gen_batch.model)\n",
+      "count": 1
+    },
+    {
+      "old": "                except _MtpStepFallback as exc:\n                    logger.debug(\"MTP batch next() fallback to standard step: %s\", exc)\n                    if not _reconcile_mtp_batch_to_standard(self):\n                        raise RuntimeError(\n                            \"Lightning MTP could not restore the committed batch cache\"\n                        ) from exc\n",
+      "new": "                except Exception as exc:\n                    # Modified by Wisp: any error in the MTP step, not only\n                    # the ones MTP raises on purpose, falls back to the\n                    # standard step below.\n                    wisp_failure = not isinstance(exc, _MtpStepFallback)\n                    if wisp_failure and not _wisp_kernel_guard.mtp_failure(\n                        self, exc\n                    ):\n                        raise\n                    logger.debug(\"MTP batch next() fallback to standard step: %s\", exc)\n                    if not _reconcile_mtp_batch_to_standard(self):\n                        if wisp_failure:\n                            # Modified by Wisp: the scheduler's own recovery\n                            # knows the original error, not this one.\n                            raise exc\n                        raise RuntimeError(\n                            \"Lightning MTP could not restore the committed batch cache\"\n                        ) from exc\n",
+      "count": 1
+    },
+    {
+      "old": "                    except _MtpStepFallback as exc:\n                        logger.debug(\"MTP next() fallback to standard step: %s\", exc)\n                        active = getattr(self, \"_omlx_mtp_state\", None)\n                        if active is not None:\n                            if not _reconcile_mtp_to_standard(self, active):\n                                raise RuntimeError(\n                                    \"Lightning MTP could not restore the committed cache\"\n                                ) from exc\n",
+      "new": "                    except Exception as exc:\n                        # Modified by Wisp: any error in the MTP step (a\n                        # verify kernel this GPU refuses, for one) falls back\n                        # to the standard step below instead of ending the\n                        # reply. The forward that failed may have advanced\n                        # the cache, so the committed state is rebuilt even\n                        # when MTP had not finished activating.\n                        wisp_failure = not isinstance(exc, _MtpStepFallback)\n                        if wisp_failure and not _wisp_kernel_guard.mtp_failure(\n                            self, exc\n                        ):\n                            raise\n                        logger.debug(\"MTP next() fallback to standard step: %s\", exc)\n                        active = getattr(self, \"_omlx_mtp_state\", None)\n                        if active is None and wisp_failure:\n                            active = SimpleNamespace(\n                                queue=deque(), uid=None, reentry_probe=False\n                            )\n                        if active is not None:\n                            if not _reconcile_mtp_to_standard(self, active):\n                                if wisp_failure:\n                                    # Modified by Wisp: the scheduler's own\n                                    # recovery knows the original error.\n                                    raise exc\n                                raise RuntimeError(\n                                    \"Lightning MTP could not restore the committed cache\"\n                                ) from exc\n",
+      "count": 1
+    }
+  ]
+}

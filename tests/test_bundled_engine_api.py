@@ -235,8 +235,8 @@ def test_unsupported_and_validation() -> None:
                 {"method": "GET", "path": "/engine"},
                 {"method": "POST", "path": "/engine/mode", "json": {"mode": "bundled"}},
             ])
-            check("invalid requirement defaults external", body(result)["mode"] == "external-omlx"
-                  and result["overlay"] == {"engine": {"mode": "external-omlx"}})
+            check("invalid requirement defaults external, and that fallback is not saved",
+                  body(result)["mode"] == "external-omlx" and result["overlay"] is None)
             check("invalid requirement refuses bundled selection", not body(result)["bundled_available"]
                   and result["responses"][1]["status"] == 409)
             check("invalid requirement is not echoed", "FAKE-INVALID-REQUIREMENT" not in json.dumps(result))
@@ -473,6 +473,74 @@ def test_credential_free_local_probe() -> None:
         check("hard deadline bounds dripping body", not result["stalled"] and result["elapsed"] < 1)
 
 
+def test_unsupported_macos_fallback_is_not_saved() -> None:
+    # A tester opened Wisp on a macOS older than the built-in engine needs. The fallback to
+    # "external-omlx" was saved, and after they updated macOS Wisp stayed set to an oMLX app
+    # they never had. The ENGINE.json requirement stands in for the Mac's macOS version here.
+    def requirement(engine: Path, minimum: str) -> None:
+        (engine / "ENGINE.json").write_text(json.dumps({"minimum_macos": minimum, "omlx_version": "0.7.1.dev1"}))
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        engine = fixture(root, minimum="999.0")
+        old = probe(root, engine, operations=[{"method": "GET", "path": "/engine"}] * 2)
+        check("too-old macOS with no oMLX runs external", old["mode"] == "external-omlx"
+              and body(old, 1)["mode"] == "external-omlx")
+        check("and saves no engine choice", old["overlay"] is None and not (root / "wisp" / "config.yaml").exists())
+        check("status reports no saved choice and no restart", body(old)["configured_mode"] is None
+              and body(old)["restart_required"] is False)
+        check("setup names the macOS requirement", "macOS 999" in (body(old)["unsupported_reason"] or ""))
+        again = probe(root, engine)
+        check("the next launch on the same macOS still saves nothing", again["mode"] == "external-omlx"
+              and again["overlay"] is None)
+        requirement(engine, "14.0")
+        updated = probe(root, engine)
+        check("after a macOS update the built-in engine is picked", updated["mode"] == "bundled"
+              and body(updated)["bundled_available"])
+        check("and that choice is saved", updated["overlay"] == {"engine": {"mode": "bundled"}})
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        engine = fixture(root, minimum="999.0")
+        (root / "wisp").mkdir()
+        (root / "wisp" / "config.yaml").write_text("chat:\n  tone: gentle\n")
+        kept = probe(root, engine)
+        check("other settings are left untouched when nothing is saved", kept["overlay"] == {"chat": {"tone": "gentle"}})
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        engine = fixture(root, minimum="999.0")
+        own = probe(root, engine, installed=True)
+        check("too-old macOS with oMLX.app installed picks and saves external", own["mode"] == "external-omlx"
+              and own["overlay"] == {"engine": {"mode": "external-omlx"}})
+        requirement(engine, "14.0")
+        later = probe(root, engine, installed=True)
+        check("and that saved choice survives a macOS update", later["mode"] == "external-omlx"
+              and later["overlay"] == {"engine": {"mode": "external-omlx"}})
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        engine = fixture(root, minimum="999.0")
+        chosen = probe(root, engine, operations=[
+            {"method": "POST", "path": "/engine/mode", "json": {"mode": "external-omlx"}}])
+        check("an external choice made in Settings is saved on a too-old macOS",
+              chosen["responses"][0]["status"] == 200 and chosen["overlay"] == {"engine": {"mode": "external-omlx"}})
+        requirement(engine, "14.0")
+        later = probe(root, engine)
+        check("and is kept after a macOS update", later["mode"] == "external-omlx"
+              and later["overlay"] == {"engine": {"mode": "external-omlx"}})
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        engine = fixture(root, minimum="999.0")
+        launched = probe(root, engine, env={"WISP_ENGINE_MODE": "external-omlx"})
+        check("a launch override is honoured and writes nothing", launched["mode"] == "external-omlx"
+              and launched["overlay"] is None)
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        engine = fixture(root, minimum="999.0")
+        (root / "wisp").mkdir()
+        (root / "wisp" / "config.yaml").write_text("engine: [unreadable\n")
+        broken = probe(root, engine)
+        check("an unreadable config is never overwritten",
+              (root / "wisp" / "config.yaml").read_text() == "engine: [unreadable\n")
+
+
 def existing_setup_suite() -> int:
     # The existing file is pytest-style, so expose a standalone entry point
     # without editing it. All import-time paths and recovery state are isolated.
@@ -516,6 +584,7 @@ def main() -> int:
     for fn in (test_first_launch_and_stickiness,
                test_omlx_only_in_the_user_applications_folder_keeps_the_built_in_engine,
                test_unsupported_and_validation,
+               test_unsupported_macos_fallback_is_not_saved,
                test_switch_and_secrets, test_env_and_corrupt_overlay, test_concurrent_selection,
                test_idle_external_engine_is_not_memory, test_credential_free_local_probe):
         print(fn.__name__)

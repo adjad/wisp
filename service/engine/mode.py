@@ -4,6 +4,8 @@ Resolved ONCE at import, like the other `.moe` constants: switching mode needs a
 backend restart, and the config module needs the answer before it defines the
 settings paths. A fresh install prefers the available built-in engine unless
 oMLX.app is installed. The router persists that first choice, never this module.
+A Mac that cannot run the built-in engine and has no oMLX.app falls back to external
+without that being saved, so a later macOS update gets the built-in engine.
 """
 from __future__ import annotations
 

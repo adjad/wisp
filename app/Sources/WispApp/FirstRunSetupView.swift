@@ -761,6 +761,10 @@ final class FirstRunPermissions: ObservableObject {
     private var askTokens: [Item: UUID] = [:]
     /// Calendar or Reminders asked, and macOS recorded no answer (see eventKitUnanswered).
     @Published private(set) var unanswered: [Item: Bool] = [:]
+    /// Mail & Notes or Messages whose app could not be asked about on the last
+    /// click: it had not finished opening, so macOS had nobody to ask about and
+    /// showed nothing (see automationReached).
+    @Published private(set) var notReached: Set<Item> = []
     /// Mail & Notes or Messages whose grant macOS has dropped since it was last
     /// Allowed (an update that changed how Wisp is signed does this once), so the
     /// row can say why it asks again instead of looking random.
@@ -939,12 +943,14 @@ final class FirstRunPermissions: ObservableObject {
         resetItems = Set([Item.mail, .messages].filter { Self.storedAutomation($0) == .reset })
         messagesReadable = Self.messagesReadable()
         waiting = waiting.filter { !Self.isDecided(next[$0] ?? .checking) }
+        notReached = notReached.filter { !Self.isDecided(next[$0] ?? .checking) }
         states = next
     }
 
     func request(_ item: Item) async {
         guard !asking.contains(item) else { return }
         let token = UUID()
+        notReached.remove(item)
         asking.insert(item)
         askTokens[item] = token
         defer { if askTokens[item] == token { asking.remove(item); askTokens[item] = nil } }
@@ -966,14 +972,47 @@ final class FirstRunPermissions: ObservableObject {
                 unanswered[item] = nil
                 Permissions.openSettingsPane(FirstRunSetupView.settingsPane(item))
             case .ask:
-                let store = eventStore(entity)
-                do {
-                    _ = item == .calendar ? try await store.requestFullAccessToEvents()
-                                          : try await store.requestFullAccessToReminders()
-                } catch {
-                    NSLog("Wisp: macOS did not answer the \(item.rawValue) request: \(error.localizedDescription)")
+                // macOS waits on its question with no time limit. One that is behind
+                // another window, or held up by another row's unanswered question,
+                // left this row on "Asking…" until Wisp was reopened: the row is let
+                // go like Mail & Notes.
+                let patience = letGoIfUnanswered(item, token: token)
+                let started = Date()
+                var tries = 0
+                var after = before
+                repeat {
+                    // A request that came back with no answer is not repeated on the
+                    // store that produced it: the next goes to a new one, with Wisp
+                    // in front again.
+                    if tries > 0 {
+                        eventStores[entity] = nil
+                        try? await Task.sleep(for: Self.eventKitRetryPause)
+                        NSApp.activate(ignoringOtherApps: true)
+                    }
+                    tries += 1
+                    let store = eventStore(entity)
+                    do {
+                        _ = item == .calendar ? try await store.requestFullAccessToEvents()
+                                              : try await store.requestFullAccessToReminders()
+                    } catch {
+                        NSLog("Wisp: macOS did not answer the \(item.rawValue) request: \(error.localizedDescription)")
+                    }
+                    after = EKEventStore.authorizationStatus(for: entity)
+                } while Self.eventKitAsksAgain(before: before, after: after, tries: tries)
+                patience.cancel()
+                // After the let-go a newer click may own the row: this late answer
+                // must not overwrite what that one shows.
+                let ownsRow = askTokens[item] == token || askTokens[item] == nil
+                if ownsRow {
+                    waiting.remove(item)
+                    unanswered[item] = Self.eventKitUnanswered(before: before, after: after)
                 }
-                unanswered[item] = Self.eventKitUnanswered(before: before, after: EKEventStore.authorizationStatus(for: entity))
+                if Self.eventKitUnanswered(before: before, after: after) {
+                    // Kept for a debug export: how fast macOS came back says whether
+                    // its question was ever on screen.
+                    let seconds = String(format: "%.1f", Date().timeIntervalSince(started))
+                    OnboardingTimeline.record("\(item.rawValue) ask: no answer from macOS after \(tries) tries, \(seconds) s")
+                }
             }
         case .contacts:
             _ = try? await CNContactStore().requestAccess(for: .contacts)
@@ -984,25 +1023,31 @@ final class FirstRunPermissions: ObservableObject {
             // started in the background first, and closed again once asked.
             var launched: [NSRunningApplication] = []
             for id in Self.automationTargets { if let app = await Self.launchHidden(id) { launched.append(app) } }
-            // Only an app Wisp just started needs a moment to come up before it can be asked.
-            if !launched.isEmpty { try? await Task.sleep(nanoseconds: 1_500_000_000) }
+            // Only an app Wisp just started needs time to come up before it can be asked.
+            if !launched.isEmpty { await Self.waitUntilReached(Self.automationTargets) }
             NSApp.activate(ignoringOtherApps: true)
             let patience = letGoIfUnanswered(item, token: token)
-            _ = await Self.automationState(ask: true)
+            let answer = await Self.automationState(ask: true)
             patience.cancel()
             waiting.remove(item)
+            await noteReach(item, Self.automationTargets)
+            // Without Full Disk Access Wisp reads Mail only while Mail is open, so
+            // closing it right after a yes left mail empty until the person opened
+            // Mail themselves. Notes still closes.
+            launched.removeAll { Self.staysOpenAfterAsking($0.bundleIdentifier, item: item, answer: answer) }
             Self.quitAfterAsking(launched)
         case .messages:
             // The same for Messages, on its own target list: its answer never
             // changes the Mail & Notes row or what Mail's reader reports.
             var launched: [NSRunningApplication] = []
             for id in Self.messagesAutomationTargets { if let app = await Self.launchHidden(id) { launched.append(app) } }
-            if !launched.isEmpty { try? await Task.sleep(nanoseconds: 1_500_000_000) }
+            if !launched.isEmpty { await Self.waitUntilReached(Self.messagesAutomationTargets) }
             NSApp.activate(ignoringOtherApps: true)
             let patience = letGoIfUnanswered(item, token: token)
             _ = await Self.messagesAutomationState(ask: true)
             patience.cancel()
             waiting.remove(item)
+            await noteReach(item, Self.messagesAutomationTargets)
             Self.quitAfterAsking(launched)
         case .fullDiskAccess:
             // Full Disk Access can't be asked for: open its page and let the person
@@ -1044,6 +1089,17 @@ final class FirstRunPermissions: ObservableObject {
     /// (or was dismissed without a choice), so Wisp is still absent from the list.
     static func eventKitUnanswered(before: EKAuthorizationStatus, after: EKAuthorizationStatus) -> Bool {
         before == .notDetermined && after == .notDetermined
+    }
+
+    /// How many times one click asks macOS for Calendar or Reminders.
+    static let eventKitTries = 2
+    static let eventKitRetryPause: Duration = .milliseconds(400)
+
+    /// Whether the same click asks once more: only after an ask macOS left
+    /// unanswered, and only until `eventKitTries` is used up. An answer of any
+    /// kind is never asked over.
+    static func eventKitAsksAgain(before: EKAuthorizationStatus, after: EKAuthorizationStatus, tries: Int) -> Bool {
+        eventKitUnanswered(before: before, after: after) && tries < eventKitTries
     }
 
     /// The Calendar or Reminders row's sentence: what it is for, or, once macOS
@@ -1218,6 +1274,11 @@ final class FirstRunPermissions: ObservableObject {
     /// asked about, so it keeps the answer remembered from the last time one could.
     nonisolated static func automationStateNow(of targets: [String], item: Item, ask: Bool,
                                                defaults: AutomationAnswerStore = UserDefaults.standard) -> State {
+        recordAutomation(automationRead(automationStatuses(of: targets, ask: ask)), item: item, defaults: defaults)
+    }
+
+    /// macOS's answer for each target, in order. Shows its question only with `ask`.
+    nonisolated static func automationStatuses(of targets: [String], ask: Bool) -> [OSStatus] {
         var statuses: [OSStatus] = []
         for id in targets {
             var target = AEAddressDesc()
@@ -1229,7 +1290,55 @@ final class FirstRunPermissions: ObservableObject {
                                                                   AEEventID(typeWildCard), ask))
             AEDisposeDesc(&target)
         }
-        return recordAutomation(automationRead(statuses), item: item, defaults: defaults)
+        return statuses
+    }
+
+    /// Pure: every target gave macOS something to answer about (allowed, refused or
+    /// not asked yet). An app that is closed or still starting gives procNotFound,
+    /// and macOS then shows no question at all, however the request is made.
+    nonisolated static func automationReached(_ statuses: [OSStatus]) -> Bool {
+        let definite = [noErr, OSStatus(errAEEventNotPermitted), OSStatus(errAEEventWouldRequireUserConsent)]
+        return !statuses.isEmpty && statuses.allSatisfy(definite.contains)
+    }
+
+    /// How long an app Wisp opened to ask may take to come up. A fixed 1.5 s was not
+    /// enough for a first launch (Mail after a macOS update): the ask went out before
+    /// the app could be asked about, showed nothing, and left the row as it was.
+    nonisolated static let automationStartPatience: Duration = .seconds(20)
+
+    /// Waits, without asking, until every target can be asked about or the patience
+    /// runs out.
+    private static func waitUntilReached(_ targets: [String]) async {
+        let deadline = ContinuousClock.now + automationStartPatience
+        while ContinuousClock.now < deadline {
+            if await Task.detached(operation: { automationReached(automationStatuses(of: targets, ask: false)) }).value { return }
+            try? await Task.sleep(for: .milliseconds(400))
+        }
+    }
+
+    /// After an ask: whether macOS could be asked at all. Read before Wisp closes
+    /// what it opened, and never a prompt.
+    private func noteReach(_ item: Item, _ targets: [String]) async {
+        let statuses = await Task.detached { Self.automationStatuses(of: targets, ask: false) }.value
+        if Self.automationReached(statuses) { notReached.remove(item); return }
+        notReached.insert(item)
+        OnboardingTimeline.record("\(item.rawValue) ask: app not reached \(statuses)")
+    }
+
+    /// The row's words when the app could not be asked about. Opening it by hand
+    /// always works: Wisp never closes an app the person opened.
+    nonisolated static func automationNotReachedNote(_ item: Item) -> String {
+        item == .messages
+            ? "macOS couldn't ask, because Messages didn't finish opening. Open Messages yourself, then click Allow again."
+            : "macOS couldn't ask, because Mail or Notes didn't finish opening. Open both yourself, then click Allow again."
+    }
+
+    /// Pure: the note a row adds to its sentence, if any. A question still up
+    /// comes first; "couldn't ask" only matters while the row can still ask.
+    static func rowNote(_ item: Item, _ state: State, waiting: Bool, notReached: Bool, reset: Bool) -> String? {
+        if waiting { return automationWaitingNote }
+        if notReached && state == .notAsked { return automationNotReachedNote(item) }
+        return reset ? automationResetNote : nil
     }
 
     /// Weighs a probe against the remembered answer, remembers the result, and
@@ -1299,6 +1408,13 @@ final class FirstRunPermissions: ObservableObject {
     /// prompt was up. Anything they opened or began using stays open.
     nonisolated static func quitsAfterAsking(launchedByWisp: Bool, isHidden: Bool, isActive: Bool) -> Bool {
         launchedByWisp && isHidden && !isActive
+    }
+
+    /// Pure: an app Wisp opened to ask that it then leaves running. Only Mail, and
+    /// only after a yes: the grant's first read (AppDelegate.resyncReaders) and
+    /// every later one script Mail, which needs it open.
+    nonisolated static func staysOpenAfterAsking(_ bundleID: String?, item: Item, answer: State) -> Bool {
+        item == .mail && bundleID == "com.apple.mail" && answer == .allowed
     }
 
     /// Closes what Wisp opened to ask, politely: the app saves and quits like any
@@ -2139,7 +2255,8 @@ struct FirstRunSetupView: View {
                               state: permissions.state(.reminders), unanswered: permissions.unanswered[.reminders] == true))
             permissionRow(.mail, icon: "envelope", title: "Mail & Notes",
                           detail: "Emails that need a reply, and your notes, while those apps are open. "
-                              + "Opens Mail and Notes for a moment to ask, then closes them.")
+                              + "Opens Mail and Notes to ask, then closes Notes. If you allow it, Mail stays "
+                              + "open in the background so Wisp can read it.")
             permissionRow(.messages, icon: "message", title: "Messages",
                           detail: "Sends the texts you approve in Ask. Opens Messages for a moment to ask, then closes it.")
             permissionRow(.fullDiskAccess, icon: "internaldrive", title: "Full Disk Access",
@@ -2203,8 +2320,11 @@ struct FirstRunSetupView: View {
     private func permissionRow(_ item: FirstRunPermissions.Item, icon: String, title: String, detail: String) -> some View {
         let state = permissions.state(item)
         let label = FirstRunPermissions.label(item, state)
-        let detail = permissions.waiting.contains(item) ? detail + " " + FirstRunPermissions.automationWaitingNote
-            : permissions.resetItems.contains(item) ? detail + " " + FirstRunPermissions.automationResetNote : detail
+        // waiting → FirstRunPermissions.automationWaitingNote, then "couldn't ask", then a dropped grant.
+        let note = FirstRunPermissions.rowNote(item, state, waiting: permissions.waiting.contains(item),
+                                               notReached: permissions.notReached.contains(item),
+                                               reset: permissions.resetItems.contains(item))
+        let detail = note.map { detail + " " + $0 } ?? detail
         return OnboardingCard(icon: icon, title: title, detail: detail) {
             HStack(spacing: 8) {
                 switch state {
