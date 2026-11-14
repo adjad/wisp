@@ -763,7 +763,10 @@ final class SettingsLoader: ObservableObject {
         } else if cloudBaseURL == "https://api.openai.com" {
             cloudPreset = "openai"
         } else if cloudBaseURL == "https://generativelanguage.googleapis.com" {
+            // Saved by an earlier build as OpenAI-compatible: the next save uses the
+            // Gemini API provider, which the service pins to this exact prefix.
             cloudPreset = "gemini"
+            cloudAPIPrefix = "/v1beta/openai"
         } else {
             cloudPreset = "custom"
         }
