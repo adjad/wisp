@@ -270,11 +270,11 @@ final class OverlayPanel: NSPanel {
 
     /// The collapsed bar and its window: on a notched MacBook it covers the
     /// notch plus a hairline of overhang; on a monitor it is a small capsule
-    /// under the menu bar; on a notchless built-in display it is an undrawn
-    /// seed under the menu bar that the card grows out of.
+    /// under the menu bar; on a notchless built-in display it is a small pill in
+    /// the menu bar's centre, as tall as the bar, that the card grows out of.
     private func barFrame() -> NSRect? { layout.barFrame }
 
-    /// A collapsed bar that draws nothing (.menuBar, or a notch behind a
+    /// A collapsed bar that draws nothing (a notch or a pill behind a
     /// full-screen app) must not take clicks from the menu bar or the app under
     /// it; hover is detected from the pointer position, and the menu-bar icon
     /// and ⌥Space open it. Everything else takes the mouse. The view draws the
@@ -498,7 +498,7 @@ final class OverlayPanel: NSPanel {
     /// content is swapped for the collapsed bar and the window drops to the
     /// bar's frame: the bar's own view may not have drawn yet, and without
     /// this the bar could blink off for a frame. Never on while the bar draws
-    /// nothing (a hidden notch, the menu-bar seed).
+    /// nothing (a hidden notch or pill).
     private func backBar(_ on: Bool) {
         barBackingGeneration &+= 1
         guard let layer = stage?.layer else { return }

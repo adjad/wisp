@@ -113,7 +113,18 @@ struct OverlayView: View {
     }
     /// The Brief in two columns, in the wider panel.
     private var briefIsWide: Bool { briefWide && briefCanWiden }
-    private var isNotch: Bool { layout.style == .notch }
+    /// Bars flush with the top edge (a notch's, and the notchless pill) show only
+    /// the small marks; a monitor's capsule also carries the orb and chevron.
+    private var isSlimBar: Bool { layout.style != .floating }
+    /// Bottom padding that sets a mark of `item` pt in the bar: a notch's own
+    /// offset, or centred in the pill, whose height is the menu bar's.
+    private func markInset(notch: CGFloat, floating: CGFloat, item: CGFloat) -> CGFloat {
+        switch layout.style {
+        case .notch: return notch
+        case .menuBar: return max(((layout.barSize.height - item) / 2).rounded(), 0)
+        case .floating: return floating
+        }
+    }
 
     /// Brief and Day under the fixed header: as tall as their content until the
     /// panel would pass the screen's bottom (SurfaceLayout.maxPanelHeight), then
@@ -300,15 +311,16 @@ struct OverlayView: View {
         }
     }
 
-    // Collapsed with nothing drawn: a built-in display without a notch, or a notch
-    // behind a full-screen app (the hybrid notch). Its status is on the menu-bar
+    // Collapsed with nothing drawn: a notch, or a notchless display's pill, behind
+    // a full-screen app (the hybrid notch). Its status is on the menu-bar
     // icon (AppDelegate.updateMenuBarStatus), and the window ignores the mouse.
     private var hiddenBar: some View {
         Color.clear.frame(width: layout.barSize.width, height: layout.barSize.height)
             .accessibilityHidden(true)
     }
 
-    // Collapsed: a black bar that wraps the notch on a notched MacBook; on a
+    // Collapsed: a black bar that wraps the notch on a notched MacBook; a black
+    // pill in the menu bar's centre on a notchless built-in display; on a
     // monitor, a small capsule under the menu bar. Hover to open.
     private var notchBar: some View {
         ZStack(alignment: .bottom) {
@@ -316,7 +328,7 @@ struct OverlayView: View {
             if model.isProcessing || model.phase == .streaming {
                 Circle().fill(.white.opacity(0.9))
                     .frame(width: 4, height: 4)
-                    .padding(.bottom, 5)
+                    .padding(.bottom, markInset(notch: 5, floating: 5, item: 4))
                     .opacity(!reduceMotion && breathe ? 0.3 : 1)
                     .animation(reduceMotion ? nil : .easeInOut(duration: 1).repeatForever(autoreverses: true), value: breathe)
                     .accessibilityHidden(true)
@@ -324,31 +336,31 @@ struct OverlayView: View {
                 // Ready while notifications are off: a still, quiet dot until the
                 // panel is opened (AppDelegate.tellReady, readyLineSeen).
                 HStack(spacing: 6) {
-                    if !isNotch { WispOrb(resting: true).scaleEffect(0.7) }
+                    if !isSlimBar { WispOrb(resting: true).scaleEffect(0.7) }
                     Circle().fill(Theme.good.opacity(0.75)).frame(width: 5, height: 5)
                 }
-                .padding(.bottom, isNotch ? 5 : 8)
+                .padding(.bottom, markInset(notch: 5, floating: 8, item: 5))
                 .accessibilityLabel("Wisp is ready")
             } else if model.setupCard != .later, todayModel.isShowingCurrentDay, todayCount > 0 {
                 // What's due today or overdue, from the day's last load (it loads only
                 // while Brief or Day is open, so the bar never triggers a load).
                 HStack(spacing: 6) {
-                    if !isNotch { WispOrb(resting: true).scaleEffect(0.7) }
+                    if !isSlimBar { WispOrb(resting: true).scaleEffect(0.7) }
                     Text("\(todayCount)").font(.wisp(.caption, weight: .bold)).foregroundStyle(.black)
                         .padding(.horizontal, 5).frame(minWidth: 14, minHeight: 13)
                         .background(Capsule().fill(.white))
                 }
-                .padding(.bottom, isNotch ? 3 : 8)
+                .padding(.bottom, markInset(notch: 3, floating: 8, item: 13))
                 .accessibilityLabel(todayCount == 1 ? "1 thing is due today" : "\(todayCount) things are due today")
             } else if model.setupCard == .later {
                 // Setup was set aside and Wisp still can't answer.
                 HStack(spacing: 6) {
-                    if !isNotch { WispOrb(resting: true).scaleEffect(0.7) }
+                    if !isSlimBar { WispOrb(resting: true).scaleEffect(0.7) }
                     Text("!").font(.wisp(.caption, weight: .heavy)).foregroundStyle(Theme.warn)
                 }
-                .padding(.bottom, isNotch ? 3 : 8)
+                .padding(.bottom, markInset(notch: 3, floating: 8, item: 13))
                 .accessibilityLabel("Wisp isn't set up yet")
-            } else if !isNotch {
+            } else if !isSlimBar {
                 HStack(spacing: 8) {
                     WispOrb(resting: true).scaleEffect(0.7)
                     Image(systemName: "chevron.down")
