@@ -96,7 +96,7 @@ async def drive_add(request: Request):
         found = await drive.export(body.file_id, pdf_ok=can_read)
     except drive.DriveError as exc:
         raise _refusal(exc) from None
-    pages, deck_status = await _read_pages(found, started) if can_read else (None, "none")
+    pages, deck_status, deck_error = await _read_pages(found, started) if can_read else (None, "none", None)
     if found["kind"] == "pdf" and not pages:
         raise api.Refusal(502 if deck_status == "failed" else 422,
                           "google_error" if deck_status == "failed" else "invalid",
@@ -108,34 +108,40 @@ async def drive_add(request: Request):
                                  "text": text, "course_id": course_id})
     if pages:
         store.save_pages(summary["id"], pages)
+        store.set_deck_error(summary["id"], None)
     elif deck_status == "failed" and not store.pages(summary["id"]):
         store.set_deck_status(summary["id"], "failed")   # a failed re-read keeps the earlier pages and status
+        store.set_deck_error(summary["id"], deck_error)
     summary = next((s for s in store.sources() if s["id"] == summary["id"]), summary)
     return {"source": summary, "state": await api._state()}
 
 
-async def _read_pages(found: dict, started: float) -> tuple[list[dict] | None, str]:
-    """(pages, deck_status) for one file: "ready" with pages, else "failed" (too large, Google
+TOO_BIG_DECK = "The file is over 14 MB, too large to read as slides."
+TOO_SLOW_DECK = "Reading the slides took too long. Try again in a moment."
+
+
+async def _read_pages(found: dict, started: float) -> tuple[list[dict] | None, str, str | None]:
+    """(pages, deck_status, reason) for one file: "ready" with pages, else "failed" (too large, Google
     refused the PDF export, or Gemini failed). Never raises: the text source still saves."""
     try:
         data = await drive.pdf_bytes(found["id"], found["kind"])
     except drive.DriveError as exc:
         log.info("Study deck: PDF fetch refused (%s)", exc.code)
-        return None, "failed"
+        return None, "failed", exc.message
     if data is None:
         log.info("Study deck: PDF over the inline cap; kept text-only")
-        return None, "failed"
+        return None, "failed", TOO_BIG_DECK
     remaining = ADD_BUDGET_S - (time.monotonic() - started)
     if remaining < 10:
-        return None, "failed"
+        return None, "failed", TOO_SLOW_DECK
     try:
         pages = await deck.read_pages(data, title=found["name"], timeout_s=min(deck.TIMEOUT_S, remaining))
     except deck.DeckError as exc:
         log.info("Study deck: read failed (%s)", exc.code)
-        return None, "failed"
+        return None, "failed", str(exc)
     if not pages:
-        return None, "none"
-    return pages, "ready"
+        return None, "none", None
+    return pages, "ready", None
 
 
 def _pages_text(pages: list[dict]) -> str:
