@@ -774,6 +774,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_study_canvas_parse.py",
     "tests/test_study_plan.py",
     "tests/test_study_drive.py",
+    "tests/test_study_find.py",
+    "tests/test_study_fetch.py",
     "tests/test_study_deck.py",
     "tests/test_study_match.py",
     "tests/test_study_slides_flow.py",
