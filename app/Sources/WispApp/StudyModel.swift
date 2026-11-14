@@ -34,6 +34,25 @@ final class StudyModel: ObservableObject {
     /// Set by the views while a text field has focus, so the panel stays open.
     @Published var editing: Bool = false
 
+    /// "Use my sources": material made from the topic or an assignment reads
+    /// the student's sources too.
+    @Published var useSources: Bool = false
+    /// What the material being made reads, for the progress line; nil when idle.
+    @Published private(set) var making: StudyMakePlan?
+
+    /// The Drive picker.
+    @Published var showingDrive: Bool = false
+    @Published private(set) var drivePhase: StudyDrivePhase = .idle
+    @Published private(set) var driveList: [StudyDriveFile] = []
+    /// The search the list answers ("" for the newest files).
+    @Published private(set) var driveQuery: String = ""
+    /// The file being added, while its text is exported.
+    @Published private(set) var addingFile: String?
+    /// A failed add, shown inside the picker.
+    @Published var driveNotice: String?
+    /// Counts list requests, so a slow answer to an older search is dropped.
+    private var driveRequest = 0
+
     private let transport: Transport
     private let reader: (() async -> [StudyPage])?
     private let baseURL: URL
@@ -130,11 +149,29 @@ final class StudyModel: ObservableObject {
         notice = StudyText.readResult(reply)
     }
 
+    /// Makes material from the topic or assignment, reading the student's
+    /// sources when "Use my sources" is on.
     func make(_ kind: StudyKind, course: StudyCourse?, assignment: StudyAssignment?, topic: String?) async {
+        let courseID = course?.id ?? assignment.map(\.courseID)
+        let ids = useSources ? (state?.sourceIDs(for: courseID) ?? []) : []
+        await make(kind, course: course, assignment: assignment, topic: topic, sourceIds: ids, wholeCourse: false)
+    }
+
+    /// Makes material from the whole course (every source and assignment of it).
+    func makeWholeCourse(_ kind: StudyKind = .guide, course: StudyCourse) async {
+        await make(kind, course: course, assignment: nil, topic: nil, sourceIds: [], wholeCourse: true)
+    }
+
+    func make(_ kind: StudyKind, course: StudyCourse?, assignment: StudyAssignment?, topic: String?,
+              sourceIds: [String], wholeCourse: Bool) async {
         guard busy == nil else { return }
         busy = .making(kind)
         notice = nil
-        defer { busy = nil }
+        making = plan(kind, course: course, sourceIds: sourceIds, wholeCourse: wholeCourse)
+        defer {
+            busy = nil
+            making = nil
+        }
 
         var fields: [String: Any] = ["kind": kind.rawValue]
         if let assignment = assignment {
@@ -145,11 +182,169 @@ final class StudyModel: ObservableObject {
         if let topic = topic?.trimmingCharacters(in: .whitespacesAndNewlines), !topic.isEmpty {
             fields["topic"] = String(topic.prefix(300))
         }
+        // Only new keys when they say something, so an older backend sees the
+        // same request as before.
+        if wholeCourse, course != nil {
+            fields["whole_course"] = true
+        } else if !sourceIds.isEmpty {
+            fields["source_ids"] = Array(sourceIds.prefix(StudyState.maxSourceIDs))
+        }
         guard let body = try? JSONSerialization.data(withJSONObject: fields) else { return }
         let request = makeRequest("POST", "study/generate", body: body, timeout: Self.makeTimeout)
         guard let material = await send(request, as: StudyMaterial.self) else { return }
         opened = material
         await fetchState()
+    }
+
+    /// What a request reads, from the state already here.
+    private func plan(_ kind: StudyKind, course: StudyCourse?, sourceIds: [String],
+                      wholeCourse: Bool) -> StudyMakePlan {
+        let current = state ?? .empty
+        var plan = StudyMakePlan(kind: kind)
+        plan.longContext = current.connector.longContext
+        if wholeCourse, let course {
+            let ids = current.sources(inCourse: course.id).map(\.id)
+            plan.wholeCourse = course.shortName
+            plan.sources = ids.count
+            plan.chars = current.sourceChars(ids)
+            plan.assignments = current.assignments(in: course).count
+        } else {
+            plan.sources = sourceIds.count
+            plan.chars = current.sourceChars(sourceIds)
+        }
+        return plan
+    }
+
+    // MARK: Sources and Google Drive
+
+    /// Whether Google is connected with Drive; nil when the service didn't say
+    /// (then `drivePhase` holds why).
+    @discardableResult
+    func driveStatus() async -> StudyDriveStatus? {
+        let request = makeRequest("GET", "study/drive/status")
+        switch await call(request) {
+        case .ok(let data):
+            guard let status = try? JSONDecoder().decode(StudyDriveStatus.self, from: data) else {
+                drivePhase = .failed(StudyText.problem(code: ""))
+                return nil
+            }
+            return status
+        case .failed(let status, let data):
+            drivePhase = status == 404 && (try? JSONDecoder().decode(StudyErrorReply.self, from: data))?.code == nil
+                ? .failed(StudyText.driveUnavailable)
+                : driveFailure(status: status, data: data)
+            return nil
+        case .offline:
+            drivePhase = .failed(StudyText.problem(code: "offline"))
+            return nil
+        }
+    }
+
+    /// Opens the picker: checks Drive, then lists the newest files.
+    func openDrive() async {
+        showingDrive = true
+        driveNotice = nil
+        drivePhase = .loading
+        guard let status = await driveStatus() else { return }
+        if let blocker = status.blocker {
+            drivePhase = .notConnected(blocker)
+            return
+        }
+        await driveFiles(query: driveQuery)
+    }
+
+    func closeDrive() {
+        showingDrive = false
+        driveNotice = nil
+        driveRequest += 1
+    }
+
+    /// Lists Docs and Slides whose names contain `query` (all of them when empty).
+    func driveFiles(query: String) async {
+        let trimmed = String(query.trimmingCharacters(in: .whitespacesAndNewlines).prefix(100))
+        driveRequest += 1
+        let ticket = driveRequest
+        driveQuery = trimmed
+        if driveList.isEmpty || drivePhase != .ready { drivePhase = .loading }
+        var parts = URLComponents()
+        parts.queryItems = [URLQueryItem(name: "q", value: trimmed), URLQueryItem(name: "limit", value: "25")]
+        let request = makeRequest("GET", "study/drive/files?" + (parts.percentEncodedQuery ?? ""), timeout: 45)
+        let reply = await call(request)
+        guard ticket == driveRequest else { return }
+        switch reply {
+        case .ok(let data):
+            guard let files = try? JSONDecoder().decode(StudyDriveFiles.self, from: data) else {
+                drivePhase = .failed(StudyText.problem(code: ""))
+                return
+            }
+            driveList = files.files
+            drivePhase = .ready
+        case .failed(let status, let data):
+            drivePhase = driveFailure(status: status, data: data)
+        case .offline:
+            drivePhase = .failed(StudyText.problem(code: "offline"))
+        }
+    }
+
+    /// Adds one Drive file as a source, tied to `courseId` when given. Returns
+    /// whether it was added.
+    @discardableResult
+    func addDriveFile(id: String, courseId: String?) async -> Bool {
+        guard addingFile == nil else { return false }
+        addingFile = id
+        driveNotice = nil
+        defer { addingFile = nil }
+        var fields: [String: Any] = ["file_id": id]
+        fields["course_id"] = courseId.flatMap { $0.isEmpty ? nil : $0 } ?? NSNull()
+        guard let body = try? JSONSerialization.data(withJSONObject: fields) else { return false }
+        let request = makeRequest("POST", "study/drive/add", body: body, timeout: Self.makeTimeout)
+        switch await call(request) {
+        case .ok(let data):
+            guard let reply = try? JSONDecoder().decode(StudyDriveAddReply.self, from: data) else {
+                driveNotice = StudyText.problem(code: "")
+                return false
+            }
+            state = reply.state
+            return true
+        case .failed(let status, let data):
+            let failure = driveFailure(status: status, data: data)
+            if case .notConnected = failure {
+                drivePhase = failure
+            } else {
+                driveNotice = Self.problem(status: status, data: data)
+            }
+            return false
+        case .offline:
+            driveNotice = StudyText.problem(code: "offline")
+            return false
+        }
+    }
+
+    /// Removes a source from Study (never from Google Drive).
+    func deleteSource(id: String) async {
+        guard busy == nil else { return }
+        busy = .saving
+        defer { busy = nil }
+        let request = makeRequest("DELETE", "study/sources/" + Self.pathComponent(id))
+        guard let data = await exchange(request) else { return }
+        if let next = try? JSONDecoder().decode(StudySourceDeleteReply.self, from: data), let fresh = next.state {
+            state = fresh
+        } else if var current = state {
+            current.sources.removeAll { $0.id == id }
+            state = current
+            await fetchState()
+        }
+    }
+
+    /// A Drive failure as the picker shows it: no Google or no Drive scope is
+    /// "not connected", anything else an error.
+    private func driveFailure(status: Int, data: Data) -> StudyDrivePhase {
+        let reply = try? JSONDecoder().decode(StudyErrorReply.self, from: data)
+        if reply?.code == "google_missing" {
+            let said = reply?.message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return .notConnected(said.isEmpty ? StudyText.driveNotConnected : String(said.prefix(300)))
+        }
+        return .failed(Self.problem(status: status, data: data))
     }
 
     func open(_ id: String) async {
@@ -300,19 +495,39 @@ final class StudyModel: ObservableObject {
         return request
     }
 
-    /// The response body on a 2xx; otherwise sets `notice` and returns nil.
-    private func exchange(_ request: URLRequest) async -> Data? {
+    private enum Reply {
+        case ok(Data)
+        case failed(status: Int, data: Data)
+        case offline
+    }
+
+    /// One round trip, with no side effects.
+    private func call(_ request: URLRequest) async -> Reply {
         let result: (Data, URLResponse)
         do {
             result = try await transport(request)
         } catch {
+            return .offline
+        }
+        let status = (result.1 as? HTTPURLResponse)?.statusCode ?? 0
+        if (200..<300).contains(status) { return .ok(result.0) }
+        return .failed(status: status, data: result.0)
+    }
+
+    /// The response body on a 2xx; otherwise sets `notice` and returns nil.
+    private func exchange(_ request: URLRequest) async -> Data? {
+        let status: Int
+        let data: Data
+        switch await call(request) {
+        case .ok(let body):
+            return body
+        case .offline:
             notice = StudyText.problem(code: "offline")
             return nil
+        case .failed(let code, let body):
+            status = code
+            data = body
         }
-        let data = result.0
-        let response = result.1
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        if (200..<300).contains(status) { return data }
         notice = Self.problem(status: status, data: data)
         if status == 409, let reply = try? JSONDecoder().decode(StudyErrorReply.self, from: data),
            reply.code == "missing" {
@@ -334,7 +549,8 @@ final class StudyModel: ObservableObject {
         await exchange(request) != nil
     }
 
-    private static let knownCodes: Set<String> = ["missing", "rejected", "busy", "unreachable", "bad_reply"]
+    private static let knownCodes: Set<String> = ["missing", "rejected", "busy", "unreachable", "bad_reply",
+                                                  "google_missing", "google_error", "too_large"]
 
     /// The gentle sentence for a failed reply.
     static func problem(status: Int, data: Data) -> String {
@@ -358,4 +574,16 @@ final class StudyModel: ObservableObject {
 /// `POST /study/import`'s body.
 private struct StudyImportBody: Encodable {
     let pages: [StudyPage]
+}
+
+/// `DELETE /study/sources/{id}`'s reply: `{"state": …}`, or anything else.
+private struct StudySourceDeleteReply: Decodable {
+    let state: StudyState?
+
+    enum CodingKeys: String, CodingKey { case state }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        state = try? c.decodeIfPresent(StudyState.self, forKey: .state)
+    }
 }

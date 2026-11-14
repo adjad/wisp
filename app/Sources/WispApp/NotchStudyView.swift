@@ -158,6 +158,7 @@ struct NotchStudyView: View {
             Text(StudyText.readOnlyNote)
                 .font(.wisp(.caption)).foregroundStyle(Theme.textMuted)
                 .fixedSize(horizontal: false, vertical: true)
+            StudySourcesSection(study: study, state: study.state ?? .empty, courseID: nil, onResize: model.onResize)
             footer(nil)
         }
     }
@@ -200,10 +201,13 @@ struct NotchStudyView: View {
             if let busy = study.busy, busy != .loading {
                 StudyBusyRow(label: StudyText.busy(busy)).transition(.opacity)
             }
+            StudyProgressLine(study: study)
             if !state.courses.isEmpty { coursesRow(state) }
             dueSection(state)
             makeSection(state)
+            StudyMakeOptions(study: study, state: state, course: selectedCourse(state))
             librarySection(state)
+            StudySourcesSection(study: study, state: state, courseID: courseID, onResize: model.onResize)
             footer(state)
         }
     }

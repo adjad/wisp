@@ -308,8 +308,18 @@ def status() -> dict:
         source = "none"
     # active_model_id: the model a call would use right now (the cloud profile's on the
     # Intel fallback), or None when Study is not ready. model_id stays the Study choice.
+    # long_context: that model is a Gemini model, so imports read more pages and generation
+    # may use a whole course (docs/STUDY_TAB.md, Long context).
     return {"provider": provider, "model_id": model_id, "ready": source != "none",
-            "source": source, "active_model_id": active, "providers": providers()}
+            "source": source, "active_model_id": active, "long_context": long_context(active),
+            "providers": providers()}
+
+
+def long_context(model_id: str | None) -> bool:
+    """Whether a model id is a Gemini model: bare ``gemini-…`` (the Gemini API) or
+    ``google/gemini-…`` (OpenRouter). Anything else keeps the ordinary limits."""
+    return isinstance(model_id, str) and (model_id.startswith("gemini-")
+                                          or model_id.startswith("google/gemini-"))
 
 
 async def status_async() -> dict:
