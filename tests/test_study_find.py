@@ -502,7 +502,7 @@ def test_module_items_of_unknown_or_unsafe_type_are_refused(hint):
     assert got["via"] == "none"
 
 
-@_pytest.mark.parametrize("hint", ["Page", "WikiPage", "Discussion", "DiscussionTopic", "ExternalUrl"])
+@_pytest.mark.parametrize("hint", ["Page", "WikiPage", "Discussion", "DiscussionTopic"])
 def test_module_items_of_a_safe_type_are_browsed(hint):
     from service.study import find as F
     course = {"id": "canvas:123", "url": "https://school.instructure.com/courses/123"}
@@ -659,3 +659,18 @@ def test_rule_one_on_drive_and_plain_material_still_readable():
 def test_rule_one_items_are_listed_as_cant_open_and_add_refuses_them():
     items = find.resolve([{"url": f"{HOST}/courses/4242/pages/quiz-3", "title": "Quiz 3"}], course=C, sources=[])
     assert [(i["via"], i["reason"]) for i in items] == [("none", "quiz")]
+
+
+@pytest.mark.parametrize("title", ["MidtermReview", "finalexam", "PracticeQuiz", "quiz3", "Exam2", "popquiz"])
+def test_rule_one_catches_words_run_together(title):
+    got = find.classify({"url": f"{HOST}/courses/4242/pages/p", "title": title}, C)
+    assert got["via"] == "none" and got["reason"] == "quiz"
+
+
+def test_examples_and_plain_pages_are_not_caught():
+    assert find.classify({"url": f"{HOST}/courses/4242/pages/examples", "title": "Worked examples"}, C)["via"] == "browser"
+
+
+def test_an_external_url_module_item_is_not_opened():
+    got = find.classify({"url": f"{HOST}/courses/4242/modules/items/8", "title": "Reading", "type": "ExternalUrl"}, C)
+    assert (got["via"], got["reason"]) == ("none", "outside")
