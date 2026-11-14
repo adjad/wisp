@@ -71,3 +71,41 @@ class GeminiPictureTurn(MediaBase):
             policy.remote_only_profile().validate_payload(
                 {"model": "gemini-3.8-flash", "stream": False, "max_tokens": 100,
                  "messages": self.ask()})
+
+
+class GeminiVoice(GeminiPictureTurn):
+    """Voice Ask's speech-to-text step on the Gemini API origin."""
+
+    def test_the_clip_goes_to_gemini_as_one_wav_part(self):
+        from unittest.mock import patch
+        from service import voice
+        from tests.test_remote_media import b64, wav
+        client = self.client([answer("Synthetic words.")])
+        clip = wav(2.0)
+        with patch("service.tools.imessage_tools._c", return_value=client):
+            self.assertEqual(run(voice.transcribe(b64(clip))), "Synthetic words.")
+        body = self.bodies[0]
+        self.assertEqual(body["model"], "gemini-3.8-flash")
+        self.assertEqual(body["messages"][0]["content"][0],
+                         {"type": "input_audio", "input_audio": {"data": b64(clip), "format": "wav"}})
+
+    def test_a_clip_longer_than_a_window_is_refused_not_sent(self):
+        from unittest.mock import patch
+        from service import voice
+        from tests.test_remote_media import b64, wav
+        client = self.client([])
+        with patch("service.tools.imessage_tools._c", return_value=client):
+            with self.assertRaisesRegex(ValueError, "too long"):
+                run(voice.transcribe(b64(wav(voice.MAX_SECONDS + 5))))
+        self.assertEqual(self.bodies, [])
+
+    def test_with_the_cloud_mode_off_voice_sends_nothing(self):
+        from unittest.mock import patch
+        from service import voice
+        from tests.test_remote_media import b64, wav
+        client = self.client([])
+        self.use_model("gemini-3.8-flash", parity=False)
+        with patch("service.tools.imessage_tools._c", return_value=client):
+            with self.assertRaisesRegex(voice.VoiceUnavailable, "only with a model on this Mac"):
+                run(voice.transcribe(b64(wav())))
+        self.assertEqual(self.bodies, [])

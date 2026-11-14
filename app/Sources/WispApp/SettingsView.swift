@@ -1636,10 +1636,11 @@ struct SettingsView: View {
     /// What leaves the Mac while Gemini handles everything, said before it is turned on.
     static let geminiEverythingDisclosure =
         "While this is on, everything Wisp reads to answer you goes to Google's Gemini API: "
-        + "your questions, and the mail, messages, calendar, reminders, notes, files, pictures "
-        + "and screen captures it uses for them, plus what it reads in the background for the "
-        + "Brief and Day. Google's terms for your API key apply. Turn it off to keep everything "
-        + "on this Mac again; the local model stays installed."
+        + "your questions, your voice recordings and meeting audio, and the mail, messages, "
+        + "calendar, reminders, notes, files, pictures and screen captures it uses for them, "
+        + "plus what it reads in the background for the Brief and Day. Google's terms for your "
+        + "API key apply. Turn it off to keep everything on this Mac again; the local model "
+        + "stays installed. Read-aloud stays on this Mac."
 
     @ViewBuilder private var geminiEverythingRow: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -1656,8 +1657,9 @@ struct SettingsView: View {
                     Text("Gemini handles everything")
                         .font(.system(size: 14, weight: .medium))
                     Text(loader.geminiEverythingEnabled
-                         ? "On. Ask, Brief, Day, pictures, voice and background work run on "
-                           + "Gemini through your API key, and your data goes to Google to do it. "
+                         ? "On. Ask, Brief, Day, pictures, voice recordings, meetings and "
+                           + "background work run on Gemini through your API key, and your data "
+                           + "goes to Google to do it. "
                            + "Turn off to go back to the private on-device model."
                          : loader.geminiEverythingAvailable
                          ? "Off. Everything runs on the on-device model and stays on this Mac."
