@@ -362,6 +362,17 @@ def test_extract_bad_reply(parsed_page):
         run(G.extract_school_data("https://x.edu", "t", "x", now=NOW, timezone="UTC", complete=Fake("nope")))
 
 
+
+def test_a_hostile_page_of_nested_tags_is_cleaned_quickly():
+    import time
+    from service.study import generate
+    hostile = "<" * 80000 + "school_data" + ">" * 80000
+    started = time.perf_counter()
+    cleaned = generate._data(hostile, 12000)
+    assert time.perf_counter() - started < 1.0
+    assert "school_data>" not in cleaned.lower() and len(cleaned) <= 12000
+
+
 def test_this_file_is_in_the_simulation_manifest():
     from pathlib import Path
     manifest = (Path(__file__).resolve().parents[1] / "scripts" / "run_simulation_qa.py").read_text()

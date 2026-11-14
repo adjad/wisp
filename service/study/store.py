@@ -32,6 +32,9 @@ _NUMERIC_ID = re.compile(r"[a-z]+:(\d+)")
 _WS = re.compile(r"\s+")
 
 
+# Work already handed in: no later page can make it due again.
+_DONE_STATUSES = ("submitted", "graded")
+
 def merge_key(name) -> str:
     """Same normalisation as canvas_parse: lower-case, punctuation to spaces, single spaces."""
     return _WS.sub(" ", re.sub(r"[^0-9a-z]+", " ", str(name or "").lower())).strip()
@@ -211,7 +214,8 @@ class StudyStore:
         for other in keep:
             for key in fields:
                 unsaid = _blank(merged.get(key)) or (key == "status" and merged.get(key) == "upcoming")
-                if key == "status" and unsaid and _extended(merged.get("due_ts"), other["due_ts"]):
+                if (key == "status" and unsaid and other[key] not in _DONE_STATUSES
+                        and _extended(merged.get("due_ts"), other["due_ts"])):
                     unsaid = False   # the surviving row's later deadline outranks an old "missing"
                 if unsaid and not _blank(other[key]):
                     merged[key] = other[key]
@@ -222,9 +226,10 @@ class StudyStore:
             if _blank(value):
                 continue
             if (key == "status" and value == "upcoming" and not _unsaid_status(merged.get(key))
-                    and not _extended(row.get("due_ts"), prior_due)):
+                    and (merged.get(key) in _DONE_STATUSES or not _extended(row.get("due_ts"), prior_due))):
                 # Parsers fill "upcoming" when a page shows no status, so it never undoes a
-                # stored submitted/graded/missing/late, unless the deadline moved later.
+                # stored status. A later deadline reopens missing or late work, but never
+                # work already handed in: a date-only page reads as 23:59 and would look later.
                 continue
             merged[key] = value
         values = [int(bool(merged[k])) if k in _BOOL_FIELDS else merged.get(k) for k in fields]

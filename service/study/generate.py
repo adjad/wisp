@@ -110,6 +110,9 @@ def _data(text: str, cap: int) -> str:
         return ""
     # NFKC folds full-width letters and brackets; format characters (zero-width joiners and
     # the like) are dropped so they cannot split a tag past the pattern.
+    # Cut first (with room for what stripping removes): the loop below is quadratic on
+    # nested fake tags, and a hostile page must not hold the event loop.
+    text = text[:cap * 2 + 1000]
     text = unicodedata.normalize("NFKC", text.replace("\x00", ""))
     text = "".join(c for c in text if unicodedata.category(c) != "Cf")
     previous = None

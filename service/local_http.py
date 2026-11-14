@@ -122,8 +122,8 @@ class LocalOriginGuard:
 # parsed, so an oversized body is never held as objects.
 AGENT_BODY_LIMIT = 32 * 1024 * 1024
 # /study/import: at most 12 pages of at most 150,000 characters (docs/STUDY_TAB.md), about
-# 1.8 MB of page text plus JSON escaping; 3 MB leaves room for that and refuses the rest.
-STUDY_IMPORT_BODY_LIMIT = 3 * 1024 * 1024
+# 1.8 MB of Latin page text, up to about 5.4 MB in three-byte scripts; 6 MB fits both.
+STUDY_IMPORT_BODY_LIMIT = 6 * 1024 * 1024
 _LIMITED_PATHS = {"/agent": AGENT_BODY_LIMIT, "/study/import": STUDY_IMPORT_BODY_LIMIT}
 _TOO_LARGE = {"/study/import": "That's too much page text for Wisp to read at once. Try fewer tabs."}
 

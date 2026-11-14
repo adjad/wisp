@@ -86,9 +86,10 @@ enum StudyCredentialStore {
     }
 
     /// Replaces any saved key with a new item whose access list trusts Wisp
-    /// itself and `/usr/bin/security` (the backend's reader), the way
-    /// BackendCredentials.add does for the inference key, so the backend's
-    /// read never brings up a Keychain prompt. A plain update would keep an
+    /// itself and `/usr/bin/security` (the backend's reader), so the backend's
+    /// read never brings up a Keychain prompt. It uses the same Keychain calls
+    /// as BackendCredentials.add, but that one trusts a dedicated signed helper;
+    /// this is where a Settings cloud key ends up after "Always Allow". A plain update would keep an
     /// older item's narrower access list, so the item is always re-created.
     private static func write(_ data: Data, provider: String) throws {
         let query = query(provider: provider)

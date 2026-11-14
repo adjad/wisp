@@ -401,6 +401,22 @@ def test_folding_duplicates_keeps_the_later_deadline_over_an_old_missing(store):
     assert len(rows) == 1 and rows[0]["id"] == "a-new" and rows[0]["status"] == "upcoming"
 
 
+
+def test_handed_in_work_is_never_reopened_by_a_later_looking_deadline(tmp_path):
+    """A date-only page reads as 23:59, which looks like an extension; done work stays done."""
+    store = StudyStore(tmp_path / "study.db")
+    base = {"id": "canvas:1:lab", "course_id": "canvas:1", "title": "Lab 5", "kind": "assignment",
+            "due_ts": 1000.0, "source": "canvas"}
+    for done in ("submitted", "graded"):
+        store.upsert_assignments([{**base, "status": done}])
+        store.upsert_assignments([{**base, "status": "upcoming", "due_ts": 90000.0}])
+        assert store.assignments()[0]["status"] == done
+    # Missing work with a real extension is due again.
+    store.upsert_assignments([{**base, "id": "canvas:1:hw", "title": "HW 2", "status": "missing"}])
+    store.upsert_assignments([{**base, "id": "canvas:1:hw", "title": "HW 2", "status": "upcoming", "due_ts": 90000.0}])
+    assert next(a for a in store.assignments() if a["id"] == "canvas:1:hw")["status"] == "upcoming"
+
+
 def test_this_file_is_in_the_simulation_manifest():
     from pathlib import Path
     manifest = (Path(__file__).resolve().parents[1] / "scripts" / "run_simulation_qa.py").read_text()

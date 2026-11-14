@@ -339,6 +339,10 @@ final class StudyModel: ObservableObject {
     /// The gentle sentence for a failed reply.
     static func problem(status: Int, data: Data) -> String {
         let reply = try? JSONDecoder().decode(StudyErrorReply.self, from: data)
+        // A key that is saved but could not be read says so in the server's own words.
+        if reply?.code == "missing", let said = reply?.message, said.contains("Keychain") {
+            return String(said.prefix(300))
+        }
         if let code = reply?.code, knownCodes.contains(code) { return StudyText.problem(code: code) }
         if let message = reply?.message?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty {
             return String(message.prefix(300))

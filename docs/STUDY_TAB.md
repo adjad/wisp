@@ -205,7 +205,7 @@ an `Origin`, 415 `{"detail": "Content-Type must be application/json."}` otherwis
 
 | route | body | returns |
 | --- | --- | --- |
-| `POST /study/import` | `{"pages": [{"url", "title", "text"}], "timezone"?}` (<= 12 pages, text <= 150k chars each, body <= 3 MB) | `{"courses": n, "assignments": n, "pages": [{"url", "kind", "recognized": bool}], "state": <state>}` |
+| `POST /study/import` | `{"pages": [{"url", "title", "text"}], "timezone"?}` (<= 12 pages, text <= 150k chars each, body <= 6 MB) | `{"courses": n, "assignments": n, "pages": [{"url", "kind", "recognized": bool}], "state": <state>}` |
 | `POST /study/connector` | `{"provider", "model_id"}` | `<state>.connector` |
 | `POST /study/generate` | `{"kind", "course_id"?, "assignment_id"?, "topic"?, "count"?}` | full material |
 | `GET /study/materials/{id}` | | full material |
@@ -217,7 +217,7 @@ an `Origin`, 415 `{"detail": "Content-Type must be application/json."}` otherwis
 Errors are `{"detail": "<code>", "message": "<gentle sentence>"}` with status
 409 for `missing`, 502 for `rejected` / `busy` / `unreachable` / `bad_reply`,
 404 `not_found` for an unknown id, 422 `invalid` for a bad body. An import body over
-3 MB is refused by `local_http.BodyLimit` with 413 `{"detail": "<sentence>"}` before it
+6 MB is refused by `local_http.BodyLimit` with 413 `{"detail": "<sentence>"}` before it
 is parsed.
 
 Import: each page goes through `canvas_parse.parse_page`. A school page it does
