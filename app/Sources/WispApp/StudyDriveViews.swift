@@ -133,6 +133,10 @@ struct StudySourcesSection: View {
 
     @State private var showAll = false
     @State private var confirming: String?
+    /// The source whose slides "Try again" is reading, and the add's own error
+    /// text when that read again failed.
+    @State private var retrying: String?
+    @State private var retryNotice: (id: String, text: String)?
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
     @Environment(\.reduceMotionOverride) private var reduceMotionOverride
     private var reduceMotion: Bool { reduceMotionOverride ?? systemReduceMotion }
@@ -161,7 +165,11 @@ struct StudySourcesSection: View {
                         ForEach(group.items) { source in
                             StudySourceRow(source: source, confirming: confirming == source.id,
                                            disabled: study.busy != nil,
+                                           retrying: retrying == source.id,
+                                           retryNotice: retryNotice?.id == source.id ? retryNotice?.text : nil,
+                                           reduceMotion: reduceMotion,
                                            onOpenPages: { Task { await study.openDeck(source) } },
+                                           onRetry: { retry(source) },
                                            onAskRemove: { set { confirming = source.id } },
                                            onRemove: {
                                                set { confirming = nil }
@@ -211,6 +219,22 @@ struct StudySourcesSection: View {
             result.append(StudySourceGroup(id: group.id, title: group.title, items: items))
         }
         return result
+    }
+
+    /// Reads a failed deck again through the same Drive add (same file, same
+    /// course): the service keeps the source's id and reads its slides again.
+    private func retry(_ source: StudySource) {
+        guard let fileID = source.driveFileID, retrying == nil, study.addingFile == nil else { return }
+        retrying = source.id
+        retryNotice = nil
+        Task {
+            let ok = await study.addDriveFile(id: fileID, courseId: source.courseID)
+            if !ok {
+                retryNotice = (source.id, study.driveNotice ?? StudyText.driveConnectHint)
+            }
+            retrying = nil
+            onResize()
+        }
     }
 
     private func toggleDrive() {
@@ -267,7 +291,11 @@ private struct StudySourceRow: View {
     let source: StudySource
     let confirming: Bool
     let disabled: Bool
+    let retrying: Bool
+    let retryNotice: String?
+    let reduceMotion: Bool
     let onOpenPages: () -> Void
+    let onRetry: () -> Void
     let onAskRemove: () -> Void
     let onRemove: () -> Void
     let onKeep: () -> Void
@@ -278,15 +306,22 @@ private struct StudySourceRow: View {
         return url
     }
 
+    private var reading: Bool { source.deckState == .reading || retrying }
+
     var body: some View {
-        HStack(alignment: .center, spacing: 8) {
-            Button { if let link { NSWorkspace.shared.open(link) } } label: { label }
-                .buttonStyle(.plain)
-                .disabled(link == nil)
-                .help(link == nil ? source.title : "Open in your browser")
-                .accessibilityLabel("\(kindName): \(source.title), \(StudyText.chars(source.chars))")
-            if source.hasPages && !confirming { pagesButton }
-            trailing
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .center, spacing: 8) {
+                Button { if let link { NSWorkspace.shared.open(link) } } label: { label }
+                    .buttonStyle(.plain)
+                    .disabled(link == nil)
+                    .help(link == nil ? source.title : "Open in your browser")
+                    .accessibilityLabel("\(kindName): \(source.title), \(StudyText.chars(source.chars))")
+                if !confirming {
+                    if reading { readingBadge } else if source.hasPages { pagesButton }
+                }
+                trailing
+            }
+            if source.deckState == .failed && !reading && !confirming { failedLine }
         }
         .padding(.horizontal, 8).padding(.vertical, 1)
         .background(RoundedRectangle(cornerRadius: 8).fill(hovering ? Color.white.opacity(0.05) : Color.clear))
@@ -333,6 +368,48 @@ private struct StudySourceRow: View {
         .disabled(disabled)
         .help("See this deck's pages and make something from them")
         .accessibilityLabel("\(StudyText.pagesCount(source.pages)) in \(source.title)")
+    }
+
+    /// "Reading slides…" with the small progress the Drive rows use; a still
+    /// glyph instead under Reduce Motion.
+    private var readingBadge: some View {
+        HStack(spacing: 4) {
+            if reduceMotion {
+                Image(systemName: "ellipsis").font(.wisp(size: 9, weight: .semibold))
+                    .accessibilityHidden(true)
+            } else {
+                ProgressView().controlSize(.mini)
+                    .accessibilityHidden(true)
+            }
+            Text(StudyText.deckReading).font(.wisp(.caption)).lineLimit(1)
+        }
+        .foregroundStyle(Theme.textMuted)
+        .fixedSize()
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Reading the slides in \(source.title)")
+    }
+
+    /// One warn-colored line under a deck that couldn't be read, with the
+    /// service's reason (or the add's error after a failed try) and Try again.
+    private var failedLine: some View {
+        let line = retryNotice.map { StudyText.deckFailed + ": " + $0 } ?? StudyText.deckFailure(source.deckError)
+        return HStack(alignment: .center, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle").font(.wisp(size: 9, weight: .semibold))
+                .frame(width: 16)
+                .accessibilityHidden(true)
+            Text(line).font(.wisp(.caption)).lineLimit(1).truncationMode(.tail)
+                .help(line)
+            Spacer(minLength: 6)
+            if source.canRetryDeck {
+                NotchChrome.small(StudyText.deckRetry) { onRetry() }
+                    .disabled(disabled)
+                    .help("Read this deck's slides again")
+                    .accessibilityLabel("Try reading the slides in \(source.title) again")
+            }
+        }
+        .foregroundStyle(Theme.warn)
+        .frame(minHeight: 22)
+        .accessibilityElement(children: .contain)
     }
 
     @ViewBuilder private var trailing: some View {

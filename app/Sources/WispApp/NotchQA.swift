@@ -812,6 +812,7 @@ extension NotchQADriver {
             scene("study-lesson", state: state, opened: "m-lesson"),
             scene("study-setup", state: empty, connector: true),
             scene("study-deck", state: studyDeckState(state, midnight: midnight), deck: true),
+            scene("study-sources", state: studySourcesState(state, midnight: midnight)),
         ]
     }
 
@@ -824,6 +825,28 @@ extension NotchQADriver {
             "created_at": midnight - 2 * 86400, "pages": 12, "deck_status": "ready",
         ]]
         return withDeck
+    }
+
+    /// The Study state with one deck in each read state: ready, still reading,
+    /// and failed with the service's reason (made-up course data).
+    static func studySourcesState(_ state: [String: Any], midnight: Double) -> [String: Any] {
+        var withSources = state
+        // One assignment and one made item, so the sources sit inside the panel's cap.
+        withSources["assignments"] = Array((state["assignments"] as? [[String: Any]] ?? []).prefix(1))
+        withSources["materials"] = Array((state["materials"] as? [[String: Any]] ?? []).prefix(1))
+        withSources["sources"] = [
+            ["id": "src-7", "course_id": "qa:cs101", "kind": "drive", "title": "Lecture 7: Pointers",
+             "url": "https://docs.google.com/presentation/d/qa-lecture-7", "chars": 9400,
+             "created_at": midnight - 2 * 86400, "pages": 12, "deck_status": "ready"],
+            ["id": "src-8", "course_id": "qa:cs101", "kind": "drive", "title": "Lecture 8: Structs",
+             "url": "https://docs.google.com/presentation/d/qa-lecture-8", "chars": 7100,
+             "created_at": midnight - 86400, "pages": 0, "deck_status": "reading"],
+            ["id": "src-9", "course_id": "qa:cs101", "kind": "drive", "title": "Lecture 9: Linked lists",
+             "url": "https://docs.google.com/presentation/d/qa-lecture-9", "chars": 6200,
+             "created_at": midnight - 3600, "pages": 0, "deck_status": "failed",
+             "deck_error": "Google took too long to send the slides."],
+        ]
+        return withSources
     }
 
     /// Twelve pages of the made-up "Lecture 7: Pointers" deck.
