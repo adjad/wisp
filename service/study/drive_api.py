@@ -43,13 +43,13 @@ async def _add_body(request: Request) -> AddBody:
         raise api.Refusal(422, "invalid", api.BAD_BODY) from exc
 
 
-@router.get("/status")
+@router.get("/status", dependencies=[Depends(native_only)])
 @api._answer
 async def drive_status():
     return drive.status()
 
 
-@router.get("/files")
+@router.get("/files", dependencies=[Depends(native_only)])
 @api._answer
 async def drive_files(request: Request):
     q = request.query_params.get("q") or ""

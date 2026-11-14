@@ -107,7 +107,8 @@ def client(google):
     app = FastAPI()
     app.include_router(api.router)
     app.include_router(drive_api.router)
-    return TestClient(app)
+    # The app sends JSON Content-Type on every request, GETs included (native_only).
+    return TestClient(app, headers=JSON)
 
 
 def add(client, **body):
@@ -307,3 +308,10 @@ def test_adding_is_native_only(client, google):
                           headers={"content-type": "text/plain"})
     assert as_form.status_code == 415
     assert google.requests == [] and google.store.saved == []
+
+
+def test_drive_reads_refuse_a_web_page(client, google):
+    for path in ("/study/drive/status", "/study/drive/files"):
+        assert client.get(path, headers={"origin": "https://evil.example"}).status_code == 403
+        assert client.get(path, headers={"content-type": "text/plain"}).status_code == 415
+    assert google.requests == []

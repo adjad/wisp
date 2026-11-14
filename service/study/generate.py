@@ -27,6 +27,7 @@ CONTEXT_CHARS = 12_000
 EXTRACT_CHARS = 24_000
 # Long context (a Gemini Study model, connector.long_context): the data block may hold a
 # whole course's sources, and an unrecognised page is read whole.
+LONG_RETRY_CHARS = 100_000   # prompts longer than this get one attempt
 LONG_CONTEXT_CHARS = 600_000
 LONG_EXTRACT_CHARS = 200_000
 # Sanitising passes over source text before every bracket look-alike is blanked instead:
@@ -371,7 +372,8 @@ async def make(kind: str, *, course: dict | None, assignment: dict | None, topic
                                     count=count, context=context or "")
     note = None
     with connector.post_budget(MAX_POSTS):
-        for attempt in range(2):
+        # A long-context prompt is not resent: one bad reply costs one POST, not 600k chars twice.
+        for attempt in range(1 if len(user) > LONG_RETRY_CHARS else 2):
             if attempt and connector.posts_left() <= 0:
                 break
             # The note is Wisp's own text (validate's messages name only a kind and a count).

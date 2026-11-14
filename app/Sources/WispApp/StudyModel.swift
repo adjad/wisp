@@ -36,7 +36,7 @@ final class StudyModel: ObservableObject {
 
     /// "Use my sources": material made from the topic or an assignment reads
     /// the student's sources too.
-    @Published var useSources: Bool = true
+    @Published var useSources: Bool = false
     /// What the material being made reads, for the progress line; nil when idle.
     @Published private(set) var making: StudyMakePlan?
 
@@ -268,7 +268,7 @@ final class StudyModel: ObservableObject {
         if driveList.isEmpty || drivePhase != .ready { drivePhase = .loading }
         var parts = URLComponents()
         parts.queryItems = [URLQueryItem(name: "q", value: trimmed), URLQueryItem(name: "limit", value: "25")]
-        let request = makeRequest("GET", "study/drive/files?" + (parts.percentEncodedQuery ?? ""))
+        let request = makeRequest("GET", "study/drive/files?" + (parts.percentEncodedQuery ?? ""), timeout: 45)
         let reply = await call(request)
         guard ticket == driveRequest else { return }
         switch reply {

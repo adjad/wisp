@@ -406,7 +406,9 @@ def _chosen_sources(store, source_ids: list[str] | None, course_id: str | None) 
             raise Refusal(404, "not_found", NOT_FOUND)
         return []
     if course_id:
-        wanted += [s["id"] for s in store.sources(course_id) if s["id"] not in wanted]
+        # The course's newest sources fill up to MAX_SOURCE_IDS in all: a whole course stays bounded.
+        extra = [s["id"] for s in store.sources(course_id) if s["id"] not in wanted]
+        wanted += extra[:max(0, MAX_SOURCE_IDS - len(wanted))]
     out = []
     for sid in wanted:
         row = store.source(sid)
