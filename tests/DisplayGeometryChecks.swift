@@ -101,6 +101,7 @@ struct DisplayGeometryChecks {
 
         let real = SurfaceLayout.make(for: notched(1512, 982))
         tabScrollCapChecks()
+        studyCapChecks()
         pageCapChecks()
 
         // Built-in displays without a notch (M1 Air, 13"/M2 13" Pro, iMac 24"): a small
@@ -501,6 +502,32 @@ struct DisplayGeometryChecks {
         check(tiny.pageContentCap(headerHeight: header) == SurfaceLayout.minTabScroll, "Floor on a tiny display")
     }
 
+    /// 2026-11-14: an opened study guide ran about 1000 pt and filled the screen.
+    /// The Study tab stops at half the screen, then scrolls, on every display.
+    static func studyCapChecks() {
+        let header: CGFloat = 30
+        let insets = SurfaceLayout.tabTopPadding + SurfaceLayout.panelBottomPadding
+        check(SurfaceLayout.studyScreenShare == 0.5, "Study takes half the screen")
+        for (name, d, limit) in [("MBP 16", notched(1728, 1117), 558), ("MBP 14", notched(1512, 982), 491),
+                                 ("MBP 14 larger text", notched(1352, 878), 439),
+                                 ("monitor", monitor(1920, 1080), 540)] as [(String, DisplayMetrics, CGFloat)] {
+            let l = SurfaceLayout.make(for: d)
+            check(l.maxStudyPanelHeight == limit, "\(name): Study limit \(l.maxStudyPanelHeight)")
+            check(l.maxStudyPanelHeight < l.maxPagePanelHeight, "\(name): Study stops before Permissions and Settings")
+            let cap = l.studyContentCap(headerHeight: header)
+            check(cap == limit - l.contentTopInset - header - insets, "\(name): Study cap \(cap)")
+            check(l.contentTopInset + header + insets + cap <= limit, "\(name): a capped Study panel stays under the limit")
+            check(l.studyContentCap(headerHeight: header + 10) == cap - 10, "\(name): header grows, Study's room shrinks")
+            check(l.studyContentCap(headerHeight: 30.4) == l.studyContentCap(headerHeight: 31), "\(name): header rounds up")
+            // The other tabs keep the screen-bottom cap.
+            check(l.tabScrollCap(headerHeight: header) > cap, "\(name): Brief and Day keep their taller cap")
+        }
+        check(SurfaceLayout.make(for: notched(1512, 982)).studyContentCap(headerHeight: 30) == 393, "14in Study cap is 393 pt")
+        let tiny = SurfaceLayout.make(for: monitor(800, 200))
+        check(tiny.maxStudyPanelHeight <= tiny.maxPanelHeight, "the Study limit never passes the panel's")
+        check(tiny.studyContentCap(headerHeight: header) == SurfaceLayout.minTabScroll, "Study floors on a tiny display")
+    }
+
     /// The overlay wraps Brief, Day, Meet and Study, and only them, in the capped scroll.
     static func tabScrollSourceChecks() {
         let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
@@ -514,9 +541,9 @@ struct DisplayGeometryChecks {
               "Day sits in the tab scroll")
         check(overlay.contains("case .meet:\n            tabScroll { NotchMeetingView(model: MeetingModel.shared) }"),
               "Meet sits in the tab scroll")
-        check(overlay.contains("case .study:\n            tabScroll { NotchStudyView(model: model, study: StudyModel.shared) }"),
-              "Study sits in the tab scroll")
-        check(overlay.components(separatedBy: "tabScroll {").count - 1 == 4, "only Brief, Day, Meet and Study scroll as a tab")
+        check(overlay.contains("NotchStudyView(model: model, study: StudyModel.shared,\n                           cap: layout.studyContentCap(headerHeight: headerHeight))"),
+              "Study gets its half-screen cap and scrolls inside itself")
+        check(overlay.components(separatedBy: "tabScroll {").count - 1 == 3, "only Brief, Day and Meet scroll as a tab")
         check(overlay.contains("CappedScroll(cap: layout.tabScrollCap(headerHeight: headerHeight), reveals: true,"),
               "the tab scroll is capped from the display's geometry")
         check(overlay.contains("bottom: SurfaceLayout.panelBottomPadding"), "the cap and the panel share one bottom padding")
@@ -533,7 +560,14 @@ struct DisplayGeometryChecks {
         let panel = overlay.components(separatedBy: "private var expandedPanel: some View {")[1]
         check(panel.contains("return VStack(alignment: .leading, spacing: 0) {\n            header\n"), "header stays fixed")
         // Fits: no indicator, no bounce. Composer and draft scroll into sight, unanimated.
-        check(cards.contains(".scrollIndicators(height > cap ? .automatic : .never)"), "no indicator while it fits")
+        check(cards.contains(".scrollIndicators(height > cap ? (showsMore ? .visible : .automatic) : .never)"),
+              "no indicator while it fits; Study's always shows once it scrolls")
+        check(cards.contains("var showsMore = false"), "the visible indicator and bottom fade are opt-in")
+        let study = (try? String(contentsOf: app.appendingPathComponent("NotchStudyView.swift"), encoding: .utf8)) ?? ""
+        check(study.contains("CappedScroll(cap: cap, reveals: true, remembers: Self.homeScroll, showsMore: true)")
+              && study.contains("CappedScroll(cap: cap.map(scrollCap), showsMore: true)"),
+              "Study's home and an opened material scroll inside the cap with the fade")
+        check(study.contains("PanelScrollMemory.forget(Self.homeScroll)"), "opening or closing a material starts at the top")
         check(cards.contains(".scrollBounceBehavior(.basedOnSize)"), "no bounce while it fits")
         check(cards.contains("replyArea(thread).revealInPanel("), "the reply composer scrolls into sight")
         check(cards.contains("draftEditor(card, action, fire: fire, withSend: sendInDraft).revealInPanel("),

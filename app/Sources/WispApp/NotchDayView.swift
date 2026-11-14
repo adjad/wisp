@@ -345,6 +345,8 @@ struct NotchDayView: View {
         }
         let fit = stillToFit(plan)
         if !fit.isEmpty { fitSection(fit) }
+        let school = schoolThisWeek(plan)
+        if !school.isEmpty { schoolSection(school) }
         if addingTask || !model.todayTaskTitle.isEmpty { addTaskRow.transition(.opacity) }
     }
 
@@ -415,6 +417,59 @@ struct NotchDayView: View {
         .padding(.top, 2)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Still to fit")
+    }
+
+    /// Today only: school work due later this week, for reference. What is due
+    /// today is already in the agenda as its deadlines, so it isn't repeated.
+    private func schoolThisWeek(_ plan: TodayPlan) -> StudyUpcomingRows {
+        guard today.isShowingCurrentDay, let study = plan.study else { return StudyUpcomingRows() }
+        let bounds = today.dayInterval
+        return study.dayUpcoming(dayStart: bounds.start.timeIntervalSince1970, dayEnd: bounds.end.timeIntervalSince1970,
+                                 shownIDs: StudyDaySummary.deadlineIDs(plan.studyNeeds.map(\.id)))
+    }
+
+    /// "SCHOOL THIS WEEK": one line an assignment, then "+N more in Study ›".
+    /// All of it opens Study.
+    private func schoolSection(_ rows: StudyUpcomingRows) -> some View {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = today.timezone
+        return Button { model.tab = .study } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text("SCHOOL THIS WEEK").font(.wisp(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
+                    Spacer(minLength: 8)
+                    HStack(spacing: 2) {
+                        Text(rows.moreLine ?? "Study")
+                        Image(systemName: "chevron.right").font(.wisp(size: 8, weight: .bold))
+                    }
+                    .font(.wisp(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary).fixedSize()
+                }
+                ForEach(Array(rows.items.enumerated()), id: \.offset) { _, item in
+                    schoolRow(item, calendar: calendar)
+                }
+            }
+            .frame(minHeight: 24)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.top, 2)
+        .help("Your school work (⌘5)")
+        .accessibilityLabel("School this week: " + StudyText.upcomingSpoken(rows, now: today.now, calendar: calendar))
+        .accessibilityHint("Opens Study")
+    }
+
+    private func schoolRow(_ item: StudyDaySummary.Due, calendar: Calendar) -> some View {
+        let assignment = item.assignment
+        return HStack(alignment: .firstTextBaseline, spacing: 9) {
+            Image(systemName: assignment.symbol).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).frame(width: 15)
+            Text(assignment.title).font(.wisp(size: 13)).foregroundStyle(Theme.textPrimary)
+                .lineLimit(1).layoutPriority(1)
+            Text(item.course).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
+            Spacer(minLength: 8)
+            Text(StudyText.dueShort(assignment, now: today.now, calendar: calendar))
+                .font(.wisp(size: 11.5)).monospacedDigit().foregroundStyle(Theme.textSecondary)
+                .lineLimit(1).fixedSize()
+        }
     }
 
     private func fitRow(_ row: DayFitRow) -> some View {

@@ -342,8 +342,10 @@ struct ProactiveBriefSection: View {
     var coverage: [SourceAccess] = []
     /// Two columns, for the wider panel.
     var wide = false
-    /// School work due today or tomorrow (StudyDaySummary.line); empty hides the row.
+    /// School work due today or tomorrow (StudyDaySummary.briefHeadline); empty hides the row.
     var school: String = ""
+    /// This week's school work under that line, one row each (StudyDaySummary.briefUpcoming).
+    var schoolRows = StudyUpcomingRows()
 
     private var unread: [SourceAccess] { proactive.unreadSources(coverage) }
 
@@ -934,25 +936,61 @@ struct ProactiveBriefSection: View {
         .help("The rest of today, hour by hour (⌘3)")
     }
 
-    /// "2 due today: Lab 5 (CSE 20), Essay draft", then Study ›.
+    /// "2 due today: Lab 5 (CS 101), Essay draft", then Study ›; under it,
+    /// this week's work one line each and "+N more in Study". All of it opens Study.
     private var schoolRow: some View {
-        Button { model.tab = .study } label: {
-            HStack(alignment: .firstTextBaseline, spacing: 9) {
-                Image(systemName: "graduationcap").font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).frame(width: 15)
-                Text(school).font(.wisp(size: 13)).foregroundStyle(Theme.textPrimary)
-                    .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
-                HStack(spacing: 2) {
-                    Text("Study")
-                    Image(systemName: "chevron.right").font(.wisp(size: 8, weight: .bold))
+        let calendar = schoolCalendar
+        return Button { model.tab = .study } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: 9) {
+                    Image(systemName: "graduationcap").font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).frame(width: 15)
+                    Text(school).font(.wisp(size: 13)).foregroundStyle(Theme.textPrimary)
+                        .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                    HStack(spacing: 2) {
+                        Text("Study")
+                        Image(systemName: "chevron.right").font(.wisp(size: 8, weight: .bold))
+                    }
+                    .font(.wisp(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary).fixedSize()
                 }
-                .font(.wisp(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary).fixedSize()
+                .padding(.bottom, schoolRows.isEmpty ? 0 : 2)
+                ForEach(Array(schoolRows.items.enumerated()), id: \.offset) { _, item in
+                    schoolItem(item, calendar: calendar)
+                }
+                if let more = schoolRows.moreLine {
+                    Text(more).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
+                        .padding(.leading, 24)
+                }
             }
             .padding(.vertical, 8)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help("Your school work (⌘5)")
-        .accessibilityLabel("School: " + school)
+        .accessibilityLabel("School: " + school
+            + (schoolRows.isEmpty ? "" : ". " + StudyText.upcomingSpoken(schoolRows, now: today.now, calendar: calendar)))
+        .accessibilityHint("Opens Study")
+    }
+
+    /// One assignment due this week: title, course, and when, in a right-hand column.
+    private func schoolItem(_ item: StudyDaySummary.Due, calendar: Calendar) -> some View {
+        let assignment = item.assignment
+        return HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(assignment.title).font(.wisp(size: 12.5)).foregroundStyle(Theme.textSecondary)
+                .lineLimit(1).layoutPriority(1)
+            Text(item.course).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
+            Spacer(minLength: 8)
+            Text(StudyText.dueShort(assignment, now: today.now, calendar: calendar))
+                .font(.wisp(size: 11.5)).monospacedDigit().foregroundStyle(Theme.textMuted)
+                .lineLimit(1).fixedSize()
+        }
+        .padding(.leading, 24)
+    }
+
+    /// Due times in the day's own time zone, as the rest of the Brief.
+    private var schoolCalendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = today.timezone
+        return calendar
     }
 
     /// Two columns: the rest of today, one row an event, the next one lit
@@ -1342,11 +1380,14 @@ struct ProactiveBriefSection: View {
 /// (CappedHeight), not learned a pass later: a page that arrives with a slide
 /// is its real height from its first frame, so the panel moves once, not twice.
 /// `remembers` keeps the scroll position under that key while the panel is
-/// open (PanelScrollMemory).
+/// open (PanelScrollMemory). `showsMore` (Study) makes an overflow obvious: the
+/// indicator always shows and flashes on arrival, and a soft fade sits over the
+/// bottom edge, with room under the content so the last line clears it.
 struct CappedScroll<Content: View>: View {
     let cap: CGFloat?
     var reveals = false
     var remembers: String? = nil
+    var showsMore = false
     @ViewBuilder var content: Content
     /// The content's height, for the scroll indicator only.
     @State private var height: CGFloat = 0
@@ -1360,9 +1401,20 @@ struct CappedScroll<Content: View>: View {
                             .background(GeometryReader { geo in
                                 Color.clear.preference(key: CappedScrollHeight.self, value: geo.size.height)
                             })
+                            .padding(.bottom, more(cap) ? Self.fade : 0)
                     }
-                    .scrollIndicators(height > cap ? .automatic : .never)
+                    .scrollIndicators(height > cap ? (showsMore ? .visible : .automatic) : .never)
+                    .scrollIndicatorsFlash(trigger: more(cap))
                     .scrollBounceBehavior(.basedOnSize)
+                    .overlay(alignment: .bottom) {
+                        if more(cap) {
+                            LinearGradient(colors: [Theme.surface.opacity(0), Theme.surface],
+                                           startPoint: .top, endPoint: .bottom)
+                                .frame(height: Self.fade)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                    }
                     .modifier(RemembersScroll(key: remembers))
                     .environment(\.panelReveal, reveals ? PanelReveal { id in
                         // After the panel has grown to fit what just opened. Never
@@ -1379,6 +1431,12 @@ struct CappedScroll<Content: View>: View {
             content
         }
     }
+
+    /// The bottom fade's height (`showsMore`).
+    private static var fade: CGFloat { 24 }
+
+    /// `showsMore` and the content passes the cap.
+    private func more(_ cap: CGFloat) -> Bool { showsMore && height > cap }
 }
 
 /// Lays out one scroll view as tall as its content, up to `cap`. A vertical
@@ -1414,6 +1472,8 @@ enum PanelScrollMemory {
         guard let kept = offsets[key], kept.version == version else { return nil }
         return kept.y
     }
+
+    static func forget(_ key: String) { offsets[key] = nil }
 
     static func forgetAll() { offsets = [:] }
 }

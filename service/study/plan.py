@@ -14,6 +14,8 @@ DONE = {"submitted", "graded"}
 TESTS = {"quiz", "exam"}
 BLOCK_SECONDS = 45 * 60
 MAX_BLOCKS = 2
+UPCOMING_CAP = 8          # reference rows the Day and Brief tabs list
+UPCOMING_DAYS = 7         # through the end of the local day this many days out
 WINDOW = (8, 22)          # study blocks only between 08:00 and 22:00
 LINE_LIMIT = 110
 _UNKNOWN_END = 60 * 60    # a busy block with no end time is treated as an hour
@@ -107,6 +109,12 @@ def _line(today_items, tomorrow_items, near_test, *, now: float, zone: ZoneInfo,
     return text[: LINE_LIMIT - 1].rstrip() + "…"
 
 
+def _item(a: dict) -> dict:
+    return {"id": a.get("id"), "title": a.get("title"), "course_name": a.get("course_name"),
+            "due_ts": _due(a), "all_day": bool(a.get("all_day")), "kind": a.get("kind") or "assignment",
+            "status": a.get("status") or "upcoming"}
+
+
 def day_summary(assignments: list[dict], *, now: float, timezone: str) -> dict:
     zone = _zone(timezone)
     today = _local_day(now, zone)
@@ -117,13 +125,16 @@ def day_summary(assignments: list[dict], *, now: float, timezone: str) -> dict:
     due_today = [a for a in open_items if _local_day(_due(a), zone) == today]
     due_tomorrow = [a for a in open_items if _local_day(_due(a), zone) == tomorrow]
     due_week = [a for a in open_items if now <= _due(a) <= week_end]
+    # Local today 00:00 through the end of local day today+7 (DST-safe: whole local days, not 7 * 86400).
+    lo, hi = _bounds(today, zone)[0], _bounds(today + timedelta(days=UPCOMING_DAYS), zone)[1]
+    window = [a for a in open_items if lo <= _due(a) < hi]
     tests = [a for a in due_week if a.get("kind") in TESTS]
     next_test = tests[0] if tests else None
     near = next(iter(a for a in tests if _local_day(_due(a), zone) <= today + timedelta(days=3)), None)
     return {
-        "due_today": [{"id": a.get("id"), "title": a.get("title"), "course_name": a.get("course_name"),
-                       "due_ts": _due(a), "all_day": bool(a.get("all_day")), "kind": a.get("kind") or "assignment",
-                       "status": a.get("status") or "upcoming"} for a in due_today],
+        "due_today": [_item(a) for a in due_today],
+        "upcoming": [{**_item(a), "course_label": _label(a) or ""} for a in window[:UPCOMING_CAP]],
+        "upcoming_more": max(0, len(window) - UPCOMING_CAP),
         "due_tomorrow_count": len(due_tomorrow),
         "due_week_count": len(due_week),
         "missing_count": sum(1 for a in rows if a.get("status") == "missing"),

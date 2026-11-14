@@ -145,7 +145,8 @@ struct NotchBriefView: View {
                                           events: restOfToday(plan),
                                           scrollCap: uncapped ? nil : Self.proactiveCap,
                                           coverage: Self.coverage(plan), wide: wide,
-                                          school: plan.study?.briefLine ?? "")
+                                          school: plan.study?.briefHeadline ?? "",
+                                          schoolRows: plan.study?.briefUpcoming ?? StudyUpcomingRows())
                     MailMemorySection(memory: MailMemoryCards.model, onResize: { model.onResize() })
                     HStack(spacing: 12) {
                         askChip(plan)
@@ -261,7 +262,8 @@ struct NotchBriefView: View {
                 tileList(tile, shown.detail).id(tile.rawValue)
                     .transition(reduceMotion ? .identity : .opacity)
             } else {
-                topList(brief.top, glance: brief.glance, unread: brief.unread, uncheckedMail: brief.uncheckedMail).id("top")
+                topList(brief.top, glance: brief.glance, school: brief.school, unread: brief.unread,
+                        uncheckedMail: brief.uncheckedMail).id("top")
                     .transition(reduceMotion ? .identity : .opacity)
             }
         }
@@ -363,8 +365,8 @@ struct NotchBriefView: View {
     // MARK: - Rows
 
     /// The default view: the Top 3, then what mail and texts are about.
-    private func topList(_ all: [BriefDetail.Line], glance: [BriefDetail.Line], unread: [String] = [],
-                         uncheckedMail: UncheckedMail = UncheckedMail()) -> some View {
+    private func topList(_ all: [BriefDetail.Line], glance: [BriefDetail.Line], school: StudyUpcomingRows = StudyUpcomingRows(),
+                         unread: [String] = [], uncheckedMail: UncheckedMail = UncheckedMail()) -> some View {
         // A row the service just confirmed cleared or done leaves at once; the
         // refreshed plan then fills its place.
         let lines = all.filter { line in line.need.map { !needActions.isHidden($0) } ?? true }
@@ -385,13 +387,65 @@ struct NotchBriefView: View {
                 // A hairline keeps a Top 3 mail item from reading as the summary's first line.
                 Rectangle().fill(Theme.hairline).frame(height: 1).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 6) {
-                    ForEach(glance) { row($0, width: width) }
+                    ForEach(glance) { line in
+                        if line.id == "glance-SCHOOL" { schoolGlance(line, rows: school, width: width) }
+                        else { row(line, width: width) }
+                    }
                 }
                 .accessibilityElement(children: .contain)
                 .accessibilityLabel("Mail and texts")
             }
         }
         .textSelection(.enabled)
+    }
+
+    /// The School line, which opens Study: the summary with Study ›, then
+    /// this week's work one line each and "+N more in Study".
+    private func schoolGlance(_ line: BriefDetail.Line, rows: StudyUpcomingRows, width: CGFloat) -> some View {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = today.timezone
+        return Button { model.tab = .study } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: Self.labelGap) {
+                    Text(line.leading.uppercased())
+                        .font(.wisp(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
+                        .frame(width: width, alignment: .leading)
+                    Text(line.text).font(.wisp(size: 13.5)).foregroundStyle(line.muted ? Theme.textMuted : Theme.textPrimary)
+                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    HStack(spacing: 2) {
+                        Text("Study")
+                        Image(systemName: "chevron.right").font(.wisp(size: 8, weight: .bold))
+                    }
+                    .font(.wisp(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary).fixedSize()
+                }
+                ForEach(Array(rows.items.enumerated()), id: \.offset) { _, item in
+                    let assignment = item.assignment
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(assignment.title).font(.wisp(size: 12.5)).foregroundStyle(Theme.textSecondary)
+                            .lineLimit(1).layoutPriority(1)
+                        Text(item.course).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
+                        Spacer(minLength: 8)
+                        Text(StudyText.dueShort(assignment, now: today.now, calendar: calendar))
+                            .font(.wisp(size: 11.5)).monospacedDigit().foregroundStyle(Theme.textMuted)
+                            .lineLimit(1).fixedSize()
+                    }
+                    .padding(.leading, width + Self.labelGap)
+                }
+                if let more = rows.moreLine {
+                    Text(more).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
+                        .padding(.leading, width + Self.labelGap)
+                }
+            }
+            .frame(minHeight: 24)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .textSelection(.disabled)
+        .help("Your school work (⌘5)")
+        .accessibilityLabel("School: " + line.text
+            + (rows.isEmpty ? "" : ". " + StudyText.upcomingSpoken(rows, now: today.now, calendar: calendar)))
+        .accessibilityHint("Opens Study")
     }
 
     private func tileList(_ tile: BriefTile, _ detail: BriefDetail) -> some View {
@@ -605,6 +659,8 @@ struct BriefContent {
     let top: [BriefDetail.Line]
     /// What mail and texts are about, under the Top 3.
     let glance: [BriefDetail.Line]
+    /// This week's school work under the School line (today only).
+    let school: StudyUpcomingRows
     /// Today's sources Wisp couldn't read ("calendar", "reminders", "email",
     /// "messages"): the lede and the Top 3 never give an all-clear for them.
     let unread: [String]
@@ -754,8 +810,9 @@ struct BriefContent {
                                           mailAccess: mailTile?.access, textsAccess: coverage("messages")?.access,
                                           mailOverview: plan.workspace?.mail_overview?.text,
                                           textsOverview: plan.workspace?.texts_overview?.text, soon: .unknown,
-                                          school: isToday ? plan.study?.briefLine ?? "" : "")
+                                          school: isToday ? plan.study?.briefHeadline ?? "" : "")
         glance = BriefTiles.glance(rows, mailProse: isToday ? plan.workspace?.mail_summary?.text : nil)
+        school = isToday ? plan.study?.briefUpcoming ?? StudyUpcomingRows() : StudyUpcomingRows()
         summary = composed?.keeping ?? []
         intro = composed?.intro ?? []
     }

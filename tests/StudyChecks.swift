@@ -29,14 +29,14 @@ func studyChecks(_ check: (Bool, String) -> Void) {
       "sample": false,
       "last_import": 1794650000.0,
       "courses": [
-        {"id": "canvas:12345", "name": "Beginning Programming in Python", "code": "CSE 20", "grade": "A-",
-         "score": 91.2, "url": "https://canvas.ucsc.edu/courses/12345", "due_count": 2, "sample": false},
-        {"id": "canvas:2", "name": "Writing 2", "code": null, "grade": null, "score": null, "url": null, "due_count": 0}
+        {"id": "canvas:12345", "name": "Introduction to Programming", "code": "CS 101", "grade": "B+",
+         "score": 87.5, "url": "https://canvas.example.edu/courses/12345", "due_count": 2, "sample": false},
+        {"id": "canvas:2", "name": "Writing 100", "code": null, "grade": null, "score": null, "url": null, "due_count": 0}
       ],
       "assignments": [
-        {"id": "canvas:12345:678", "course_id": "canvas:12345", "course_name": "CSE 20", "title": "Lab 5: Lists",
+        {"id": "canvas:12345:678", "course_id": "canvas:12345", "course_name": "CS 101", "title": "Lab 5: Lists",
          "kind": "assignment", "due_ts": 1794700740.0, "all_day": false, "points": 20.0, "score": null,
-         "status": "upcoming", "url": "https://canvas.ucsc.edu/courses/12345/assignments/678", "sample": false},
+         "status": "upcoming", "url": "https://canvas.example.edu/courses/12345/assignments/678", "sample": false},
         {"id": "a2", "title": "Peer review", "kind": "peer_review", "status": "excused", "due_ts": null},
         {"title": "no id, dropped"}
       ],
@@ -59,7 +59,7 @@ func studyChecks(_ check: (Bool, String) -> Void) {
         check(state.connector.providers.last?.models.first?.label == "gemini-3.8-flash",
               "a model without a label falls back to its id")
         check(state.lastImport == 1794650000.0 && !state.sample, "last_import and sample decode")
-        check(state.courses.count == 2 && state.courses[0].dueCount == 2 && state.courses[0].score == 91.2,
+        check(state.courses.count == 2 && state.courses[0].dueCount == 2 && state.courses[0].score == 87.5,
               "courses decode with snake_case keys")
         check(state.courses[1].code == nil && state.courses[1].grade == nil && !state.courses[1].sample,
               "null and missing course fields default")
@@ -72,8 +72,8 @@ func studyChecks(_ check: (Bool, String) -> Void) {
               "unknown kind and status are kept as sent; missing fields default")
         check(state.materials.count == 1 && state.materials[0].kind == .quiz && state.materials[0].bestScore == 0.75,
               "materials decode; one of an unknown kind is skipped")
-        check(state.hasData && state.course("canvas:12345")?.shortName == "CSE 20"
-              && state.courses[1].shortName == "Writing 2", "lookups and short names")
+        check(state.hasData && state.course("canvas:12345")?.shortName == "CS 101"
+              && state.courses[1].shortName == "Writing 100", "lookups and short names")
         check(state.courses.allSatisfy { $0.active }, "a course without \"active\" counts as active")
     }
     let bare = decode(StudyState.self, "{}")
@@ -141,8 +141,8 @@ func studyChecks(_ check: (Bool, String) -> Void) {
     check(decode(StudyMaterial.self, #"{"id": "x", "kind": "quiz"}"#) == nil, "a material without a body does not decode")
 
     let importReply = decode(StudyImportReply.self, """
-    {"courses": 5, "assignments": 9, "pages": [{"url": "https://canvas.ucsc.edu/grades", "kind": "grades",
-      "recognized": true}, {"url": "https://canvas.ucsc.edu/x", "kind": "other", "recognized": false}],
+    {"courses": 5, "assignments": 9, "pages": [{"url": "https://canvas.example.edu/grades", "kind": "grades",
+      "recognized": true}, {"url": "https://canvas.example.edu/x", "kind": "other", "recognized": false}],
      "state": {}}
     """)
     check(importReply?.pages.count == 2 && importReply?.pages[1].recognized == false && importReply?.courses == 5,
@@ -160,18 +160,18 @@ func studyChecks(_ check: (Bool, String) -> Void) {
     let validation = decode(StudyErrorReply.self, #"{"detail": [{"loc": ["body"], "msg": "field required"}]}"#)
     check(validation != nil && validation?.code == nil, "a FastAPI 422 detail array is tolerated")
 
-    let page = StudyPage(url: "https://canvas.ucsc.edu", title: "Dashboard", text: "CSE 20")
+    let page = StudyPage(url: "https://canvas.example.edu", title: "Dashboard", text: "CS 101")
     let encoded = (try? JSONEncoder().encode(page)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: String] }
-    check(encoded == ["url": "https://canvas.ucsc.edu", "title": "Dashboard", "text": "CSE 20"],
+    check(encoded == ["url": "https://canvas.example.edu", "title": "Dashboard", "text": "CS 101"],
           "a page encodes as url, title and text")
 
     // MARK: School pages
 
-    let school = ["https://canvas.ucsc.edu/courses/1", "https://ucsc.instructure.com/", "https://classroom.google.com/u/0",
+    let school = ["https://canvas.example.edu/courses/1", "https://school.instructure.com/", "https://classroom.google.com/u/0",
                   "https://app.schoology.com/home", "https://district.powerschool.com/", "https://learn.d2l.com/",
                   "https://moodle.school.org/my", "https://edstem.org/us/dashboard", "https://www.gradescope.com/",
-                  "https://my.ucsc.edu/", "https://lincoln.k12.ca.us/grades", "https://blackboard.example.com/"]
-    let notSchool = ["http://canvas.ucsc.edu/", "https://example.com/", "https://google.com/classroom",
+                  "https://my.example.edu/", "https://district.k12.ca.us/grades", "https://blackboard.example.com/"]
+    let notSchool = ["http://canvas.example.edu/", "https://example.com/", "https://google.com/classroom",
                      "https://canvasfake.com/", "https://edu.example.com/", "file:///Users/x/edu", "not a url",
                      "https://k12.ca.us/", "https://instructure.com.evil.net/"]
     check(school.allSatisfy { StudySchoolURL.isSchool($0) }, "school sites are recognised: "
@@ -183,7 +183,7 @@ func studyChecks(_ check: (Bool, String) -> Void) {
 
     func assignment(_ id: String, _ due: Date?, status: String = "upcoming", allDay: Bool = false,
                     kind: String = "assignment", points: Double? = nil, score: Double? = nil) -> StudyAssignment {
-        StudyAssignment(id: id, courseID: "c", courseName: "CSE 20", title: id, kind: kind,
+        StudyAssignment(id: id, courseID: "c", courseName: "CS 101", title: id, kind: kind,
                         dueTS: due?.timeIntervalSince1970, allDay: allDay, points: points, score: score,
                         status: status, url: nil, sample: false)
     }
@@ -247,22 +247,53 @@ func studyChecks(_ check: (Bool, String) -> Void) {
     check(StudyText.due(assignment("a", at(13, 9), status: "submitted"), now: now, calendar: calendar) == "Submitted"
           && StudyText.due(assignment("a", at(13, 9), status: "graded"), now: now, calendar: calendar) == "Graded",
           "past work that is in reads as submitted or graded")
+    check(StudyText.dueShort(assignment("a", at(14, 23, 59)), now: now, calendar: calendar) == "Today 11:59 PM"
+          && StudyText.dueShort(assignment("a", at(14, 0), allDay: true), now: now, calendar: calendar) == "Today",
+          "short due: today with and without a time")
+    check(StudyText.dueShort(assignment("a", at(15, 9, 30)), now: now, calendar: calendar) == "Tomorrow 9:30 AM"
+          && StudyText.dueShort(assignment("a", at(15, 0), allDay: true), now: now, calendar: calendar) == "Tomorrow",
+          "short due: tomorrow with and without a time")
+    check(StudyText.dueShort(assignment("a", at(16, 9)), now: now, calendar: calendar) == "Mon, Nov 16"
+          && StudyText.dueShort(assignment("a", at(4, 9, month: 1, year: 2027)), now: now, calendar: calendar)
+          == "Mon, Jan 4, 2027", "short due: a later date drops \"Due\" and keeps the year when it differs")
+    check(StudyText.dueShort(assignment("a", at(12, 23, 59), status: "missing"), now: now, calendar: calendar)
+          == "Missing since Nov 12"
+          && StudyText.dueShort(assignment("a", at(13, 9), status: "graded"), now: now, calendar: calendar) == "Graded"
+          && StudyText.dueShort(assignment("a", nil), now: now, calendar: calendar) == "No date",
+          "short due: missing and handed-in work read as before; no date is short")
+
+    // Brief and Day's school rows (StudyDaySummary.upcoming) word their due time as Study's list does.
+    let schoolQuiz = StudyDaySummary.Due(id: "q3", title: "Quiz 3", courseName: "Intro to Programming", courseLabel: "CS 101",
+                                   dueTS: at(15, 10).timeIntervalSince1970, kind: "quiz")
+    let blank = StudyDaySummary.Due(id: "r", title: " ", courseName: "Writing 100", dueTS: at(16, 0).timeIntervalSince1970,
+                                    allDay: true)
+    check(StudyText.dueShort(schoolQuiz.assignment, now: now, calendar: calendar) == "Tomorrow 10:00 AM"
+          && StudyText.dueShort(blank.assignment, now: now, calendar: calendar) == "Mon, Nov 16",
+          "a Brief or Day school row's due column")
+    check(schoolQuiz.assignment.courseName == "CS 101" && schoolQuiz.assignment.symbol == "checklist"
+          && blank.assignment.title == "Untitled" && blank.assignment.kind == "assignment"
+          && blank.assignment.status == "upcoming" && blank.assignment.points == nil && blank.assignment.url == nil,
+          "the bridge names the course by its label and carries no points or link")
+    check(StudyText.upcomingSpoken(schoolQuiz, now: now, calendar: calendar) == "Quiz 3, CS 101, Due tomorrow, 10:00 AM",
+          "a school row read aloud: \(StudyText.upcomingSpoken(schoolQuiz, now: now, calendar: calendar))")
+    check(StudyText.upcomingSpoken(StudyUpcomingRows(items: [schoolQuiz], more: 2), now: now, calendar: calendar)
+          == "Quiz 3, CS 101, Due tomorrow, 10:00 AM; 2 more in Study", "the list read aloud names what Study holds")
 
     func course(grade: String?, score: Double?) -> StudyCourse {
         StudyCourse(id: "c", name: "Course", code: nil, grade: grade, score: score, url: nil, dueCount: 0, sample: false)
     }
-    check(StudyText.grade(course(grade: "A-", score: 91.2)) == "A- · 91%", "letter and percent")
-    check(StudyText.grade(course(grade: nil, score: 91.2)) == "91%", "percent only")
+    check(StudyText.grade(course(grade: "B+", score: 87.5)) == "B+ · 88%", "letter and percent")
+    check(StudyText.grade(course(grade: nil, score: 87.5)) == "88%", "percent only")
     check(StudyText.grade(course(grade: "B+", score: nil)) == "B+", "letter only")
     check(StudyText.grade(course(grade: nil, score: 113.4)) == "113%", "extra credit above 100% is shown")
-    check(StudyText.grade(course(grade: "91.2%", score: 91.2)) == "91%", "a percent grade is said once")
+    check(StudyText.grade(course(grade: "87.5%", score: 87.5)) == "88%", "a percent grade is said once")
     check(StudyText.grade(course(grade: " ", score: nil)) == nil, "no grade, no chip")
-    check(StudyCourse.short("Writing 2") == "Writing 2"
-          && StudyCourse.short("Calculus for Science, Engineering and Mathematics") == "Calculus for Science,…"
+    check(StudyCourse.short("Writing 100") == "Writing 100"
+          && StudyCourse.short("Calculus for Science, Business and Economics") == "Calculus for Science,…"
           && StudyCourse.short("Introductory Microeconomics Workshop") == "Introductory Microeco…",
           "a course without a code gets a short name: three words, about 22 characters")
-    check(StudyCourse(id: "c", name: "Rhetoric and Inquiry", code: " ", grade: nil, score: nil, url: nil,
-                      dueCount: 0, sample: false).shortName == "Rhetoric and Inquiry", "a blank code falls back to the name")
+    check(StudyCourse(id: "c", name: "Writing and Rhetoric", code: " ", grade: nil, score: nil, url: nil,
+                      dueCount: 0, sample: false).shortName == "Writing and Rhetoric", "a blank code falls back to the name")
     check(decode(StudyCourse.self, #"{"id": "c", "name": "Old course", "active": false}"#)?.active == false,
           "an inactive course decodes as inactive")
     check(StudyText.points(assignment("a", nil, points: 20, score: 18)) == "18 of 20 pts"
