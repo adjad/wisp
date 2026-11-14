@@ -61,8 +61,9 @@ CANVAS_KIND = {"page": "page", "wikipage": "page", "discussion": "discussion", "
 # Module item types the walker must never open (Canvas's own type labels, lower-cased letters only).
 # Module item types that are safe to open: anything else (an external tool, a quiz, an assignment, a file, or a
 # type the app could not read) is refused, since opening it can launch a tool with the student's identity.
-SAFE_ITEM_HINTS = frozenset({"page", "wikipage", "wiki page", "discussion", "discussiontopic", "discussion topic",
-                             "externalurl", "external url"})
+# An External URL item is not opened: only its title is known before it lands off the course
+# (a plainly named Zoom, form or proctoring link would open), so when in doubt it is refused.
+SAFE_ITEM_HINTS = frozenset({"page", "wikipage", "wiki page", "discussion", "discussiontopic", "discussion topic"})
 TOOL_HINTS = frozenset({"assignment", "externaltool", "external tool", "contextexternaltool", "lti", "quiz", "quizzes",
                         "new quiz", "newquiz", "assessment", "quizzeslti"})
 _TOOL_TITLE = re.compile(r"\b(?:gradescope|pearson|mcgraw|mylab|mastering|webassign|zybooks|cengage|"
@@ -193,6 +194,8 @@ def _reason(hint: str, title: str) -> str:
         return "quiz"
     if hint == "assignment":
         return "assignment"
+    if hint in ("externalurl", "external url"):
+        return "outside"
     return "tool" if hint else "unknown"
 
 
@@ -216,6 +219,8 @@ _IMPORTANT = [
     ("account", r"accounts?|settings|profile|passwords?|log ?in|log ?out|sign ?in|sign ?out|sso|"
                 r"permissions|notifications? preferences"),
 ]
+_RUN_TOGETHER = re.compile(r"(?:final|midterm|practice|pop|unit|chapter|weekly)(?:exam|quiz|test)|"
+                           r"(?:exam|quiz|test)(?:review|prep|\d)", re.I)
 _IMPORTANT_RE = [(label, re.compile(rf"(?<![a-z0-9])(?:{words})(?![a-z0-9])", re.I)) for label, words in _IMPORTANT]
 
 
@@ -227,6 +232,9 @@ def important(title: str, url: str = "") -> str | None:
     except ValueError:
         path = url or ""
     words = f"{title or ''} " + re.sub(r"[/_+.=&?-]", " ", path)
+    words = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", words)          # MidtermReview -> Midterm Review
+    if _RUN_TOGETHER.search(words):
+        return "quiz"
     for label, pattern in _IMPORTANT_RE:
         if pattern.search(words):
             return label
