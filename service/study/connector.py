@@ -443,14 +443,27 @@ def _field_rejected(body: str, payload: dict) -> list[str]:
     lowered = body.lower()
     named = [f for f in optional
              if f in lowered or (f == "reasoning_effort" and "reasoning" in lowered)
-             or (f == "response_format" and ("json_object" in lowered or "response format" in lowered))]
+             or (f == "response_format" and ("json_object" in lowered or "response format" in lowered
+                                             or "json_schema" in lowered or "schema" in lowered))]
     return named or optional
+
+
+def response_format(model: str, schema: dict | None, name: str = "study") -> dict:
+    """Gemini's structured output (a JSON schema it must follow) when the model is a Gemini
+    model and a schema is given; plain JSON mode otherwise."""
+    if schema and long_context(model):
+        return {"type": "json_schema", "json_schema": {"name": name, "schema": schema, "strict": True}}
+    return {"type": "json_object"}
 
 
 async def complete_json(system: str, user: str, *, max_tokens: int = 6000,
                         key_reader: Callable[[str], str] | None = None,
-                        transport: httpx.AsyncBaseTransport | None = None) -> dict:
-    """One non-streaming JSON completion from the Study model; returns the object."""
+                        transport: httpx.AsyncBaseTransport | None = None,
+                        schema: dict | None = None, schema_name: str = "study") -> dict:
+    """One non-streaming JSON completion from the Study model; returns the object. With a
+    schema and a Gemini model the reply must follow that schema (structured output); a 400
+    over it falls back to JSON mode, then to no response_format, and the caller's
+    validation still checks every reply."""
     # Every Keychain read (the Study key, or the cloud profile's) may wait on a macOS prompt:
     # never on the event loop.
     url, model, key, provider = await asyncio.to_thread(_resolve, key_reader)
@@ -466,11 +479,12 @@ async def complete_json(system: str, user: str, *, max_tokens: int = 6000,
         "max_tokens": int(max_tokens),
         "temperature": 0.4,
         "reasoning_effort": "low",
-        "response_format": {"type": "json_object"},
+        "response_format": response_format(model, schema, schema_name),
         "stream": False,
     }
     retries = 1          # bad JSON, 5xx or a timeout
-    field_retry = 1      # a 400 over reasoning_effort / response_format
+    # a 400 over reasoning_effort / response_format; one more when a schema can step down to JSON mode
+    field_retry = 2 if payload["response_format"]["type"] == "json_schema" else 1
     pending = "unreachable"   # what to report when the request's POST budget runs out
     async with httpx.AsyncClient(trust_env=False, follow_redirects=False,
                                  timeout=TIMEOUT_S, transport=transport) as client:
@@ -496,7 +510,10 @@ async def complete_json(system: str, user: str, *, max_tokens: int = 6000,
                     if dropped:
                         field_retry -= 1
                         for field in dropped:
-                            payload.pop(field, None)
+                            if field == "response_format" and payload[field]["type"] == "json_schema":
+                                payload[field] = {"type": "json_object"}   # schema refused: JSON mode
+                            else:
+                                payload.pop(field, None)
                         log.info("Study provider refused %s; retrying without it", ", ".join(dropped))
                         pending = "bad_reply"
                         continue
