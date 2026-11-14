@@ -151,9 +151,9 @@ struct NotchStudyView: View {
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 6)
             NotchChrome.small("Open Settings") {
-                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-                    NSWorkspace.shared.open(url)
-                }
+                // Through Permissions, like every privacy page Wisp opens: it notes the
+                // pane (so a "Quit & Reopen" brings Wisp back) and steps the panel aside.
+                Permissions.openSettingsPane("com.apple.preference.security?Privacy_Accessibility")
             }
         }
     }
