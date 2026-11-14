@@ -46,7 +46,7 @@ PROVIDER = "gemini"
 ORIGIN = "https://generativelanguage.googleapis.com"
 INTERACTIONS_URL = ORIGIN + "/v1beta/interactions"
 API_REVISION = "2026-05-20"
-MAX_PDF_BYTES = 18 * 1024 * 1024      # inline request limit is larger; base64 grows it by a third
+MAX_PDF_BYTES = 14 * 1024 * 1024      # base64 grows it by a third: stays under a 20 MB inline request
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_PAGES = 500
 TIMEOUT_S = 100.0                      # the whole read, retry included
@@ -139,6 +139,15 @@ def request_body(model: str, pdf_bytes: bytes, title: str) -> dict:
     }
 
 
+def _key_refused(response) -> bool:
+    """A 403 about the key itself (not a model or region refusal)."""
+    try:
+        text = response.text[:4000].lower()
+    except Exception:  # noqa: BLE001
+        return True
+    return any(w in text for w in ("api key", "api_key", "unregistered caller"))
+
+
 def reply_text(data) -> str:
     """The model's text from an Interaction: every model_output step's text parts, joined."""
     if not isinstance(data, dict) or data.get("status") not in (None, "completed"):
@@ -149,6 +158,10 @@ def reply_text(data) -> str:
             continue
         for item in step.get("content") or []:
             if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+    if not parts:   # other reply layouts: a flat outputs list, or output_text
+        for item in data.get("outputs") or []:
+            if isinstance(item, dict) and item.get("type") in (None, "text") and isinstance(item.get("text"), str):
                 parts.append(item["text"])
     if not parts and isinstance(data.get("output_text"), str):
         parts.append(data["output_text"])
@@ -222,9 +235,11 @@ async def read_pages(pdf_bytes: bytes, *, title: str, key_reader: Callable[[str]
                 failure = "unreachable"
                 continue
             code = response.status_code
-            if code in (401, 403):
+            if code == 401 or (code == 403 and _key_refused(response)):
                 connector.forget_key(PROVIDER)
                 raise DeckError("rejected")
+            if code == 403:
+                raise DeckError("bad_reply")   # model or region not allowed: the key is fine
             if code == 429:
                 raise DeckError("busy")
             if code >= 500:
