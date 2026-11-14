@@ -1,0 +1,301 @@
+# Study tab
+
+Study is the notch's fifth tab. It reads the school pages you have open in your
+browser (Canvas first), keeps your courses, grades and assignments on this Mac,
+shows what is due in the Brief and Day tabs, and makes study guides, practice
+quizzes, short lessons and flash cards from your real coursework.
+
+This file is also the build contract: the shapes below are what the backend
+serves and what the app decodes.
+
+## Privacy rules
+
+- School data is stored only in `MOE_DIR/study/study.db` (0600).
+- Wisp only reads school pages. It never submits, posts, clicks or changes
+  anything on a school site, and never types a password.
+- Page text is untrusted data. It is never treated as instructions, and it is
+  passed to a model only inside a clearly delimited data block.
+- Study material is written by the **Study connector**: a cloud model reached
+  with a key that is used for Study and nothing else. Nothing else in Wisp uses
+  that key, and Study never uses the local chat model's cloud settings, with one
+  exception: on a Mac with no local engine (the Intel build, already all-cloud),
+  Study falls back to the existing cloud connection when no Study key is set.
+- The key lives in the macOS Keychain: generic password, service
+  `com.wisp.study`, account = provider id (`openrouter` or `gemini`). It never
+  crosses HTTP, is never logged, and is never written to a file.
+
+## Providers
+
+| id | label | origin | API prefix | default model |
+| --- | --- | --- | --- | --- |
+| `openrouter` | OpenRouter | `https://openrouter.ai` | `/api/v1` | `google/gemini-3.8-flash` |
+| `gemini` | Gemini API | `https://generativelanguage.googleapis.com` | `/v1beta/openai` | `gemini-3.8-flash` |
+
+Both are OpenAI-compatible `POST {origin}{prefix}/chat/completions` with
+`Authorization: Bearer <key>`, `response_format: {"type": "json_object"}` and
+`reasoning_effort: "low"`. Only these two exact origins are ever contacted.
+
+## Backend (`service/study/`)
+
+| file | owns |
+| --- | --- |
+| `store.py` | sqlite store: courses, assignments, materials, attempts, meta |
+| `canvas_parse.py` | pure: captured page text -> courses and assignments |
+| `plan.py` | pure: what is due, study-block suggestions |
+| `day_hook.py` | `attach(result, now=, timezone=)` for `/assistant/today` |
+| `connector.py` | Study connector: choice, key read, JSON completion |
+| `generate.py` | prompts + strict validation for the four material kinds, and model-assisted page extraction |
+| `sample.py` | built-in sample courses, assignments and one material of each kind |
+| `api.py` | FastAPI router, prefix `/study` |
+
+### Python interfaces (exact)
+
+```python
+# store.py
+class StudyStore:
+    def __init__(self, path: Path): ...
+    def upsert_courses(self, courses: list[dict]) -> int      # by id
+    def upsert_assignments(self, items: list[dict]) -> int    # by id
+    def courses(self) -> list[dict]
+    def assignments(self) -> list[dict]                       # every row, due_ts ascending, nulls last
+    def save_material(self, material: dict) -> dict           # assigns id + created_at when missing
+    def material(self, material_id: str) -> dict | None       # full, with body
+    def materials(self) -> list[dict]                         # summaries, newest first
+    def delete_material(self, material_id: str) -> bool
+    def record_attempt(self, material_id: str, correct: int, total: int) -> float | None  # best score 0..1
+    def meta(self, key: str, default=None); def set_meta(self, key: str, value) -> None
+    def clear(self) -> None                                   # everything
+def study_store() -> StudyStore   # lazy singleton at MOE_DIR / "study" / "study.db"
+
+# canvas_parse.py  (no I/O, no model)
+@dataclass
+class ParsedPage: kind: str; courses: list[dict]; assignments: list[dict]
+#   kind: "grades" | "course_grades" | "assignments" | "dashboard" | "calendar" | "other"
+def parse_page(url: str, title: str, text: str, *, now: float, timezone: str) -> ParsedPage
+def is_school_url(url: str) -> bool
+
+# plan.py  (pure)
+def day_summary(assignments: list[dict], *, now: float, timezone: str) -> dict   # the "study" object below
+def study_blocks(assignments: list[dict], busy: list[tuple[float, float]], *, now: float, timezone: str,
+                 day: str) -> list[dict]                                          # Day `blocks` entries
+def deadlines(assignments: list[dict], *, day: str, timezone: str) -> list[dict]  # Day `deadlines` entries
+
+# day_hook.py
+def attach(result: dict, *, now: float, timezone: str) -> None   # never raises
+
+# connector.py
+class StudyConnectorError(Exception): code: str; message: str
+#   codes: "missing" (no key), "rejected" (401/403), "busy" (429), "unreachable", "bad_reply"
+def status() -> dict                       # the "connector" object below; never returns the key
+def set_choice(provider: str, model_id: str) -> dict
+async def complete_json(system: str, user: str, *, max_tokens: int = 6000, key_reader=None, transport=None) -> dict
+
+# generate.py
+KINDS = ("guide", "quiz", "lesson", "flashcards")
+async def make(kind: str, *, course: dict | None, assignment: dict | None, topic: str | None,
+               count: int | None, context: str = "", complete=None) -> dict   # {"title": str, "body": {...}}
+def validate(kind: str, body: dict) -> dict        # raises ValueError; returns the cleaned body
+async def extract_school_data(url: str, title: str, text: str, *, now: float, timezone: str,
+                              complete=None) -> ParsedPage
+```
+
+### Stored rows
+
+```jsonc
+// course
+{"id": "canvas:12345", "name": "Beginning Programming in Python", "code": "CSE 20",
+ "grade": "A-", "score": 91.2, "url": "https://…/courses/12345", "source": "canvas", "sample": false}
+// assignment
+{"id": "canvas:12345:678", "course_id": "canvas:12345", "title": "Lab 5: Lists",
+ "kind": "assignment",            // assignment | quiz | exam | project | discussion | reading
+ "due_ts": 1794700740.0,          // epoch seconds, or null
+ "all_day": false,
+ "points": 20.0, "score": null,   // score in points, or null
+ "status": "upcoming",            // upcoming | submitted | graded | missing | late
+ "details": "",                   // description text when the page had one (<= 4000 chars)
+ "url": "https://…", "source": "canvas", "sample": false}
+```
+
+Ids are stable across imports so a re-read updates rows. When a page gives no
+numeric ids, the id is `"<source>:" + sha1(course name | title)[:12]`.
+
+### HTTP API (`/study`)
+
+All mutating routes are native-only (`application/json`, no `Origin`).
+
+`GET /study/state`
+
+```jsonc
+{
+  "connector": {
+    "provider": "openrouter", "model_id": "google/gemini-3.8-flash",
+    "ready": true,
+    "source": "study",            // study | cloud (Intel fallback) | none
+    "providers": [{"id": "openrouter", "label": "OpenRouter", "default_model": "google/gemini-3.8-flash",
+                   "models": [{"id": "google/gemini-3.8-flash", "label": "Gemini 3.8 Flash"}],
+                   "key_url": "https://openrouter.ai/keys", "key_hint": "sk-or-…"}]
+  },
+  "sample": false,                // true while the built-in sample is loaded
+  "last_import": 1794650000.0,    // or null
+  "courses": [{"id", "name", "code", "grade", "score", "url", "due_count": 2, "sample"}],
+  "assignments": [{"id", "course_id", "course_name", "title", "kind", "due_ts", "all_day",
+                   "points", "score", "status", "url", "sample"}],
+  //   assignments: not yet due, or missing/late within the last 14 days; due_ts ascending, nulls last
+  "materials": [{"id", "kind", "title", "course_id", "assignment_id", "created_at",
+                 "count": 8, "best_score": 0.75, "sample": false}]
+  //   count: questions / cards / steps / sections
+}
+```
+
+| route | body | returns |
+| --- | --- | --- |
+| `POST /study/import` | `{"pages": [{"url", "title", "text"}]}` (<= 12 pages, text <= 200k chars each) | `{"courses": n, "assignments": n, "pages": [{"url", "kind", "recognized": bool}], "state": <state>}` |
+| `POST /study/connector` | `{"provider", "model_id"}` | `<state>.connector` |
+| `POST /study/generate` | `{"kind", "course_id"?, "assignment_id"?, "topic"?, "count"?}` | full material |
+| `GET /study/materials/{id}` | | full material |
+| `DELETE /study/materials/{id}` | | `{"deleted": true}` |
+| `POST /study/materials/{id}/attempt` | `{"correct": int, "total": int}` | `{"best_score": 0.8}` |
+| `POST /study/sample` | `{}` | `<state>` with the sample loaded (replaces only sample rows) |
+| `DELETE /study/data` | | `<state>` after clearing everything |
+
+Errors are `{"detail": "<code>", "message": "<gentle sentence>"}` with status
+409 for `missing`, 502 for `rejected` / `busy` / `unreachable` / `bad_reply`,
+404 for an unknown id, 422 for a bad body.
+
+Import: each page goes through `canvas_parse.parse_page`. A school page it does
+not recognise (`kind == "other"`) is handed to `generate.extract_school_data`
+when the connector is ready; otherwise it is reported `recognized: false`.
+A real import clears sample rows first.
+
+### Material
+
+```jsonc
+{"id": "m_ab12", "kind": "quiz", "title": "Lists and loops: practice quiz",
+ "course_id": "canvas:12345", "assignment_id": "canvas:12345:678",
+ "created_at": 1794650000.0, "model": "google/gemini-3.8-flash", "sample": false,
+ "best_score": null,
+ "body": { … }}
+```
+
+Bodies:
+
+```jsonc
+// guide
+{"summary": "…", "sections": [{"heading": "…", "points": ["…"]}],
+ "key_terms": [{"term": "…", "meaning": "…"}], "practice": ["…"]}
+// quiz   (4 choices each, `answer` is the 0-based index)
+{"questions": [{"prompt": "…", "choices": ["…", "…", "…", "…"], "answer": 2, "why": "…"}]}
+// lesson
+{"steps": [{"title": "…", "explain": "…", "example": "…" /* or null */,
+            "check": {"prompt": "…", "choices": ["…"], "answer": 0, "why": "…"} /* or null */}]}
+// flashcards
+{"cards": [{"front": "…", "back": "…"}]}
+```
+
+Limits enforced by `validate`: guide 2–8 sections; quiz 3–15 questions with 2–5
+choices; lesson 2–8 steps; flashcards 4–30 cards; every string trimmed and
+capped (prompt 600, choice 300, explain 2000).
+
+### Brief and Day (`/assistant/today`)
+
+`day_hook.attach` adds, without touching the saved plan:
+
+```jsonc
+"study": {
+  "due_today": [{"id", "title", "course_name", "due_ts", "all_day", "kind", "status"}],
+  "due_tomorrow_count": 1,
+  "due_week_count": 4,
+  "missing_count": 0,
+  "next_test": {"id", "title", "course_name", "due_ts"},   // next quiz/exam within 7 days, or null
+  "line": "2 due today: Lab 5 (CSE 20), Essay draft",        // "" when nothing is due today or tomorrow
+  "sample": false
+}
+```
+
+- `deadlines` gains `{"id": "study:<assignment id>", "title": "<title> · <course code or name>",
+  "due_ts", "source": "study"}` for items due on that day (not submitted/graded).
+- `blocks` gains at most two `{"id": "study-block:<assignment id>", "title": "Study: <title>",
+  "start", "end", "kind": "study", "task_id": null, "warnings": []}` blocks of 45 minutes, placed
+  in the first free gaps between now (rounded up to :00/:30) and the due time, inside 08:00–22:00,
+  only for today, only for items due within 48 hours that are not submitted. Never overlaps a block.
+
+## App (`app/Sources/WispApp/`)
+
+| file | owns |
+| --- | --- |
+| `Study.swift` | Foundation-only: decoded types, due grouping, quiz and flash-card state, copy |
+| `StudyModel.swift` | `@MainActor final class StudyModel: ObservableObject`, injectable transport |
+| `StudyCredentialStore.swift` | Keychain `com.wisp.study` |
+| `StudyPageReader.swift` | reads the front tab of each open browser window through Accessibility |
+| `NotchStudyView.swift` | the tab: courses, due list, make buttons, library |
+| `StudyMaterialViews.swift` | quiz player, flash cards, guide and lesson readers |
+| `StudyConnectorCard.swift` | key card: provider, key field, model |
+
+### Swift names (exact)
+
+```swift
+// Study.swift — Foundation only, no SwiftUI
+enum StudyKind: String, Codable, CaseIterable { case guide, quiz, lesson, flashcards }   // .title, .symbol, .verb
+struct StudyConnectorState: Decodable, Equatable  // provider, modelID, ready, source, providers: [StudyProvider]
+struct StudyProvider: Decodable, Equatable, Identifiable   // id, label, defaultModel, models: [StudyModelOption], keyURL, keyHint
+struct StudyModelOption: Decodable, Equatable, Identifiable // id, label
+struct StudyCourse: Decodable, Equatable, Identifiable     // id, name, code, grade, score, url, dueCount, sample
+struct StudyAssignment: Decodable, Equatable, Identifiable // id, courseID, courseName, title, kind, dueTS, allDay, points, score, status, url, sample
+struct StudyMaterialSummary: Decodable, Equatable, Identifiable // id, kind: StudyKind, title, courseID, assignmentID, createdAt, count, bestScore, sample
+struct StudyState: Decodable, Equatable            // connector, sample, lastImport, courses, assignments, materials
+struct StudyMaterial: Decodable, Equatable, Identifiable   // summary fields + model + body: StudyBody
+enum StudyBody: Equatable { case guide(StudyGuide), quiz(StudyQuiz), lesson(StudyLesson), flashcards(StudyDeck) }
+struct StudyGuide / StudyQuiz / StudyQuestion / StudyLesson / StudyLessonStep / StudyDeck / StudyCard
+struct StudyPage: Encodable, Equatable             // url, title, text
+struct StudyDaySummary: Decodable, Equatable       // the "study" object of /assistant/today (lives in NotchDay.swift)
+
+enum StudyDue { static func groups(_ items: [StudyAssignment], now: Date, calendar: Calendar) -> [StudyDueGroup] }
+//   groups: Missing, Today, Tomorrow, This week, Later, No date — empty groups dropped
+struct QuizRun: Equatable      // init(quiz:); current, chosen, isLast, choose(_:), next(), finished, correct, total, scoreText
+struct FlashRun: Equatable     // init(deck:); current, flipped, flip(), mark(known:), again queue, finished, knownCount, total
+enum StudyText                 // every user-facing string and formatter (due labels, grade chip, counts, empty states)
+
+// StudyModel.swift
+@MainActor final class StudyModel: ObservableObject {
+    static let shared: StudyModel
+    typealias Transport = (URLRequest) async throws -> (Data, URLResponse)
+    init(transport: Transport? = nil, reader: (() async -> [StudyPage])? = nil)
+    @Published private(set) var state: StudyState?
+    @Published private(set) var busy: StudyBusy?          // .reading, .making(StudyKind), .saving, .loading
+    @Published var notice: String?                        // gentle one-line error or result
+    @Published var opened: StudyMaterial?                 // the material shown full-tab
+    @Published var showingConnector: Bool
+    func refresh() async
+    func readSchoolPages() async                          // StudyPageReader -> POST /study/import
+    func make(_ kind: StudyKind, course: StudyCourse?, assignment: StudyAssignment?, topic: String?) async
+    func open(_ id: String) async
+    func close()
+    func delete(_ id: String) async
+    func record(correct: Int, total: Int) async           // for the opened material
+    func saveConnector(provider: String, key: String?, modelID: String) async   // key nil keeps the saved key
+    func loadSample() async
+    func clearAll() async
+}
+
+// StudyPageReader.swift
+enum StudyPageReader { static func read() async -> [StudyPage]; static var hasAccessibility: Bool }
+
+// StudyCredentialStore.swift
+enum StudyCredentialStore { static func save(_ key: String, provider: String) throws
+                            static func remove(provider: String); static func has(provider: String) -> Bool }
+
+// Views
+struct NotchStudyView: View { init(model: OverlayModel, study: StudyModel) }
+```
+
+JSON keys are snake_case; Swift properties are camelCase through explicit
+`CodingKeys` (the repo's convention; no `convertFromSnakeCase`).
+
+## Tests
+
+- Python: `tests/test_study_store.py`, `test_study_api.py`, `test_study_connector.py`,
+  `test_study_generate.py`, `test_study_canvas_parse.py`, `test_study_plan.py`. Each is listed in
+  `scripts/run_simulation_qa.py` and ends with the manifest self-check.
+- Swift: `tests/StudyChecks.swift` (`func studyChecks(_ check: (Bool, String) -> Void)`), compiled
+  with `tests/NotchTabChecks.swift`.
+- `WISP_NOTCH_QA` scenes: `study`, `study-quiz`, `study-cards`, `study-guide`, `study-lesson`, `study-setup`.
