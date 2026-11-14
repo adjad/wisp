@@ -1799,3 +1799,68 @@ def test_light_cycles_come_every_minute_only_while_the_switch_is_on(yes, monkeyp
     acting.set_enabled(False)
     asyncio.run(cycle._light_tick())
     assert cycle._next_tick_at == 1300.0
+
+
+# --- a second dated text from the same person (found by the sandbox run on build 4118) ------------
+
+SECOND = "Lunch at Tartine Sun Nov 1 at 1pm, can you make it?"
+
+
+def test_a_friends_second_dated_text_is_added_while_the_first_is_still_in_view(store, yes):
+    yes(NOW - 5 * 3600)
+    first = conversation("Maya Chen", (3.0, RECITAL))
+    writers = Writers()
+    production_step(store, survivors(first), writers)
+    assert [p["start_ts"] for _k, p in writers.calls] == [at(10, 31, 18)]
+    both = conversation("Maya Chen", (3.0, RECITAL), (1.0, SECOND))
+    out, notes = production_step(store, survivors(both), writers)
+    assert [p["start_ts"] for _k, p in writers.calls] == [at(10, 31, 18), at(11, 1, 13)] and notes == ["added"]
+    assert len(out["added"]) == 1
+    out, notes = production_step(store, survivors(both), writers)            # both dealt with: nothing more
+    assert len(writers.calls) == 2 and out["added"] == [] and out["tap"] == []
+
+
+def test_a_dated_line_after_the_yes_is_added_though_an_older_one_came_before_it(store, yes):
+    yes(NOW - 2 * 3600)
+    item = conversation("Maya Chen", (3.0, RECITAL), (1.0, SECOND))          # the first line is older than the yes
+    writers = Writers()
+    out, notes = production_step(store, survivors(item), writers)
+    assert [p["start_ts"] for _k, p in writers.calls] == [at(11, 1, 13)] and len(out["added"]) == 1
+    assert out["tap"] == []                                                  # one conversation, one thing a pass
+
+
+def test_the_same_plan_said_twice_is_one_event_and_the_first_line_still_decides_when_nothing_is_new(store, yes):
+    yes(NOW - 5 * 3600)
+    twice = conversation("Maya Chen", (3.0, RECITAL), (1.0, "see you at my recital Sat Oct 31 at 6pm!"))
+    writers = Writers()
+    production_step(store, survivors(twice), writers)
+    out, notes = production_step(store, survivors(twice), writers)
+    assert len(writers.calls) == 1 and notes == ["already added"]
+    # Off: the first dated line is offered as a card, as before; nothing is skipped ahead to.
+    both = conversation("Sam Lee", (3.0, RECITAL), (1.0, SECOND))
+    from service.proactive import acting
+    acting.set_enabled(False)
+    out, notes = production_step(ProactiveStore(Path(tempfile.mkdtemp()) / "p"), survivors(both), Writers())
+    assert [c["action"]["method"] for c in out["tap"]] == ["calendar_event"] and notes == ["tap to add"]
+
+
+def test_a_second_line_cannot_get_past_the_rules(store, yes, monkeypatch):
+    yes(NOW - 5 * 3600)
+    writers = Writers()
+    production_step(store, survivors(conversation("Maya Chen", (3.0, RECITAL))), writers)
+    # The next dated line is a proposal, a past date, or already on the calendar: nothing is added.
+    for later in ("maybe we could do lunch Sun Nov 1 at 1pm?", "Lunch Thu Oct 22 at 1pm was fun"):
+        out, _ = production_step(store, survivors(conversation("Maya Chen", (3.0, RECITAL), (1.0, later))), writers)
+        assert len(writers.calls) == 1 and out["added"] == []
+    notes = []
+    out = asyncio.run(autoadd.step(survivors(conversation("Maya Chen", (3.0, RECITAL), (1.0, SECOND))),
+                                   {"calendar": [{"id": "c9", "title": "Lunch Tartine", "when_ts": at(11, 1, 13),
+                                                  "all_day": False, "source": "calendar"}], "reminders": []},
+                                   now=NOW, tz=TZ, store=store, abort=lambda: False, writers=writers.table(),
+                                   existing=lambda n: [], debug=notes))
+    assert len(writers.calls) == 1 and out["added"] == []
+    # An undone add still retires the whole conversation.
+    [fp] = [k for k, r in store.auto_added().items() if r.get("status") == "added"]
+    store.auto_add_put(fp, {**store.auto_added()[fp], "status": "undone"})
+    out, notes = production_step(store, survivors(conversation("Maya Chen", (3.0, RECITAL), (1.0, SECOND))), writers)
+    assert len(writers.calls) == 1 and notes == ["undone before"]

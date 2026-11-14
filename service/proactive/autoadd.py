@@ -697,8 +697,11 @@ def _missed(item: dict, now: float) -> bool:
     return card_due(item, now)
 
 
-def plan_for(item: dict, result: dict | None, *, now: float, tz: str) -> tuple[dict | None, str]:
-    """(plan, "") for an eligible item, else (None, why not). Pure: no store, no I/O."""
+def plan_for(item: dict, result: dict | None, *, now: float, tz: str,
+             skip: frozenset = frozenset()) -> tuple[dict | None, str]:
+    """(plan, "") for an eligible item, else (None, why not). Pure: no store, no I/O.
+    `skip`: fingerprints of plans to pass over, so the caller can ask for a conversation's
+    NEXT dated sentence when its first one is already dealt with (step's _choose)."""
     from service.proactive import triage
     source = item.get("source")
     if source not in ("mail", "messages"):
@@ -785,6 +788,9 @@ def plan_for(item: dict, result: dict | None, *, now: float, tz: str) -> tuple[d
             continue
         # In a group the plan is named for whoever wrote the line, not the last to speak.
         named = {**item, "who": writer} if writer else item
+        if fingerprint(item, kind, at) in skip:
+            reason = "already handled"
+            continue
         title = _title(named, sentence, got.quote, kind, word)
         if not title or guard.output_has_pii(title) or guard.has_contact_or_link(title):
             reason = "no safe title"
@@ -1338,9 +1344,32 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
         if not survivor.get("add_only"):
             tap.append(tap_card(plan, now))
 
+    def choose(item, result):
+        """The plan to act on for this conversation. Its first dated sentence, as always, unless
+        that one is already dealt with (added, tried, on the calendar) or the yes does not cover
+        it: then the next dated sentence that is new and covered. Without this a friend's second
+        dated text was never looked at while their first was still among the newest lines.
+        Nothing here loosens a rule: every plan still comes from plan_for, and the one chosen
+        goes through every check below."""
+        first, skip = None, set()
+        for _ in range(6):
+            plan, reason = plan_for(item, result, now=now, tz=tz, skip=frozenset(skip))
+            if plan is None:
+                return first if first is not None else (None, reason)
+            if first is None:
+                first = (plan, reason)
+            fp = plan["fingerprint"]
+            record = records.get(fp) or {}
+            dealt = (record.get("status") in _RECORD_STATES_BLOCKING or int(record.get("attempts") or 0) >= MAX_ATTEMPTS
+                     or already_there(plan, rows, tz) is not None)
+            if not dealt and on and _allowed(allows, plan.get("line_ts"), _action_of(item, plan)):
+                return plan, ""
+            skip.add(fp)
+        return first
+
     for survivor in sorted(survivors, key=lambda s: -(s["item"].get("received_ts") or 0)):
         item, result = survivor["item"], survivor.get("result")
-        plan, reason = plan_for(item, result, now=now, tz=tz)
+        plan, reason = choose(item, result)
         if plan is None:
             note(item, reason)
             continue

@@ -1257,7 +1257,7 @@ async def _build_tick() -> None:
             traceback.print_exc()
     store.save_state(built_for=now, idle_refresh_at=now, idle_refresh_inputs=refresh_inputs(store, now))
     return_refresh.caught_up()
-    _next_tick_at = time.time() + IDLE_GAP_S
+    _next_tick_at = time.time() + _light_gap()       # the light cycles that follow a build keep their pace
     await return_refresh.announce()
 
 
