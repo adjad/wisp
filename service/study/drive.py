@@ -1,5 +1,6 @@
-"""Google Drive for the Study tab: list the student's Docs and Slides and export one as
-plain text (docs/STUDY_TAB.md, "Drive").
+"""Google Drive for the Study tab: list the student's Docs, Slides and PDFs, export a Doc or
+Slides file as plain text, and fetch any of them as one PDF for reading as pages
+(docs/STUDY_TAB.md, "Drive" and "Slides as pages").
 
 IMPORTANT rules:
 - Read-only. It rides the existing Google sign-in (service.gmail_source) and needs the
@@ -26,9 +27,13 @@ ORIGIN = "https://www.googleapis.com"
 FILES = f"{ORIGIN}/drive/v3/files"
 DOC = "application/vnd.google-apps.document"
 SLIDES = "application/vnd.google-apps.presentation"
-KINDS = {DOC: "doc", SLIDES: "slides"}
+PDF = "application/pdf"
+KINDS = {DOC: "doc", SLIDES: "slides", PDF: "pdf"}
 OPEN_URL = {DOC: "https://docs.google.com/document/d/{id}/edit",
-            SLIDES: "https://docs.google.com/presentation/d/{id}/edit"}
+            SLIDES: "https://docs.google.com/presentation/d/{id}/edit",
+            PDF: "https://drive.google.com/file/d/{id}/view"}
+PDF_BYTES = 18 * 1024 * 1024  # a deck read as pages is sent inline; over this it stays text-only
+PDF_TOTAL_S = 45.0            # one PDF export or download
 FILE_ID = re.compile(r"[A-Za-z0-9_-]{10,200}")
 MAX_LIST = 25
 QUERY_CHARS = 200
@@ -46,7 +51,8 @@ UNREACHABLE = "Wisp couldn't reach Google Drive. Try again in a moment."
 DRIVE_OFF = "Turn on the Google Drive API for Wisp's Google project, then try again."
 NOT_FOUND = "Wisp couldn't find that file in your Google Drive."
 TOO_LARGE = "That file is too large for Google to export as text."
-BAD_ID = "That isn't a Google Docs or Slides file."
+BAD_ID = "That isn't a Google Docs, Slides or PDF file."
+PDF_NEEDS_GEMINI = "Reading a PDF needs the Gemini API as the Study connector. Choose it in Study settings."
 EMPTY = "That file has no text to study."
 
 # Tests swap in an httpx.MockTransport; production leaves it None (the real network).
@@ -156,13 +162,13 @@ def _client() -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=_transport, timeout=TIMEOUT, follow_redirects=False)
 
 
-async def _bounded(work):
+async def _bounded(work, total_s: float = TOTAL_S):
     """Run `work(http)` as the Drive account, inside one total time limit."""
     account = _drive_account()
     try:
         with gmail_source.bound_account(account):
             async with _client() as http:
-                result = await asyncio.wait_for(work(http), TOTAL_S)
+                result = await asyncio.wait_for(work(http), total_s)
                 if not gmail_source.still_connected():
                     raise _missing(NOT_CONNECTED)
                 return result
@@ -198,7 +204,7 @@ def escape(text: str) -> str:
 
 
 def drive_query(q: str = "") -> str:
-    query = f"(mimeType='{DOC}' or mimeType='{SLIDES}') and trashed=false"
+    query = f"(mimeType='{DOC}' or mimeType='{SLIDES}' or mimeType='{PDF}') and trashed=false"
     word = escape(q)
     return f"{query} and name contains '{word}'" if word else query
 
@@ -228,7 +234,7 @@ def _row(item) -> dict | None:
 
 
 async def list_files(q: str = "", limit: int = MAX_LIST) -> list[dict]:
-    """The student's Docs and Slides, most recently changed first."""
+    """The student's Docs, Slides and PDFs, most recently changed first."""
     limit = max(1, min(int(limit), MAX_LIST))
     params = [("q", drive_query(q)), ("orderBy", "modifiedTime desc"), ("pageSize", str(limit)),
               ("fields", "files(id,name,mimeType,modifiedTime,webViewLink)")]
@@ -264,22 +270,77 @@ async def _export_text(http: httpx.AsyncClient, file_id: str) -> str:
     return "".join(parts)[:SOURCE_CHARS]
 
 
-async def export(file_id: str) -> dict:
-    """{"id", "name", "kind", "url", "text"} for one Doc or Slides file."""
+async def _meta(http: httpx.AsyncClient, file_id: str) -> tuple[dict, str]:
+    meta = await _get_json(http, f"/{file_id}", [("fields", "id,name,mimeType,webViewLink,trashed"),
+                                                 ("supportsAllDrives", "true")])
+    mime = meta.get("mimeType")
+    if mime not in KINDS or meta.get("trashed"):
+        raise DriveError(422, "invalid", BAD_ID)
+    return meta, mime
+
+
+def _found(file_id: str, meta: dict, mime: str, text: str) -> dict:
+    return {"id": file_id, "name": str(meta.get("name") or "Untitled"), "kind": KINDS[mime],
+            "url": _link(meta.get("webViewLink")) or OPEN_URL[mime].format(id=file_id), "text": text}
+
+
+async def export(file_id: str, *, pdf_ok: bool = False) -> dict:
+    """{"id", "name", "kind", "url", "text"} for one Doc or Slides file. A PDF has no text
+    export: with ``pdf_ok`` it comes back with "text": "" (its pages are its text), else it
+    is refused (PDF_NEEDS_GEMINI)."""
     if not valid_id(file_id):
         raise DriveError(422, "invalid", BAD_ID)
 
     async def work(http):
-        meta = await _get_json(http, f"/{file_id}", [("fields", "id,name,mimeType,webViewLink,trashed"),
-                                                     ("supportsAllDrives", "true")])
-        mime = meta.get("mimeType")
-        if mime not in KINDS or meta.get("trashed"):
-            raise DriveError(422, "invalid", BAD_ID)
+        meta, mime = await _meta(http, file_id)
+        if mime == PDF:
+            if not pdf_ok:
+                raise DriveError(422, "invalid", PDF_NEEDS_GEMINI)
+            return meta, mime, ""
         text = await _export_text(http, file_id)
         return meta, mime, text
     meta, mime, text = await _bounded(work)
-    text = text.lstrip("﻿")
+    if mime == PDF:
+        return _found(file_id, meta, mime, "")
+    text = text.lstrip("\ufeff")
     if not text.strip():
         raise DriveError(422, "invalid", EMPTY)
-    return {"id": file_id, "name": str(meta.get("name") or "Untitled"), "kind": KINDS[mime],
-            "url": _link(meta.get("webViewLink")) or OPEN_URL[mime].format(id=file_id), "text": text}
+    return _found(file_id, meta, mime, text)
+
+
+async def _stream_bytes(http: httpx.AsyncClient, path: str, params: list[tuple[str, str]],
+                        cap: int) -> bytes | None:
+    """The body, or None when it is larger than ``cap`` (the rest is never downloaded)."""
+    token = await _token(http)
+    async with http.stream("GET", _url(path), params=params,
+                           headers={"Authorization": f"Bearer {token}"}) as response:
+        if response.status_code != 200:
+            await response.aread()
+            raise _failure(response)
+        declared = response.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > cap:
+            return None
+        parts: list[bytes] = []
+        size = 0
+        async for chunk in response.aiter_bytes():
+            size += len(chunk)
+            if size > cap:
+                return None
+            parts.append(chunk)
+    return b"".join(parts)
+
+
+async def pdf_bytes(file_id: str, kind: str, *, cap: int = PDF_BYTES,
+                    total_s: float = PDF_TOTAL_S) -> bytes | None:
+    """One file as a PDF: Docs and Slides exported as application/pdf, a PDF downloaded
+    (alt=media). None when it is over ``cap``; DriveError for Google's refusals (an export
+    over Google's own limit is "too_large")."""
+    if not valid_id(file_id) or kind not in KINDS.values():
+        raise DriveError(422, "invalid", BAD_ID)
+
+    async def work(http):
+        if kind == "pdf":
+            return await _stream_bytes(http, f"/{file_id}", [("alt", "media"), ("supportsAllDrives", "true")],
+                                       cap)
+        return await _stream_bytes(http, f"/{file_id}/export", [("mimeType", PDF)], cap)
+    return await _bounded(work, total_s)

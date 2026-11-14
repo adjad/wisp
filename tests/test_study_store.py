@@ -419,7 +419,7 @@ def test_handed_in_work_is_never_reopened_by_a_later_looking_deadline(tmp_path):
 
 # --- sources ---------------------------------------------------------------------------
 
-SUMMARY_KEYS = {"id", "course_id", "kind", "title", "url", "chars", "created_at"}
+SUMMARY_KEYS = {"id", "course_id", "kind", "title", "url", "chars", "created_at", "pages", "deck_status"}
 
 
 def drive(url="https://docs.google.com/document/d/abc", **values):

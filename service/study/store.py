@@ -182,6 +182,24 @@ class StudyStore:
                 UNIQUE (kind, url)
             );
             CREATE INDEX IF NOT EXISTS sources_course ON sources(course_id);
+            CREATE TABLE IF NOT EXISTS deck_pages (
+                source_id TEXT NOT NULL,
+                page      INTEGER NOT NULL,
+                title     TEXT NOT NULL DEFAULT '',
+                points    TEXT NOT NULL DEFAULT '[]',
+                figure    TEXT,
+                topics    TEXT NOT NULL DEFAULT '[]',
+                PRIMARY KEY (source_id, page)
+            );
+            CREATE TABLE IF NOT EXISTS misses (
+                material_id TEXT NOT NULL,
+                question    INTEGER NOT NULL,
+                source_id   TEXT,
+                page        INTEGER,
+                topic       TEXT NOT NULL DEFAULT '',
+                at          REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS misses_material ON misses(material_id);
         """)
         self._migrate()
 
@@ -196,6 +214,12 @@ class StudyStore:
         for row in self._db.execute("SELECT id, name FROM courses WHERE merge_key IS NULL").fetchall():
             self._db.execute("UPDATE courses SET merge_key=? WHERE id=?", (merge_key(row["name"]), row["id"]))
         self._db.execute("CREATE INDEX IF NOT EXISTS courses_merge_key ON courses(merge_key)")
+        cols = {r[1] for r in self._db.execute("PRAGMA table_info(sources)")}
+        if "deck_status" not in cols:
+            try:
+                self._db.execute("ALTER TABLE sources ADD COLUMN deck_status TEXT NOT NULL DEFAULT 'none'")
+            except sqlite3.OperationalError:
+                pass   # another opener added it first
 
     # --- courses and assignments ------------------------------------------------
 
@@ -428,6 +452,7 @@ class StudyStore:
         with self._lock:
             cur = self._db.execute("DELETE FROM materials WHERE id=?", (material_id,))
             self._db.execute("DELETE FROM attempts WHERE material_id=?", (material_id,))
+            self._db.execute("DELETE FROM misses WHERE material_id=?", (material_id,))
         return cur.rowcount > 0
 
     def record_attempt(self, material_id: str, correct: int, total: int) -> float | None:
@@ -464,12 +489,16 @@ class StudyStore:
         course_id = course_id if isinstance(course_id, str) and course_id else None
         now = time.time()
         with self._lock:
-            old = (self._db.execute("SELECT id FROM sources WHERE kind=? AND url=?", (kind, url)).fetchone()
+            old = (self._db.execute("SELECT id, deck_status FROM sources WHERE kind=? AND url=?",
+                                    (kind, url)).fetchone()
                    if url is not None else None)
             sid = old["id"] if old else "src_" + secrets.token_hex(6)
+            # Re-adding keeps the pages read earlier (and their status) until new ones replace them.
+            deck_status = old["deck_status"] if old else "none"
             self._db.execute(
-                "INSERT OR REPLACE INTO sources(id,course_id,kind,title,url,text,chars,created_at)"
-                " VALUES (?,?,?,?,?,?,?,?)", (sid, course_id, kind, title, url, text, len(text), now))
+                "INSERT OR REPLACE INTO sources(id,course_id,kind,title,url,text,chars,created_at,deck_status)"
+                " VALUES (?,?,?,?,?,?,?,?,?)",
+                (sid, course_id, kind, title, url, text, len(text), now, deck_status))
             row = self._db.execute(_SOURCE_SELECT + " WHERE id=?", (sid,)).fetchone()
         return dict(row)
 
@@ -486,14 +515,134 @@ class StudyStore:
     def source(self, source_id: str) -> dict | None:
         """The full row, with "text"."""
         with self._lock:
-            row = self._db.execute(_SOURCE_SELECT.replace(" FROM", ", text FROM") + " WHERE id=?",
+            row = self._db.execute(_SOURCE_SELECT.replace(" FROM sources", ", text FROM sources") + " WHERE id=?",
                                    (source_id,)).fetchone()
         return dict(row) if row else None
 
     def delete_source(self, source_id: str) -> bool:
         with self._lock:
             cur = self._db.execute("DELETE FROM sources WHERE id=?", (source_id,))
+            self._db.execute("DELETE FROM deck_pages WHERE source_id=?", (source_id,))
         return cur.rowcount > 0
+
+    # --- deck pages -------------------------------------------------------------
+
+    def save_pages(self, source_id: str, pages: list[dict]) -> int:
+        """Replace a source's pages (deck.validate_pages' shape) and mark its deck "ready"
+        (or "none" for an empty list). An unknown source saves nothing. Returns pages saved."""
+        rows = []
+        seen: set[int] = set()
+        for item in pages or []:
+            row = _page_in(item)
+            if row is not None and row[0] not in seen and len(rows) < PAGE_MAX:
+                seen.add(row[0])
+                rows.append(row)
+        with self._lock:
+            if self._db.execute("SELECT 1 FROM sources WHERE id=?", (source_id,)).fetchone() is None:
+                return 0
+            self._db.execute("BEGIN")
+            try:
+                self._db.execute("DELETE FROM deck_pages WHERE source_id=?", (source_id,))
+                self._db.executemany(
+                    "INSERT INTO deck_pages(source_id,page,title,points,figure,topics) VALUES (?,?,?,?,?,?)",
+                    [(source_id, *row) for row in rows])
+                self._db.execute("UPDATE sources SET deck_status=? WHERE id=?",
+                                 ("ready" if rows else "none", source_id))
+                self._db.execute("COMMIT")
+            except BaseException:
+                self._db.execute("ROLLBACK")
+                raise
+        return len(rows)
+
+    def set_deck_status(self, source_id: str, status: str) -> None:
+        """"none" | "ready" | "failed". "failed" keeps any pages an earlier read saved."""
+        if status not in DECK_STATUSES:
+            raise ValueError("unknown deck status")
+        with self._lock:
+            self._db.execute("UPDATE sources SET deck_status=? WHERE id=?", (status, source_id))
+
+    def pages(self, source_id: str) -> list[dict]:
+        with self._lock:
+            rows = self._db.execute("SELECT * FROM deck_pages WHERE source_id=? ORDER BY page",
+                                    (source_id,)).fetchall()
+        return [_page_out(r) for r in rows]
+
+    def search_pages(self, query: str, *, course_id: str | None = None, limit: int = 8) -> list[dict]:
+        """Local keyword search over every deck page: no model, no network. A query word in a
+        page's title or topics counts 3, in the deck's title 2, in its points or figure 1;
+        a word is matched lower-cased and lightly stemmed ("pointers" finds "pointer").
+        Best first, then deck title and page order. A score of 0 is never returned."""
+        words = set(_terms(query))
+        if not words:
+            return []
+        limit = max(1, min(int(limit), 100))
+        sql = ("SELECT p.*, s.title AS deck, s.course_id AS course_id FROM deck_pages p"
+               " JOIN sources s ON s.id = p.source_id")
+        with self._lock:
+            if course_id is None:
+                rows = self._db.execute(sql).fetchall()
+            else:
+                rows = self._db.execute(sql + " WHERE s.course_id=?", (course_id,)).fetchall()
+        deck_terms: dict[str, set[str]] = {}
+        found = []
+        for row in rows:
+            page = _page_out(row)
+            deck = row["deck"] or ""
+            if deck not in deck_terms:
+                deck_terms[deck] = set(_terms(deck))
+            fields = ((3, set(_terms(page["title"]))), (3, set(_terms(" ".join(page["topics"])))),
+                      (2, deck_terms[deck]), (1, set(_terms(" ".join(page["points"])))),
+                      (1, set(_terms(page["figure"] or ""))))
+            score = sum(weight * len(words & terms) for weight, terms in fields)
+            if score <= 0:
+                continue
+            found.append(page | {"source_id": row["source_id"], "deck": deck, "course_id": row["course_id"],
+                                 "score": float(score)})
+        found.sort(key=lambda p: (-p["score"], p["deck"].casefold(), p["source_id"], p["page"]))
+        return found[:limit]
+
+    # --- misses -----------------------------------------------------------------
+
+    def record_misses(self, material_id: str, rows: list[dict]) -> int:
+        """The questions a quiz attempt got wrong, with each one's slide and topic."""
+        now = time.time()
+        clean = []
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            question = row.get("question")
+            if isinstance(question, bool) or not isinstance(question, int) or question < 0:
+                continue
+            source_id = row.get("source_id")
+            source_id = source_id if isinstance(source_id, str) and source_id else None
+            page = row.get("page")
+            page = page if isinstance(page, int) and not isinstance(page, bool) and page >= 1 else None
+            topic = row.get("topic")
+            topic = topic.strip()[:_TOPIC] if isinstance(topic, str) else ""
+            clean.append((material_id, question, source_id, page, topic, now))
+        if not clean:
+            return 0
+        with self._lock:
+            if self._db.execute("SELECT 1 FROM materials WHERE id=?", (material_id,)).fetchone() is None:
+                return 0
+            self._db.executemany(
+                "INSERT INTO misses(material_id,question,source_id,page,topic,at) VALUES (?,?,?,?,?,?)", clean)
+        return len(clean)
+
+    def misses(self, course_id: str | None = None, since: float | None = None) -> list[dict]:
+        """Missed questions, oldest first, each with its material's course_id."""
+        sql = ("SELECT x.material_id, x.question, x.source_id, x.page, x.topic, x.at, m.course_id"
+               " FROM misses x JOIN materials m ON m.id = x.material_id WHERE 1=1")
+        args: list = []
+        if course_id is not None:
+            sql += " AND m.course_id=?"
+            args.append(course_id)
+        if since is not None:
+            sql += " AND x.at>=?"
+            args.append(float(since))
+        with self._lock:
+            rows = self._db.execute(sql + " ORDER BY x.at, x.material_id, x.question", args).fetchall()
+        return [dict(r) for r in rows]
 
     # --- meta and clearing ------------------------------------------------------
 
@@ -514,7 +663,8 @@ class StudyStore:
     def clear(self) -> None:
         with self._lock:
             self._db.executescript("BEGIN; DELETE FROM courses; DELETE FROM assignments; DELETE FROM materials;"
-                                   " DELETE FROM attempts; DELETE FROM meta; DELETE FROM sources; COMMIT;")
+                                   " DELETE FROM attempts; DELETE FROM meta; DELETE FROM sources;"
+                                   " DELETE FROM deck_pages; DELETE FROM misses; COMMIT;")
 
     def clear_sample(self) -> None:
         """Only the built-in sample: real courses, sources and anything made from them stay."""
@@ -522,6 +672,7 @@ class StudyStore:
             self._db.executescript(
                 "BEGIN;"
                 " DELETE FROM attempts WHERE material_id IN (SELECT id FROM materials WHERE sample=1);"
+                " DELETE FROM misses WHERE material_id IN (SELECT id FROM materials WHERE sample=1);"
                 " DELETE FROM materials WHERE sample=1;"
                 " DELETE FROM assignments WHERE sample=1;"
                 " DELETE FROM courses WHERE sample=1;"
@@ -553,7 +704,65 @@ _MATERIAL_SELECT = (
     " AS best_score FROM materials m")
 
 
-_SOURCE_SELECT = "SELECT id, course_id, kind, title, url, chars, created_at FROM sources"
+_SOURCE_SELECT = ("SELECT id, course_id, kind, title, url, chars, created_at,"
+                  " (SELECT COUNT(*) FROM deck_pages p WHERE p.source_id = sources.id) AS pages,"
+                  " deck_status FROM sources")
+
+DECK_STATUSES = ("none", "ready", "failed")
+PAGE_MAX = 500          # pages kept per source
+_PAGE_TITLE = 200
+_POINT = 500
+_POINTS = 6
+_FIGURE = 1000
+_TOPIC = 80
+_TOPICS = 5
+_WORD = re.compile(r"[0-9a-z]+")
+_STOP = frozenset("a an and are as at be by do for from how in is it of on or the to what when where which who"
+                  " why with this that these those about me my i you your we our".split())
+
+
+def _stem(word: str) -> str:
+    """Stemming-lite: enough that plural, -ing and -ed forms meet ("pointers", "pointer")."""
+    for suffix in ("ies", "ing", "ed", "es", "s"):
+        if word.endswith(suffix) and len(word) - len(suffix) >= 3:
+            word = word[: -len(suffix)] + ("y" if suffix == "ies" else "")
+            break
+    return word
+
+
+def _terms(text) -> list[str]:
+    return [_stem(w) for w in _WORD.findall(str(text or "").lower()) if w not in _STOP]
+
+
+def _text_list(value, cap: int, size: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out = []
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            out.append(_WS.sub(" ", item).strip()[:size])
+    return out[:cap]
+
+
+def _page_in(item) -> tuple | None:
+    """(page, title, points json, figure, topics json), or None for a row that is not a page."""
+    if not isinstance(item, dict):
+        return None
+    page = item.get("page")
+    if isinstance(page, bool) or not isinstance(page, int) or not 1 <= page <= 10_000:
+        return None
+    title = item.get("title")
+    title = _WS.sub(" ", title).strip()[:_PAGE_TITLE] if isinstance(title, str) else ""
+    figure = item.get("figure")
+    figure = (_WS.sub(" ", figure).strip()[:_FIGURE] or None) if isinstance(figure, str) else None
+    points = _text_list(item.get("points"), _POINTS, _POINT)
+    topics = _text_list(item.get("topics"), _TOPICS, _TOPIC)
+    return (page, title, json.dumps(points, ensure_ascii=False), figure, json.dumps(topics, ensure_ascii=False))
+
+
+def _page_out(row: sqlite3.Row) -> dict:
+    return {"source_id": row["source_id"], "page": row["page"], "title": row["title"],
+            "points": json.loads(row["points"]), "figure": row["figure"], "topics": json.loads(row["topics"])}
 
 
 def _count(kind: str, body: dict) -> int:

@@ -90,6 +90,10 @@ def google(tmp_path, monkeypatch):
     monkeypatch.setattr(gmail_source, "access_token", token)
     monkeypatch.setattr(drive, "_transport", httpx.MockTransport(g.handler))
 
+    async def no_pages():   # these tests are the text-only add; tests/test_study_deck.py reads pages
+        return False
+    monkeypatch.setattr(drive_api.deck, "available_async", no_pages)
+
     store = FakeStore(StudyStore(tmp_path / "study" / "study.db"))
     g.store = store
     for module in (api, drive_api):
@@ -166,7 +170,7 @@ def test_the_search_word_is_escaped(client, google):
     client.get("/study/drive/files", params={"q": "it's a\\b", "limit": 5})
     params = google.requests[0].url.params
     assert params["q"].endswith(" and name contains 'it\\'s a\\\\b'")
-    assert params["q"].startswith(f"(mimeType='{drive.DOC}' or mimeType='{drive.SLIDES}') and trashed=false")
+    assert params["q"].startswith(f"(mimeType='{drive.DOC}' or mimeType='{drive.SLIDES}' or mimeType='{drive.PDF}') and trashed=false")
     assert params["pageSize"] == "5"
 
 
