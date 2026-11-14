@@ -168,8 +168,13 @@ def test_an_assignment_for_an_unknown_course_gets_an_empty_course_name(client, f
 # --- sample and clearing ------------------------------------------------------------
 
 
-def test_loading_and_clearing_the_sample(client, fakes):
-    got = client.post("/study/sample", json={}).json()
+def test_loading_and_clearing_the_sample(client, fakes, monkeypatch):
+    # A fixed clock (noon in London, early morning on the US coasts): the sample is built around
+    # "now" in the given zone, so on the wall clock the second load (London) would see its
+    # 23:30 item already past during London's last half hour and count one fewer due.
+    fixed = 1_794_830_400.0   # 2026-11-16 12:00 UTC
+    monkeypatch.setattr(api, "time", SimpleNamespace(time=lambda: fixed))
+    got =client.post("/study/sample", json={}).json()
     assert got["sample"] is True and len(got["courses"]) == 4 and len(got["materials"]) == 4
     assert all(a["sample"] for a in got["assignments"]) and got["assignments"]
     assert client.post("/study/sample", json={"timezone": "Europe/London"}).json()["courses"] == got["courses"]

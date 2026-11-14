@@ -169,9 +169,13 @@ def mark(blocks: list[dict], current: list[dict], day: str, booked: dict) -> tup
     """Today's study blocks with "added"/"event_source_id", and the Day's other blocks without
     the calendar copy of a booked one. A booked block stays where it was booked."""
     mine = {k: v for k, v in (booked or {}).items() if isinstance(v, dict) and v.get("day") == day}
+    # A booking whose id no block carries now (its assignment folded into a twin since) still
+    # covers that item: a fresh block with the booked title is not offered a second time.
+    fresh = {b.get("id") for b in blocks}
+    orphans = {str(r.get("title") or "").strip().casefold() for k, r in mine.items() if k not in fresh}
     out = []
     for b in blocks:
-        if b.get("id") in mine:
+        if b.get("id") in mine or str(b.get("title") or "").strip().casefold() in orphans:
             continue
         out.append({**b, "added": False, "event_source_id": None})
     by_id = {b.get("id"): b for b in blocks}
