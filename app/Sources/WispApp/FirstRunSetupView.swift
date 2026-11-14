@@ -478,6 +478,11 @@ enum FirstRunBrain: Equatable {
     static func from(status: SetupStatus?, downloads: [SetupGuideModel.DownloadTask],
                      stillLooking: Bool = false) -> FirstRunBrain {
         guard let status else { return .checking }
+        // Remote-only: the card names the cloud model ("Gemini 3.8 Flash"),
+        // never the on-device model the local roster would pick.
+        if status.remoteOnly == true, let remote = status.remoteModel {
+            return .ready(label: CloudModelName.model(remote.id))
+        }
         if status.ready {
             let model = status.roles.first(where: { $0.endpoint == "local" })?.model ?? status.models.recommended
             let label = status.models.installed.first(where: { $0.id == model })?.label ?? model
@@ -2035,7 +2040,8 @@ struct FirstRunSetupView: View {
                 Text(note).font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true).padding(.top, 4)
             }
-            if let hw = setup.status?.hardware {
+            // A cloud model isn't picked for this Mac's chip, so the card is left out then.
+            if let hw = setup.status?.hardware, setup.status?.remoteOnly != true {
                 OnboardingCard(icon: "cpu", title: "Picked for your Mac",
                                detail: "\(hw.chip) · \(hw.ramGb > 0 ? "\(hw.ramGb) GB memory" : "memory unknown")") {
                     EmptyView()

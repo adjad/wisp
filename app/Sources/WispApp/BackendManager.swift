@@ -301,6 +301,11 @@ final class BackendManager {
                 do {
                     try Self.publishRuntimeReceipt(generation: snapshot.generation, pid: proc.processIdentifier,
                                                    configDigest: configDigest)
+                } catch BackendCredentials.Failure.unavailable {
+                    // The receipt couldn't be written (lsof slower than its 3 s bound on a
+                    // slow Mac, or no room for the file). Nothing about the child is in
+                    // doubt, so the healthy service keeps running without a receipt.
+                    NSLog("Wisp: runtime receipt not written (unavailable); the service keeps running")
                 } catch {
                     credentialState.quarantine()
                     proc.terminate()

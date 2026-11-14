@@ -911,6 +911,10 @@ async def _cloud_model_answers(probe, model_id: str, available: list[str]) -> bo
     return bool((response or {}).get("choices"))
 
 
+CLOUD_KEY_UNREADABLE = ("Wisp couldn't read the key you saved. If macOS asked for your login password, "
+                        "Connect again and choose Always Allow.")
+
+
 @app.post("/inference/cloud")
 async def connect_cloud_inference(body: dict[str, Any]) -> dict[str, Any]:
     provider_name = body.get("provider")
@@ -943,7 +947,15 @@ async def connect_cloud_inference(body: dict[str, Any]) -> dict[str, Any]:
     from service.config import CLOUD_EVERYTHING, set_cloud_everything
     if CLOUD_EVERYTHING in roles:
         try:
-            endpoint_from_config("cloud", endpoint_cfg)
+            checked = endpoint_from_config("cloud", endpoint_cfg)
+            # The first read of a key the app just saved makes macOS ask for the login
+            # password. Ask it once here, while the person is at the Connect button, with
+            # time to answer; after Always Allow the restarted service reads it silently.
+            from service.config.provider_credentials import resolve_keychain
+            try:
+                await asyncio.to_thread(resolve_keychain, credential_name, checked.base_url, wait=True)
+            except EndpointConfigurationError:
+                raise HTTPException(status_code=400, detail=CLOUD_KEY_UNREADABLE) from None
             if remote_only_profile() is None:
                 # Test the key and model before moving all of Wisp onto them.
                 probe = OMLXClient(target=Target("connection-test", endpoint_from_config("cloud", endpoint_cfg),

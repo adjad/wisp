@@ -41,6 +41,13 @@ final class GoogleAccountModel: ObservableObject {
     @Published var wsMessage = ""
 
     private var polling: Task<Void, Never>?
+    /// Only while the sign-in request itself is being sent: a second click then does
+    /// nothing. While Google's page is open (`authorizing`), Connect starts over: a
+    /// closed tab never reaches Wisp, and the service replaces the waiting sign-in.
+    @Published private(set) var starting = false
+    /// The account the waiting sign-in reconnects (nil for a new account), so starting
+    /// over repeats the same sign-in.
+    private(set) var pendingReconnect: String?
     private var wsPolling: Task<Void, Never>?
 
     var consentNotice: String { GoogleConsentCopy.notice(status) }
@@ -140,15 +147,18 @@ final class GoogleAccountModel: ObservableObject {
 
     /// Connect a new account, or (`reconnect`) sign an existing one in again.
     func connect(reconnect account: String? = nil) {
-        guard !authorizing else { return }
+        guard !starting else { return }
         guard account != nil || canConnect else {
             message = "Add your own OAuth client under Advanced first."
             return
         }
         message = ""
         authorizing = true
+        starting = true
+        pendingReconnect = account
         polling?.cancel()
         Task {
+            defer { starting = false }
             var body: [String: Any] = ["mail_account_id": selectedMailAccountID]
             if let account {
                 body["reconnect"] = account
@@ -255,9 +265,15 @@ struct GoogleSettingsPane: View {
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Button(model.authorizing ? "Waiting for Google…" : "Connect Google account") { model.connect() }
+                Button(model.authorizing ? "Start sign-in again" : "Connect Google account") {
+                    model.connect(reconnect: model.authorizing ? model.pendingReconnect : nil)
+                }
                     .buttonStyle(.borderedProminent).tint(palette.accent)
-                    .disabled(model.authorizing || !model.canConnect)
+                    .disabled(model.starting || (!model.canConnect && !(model.authorizing && model.pendingReconnect != nil)))
+                if model.authorizing && !model.starting {
+                    Text("Waiting for Google… If you closed Google's page, start again.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 if !model.consentNotice.isEmpty {
                     Text(model.consentNotice).font(.caption).foregroundStyle(.secondary)
                 }
@@ -317,7 +333,7 @@ struct GoogleSettingsPane: View {
                         Text(account.note).font(.caption2).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                         Button("Reconnect") { model.connect(reconnect: account.id) }
-                            .controlSize(.small).disabled(model.authorizing)
+                            .controlSize(.small).disabled(model.starting)
                         Button("Not now") {
                             UserDefaults.standard.set(account.note, forKey: GoogleAccountNote.key(account))
                             dismissedNotes[account.id] = account.note
@@ -329,7 +345,7 @@ struct GoogleSettingsPane: View {
             Spacer()
             if let title = account.reconnectTitle {
                 Button(title) { model.connect(reconnect: account.id) }
-                    .disabled(model.authorizing)
+                    .disabled(model.starting)
             }
             Button("Disconnect & erase…") {
                 accountToErase = account.id

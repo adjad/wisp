@@ -246,6 +246,9 @@ final class OverlayModel: ObservableObject {
     @Published private(set) var modelMemory: ModelMemory?
     // First-run setup at the top of Ask. Its readiness lives on the app's one
     // SetupGuideModel, which Settings › Models › Setup shares.
+    /// The cloud model every answer comes from ("Gemini 3.8 Flash"), shown in
+    /// Ask and Brief; nil when Wisp answers on this Mac.
+    @Published var cloudModel: String?
     @Published var setupCard: NotchSetupCard = .hidden { didSet { if setupCard != oldValue { onResize() } } }
     // Whether Wisp's own service answers (BackendManager's reachability watch).
     // False shows "Wisp service isn't running" with Retry instead of a green dot.

@@ -103,12 +103,13 @@ struct SurfaceLayout: Equatable {
     static let floatingGap: CGFloat = 8
     static let floatingBar = CGSize(width: 148, height: 28)
     static let screenMargin: CGFloat = 12
-    /// Menu bar only: the resting pill's width. The notch bar is 198 pt on a
-    /// 14" display (185 + wings); 176 is that less the wings and a little more,
-    /// still wide enough for the status dot and a clear hover target, and
-    /// narrow enough that on the smallest scaled mode (1024 pt) it covers only
-    /// the empty middle of the menu bar. Its height is the menu bar's own.
-    static let restingPillWidth: CGFloat = 176
+    /// Menu bar only: the resting pill. On a 13" MacBook Pro the first size (176 pt
+    /// wide, the menu bar's full height) was too big: this is a barely visible sliver
+    /// hanging from the top edge. Moving the pointer to the top edge above it (or
+    /// clicking it, or Option-Space) still opens the panel; the hover zone is wider
+    /// than the sliver. Never taller than the menu bar.
+    static let restingPillWidth: CGFloat = 96
+    static let restingPillHeight: CGFloat = 6
     /// Menu bar heights: macOS's standard, used when the menu bar is hidden
     /// (auto-hide) and the display reports no height of its own.
     static let standardMenuBarHeight: CGFloat = 24
@@ -161,7 +162,7 @@ struct SurfaceLayout: Equatable {
     var barCornerRadius: CGFloat {
         switch style {
         case .notch: return 10
-        case .menuBar: return 10
+        case .menuBar: return 3          // the sliver is 6 pt tall
         case .floating: return 14
         }
     }
@@ -323,11 +324,11 @@ struct SurfaceLayout: Equatable {
             // panel's menu-bar strip reaches. The pill and the panel it grows
             // into hang from the screen's top edge, like a notch's, centred on
             // the display (not on `usable`, which a side Dock shifts) and as tall
-            // as the menu bar, so the pill never reaches below it.
+            // as the menu bar at most, so the pill never reaches below it.
             var usable = metrics.visibleFrame
             usable.size.height = min(usable.height, frame.maxY - metrics.menuBarHeight - usable.minY)
             let barW = centrable(restingPillWidth, in: frame.width, .up)
-            let barH = metrics.menuBarHeight.rounded()
+            let barH = min(restingPillHeight, metrics.menuBarHeight.rounded())
             let bar = CGRect(x: (frame.midX - barW / 2).rounded(), y: frame.maxY - barH,
                              width: barW, height: barH)
             return SurfaceLayout(style: .menuBar, screenFrame: frame, usableFrame: usable, notchSize: .zero,
@@ -440,7 +441,11 @@ struct CollapsedPresentation: Equatable {
         case .menuBar where frontmostFullScreen,
              .notch where displayHasNotch && frontmostFullScreen:
             return CollapsedPresentation(mode: .hitbox, statusInMenuBar: true)
-        case .notch, .menuBar, .floating:
+        case .menuBar:
+            // The notchless sliver is too thin for the count or the "!", so the
+            // menu-bar icon carries them, as it does in full screen.
+            return CollapsedPresentation(mode: .bar, statusInMenuBar: true)
+        case .notch, .floating:
             return CollapsedPresentation(mode: .bar, statusInMenuBar: false)
         }
     }

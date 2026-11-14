@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import Foundation
+import Security
 
 /// The Intel preview's one-time first-launch cleanup. An earlier Wisp on the same Mac
 /// shares this bundle id, so its saved state skipped onboarding, its ~/.moe held an old
@@ -163,6 +164,89 @@ enum IntelFirstLaunch {
         let marker = markerURL(home: home)
         try? fm.createDirectory(at: marker.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? Data(summary.utf8).write(to: marker, options: .atomic)
+    }
+
+    // MARK: Permissions, once per signing identity
+
+    /// macOS keeps privacy permissions (TCC) for the app's designated requirement. An
+    /// ad-hoc build's requirement is its code hash, so to TCC every such build is a new
+    /// app and the grants or denials an earlier one left under the same bundle id stay
+    /// behind: System Settings shows Wisp switched on while macOS refuses this copy, and
+    /// a remembered "no" keeps a question (Calendar's) from appearing. Intel previews are
+    /// now signed with one stable identity ("Wisp Dev"), so the requirement stays the
+    /// same from update to update and grants carry over. Wisp's own permissions (this
+    /// bundle id only) are reset only when the requirement changes: once when moving
+    /// to the stable identity, and on every update of an ad-hoc build.
+    static let permissionsMarkerName = "intel-permissions-requirement"
+
+    /// This running app's designated requirement as text; nil when it can't be read.
+    static func signingRequirement() -> String? {
+        var code: SecCode?
+        guard SecCodeCopySelf([], &code) == errSecSuccess, let code else { return nil }
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode else { return nil }
+        var requirement: SecRequirement?
+        guard SecCodeCopyDesignatedRequirement(staticCode, [], &requirement) == errSecSuccess,
+              let requirement else { return nil }
+        var text: CFString?
+        guard SecRequirementCopyString(requirement, [], &text) == errSecSuccess, let text else { return nil }
+        return text as String
+    }
+
+    /// Intel build, no bundled engine, a known requirement that differs from the recorded one. Pure.
+    static func permissionsResetDue(compiledForIntel: Bool, engineBundled: Bool,
+                                    recorded: String?, current: String?) -> Bool {
+        guard compiledForIntel, !engineBundled, let current, !current.isEmpty else { return false }
+        return recorded?.trimmingCharacters(in: .whitespacesAndNewlines) != current
+    }
+
+    /// Saved answers that would show a permission as given after the reset. Pure.
+    static func staleAnswerKeys(in keys: [String]) -> [String] {
+        keys.filter {
+            $0 == Permissions.screenRecordingPromptedKey || $0 == Permissions.accessibilityPromptedKey
+                || $0.hasPrefix("wisp.automation.answer.")
+        }
+    }
+
+    static func resetPermissionsIfNewBuild(home: String = NSHomeDirectory()) {
+        let marker = URL(fileURLWithPath: home).appendingPathComponent(markerFolder)
+            .appendingPathComponent(permissionsMarkerName)
+        let recorded = try? String(contentsOf: marker, encoding: .utf8)
+        let current = signingRequirement()
+        guard permissionsResetDue(compiledForIntel: IntelCloudPreset.compiledForIntel, engineBundled: engineBundled,
+                                  recorded: recorded, current: current), let current,
+              let arguments = WispReset.tccArguments(bundleID: Bundle.main.bundleIdentifier) else { return }
+        let tcc = Process()
+        tcc.executableURL = URL(fileURLWithPath: WispReset.tccutil)
+        tcc.arguments = arguments
+        tcc.standardOutput = FileHandle.nullDevice
+        tcc.standardError = FileHandle.nullDevice
+        guard (try? tcc.run()) != nil else {
+            NSLog("Intel permissions: tccutil could not be started; earlier grants left as they were")
+            return
+        }
+        // Bounded: launch never waits on a slow tccd for more than a few seconds.
+        let deadline = Date().addingTimeInterval(10)
+        while tcc.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        if tcc.isRunning {
+            tcc.terminate()
+            NSLog("Intel permissions: tccutil reset took too long; it runs again next launch")
+            return
+        }
+        // A failed reset is tried again on the next launch: the marker is written only after success.
+        guard tcc.terminationStatus == 0 else {
+            NSLog("Intel permissions: tccutil reset failed (status %d)", tcc.terminationStatus)
+            return
+        }
+        let defaults = UserDefaults.standard
+        for key in staleAnswerKeys(in: Array(defaults.dictionaryRepresentation().keys)) {
+            defaults.removeObject(forKey: key)
+        }
+        defaults.synchronize()
+        try? FileManager.default.createDirectory(at: marker.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
+        try? Data(current.utf8).write(to: marker, options: .atomic)
+        NSLog("Intel permissions: reset Wisp's own grants for a new signature")
     }
 
     /// The first step's line when data was moved aside; nil otherwise.

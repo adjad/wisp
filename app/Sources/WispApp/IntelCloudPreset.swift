@@ -52,6 +52,28 @@ enum IntelCloudPreset {
     static func isOffered(model id: String) -> Bool { models.contains { $0.id == id } }
 }
 
+/// The name shown for the cloud model Wisp answers with (/setup/status `remote_model`),
+/// so Ask, Brief and setup say which model it is ("Gemini 3.8 Flash"). Pure.
+enum CloudModelName {
+    /// "Gemini 3.8 Flash" for a listed model, else the id's last part ("my-model").
+    static func model(_ id: String) -> String {
+        if let known = IntelCloudPreset.models.first(where: { $0.id == id }) {
+            return known.label.replacingOccurrences(of: " (default)", with: "")
+        }
+        // An unlisted id: its last part without an ":tag", kept short for the notch.
+        let last = id.split(separator: "/").last.map(String.init) ?? id
+        let bare = last.split(separator: ":").first.map(String.init) ?? last
+        return bare.count > 24 ? String(bare.prefix(23)) + "…" : bare
+    }
+
+    /// The name from the status field; nil when absent or malformed.
+    static func display(_ field: Any?) -> String? {
+        guard let object = field as? [String: Any], let id = object["id"] as? String,
+              !id.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        return model(id)
+    }
+}
+
 /// Stores the key, connects every role to OpenRouter through POST /inference/cloud
 /// and restarts the backend: the Cloud form's path, with one field.
 @MainActor
@@ -113,7 +135,9 @@ final class IntelKeyConnector: ObservableObject {
     private static func send(_ method: String, _ path: String, body: [String: Any]?) async throws -> [String: Any] {
         var request = URLRequest(url: WispClient.baseURL.appendingPathComponent(path))
         request.httpMethod = method
-        request.timeoutInterval = 60
+        // Room for macOS's one-time login-password question about the saved key, then
+        // the one test reply (Gemini answers all at once).
+        request.timeoutInterval = 180
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let body { request.httpBody = try JSONSerialization.data(withJSONObject: body) }
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -175,7 +199,9 @@ struct IntelKeyCard: View {
             HStack(spacing: 8) {
                 if connector.connecting {
                     ProgressView().controlSize(.small)
-                    Text("Testing the key and model…").font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+                    Text("Testing the key and model… If macOS asks for your login password, choose Always Allow.")
+                        .font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+                        .fixedSize(horizontal: false, vertical: true)
                 } else if connector.connected {
                     ProgressView().controlSize(.small)
                     Text("Connected. Starting Wisp on OpenRouter…").font(.system(size: 12)).foregroundStyle(Theme.textMuted)

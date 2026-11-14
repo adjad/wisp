@@ -117,7 +117,7 @@ struct OverlayView: View {
     /// the small marks; a monitor's capsule also carries the orb and chevron.
     private var isSlimBar: Bool { layout.style != .floating }
     /// Bottom padding that sets a mark of `item` pt in the bar: a notch's own
-    /// offset, or centred in the pill, whose height is the menu bar's.
+    /// offset, or centred in the notchless sliver.
     private func markInset(notch: CGFloat, floating: CGFloat, item: CGFloat) -> CGFloat {
         switch layout.style {
         case .notch: return notch
@@ -341,7 +341,7 @@ struct OverlayView: View {
                 }
                 .padding(.bottom, markInset(notch: 5, floating: 8, item: 5))
                 .accessibilityLabel("Wisp is ready")
-            } else if model.setupCard != .later, todayModel.isShowingCurrentDay, todayCount > 0 {
+            } else if layout.style != .menuBar, model.setupCard != .later, todayModel.isShowingCurrentDay, todayCount > 0 {
                 // What's due today or overdue, from the day's last load (it loads only
                 // while Brief or Day is open, so the bar never triggers a load).
                 HStack(spacing: 6) {
@@ -352,8 +352,9 @@ struct OverlayView: View {
                 }
                 .padding(.bottom, markInset(notch: 3, floating: 8, item: 13))
                 .accessibilityLabel(todayCount == 1 ? "1 thing is due today" : "\(todayCount) things are due today")
-            } else if model.setupCard == .later {
-                // Setup was set aside and Wisp still can't answer.
+            } else if layout.style != .menuBar, model.setupCard == .later {
+                // Setup was set aside and Wisp still can't answer. (The notchless sliver is
+                // too thin for the count or this mark: it shows only the small dots.)
                 HStack(spacing: 6) {
                     if !isSlimBar { WispOrb(resting: true).scaleEffect(0.7) }
                     Text("!").font(.wisp(.caption, weight: .heavy)).foregroundStyle(Theme.warn)
@@ -815,7 +816,8 @@ struct OverlayView: View {
     private var inputRow: some View {
         HStack(spacing: 10) {
             TextField(model.voice.isActive ? model.voice.placeholder
-                      : model.researchMode ? "What would you like to research?" : "Ask anything…",
+                      : model.researchMode ? "What would you like to research?"
+                      : model.cloudModel.map { "Ask anything · \($0)" } ?? "Ask anything…",
                       text: $model.input, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(.wisp(.input))

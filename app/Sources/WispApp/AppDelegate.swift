@@ -194,6 +194,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Intel preview only, once: clear an earlier Wisp before anything else looks at
         // running copies, the port or saved state (no-op elsewhere).
         IntelFirstLaunch.runIfNeeded()
+        // Intel preview only, once per build: a new ad-hoc build is a new app to macOS
+        // privacy permissions, so the earlier build's stale grants are cleared first.
+        IntelFirstLaunch.resetPermissionsIfNewBuild()
+        NotificationCenter.default.addObserver(forName: .wispCloudModelChanged, object: nil, queue: .main) { [weak self] note in
+            let name = (note.object as? String).map(CloudModelName.model)
+            MainActor.assumeIsolated {
+                if self?.model.cloudModel != name { self?.model.cloudModel = name }
+            }
+        }
         // Meet stays in the strip on every build. With no on-device engine the chosen
         // cloud model hears the meeting; when it can't hear audio, starting one answers
         // with the service's 409 reason on the Meet tab, so the strip never goes stale
@@ -874,6 +883,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                       let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       let ready = object["ready"] as? Bool else { continue }
                 answered = true
+                let cloud = object["remote_only"] as? Bool == true ? CloudModelName.display(object["remote_model"]) : nil
+                if cloud != self.model.cloudModel { self.model.cloudModel = cloud }
                 let canAnswer = FirstRunSetup.canAnswer(ready: ready,
                                                         remoteOnly: object["remote_only"] as? Bool == true)
                 // After setup was finished, "can't answer" at launch is usually the model

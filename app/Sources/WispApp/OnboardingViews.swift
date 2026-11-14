@@ -109,11 +109,18 @@ struct OnboardingGoogleStep: View {
                                   + "in Drive, Docs and Sheets. Wisp builds your to-dos on this Mac and asks before anything changes.")
             ForEach(model.status.accounts) { account in accountCard(account) }
             if model.authorizing {
+                // Closing Google's page never reaches Wisp, so the wait can always be
+                // started over (the service replaces the waiting sign-in).
                 OnboardingCard(icon: "globe", title: "Waiting for Google…",
-                               detail: "Finish signing in in your browser, then come back here.") {
-                    ProgressView().controlSize(.small)
+                               detail: "Finish signing in in your browser, then come back here. "
+                                   + "Closed Google's page? Start again.") {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Button("Start again") { model.connect(reconnect: model.pendingReconnect) }
+                            .buttonStyle(FirstRunButtonStyle())
+                            .disabled(model.starting)
+                    }
                 }
-                .accessibilityElement(children: .combine)
             } else {
                 connectRow
             }
@@ -131,7 +138,7 @@ struct OnboardingGoogleStep: View {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 10_000_000_000)
                 guard !Task.isCancelled else { return }
-                if !model.authorizing { await model.refresh() }
+                await model.refresh()
             }
         }
     }

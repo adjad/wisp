@@ -60,6 +60,21 @@ def visible_test_answer(payload: object) -> str:
     return content
 
 
+def remote_model() -> dict | None:
+    """The model every answer comes from when Wisp is remote-only: its id and the
+    provider's host, for the app to name it ("Gemini 3.8 Flash · OpenRouter"). No
+    credential and no path; None when Wisp isn't remote-only."""
+    try:
+        from urllib.parse import urlsplit
+        from service.inference.remote_policy import remote_only_profile
+        profile = remote_only_profile()
+        if profile is None:
+            return None
+        return {"id": profile.model_id, "host": urlsplit(profile.base_url).hostname or ""}
+    except Exception:  # noqa: BLE001 — setup status must answer regardless
+        return None
+
+
 def remote_only() -> bool:
     """Whether every answer comes from a remote provider. An invalid remote
     configuration is not remote-only here; inference reports that itself."""
@@ -201,6 +216,7 @@ def build_status(*, hardware: Hardware, omlx: OmlxState, installed: list[str],
         # Wisp answers through a remote provider (WISP_REMOTE_ONLY, or Cloud
         # "Everything"), so a missing local model is not "not set up".
         "remote_only": remote_only(),
+        "remote_model": remote_model(),
         "bundled_engine": bundled_compatibility(),
         "hardware": {"chip": hardware.chip, "ram_gb": hardware.ram_gb, "tier": hardware.tier},
         "omlx": {"installed": built_in or omlx.installed, "running": omlx.running, "bundled": built_in,

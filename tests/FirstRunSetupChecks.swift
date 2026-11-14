@@ -19,12 +19,12 @@ struct FirstRunSetupChecks {
                        available: Bool = true, installed: [String] = [], roles: String = "Ling-3.0-tiny-oQ4e",
                        fits: Bool? = nil, download: Bool = true, warning: String? = nil,
                        modelAction: String? = nil, remoteOnly: Bool = false,
-                       roleEndpoint: String = "local") -> SetupStatus {
+                       roleEndpoint: String = "local", remoteModel: String? = nil) -> SetupStatus {
         let installedJSON = installed.map {
             #"{"id":"\#($0)","label":"\#($0 == gemma ? realLabel : $0)","size_gb":5.5,"fit":"recommended","tested":true,"note":""}"#
         }.joined(separator: ",")
         let json = """
-        {"ready":\(ready),"remote_only":\(remoteOnly),
+        {"ready":\(ready),"remote_only":\(remoteOnly),\(remoteModel.map { #""remote_model":{"id":"\#($0)","host":"openrouter.ai"},"# } ?? "")
          "hardware":{"chip":"Apple M5 Pro","ram_gb":24,"tier":"comfortable"},
          "omlx":{"installed":true,"running":\(running),"model_dir":null,"min_macos":26,"url":"","admin_url":"","bundled":\(bundled)},
          "bundled_engine":{"available":\(available),"minimum_macos":"26.0","unavailable_reason":\(available ? "null" : "\"Wisp's engine needs macOS 26.\"")},
@@ -614,6 +614,17 @@ struct FirstRunSetupChecks {
               "Remote-only answers even with no local engine running")
         check(NotchModelOffer.from(status: status(remoteOnly: true), downloads: []) == .none,
               "Remote-only: the notch offers no download either")
+        // The cloud model is named, never the on-device model the local roster would pick.
+        check(FirstRunBrain.from(status: status(ready: true, installed: [gemma], remoteOnly: true,
+                                                remoteModel: "google/gemini-3.8-flash"), downloads: [])
+              == .ready(label: "Gemini 3.8 Flash"), "Remote-only names the cloud model, not Gemma")
+        check(CloudModelName.display(["id": "google/gemini-3.8-flash", "host": "openrouter.ai"]) == "Gemini 3.8 Flash"
+              && CloudModelName.display(["id": "vendor/my-model", "host": "llm.example.com"]) == "my-model"
+              && CloudModelName.display(["id": "anthropic/claude-haiku-5.5"]) == "Claude Haiku 5.5"
+              && CloudModelName.model("vendor/some-model:free") == "some-model"
+              && CloudModelName.model("vendor/an-unusually-long-custom-model-name-v2").count == 24
+              && CloudModelName.display(nil) == nil && CloudModelName.display(["id": " "]) == nil,
+              "Cloud model names: the listed label, else the id's last part; no provider")
 
         // Wisp's service that never comes up: after the notch's 3 minutes, Check again.
         check(FirstRunBrain.serviceStartLimit == 180, "The same 3 minutes AppDelegate allows a cold first launch")
@@ -1473,6 +1484,30 @@ struct FirstRunSetupChecks {
               && !IntelFirstLaunch.leftoverIsFromIntelLine(configText: "  nested:\n    remote_parity_x: true\n")
               && !IntelFirstLaunch.leftoverIsFromIntelLine(configText: nil),
               "parity off, a lookalike key, or no config: cleared")
+        // Permissions reset only when the signature's designated requirement changes:
+        // a stable identity keeps grants across updates; ad-hoc builds are new apps to TCC.
+        let identity: String? = #"identifier "com.wisp.assistant" and certificate leaf = H"3824""#
+        check(IntelFirstLaunch.permissionsResetDue(compiledForIntel: true, engineBundled: false, recorded: nil, current: identity),
+              "First signed build here: permissions reset")
+        check(IntelFirstLaunch.permissionsResetDue(compiledForIntel: true, engineBundled: false,
+                                                   recorded: #"cdhash H"aaaa""#, current: identity),
+              "Moving from an ad-hoc build to the stable identity: reset once")
+        check(!IntelFirstLaunch.permissionsResetDue(compiledForIntel: true, engineBundled: false,
+                                                    recorded: identity.map { $0 + "\n" }, current: identity),
+              "An update with the same identity keeps every grant")
+        check(!IntelFirstLaunch.permissionsResetDue(compiledForIntel: true, engineBundled: false, recorded: nil, current: ""),
+              "An empty requirement is unknown: no reset")
+        check(!IntelFirstLaunch.permissionsResetDue(compiledForIntel: false, engineBundled: false, recorded: nil, current: identity)
+              && !IntelFirstLaunch.permissionsResetDue(compiledForIntel: true, engineBundled: true, recorded: nil, current: identity)
+              && !IntelFirstLaunch.permissionsResetDue(compiledForIntel: true, engineBundled: false, recorded: nil, current: nil),
+              "Apple silicon, an engine build, or an unknown build: never reset")
+        check(Set(IntelFirstLaunch.staleAnswerKeys(in: [Permissions.screenRecordingPromptedKey,
+                                                        Permissions.accessibilityPromptedKey,
+                                                        "wisp.automation.answer.mail", "wisp.setupGuide.shown",
+                                                        "wisp.automationx"]))
+              == [Permissions.screenRecordingPromptedKey, Permissions.accessibilityPromptedKey,
+                  "wisp.automation.answer.mail"],
+              "Only saved permission answers are cleared with the reset")
         let stamp = Date(timeIntervalSince1970: 1_800_000_000)
         check(IntelFirstLaunch.backupName(for: stamp).range(of: "^\\.moe-backup-[0-9]{8}-[0-9]{6}$",
                                                             options: .regularExpression) != nil,

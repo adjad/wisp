@@ -104,7 +104,7 @@ struct DisplayGeometryChecks {
         pageCapChecks()
 
         // Built-in displays without a notch (M1 Air, 13"/M2 13" Pro, iMac 24"): a small
-        // black pill hangs from the top-centre edge, as tall as the menu bar. Default
+        // black sliver hangs from the top-centre edge, inside the menu bar. Default
         // and scaled point sizes, plus a hidden (auto-hide) menu bar.
         for (n, d) in [("M1 Air", notchless(1440, 900)), ("M1 Air more space", notchless(1680, 1050)),
                        ("M1 Air larger text", notchless(1280, 800)), ("13in Pro", notchless(1440, 900)),
@@ -242,7 +242,7 @@ struct DisplayGeometryChecks {
         for d in [notchless(1440, 900), notchless(1024, 640)] {
             let desk = SurfaceLayout.make(for: d)
             let full = SurfaceLayout.make(for: d, frontmostFullScreen: true)
-            check(desk.barIsVisible && !desk.statusInMenuBar, "Desktop pill is drawn")
+            check(desk.barIsVisible && desk.statusInMenuBar, "Desktop sliver is drawn; its status is on the icon")
             check(!full.barIsVisible && full.statusInMenuBar, "Full-screen pill draws nothing, status on the icon")
             check(full.barFrame == desk.barFrame && full.hoverZone == desk.hoverZone, "Hitbox keeps the pill's frame and zone")
         }
@@ -646,7 +646,7 @@ struct DisplayGeometryChecks {
     }
 
     /// The notchless built-in display's resting pill (MacBook Pro 13" 2020 and its
-    /// scaled modes): flush with the top edge, centred, as tall as the menu bar,
+    /// scaled modes): flush with the top edge, centred, a barely visible sliver,
     /// and exactly as large as what is drawn, so menus beside it stay clickable.
     @MainActor
     static func menuBarPillChecks() {
@@ -659,14 +659,17 @@ struct DisplayGeometryChecks {
             check(l.style == .menuBar, "\(n): menu-bar style")
             check(bar.maxY == d.frame.maxY, "\(n): pill flush with the top edge")
             check(bar.midX == d.frame.midX, "\(n): pill dead centre: \(bar)")
-            check(bar.height == 24 && bar.minY == d.visibleFrame.maxY, "\(n): pill is exactly the menu bar, never below it")
-            check(bar.width <= 200 && bar.width >= 160, "\(n): modest width: \(bar.width)")
+            check(bar.height == 6 && bar.minY > d.visibleFrame.maxY, "\(n): a barely visible sliver inside the menu bar, never below it")
+            check(bar.width == 96, "\(n): small width: \(bar.width)")
+            check(l.hoverZone.width > bar.width && l.hoverZone.maxY >= d.frame.maxY && l.hoverZone.contains(CGPoint(x: bar.midX, y: d.frame.maxY - 1)),
+                  "\(n): the top edge above the sliver still opens it")
+            check(l.barCornerRadius * 2 <= bar.height, "\(n): corners fit the sliver")
             check(bar.minX == bar.minX.rounded() && bar.maxX == bar.maxX.rounded(), "\(n): whole points")
             // Drawn and hit-tested as one shape: the window is the bar's frame, the
             // view fills it, and the corners are square on top, rounded below.
             check(l.barSize == bar.size, "\(n): drawn size is the hit size")
-            check(l.presentation == CollapsedPresentation(mode: .bar, statusInMenuBar: false) && l.barIsVisible,
-                  "\(n): drawn at rest, not a hitbox")
+            check(l.presentation == CollapsedPresentation(mode: .bar, statusInMenuBar: true) && l.barIsVisible,
+                  "\(n): drawn at rest, not a hitbox; the count and \"!\" go to the menu-bar icon")
             check(!OverlayPanel.ignoresMouse(collapsed: true, layout: l), "\(n): the drawn pill takes its own clicks")
             check(!OverlayPanel.ignoresMouse(collapsed: false, layout: l), "\(n): the open panel takes the mouse")
             for x in [bar.minX - 1, bar.maxX + 1] {

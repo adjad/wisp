@@ -9,6 +9,8 @@ extension Notification.Name {
     /// roles, the engine mode), whether or not the write succeeded. Setup's
     /// "Test passed" belongs to the configuration it was earned on.
     static let wispInferenceConfigurationChanged = Notification.Name("WispInferenceConfigurationChanged")
+    /// A fresh /setup/status named the cloud model (object: its id, or nil for none).
+    static let wispCloudModelChanged = Notification.Name("WispCloudModelChanged")
 }
 
 // MARK: - Wire types (GET /setup/status)
@@ -68,6 +70,9 @@ struct SetupStatus: Decodable {
     let configurationToken: String?
     /// Every role on a remote provider: nothing to download (service/setup/guide.py).
     var remoteOnly: Bool? = nil
+    /// The remote model every answer comes from, when remote-only (service/setup/guide.py).
+    struct RemoteModel: Decodable, Equatable { let id: String; let host: String? }
+    var remoteModel: RemoteModel? = nil
     var canAnswer: Bool { Self.canAnswer(ready: ready, remoteOnly: remoteOnly == true) }
     /// Wisp can answer: a ready local model, or nothing to download. The one rule
     /// for finishing setup, the menu, the setup cue and the readers.
@@ -430,6 +435,10 @@ final class SetupGuideModel: ObservableObject {
         if !next.ready || configuration(next) != configuration(status) { invalidateTest() }
         status = next
         statusIsCurrent = true
+        // Ask and Brief name the cloud model; any fresh status keeps that name true
+        // (a Cloud switch in Settings, a different model, back to this Mac).
+        NotificationCenter.default.post(name: .wispCloudModelChanged,
+            object: next.remoteOnly == true ? next.remoteModel?.id : nil)
         if selectedModel == nil || !next.models.installed.contains(where: { $0.id == selectedModel }) {
             selectedModel = next.models.use ?? next.models.installed.first?.id
         }

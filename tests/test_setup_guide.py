@@ -1030,6 +1030,11 @@ def test_status_says_when_a_remote_provider_answers(monkeypatch):
     assert _status()["remote_only"] is False
     monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: object())
     assert _status()["remote_only"] is True
+    assert _status()["remote_model"] is None          # a profile without fields: no name, no error
+    from types import SimpleNamespace
+    profile = SimpleNamespace(model_id="google/gemini-3.8-flash", base_url="https://openrouter.ai")
+    monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: profile)
+    assert _status()["remote_model"] == {"id": "google/gemini-3.8-flash", "host": "openrouter.ai"}
 
     def invalid():
         from service.config.endpoints import EndpointConfigurationError
