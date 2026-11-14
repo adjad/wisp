@@ -229,10 +229,28 @@ def remote_only_profile() -> RemoteOnlyProfile | None:
         if not (cfg.get("remote_parity") is True and isinstance(profile, dict)
                 and profile.get("enabled", True) is True):
             return None
+        # Opted in from Settings, not the launcher: a profile this build refuses (one
+        # left by an older build, a hand edit) must not keep the service from starting,
+        # or Settings could never reach it to reconnect. Run without the cloud model
+        # and say why in the log. The launcher's WISP_REMOTE_ONLY=1 still refuses.
+        from service.config.endpoints import EndpointConfigurationError
+        try:
+            return profile_from_config(profile)
+        except EndpointConfigurationError as exc:
+            _log.warning("Cloud model not used: its saved settings are invalid (%s). "
+                         "Reconnect it in Settings > Models > Cloud.", exc)
+            print(f"[remote] cloud model not used: saved settings are invalid ({exc})", flush=True)
+            return None
     inference = models_config().get("inference", {})
     if not isinstance(inference, dict):
         _refuse("Invalid inference configuration")
     return profile_from_config(inference.get("remote_only"))
+
+
+def launched_remote_only() -> bool:
+    """Whether the launcher itself forced remote-only mode (WISP_REMOTE_ONLY=1), as
+    opposed to the Settings opt-in. Only the forced mode fails closed at startup."""
+    return _FORCED_MODE == "1"
 
 
 def require_generation_role(role: str) -> None:

@@ -388,9 +388,17 @@ async def lifespan(app: FastAPI):
     if profile is not None:
         try:
             await _prepare_remote_inference(client)
-        except Exception:
-            await client.aclose()
-            raise
+        except Exception as exc:
+            from service.inference.remote_policy import launched_remote_only
+            if launched_remote_only():
+                await client.aclose()
+                raise
+            # Opted in from Settings: a cloud model that doesn't answer right now (no
+            # network, a wrong key or address) must not keep the service down, or
+            # Settings could never reach it to fix the connection. Every turn checks
+            # readiness again, so a down server is an error in that answer instead.
+            print(f"[remote] cloud model not reachable at startup ({type(exc).__name__}); "
+                  "starting anyway", flush=True)
     # Keep the resident chat model warm. Every text role resolves to it now
     # (see config/models.yaml), so this is the model essentially every request
     # needs and there is no second chat model for it to contend with. Warm it
