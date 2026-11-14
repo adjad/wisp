@@ -544,14 +544,16 @@ def test_a_url_less_course_takes_its_address_from_its_own_assignments():
     assert items[f"{HOST}/courses/4242/pages/syllabus"]["kind"] == "page"
     assert items[f"{HOST}/courses/4242/discussion_topics/9"]["kind"] == "discussion"
     assert items[f"{HOST}/courses/4242/files/77"]["kind"] == "file"
-    assert items.get(f"{HOST}/courses/4242/modules/items/99", {"via": "none"})["via"] == "none"
+    quiz = items[f"{HOST}/courses/4242/modules/items/99"]
+    assert (quiz["via"], quiz["kind"], quiz["reason"]) == ("none", "other", "quiz")
     # without the address, none of them is a browser item (the first live walk)
     assert not [i for i in find.resolve(links, course=NAMED, sources=[]) if i["via"] == "browser"]
+    assert "reason" not in items[f"{HOST}/courses/4242/pages/syllabus"]
 
 
 @pytest.mark.parametrize("assignments, courses", [
     ([_asg(1), _asg(2, url=f"{HOST}/courses/5555/assignments/2")], []),           # disagree
-    ([_asg(1, url="https://canvas.evil.example/courses/4242/assignments/1")], []),  # unknown host
+    ([_asg(1, url="https://school.example.edu/courses/4242/assignments/1")], []),  # not a Canvas host
     ([_asg(1, url="http://school.instructure.com/courses/4242/assignments/1")], []),  # not https
     ([_asg(1, course="canvas:other")], []),                                        # another course's
     ([], []),
@@ -573,3 +575,27 @@ def test_the_course_syllabus_is_a_page_but_an_assignment_is_not():
     assert find.classify({"url": f"{HOST}/courses/4242/assignments/12", "title": "PS 1"}, c)["via"] == "none"
     got = find.resolve([{"url": f"{HOST}/courses/4242/assignments/syllabus", "title": "Syllabus"}], course=c, sources=[])
     assert [i["via"] for i in got] == ["browser"]
+
+
+def test_a_custom_canvas_host_from_the_courses_own_assignments():
+    url = "https://canvas.school.edu/courses/4242/assignments/1"
+    got = find.with_address(NAMED, [_asg(1, url=url), _asg(2, url=url.replace("/1", "/2"))], [NAMED])
+    assert got["url"] == "https://canvas.school.edu/courses/4242"
+    items = find.resolve([{"url": "https://canvas.school.edu/courses/4242/modules/items/5", "title": "Notes",
+                           "type": "Page"}], course=got, sources=[])
+    assert [i["via"] for i in items] == ["browser"]
+
+
+@pytest.mark.parametrize("path, reason", [("/assignments/12", "assignment"), ("/quizzes/3", "quiz"),
+                                          ("/external_tools/8", "tool")])
+def test_refused_course_links_are_listed_with_a_reason(path, reason):
+    c = {"id": "canvas:4242", "url": f"{HOST}/courses/4242"}
+    items = find.resolve([{"url": f"{HOST}/courses/4242{path}", "title": "Thing"}], course=c, sources=[])
+    assert [(i["via"], i["kind"], i["reason"]) for i in items] == [("none", "other", reason)]
+
+
+def test_module_item_reasons():
+    c = {"id": "canvas:4242", "url": f"{HOST}/courses/4242"}
+    links = [{"url": f"{HOST}/courses/4242/modules/items/{n}", "title": t, "type": h}
+             for n, (t, h) in enumerate([("Lab", "ExternalTool"), ("HW 2", "Assignment"), ("Notes", None)])]
+    assert [i["reason"] for i in find.resolve(links, course=c, sources=[])] == ["tool", "assignment", "unknown"]
