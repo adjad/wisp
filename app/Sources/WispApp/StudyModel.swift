@@ -40,6 +40,12 @@ final class StudyModel: ObservableObject {
     /// What the material being made reads, for the progress line; nil when idle.
     @Published private(set) var making: StudyMakePlan?
 
+    /// A deck's pages, shown full-tab.
+    @Published private(set) var openedDeck: StudyOpenDeck?
+    /// "Get ready for quizzes automatically"; nil when the service has no
+    /// such setting (an older backend), so the toggle is hidden.
+    @Published private(set) var autoPrepare: Bool?
+
     /// The Drive picker.
     @Published var showingDrive: Bool = false
     @Published private(set) var drivePhase: StudyDrivePhase = .idle
@@ -358,9 +364,8 @@ final class StudyModel: ObservableObject {
     /// "not connected", anything else an error.
     private func driveFailure(status: Int, data: Data) -> StudyDrivePhase {
         let reply = try? JSONDecoder().decode(StudyErrorReply.self, from: data)
-        if reply?.code == "google_missing" {
-            let said = reply?.message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            return .notConnected(said.isEmpty ? StudyText.driveNotConnected : String(said.prefix(300)))
+        if StudyRefusal.notConnected(reply?.code) {
+            return .notConnected(StudyRefusal.cleaned(reply?.message) ?? StudyText.driveNotConnected)
         }
         return .failed(Self.problem(status: status, data: data))
     }
@@ -378,6 +383,58 @@ final class StudyModel: ObservableObject {
         opened = nil
     }
 
+    /// Opens a deck full-tab and fetches its pages.
+    func openDeck(_ source: StudySource) async {
+        guard source.hasPages else { return }
+        openedDeck = StudyOpenDeck(source: source, pages: [], loading: true)
+        let request = makeRequest("GET", "study/sources/" + Self.pathComponent(source.id) + "/pages")
+        let reply = await send(request, as: StudyDeckPages.self)
+        guard openedDeck?.source.id == source.id else { return }
+        openedDeck?.pages = reply?.pages ?? []
+        openedDeck?.loading = false
+    }
+
+    func closeDeck() {
+        openedDeck = nil
+    }
+
+    /// Shows a fixture deck without the backend (QA scenes and previews).
+    func show(deck: StudyOpenDeck?, autoPrepare: Bool? = nil) {
+        openedDeck = deck
+        self.autoPrepare = autoPrepare
+    }
+
+    /// Reads `GET /study/settings`; a missing route (404) hides the toggle.
+    func loadSettings() async {
+        let request = makeRequest("GET", "study/settings")
+        switch await call(request) {
+        case .ok(let data):
+            autoPrepare = (try? JSONDecoder().decode(StudySettings.self, from: data))?.autoPrepare
+        case .failed(let status, _):
+            if status == 404 { autoPrepare = nil }
+        case .offline:
+            break
+        }
+    }
+
+    /// Turns automatic quiz preparing on or off: shown at once, put back if the save fails.
+    func setAutoPrepare(_ on: Bool) async {
+        guard let before = autoPrepare, before != on else { return }
+        autoPrepare = on
+        guard let body = try? JSONSerialization.data(withJSONObject: ["auto_prepare": on]) else {
+            autoPrepare = before
+            return
+        }
+        let request = makeRequest("POST", "study/settings", body: body)
+        guard let data = await exchange(request) else {
+            autoPrepare = before
+            return
+        }
+        if let saved = try? JSONDecoder().decode(StudySettings.self, from: data) {
+            autoPrepare = saved.autoPrepare
+        }
+    }
+
     func delete(_ id: String) async {
         guard busy == nil else { return }
         busy = .saving
@@ -393,9 +450,12 @@ final class StudyModel: ObservableObject {
     }
 
     /// Records a quiz attempt for the opened material and keeps its best score.
-    func record(correct: Int, total: Int) async {
+    func record(correct: Int, total: Int, missed: [Int] = []) async {
         guard let material = opened, total > 0 else { return }
-        let fields: [String: Any] = ["correct": max(0, min(correct, total)), "total": total]
+        var fields: [String: Any] = ["correct": max(0, min(correct, total)), "total": total]
+        // Only when there are misses, so an older backend sees the same request as before.
+        let misses = StudyAttempt.missed(missed, total: total)
+        if !misses.isEmpty { fields["missed"] = misses }
         guard let body = try? JSONSerialization.data(withJSONObject: fields) else { return }
         let request = makeRequest("POST", "study/materials/" + Self.pathComponent(material.id) + "/attempt", body: body)
         guard let reply = await send(request, as: StudyAttemptReply.self) else { return }
@@ -499,7 +559,7 @@ final class StudyModel: ObservableObject {
     }
 
     /// Native-only: JSON content type, no Origin header.
-    private func makeRequest(_ method: String, _ path: String, body: Data? = nil,
+    func makeRequest(_ method: String, _ path: String, body: Data? = nil,
                              timeout: TimeInterval = StudyModel.timeout) -> URLRequest {
         var root = baseURL.absoluteString
         while root.hasSuffix("/") { root.removeLast() }
@@ -567,25 +627,10 @@ final class StudyModel: ObservableObject {
         await exchange(request) != nil
     }
 
-    private static let knownCodes: Set<String> = ["missing", "rejected", "busy", "unreachable", "bad_reply",
-                                                  "google_missing", "google_error", "too_large"]
-
-    /// The gentle sentence for a failed reply.
+    /// The gentle sentence for a failed reply (StudyRefusal).
     static func problem(status: Int, data: Data) -> String {
         let reply = try? JSONDecoder().decode(StudyErrorReply.self, from: data)
-        // A key that is saved but could not be read says so in the server's own words.
-        if reply?.code == "missing", let said = reply?.message, said.contains("Keychain") {
-            return String(said.prefix(300))
-        }
-        if let code = reply?.code, knownCodes.contains(code) { return StudyText.problem(code: code) }
-        if let message = reply?.message?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty {
-            return String(message.prefix(300))
-        }
-        switch status {
-        case 404: return StudyText.problem(code: "not_found")
-        case 422: return StudyText.problem(code: "bad_request")
-        default: return StudyText.problem(code: "")
-        }
+        return StudyRefusal.message(code: reply?.code, said: reply?.message, status: status)
     }
 }
 

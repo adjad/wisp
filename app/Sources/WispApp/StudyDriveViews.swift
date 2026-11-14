@@ -161,6 +161,7 @@ struct StudySourcesSection: View {
                         ForEach(group.items) { source in
                             StudySourceRow(source: source, confirming: confirming == source.id,
                                            disabled: study.busy != nil,
+                                           onOpenPages: { Task { await study.openDeck(source) } },
                                            onAskRemove: { set { confirming = source.id } },
                                            onRemove: {
                                                set { confirming = nil }
@@ -266,6 +267,7 @@ private struct StudySourceRow: View {
     let source: StudySource
     let confirming: Bool
     let disabled: Bool
+    let onOpenPages: () -> Void
     let onAskRemove: () -> Void
     let onRemove: () -> Void
     let onKeep: () -> Void
@@ -283,6 +285,7 @@ private struct StudySourceRow: View {
                 .disabled(link == nil)
                 .help(link == nil ? source.title : "Open in your browser")
                 .accessibilityLabel("\(kindName): \(source.title), \(StudyText.chars(source.chars))")
+            if source.hasPages && !confirming { pagesButton }
             trailing
         }
         .padding(.horizontal, 8).padding(.vertical, 1)
@@ -309,6 +312,27 @@ private struct StudySourceRow: View {
         }
         .frame(minHeight: 24)
         .contentShape(Rectangle())
+    }
+
+    /// "12 pages ›": opens the deck's pages.
+    private var pagesButton: some View {
+        Button(action: onOpenPages) {
+            HStack(spacing: 3) {
+                Text(StudyText.pagesCount(source.pages)).font(.wisp(.caption, weight: .medium)).monospacedDigit()
+                Image(systemName: "chevron.right").font(.wisp(size: 8, weight: .semibold))
+            }
+            .foregroundStyle(Theme.textSecondary)
+            .padding(.horizontal, 7)
+            .frame(minHeight: 20)
+            .background(Capsule().fill(Theme.chipFill))
+            .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(StudyRowButtonStyle())
+        .fixedSize()
+        .disabled(disabled)
+        .help("See this deck's pages and make something from them")
+        .accessibilityLabel("\(StudyText.pagesCount(source.pages)) in \(source.title)")
     }
 
     @ViewBuilder private var trailing: some View {
@@ -604,5 +628,178 @@ private struct StudyDriveFileRow: View {
             Image(systemName: "plus").font(.wisp(size: 10, weight: .semibold))
                 .foregroundStyle(hovering ? Theme.textPrimary : Theme.textMuted)
         }
+    }
+}
+
+// MARK: - Automatic quiz preparing
+
+/// "Get ready for quizzes automatically": one line and a muted note under it.
+/// Shown only when the service has the setting.
+struct StudyAutoPrepareRow: View {
+    let on: Bool
+    let disabled: Bool
+    let onChange: (Bool) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .center, spacing: 8) {
+                Text(StudyText.autoPrepareTitle)
+                    .font(.wisp(.footnote, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                    .lineLimit(1).truncationMode(.tail)
+                Spacer(minLength: 8)
+                Toggle("", isOn: Binding(get: { on }, set: { onChange($0) }))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    .disabled(disabled)
+                    .accessibilityLabel(StudyText.autoPrepareTitle)
+            }
+            .frame(minHeight: 24)
+            Text(StudyText.autoPrepareNote)
+                .font(.wisp(.caption)).foregroundStyle(Theme.textMuted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+// MARK: - Deck pages
+
+/// A deck's pages full-tab, pushed like a material: the back row, the deck's
+/// title and the make buttons stay put; the pages scroll. A click on a page
+/// picks it; the buttons make from the picked pages, or from every page
+/// (up to 40) when none is picked.
+struct StudyDeckPagesPage<Notice: View>: View {
+    @ObservedObject var study: StudyModel
+    let deck: StudyOpenDeck
+    let cap: CGFloat?
+    let onResize: () -> Void
+    @ViewBuilder let notice: () -> Notice
+    @State private var selected: Set<StudySlideRef> = []
+
+    private static var kinds: [StudyKind] { [.flashcards, .quiz, .guide] }
+
+    var body: some View {
+        StudyPinnedPage(cap: cap, onResize: onResize, onBack: { study.closeDeck() }, scrollID: deck.source.id) {
+            StudyPageBadge(symbol: "play.rectangle", title: "Slides")
+        } title: {
+            titleBlock
+        } content: {
+            VStack(alignment: .leading, spacing: 6) {
+                notice()
+                pageList
+            }
+        }
+    }
+
+    private var titleBlock: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(deck.source.title)
+                    .font(.wisp(.headline, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityAddTraits(.isHeader)
+                Text(metaLine).font(.wisp(.caption)).foregroundStyle(Theme.textMuted).lineLimit(1)
+            }
+            if let busy = study.busy, busy != .loading {
+                StudyBusyRow(label: StudyText.busy(busy))
+            } else if !deck.pages.isEmpty {
+                HStack(spacing: 6) {
+                    ForEach(Self.kinds) { kind in
+                        StudyChrome.pill(kind.label, icon: kind.symbol, primary: kind == .quiz) { make(kind) }
+                            .disabled(study.busy != nil)
+                    }
+                    Spacer(minLength: 4)
+                    Text(StudyText.deckSelection(selected.count, total: deck.pages.count))
+                        .font(.wisp(.caption)).foregroundStyle(Theme.textMuted).lineLimit(1)
+                }
+            }
+        }
+    }
+
+    private var metaLine: String {
+        var parts = [StudyText.pagesCount(deck.pages.isEmpty ? deck.source.pages : deck.pages.count)]
+        if let course = study.state?.course(deck.source.courseID) { parts.append(course.shortName) }
+        return parts.joined(separator: " · ")
+    }
+
+    @ViewBuilder private var pageList: some View {
+        if deck.loading {
+            ProcessingRow(label: StudyText.deckPagesLoading)
+        } else if deck.pages.isEmpty {
+            Text(StudyText.deckPagesEmpty).font(.wisp(.footnote)).foregroundStyle(Theme.textMuted)
+        } else {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(deck.pages) { page in
+                    let ref = StudySlideRef(sourceID: deck.source.id, page: page.page)
+                    StudyDeckPageRow(page: page, picked: selected.contains(ref)) {
+                        if selected.contains(ref) { selected.remove(ref) } else { selected.insert(ref) }
+                    }
+                }
+            }
+        }
+    }
+
+    private func make(_ kind: StudyKind) {
+        guard study.connectorReady else {
+            study.notice = StudyText.problem(code: "missing")
+            return
+        }
+        let pages = StudySlides.pagesToSend(selected: selected, all: deck.refs)
+        Task { await study.makeFromPages(kind, pages: pages, title: deck.source.title) }
+    }
+}
+
+/// One deck page: a check, "p. 7 · Title", its points as short bullets and
+/// the figure in muted text. The whole block picks it, with no pressed look.
+private struct StudyDeckPageRow: View {
+    let page: StudyDeckPage
+    let picked: Bool
+    let onToggle: () -> Void
+    @State private var hovering = false
+
+    /// Points shown per page, so a long page stays short.
+    private static let maxPoints = 4
+
+    var body: some View {
+        Button(action: onToggle) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: picked ? "checkmark.circle.fill" : "circle")
+                    .font(.wisp(size: 11)).foregroundStyle(picked ? Theme.textPrimary : Theme.textMuted)
+                    .frame(width: 14)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(StudyText.deckPageHeader(page))
+                        .font(.wisp(.footnote, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+                        .lineLimit(1).truncationMode(.tail)
+                    ForEach(Array(page.points.prefix(Self.maxPoints).enumerated()), id: \.offset) { pair in
+                        HStack(alignment: .firstTextBaseline, spacing: 5) {
+                            Text("•").font(.wisp(.caption)).foregroundStyle(Theme.textMuted)
+                            Text(pair.element).font(.wisp(.caption)).foregroundStyle(Theme.textSecondary)
+                                .lineLimit(1).truncationMode(.tail)
+                        }
+                    }
+                    if let figure = page.figure {
+                        Text(figure).font(.wisp(.caption)).foregroundStyle(Theme.textMuted)
+                            .lineLimit(1).truncationMode(.tail)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 8).fill(rowFill))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(StudyRowButtonStyle())
+        .onHover { hovering = $0 }
+        .accessibilityLabel(StudyText.deckPageHeader(page))
+        .accessibilityValue(picked ? "Picked" : "Not picked")
+        .accessibilityAddTraits(picked ? [.isButton, .isSelected] : .isButton)
+    }
+
+    private var rowFill: Color {
+        if picked { return Color.white.opacity(0.08) }
+        return hovering ? Color.white.opacity(0.05) : Color.clear
     }
 }
