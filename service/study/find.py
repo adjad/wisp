@@ -146,6 +146,43 @@ def _canvas(course: dict | None) -> tuple[str | None, str | None]:
     return origin, number
 
 
+def with_address(course: dict, assignments: list[dict], courses: list[dict]) -> dict:
+    """``course`` with a "url" when it has none: the Canvas course page its own stored
+    assignments link to, only when they all agree on one host and course number, and only on
+    *.instructure.com or a host another stored course already lives on. Never from a page."""
+    if not isinstance(course, dict) or str(course.get("url") or "").startswith("https://"):
+        return course
+    hosts = set()
+    for other in courses or ():
+        try:
+            if other.get("id") != course.get("id") and str(other.get("url") or "").startswith("https://"):
+                hosts.add((urlsplit(other["url"]).hostname or "").lower())
+        except ValueError:
+            continue
+    seen = set()
+    for a in assignments or ():
+        if not isinstance(a, dict) or a.get("course_id") != course.get("id"):
+            continue
+        url = a.get("url")
+        if not isinstance(url, str) or not url.startswith("https://"):
+            continue
+        try:
+            parts = urlsplit(url)
+        except ValueError:
+            return course
+        match = _CANVAS_COURSE.match(parts.path)
+        host = (parts.hostname or "").lower()
+        if match is None or not host or parts.port not in (None, 443) or "@" in parts.netloc:
+            continue
+        seen.add((host, match.group(1)))
+    if len(seen) != 1:
+        return course
+    host, number = seen.pop()
+    if not (_host_is(host, ("instructure.com",)) and host != "instructure.com" or host in hosts):
+        return course
+    return {**course, "url": f"https://{host}/courses/{number}"}
+
+
 def classify(link: dict, course: dict | None = None) -> dict:
     """{"key", "kind", "via", "url" (canonical), "file_id"} for one found link on ``course``'s
     pages. "key" is the dedupe key: "drive:<id>" for a Google file (one key across every url
@@ -185,8 +222,8 @@ def classify(link: dict, course: dict | None = None) -> dict:
             kind = "file"
         elif re.fullmatch(r"/discussion_topics/\d+", rest):
             kind = "discussion"
-        elif re.fullmatch(r"/pages/[^/]+", rest):
-            kind = "page"
+        elif re.fullmatch(r"/pages/[^/]+", rest) or rest == "/assignments/syllabus":
+            kind = "page"     # the Syllabus is a plain page, unlike an assignment
         elif re.fullmatch(r"/modules/items/\d+", rest):
             # An item that launches an external tool or a quiz must never be opened: Canvas would
             # post the student's identity to the tool's site (or start the quiz).
@@ -249,7 +286,8 @@ def resolve(links: list[dict], *, course: dict | None, sources: list[dict]) -> l
         if got["key"] in seen or got["kind"] == "other":
             continue
         title = " ".join(str(link.get("title") or "").split())[:300]
-        if title and _JUNK_TITLE.match(title) and got["via"] != "drive":
+        # A same-course page named like navigation ("Syllabus", "Home") is still that course's page.
+        if title and _JUNK_TITLE.match(title) and got["via"] not in ("drive", "browser"):
             continue
         if got["via"] == "browser":
             if browser >= MAX_BROWSER:
