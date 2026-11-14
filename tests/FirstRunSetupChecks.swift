@@ -1458,6 +1458,17 @@ struct FirstRunSetupChecks {
               "A build with an engine never runs it")
         check(!IntelFirstLaunch.shouldRun(compiledForIntel: true, engineBundled: false, alreadyDone: true),
               "Once done, never again")
+        // An earlier Intel preview's settings (it alone writes remote_parity) are kept.
+        check(IntelFirstLaunch.leftoverIsFromIntelLine(configText: "inference:\n  remote_only: {}\nremote_parity: true\n"),
+              "an Intel preview's config is kept")
+        check(IntelFirstLaunch.leftoverIsFromIntelLine(configText: "remote_parity: true  # set by Settings\n"),
+              "a trailing comment doesn't matter")
+        check(!IntelFirstLaunch.leftoverIsFromIntelLine(configText: "inference:\n  remote_only:\n    base_url: https://x\n"),
+              "an older build's profile alone is cleared")
+        check(!IntelFirstLaunch.leftoverIsFromIntelLine(configText: "remote_parity: false\n")
+              && !IntelFirstLaunch.leftoverIsFromIntelLine(configText: "  nested:\n    remote_parity_x: true\n")
+              && !IntelFirstLaunch.leftoverIsFromIntelLine(configText: nil),
+              "parity off, a lookalike key, or no config: cleared")
         let stamp = Date(timeIntervalSince1970: 1_800_000_000)
         check(IntelFirstLaunch.backupName(for: stamp).range(of: "^\\.moe-backup-[0-9]{8}-[0-9]{6}$",
                                                             options: .regularExpression) != nil,

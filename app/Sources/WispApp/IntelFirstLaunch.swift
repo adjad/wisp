@@ -60,7 +60,34 @@ enum IntelFirstLaunch {
         let done = FileManager.default.fileExists(atPath: markerURL().path)
         guard shouldRun(compiledForIntel: IntelCloudPreset.compiledForIntel,
                         engineBundled: engineBundled, alreadyDone: done) else { return }
+        // State from an earlier Intel preview of this line (its cloud connection) is
+        // kept: only that build writes remote_parity, so the key needn't be entered again.
+        if leftoverIsFromIntelLine(configText: try? String(contentsOfFile: NSHomeDirectory() + "/.moe/config.yaml",
+                                                           encoding: .utf8)) {
+            writeMarker(summary: "Intel first launch: kept the earlier Intel preview's settings")
+            return
+        }
         run()
+    }
+
+    /// Whether ~/.moe/config.yaml was written by an Intel preview of this line: it
+    /// turns on the cloud model for everything (`remote_parity: true`), which no older
+    /// Wisp wrote. Pure.
+    static func leftoverIsFromIntelLine(configText: String?) -> Bool {
+        guard let configText else { return false }
+        return configText.split(whereSeparator: \.isNewline).contains { line in
+            let parts = line.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+            return parts.count == 2 && parts[0] == "remote_parity"
+                && parts[1].split(separator: "#").first?.trimmingCharacters(in: .whitespaces) == "true"
+        }
+    }
+
+    static func writeMarker(summary: String, home: String = NSHomeDirectory()) {
+        let marker = markerURL(home: home)
+        try? FileManager.default.createDirectory(at: marker.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
+        try? Data(summary.utf8).write(to: marker, options: .atomic)
+        NSLog("%@", summary)
     }
 
     static func run(home: String = NSHomeDirectory(), now: Date = Date()) {
