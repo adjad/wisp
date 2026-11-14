@@ -270,6 +270,83 @@ def test_attach_after_a_merged_import_and_with_a_missing_course_row(tmp_path, mo
                       "study:canvas:404:aa": "Orphan"}
 
 
+# ---------------------------------------------------------------- upcoming
+
+def test_upcoming_window_edges_and_order():
+    now = at(9, 10)
+    rows = [
+        item("early", "Earlier today", at(0), course_code="CSE 20"),            # start of today: in
+        item("late", "Still open", at(8), course_name="Statistics"),             # earlier today, open: in
+        item("yday", "Yesterday", at(23, 59, d=15)),                            # before today: out
+        item("d7", "Day 7", at(23, 59, d=23)),                                  # end of day+7: in
+        item("d8", "Day 8", at(0, d=24)),                                       # start of day+8: out
+        item("mid", "Midweek", at(12, d=18), course_name="A very long course name indeed"),
+    ]
+    s = plan.day_summary(rows, now=now, timezone=TZ)
+    assert [u["id"] for u in s["upcoming"]] == ["early", "late", "mid", "d7"]
+    assert s["upcoming_more"] == 0
+    assert [d["id"] for d in s["due_today"]] == ["early", "late"]       # today is in both lists
+
+
+def test_upcoming_item_shape_and_labels():
+    now = at(9)
+    rows = [item("a", "Lab 5", at(23, 59), course_code="CSE 20", course_name="Programming"),
+            item("b", "Essay", at(23, 59, d=17), course_name="Statistics"),
+            item("c", "Reading", at(23, 59, d=18), course_name="Academic Literacy and Ethos: International"),
+            item("d", "Notes", at(23, 59, d=19)),
+            item("e", "Reflection", at(0, d=20), all_day=True, kind="discussion")]
+    ups = {u["id"]: u for u in plan.day_summary(rows, now=now, timezone=TZ)["upcoming"]}
+    assert ups["a"] == {"id": "a", "title": "Lab 5", "course_name": "Programming", "course_label": "CSE 20",
+                        "due_ts": at(23, 59), "all_day": False, "kind": "assignment", "status": "upcoming"}
+    assert ups["b"]["course_label"] == "Statistics"
+    assert ups["c"]["course_label"] == "" and ups["d"]["course_label"] == ""
+    assert ups["e"]["all_day"] is True and ups["e"]["kind"] == "discussion"
+    assert set(ups["a"]) == {"id", "title", "course_name", "course_label", "due_ts", "all_day", "kind", "status"}
+    assert not {"points", "score", "url", "details"} & set(ups["a"])
+
+
+def test_upcoming_cap_and_more():
+    now = at(9)
+    rows = [item(f"r{i:02}", f"T{i}", at(10 + i % 10, d=16 + i // 10)) for i in range(12)]
+    s = plan.day_summary(rows, now=now, timezone=TZ)
+    assert plan.UPCOMING_CAP == 8
+    assert len(s["upcoming"]) == 8 and s["upcoming_more"] == 4
+    assert [u["due_ts"] for u in s["upcoming"]] == sorted(u["due_ts"] for u in s["upcoming"])
+    assert s["upcoming"][0]["id"] == "r00"
+
+
+def test_upcoming_leaves_out_done_work_and_old_missing():
+    now = at(9)
+    rows = [item("s", "Sent", at(12), status="submitted"), item("g", "Graded", at(12, d=17), status="graded"),
+            item("m", "Old missing", at(12, d=10), status="missing"),
+            item("k", "Open", at(12, d=17)), item("n", "No date", None)]
+    s = plan.day_summary(rows, now=now, timezone=TZ)
+    assert [u["id"] for u in s["upcoming"]] == ["k"]
+    assert s["missing_count"] == 1
+
+
+def test_upcoming_empty():
+    s = plan.day_summary([], now=at(9), timezone=TZ)
+    assert s["upcoming"] == [] and s["upcoming_more"] == 0
+
+
+def test_upcoming_across_a_dst_change_week():
+    # US clocks fall back on Sunday 2026-11-01: today Mon 2026-10-26, day+7 is Mon 2026-11-02 (a 25 h week).
+    def on(h, mi=0, d=26, mo=10):
+        return datetime(2026, mo, d, h, mi, tzinfo=ZONE).timestamp()
+    now = on(9)
+    rows = [item("in", "Last night", datetime(2026, 11, 2, 23, 59, tzinfo=ZONE).timestamp()),
+            item("out", "Next day", datetime(2026, 11, 3, 0, 0, tzinfo=ZONE).timestamp()),
+            item("t", "Today", on(0))]
+    s = plan.day_summary(rows, now=now, timezone=TZ)
+    assert [u["id"] for u in s["upcoming"]] == ["t", "in"]
+    # Spring forward: Sunday 2027-03-14; today Mon 2027-03-08 -> day+7 is Mon 2027-03-15 (a 23 h week).
+    spring = lambda h, mi, d: datetime(2027, 3, d, h, mi, tzinfo=ZONE).timestamp()  # noqa: E731
+    rows = [item("in", "Edge", spring(23, 59, 15)), item("out", "Past edge", spring(0, 0, 16))]
+    s = plan.day_summary(rows, now=spring(9, 0, 8), timezone=TZ)
+    assert [u["id"] for u in s["upcoming"]] == ["in"]
+
+
 def test_this_file_is_in_the_simulation_manifest():
     from pathlib import Path
     manifest = (Path(__file__).resolve().parents[1] / "scripts" / "run_simulation_qa.py").read_text()
