@@ -1578,8 +1578,7 @@ async def forward_email(message_id: str, to: str, note: str = "") -> str:
 
 
 
-MESSAGE_HANDED_OVER = ("Messages accepted it; delivery is not confirmed here, "
-                       "so do not say it was delivered.")
+MESSAGE_HANDED_OVER = "Messages accepted it; delivery isn't confirmed here."
 
 @register(
     "send_message",

@@ -106,7 +106,7 @@ def test_a_sent_text_is_not_reported_as_delivered():
     from service.tools import action_tools
     source = (ROOT / "service/tools/action_tools.py").read_text(encoding="utf-8")
     assert 'return f"Message sent to {display}. {MESSAGE_HANDED_OVER}"' in source
-    assert "delivery is not confirmed" in action_tools.MESSAGE_HANDED_OVER
+    assert action_tools.MESSAGE_HANDED_OVER == "Messages accepted it; delivery isn't confirmed here."
     from service.tools.registry import classify_tool_outcome
     receipt = "Message sent to 22821. " + action_tools.MESSAGE_HANDED_OVER
     assert classify_tool_outcome("send_message", receipt).status == "succeeded"
