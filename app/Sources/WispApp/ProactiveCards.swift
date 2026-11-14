@@ -1405,6 +1405,13 @@ struct CappedScroll<Content: View>: View {
     @ViewBuilder var content: Content
     /// The content's height, for the scroll indicator only.
     @State private var height: CGFloat = 0
+    /// `showsMore`: bumped once, when the content is first measured past the cap,
+    /// so the indicator flashes as the page arrives overflowing and never again
+    /// as something inside it opens or closes across the cap.
+    @State private var flashes = 0
+    @State private var measured = false
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    @Environment(\.reduceMotionOverride) private var reduceMotionOverride
 
     var body: some View {
         if let cap {
@@ -1416,15 +1423,22 @@ struct CappedScroll<Content: View>: View {
                                 Color.clear.preference(key: CappedScrollHeight.self, value: geo.size.height)
                             })
                             .padding(.bottom, more(cap) ? Self.fade : 0)
+                            // The overflow is learned a pass after the change that
+                            // caused it, outside its animation: ease what it adds.
+                            .animation(moreMotion, value: more(cap))
                     }
                     .scrollIndicators(height > cap ? (showsMore ? .visible : .automatic) : .never)
-                    .scrollIndicatorsFlash(trigger: more(cap))
+                    .scrollIndicatorsFlash(trigger: flashes)
                     .scrollBounceBehavior(.basedOnSize)
                     .overlay(alignment: .bottom) {
-                        if more(cap) {
+                        // Always there for showsMore, faded in and out with the overflow
+                        // on the panel's spring rather than popping in at full strength.
+                        if showsMore {
                             LinearGradient(colors: [Theme.surface.opacity(0), Theme.surface],
                                            startPoint: .top, endPoint: .bottom)
                                 .frame(height: Self.fade)
+                                .opacity(more(cap) ? 1 : 0)
+                                .animation(moreMotion, value: more(cap))
                                 .allowsHitTesting(false)
                                 .accessibilityHidden(true)
                         }
@@ -1437,7 +1451,18 @@ struct CappedScroll<Content: View>: View {
                     } : nil)
                 }
             }
-            .onPreferenceChange(CappedScrollHeight.self) { height = $0 }
+            .onPreferenceChange(CappedScrollHeight.self) { new in
+                // Crossing the cap: the fade's room is added in the same animated
+                // transaction, not as a 24 pt jump in the first frame.
+                if showsMore, measured, (new > cap) != (height > cap) {
+                    withAnimation(moreMotion) { height = new }
+                } else {
+                    height = new
+                }
+                guard showsMore, !measured, new > 0 else { return }
+                measured = true
+                if new > cap { flashes += 1 }
+            }
             // A CappedScroll inside this one reports its own content; keep it
             // from reaching (and inflating) an outer one.
             .transformPreference(CappedScrollHeight.self) { $0 = CappedScrollHeight.defaultValue }
@@ -1451,6 +1476,9 @@ struct CappedScroll<Content: View>: View {
 
     /// `showsMore` and the content passes the cap.
     private func more(_ cap: CGFloat) -> Bool { showsMore && height > cap }
+
+    /// The fade and its room following the overflow: the panel's spring, none with Reduce Motion.
+    private var moreMotion: Animation? { Theme.Motion.panel(reduceMotion: reduceMotionOverride ?? systemReduceMotion) }
 }
 
 /// Lays out one scroll view as tall as its content, up to `cap`. A vertical
