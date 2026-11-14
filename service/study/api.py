@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import re
 import time
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -183,6 +184,16 @@ def _existing_store():
     return study_store() if study_exists() else None
 
 
+def _shown_name(course: dict) -> str:
+    """A course's name for the state. A course page that showed no name saves a nameless row;
+    it shows as "Course <canvas id>" instead of a blank chip (state only, never stored)."""
+    name = (course.get("name") or "").strip()
+    if name:
+        return name
+    match = re.fullmatch(r"[a-z]+:(\d+)", course.get("id") or "")
+    return f"Course {match.group(1)}" if match else ""
+
+
 def state(now: float | None = None, *, connector_state: dict | None = None) -> dict:
     """The contract's state. Async routes pass connector_state from status_async()."""
     now = time.time() if now is None else now
@@ -192,7 +203,7 @@ def state(now: float | None = None, *, connector_state: dict | None = None) -> d
     if store is None:
         return _empty_state(connector_state)
     courses = store.courses()
-    names = {c["id"]: c.get("name") or "" for c in courses}
+    names = {c["id"]: _shown_name(c) for c in courses}
     rows = store.assignments()   # already due_ts ascending, nulls last
     due_counts: dict[str, int] = {}
     for item in rows:
@@ -203,7 +214,7 @@ def state(now: float | None = None, *, connector_state: dict | None = None) -> d
     for c in courses:
         due_count = due_counts.get(c["id"], 0)
         graded = c.get("score") is not None or c.get("grade") is not None
-        listed.append({"id": c["id"], "name": c.get("name") or "", "code": c.get("code"),
+        listed.append({"id": c["id"], "name": names[c["id"]], "code": c.get("code"),
                        "grade": c.get("grade"), "score": c.get("score"), "url": c.get("url"),
                        "due_count": due_count, "active": due_count > 0 or graded,
                        "sample": bool(c.get("sample"))})

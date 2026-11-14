@@ -205,6 +205,23 @@ class StudyStore:
             CREATE INDEX IF NOT EXISTS misses_material ON misses(material_id);
         """)
         self._migrate()
+        self._repair_nameless()
+
+    def _repair_nameless(self) -> None:
+        """Open-time repair of a store split before nameless course pages could merge (see
+        ``_adopt_nameless``). Idempotent and never fatal: a store it cannot repair still opens."""
+        with self._lock:
+            try:
+                self._db.execute("BEGIN")
+                now = time.time()
+                for canonical in self._adopt_nameless(now):
+                    self._dedupe_assignments(canonical, now)
+                self._db.execute("COMMIT")
+            except sqlite3.Error:
+                try:
+                    self._db.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
 
     def _migrate(self) -> None:
         """A study.db from before merge_key: add the column and fill it from the names."""
@@ -345,6 +362,7 @@ class StudyStore:
                     assignment_ids.add(a["id"])
                     if course_id:
                         touched.add(course_id)
+                touched |= self._adopt_nameless(now)
                 for course_id in touched:
                     self._dedupe_assignments(course_id, now)
                 kept = sum(self._db.execute("SELECT 1 FROM assignments WHERE id=?", (a,)).fetchone() is not None
@@ -381,6 +399,37 @@ class StudyStore:
         if hashed:
             return hashed[0], [cid] if stored is not None else []
         return cid, []
+
+    def _adopt_nameless(self, now: float) -> set[str]:
+        """A course page that showed no course name saves a nameless row under its numeric
+        id and address, which no name can match to the Dashboard's row for the same course.
+        Such a row takes in the one url-less named row with the same score: the numeric id
+        survives (as in ``_canonical_course``), gaining the name and code; the named row is
+        retired and its assignments, materials and sources move over. Nothing happens unless
+        the match is one-to-one both ways and nothing contradicts it (two codes or two letter
+        grades that differ). Returns the surviving ids."""
+        rows = self._db.execute("SELECT * FROM courses WHERE sample=0 ORDER BY updated_at, id").fetchall()
+        nameless = [r for r in rows if _blank(r["name"]) and r["score"] is not None and not _blank(r["url"])
+                    and _numeric(r["id"], r["url"])]
+        named = [r for r in rows if not _blank(r["name"]) and _blank(r["url"]) and r["score"] is not None]
+
+        def agree(a, b) -> bool:
+            if a["score"] != b["score"]:
+                return False
+            return not any(not _blank(a[k]) and not _blank(b[k]) and str(a[k]).strip() != str(b[k]).strip()
+                           for k in ("code", "grade"))
+
+        adopted: set[str] = set()
+        for row in nameless:
+            matches = [n for n in named if agree(row, n)]
+            if len(matches) != 1 or sum(agree(other, matches[0]) for other in nameless) != 1:
+                continue
+            twin = matches[0]
+            self._write("courses", _COURSE_FIELDS, {"id": row["id"]}, _COURSE_DEFAULTS, now, keep=(twin,))
+            self._retire_course(twin["id"], row["id"])
+            named.remove(twin)
+            adopted.add(row["id"])
+        return adopted
 
     def _retire_course(self, old: str, canonical: str) -> None:
         self._db.execute("UPDATE assignments SET course_id=? WHERE course_id=?", (canonical, old))
