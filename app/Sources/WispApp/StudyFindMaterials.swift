@@ -867,7 +867,7 @@ enum StudyFindText {
     static let nothingFound = "Wisp didn't find any course materials on the Modules page."
     static let stoppedEarly = "Stopped. This is what Wisp found so far."
     static let stopped = "Stopped. Nothing was added."
-    static let timeCap = "Wisp stopped looking after 20 minutes. This is what it found."
+    static let timeCap = "Wisp reached its time limit for one run. This is what it found."
     static let added = "Added"
     static let cantAdd = "Can't add yet"
     static let couldntReadItem = "Couldn't read"
@@ -969,9 +969,12 @@ final class StudyFindRun: ObservableObject {
     /// `StudyFindTarget.pathKey` of each link sent → its Canvas module item type.
     private var sentTypes: [String: String] = [:]
 
-    /// The owner asked for up to 100 opened pages (was 10). A run stops after 20 minutes.
+    /// The owner asked for up to 100 opened pages (was 10). The run limit scales with
+    /// the cap (5 minutes plus 9 s a page: 20 minutes at 100), and Wisp pauses
+    /// `openPause` between page opens so the course site isn't hammered.
     static let maxVisits = 100
-    static let runSeconds: TimeInterval = 1200
+    static let runSeconds: TimeInterval = 300 + TimeInterval(maxVisits) * 9
+    static let openPause: UInt64 = 1_500_000_000
     static let modulesWait: TimeInterval = 25
     static let pageWait: TimeInterval = 20
     static let maxAddBatch = 60
@@ -1175,6 +1178,11 @@ final class StudyFindRun: ObservableObject {
             // page, and never a tool, LTI or quiz launch.
             guard let url = t.openableURL(item.url) else { continue }
             step = StudyFindText.readingPage(index + 1, of: visits.count)
+            if index > 0 {
+                // A short pause between opens, so the course site isn't hammered.
+                try? await Task.sleep(nanoseconds: Self.openPause)
+                guard live(gen) else { return }
+            }
             let snapshot = await StudyFindReader.tabs()
             guard live(gen) else { return }
             // Skip this one when the browsers didn't all answer in time.
