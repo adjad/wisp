@@ -77,6 +77,45 @@ OPTIONAL_KEYS = frozenset({"enabled", "api_prefix", "readiness_timeout"})
 _MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}")
 _BASE_URL_CHARS = re.compile(r"[\x21-\x7e]+")
 _CREDENTIAL_REF = re.compile(r"keychain:[A-Za-z][A-Za-z0-9_-]{0,63}")
+# The only models a request may ask to reason, and the one effort each gets. The
+# value is sent as the top-level `reasoning` option; it comes from this constant
+# alone, never from a prompt, a tool result or a model reply.
+REASONING_EFFORT_MODELS = {"anthropic/claude-haiku-5.5": "medium"}
+# The provider sets the reasoning budget to half of max_tokens (at least 1024) and
+# requires max_tokens strictly above it, so a reasoning request needs at least this.
+REASONING_MIN_MAX_TOKENS = 2049
+# Where the inference client keeps a reply's reasoning_details for the next request
+# of the same turn. Private: it is never sent under this name, shown or stored.
+REPLAY_REASONING_KEY = "_replay_reasoning_details"
+# Models whose reasoning_details must go back unchanged with their tool calls, and
+# that always (or, with the option above, usually) send them. Their replies are
+# fetched whole, never streamed: a streamed reasoning sequence is only the chunks
+# in arrival order and may hold redacted placeholders, so it cannot be replayed
+# reliably. Every other remote model streams as before.
+REPLAY_REASONING_MODELS = frozenset({
+    "google/gemini-3.8-flash", "google/gemini-4-carbon", "google/gemini-4-argon",
+    "anthropic/claude-haiku-5.5",
+})
+REASONING_REPLAY_TOO_LARGE = ("This model's reasoning is too large to continue the answer; "
+                              "try a shorter request or another model")
+
+
+def reasoning_option(model_id: str) -> dict | None:
+    """The `reasoning` option for this model, or None when it gets none."""
+    effort = REASONING_EFFORT_MODELS.get(model_id)
+    return {"effort": effort} if effort else None
+
+
+def replay_reasoning_bytes(messages) -> int:
+    """Wire bytes of every replayed reasoning_details list in `messages`, encoded as
+    the request body encodes them. Raises TypeError/ValueError for anything that
+    cannot be sent as JSON."""
+    total = 0
+    for row in messages or []:
+        if isinstance(row, dict) and "reasoning_details" in row:
+            total += len(json.dumps(row["reasoning_details"], ensure_ascii=False,
+                                    allow_nan=False).encode("utf-8"))
+    return total
 
 
 def _refuse(message: str):
@@ -111,7 +150,8 @@ class RemoteOnlyProfile:
         return min(value, self.max_tokens)
 
     def validate_payload(self, payload: dict) -> None:
-        allowed = {"model", "messages", "max_tokens", "stream", "temperature", "tools", "tool_choice"}
+        allowed = {"model", "messages", "max_tokens", "stream", "temperature", "tools", "tool_choice",
+                   "reasoning"}
         if not isinstance(payload, dict) or set(payload) - allowed:
             _refuse("Unsupported remote-only inference options")
         if payload.get("model") != self.model_id or type(payload.get("stream")) is not bool:
@@ -119,6 +159,14 @@ class RemoteOnlyProfile:
         value = payload.get("max_tokens")
         if type(value) is not int or not 1 <= value <= self.max_tokens:
             _refuse("Remote-only output budget exceeds the profile limit")
+        if "reasoning" in payload:
+            # Exactly the constant's option for this model, with room for its budget.
+            wanted = reasoning_option(payload["model"])
+            got = payload["reasoning"]
+            if (wanted is None or type(got) is not dict or set(got) != {"effort"}
+                    or type(got["effort"]) is not str or got != wanted
+                    or value < REASONING_MIN_MAX_TOKENS):
+                _refuse("Unsupported remote-only reasoning option")
         messages = payload.get("messages")
         if not isinstance(messages, list) or not 1 <= len(messages) <= self.messages:
             _refuse("Remote-only message budget exceeded")
@@ -130,6 +178,16 @@ class RemoteOnlyProfile:
             content = row.get("content")
             if not isinstance(content, str) and not (row["role"] == "assistant" and row.get("tool_calls") and content is None):
                 _refuse("Remote-only inference accepts text and tool transcripts only")
+            if REPLAY_REASONING_KEY in row:
+                _refuse("Invalid remote-only message")
+            if "reasoning_details" in row:
+                # A provider's own reasoning, sent back unchanged with the tool calls it
+                # came with (same turn only). Nowhere else, and only as a list of objects.
+                details = row["reasoning_details"]
+                if (row["role"] != "assistant" or not row.get("tool_calls")
+                        or type(details) is not list or not details
+                        or not all(type(item) is dict for item in details)):
+                    _refuse("Remote-only reasoning replay is allowed only with its tool calls")
         tools = payload.get("tools")
         if tools is not None and (not isinstance(tools, list) or not 1 <= len(tools) <= self.tools):
             _refuse("Remote-only tool schema budget exceeded")
@@ -143,13 +201,22 @@ class RemoteOnlyProfile:
                 valid = False
             if not valid:
                 _refuse("Invalid remote-only temperature")
+        # Replayed reasoning has its own cap (response_bytes: it is one reply's worth
+        # of provider output) and is left out of the transcript budget, so a turn
+        # that fits is never refused only because the model reasoned at length. The
+        # whole body stays bounded: request_bytes plus at most response_bytes.
         try:
+            reasoning_bytes = replay_reasoning_bytes(messages)
+            transcript = [{k: v for k, v in row.items() if k != "reasoning_details"}
+                          if "reasoning_details" in row else row for row in messages]
             wire = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
-            aggregate = json.dumps({"messages": messages, "tools": tools}, ensure_ascii=False,
+            aggregate = json.dumps({"messages": transcript, "tools": tools}, ensure_ascii=False,
                                    separators=(",", ":"), allow_nan=False).encode("utf-8")
         except (TypeError, ValueError, RecursionError, UnicodeError):
             _refuse("Invalid bounded remote-only payload")
-        if len(wire) > self.request_bytes or len(aggregate) > self.aggregate_bytes:
+        if reasoning_bytes > self.response_bytes:
+            _refuse(REASONING_REPLAY_TOO_LARGE)
+        if len(wire) > self.request_bytes + reasoning_bytes or len(aggregate) > self.aggregate_bytes:
             _refuse("Remote-only transcript/schema byte budget exceeded")
 
 
