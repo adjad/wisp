@@ -264,6 +264,7 @@ enum Harness {
         if let rounds = ProcessInfo.processInfo.environment["WISP_NOTCH_MOTION_PROFILE"].flatMap(Int.init) {
             return try await profile(rounds: rounds, out: out)
         }
+        if ProcessInfo.processInfo.environment["WISP_NOTCH_FLASH"] != nil { return try await FlashProbe.run(out: out) }
 
         var failures = 0
         for reduce in [false, true] {
@@ -880,5 +881,254 @@ enum Harness {
         return abs(got - want) <= 2
             ? "PASS scroll memory: Brief came back at \(f(Double(got))) (left at \(f(Double(want))))"
             : "FAIL scroll memory: Brief left at \(f(Double(want))) came back at \(f(Double(got)))"
+    }
+}
+
+// MARK: Study row flash probe (WISP_NOTCH_FLASH=1)
+
+/// Calls to -[NSScrollView flashScrollers] (SwiftUI's scrollIndicatorsFlash).
+nonisolated(unsafe) var flashScrollerCalls = 0
+
+/// A Coming-up row opening and closing, every sample a full frame, on fixtures
+/// sized against the Study cap: one comfortably under it either way, one just
+/// under it closed and over it open, one over it both ways. Per frame: window,
+/// content, scroll document/clip/offset, the scroller, flashScrollers calls and
+/// the luminance of the tapped row, the whole panel, the bottom 30 pt and the
+/// right edge. Repeats each change with staggered first samples so that the
+/// merged timeline is dense, since one full capture takes 30-150 ms.
+@MainActor
+enum FlashProbe {
+    struct Scroll { var doc = 0.0, clip = 0.0, offset = 0.0, scroller = "none", style = 0 }
+    struct Frame { var s: MotionSample; var scroll: Scroll; var flashes: Int; var rep: Int }
+    struct Lum { var row = 0.0, panel = 0.0, bottom = 0.0, edge = 0.0, belowAlpha = 0.0 }
+
+    static var hooked = Set<ObjectIdentifier>()
+
+    static func hook(_ cls: AnyClass) {
+        guard hooked.insert(ObjectIdentifier(cls)).inserted else { return }
+        let sel = #selector(NSScrollView.flashScrollers)
+        guard let m = class_getInstanceMethod(cls, sel) else { return }
+        typealias Fn = @convention(c) (AnyObject, Selector) -> Void
+        let call = unsafeBitCast(method_getImplementation(m), to: Fn.self)
+        let block: @convention(block) (AnyObject) -> Void = { obj in flashScrollerCalls += 1; call(obj, sel) }
+        let imp = imp_implementationWithBlock(block)
+        if !class_addMethod(cls, sel, imp, method_getTypeEncoding(m)) { method_setImplementation(m, imp) }
+    }
+
+    static func homeScroll(_ rig: MotionRig) -> NSScrollView? {
+        let all = Harness.scrollViews(in: rig.host)
+        for s in all { hook(type(of: s)) }
+        return all.filter { $0.frame.width > 300 }.max { $0.frame.height < $1.frame.height }
+    }
+
+    static func scroll(_ rig: MotionRig) -> Scroll {
+        guard let v = homeScroll(rig) else { return Scroll() }
+        let sc = v.verticalScroller
+        let scroller = sc.map { "has=\(v.hasVerticalScroller ? 1 : 0) hidden=\($0.isHidden ? 1 : 0) a=\(String(format: "%.2f", $0.alphaValue)) knob=\(String(format: "%.2f", $0.knobProportion))" } ?? "none"
+        return Scroll(doc: Double(v.documentView?.frame.height ?? 0), clip: Double(v.contentSize.height),
+                      offset: Double(v.contentView.bounds.origin.y), scroller: scroller, style: v.scrollerStyle.rawValue)
+    }
+
+    /// Top-down premultiplied RGBA: the RGB is the frame over black, A its coverage.
+    static func raw(_ s: MotionSample) -> (data: [UInt8], w: Int, h: Int)? {
+        guard let image = s.image, image.width > 8, let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+        let w = image.width, h = image.height
+        var data = [UInt8](repeating: 0, count: w * h * 4)
+        let ok: Bool = data.withUnsafeMutableBytes { buffer in
+            guard let ctx = CGContext(data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                      space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        return ok ? (data, w, h) : nil
+    }
+
+    static func mean(_ p: (data: [UInt8], w: Int, h: Int), x0: Int, x1: Int, y0: Int, y1: Int, alpha: Bool = false) -> Double {
+        let xa = max(0, x0), xb = min(p.w, x1), ya = max(0, y0), yb = min(p.h, y1)
+        guard xb > xa, yb > ya else { return 0 }
+        var sum = 0.0
+        for y in ya..<yb {
+            for x in xa..<xb {
+                let i = (y * p.w + x) * 4
+                if alpha { sum += Double(p.data[i + 3]) } else {
+                    sum += 0.2126 * Double(p.data[i]) + 0.7152 * Double(p.data[i + 1]) + 0.0722 * Double(p.data[i + 2])
+                }
+            }
+        }
+        return sum / Double((xb - xa) * (yb - ya))
+    }
+
+    /// The first pixel row (in points) where two frames differ: the tapped row's top.
+    static func firstDiff(_ a: MotionSample, _ b: MotionSample) -> Double? {
+        guard let pa = raw(a), let pb = raw(b), pa.w == pb.w else { return nil }
+        for y in 0..<min(pa.h, pb.h) {
+            let la = mean(pa, x0: 0, x1: pa.w, y0: y, y1: y + 1), lb = mean(pb, x0: 0, x1: pb.w, y0: y, y1: y + 1)
+            if abs(la - lb) > 0.4 { return Double(y) / a.scale }
+        }
+        return nil
+    }
+
+    static func lum(_ s: MotionSample, rowTop: Double) -> Lum {
+        guard let p = raw(s) else { return Lum() }
+        let k = s.scale
+        let w = p.w, top = Int(rowTop * k)
+        let vis = Int(min(s.vis, s.win) * k), win = Int(s.win * k)
+        return Lum(row: mean(p, x0: Int(0.03 * Double(w)), x1: Int(0.55 * Double(w)), y0: top, y1: top + Int(26 * k)),
+                   panel: mean(p, x0: 0, x1: w, y0: 0, y1: win),
+                   bottom: mean(p, x0: 0, x1: w, y0: vis - Int(30 * k), y1: vis),
+                   edge: mean(p, x0: w - Int(18 * k), x1: w - Int(3 * k), y0: Int(70 * k), y1: vis - Int(4 * k)),
+                   belowAlpha: mean(p, x0: 0, x1: w, y0: vis + Int(2 * k), y1: win, alpha: true))
+    }
+
+    static func lines(_ n: Int) -> String? { n == 0 ? nil : (1...n).map { "Probe note line \($0)" }.joined(separator: "\n") }
+
+    static func run(out: URL) async throws -> Bool {
+        hook(NSScrollView.self)
+        let rig = try MotionRig(reduce: false)
+        try await rig.open()
+        let study = StudyModel.shared
+        let midnight = Calendar.current.startOfDay(for: Date()).timeIntervalSince1970
+        var full = NotchQADriver.studyState(midnight: midnight)
+        var small = full
+        small["materials"] = Array((full["materials"] as! [[String: Any]]).prefix(1))
+        small["assignments"] = Array((full["assignments"] as! [[String: Any]]).prefix(2))
+        full["last_import"] = midnight + 9 * 3600
+        func state(_ d: [String: Any]) throws -> StudyState {
+            try JSONDecoder().decode(StudyState.self, from: JSONSerialization.data(withJSONObject: d))
+        }
+        let bases = [("full", try state(full)), ("small", try state(small))]
+        rig.model.tab = .study
+        try await rig.settle()
+        try await Task.sleep(for: .milliseconds(1500))
+        var report = "Study row flash probe\n"
+        var open = false
+        func toggle() { NotchStudyView.qaToggle.send("qa:lab4"); open.toggle() }
+        func show(_ st: StudyState, _ n: Int) async throws {
+            if open { toggle(); try await rig.settle() }
+            study.show(state: st, notice: lines(n))
+            try await rig.settle()
+        }
+        // Size the variants.
+        var delta = 0.0, cap: Double? = nil
+        var table: [(base: Int, n: Int, doc: Double, over: Bool)] = []
+        for (bi, base) in bases.enumerated() {
+            try await show(base.1, 0)
+            let closed = scroll(rig)
+            toggle(); try await rig.settle()
+            let opened = scroll(rig)
+            toggle(); try await rig.settle()
+            delta = max(delta, opened.doc - closed.doc)
+            report += "base \(base.0): closed doc \(Harness.f(closed.doc)) clip \(Harness.f(closed.clip)); open doc \(Harness.f(opened.doc)) clip \(Harness.f(opened.clip))\n"
+            for n in 0...60 {
+                try await show(base.1, n)
+                let sc = scroll(rig)
+                let over = sc.doc > sc.clip + 1
+                if over { cap = sc.clip }
+                table.append((bi, n, sc.doc, over))
+                if over, n > 0 { break }
+            }
+        }
+        report += "action row adds \(Harness.f(delta)) pt; cap (clip when overflowing) \(cap.map(Harness.f) ?? "never reached")\n"
+        guard let cap else { throw MotionFailure(description: "the Study home never reached its cap") }
+        func pick(_ ok: (Double, Bool) -> Bool) -> (Int, Int)? {
+            table.filter { ok($0.doc, $0.over) }.max { ($0.doc) < ($1.doc) }.map { ($0.base, $0.n) }
+        }
+        var variants: [(String, Int, Int, Bool)] = []   // name, base, notice lines, hover
+        if let c = pick({ doc, over in !over && doc + delta <= cap - 20 }) {
+            variants.append(("under", c.0, c.1, true)); variants.append(("under-nohover", c.0, c.1, false))
+        }
+        if let c = pick({ doc, over in !over && doc + delta > cap + 4 }) { variants.append(("crossing", c.0, c.1, true)) }
+        if let c = table.filter({ $0.over }).min(by: { $0.doc < $1.doc }) { variants.append(("over", c.base, c.n, true)) }
+
+        var ok = true
+        for (name, bi, n, hover) in variants {
+            try await show(bases[bi].1, n)
+            NotchStudyView.qaHover.send(hover ? "qa:lab4" : nil)
+            try await rig.settle()
+            let sc0 = scroll(rig)
+            report += "\n===== \(name): base \(bases[bi].0), \(n) notice line(s), hover \(hover), closed doc \(Harness.f(sc0.doc)) clip \(Harness.f(sc0.clip)) cap \(Harness.f(cap))\n"
+            for dir in ["open", "close"] {
+                var frames: [Frame] = []
+                var before: MotionSample?, final: MotionSample?, beforeScroll = Scroll(), finalScroll = Scroll()
+                var flashTotal = 0
+                for rep in 0..<6 {
+                    if (dir == "open") == open { toggle(); try await rig.settle() }   // start from the other state
+                    try await rig.settle()
+                    let b = rig.capture(); if before == nil { before = b; beforeScroll = scroll(rig) }
+                    let f0 = flashScrollerCalls
+                    let t0 = CACurrentMediaTime()
+                    toggle()
+                    if rep > 0 { try await Task.sleep(for: .milliseconds(rep * 11)) }
+                    while true {
+                        let t = CACurrentMediaTime() - t0
+                        if t >= 0.7 { break }
+                        var s = rig.capture(full: true)
+                        s.t = t
+                        frames.append(Frame(s: s, scroll: scroll(rig), flashes: flashScrollerCalls - f0, rep: rep))
+                        try await Task.sleep(for: .milliseconds(2))
+                    }
+                    try await rig.settle()
+                    flashTotal += flashScrollerCalls - f0
+                    if final == nil { final = rig.capture(); finalScroll = scroll(rig) }
+                }
+                guard let before, let final else { continue }
+                let closedFrame = dir == "open" ? before : final, openFrame = dir == "open" ? final : before
+                let rowTop = firstDiff(closedFrame, openFrame) ?? 0
+                frames.sort { $0.s.t < $1.s.t }
+                let lb = lum(before, rowTop: rowTop), lf = lum(final, rowTop: rowTop)
+                report += "-- \(name) \(dir): row top \(Harness.f(rowTop)) pt, flashScrollers calls \(flashTotal) over 6 runs\n"
+                report += String(format: "   before: win %.1f content %.1f doc %.1f clip %.1f off %.1f | row %.2f panel %.2f bottom30 %.2f edge %.2f below-a %.1f | %@\n",
+                                 before.win, before.vis, beforeScroll.doc, beforeScroll.clip, beforeScroll.offset, lb.row, lb.panel, lb.bottom, lb.edge, lb.belowAlpha, beforeScroll.scroller)
+                var series: [String: [Double]] = ["row": [], "panel": [], "bottom30": [], "edge": [], "content": [], "offset": []]
+                for fr in frames {
+                    let l = lum(fr.s, rowTop: rowTop)
+                    series["row"]!.append(l.row); series["panel"]!.append(l.panel); series["bottom30"]!.append(l.bottom)
+                    series["edge"]!.append(l.edge); series["content"]!.append(fr.s.vis); series["offset"]!.append(fr.scroll.offset)
+                    report += String(format: "   t=%3d r%d  win %.1f content %.1f doc %.1f clip %.1f off %.1f | row %.2f panel %.2f bottom30 %.2f edge %.2f below-a %.1f | flash %d | %@\n",
+                                     Int(fr.s.t * 1000), fr.rep, fr.s.win, fr.s.vis, fr.scroll.doc, fr.scroll.clip, fr.scroll.offset,
+                                     l.row, l.panel, l.bottom, l.edge, l.belowAlpha, fr.flashes, fr.scroll.scroller)
+                }
+                report += String(format: "   final: win %.1f content %.1f doc %.1f clip %.1f off %.1f | row %.2f panel %.2f bottom30 %.2f edge %.2f below-a %.1f | %@\n",
+                                 final.win, final.vis, finalScroll.doc, finalScroll.clip, finalScroll.offset, lf.row, lf.panel, lf.bottom, lf.edge, lf.belowAlpha, finalScroll.scroller)
+                // Excursions: how far any frame leaves the range between before and final.
+                let ends: [String: (Double, Double)] = ["row": (lb.row, lf.row), "panel": (lb.panel, lf.panel), "bottom30": (lb.bottom, lf.bottom),
+                                                         "edge": (lb.edge, lf.edge), "content": (before.vis, final.vis), "offset": (beforeScroll.offset, finalScroll.offset)]
+                for key in ["row", "panel", "bottom30", "edge", "content", "offset"] {
+                    let (a, b) = ends[key]!
+                    var worst = 0.0, at = 0
+                    for (i, v) in series[key]!.enumerated() {
+                        let e = max(min(a, b) - v, v - max(a, b), 0)
+                        if e > worst { worst = e; at = Int(frames[i].s.t * 1000) }
+                    }
+                    report += String(format: "   excursion %@: %.2f at %d ms (ends %.2f -> %.2f)\n", key, worst, at, a, b)
+                }
+                // The largest one-sample step of the bottom fade, per run, as a share of its change.
+                let fadeChange = abs(lb.bottom - lf.bottom)
+                var fadePop = 0.0
+                for rep in 0..<6 {
+                    var prev = lb.bottom
+                    for (i, fr) in frames.enumerated() where fr.rep == rep {
+                        fadePop = max(fadePop, abs(series["bottom30"]![i] - prev)); prev = series["bottom30"]![i]
+                    }
+                }
+                report += String(format: "   bottom fade: change %.2f, largest one-sample step %.2f (%d%%)\n", fadeChange, fadePop,
+                                 fadeChange > 0.5 ? Int(fadePop / fadeChange * 100) : 0)
+                if flashTotal > 0 { ok = false }
+                // Sheet: before, up to 14 frames spread over the merged timeline, final.
+                var picks: [(String, MotionSample)] = [("before", before)]
+                let stride = max(1, frames.count / 14)
+                for i in Swift.stride(from: 0, to: frames.count, by: stride).prefix(14) {
+                    picks.append(("\(Int(frames[i].s.t * 1000)) ms r\(frames[i].rep)", frames[i].s))
+                }
+                picks.append(("final", final))
+                try Harness.contactSheet(title: "flash \(name) \(dir)", frames: picks, to: out.appendingPathComponent("flash-\(name)-\(dir).png"))
+            }
+            NotchStudyView.qaHover.send(nil)
+        }
+        if open { toggle(); try await rig.settle() }
+        rig.close()
+        try report.write(to: out.appendingPathComponent("flash-report.txt"), atomically: true, encoding: .utf8)
+        print(report.split(separator: "\n").filter { !$0.hasPrefix("   t=") }.joined(separator: "\n"))
+        return ok
     }
 }
