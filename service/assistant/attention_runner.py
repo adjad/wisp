@@ -242,6 +242,25 @@ async def _publish(event: dict) -> None:
         await hub.publish(event, durable=False)
 
 
+def one_path(settings):
+    """One path per message. With "Let Wisp act for me" on (service/proactive/acting.py), the
+    Brief's auto-add is what puts a missed date on Calendar or Reminders, so Caught for you
+    stops creating and goes back to recording what it would have done (shadow). Without this
+    the same text could become two reminders. Auto-add covers the other direction itself: it
+    never adds what is already on Calendar or in Reminders (autoadd.already_there)."""
+    if settings.mode != "live":
+        return settings
+    try:
+        from service.proactive import acting
+        acting_on = acting.enabled("add")     # only when Wisp's own adding is in force
+    except Exception:  # noqa: BLE001 — unknown: do not let two writers run
+        acting_on = True
+    if not acting_on:
+        return settings
+    from dataclasses import replace
+    return replace(settings, mode="shadow")
+
+
 async def run_tick(now: float | None = None) -> list:
     """One scheduler pass. Cheap when nothing changed; never raises into the scheduler."""
     global _last_fingerprint, _last_run
@@ -249,7 +268,7 @@ async def run_tick(now: float | None = None) -> list:
     if now - _last_run < MIN_INTERVAL_S:
         return []
     _last_run = now
-    settings = load_settings(settings_path(MOE_DIR))
+    settings = one_path(load_settings(settings_path(MOE_DIR)))
     ledger = get_ledger()
     try:
         # The words of a message are only needed inside the lookback; keep the id and the state.
@@ -477,8 +496,14 @@ def _capture_current(candidate, *, automatic: bool) -> bool:
         if read_only():
             return False
         latest = load_settings(settings_path(MOE_DIR))
+        if automatic:
+            latest = one_path(latest)       # re-read at the effect: acting for you may have just been turned on
         if latest.mode == 'off' or (automatic and (latest.mode != 'live' or not latest.capture_events)):
             return False
+        if automatic:
+            from service.attention.event_capture import captures_itself
+            if not captures_itself(candidate):  # mail never adds by itself (MAIL_CAPTURES_ITSELF)
+                return False
         if _policy_block():
             return False
         current = capture_candidates(time.time(), candidate.timezone, latest)
@@ -522,7 +547,7 @@ def _capture_commitments(now: float, tz: str) -> list[dict]:
 
 
 async def run_capture_tick(now: float, tz: str, settings) -> list:
-    from service.attention.event_capture import capture, preview
+    from service.attention.event_capture import capture, captures_itself, preview
     ledger = get_ledger()
     ledger.recover(now)
     enabled = settings.mode == 'live' and settings.capture_events
@@ -535,7 +560,7 @@ async def run_capture_tick(now: float, tz: str, settings) -> list:
     floor = float(ledger.meta('capture_enabled_at') or now)
     for c in values:
         record = preview(c, ledger, now)
-        if not enabled or not c.automatic_eligible or c.source_ts < floor or record['state'] != 'shadow':
+        if not enabled or not captures_itself(c) or c.source_ts < floor or record['state'] != 'shadow':
             continue
         try:
             row = await capture(c, ledger=ledger, now=now, settings=settings,

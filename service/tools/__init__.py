@@ -19,7 +19,7 @@ import service.tools.tool_authoring  # noqa: F401 (registers draft_tool/create_t
 import service.tools.files_tools  # noqa: F401     (registers find_files — Spotlight, not `find`)
 import service.tools.timers_alarms  # noqa: F401   (registers timers, alarms, stopwatch)
 import service.tools.conversions  # noqa: F401     (registers calculate, convert_units)
-import service.tools.notes_write  # noqa: F401     (registers create_note, append_note)
+import service.tools.notes_write  # noqa: F401     (create_note, append_note, delete_note)
 import service.tools.reference_tools  # noqa: F401 (registers world_time)
 import service.tools.system_extras  # noqa: F401   (display, capture, toggles, status)
 import service.tools.window_tools  # noqa: F401    (windows, app switching, reveal)

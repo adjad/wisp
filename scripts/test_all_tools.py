@@ -254,6 +254,7 @@ SKIP = {
     "cancel_event": "no safe target — would need to cancel a real event",
     "complete_reminder": "no safe target in this run",
     "clear_past_reminders": "bulk-deletes real past-due items",
+    "delete_note": "deletes a real note",
     "update_event": "cancels + recreates a real event",
     "http_request": "would send a real mutating request to whatever URL is given",
     "create_tool": "generates and installs a new tool — a real, standing change",

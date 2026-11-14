@@ -36,7 +36,7 @@
     {
       "path": "omlx/wisp_guard.py",
       "source": "proof.py",
-      "sha256": "867bed33159673164953f29f28aa1a8fc59cbed97df6cd6eda8ee9ce56282b9d"
+      "sha256": "2dc3f2b3daa1b7263ae9b74c48d16b260c97007cc4f9002a8008386a8c3023ab"
     },
     {
       "path": "omlx/wisp_encoders.py",

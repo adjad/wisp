@@ -30,11 +30,14 @@ final class MotionFixtureProtocol: URLProtocol {
 @MainActor
 final class MotionFixtureModel: ObservableObject {
     @Published var height: CGFloat = 220
+    /// The content's width. In the app it follows the layout (OverlayView's
+    /// `.frame(width:)`), and the hosting view holds the window to it.
+    @Published var width: CGFloat = 640
 }
 
 struct MotionFixtureView: View {
     @ObservedObject var model: MotionFixtureModel
-    var body: some View { Text("Synthetic motion fixture").frame(width: 640, height: model.height) }
+    var body: some View { Text("Synthetic motion fixture").frame(width: model.width, height: model.height) }
 }
 
 @main
@@ -139,6 +142,370 @@ struct OverlayTransitionChecks {
         check(OverlayModel.heartbeatSeconds(2, fromLoop: false) == 16, "Two silent waits are 16 s")
         check(OverlayModel.heartbeatSeconds(0, fromLoop: false) == 0, "No heartbeat, no seconds")
         print("PASS: heartbeats count seconds at their sender's pace")
+    }
+
+    /// The window that covers both the current frame and the target: the wider
+    /// and the taller of the two, hanging from the same top.
+    static func coveringChecks() {
+        let current = NSRect(x: 100, y: 500, width: 640, height: 300) // top 800
+        func same(_ a: NSRect, _ b: NSRect) -> Bool { a == b }
+        // Wider target, same height: grows both sides, same top.
+        let wider = NSRect(x: 0, y: 500, width: 840, height: 300)
+        check(same(OverlayPanel.covering(current, wider), wider), "A wider target is covered by its own frame")
+        // Narrower target, shorter: the current frame still covers it.
+        let narrowShort = NSRect(x: 150, y: 600, width: 540, height: 200)
+        check(same(OverlayPanel.covering(current, narrowShort), current), "A smaller target keeps the current frame")
+        // Taller target (same x, same top): the taller height wins.
+        let taller = NSRect(x: 100, y: 400, width: 640, height: 400)
+        check(same(OverlayPanel.covering(current, taller), taller), "A taller target is covered by its own frame")
+        // Shorter target, same width: the current height stays.
+        let shorter = NSRect(x: 100, y: 600, width: 640, height: 200)
+        check(same(OverlayPanel.covering(current, shorter), current), "A shorter target keeps the current height")
+        // Wider and shorter together: the union width at the current height.
+        let wideShort = NSRect(x: 0, y: 600, width: 840, height: 200)
+        check(same(OverlayPanel.covering(current, wideShort), NSRect(x: 0, y: 500, width: 840, height: 300)),
+              "Wider and shorter covers the wider width at the taller height")
+        // Narrower and taller together.
+        let narrowTall = NSRect(x: 150, y: 400, width: 540, height: 400)
+        check(same(OverlayPanel.covering(current, narrowTall), NSRect(x: 100, y: 400, width: 640, height: 400)),
+              "Narrower and taller keeps the width at the taller height")
+        for target in [wider, narrowShort, taller, shorter, wideShort, narrowTall] {
+            let c = OverlayPanel.covering(current, target)
+            check(c.maxY == 800 && target.maxY == 800, "The top stays put")
+            check(c.contains(current) && c.contains(target), "The result holds both frames")
+            check(OverlayPanel.covering(c, target) == c && OverlayPanel.covering(target, current) == OverlayPanel.covering(current, target),
+                  "Covering is idempotent and symmetric")
+        }
+        // Different tops: the higher top wins and the height is the taller one.
+        let lower = NSRect(x: 100, y: 450, width: 640, height: 300) // top 750
+        check(same(OverlayPanel.covering(current, lower), NSRect(x: 100, y: 500, width: 640, height: 300)),
+              "The higher top wins")
+        print("PASS: covering holds both frames from the same top")
+    }
+
+    /// The paths an open and a close take (RevealMotion), built on NotchBox's springs.
+    static func revealMotionChecks() {
+        let open = NotchSpring.open, close = NotchSpring.close
+        check(abs(open.response - 0.5 / 1.2) < 1e-9 && open.dampingRatio == 0.7,
+              "Open starts from NotchBox's spring: response 0.5 at 1.2x, damping 0.7")
+        check(close.response == 0.35 && close.dampingRatio == 1, "Close starts from NotchBox's: response 0.35, no bounce")
+        check(abs(open.overshoot - 0.046) < 0.001 && close.overshoot == 0, "Left alone, NotchBox's open swings 4.6% past")
+        check(open.position(at: 0) == 0 && close.position(at: 0) == 0, "A spring starts where it is")
+        let peak = stride(from: 0.0, through: 1.0, by: 0.002).map { open.position(at: $0) }.max()!
+        check(abs(peak - (1 + open.overshoot)) < 0.001, "The spring's path peaks where its overshoot says: \(peak)")
+        check(abs(open.position(at: 2) - 1) < 1e-6 && abs(close.position(at: 2) - 1) < 1e-6, "Both come to rest on the target")
+        check(open.capped(overshoot: 0).dampingRatio == 1 && open.capped(overshoot: 0.5) == open,
+              "Capping at nothing removes the bounce; a generous cap changes nothing")
+
+        // Opening: NotchBox's pace, damped to land softly; the path ends as the shape arrives.
+        for reach in [120, 221, 480, 940] as [CGFloat] {
+            let motion = RevealMotion.opening(reach: reach)
+            let p = motion.progress
+            check(p.first == 0 && p.last == 1, "An open starts on the bar and ends exactly on the panel")
+            check(p.allSatisfy { $0 <= 1 }, "A \(reach) pt open never passes the panel")
+            for i in 1..<p.count { check(p[i] >= p[i - 1], "An open never backs up") }
+            check(motion.duration > 0.28 && motion.duration < 0.5, "An open is over in about a third of a second: \(motion.duration)")
+            let at95 = Double(p.firstIndex { $0 >= 0.95 }!) * RevealMotion.step
+            check(at95 < 0.3, "Most of an open is done well inside that: \(at95)")
+            check(CGFloat(1 - p[p.count - 2]) * reach < 1.01, "An open arrives slowly: its last step is under a point")
+        }
+
+        // Closing: NotchBox's own spring, as it is. No hold, aimed at the bar itself.
+        let closing = RevealMotion.closing()
+        let c = closing.progress
+        check(c.first == 0 && c.last == 1, "A close starts on the panel and ends exactly on the bar")
+        check(c[1] > 0, "A close moves from its first frame: there is no hold")
+        check(c.allSatisfy { $0 <= 1 }, "A close never passes the bar")
+        for i in 1..<c.count { check(c[i] >= c[i - 1], "A close only ever shrinks") }
+        for i in 0..<(c.count - 1) {
+            check(abs(c[i] - close.position(at: Double(i) * RevealMotion.step)) < 1e-12, "A close is the spring itself, sample for sample")
+        }
+        check(closing.duration > 0.42 && closing.duration < 0.55, "A close takes about half a second: \(closing.duration)")
+        let halfway = Double(c.firstIndex { $0 >= 0.5 }!) * RevealMotion.step
+        check(halfway < 0.12, "A close is quick out of the panel: half way in \(halfway) s")
+        check(1 - c[c.count - 2] < 2 * RevealMotion.closeSettle, "A close has all but come to rest when its path ends")
+        let easing = close.settleTime(tolerance: RevealMotion.closeSettle) - close.settleTime(tolerance: 0.05)
+        check(easing > 0.15, "And eases into the notch for a long time: \(easing) s over its last 5%")
+        print("PASS: an open lands softly without passing the panel; a close follows NotchBox's spring into the bar")
+    }
+
+    #if WISP_MOTION_APP_DELEGATE_CHECKS
+    /// The content's veil through an open and a close (OverlayModel.contentVeiled),
+    /// with the panel's own motion stood in for: no window, so it runs everywhere.
+    @MainActor
+    static func contentVeilChecks() async {
+        check(AppDelegate.closeFade < OverlayPanel.contentHideDelay,
+              "The content has faded before its layers are taken out: \(AppDelegate.closeFade) s, then \(OverlayPanel.contentHideDelay) s")
+        check(AppDelegate.openFadeDelay + AppDelegate.openFade < RevealMotion.opening(reach: 221).duration,
+              "The open's fade is done before the shape lands")
+        let model = OverlayModel(loadDebugMode: { false }, saveDebugMode: { _ in })
+        model.collapsed = false
+
+        // A close: veiled while the shape retracts, lifted as the bar takes over.
+        var endClose: (() -> Void)?
+        var closed = 0
+        AppDelegate.veiledClose(model: model, animated: true, rollUp: { endClose = $0 }) { closed += 1 }
+        check(model.contentVeiled && !model.collapsed && closed == 0,
+              "A close veils the content and keeps it mounted while the shape retracts")
+        // The reveal's end and a display change cutting it short both arrive here.
+        endClose?()
+        check(!model.contentVeiled && model.collapsed && closed == 1,
+              "The end of a close lifts the veil, swaps in the bar, then tells the caller")
+
+        // An open: mounted veiled, and the fade-in starts with the reveal, not after it.
+        var endOpen: (() -> Void)?
+        var veiledAtReveal: Bool?
+        var opened = 0
+        AppDelegate.veiledOpen(model: model, animated: true,
+                               dropOpen: { veiledAtReveal = model.contentVeiled; endOpen = $0 }) { opened += 1 }
+        check(model.contentVeiled && !model.collapsed && endOpen == nil,
+              "An open mounts the content veiled, before the shape moves")
+        await waitUntil { endOpen != nil }
+        check(veiledAtReveal == false && !model.contentVeiled,
+              "The fade-in is under way as the reveal starts, so nothing can leave the content hidden")
+        check(opened == 0, "The open is not finished until the panel says so")
+        endOpen?()
+        check(opened == 1 && !model.contentVeiled, "Then the caller hears, once")
+
+        // A close whose end never arrives (the panel was hidden mid-close) leaves
+        // the veil down; the next open clears it, with or without motion.
+        AppDelegate.veiledClose(model: model, animated: true, rollUp: { _ in }) { closed += 1 }
+        check(model.contentVeiled && closed == 1, "A close that never ends leaves the veil down")
+        endOpen = nil
+        AppDelegate.veiledOpen(model: model, animated: true, dropOpen: { endOpen = $0 }) {}
+        await waitUntil { endOpen != nil }
+        check(!model.contentVeiled, "The next open lifts a veil left behind")
+        model.contentVeiled = true
+        endOpen = nil
+        AppDelegate.veiledOpen(model: model, animated: false, dropOpen: { endOpen = $0 }) {}
+        check(!model.contentVeiled, "With Reduce Motion an open never veils, and clears one left behind at once")
+        await waitUntil { endOpen != nil }
+
+        // With Reduce Motion a close never veils either.
+        var veiledDuringClose: Bool?
+        AppDelegate.veiledClose(model: model, animated: false,
+                                rollUp: { veiledDuringClose = model.contentVeiled; $0() }) {}
+        check(veiledDuringClose == false && !model.contentVeiled && model.collapsed,
+              "With Reduce Motion a close swaps straight to the bar")
+        print("PASS: the content's veil lifts at the end of every close and with the start of every open")
+    }
+    #endif
+
+    /// The reveal itself, sampled on a real panel: an open stays inside its
+    /// window and lands on the panel; a close only shrinks, stops at the bar,
+    /// and keeps the bar solid until the collapsed bar has taken over.
+    @MainActor
+    static func revealPathChecks() async {
+        _ = NSApplication.shared
+        NSApp.setActivationPolicy(.accessory)
+        var compact = false
+        let fixture = MotionFixtureModel()
+        let panel = OverlayPanel { MotionFixtureView(model: fixture) }
+        panel.isCompact = { compact }
+        panel.reduceMotion = { false }
+        fixture.height = 300
+        let layout = panel.layoutProvider()
+        let target = layout.expandedFrame(contentHeight: 300)
+        let bar = layout.barFrame.size
+        panel.present()
+        let mask = panel.contentView!.layer!.mask!
+
+        var opened = false
+        panel.dropOpen { opened = true }
+        check(panel.frame == target, "An open takes the panel's own frame, nothing more: \(panel.frame) vs \(target)")
+        check(!panel.hasBarBacking, "Nothing backs the content of an open panel")
+        let parts = (mask.animation(forKey: "reveal") as? CAAnimationGroup)?.animations ?? []
+        check(parts.count == 2 && parts.allSatisfy { $0 is CAKeyframeAnimation }, "Size and corners follow one sampled path")
+        var widest: CGFloat = 0, tallest: CGFloat = 0, samples = 0
+        while !opened {
+            if let live = mask.presentation() {
+                widest = max(widest, live.bounds.width)
+                tallest = max(tallest, live.bounds.height)
+                check(live.bounds.width >= bar.width - 0.5 && live.bounds.height >= bar.height - 0.5,
+                      "An open never dips under the bar")
+                samples += 1
+            }
+            try? await Task.sleep(for: .milliseconds(4))
+            check(samples < 1000, "The open ends")
+        }
+        // A loaded machine oversleeps the 4 ms poll, so only ask for a handful.
+        check(samples > 4, "The open was sampled through its travel: \(samples)")
+        check(widest <= target.width + 0.5 && tallest <= target.height + 0.5,
+              "An open never passes the panel: \(widest) x \(tallest) for \(target.size)")
+        check(panel.frame == target && mask.bounds.size == target.size, "At rest the window and the mask are the panel")
+        check(mask.animationKeys()?.isEmpty != false, "No residual animation after the open")
+
+        var closed = false
+        let closeStart = CACurrentMediaTime()
+        panel.rollUp { compact = true; closed = true }
+        check(panel.hasBarBacking == layout.barIsVisible, "A close backs the bar it is heading for, when there is one to draw")
+        // The path, read off the animation the panel is really playing.
+        let closeParts = ((mask.animation(forKey: "reveal") as? CAAnimationGroup)?.animations ?? [])
+            .compactMap { $0 as? CAKeyframeAnimation }
+        let heights = (closeParts.first { $0.keyPath == "bounds.size" }?.values ?? [])
+            .compactMap { ($0 as? NSValue)?.sizeValue.height }
+        check(heights.count > 20 && abs(heights[0] - target.height) < 0.5 && abs(heights[heights.count - 1] - bar.height) < 0.5,
+              "The close's path runs from the panel to the bar: \(heights.count) steps")
+        let playing = RevealMotion.closing()
+        check(heights.count == playing.progress.count && abs((closeParts.first?.duration ?? 0) - playing.duration) < 1e-9,
+              "The panel plays the close's own path: \(heights.count) steps over \(closeParts.first?.duration ?? 0) s")
+        let fullRate = (mask.animation(forKey: "reveal") as? CAAnimationGroup)?.preferredFrameRateRange.preferred
+        check(fullRate == 120, "The reveal asks for the display's full refresh rate: \(String(describing: fullRate))")
+        check(!panel.contentIsHidden, "The content is still there to fade when a close begins")
+        var narrowest = target.width, shortest = target.height, lastWidth = target.width
+        var contentWentOut = false
+        samples = 0
+        while !closed {
+            contentWentOut = contentWentOut || panel.contentIsHidden
+            if let live = mask.presentation() {
+                narrowest = min(narrowest, live.bounds.width)
+                shortest = min(shortest, live.bounds.height)
+                check(live.bounds.width <= lastWidth + 0.5, "A close only ever narrows: \(live.bounds.width) after \(lastWidth)")
+                lastWidth = live.bounds.width
+                samples += 1
+            }
+            try? await Task.sleep(for: .milliseconds(4))
+            check(samples < 1000, "The close ends")
+        }
+        let closedAt = CACurrentMediaTime()
+        check(samples > 4, "The close was sampled through its travel: \(samples)")
+        check(contentWentOut == layout.barIsVisible, "Once faded, the content's layers are out of the picture while the shape travels")
+        check(!panel.contentIsHidden, "And back before the bar is swapped in")
+        check(narrowest >= bar.width - 0.5 && shortest >= bar.height - 0.5,
+              "A close never passes the bar: \(narrowest) x \(shortest) for \(bar)")
+        // Generous: the path's own length is checked exactly above and in revealMotionChecks.
+        check(closedAt - closeStart < 1.5, "A close is over promptly: \(closedAt - closeStart) s")
+        // Where the shape came to rest on the screen, against where the bar
+        // will be: the same rectangle, so nothing steps sideways at the swap.
+        let landed = mask.frame.offsetBy(dx: panel.frame.minX, dy: panel.frame.minY)
+        check(abs(landed.minX - layout.barFrame.minX) < 0.01 && abs(landed.maxX - layout.barFrame.maxX) < 0.01
+              && abs(landed.maxY - layout.barFrame.maxY) < 0.01 && abs(landed.minY - layout.barFrame.minY) < 0.01,
+              "A close lands exactly on the bar: \(landed) for \(layout.barFrame)")
+        if layout.style == .notch {
+            check(layout.barFrame.midX == layout.screenFrame.midX && target.midX == layout.screenFrame.midX,
+                  "The bar and the panel share the notch's centre: \(layout.barFrame.midX), \(target.midX), \(layout.screenFrame.midX)")
+        }
+        panel.settleToBar()
+        check(mask.bounds.size == panel.frame.size && panel.frame.size == bar, "Then the bar")
+        check(panel.frame == layout.barFrame, "The bar's window is where the close landed")
+        check(panel.hasBarBacking == layout.barIsVisible, "The bar stays backed while the collapsed bar takes over")
+        await waitUntil { !panel.hasBarBacking }
+        print("PASS: the backing goes once the collapsed bar has had time to draw")
+
+        // A reopen straight after a close must not keep the backing under the open panel.
+        compact = false
+        panel.rollUp { compact = true }
+        opened = false
+        panel.dropOpen { opened = true }
+        check(!panel.hasBarBacking, "An open drops the backing a close turned on")
+        await waitUntil { opened }
+        check(!panel.contentIsHidden, "An open that cuts a close short has its content")
+
+        // A display change in the middle of a close ends the close, but the
+        // swap to the bar is still to come: the backing must outlast it.
+        var cutShort = false
+        panel.rollUp { compact = true; cutShort = true }
+        check(panel.isRevealing && !cutShort, "The close is in flight")
+        panel.applyDisplayChange()
+        check(cutShort && !panel.isRevealing, "The display change ends the close")
+        check(!panel.contentIsHidden, "A close cut short brings the content back")
+        check(panel.hasBarBacking == layout.barIsVisible, "A close cut short by a display change keeps the bar backed")
+        panel.settleToBar()
+        check(panel.hasBarBacking == layout.barIsVisible, "And through the swap to the bar")
+        // A second display change while the bar is still taking over keeps it too.
+        panel.applyDisplayChange()
+        check(panel.hasBarBacking == layout.barIsVisible, "A display change just after the swap keeps the bar backed")
+        await waitUntil { !panel.hasBarBacking }
+
+        #if WISP_MOTION_APP_DELEGATE_CHECKS
+        // The same cut-short close through the app's own veil: the content
+        // must not stay hidden behind the surface.
+        let veil = OverlayModel(loadDebugMode: { false }, saveDebugMode: { _ in })
+        veil.collapsed = false
+        compact = false
+        opened = false
+        AppDelegate.veiledOpen(model: veil, animated: true, dropOpen: { panel.dropOpen($0) }) { opened = true }
+        check(veil.contentVeiled, "A real open starts veiled")
+        await waitUntil { opened }
+        check(!veil.contentVeiled && !veil.collapsed, "An open panel shows its content")
+        var veiledClosed = false
+        AppDelegate.veiledClose(model: veil, animated: true, rollUp: { panel.rollUp($0) }) {
+            compact = true
+            veiledClosed = true
+        }
+        check(veil.contentVeiled && panel.isRevealing && !veiledClosed, "A real close veils the content while it retracts")
+        panel.applyDisplayChange()
+        check(veiledClosed && !veil.contentVeiled && veil.collapsed,
+              "A close cut short by a display change lifts the veil and hands over to the bar")
+        panel.settleToBar()
+        #endif
+        panel.orderOut(nil)
+        print("PASS: a sampled open stays inside its window; a sampled close only shrinks, stops at the bar and keeps it solid")
+    }
+
+    /// Width changes: the panel's width comes from the layout, so inject one.
+    @MainActor
+    static func widthResizeChecks() async {
+        _ = NSApplication.shared
+        NSApp.setActivationPolicy(.accessory)
+        let fixture = MotionFixtureModel()
+        let panel = OverlayPanel { MotionFixtureView(model: fixture) }
+        panel.isCompact = { false }
+        panel.reduceMotion = { false }
+        let base = panel.layoutProvider()
+        var wide = base.widened(true)
+        if wide.expandedWidth == base.expandedWidth { wide.expandedWidth = base.expandedWidth + 200 }
+        var useWide = false
+        panel.layoutProvider = { useWide ? wide : base }
+        fixture.width = base.expandedWidth
+        fixture.height = 320
+        panel.present()
+        var opened = 0
+        panel.dropOpen { opened += 1 }
+        await waitUntil { opened == 1 }
+        check(panel.frame.width == base.expandedWidth && panel.frame.height == 320, "Opened at the narrow width")
+        let narrowFrame = panel.frame
+        let settle = Int(OverlayPanel.shrinkSettle * 1000)
+
+        // Widen and shrink together: covering frame at once, the target after the settle.
+        useWide = true
+        fixture.width = wide.expandedWidth
+        fixture.height = 240
+        try? await Task.sleep(for: .milliseconds(60))
+        panel.resizeToFit()
+        let target = wide.expandedFrame(contentHeight: 240)
+        let covering = OverlayPanel.covering(narrowFrame, target)
+        check(panel.frame == covering, "A width change with a height shrink grows at once to the covering frame: \(panel.frame) vs \(covering)")
+        check(panel.frame.width == wide.expandedWidth && panel.frame.height == 320, "Covering is wide and still tall")
+        check(panel.hasPendingShrink, "The target waits for the settle")
+        let mask = panel.contentView!.layer!.mask!
+        check(mask.bounds.size == panel.frame.size, "The mask follows the covering frame")
+        try? await Task.sleep(for: .milliseconds(settle / 2))
+        check(panel.frame == covering && panel.hasPendingShrink, "Still the covering frame before the settle")
+        await waitUntil { panel.frame.height == 240 }
+        check(panel.frame == target && !panel.hasPendingShrink, "Settles to the target: \(panel.frame) vs \(target)")
+        check(mask.bounds.size == panel.frame.size, "The mask follows the target")
+
+        // Narrow back and shrink together: the covering frame keeps the wide width until the settle.
+        let wideFrame = panel.frame
+        useWide = false
+        fixture.width = base.expandedWidth
+        fixture.height = 200
+        try? await Task.sleep(for: .milliseconds(60))
+        panel.resizeToFit()
+        check(panel.frame == wideFrame && panel.hasPendingShrink, "A narrowing shrink waits entirely")
+        await waitUntil { panel.frame.height == 200 }
+        check(panel.frame.width == base.expandedWidth && !panel.hasPendingShrink, "Then lands narrow")
+
+        // A pure widen (same height) applies at once with nothing pending.
+        useWide = true
+        fixture.width = wide.expandedWidth
+        try? await Task.sleep(for: .milliseconds(60))
+        panel.resizeToFit()
+        check(panel.frame == wide.expandedFrame(contentHeight: 200), "A pure widen applies at once")
+        check(!panel.hasPendingShrink, "A pure widen leaves nothing pending")
+        panel.orderOut(nil)
+        print("PASS: a width change with a shrink grows to the covering frame then settles; a pure widen is immediate")
     }
 
     @MainActor
@@ -544,6 +911,8 @@ struct OverlayTransitionChecks {
 
     static func main() async {
         lifecycleChecks()
+        coveringChecks()
+        revealMotionChecks()
         approvalAnnouncementChecks()
         alwaysAllowLineChecks()
         forgetResultChecks()
@@ -569,11 +938,14 @@ struct OverlayTransitionChecks {
         await attachmentLabelChecks()
         await unloadNoticeChecks()
         await chatArchiveChecks()
+        await contentVeilChecks()
         await AppDelegate.checkMenuExportsDebugLog()
         await AppDelegate.checkMenuChecksForUpdates()
         #endif
         if ProcessInfo.processInfo.environment["WISP_MOTION_NATIVE_CHECK"] == "1" {
             await nativeChecks()
+            await revealPathChecks()
+            await widthResizeChecks()
             #if WISP_MOTION_APP_DELEGATE_CHECKS
             await AppDelegate.checkDebugExportLeavesNotchLive()
             #endif

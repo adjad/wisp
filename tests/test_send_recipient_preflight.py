@@ -581,13 +581,13 @@ def test_a_saved_name_is_shown_as_saved_and_an_exact_handle_wins(monkeypatch):
 # ---- The receipt names the contact too ----
 
 async def test_a_text_receipt_names_the_matched_contact(contacts, app_bridge):
-    assert await action_tools.send_message("Ian", "Running late") == f"Message sent to Brian Chen ({PHONE})."
-    assert await action_tools.send_message(PHONE, "Running late") == f"Message sent to Brian Chen ({PHONE})."
+    assert await action_tools.send_message("Ian", "Running late") == f"Message sent to Brian Chen ({PHONE}). " + action_tools.MESSAGE_HANDED_OVER
+    assert await action_tools.send_message(PHONE, "Running late") == f"Message sent to Brian Chen ({PHONE}). " + action_tools.MESSAGE_HANDED_OVER
     assert [payload["to"] for _, payload in app_bridge] == [PHONE, PHONE]
 
 
 async def test_a_text_receipt_for_an_unsaved_number_is_unchanged(contacts, app_bridge):
-    assert await action_tools.send_message("+15550109999", "Hi") == "Message sent to +15550109999."
+    assert await action_tools.send_message("+15550109999", "Hi") == "Message sent to +15550109999. " + action_tools.MESSAGE_HANDED_OVER
 
 
 async def test_a_scheduled_send_stores_the_matched_contact(contacts, queued):
@@ -610,10 +610,23 @@ def test_the_cancel_card_shows_the_handle_once(monkeypatch):
     assert f"To: Ian ({PHONE})\n" in action_tools._cancel_scheduled_preview({"id": "fixture-id"})
 
 
-async def test_a_forward_receipt_names_the_matched_contact(contacts, app_bridge):
+async def test_a_forward_receipt_names_the_matched_contact(contacts, app_bridge, monkeypatch):
+    # The bridge path, for when the Apple Mail forward is switched on.
+    monkeypatch.setattr(action_tools, "APPLE_MAIL_FORWARD_READY", True)
     receipt = await action_tools.forward_email("<m1@example.com>", "Ian, other.fixture@example.com")
     assert receipt == f"Forwarded to Brian Chen ({BRIAN}), other.fixture@example.com."
     assert app_bridge[0][1]["to"] == [BRIAN, "other.fixture@example.com"]
+
+
+async def test_a_held_back_forward_says_nothing_was_sent_and_asks_nothing_of_the_app(contacts, app_bridge):
+    from service.tools.registry import REGISTRY, not_sent_receipt
+    assert action_tools.APPLE_MAIL_FORWARD_READY is False
+    result = await action_tools.forward_email("<m1@example.com>", "Ian")
+    assert not app_bridge and not_sent_receipt(REGISTRY["forward_email"], result)
+    assert "NOT sent" in result and "new email" in result.question
+    # A recipient that cannot be resolved is still reported first.
+    missing = await action_tools.forward_email("<m1@example.com>", "Nobody Atall")
+    assert not app_bridge and "new email" not in getattr(missing, "question", "")
 
 
 # ---- Through the real loop: the approved card is the one that names them ----
@@ -636,7 +649,7 @@ def test_the_text_card_in_a_chat_names_the_matched_contact(chat, monkeypatch):
     assert card["args"]["to"] == "Ian"
     assert chat.dispatched == [("send_message", {"to": PHONE, "text": "Running late"})]
     results = [e["result"] for e in events if e["type"] == "tool_result" and "Message sent" in e["result"]]
-    assert results == [f"Message sent to Brian Chen ({PHONE})."]
+    assert results == [f"Message sent to Brian Chen ({PHONE}). " + action_tools.MESSAGE_HANDED_OVER]
 
 
 def test_several_matches_in_a_chat_still_ask_with_no_card(chat, monkeypatch):
@@ -753,10 +766,63 @@ def test_the_model_can_never_supply_the_bound_number():
     tool = REAL_TOOLS["send_message"]
     call = {"to": "Ian", "text": "Hi", "resolved_to": PHONE}
     assert "unexpected argument" in (_validate_args(tool, call) or "")
-    assert _validate_args(tool, call, host_bound=True) is None
+    # At dispatch a plain value is still refused: only the host's own binding counts.
+    assert "unexpected argument" in (_validate_args(tool, call, host_bound=True) or "")
+    hosted = {**call, "resolved_to": registry.host_bound_arg(PHONE)}
+    assert _validate_args(tool, hosted, host_bound=True) is None
     assert "resolved_to" not in tool.parameters["properties"]
     # No other tool gains it.
     assert "unexpected argument" in (
         _validate_args(REAL_TOOLS["send_email"],
                        {"to": "a@example.com", "subject": "s", "body": "b", "resolved_to": PHONE},
                        host_bound=True) or "")
+
+
+# ---- What Messages itself recorded decides the receipt ----
+
+@pytest.mark.parametrize("extra, to, expected", [
+    ({"delivery": "sent", "delivery_service": "SMS"}, "+15550109999", "Message sent to +15550109999."),
+    ({"delivery": "delivered", "delivery_service": "iMessage"}, "+15550109999",
+     "Message sent to +15550109999. Messages shows it as delivered."),
+    ({"delivery": "unknown", "delivery_service": ""}, "+15550109999",
+     "Message sent to +15550109999. " + action_tools.MESSAGE_HANDED_OVER),
+    ({}, "+15550109999", "Message sent to +15550109999. " + action_tools.MESSAGE_HANDED_OVER),
+])
+async def test_a_text_receipt_says_what_messages_recorded(contacts, monkeypatch, extra, to, expected):
+    async def bridge(event_type, payload):
+        return {"ok": True, "status": "succeeded", **extra}
+    monkeypatch.setattr(action_tools, "app_request", bridge)
+    assert await action_tools.send_message(to, "Hi") == expected
+
+
+@pytest.mark.parametrize("extra, hint", [
+    ({"delivery": "failed", "delivery_service": "iMessage"}, False),
+    ({"delivery": "failed", "delivery_service": "SMS"}, True),
+])
+async def test_a_text_messages_marked_not_delivered_is_never_a_sent_receipt(contacts, monkeypatch, extra, hint):
+    from service.tools.registry import _NotSentResult, classify_tool_outcome
+
+    async def bridge(event_type, payload):
+        return {"ok": True, "status": "succeeded", **extra}
+    monkeypatch.setattr(action_tools, "app_request", bridge)
+    result = await action_tools.send_message("+15550109999", "Hi")
+    assert result.startswith("The text to +15550109999 was not delivered: Messages shows it as Not Delivered.")
+    assert ("Text Message Forwarding" in result) is hint
+    # Every reader of a receipt takes it as a failure: the draft-card send and
+    # the proactive card go by this prefix, the loop by the classifier.
+    assert not result.startswith("Message sent to ")
+    assert classify_tool_outcome("send_message", result).status == "failed"
+    # It did go to Messages, so it is not proof that nothing went out.
+    assert not isinstance(result, _NotSentResult)
+
+
+async def test_a_mac_with_no_sms_account_says_the_text_was_not_sent(contacts, monkeypatch):
+    from service.tools.registry import _NotSentResult
+
+    async def bridge(event_type, payload):
+        return {"ok": True, "status": "succeeded", "delivery": "no_sms_account"}
+    monkeypatch.setattr(action_tools, "app_request", bridge)
+    result = await action_tools.send_message("+15550109999", "Hi")
+    assert isinstance(result, _NotSentResult)
+    assert "NOT sent" in result and "Text Message Forwarding" in result
+    assert not result.startswith("Message sent to ")

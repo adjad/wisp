@@ -49,7 +49,7 @@ by default), and your Brief and answers fit you.
 
 ## Private by design
 
-- **The AI runs on your Mac.** Wisp downloads its model once (Gemma 4 E4B, about 5.5 GB) and runs it
+- **The AI runs on your Mac.** Wisp downloads its model once (Gemma Wisp, about 5.6 GB) and runs it
   with an engine built into the app. Your mail, calendar, messages and notes are read on the Mac
   and stored there, in `~/.moe`.
 - **You decide how much it does on its own.** Wisp starts with **Full access** on, so everyday
@@ -59,6 +59,24 @@ by default), and your Brief and answers fit you.
   your Mac. Turn Full access off in **Settings › Privacy & Access**, the notch's quick settings or
   the chat window, and risky actions pause for your confirmation. Every action Wisp takes is logged
   in `~/.moe/audit.jsonl`.
+- **It acts without being asked only if you say so.** **Let Wisp act for me** is off until you say
+  yes, in setup or in Settings. On, Wisp adds an event or deadline you missed to Calendar or
+  Reminders by itself, without waiting for your approval, from messages that arrive after your
+  yes. A text counts when it is a one-to-one iMessage (a blue bubble) from the saved number or
+  address of someone in your Contacts; a green-bubble message (SMS or RCS) shows a card,
+  because its sender number can be forged. An email never adds an event or a deadline by itself, because an
+  email's From line is not proof of who sent it: Wisp shows a card and waits for your tap. In a
+  Google account you linked, it also adds a reminder to reply when someone
+  in your Contacts whom you have written to before asked you something by email over a day ago
+  and has not heard back. It also holds
+  a free hour on your Day plan for work due today or in the next three days. A hold is for
+  deadlines already on your calendar or in Reminders, including ones that were there before you
+  said yes; it lives in Wisp only, never on your calendar. At most 10 actions a day. Each one
+  appears in the Brief as "Wisp did this" with an Undo that takes back exactly what Wisp did.
+  Separately, if you switched **Caught for you** to Live yourself in Today, it also adds
+  reminders on its own. While **Let Wisp act for me** is on, Caught for you stops creating, so a
+  message never becomes two reminders. Wisp never sends, replies, deletes or pays for anything by
+  itself.
 - **You can start over.** `/resetwisp` deletes everything Wisp has stored and revokes the access
   you gave it.
 
@@ -150,7 +168,7 @@ built-in sign-in? See [docs/google-cloud-setup.md](docs/google-cloud-setup.md).
 - **Uninstall.**
   1. Disconnect Google first (**Settings ▸ Google ▸ Disconnect & erase**).
   2. Quit Wisp, then drag **Wisp.app** to the Bin.
-  3. To remove everything, also delete `~/.moe` (it holds the 5.5 GB model) and run
+  3. To remove everything, also delete `~/.moe` (it holds the 5.6 GB model) and run
      `defaults delete com.wisp.assistant` and `tccutil reset All com.wisp.assistant`.
 
 ### Report a problem
@@ -179,7 +197,7 @@ macOS system `python3` is 3.9 and too old) and Apple's Command Line Tools
    ```
 
 2. **Start a model server.** Run [oMLX](https://github.com/jundot/omlx) with a model loaded; its
-   menu-bar app serves on `127.0.0.1:8000`. Gemma 4 E4B (`gemma-4-E4B-it-oQ4e-mtp`) is the default.
+   menu-bar app serves on `127.0.0.1:8000`. Gemma Wisp (`Gemma-Wisp`, from `Neo-Arid/Gemma-Wisp`) is the default.
 3. **Run the backend** with auto-reload on `:8765`:
 
    ```bash

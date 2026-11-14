@@ -162,6 +162,7 @@ _NOT_DONE_TOOLS = {
     "set_timer": "service.tools.timers_alarms",
     "create_note": "service.tools.notes_write",
     "append_note": "service.tools.notes_write",
+    "delete_note": "service.tools.notes_write",
     "remember": "service.tools.memory_tools",
     "save_email_attachment": "service.tools.attachment_actions",
 }
@@ -381,6 +382,7 @@ _TOOL_EFFECTS = {
     "organize_files": "moved", "save_email_attachment": "saved",
     "commit_private_meeting": "created",
     "save_knowledge": "created", "edit_knowledge": "updated", "delete_knowledge": "deleted",
+    "delete_note": "deleted",
 }
 
 
@@ -462,7 +464,7 @@ def classify_tool_outcome(tool_name: str, result: str, *, planned: bool = False,
         "draft_message": "message draft prepared in wisp",
         "commit_private_meeting": "private calendar block created: ",
         "save_knowledge": "saved knowledge: ", "edit_knowledge": "updated knowledge: ",
-        "delete_knowledge": "deleted knowledge: ",
+        "delete_knowledge": "deleted knowledge: ", "delete_note": "deleted the note ",
     }
     if tool_name in receipts and not low.startswith(receipts[tool_name]):
         return ToolOutcome("failed", text, effect)
@@ -584,11 +586,34 @@ def _arg_hint(tool: Tool) -> str:
 # the tool's schema and are never offered to the model. `send_message.
 # resolved_to` is the one number a text's card was settled on (action_tools.
 # prepare_send_recipient sets it, and drops any value the call arrived with).
-# Accepted only at dispatch (`host_bound=True`): every check of a call as the
-# model wrote it still refuses them, so the model can never supply one.
+# Accepted only at dispatch (`host_bound=True`) and only as a HostBoundArg:
+# every check of a call as the model wrote it still refuses them, and so does
+# dispatch for a plain value, so no model or caller can ever supply one.
 HOST_BOUND_ARGS: dict[str, frozenset[str]] = {
     "send_message": frozenset({"resolved_to"}),
 }
+
+
+class HostBoundArg(str):
+    """A value for a HOST_BOUND_ARGS key that the host itself set.
+
+    `host_bound=True` used to accept the key from anyone: every path into
+    run_tool (the agent loop's ALLOW branch, router-direct calls, workflow and
+    task steps, vision actions) validated with it, so a call that arrived WITH
+    `resolved_to` kept it and the text went to whatever number it named. Only
+    the host's own approval path (action_tools.prepare_send_recipient) wraps a
+    value in this type. Arguments parsed from a model's JSON, a stored
+    workflow, or an HTTP body are plain `str` and can never be one, so they
+    are refused at dispatch and ignored by the tool itself."""
+    __slots__ = ()
+
+
+def host_bound_arg(value: str) -> HostBoundArg:
+    return HostBoundArg(value)
+
+
+def is_host_bound(value: object) -> bool:
+    return type(value) is HostBoundArg
 
 
 def _validate_args(tool: Tool, args: dict, *, host_bound: bool = False) -> str | None:
@@ -606,7 +631,9 @@ def _validate_args(tool: Tool, args: dict, *, host_bound: bool = False) -> str |
         return f"(error calling {tool.name}: arguments must be a JSON object.)"
     props = tool.parameters.get("properties", {})
     host = HOST_BOUND_ARGS.get(tool.name, frozenset()) if host_bound else frozenset()
-    unknown = [k for k in args if k not in props and k not in host]
+    # A host-bound key counts only when the host set it (see HostBoundArg).
+    unknown = [k for k in args if k not in props
+               and not (k in host and is_host_bound(args[k]))]
     missing = [r for r in tool.parameters.get("required", []) if r not in args]
     def invalid(value, schema, path):
         kind = schema.get('type')

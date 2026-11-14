@@ -101,6 +101,12 @@ PROFILE_TESTS = {
         "tests/test_email_search_ranking.py",
         # Voice input: the clip reaches only a local model with an audio encoder (stub client).
         "tests/test_voice_transcribe.py",
+        # Meeting notes: windows to transcript to notes, text only on disk, fenced transcript,
+        # a reminder only on the person's press (stub client, tmp_path as the home folder).
+        "tests/test_meetings.py",
+        # Your writing style: rows from sent mail, a child trains and drafts, drafts only, erased by
+        # forget (a /bin/sh stand-in for the MLX Python, fake Mail bridge, tmp_path as the home folder).
+        "tests/test_personal_style.py",
         # Image/video input: one dedicated vision call (stub client, synthetic media).
         "tests/test_vision.py",
         # Pictures that lead to actions: the reading as untrusted data, every effect
@@ -195,6 +201,9 @@ PROFILE_TESTS = {
         "tests/test_execution_contract_loop.py",
         "tests/test_forced_step_withholding.py",
         "tests/test_shell_boundary.py",
+        # run_shell's write guard: a Wisp folder and a home in a temp dir. The real-process
+        # cases need to apply a sandbox, so they skip inside this profile's own sandbox.
+        "tests/test_shell_sandbox.py",
         "tests/test_shell_local_service_deny.py",
         # /resetwisp on a scratch home under pytest's temp dir; no Google, Keychain, TCC or live service.
         "tests/test_wisp_reset.py",
@@ -302,8 +311,12 @@ PROFILE_TESTS = {
 ADDITIONAL_FULL_TESTS = {
     # In-app updates, release side: pure appcast, Ed25519 and fail-closed checks; no network or keys.
     "tests/test_sparkle_updates.py",
+    "tests/test_final_weather_place.py",
+    "tests/test_final_emails_to_answer.py",
     # rc3 fix batch: one file per fixed area (pure Python, stub models, scratch stores, or source
     # contracts that read the Swift and service text; nothing live).
+    "tests/test_final_ask_headings.py",
+    "tests/test_final_public_web_lookup.py",
     "tests/test_rc3_app_lifecycle.py",
     "tests/test_rc3_audit_repairs.py",
     "tests/test_rc3_backend_launch.py",
@@ -337,6 +350,32 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_rc3_ui_sweep.py",
     "tests/test_rc3_untitled_sync.py",
     "tests/test_rc3_untitled_sync_swift.py",
+    # rc2 known-issue batch: pure Python, scratch stores, fake engines and clocks, or source contracts.
+    "tests/test_rc2_ask_web_own_events.py",
+    "tests/test_rc2_ask_web_possessive.py",
+    "tests/test_rc2_engine_fold_resident.py",
+    "tests/test_rc2_engine_guard_wake.py",
+    "tests/test_rc2_grants_inert_move_rule.py",
+    "tests/test_rc2_policy_delete_recheck.py",
+    "tests/test_rc2_policy_inert_text.py",
+    "tests/test_rc2_policy_never_run_gaps.py",
+    "tests/test_rc2_policy_quoted_delete.py",
+    "tests/test_rc2_sends_host_bound.py",
+    "tests/test_rc2_sends_own_address.py",
+    "tests/test_rc2_sessions_old_text.py",
+    "tests/test_rc2_text_size_contract.py",
+    # 0.5.0 Ask dead ends: store-hours wordings and the search-first head start (pure Python).
+    "tests/test_final_ask_direct_leads.py",
+    "tests/test_final_ask_own_switches.py",
+    "tests/test_final_ask_write_followups.py",
+    "tests/test_final_notes_delete_and_bullets.py",
+    "tests/test_final_send_to_myself.py",
+    "tests/test_final_ask_card_and_referents.py",
+    "tests/test_final_ask_web_wordings.py",
+    "tests/test_final_web_ownership.py",
+    "tests/test_rc2_ask_web_possessive_egress.py",
+    "tests/test_rc2_policy_audit_repairs.py",
+    "tests/test_rc2_policy_audit_repairs_2.py",
     # rc1 Brief and Day honesty: no all-clear for an unread source, per-source blocked reasons.
     "tests/test_first_day_honesty.py",
     # rc1 reminders: expiry and supersede, the first-launch auto-action hold, the day-one Daily Summary.
@@ -456,9 +495,34 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_public_fact_lookups.py",
     "tests/test_proactive_accounts.py",
     "tests/test_proactive_auto_add.py",
+    "tests/test_autoadd_mail_timing.py",
+    # Let Wisp act for me: the gate, the shared record and card. Fake config and store; no model, network or native write.
+    "tests/test_acting.py",
+    # One strict reading of a mail From value: pure strings, no mail is read.
+    "tests/test_mail_sender.py",
+    "tests/test_policy_moe_wildcards.py",
+    "tests/test_stage_mode.py",
+    "tests/test_stage_mode_menu.py",
+    "tests/test_stage_mode_overrides.py",
+    "tests/test_stage_mode_background.py",
+    "tests/test_stage_warm.py",
+    "tests/test_followups_cycle.py",
+    "tests/test_text_records_join.py",
+    "tests/test_mail_history_regex.py",
+    # Mail acts only with proof: injected Sent rows, Contacts and fetched authentication results.
+    "tests/test_autoadd_mail_proof.py",
+    "tests/test_capture_mail_stays_a_card.py",
+    "tests/test_mail_auth.py",
+    "tests/test_mail_known.py",
+    "tests/test_reply_recipient_sender.py",
+    # Hold time for a deadline under the gate: fake holds and a fake Day store; no calendar, model or native write.
+    "tests/test_autohold.py",
+    # The background cycle calling the hold step: injected fakes and a tmp store only.
+    "tests/test_autohold_cycle.py",
     "tests/test_proactive_clear.py",
     "tests/test_proactive_handled.py",
     "tests/test_proactive_sent_check.py",
+    "tests/test_proactive_followups.py",
     "tests/test_proactive_deadlines.py",
     "tests/test_proactive_engine.py",
     "tests/test_proactive_idle_refresh.py",
@@ -528,6 +592,10 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_bundled_attribution.py",
     "tests/test_bundled_engine_api.py",
     "tests/test_engine_downloads.py",
+    # 0.5.0 Gemma Wisp: the published layout from a JSON extract, and role repair over fake
+    # model lists; pure Python, no engine, download or network.
+    "tests/test_gemma_wisp_checkpoint.py",
+    "tests/test_stranded_roles.py",
     # Per-model engine settings seeded into a temp model_settings.json; no engine runs.
     "tests/test_engine_profiles.py",
     "tests/test_engine_memory_guard.py",

@@ -37,7 +37,7 @@ CORE: dict[str, tuple[str, ...]] = {
              "forward_email", "schedule_send"),
     "messages_contacts": ("lookup_contact", "send_message", "view_messages", "summarize_messages",
                           "draft_message", "search_conversations"),
-    "notes": ("search_notes", "create_note", "append_note"),
+    "notes": ("search_notes", "create_note", "append_note", "delete_note"),
     "memory": ("remember", "recall", "search_conversations", "forget"),
     "files": ("find_files", "list_dir", "read_file", "move_path"),
     "public_web": ("web_search", "web_fetch", "get_weather", "travel_time", "find_place"),

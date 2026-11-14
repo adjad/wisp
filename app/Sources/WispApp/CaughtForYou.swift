@@ -215,14 +215,14 @@ struct CaughtForYouSection: View {
                         get: { model.live }, set: { value in Task { await model.setLive(value) } }))
                         .toggleStyle(.switch).controlSize(.mini).font(.caption)
                         .disabled(model.busy)
-                        .help("Off: Wisp only lists what it would add. On: it adds the reminder (at most \(status.settings.daily_cap) a day) and tells you.")
+                        .help("Off: Wisp only lists what it would add. On: it adds the reminder for a plan in a text (at most \(status.settings.daily_cap) a day) and tells you. A plan from email is shown here and added only when you tap Review & add.")
                 }
             }
             if model.status?.settings.mode != "off" {
-                Toggle("Also capture Calendar events from mail and texts", isOn: Binding(
+                Toggle("Also capture Calendar events (texts by themselves, email on your tap)", isOn: Binding(
                     get: { model.captureEvents }, set: { value in Task { await model.setCaptureEvents(value) } }))
                     .toggleStyle(.switch).controlSize(.mini).font(.caption).disabled(model.busy)
-                    .help("With automatic reminders on, new confirmed plans also create Calendar events. Existing plans stay previews. Dates without times become all-day events; the reminder uses the shown default hour.")
+                    .help("With automatic reminders on, new confirmed plans in texts also create Calendar events. A plan from email is shown here and waits for you to tap Review & add. Existing plans stay previews. Dates without times become all-day events; the reminder uses the shown default hour.")
                 if model.captureEvents && !model.live {
                     Text("Calendar capture is in preview until automatic reminders are on.")
                         .font(.caption).foregroundStyle(.secondary)

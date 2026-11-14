@@ -83,12 +83,35 @@ enum OutboundSender {
         }
     }
 
+    /// A short code (3 to 6 digits, like 22821) is never an iMessage address.
+    /// Messages accepts an iMessage send to one without an error and then
+    /// marks it Not Delivered, so the SMS fallback below never ran for it
+    /// (seen on the real app, 2026-11-13).
+    static func isShortCode(_ s: String) -> Bool {
+        let t = s.trimmingCharacters(in: .whitespaces)
+        return (3...6).contains(t.count) && t.allSatisfy(\.isNumber)
+    }
+
+    static let noSMSAccount = "no_sms_account"
+    static let noTextRelay = "This Mac can't send SMS texts. On your iPhone, turn on Settings › Apps › Messages › Text Message Forwarding for this Mac."
+
     static func sendMessage(actionId: String, to: String, text: String) {
         DispatchQueue.global(qos: .userInitiated).async {
-            // Resolve the service first and fall back to SMS: `buddy ... of
-            // service ... iMessage` fails outright for a recipient who isn't on
-            // iMessage, which for a plain phone number is the common case.
-            let script = """
+            let shortCode = isShortCode(to)
+            // A short code goes by SMS only: iMessage cannot reach it, and an
+            // iMessage send to it does not fail here, it fails later in
+            // Messages. With no SMS account the script raises and nothing is
+            // sent. Everyone else: iMessage first, then SMS, because `buddy
+            // ... of service ... iMessage` fails outright for a recipient who
+            // isn't on iMessage.
+            let script = shortCode ? """
+            tell application "Messages"
+                set targetBuddy to "\(escape(to))"
+                if (count of (accounts whose service type = SMS)) is 0 then return "\(noSMSAccount)"
+                set theService to 1st account whose service type = SMS
+                send "\(escape(text))" to participant targetBuddy of theService
+            end tell
+            """ : """
             tell application "Messages"
                 set targetBuddy to "\(escape(to))"
                 try
@@ -105,16 +128,28 @@ enum OutboundSender {
                 post(actionId: actionId, ok: false, error: "couldn't build the send script")
                 return
             }
-            s.executeAndReturnError(&err)
+            // A few seconds of slack: the row's date is Messages' clock for the send.
+            let since = MessageDeliveryCheck.storeDate(Date().addingTimeInterval(-5))
+            let out = s.executeAndReturnError(&err)
             if let err {
                 let code = err[NSAppleScript.errorNumber] as? Int ?? 0
                 let reason = code == -1743
                     ? "Messages Automation access isn't granted — allow it in System Settings › Privacy & Security › Automation"
+                    : shortCode ? noTextRelay
                     : (err[NSAppleScript.errorMessage] as? String ?? "Messages refused the send")
                 post(actionId: actionId, ok: false, error: reason, extra: refusal(code))
                 return
             }
-            post(actionId: actionId, ok: true, error: "")
+            if out.stringValue == noSMSAccount {
+                // The script stopped before any send: this Mac has no SMS account.
+                post(actionId: actionId, ok: true, error: "", extra: ["delivery": noSMSAccount])
+                return
+            }
+            // Messages accepting a text is not the text going out. Its own
+            // store says which, so read the row back before answering.
+            let seen = MessageDeliveryCheck.settle(to: to, text: text, sinceNs: since)
+            post(actionId: actionId, ok: true, error: "",
+                 extra: ["delivery": seen.state.rawValue, "delivery_service": seen.service])
         }
     }
 
@@ -314,7 +349,7 @@ enum OutboundSender {
                 case -1743:
                     reason = "Messages Automation access isn't granted — allow it in System Settings › Privacy & Security › Automation"
                 case -25211, -1719:
-                    reason = "typing the draft needs Accessibility access — allow Wisp in System Settings › Privacy & Security › Accessibility"
+                    reason = "typing the draft needs \(PrivacyNames.accessibility) access — allow Wisp in \(PrivacyNames.accessibilityPath)"
                 default:
                     reason = err[NSAppleScript.errorMessage] as? String ?? "Messages refused the draft"
                 }

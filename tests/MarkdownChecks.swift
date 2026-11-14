@@ -349,6 +349,28 @@ struct MarkdownChecks {
         }
     }
 
+    /// A streaming answer hides only a bold marker still waiting for its pair.
+    static func streamingBoldChecks() {
+        let cases: [(String, String, String)] = [
+            ("is **bold** here", "is **bold** here", "balanced markers stay"),
+            ("is **Worksheet 3 for", "is Worksheet 3 for", "an open marker hides until its pair arrives"),
+            ("is **", "is ", "a marker at the very end hides"),
+            ("**a** and **b", "**a** and b", "only the unpaired marker hides"),
+            ("```py\nf(**kw", "```py\nf(**kw", "a code fence is left alone"),
+            ("call `f(**kw)` and **bold", "call `f(**kw)` and bold", "markers in inline code don't count"),
+            ("call `f(**kw", "call `f(**kw", "an open inline code span keeps its asterisks"),
+            ("2 ** 3 = 8", "2 ** 3 = 8", "asterisks between spaces stay"),
+            ("2 ** 3 is **8", "2 ** 3 is 8", "a literal ** doesn't pair with a real marker"),
+            ("a * b and *c", "a * b and *c", "single asterisks are never touched"),
+            ("done** later", "done** later", "a marker with a space after it opens nothing"),
+            ("", "", "empty text"),
+        ]
+        for (input, expected, what) in cases {
+            let got = StreamingMarkdown.withoutOpenBold(input)
+            check(got == expected, "streaming bold: \(what): \(input.debugDescription) -> \(got.debugDescription)")
+        }
+    }
+
     static func main() {
         linkChecks()
         mathChecks()
@@ -356,6 +378,7 @@ struct MarkdownChecks {
         tableValidationChecks()
         growingPrefixChecks()
         existingMarkdownChecks()
+        streamingBoldChecks()
         print("Markdown contract passed (\(assertions) assertions)")
     }
 }

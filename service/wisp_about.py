@@ -265,7 +265,8 @@ def cloud_state() -> tuple[str, str]:
 
 def _auto_add_on() -> bool:
     """Whether the Brief may add a time-sensitive event or deadline to Calendar
-    or Reminders on its own (service/proactive/autoadd.py). Off by default."""
+    or Reminders on its own (service/proactive/autoadd.py): only after the person's yes to
+    "Let Wisp act for me" (service/proactive/acting.py). Off by default."""
     try:
         from service.config import proactive_auto_add_enabled
         return proactive_auto_add_enabled()
@@ -335,8 +336,10 @@ def _attention_state() -> tuple[str, bool] | None:
 
 _SEND_OK = "Before anything is sent, I show it to you and wait for your OK."
 _CALENDAR_OK = "Before anything is sent, or your calendar changes, I show it to you and wait for your OK."
-_AUTO_ADD = ("Because auto-add is on, I may add a time-sensitive event or deadline to your Calendar "
-             "or Reminders on my own, then tell you, with Undo.")
+_AUTO_ADD = ("Because you let me act for you, I may add a time-sensitive event or deadline from an iMessage with a "
+             "saved contact to your Calendar or Reminders on my own, add a reminder to reply when someone you email "
+             "asked you something by email over a day ago, in a Google account you linked, and hold a free hour on my own Day plan (never on your calendar) "
+             "for work due soon, then tell you, with Undo. For a date in an email I show a card and wait for your tap.")
 _ROUTINE = {
     "held": ("For your first few days I only suggest reminders from your routine. After that I may "
              "add a reminder or a Tentative hold in Wisp's own schedule on my own and tell you, with Undo."),
@@ -355,13 +358,14 @@ def _automatic_adds() -> tuple[str, list[tuple[str, str, bool]]]:
     as (full sentence, fragment for a combined sentence, cautious). Every
     automatic writer Wisp has is here: proactive auto-add, routine actions
     (behavior_runtime) and Caught for you (attention_runner live reminders and
-    capture_events). The last two pass the same assistant_write gate as
+    capture_events; not while the gate is on, when it only previews). The last two pass the same assistant_write gate as
     _write_mode, so a refusal there means they don't write."""
     mode = _write_mode()
     adds: list[tuple[str, str, bool]] = []
     if _auto_add_on():
-        adds.append((_AUTO_ADD, "a time-sensitive event or deadline to your Calendar or Reminders "
-                                "(auto-add is on)", False))
+        adds.append((_AUTO_ADD, "a time-sensitive event or deadline from an iMessage to your "
+                                "Calendar or Reminders, a reminder to reply to an email in a Google account you linked, and a held hour on my "
+                                "own Day plan (you let me act for you)", False))
     routine = _routine_state()
     if mode == "unknown" and routine != "off":
         routine = "unknown"
@@ -373,6 +377,10 @@ def _automatic_adds() -> tuple[str, list[tuple[str, str, bool]]]:
                     "reminders or Tentative holds in Wisp's own schedule, from your routine")
         adds.append((_ROUTINE[routine], fragment, routine == "unknown"))
     attention = _attention_state()
+    if _auto_add_on():
+        # While the gate is on, attention_runner.one_path turns Caught for you's
+        # live mode into shadow: it creates nothing, so it is not listed.
+        attention = ("shadow", False)
     if attention is None or (mode == "unknown" and attention[0] == "live"):
         adds.append(("Depending on your Caught for you settings, I may add reminders or Calendar "
                      "events from your mail and messages on my own, and tell you.",
@@ -683,6 +691,126 @@ def privacy() -> str:
     return "\n".join(out)
 
 
+# --- What Wisp does on its own (service/proactive/acting.py) ------------------
+# Answers to "How much do you do on your own?", "Will you reply to my emails
+# for me?", "Does anything I type leave this Mac?" and "What's new in Wisp?"
+# (model_only.own_question). Every line about acting is acting.py's own
+# wording (ACTIONS, NEVER, SCOPE) and its live state, read and never written.
+
+_ACTING_LABELS = {"add": "Texts with a date", "add_more": "Other texts and email", "hold": "Deadlines",
+                  "follow_up": "Replies you owe"}
+_ACT_WHERE = "Settings › Privacy, or the notch's settings (the gear)"
+_DRAFTS = "I draft replies for you to send; a send always shows a card and waits for your OK."
+
+
+def _acting_state() -> dict | None:
+    """acting.state() plus how many of today's actions are used, or None when
+    it can't be read (the answer then says the cautious thing)."""
+    try:
+        import time
+        from service.proactive import acting
+        state = dict(acting.state())
+        state["actions"] = dict(acting.ACTIONS)
+        state["covered"] = [key for key in acting.ACTIONS if acting.enabled(key)]
+        state["used"] = None
+        if state["enabled"]:
+            try:
+                from service.proactive.store import store
+                state["used"] = int(acting.done_since(store(), time.time() - acting.DAY_S))
+            except Exception:  # noqa: BLE001 - the count is a detail; say the limit without it
+                state["used"] = None
+        return state
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def acting() -> str:
+    state = _acting_state()
+    if state is None:
+        return ("**I couldn't check whether \"Let Wisp act for me\" is on.**\n\n"
+                "- It is off until you say yes, in " + _ACT_WHERE + ".\n"
+                "- **Never**: Wisp never sends, replies, deletes or pays for anything by itself. " + _DRAFTS)
+    if state["enabled"]:
+        out = ["**\"Let Wisp act for me\" is on**, so I do these on my own, each with an Undo:", ""]
+        keys = state["covered"]
+    else:
+        out = ["**Nothing yet: \"Let Wisp act for me\" is off.** It stays off until you say yes. "
+               "After your yes I would do these on my own, each with an Undo:", ""]
+        keys = list(state["actions"])
+    out += [f"- **{_ACTING_LABELS.get(key, key)}**: {state['actions'][key]}" for key in keys]
+    waiting = [key for key in state["actions"] if key not in keys]
+    if state["enabled"] and waiting:
+        out.append("- **Not agreed yet**: " + _join([_ACTING_LABELS.get(k, k).lower() for k in waiting])
+                   + ". I don't do that until you say yes to it.")
+    used = state.get("used")
+    cap = "- **Limit**: none per day. Each action shows in the Brief with an Undo."
+    if state["enabled"] and used is not None:
+        cap += f" {used} done in the last day."
+    out += [cap,
+            "- **Scope**: " + state["scope"],
+            "- **Never**: " + state["never"] + " " + _DRAFTS,
+            "- **The switch**: " + _ACT_WHERE + "."]
+    return "\n".join(out)
+
+
+def replies() -> str:
+    state = _acting_state()
+    on = bool(state and state["enabled"] and "follow_up" in state["covered"])
+    never = state["never"] if state else "Wisp never sends, replies, deletes or pays for anything by itself."
+    reminder = ("- **Reminders to reply**: \"Let Wisp act for me\" is on, so when someone asked you something by "
+                "email over a day ago and hasn't heard back, I add a \"Reply to <name>\" reminder (Google accounts "
+                "linked in Wisp)." if on else
+                "- **Reminders to reply**: with \"Let Wisp act for me\" on, I add a \"Reply to <name>\" reminder when "
+                "someone asked you something by email over a day ago and hasn't heard back (Google accounts linked "
+                "in Wisp). It is off now"
+                + ("." if state is not None else " or I couldn't check.")
+                + " The switch is in " + _ACT_WHERE + ".")
+    return "\n".join([
+        "**No. I never send a reply by myself.**", "",
+        "- **Drafts**: ask me to reply to an email or a text and I write it. It is sent only after you "
+        "OK its card, every time.",
+        reminder,
+        "- **Never**: " + never])
+
+
+_WEB_WORDS = ("- **The web**: a web lookup sends only its search words, or the address of the page it opens. "
+              "A question about someone in your life is not searched.")
+
+
+def leaves() -> str:
+    """privacy() for the live local/cloud state, plus what a web lookup sends."""
+    lines = privacy().split("\n")
+    at = next((i for i, line in enumerate(lines) if line.startswith("- Some things have to go online")), len(lines))
+    return "\n".join([*lines[:at + 1], _WEB_WORDS, *lines[at + 1:]])
+
+
+def whats_new() -> str:
+    state = _acting_state()
+    switch = ("on" if state["enabled"] else "off until you say yes") if state else "off until you say yes"
+    return "\n".join([
+        "**New in Wisp 0.5.0:**", "",
+        f"- **Acting for you**: a new switch, \"Let Wisp act for me\" ({switch}). With it on I add a dated "
+        "text from a saved contact, or a dated email from someone you know, to Calendar, hold an hour for a "
+        "deadline and remind you to reply to email, each with an Undo. Wisp never sends anything by itself.",
+        "- **Gemma Wisp**: a model tuned on Wisp's own tools is the default for new installs.",
+        "- **Demo mode**: a switch in the menu-bar icon's menu that keeps the model loaded and warm for the "
+        "fastest answers.",
+        "- **Web privacy**: a web lookup sends only its search words, and a question about someone in your "
+        "life stays off the web."])
+
+
+OWN_ANSWERS = {"acting": acting, "replies": replies, "leaves": leaves, "whats_new": whats_new}
+
+
+def own_answer(kind: str) -> str:
+    """The report for one model_only.own_question kind, else ""."""
+    build = OWN_ANSWERS.get(kind)
+    try:
+        return build() if build else ""
+    except Exception:  # noqa: BLE001 - no report: the model answers as before
+        return ""
+
+
 # How-to entries: (keywords that pick it, the step). A specific question
 # ("how do I connect Google?") gets only its matching entries; anything else
 # gets the whole guide.
@@ -719,7 +847,7 @@ _HOWTO = (
      "Gmail and Calendar too."),
     (r"permission|access|allow|grant|privacy|calendar access|full disk",
      "**Let Wisp read more**: open **Settings → Privacy & Access**, choose **Permissions…**, "
-     "and click **Allow** next to what you want. Screen Recording and Accessibility are under "
+     "and click **Allow** next to what you want. Screen Recording and Device Control and Data Access (called Accessibility before macOS 27) are under "
      "**More Access…** next to it."),
     (r"problem|bug|broken|wrong|report|feedback",
      "**Something wrong?** Type **/report**, or right-click the menu bar icon and choose "

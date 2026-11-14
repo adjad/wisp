@@ -371,7 +371,7 @@ def _email_lookup(t: str) -> CommonClaim | None:
         return None
     return CommonClaim(("view_emails", "summarize_emails"), "email lookup -> view_emails(query)",
                        force="view_emails",
-                       forbid=frozenset({"write_document", "create_note", "append_note", "write_file",
+                       forbid=frozenset({"write_document", "create_note", "append_note", "delete_note", "write_file",
                                          "send_email", "send_message", "draft_email"}))
 
 

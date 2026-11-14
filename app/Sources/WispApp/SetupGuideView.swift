@@ -245,6 +245,9 @@ final class SetupGuideModel: ObservableObject {
         let model: String; let state: String; let progress: Double
         let downloadedBytes: Double; let totalBytes: Double; let bytesPerSecond: Double
         let message: String?
+        /// not_found, gated, no_space, offline, other, or incomplete / mismatch (the engine finished,
+        /// Wisp's check of the files didn't pass): set only on a failed download.
+        let reason: String?
         var id: String { model }
         var active: Bool { state == "pending" || state == "downloading" }
 
@@ -678,7 +681,8 @@ final class SetupGuideModel: ObservableObject {
                 body["automatic"] = true
                 body["expected_configuration"] = expectedConfiguration
             }
-            let next = try decode(try await call("POST", "setup/apply", body: body))
+            // Apply hashes a fresh Gemma Wisp download once (5.6 GB: seconds, up to ~30 s on a slow disk).
+            let next = try decode(try await call("POST", "setup/apply", body: body, timeout: 90))
             guard generation == statusGeneration, !monitoringStopped, !Task.isCancelled else { return }
             accept(next)
             message = "Wisp will use \(model) for chat, tools, coding, and reasoning."
@@ -1095,8 +1099,27 @@ struct SetupGuideView: View {
                     } else if task.state == "failed" || task.state == "cancelled" {
                         Text(task.message ?? "Download cancelled. You can resume it here.")
                             .font(.caption).foregroundStyle(.orange)
-                        action("Retry download") { Task { await model.download(d.model) } }
-                            .disabled(model.busy != nil)
+                            .fixedSize(horizontal: false, vertical: true)
+                        HStack {
+                            action("Retry download") { Task { await model.download(d.model) } }
+                                .disabled(model.busy != nil)
+                            if task.state == "failed" {
+                                // No other model is offered, so a failure shows where the files live
+                                // and the manual route, whatever the reason.
+                                action("Open on Hugging Face") { model.open(d.url) }
+                                action(model.copied == tag ? "Copied" : "Copy command") { model.copy(d.command, tag: tag) }
+                            }
+                            Spacer()
+                        }
+                        if task.state == "failed" {
+                            Text("Or download it in Terminal (needs the `hf` tool: \(d.installHf)), then choose Check again:")
+                                .font(.caption2).foregroundStyle(palette.textMuted)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Text(d.command)
+                                .font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
+                                .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                                .background(RoundedRectangle(cornerRadius: 8).fill(palette.codeFill))
+                        }
                     } else {
                         Text("Download finished. Choose the installed model above, then Use this model.")
                             .font(.caption).foregroundStyle(palette.textSecondary)

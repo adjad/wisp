@@ -46,8 +46,8 @@ def test_registry_stays_under_the_one_hundred_cap():
     builtin = [name for name, tool in REGISTRY.items()
                if tool.func.__module__.startswith("service.tools.")]
     # 94 before batch 3 of attachments added read_message_attachments and
-    # save_email_attachment; the documented cap stays 100.
-    assert len(builtin) == 96
+    # save_email_attachment, and 97 with delete_note; the documented cap stays 100.
+    assert len(builtin) == 97
 
 
 def test_retired_names_stay_retired_and_merged_tools_exist():

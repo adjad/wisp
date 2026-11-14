@@ -48,7 +48,7 @@ def user_is_sam(monkeypatch):
 
 
 def mail(mid, sender, address, subject, body="", ago_h=3, **extra):
-    return dict(ts=NOW - ago_h * 3600, account=ME, account_id="acct-1", sender=f"{sender} <{address}>",
+    return dict(ts=NOW - ago_h * 3600, account=ME, account_id="acct-1", sender=sender,
                 sender_address=address, to=ME, subject=subject, message_id=mid, body=body, unread=True) | extra
 
 

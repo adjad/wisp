@@ -14,11 +14,12 @@ asked for. Both talk to the same service and the same saved chats.
   shows Wisp is working, a count shows what is due today or overdue, and an
   orange "!" means setup was set aside. Clicking a Wisp notification (other than
   a nudge's buttons) opens Day.
-- **Tabs** (⌘1 to ⌘3): **Ask**, the conversation; **Brief**, one sentence about
+- **Tabs** (⌘1 to ⌘4): **Ask**, the conversation; **Brief**, one sentence about
   the day, a short version of today's Daily Summary, and four rows (CAL, MAIL,
   TEXTS, SOON) that open their details in place, read only; **Day**, the rest of today on
   one hour-by-hour timeline (calendar, your tasks, suggestions, learned busy
-  times, plans caught in texts, reminders due) under a two-line blurb.
+  times, plans caught in texts, reminders due) under a two-line blurb; **Meet**,
+  meeting notes written on this Mac (`MeetingNotes.swift`, `service/meetings.py`).
   Research is a mode of Ask (`NotchTab.research`, not in the strip): `/research`,
   a job opened from the window or New research turn the prompt into an editable
   research plan, then show the run and its report. Choosing a tab leaves it.

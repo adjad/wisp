@@ -33,26 +33,33 @@ struct ChatRootView: View {
                     .transition(reduceMotion ? .opacity : .move(edge: .leading).combined(with: .opacity))
                 Rectangle().fill(ChatTheme.line).frame(width: 1)
             }
+            // A ZStack so the old and new section overlap while they crossfade, not sit side by side.
+            ZStack {
             switch navigation.section {
             case .chats:
-                ChatMainColumn(store: store, sidebarVisible: $sidebarVisible)
+                ChatMainColumn(store: store, sidebarVisible: $sidebarVisible).transition(.opacity)
             case .today:
                 if let today = navigation.today {
                     TodayHomeView(today: today, initialTab: navigation.todayTab, sidebarVisible: $sidebarVisible)
+                        .transition(.opacity)
                 }
             case .memory:
-                MemoryHomeView(navigation: navigation, sidebarVisible: $sidebarVisible)
+                MemoryHomeView(navigation: navigation, sidebarVisible: $sidebarVisible).transition(.opacity)
             case .research:
                 if let library = navigation.researchLibrary {
                     ResearchHomeView(library: library, launchers: launchers, sidebarVisible: $sidebarVisible)
+                        .transition(.opacity)
                 }
             case .settings:
                 if let loader = navigation.settings {
                     SettingsHomeView(loader: loader, setup: navigation.setup,
                                      setupStandsInForWelcome: navigation.setupStandsInForWelcome,
                                      sidebarVisible: $sidebarVisible)
+                        .transition(.opacity)
                 }
             }
+            }
+            .animation(Theme.Motion.panel(reduceMotion: reduceMotion), value: navigation.section)
             if store.showInspector && navigation.section == .chats {
                 Rectangle().fill(ChatTheme.line).frame(width: 1)
                 ChatInspector(store: store)
@@ -62,8 +69,8 @@ struct ChatRootView: View {
         }
         .id(textSize)   // a Text size change rebuilds the content once, as the notch does
         .background(ChatAurora())
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: sidebarVisible)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: store.showInspector)
+        .animation(Theme.Motion.panel(reduceMotion: reduceMotion), value: sidebarVisible)
+        .animation(Theme.Motion.panel(reduceMotion: reduceMotion), value: store.showInspector)
         .background(shortcuts)
         // VoiceOver hears a reply as words, not Markdown: the notch's own cleanup.
         .onAppear { store.spokenText = SpokenText.plain }
@@ -310,17 +317,25 @@ struct ChatIconButtonStyle: ButtonStyle {
 struct ChatMainColumn: View {
     @ObservedObject var store: ChatStore
     @Binding var sidebarVisible: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 0) {
             topBar
             Rectangle().fill(ChatTheme.line).frame(height: 1)
-            if let conversation = store.selected {
-                ChatConversationView(store: store, conversation: conversation)
-                    .id(conversation.id)
-            } else {
-                ChatWelcome(store: store)
+            // A ZStack so the old and new chat crossfade in place. Keyed on the
+            // selected id alone: nothing inside a chat (streaming) re-animates.
+            ZStack {
+                if let conversation = store.selected {
+                    ChatConversationView(store: store, conversation: conversation)
+                        .id(conversation.id)
+                        .transition(.opacity)
+                } else {
+                    ChatWelcome(store: store)
+                        .transition(.opacity)
+                }
             }
+            .animation(Theme.Motion.panel(reduceMotion: reduceMotion), value: store.selected?.id)
         }
         .frame(maxWidth: .infinity)
     }
@@ -505,6 +520,7 @@ struct ChatThread: View {
     @State private var ownScrollUntil = Date.distantPast
     /// Which sources "Try another" may ask about (StarterAccess).
     @ObservedObject private var access = StarterAccess.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -513,10 +529,13 @@ struct ChatThread: View {
                     ForEach(conversation.messages) { message in
                         ChatMessageRow(store: store, conversation: conversation, message: message)
                             .id(message.id)
+                            .transition(.opacity)
                     }
                     if offersTryAnother { tryAnotherRow }
                     Color.clear.frame(height: 1).id("bottom")
                 }
+                // Keyed on the count, never the text: a new row fades in, a streaming reply does not re-animate.
+                .animation(Theme.Motion.panel(reduceMotion: reduceMotion), value: conversation.messages.count)
                 .frame(maxWidth: 740)
                 .padding(.horizontal, 24).padding(.top, 26).padding(.bottom, 12)
                 .frame(maxWidth: .infinity)
@@ -526,7 +545,7 @@ struct ChatThread: View {
                 // A new exchange (the reader sent something, or a chat just loaded) shows the bottom.
                 followsBottom = true
                 ownScrollUntil = Date().addingTimeInterval(0.6)
-                withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) }
+                withAnimation(Theme.Motion.panel(reduceMotion: reduceMotion)) { proxy.scrollTo("bottom", anchor: .bottom) }
             }
             .onChange(of: conversation.messages.last?.text) { _, _ in follow(proxy) }
             .onChange(of: conversation.messages.last?.tools.count) { _, _ in follow(proxy) }
@@ -606,6 +625,7 @@ struct ChatMessageRow: View {
     @ObservedObject var store: ChatStore
     @ObservedObject var conversation: ChatConversation
     let message: ChatMessage
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         switch message.role {
@@ -631,12 +651,17 @@ struct ChatMessageRow: View {
         }
     }
 
+    private var showsThinking: Bool {
+        message.isLive && message.text.isEmpty && message.tools.isEmpty && message.approval == nil && message.draft == nil
+    }
+
     private var assistant: some View {
         HStack(alignment: .top, spacing: 14) {
             ChatOrb(size: 20, thinking: message.isLive).padding(.top, 2)
             VStack(alignment: .leading, spacing: 12) {
-                if message.isLive && message.text.isEmpty && message.tools.isEmpty && message.approval == nil && message.draft == nil {
+                if showsThinking {
                     ChatThinkingRow(label: message.status.isEmpty ? "Thinking…" : message.status)
+                        .transition(.opacity)
                 }
                 if message.showsStopped {
                     Text("Stopped").font(.wisp(.footnote, on: .window)).foregroundStyle(ChatTheme.text3)
@@ -675,6 +700,8 @@ struct ChatMessageRow: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            // Keyed on the row's presence, not the streaming text.
+            .animation(Theme.Motion.panel(reduceMotion: reduceMotion), value: showsThinking)
         }
     }
 
@@ -820,6 +847,7 @@ private struct ChatMetaLine: View {
 struct ChatTraceView: View {
     let message: ChatMessage
     @State private var expanded = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var isOpen: Bool { expanded || message.isLive }
     private var title: String { message.traceTitle }
@@ -858,7 +886,7 @@ struct ChatTraceView: View {
         }
         .background(RoundedRectangle(cornerRadius: 12).fill(ChatTheme.glass))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(ChatTheme.line, lineWidth: 1))
-        .animation(.easeOut(duration: 0.18), value: isOpen)
+        .animation(Theme.Motion.panel(reduceMotion: reduceMotion), value: isOpen)
     }
 }
 
@@ -1046,6 +1074,7 @@ struct ChatComposer: View {
     @State private var image: (name: String, dataURL: String)?
     @State private var attachNote = ""
     @FocusState private var focused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var canSend: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !busy && !loading }
 
@@ -1057,6 +1086,7 @@ struct ChatComposer: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 4)
                     .frame(maxWidth: 740, alignment: .leading)
+                    .transition(.opacity)
             }
             VStack(alignment: .leading, spacing: 8) {
                 if let image {
@@ -1127,6 +1157,8 @@ struct ChatComposer: View {
         }
         .padding(.horizontal, 24).padding(.bottom, 14).padding(.top, 4)
         .frame(maxWidth: .infinity)
+        // Keyed on whether a note shows, not its words.
+        .animation(Theme.Motion.panel(reduceMotion: reduceMotion), value: notice?.isEmpty == false)
         .onAppear {
             focused = true
             // A fresh composer picks up what was typed here before it was rebuilt.

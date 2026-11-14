@@ -83,7 +83,8 @@ struct SurfaceLayout: Equatable {
     /// than this keeps the one-column Brief.
     static let minWideWidth: CGFloat = 800
     /// Collapsed bar overhang on each side of the notch — a hairline of black
-    /// so the bar reads as Wisp's, not merely as the hardware.
+    /// so the bar reads as Wisp's, not merely as the hardware. At least this:
+    /// half a point more each side where that centres the bar (`centrable`).
     static let wing: CGFloat = 6
     /// Extra reach of the hover zone past the visible bar. Forgiving on the
     /// way in, and paired with a dwell delay so a brush doesn't open it.
@@ -187,8 +188,21 @@ struct SurfaceLayout: Equatable {
     func widened(_ wide: Bool) -> SurfaceLayout {
         guard wide, canWiden else { return self }
         var copy = self
-        copy.expandedWidth = min(Self.wideExpandedWidth, usableFrame.width - 2 * Self.screenMargin).rounded(.down)
+        let width = min(Self.wideExpandedWidth, usableFrame.width - 2 * Self.screenMargin).rounded(.down)
+        copy.expandedWidth = style == .notch ? Self.centrable(width, in: usableFrame.width, .down) : width
         return copy
+    }
+
+    /// `width` as a whole number of points that can sit dead centre in `span`
+    /// with both edges on whole points: that takes the span's own parity (even
+    /// in an even span), so it moves one more point in the rounding direction
+    /// when it has the other. A notch is at the display's exact centre, and a
+    /// bar one point off this parity sat half a point to its right, with one
+    /// wing wider than the other and every close stepping sideways onto it.
+    static func centrable(_ width: CGFloat, in span: CGFloat, _ rule: FloatingPointRoundingRule) -> CGFloat {
+        let whole = width.rounded(rule)
+        guard (span - whole).truncatingRemainder(dividingBy: 2) != 0 else { return whole }
+        return whole + (rule == .down ? -1 : 1)
     }
 
     func shape(radius: CGFloat) -> UnevenRoundedRectangle {
@@ -276,12 +290,14 @@ struct SurfaceLayout: Equatable {
             let notch = metrics.physicalNotch
                 ?? CGSize(width: referenceNotch.width,
                           height: metrics.safeAreaTop > 0 ? metrics.safeAreaTop : referenceNotch.height)
-            let barW = (notch.width + 2 * wing).rounded()
+            // The bar, the panel and the shape that travels between them all
+            // share the notch's own centre (see `centrable`).
+            let barW = centrable(notch.width + 2 * wing, in: frame.width, .up)
             let barH = notch.height.rounded()
             let bar = CGRect(x: (frame.midX - barW / 2).rounded(), y: frame.maxY - barH,
                              width: barW, height: barH)
             return SurfaceLayout(style: .notch, screenFrame: frame, usableFrame: frame, notchSize: notch,
-                                 expandedWidth: width, barFrame: bar,
+                                 expandedWidth: centrable(width, in: frame.width, .down), barFrame: bar,
                                  hoverZone: notchZone(around: bar, top: frame.maxY))
         case .menuBar:
             // Under the menu bar, even while it is auto-hidden (visibleFrame then

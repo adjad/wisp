@@ -17,11 +17,15 @@ these need no new permission prompt.
 """
 from __future__ import annotations
 
+import re
 import subprocess
+import time
 
 from service.tools.registry import not_done, register
 
 _TIMEOUT = 25
+_VERIFY_TRIES = 4
+_VERIFY_WAIT_S = 0.6
 
 
 def _osa(script: str) -> subprocess.CompletedProcess:
@@ -40,6 +44,81 @@ def _html(text: str) -> str:
     though every character is technically still there."""
     out = (text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
     return out.replace("\n", "<br>")
+
+
+_BULLET = re.compile(r"^\s*[-*•]\s+(\S.*)$")
+_NUMBERED = re.compile(r"^\s*\d+[.)]\s+(\S.*)$")
+
+
+def _item_text(line: str) -> str:
+    """One list line without its "- " / "* " / "• " / "1. " marker."""
+    m = _BULLET.match(line) or _NUMBERED.match(line)
+    return (m.group(1) if m else line).strip()
+
+
+def _body_html(text: str) -> str:
+    """A note body: "- " / "* " / "• " lines become <ul> items and "1. " lines
+    <ol> items, with the marker dropped. Left as text, Notes showed it beside
+    its own bullet ("• - Demo point 1"). Other lines keep the <br> rule above."""
+    parts: list[str] = []
+    plain: list[str] = []
+    items: list[str] = []
+    kind = ""
+
+    def close_list():
+        nonlocal kind
+        if kind:
+            parts.append(f"<{kind}>" + "".join(f"<li>{i}</li>" for i in items) + f"</{kind}>")
+            items.clear()
+            kind = ""
+
+    for line in text.split("\n"):
+        m_b, m_n = _BULLET.match(line), _NUMBERED.match(line)
+        this = "ul" if m_b else "ol" if m_n else ""
+        if not this:
+            close_list()
+            plain.append(line)
+            continue
+        if plain:
+            parts.append(_html("\n".join(plain)))
+            plain.clear()
+        if kind != this:
+            close_list()
+            kind = this
+        items.append(_html((m_b or m_n).group(1).strip()))
+    close_list()
+    if plain:
+        parts.append(_html("\n".join(plain)))
+    return "".join(parts)
+
+
+_BULLET_ASK = re.compile(r"\b(?:bullets?|bullet\s+points?|list\s+items?|checklist\s+items?)\b", re.I)
+
+
+def _asked_for_bullet() -> bool:
+    """The person's own message this turn asked for a bullet or list item."""
+    from service.tools.self_send import turn_text
+    return bool(_BULLET_ASK.search(turn_text()))
+
+
+_LIST_ASK = re.compile(r"\b(?:bullets?|bullet\s+points?|(?:check)?list|list\s+items?)\b", re.I)
+_LIST_JOIN = re.compile(r"\s*[,;]\s*(?:and\s+)?|\s+and\s+", re.I)
+
+
+def _split_one_list_line(body: str) -> str:
+    """"Alpha, Beta, Gamma" as one "- " line each, when the person's own
+    message this turn asked for bullets or a list and the body is that single
+    run ("…with three bullet points: Alpha, Beta, Gamma" was written as ONE
+    bullet, 2026-11-13 real-model run). Anything else is returned unchanged:
+    several lines, a sentence, or a turn that asked for no list."""
+    from service.tools.self_send import turn_text
+    lines = [line for line in (body or "").split("\n") if line.strip()]
+    if len(lines) != 1 or not _LIST_ASK.search(turn_text()):
+        return body
+    items = [i.strip() for i in _LIST_JOIN.split(_item_text(lines[0]).rstrip(".")) if i.strip()]
+    if len(items) < 2 or any(len(i.split()) > 5 for i in items):
+        return body
+    return "\n".join(f"- {i}" for i in items)
 
 
 def _err(p: subprocess.CompletedProcess) -> str | None:
@@ -80,12 +159,13 @@ def create_note(title: str, body: str = "", folder: str = "",
         return not_done("(error: create_note needs a `title`.)",
                         question="What should the note be called?")
 
+    body = _split_one_list_line(body)
     if checklist and body.strip():
-        items = "".join(f"<li>{_html(ln.strip())}</li>"
+        items = "".join(f"<li>{_html(_item_text(ln))}</li>"
                         for ln in body.splitlines() if ln.strip())
         body_html = f"<ul>{items}</ul>"
     else:
-        body_html = _html(body)
+        body_html = _body_html(body)
     full = f"<div><b>{_html(title)}</b></div>{body_html}"
 
     if folder.strip():
@@ -127,6 +207,7 @@ def create_note(title: str, body: str = "", folder: str = "",
         "properties": {
             "title": {"type": "string", "description": "Part of the existing note's title, e.g. 'shopping'."},
             "text": {"type": "string", "description": "The line(s) to add at the end."},
+            "bullet": {"type": "boolean", "description": "true when the user asked for a bullet or list item."},
         },
         "required": ["title", "text"],
     },
@@ -134,9 +215,19 @@ def create_note(title: str, body: str = "", folder: str = "",
     aliases=["add milk to my shopping list", "put that on my packing list",
              "add a line to the meeting note", "tack this onto my ideas note"],
 )
-def append_note(title: str, text: str) -> str:
+def append_note(title: str, text: str, bullet: bool = False) -> str:
     title = (title or "").strip()
     text = (text or "").strip()
+    # A bullet is a real list item. "Add one more bullet to that note" sent
+    # "<div>Demo point 4</div>", a plain line, and Wisp called it a bullet
+    # (2026-11-13 real-model run). When the note ends in a list, the new lines
+    # join that list; when a bullet was asked for, they start one; otherwise
+    # they stay the plain lines they were.
+    lines = [line for line in text.split("\n") if line.strip()]
+    items = "".join(f"<li>{_html(_item_text(line))}</li>" for line in lines)
+    if (bullet is True or _asked_for_bullet()) and not any(
+            _BULLET.match(line) or _NUMBERED.match(line) for line in lines):
+        text = "\n".join(f"- {line.strip()}" for line in lines)
     if not title:
         return not_done("(error: append_note needs the `title` of the note to add to.)",
                         question="Which note should I add that to?")
@@ -159,7 +250,20 @@ def append_note(title: str, text: str) -> str:
         f'    return "MANY:" & out\n'
         f'  end if\n'
         f'  set target to item 1 of hits\n'
-        f'  set body of target to (body of target) & "<div>{_esc(_html(text))}</div>"\n'
+        f'  set b to body of target\n'
+        f'  set e to b\n'
+        f'  repeat while (length of e) > 1 and (e ends with linefeed or e ends with return or e ends with " ")\n'
+        f'    set e to text 1 thru -2 of e\n'
+        f'  end repeat\n'
+        f'  set closer to ""\n'
+        f'  repeat with c in {{"</ul></div>", "</ol></div>", "</ul>", "</ol>"}}\n'
+        f'    if closer is "" and e ends with (c as text) then set closer to (c as text)\n'
+        f'  end repeat\n'
+        f'  if closer is not "" and (length of e) > (length of closer) then\n'
+        f'    set body of target to (text 1 thru -((length of closer) + 1) of e) & "{_esc(items)}" & closer\n'
+        f'  else\n'
+        f'    set body of target to b & "<div>{_esc(_body_html(text))}</div>"\n'
+        f'  end if\n'
         f'  return "OK:" & (name of target)\n'
         f'end tell')
 
@@ -181,3 +285,190 @@ def append_note(title: str, text: str) -> str:
     return f"Added it to \"{name}\"."
 
 
+
+
+def delete_note_reason(title: str, folder: str = "") -> str:
+    """The confirmation card's line for delete_note (policy.decide and the
+    card's folder lookup both use it, so they cannot word it differently)."""
+    title = " ".join(str(title or "").split())[:120]
+    folder = " ".join(str(folder or "").split())[:80]
+    where = f"from the “{folder}” folder" if folder else "from Notes"
+    return (f"deletes the note “{title}” {where}. Notes keeps it in Recently "
+            "Deleted for 30 days — always confirmed")
+
+
+def _find_notes(title: str, folder: str):
+    """Notes whose title is exactly `title` (case-insensitive), outside
+    Recently Deleted: a list of (note id, folder id, folder name, title), or
+    "NOFOLDER", or an error string."""
+    row = ('    set out to out & (id of n) & tab & (id of f) & tab & (name of f) '
+           '& tab & (name of n) & linefeed\n')
+    if folder:
+        script = (f'tell application "Notes"\n'
+                  f'  if not (exists folder "{_esc(folder)}") then return "NOFOLDER"\n'
+                  f'  set f to folder "{_esc(folder)}"\n'
+                  f'  set out to ""\n'
+                  f'  repeat with n in (every note of f whose name is "{_esc(title)}")\n'
+                  f'{row}'
+                  f'  end repeat\n'
+                  f'  return "HITS:" & out\n'
+                  f'end tell')
+    else:
+        script = (f'tell application "Notes"\n'
+                  f'  set out to ""\n'
+                  f'  repeat with n in (every note whose name is "{_esc(title)}")\n'
+                  f'    set f to container of n\n'
+                  f'    if (name of f) is not "Recently Deleted" then\n'
+                  f'  {row}'
+                  f'    end if\n'
+                  f'  end repeat\n'
+                  f'  return "HITS:" & out\n'
+                  f'end tell')
+    p = _osa(script)
+    if (e := _err(p)) is not None:
+        return e
+    out = p.stdout.strip("\n")
+    if out.strip() == "NOFOLDER":
+        return "NOFOLDER"
+    if not out.startswith("HITS:"):
+        return f"(error talking to Notes: unexpected reply {out[:80]!r})"
+    hits = []
+    for line in out[5:].splitlines():
+        parts = line.split("\t")
+        # Exact title only: never a note that merely contains the words.
+        if len(parts) == 4 and parts[3].strip().casefold() == title.casefold():
+            hits.append(tuple(parts))
+    return hits
+
+
+_SAID_NOTE = re.compile(
+    r"\b(?:delete|remove|erase|trash|bin|get\s+rid\s+of)\s+(?:the|my|that|this)\s+"
+    r"(?:note\s+(?:called|titled|named)\s+)?[\"“']?(.+?)[\"”']?(?:\s+note)?\s*[.!?]*$", re.I)
+
+
+def _title_as_said(title: str, folder: str) -> str:
+    """The title in the person's own words when the model shortened it. With
+    "Wisp test note" and "Wisp test note 2" both in Notes, "Delete the Wisp
+    test note 2 note" reached the card as "Wisp test note" and the wrong note
+    was offered (2026-11-13, real Mac). Used only when what they typed
+    contains the model's title and is itself a note's exact title."""
+    from service.tools.self_send import turn_text
+    said = _SAID_NOTE.search(" ".join(turn_text().split()))
+    if not said:
+        return title
+    typed = said.group(1).strip()
+    if typed.casefold() == title.casefold() or title.casefold() not in typed.casefold():
+        return title
+    hits = _find_notes(typed, folder)
+    return typed if isinstance(hits, list) and hits else title
+
+
+def delete_note_card(args: dict) -> tuple[dict, str] | None:
+    """For the confirmation card: the call bound to the one note's folder and
+    a reason naming it, or None when there is not exactly one match (the tool
+    then refuses after the card without deleting anything). Read-only."""
+    title = str(args.get("title") or "").strip()
+    folder = str(args.get("folder") or "").strip()
+    if not title:
+        return None
+    title = _title_as_said(title, folder)
+    hits = _find_notes(title, folder)
+    if not isinstance(hits, list) or len(hits) != 1:
+        return None
+    return {**args, "title": title, "folder": hits[0][2]}, delete_note_reason(hits[0][3], hits[0][2])
+
+
+@register(
+    "delete_note",
+    "Delete one note, by exact title.",
+    {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "The note's exact title."},
+            "folder": {"type": "string", "description": "Optional folder to look in."},
+        },
+        "required": ["title"],
+    },
+    category="notes_write",
+    aliases=["delete my packing list note", "remove the note called groceries",
+             "get rid of the old meeting note", "trash my ideas note"],
+)
+def delete_note(title: str, folder: str = "") -> str:
+    title = " ".join((title or "").split())
+    folder = (folder or "").strip()
+    if not title:
+        return not_done("(error: delete_note needs the exact `title` of the note.)",
+                        question="Which note should I delete?")
+
+    title = _title_as_said(title, folder)
+    hits = _find_notes(title, folder)
+    if hits == "NOFOLDER":
+        return not_done(f"(There's no Notes folder called {folder!r}. Nothing was deleted.)",
+                        question=f"There's no Notes folder called “{folder}”, so I didn't delete anything. "
+                                 "Which folder is the note in?")
+    if isinstance(hits, str):
+        # Only the lookup ran: nothing was deleted.
+        return not_done(hits)
+    where = f" in the “{folder}” folder" if folder else ""
+    if not hits:
+        return not_done(f"No note is titled exactly {title!r}{where}. Nothing was deleted.",
+                        question=f"I couldn't find a note titled “{title}”{where}, so nothing was deleted. "
+                                 "What is its exact title?")
+    if len(hits) > 1:
+        listed = "\n".join(f"  - {h[3]} (folder: {h[2]})" for h in hits[:8])
+        return not_done(f"Several notes are titled {title!r}; nothing was deleted. Which one?\n{listed}",
+                        question=f"Several notes are titled “{title}”, so nothing was deleted. "
+                                 f"Which folder is the one to delete in?\n{listed}")
+
+    note_id, folder_id, folder_name, name = hits[0]
+    p = _osa(f'tell application "Notes"\n'
+             f'  delete note id "{_esc(note_id)}"\n'
+             f'  return "OK"\n'
+             f'end tell')
+    if (e := _err(p)) is not None:
+        # The script may have stopped after the delete: say so, never not_done.
+        return (f"{e} I can't tell whether “{name}” was deleted. "
+                "Check Notes (and Recently Deleted) before trying again.")
+
+    # Success only once a read-back shows the note has left that folder.
+    # On a real Mac the deletes worked and this check still said it could not
+    # confirm them (2026-11-13): it ran before Notes had moved the note, or
+    # stopped on the moved note's container. Reading the moved note's container
+    # may fail, so that part cannot stop the check, and the check is repeated
+    # while Notes settles. The folder listing decides.
+    check = (f'tell application "Notes"\n'
+             f'  set still to false\n'
+             f'  try\n'
+             f'    if exists note id "{_esc(note_id)}" then\n'
+             f'      if (id of container of note id "{_esc(note_id)}") is "{_esc(folder_id)}" then set still to true\n'
+             f'    end if\n'
+             f'  end try\n'
+             f'  if still then return "STILL"\n'
+             f'  set out to ""\n'
+             f'  repeat with n in (every note of folder id "{_esc(folder_id)}" whose name is "{_esc(name)}")\n'
+             f'    set out to out & (name of n) & linefeed\n'
+             f'  end repeat\n'
+             f'  return "LEFT:" & out\n'
+             f'end tell')
+    remaining = None
+    for attempt in range(_VERIFY_TRIES):
+        if attempt:
+            time.sleep(_VERIFY_WAIT_S)
+        v = _osa(check)
+        left = v.stdout.strip("\n") if v.returncode == 0 else ""
+        if left.startswith("LEFT:"):
+            remaining = [n for n in left[5:].splitlines() if n.strip().casefold() == name.strip().casefold()]
+        elif left.strip() == "STILL":
+            remaining = [name]
+        else:
+            remaining = None
+        if remaining == []:
+            break
+    if remaining is None:
+        return (f"(couldn't confirm the delete: Notes took the delete of “{name}” but did not answer "
+                "the check afterwards. It is probably in Recently Deleted; look in Notes before trying again.)")
+    if remaining:
+        return (f"(couldn't confirm the delete: Notes still lists “{name}” in {folder_name}. "
+                "Check Notes before trying again.)")
+    return (f"Deleted the note “{name}” from {folder_name}. "
+            "Notes keeps it in Recently Deleted for 30 days.")

@@ -164,6 +164,12 @@ class ProactiveStore:
             self.auto_added()[fingerprint] = dict(entry)
             self._write("decisions.json")
 
+    def auto_add_drop(self, fingerprint: str) -> None:
+        """Forget one outcome: only for an in-flight mark whose write then did nothing."""
+        with self._lock:
+            if self.auto_added().pop(fingerprint, None) is not None:
+                self._write("decisions.json")
+
     def auto_added_since(self, since: float) -> int:
         """Writes dispatched since `since` that may have landed (the daily cap)."""
         return sum(1 for v in self.auto_added().values()

@@ -37,6 +37,9 @@ IMPORTANT rules:
 - No cap outlives Wisp. A capped request still generating when Wisp quits
   would be killed with the engine, and the cap would stay on the Mac. So
   quitting first stops new caps and lifts the ones in flight (``lift_for_quit``).
+- Demo mode (service/stage_mode.py) reads Save power as off: no cap for any
+  call, and turning it on lifts the caps in flight (``stage_mode_changed``).
+  The saved switch is never written, so Settings still shows the person's choice.
 
 With the "Save power" switch on (the notch; on by default; stored as
 ``save_when_away``):
@@ -180,9 +183,17 @@ def capping_engine() -> bool:
     return _bundled_engine() and not _remote_only()
 
 
+def _stage_mode() -> bool:
+    """Demo mode (service/stage_mode.py): Save power reads as off, without changing the saved switch."""
+    from service import stage_mode
+    return stage_mode.active()
+
+
 def _capping_possible() -> bool:
-    """The switch is on and the engine can drop a cap at once (see the module rules)."""
-    return save_when_away() and _lift_askable() and not _remote_only() and _bundled_engine()
+    """The switch is on and the engine can drop a cap at once (see the module rules).
+    Off while Demo mode is on (the saved switch is untouched: Settings still shows it)."""
+    return (save_when_away() and not _stage_mode() and _lift_askable() and not _remote_only()
+            and _bundled_engine())
 
 
 def _on_battery_probe() -> bool:
@@ -621,6 +632,32 @@ def call_started(watts: int | None = None,
     return watched, key
 
 
+def stage_mode_changed(on: bool) -> None:
+    """A stage_mode listener: Demo mode just turned on, so lift the caps already
+    in flight now (their requests finish uncapped; _wanted gives no new cap). The
+    same lift the watch and a waited-on call use. From any thread; never raises."""
+    if not on:
+        return
+    try:
+        with _calls_lock:
+            capped = bool(_capped)
+        if not capped:
+            return
+        loop = _service_loop
+        if loop is None or loop.is_closed():
+            return
+        try:
+            here = asyncio.get_running_loop()
+        except RuntimeError:
+            here = None
+        if here is loop:
+            _schedule_lift()
+        else:
+            loop.call_soon_threadsafe(_schedule_lift)
+    except Exception:  # noqa: BLE001 — the cap still ends with its request
+        logger.debug("Demo mode: lifting the caps in flight failed", exc_info=True)
+
+
 def call_ended(started: tuple[bool, int | None]) -> None:
     global _watched_calls, _uncapped_watched
     watched, key = started
@@ -673,7 +710,10 @@ def watts(cap: str | None) -> int | None:
 
 
 def _wanted(tier: str | None) -> str | None:
-    """The cap a call at ``tier`` gets right now if other apps are quiet on the GPU."""
+    """The cap a call at ``tier`` gets right now if other apps are quiet on the GPU.
+    None for every tier while Demo mode is on, on battery and away too."""
+    if _stage_mode():
+        return None
     if _quiesced or tier not in _TIERS or not _on_service_loop() or not _capping_possible():
         return None
     if tier in _UNWATCHED and watched_running():

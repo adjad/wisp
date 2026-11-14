@@ -59,7 +59,7 @@ echo "wisp home:      $WISP_HOME"
 echo "backend:        http://127.0.0.1:$BACKEND_PORT"
 echo "sandbox server: http://127.0.0.1:$SANDBOX_PORT"
 
-.venv/bin/uvicorn service.main:app --port "$BACKEND_PORT" >"$WISP_SANDBOX_HOME/backend.log" 2>&1 &
+.venv/bin/uvicorn service.main:app --port "$BACKEND_PORT" --no-proxy-headers >"$WISP_SANDBOX_HOME/backend.log" 2>&1 &
 BACKEND_PID=$!
 # Initialised BEFORE the trap exists: under `set -u` an interrupt or a failed health
 # check before the sandbox server starts made the cleanup die on an unset variable,

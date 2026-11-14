@@ -491,7 +491,11 @@ struct ProactiveBriefSection: View {
     /// Wisp's cards, under the Brief's tagline: what it got ready before you
     /// asked. Amber with a count while there are any (they need you).
     @ViewBuilder private func beforeYouAsk(_ shown: ProactiveState) -> some View {
-        let cards = shown.cards.filter { !actions.hidden.contains($0.id) }
+        // A grouped "Wisp did this" card goes once every one of its rows has been undone.
+        let cards = shown.cards.filter { card in
+            !actions.hidden.contains(card.id)
+                && !(card.isGroup && card.notes.isEmpty && card.members.allSatisfy { actions.hidden.contains($0.id) })
+        }
         let index = cards.firstIndex { $0.id == actions.heroID } ?? 0
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center, spacing: 6) {
@@ -503,6 +507,8 @@ struct ProactiveBriefSection: View {
             }
             .frame(height: Self.controlsHeaderHeight)
             if proactive.isWorking || actions.analyzePending() { progressRow }
+            // "Let Wisp act for me", always in the Brief: the question, or one line (ActForMe.swift).
+            ActForMeBriefRow()
             if !actions.analyzeError.isEmpty {
                 Text(actions.analyzeError).font(.wisp(size: 11)).foregroundStyle(Theme.bad)
             }
@@ -517,6 +523,11 @@ struct ProactiveBriefSection: View {
                 if !rest.isEmpty { otherCards(Array(rest.prefix(3))) }
             }
         }
+        // The gate's state is loaded HERE, on a view that always exists: every time the Brief
+        // shows, and again whenever its cards change (a cycle finished, an Undo), so the
+        // question, the line and today's count are never missing or stale. (A .task on the
+        // question card itself never ran: that view is empty until the state is loaded.)
+        .task(id: shown.cards.map(\.id)) { await ActForMeModel.shared.refresh() }
     }
 
     /// The other cards, by title; one tap makes it the one shown. They share a
@@ -608,12 +619,20 @@ struct ProactiveBriefSection: View {
         let hasDraft = !(action?.draft ?? "").isEmpty
         return VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
+                if card.wispDidThis {
+                    // Already done by Wisp: a tick and brighter ink set it apart from cards that ask.
+                    Image(systemName: "checkmark.circle.fill").font(.wisp(size: 10.5, weight: .semibold))
+                        .foregroundStyle(Theme.textSecondary).accessibilityHidden(true)
+                }
                 Text(card.metaLine)
                     .font(.wisp(size: 10, weight: .medium, design: .monospaced)).tracking(0.6)
-                    .foregroundStyle(Theme.textMuted).lineLimit(1)
+                    .foregroundStyle(card.wispDidThis ? Theme.textSecondary : Theme.textMuted).lineLimit(1)
                     .help(card.why)
                 Spacer(minLength: 4)
-                if actions.dismissing.contains(card.id) {
+                if card.isGroup {
+                    // A group has no Dismiss: each row has its own Undo, and it leaves with its rows.
+                    EmptyView()
+                } else if actions.dismissing.contains(card.id) {
                     ProgressView().controlSize(.mini)
                 } else if fire != .sending, !isDone(fire) {
                     Button { Task { await actions.dismiss(card, today: today) } } label: {
@@ -628,6 +647,7 @@ struct ProactiveBriefSection: View {
             Text(card.title)
                 .font(.wisp(size: 15.5, weight: .semibold)).foregroundStyle(Theme.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
+            if card.isGroup { groupRows(card) }
             if !card.body.isEmpty {
                 // Two lines keep the card short; More opens the rest in place,
                 // so it isn't reachable only by hovering for the tooltip.
@@ -640,7 +660,7 @@ struct ProactiveBriefSection: View {
                 draftEditor(card, action, fire: fire, withSend: sendInDraft).revealInPanel("draft-\(card.id)")
             }
             HStack(alignment: .center, spacing: 12) {
-                if let action, !sendInDraft, !isUnconfirmed(fire) { fireButton(card, action, fire) }
+                if let action, !card.isGroup, !sendInDraft, !isUnconfirmed(fire) { fireButton(card, action, fire) }
                 if action?.method == "block_time" {
                     secondary("Pick another time") { model.tab = .day }
                         .help("Open Day to choose a different time")
@@ -696,6 +716,57 @@ struct ProactiveBriefSection: View {
         .accessibilityLabel("\(card.metaLine). \(card.title)")
     }
 
+    /// The rows of a grouped "Wisp did this" card: what was done, the day and time it is for, and
+    /// that thing's own Undo (the member card's, fired exactly as a single card's is). Up to
+    /// `ProactiveCard.groupRows` rows, then how many more there are.
+    @ViewBuilder private func groupRows(_ card: ProactiveCard) -> some View {
+        let members = card.members.filter { !actions.hidden.contains($0.id) }
+        let shownMembers = Array(members.prefix(ProactiveCard.groupRows))
+        let shownNotes = Array(card.notes.prefix(ProactiveCard.groupRows - shownMembers.count))
+        let more = members.count + card.notes.count - shownMembers.count - shownNotes.count
+        VStack(alignment: .leading, spacing: 7) {
+            ForEach(shownMembers) { member in
+                let fire = actions.fires[member.id]
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .center, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(member.title).font(.wisp(size: 12.5, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            if !member.when.isEmpty {
+                                Text(member.when).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
+                            }
+                        }
+                        Spacer(minLength: 6)
+                        if let action = member.action, !isUnconfirmed(fire) { fireButton(member, action, fire) }
+                    }
+                    if case .failed(let reason) = fire {
+                        Text(reason).font(.wisp(size: 11)).foregroundStyle(Theme.bad)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if case .unconfirmed(let line) = fire {
+                        Text(line).font(.wisp(size: 11)).foregroundStyle(Theme.warn)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .accessibilityElement(children: .contain)
+            }
+            ForEach(shownNotes, id: \.self) { note in
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: "questionmark").font(.wisp(size: 9, weight: .bold)).foregroundStyle(Theme.textMuted)
+                        .accessibilityHidden(true)
+                    Text(note).font(.wisp(size: 12)).foregroundStyle(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .help("Wisp started this and was interrupted before it could confirm. If it is there and you don't want it, remove it there.")
+            }
+            if more > 0 {
+                Text("and \(more) more, listed under “Wisp is acting for you” above")
+                    .font(.wisp(size: 11.5)).foregroundStyle(Theme.textMuted)
+            }
+        }
+        .padding(.top, 1)
+    }
+
     private func secondary(_ title: String, chevron: String? = nil, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 3) {
@@ -741,6 +812,24 @@ struct ProactiveBriefSection: View {
             .padding(.horizontal, 12).padding(.vertical, 5)
             .background(Capsule().fill(Theme.chipOn))
         default:
+            if action.method == "undo_add" {
+                // The add already happened, so Undo is the quiet button: an outline, not the white pill.
+                Button { Task { await actions.fire(card, today: today); model.onResize() } } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.uturn.backward").font(.wisp(size: 10, weight: .bold))
+                        Text(isFailed(fire) ? "Try again" : action.undoLabel).lineLimit(1)
+                    }
+                    .font(.wisp(size: 12.5, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+                    .padding(.horizontal, 12).padding(.vertical, 5)
+                    .background(Capsule().fill(Theme.chipFill))
+                    .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .fixedSize()
+                .help("Removes exactly what Wisp added, and Wisp won't add it again")
+                .accessibilityLabel("Undo: remove what Wisp added")
+            } else {
             let draftOpen = actions.openDrafts.contains(card.id)
             Button { Task { await actions.fire(card, today: today); model.onResize() } } label: {
                 Text(isFailed(fire) && (draftOpen || !action.sendsDraft) ? "Try again"
@@ -756,6 +845,7 @@ struct ProactiveBriefSection: View {
             .help(action.sendsDraft ? (draftOpen ? "Sends exactly the draft above, as it reads now"
                                                  : "Shows the draft first; nothing is sent until you tap Send")
                   : card.why)
+            }
         }
     }
 
@@ -1219,30 +1309,40 @@ struct ProactiveBriefSection: View {
 /// indicator and no bounce. Used for an opened Brief row, and for the whole
 /// Brief and Day tabs under the panel's header (OverlayView.tabScroll), where
 /// `reveals` lets a view inside ask to be scrolled into sight (`revealInPanel`).
+///
+/// Its height is measured in the same layout pass as everything else
+/// (CappedHeight), not learned a pass later: a page that arrives with a slide
+/// is its real height from its first frame, so the panel moves once, not twice.
+/// `remembers` keeps the scroll position under that key while the panel is
+/// open (PanelScrollMemory).
 struct CappedScroll<Content: View>: View {
     let cap: CGFloat?
     var reveals = false
+    var remembers: String? = nil
     @ViewBuilder var content: Content
+    /// The content's height, for the scroll indicator only.
     @State private var height: CGFloat = 0
 
     var body: some View {
         if let cap {
-            ScrollViewReader { proxy in
-                ScrollView(.vertical) {
-                    content
-                        .background(GeometryReader { geo in
-                            Color.clear.preference(key: CappedScrollHeight.self, value: geo.size.height)
-                        })
+            CappedHeight(cap: cap) {
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical) {
+                        content
+                            .background(GeometryReader { geo in
+                                Color.clear.preference(key: CappedScrollHeight.self, value: geo.size.height)
+                            })
+                    }
+                    .scrollIndicators(height > cap ? .automatic : .never)
+                    .scrollBounceBehavior(.basedOnSize)
+                    .modifier(RemembersScroll(key: remembers))
+                    .environment(\.panelReveal, reveals ? PanelReveal { id in
+                        // After the panel has grown to fit what just opened. Never
+                        // animated, so Reduce Motion needs no special case.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { proxy.scrollTo(id) }
+                    } : nil)
                 }
-                .scrollIndicators(height > cap ? .automatic : .never)
-                .scrollBounceBehavior(.basedOnSize)
-                .environment(\.panelReveal, reveals ? PanelReveal { id in
-                    // After the panel has grown to fit what just opened. Never
-                    // animated, so Reduce Motion needs no special case.
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { proxy.scrollTo(id) }
-                } : nil)
             }
-            .frame(height: min(max(height, 1), cap))
             .onPreferenceChange(CappedScrollHeight.self) { height = $0 }
             // A CappedScroll inside this one reports its own content; keep it
             // from reaching (and inflating) an outer one.
@@ -1250,6 +1350,80 @@ struct CappedScroll<Content: View>: View {
         } else {
             content
         }
+    }
+}
+
+/// Lays out one scroll view as tall as its content, up to `cap`. A vertical
+/// ScrollView asked for its ideal height answers with its content's height.
+struct CappedHeight: Layout {
+    let cap: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let scroll = subviews.first else { return .zero }
+        let ideal = scroll.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil))
+        return CGSize(width: proposal.width ?? ideal.width, height: max(min(ideal.height, cap), 1))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, anchor: .topLeading, proposal: ProposedViewSize(bounds.size))
+    }
+}
+
+/// Where each tab's scroll was left, while the panel stays open. Going back to
+/// a tab finds it there; closing the panel forgets them all, so it reopens on
+/// each tab's top as before. `version` lets a view refuse a position that no
+/// longer fits what it shows (Ask: a conversation that has moved on).
+@MainActor
+enum PanelScrollMemory {
+    private static var offsets: [String: (y: CGFloat, version: Int)] = [:]
+
+    static func key(_ tab: NotchTab) -> String { "tab.\(tab.rawValue)" }
+
+    static func note(_ key: String, y: CGFloat, version: Int = 0) { offsets[key] = (y, version) }
+
+    /// The remembered offset, if one was kept for this version.
+    static func offset(_ key: String, version: Int = 0) -> CGFloat? {
+        guard let kept = offsets[key], kept.version == version else { return nil }
+        return kept.y
+    }
+
+    static func forgetAll() { offsets = [:] }
+}
+
+/// Keeps a scroll view's position under `key` (PanelScrollMemory). Needs
+/// macOS 15's scroll geometry; on macOS 14 a tab comes back at its top.
+struct RemembersScroll: ViewModifier {
+    let key: String?
+    var version = 0
+
+    func body(content: Content) -> some View {
+        if #available(macOS 15, *), let key {
+            content.modifier(RemembersScrollPosition(key: key, version: version))
+        } else {
+            content
+        }
+    }
+}
+
+@available(macOS 15, *)
+private struct RemembersScrollPosition: ViewModifier {
+    let key: String
+    let version: Int
+    @State private var position: ScrollPosition
+
+    init(key: String, version: Int) {
+        self.key = key
+        self.version = version
+        let y = PanelScrollMemory.offset(key, version: version)
+        _position = State(initialValue: y.map { ScrollPosition(point: CGPoint(x: 0, y: $0)) } ?? ScrollPosition())
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .scrollPosition($position)
+            .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.y + $0.contentInsets.top }) { _, y in
+                PanelScrollMemory.note(key, y: max(y, 0), version: version)
+            }
     }
 }
 

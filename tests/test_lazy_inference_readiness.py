@@ -214,15 +214,35 @@ def test_optional_reranker_is_ready_before_route(endpoint, monkeypatch):
 
 
 def test_direct_turn_still_folds_overflow_memory_when_due(endpoint, monkeypatch):
-    request, calls, _, store = endpoint
+    request, calls, raw, store = endpoint
     fake_summary(monkeypatch, calls)
     sid = store.create_session()
     for i in range(context.KEEP_MESSAGES + context._FOLD_BATCH - 2):
         store.add_turn(sid, "user" if i % 2 == 0 else "assistant", f"Fixture turn {i}")
+    # The fold is resident-only: it runs on a model the engine already holds and never loads one.
+    async def loaded_models():
+        return [main.role_target("fast").model]
+
+    raw.loaded_models = loaded_models
     asyncio.run(request("summarize my messages", session_id=sid))
-    assert [c[0] for c in calls] == ["tool", "start", "load", "chat"]
+    assert [c[0] for c in calls] == ["tool", "start", "chat"]
     assert store.get_session(sid)["summary"] == "Preserved rolling summary."
     assert store.get_session(sid)["summarized_idx"] == context._FOLD_BATCH
+
+
+def test_direct_turn_fold_stands_down_when_its_model_is_not_loaded(endpoint, monkeypatch):
+    request, calls, raw, store = endpoint
+    fake_summary(monkeypatch, calls)
+    sid = store.create_session()
+    for i in range(context.KEEP_MESSAGES + context._FOLD_BATCH - 2):
+        store.add_turn(sid, "user" if i % 2 == 0 else "assistant", f"Fixture turn {i}")
+    async def loaded_models():
+        return []
+
+    raw.loaded_models = loaded_models
+    asyncio.run(request("summarize my messages", session_id=sid))
+    assert "load" not in [c[0] for c in calls] and "chat" not in [c[0] for c in calls]
+    assert not store.get_session(sid)["summary"]
 
 
 def test_residency_rechecked_each_step_and_start_failures_propagate():

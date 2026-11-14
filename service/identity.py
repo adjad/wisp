@@ -49,7 +49,10 @@ LAUNCH_NONCE_ENV = "WISP_LAUNCH_NONCE"
 # Never passed to anything this backend runs (a shell command, a skill script, an
 # MCP server): the nonce marks only the backend the app launched, and it gates
 # /resetwisp's restart pass in service/main.py.
-NEVER_INHERITED = frozenset({LAUNCH_NONCE_ENV})
+# PYTHONNOUSERSITE is how the app keeps the per-user site-packages out of THIS process (a
+# `.pth` file there would run inside the service). A command the person asks Wisp to run is
+# their own Python and keeps its usual behaviour, so the setting stops here.
+NEVER_INHERITED = frozenset({LAUNCH_NONCE_ENV, "PYTHONNOUSERSITE"})
 
 
 def child_environment(base: dict[str, str] | None = None) -> dict[str, str]:

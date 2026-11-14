@@ -2192,6 +2192,17 @@ def make_fakes(w: World) -> dict:
         _record(w, "append_note", {"title": title, "text": text})
         return f"Appended to '{title}'."
 
+    def delete_note(title, folder=None, **_):
+        # Exact title only, like production: a partial title deletes nothing.
+        hits = [n for n in w.notes if n["title"].casefold() == str(title or "").strip().casefold()]
+        if len(hits) != 1:
+            return (f"No note is titled exactly {title!r}. Nothing was deleted." if not hits else
+                    f"Several notes are titled {title!r}; nothing was deleted. Which one?")
+        _record(w, "delete_note", {"title": title, "folder": folder})
+        w.notes.remove(hits[0])
+        return (f"Deleted the note “{hits[0]['title']}” from Notes. "
+                "Notes keeps it in Recently Deleted for 30 days.")
+
     # -------------------------------------------------------------------- files
 
     def list_dir(path, recursive=None, max_depth=None, **_):

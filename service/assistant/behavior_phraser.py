@@ -45,6 +45,13 @@ def _event_loop_running() -> bool:
         return False
 
 
+
+def _demo_hold() -> bool:
+    """Demo mode (service/stage_mode.py): the behavior engine's model calls (phrasing and
+    the interpreter, which calls through here) stand down as for a turn; asked every time."""
+    from service import stage_mode
+    return stage_mode.holds_background()
+
 class WispPhraser:
     """``service.behavior.engine.Phraser`` backed by Wisp's ``fast`` role."""
 
@@ -59,6 +66,8 @@ class WispPhraser:
     # ---- gating ---------------------------------------------------------------
     def _admit(self) -> bool:
         if idle.foreground_busy() or any(idle._in_flight.values()) or _event_loop_running():
+            return False
+        if _demo_hold():
             return False
         now = self._clock()
         with self._lock:
@@ -95,7 +104,7 @@ class WispPhraser:
                     return None
                 from service.config import no_thinking_kwargs
                 extra = no_thinking_kwargs(target.model)
-            if idle.foreground_busy():
+            if idle.foreground_busy() or _demo_hold():
                 return None
             from service.inference.power_tier import BACKGROUND, power_tier
             with power_tier(BACKGROUND):

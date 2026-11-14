@@ -255,6 +255,11 @@ def find_contacts(name: str) -> list[dict]:
 def contact_name_for_handle(handle: str) -> str:
     """The saved contact one literal number or address belongs to, or "".
 
+    A LOOSE match, for labels: phone numbers are compared on their last ten digits, so
+    numbers in two countries that share those digits get the same name. Right for naming
+    a conversation or a send's recipient that the person then confirms; never use it to
+    decide who may ACT (service/proactive/autoadd.strict_contact_name does that).
+
     For naming a send's recipient on its card and receipt. A handle saved
     exactly as given wins over the last-10-digits match, so two cards that
     hold the same number in different formats can't trade names.
@@ -477,6 +482,9 @@ def structured_messages_snapshot() -> dict:
                       for link in message.links],
             "source": {"kind": "messages", "message_guid": message.guid,
                        "chat_guid": message.conversation, "navigation_url": None},
+            # How Messages delivered it, from the reader ("iMessage", "SMS", "RCS"); "" when the
+            # reader did not say or said something else. Nothing here guesses it from a GUID.
+            "service": source["service"] if source.get("service") in ("iMessage", "SMS", "RCS") else "",
             "status": "partial" if result.status == "partial" or "partial" in row_coverage.values()
                       else "complete",
             "coverage": {"text": row_coverage["text"], "links": row_coverage["links"]},

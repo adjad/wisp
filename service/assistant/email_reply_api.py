@@ -94,6 +94,7 @@ _THREAD_BODY_CHARS = 3_000
 _EARLIER_BODY_CHARS = 800
 _DRAFT_TOKENS = 320
 _DRAFT_TIMEOUT_S = 45.0
+_STYLED_SHARE_S = 25.0      # of _DRAFT_TIMEOUT_S, for a draft in the person's own style
 
 # Envelope nonces that already reached Mail (sent or unknown) → their expiry,
 # and the ones whose send is in flight right now.
@@ -188,8 +189,22 @@ async def _model_reply(system: str, material: str) -> str | None:
     from service.assistant.brief import _c
     from service.config import role_to_model, thinking_kwargs
     model = role_to_model("fast")
+    deadline = time.monotonic() + _DRAFT_TIMEOUT_S      # the styled try and the usual call share it
     idle.begin_foreground()
     try:
+        # Your writing style (service/personal_style.py): when the person trained an
+        # adapter on their own sent mail and switched it on, it writes this draft. Text
+        # only, into the same editable field; any failure falls through to the usual model.
+        from service import personal_style
+        if personal_style.ready():
+            # A styled draft cut off at the token limit comes back as None (the same rule as
+            # the finish_reason check below), and its wait is part of this draft's one budget.
+            styled = await personal_style.write(
+                system, material, max_tokens=_DRAFT_TOKENS,
+                timeout=min(_STYLED_SHARE_S, deadline - time.monotonic()))
+            if styled:
+                return styled
+
         async def call() -> dict:
             client = _c()
             await client.ensure_only(model)
@@ -197,7 +212,7 @@ async def _model_reply(system: str, material: str) -> str | None:
                 model, [{"role": "system", "content": system},
                         {"role": "user", "content": material}],
                 max_tokens=_DRAFT_TOKENS, **thinking_kwargs(model, on=False))
-        response = await asyncio.wait_for(call(), timeout=_DRAFT_TIMEOUT_S)
+        response = await asyncio.wait_for(call(), timeout=max(1.0, deadline - time.monotonic()))
     except Exception:  # noqa: BLE001 — a failed draft leaves an empty, editable field
         return None
     finally:
@@ -337,7 +352,12 @@ def _find_row(ref: dict) -> dict | None:
             row = dict(row, body="")
             name, address = str(row.get("sender") or "").strip(), str(row.get("sender_address") or "").strip()
             if "@" not in name and "@" in address:
+                # One shape, never both: the full "Name <address>" header with no separate
+                # address field. A row that carries BOTH is read as a name dressed up as an
+                # address (service/mail_sender.py) and gets no reply from Wisp. A name that
+                # itself holds "<" or ">" still ends up odd here, as it should.
                 row["sender"] = f"{name} <{address}>" if name else address
+                row.pop("sender_address", None)
             return row
     return None
 
@@ -505,7 +525,7 @@ def _fix_greeting(draft: str, row: dict) -> str:
     if not match or not me or match.group(2).casefold() != me:
         return draft
     name = parseaddr(str(row.get("sender") or ""))[0].strip().split()
-    first = name[0] if name and "@" not in name[0] else ""
+    first = name[0] if name and "@" not in name[0] and not _reply_recipient(row)[1] else ""
     greeting = f"{match.group(1)} {first}{match.group(3) or ','}" if first else ""
     rest = draft[match.end():].lstrip()
     return f"{greeting}\n\n{rest}".strip() if greeting else rest
@@ -516,10 +536,32 @@ def _reply_subject(subject: str) -> str:
     return subject if re.match(r"^\s*re\s*:", subject, re.I) else f"Re: {subject}".strip()
 
 
+_UNSURE_SENDER = "Wisp couldn't tell who this email is really from, so it won't reply for you. Open it in Mail."
+
+
+def _reply_recipient(row: dict) -> tuple[str, bool]:
+    """(the address a reply goes back to, the sender is odd), from service.mail_sender.
+
+    The address is the one the mail was really sent from, never one written into the
+    display name ("" when there is none to trust). An ordinary sender keeps the
+    address as written (its case included); only which address is read changed."""
+    from service import mail_sender
+    sender, parsed = str(row.get("sender") or ""), str(row.get("sender_address") or "")
+    real = mail_sender.real_address(sender, parsed)
+    if not real:
+        return "", mail_sender.is_odd(sender, parsed)
+    written = (parsed or parseaddr(sender)[1]).strip()
+    return (written if written.casefold() == real else real), mail_sender.is_odd(sender, parsed)
+
+
 def _predicted_envelope(ref: dict, row: dict, identity: tuple[str, str]) -> dict | None:
-    """The reply as the cache row predicts it: back to the sender, "Re:" subject."""
-    sender = parseaddr(str(row.get("sender") or ""))[1].strip()
-    if "@" not in sender:
+    """The reply as the cache row predicts it: back to the sender, "Re:" subject.
+
+    None when Wisp can't trust who sent it: no real address, or a display name
+    dressed up as an address (the card could name one person while the reply went
+    to another), so nothing is sealed and the tap-to-send is refused."""
+    sender, odd = _reply_recipient(row)
+    if "@" not in sender or odd:
         return None
     account, account_id = identity
     return {"message_id": ref["message_id"], "account": account, "account_id": account_id,
@@ -528,7 +570,7 @@ def _predicted_envelope(ref: dict, row: dict, identity: tuple[str, str]) -> dict
 
 def _envelope_view(ref: dict, row: dict) -> dict:
     """Who/what the reply goes to and whether Wisp can send it; no model, no Mail."""
-    sender = parseaddr(str(row.get("sender") or ""))[1]
+    sender, _odd = _reply_recipient(row)
     out: dict[str, Any] = {
         "ok": True, "reply_ref": ref, "account": ref["account"],
         "to": [sender] if sender else [], "cc": [],
@@ -547,7 +589,7 @@ def _envelope_view(ref: dict, row: dict) -> dict:
     out.update(open_url=open_url(ref, gmail=False), open_label="Open in Mail")
     predicted = _predicted_envelope(ref, row, identity)
     if predicted is None:
-        out["reason"] = "Wisp couldn't tell who this email is from, so it can't reply here."
+        out["reason"] = _UNSURE_SENDER
         return out
     out.update(account=identity[0], to=predicted["to"], cc=[], subject=predicted["subject"],
                envelope=seal_envelope(predicted, verified=False),

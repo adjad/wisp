@@ -2182,6 +2182,14 @@ struct SettingsView: View {
 
                         Divider()
 
+                        WritingStyleSettingsRow()
+
+                        Divider()
+
+                        ActForMeSettingsRow()
+
+                        Divider()
+
                         if loader.behaviorEnabled != nil {
                             Toggle(isOn: Binding(
                                 get: { loader.behaviorEnabled == true },
@@ -2258,7 +2266,8 @@ struct SettingsView: View {
                             Text("macOS permissions")
                                 .font(.system(size: 14, weight: .medium))
                             Text("Permissions… shows what Wisp reads, such as Calendar, Mail and Messages, each "
-                                 + "with its own Allow. More Access… asks for Screen Recording, Accessibility and "
+                                 + "with its own Allow. More Access… asks for Screen Recording, "
+                                 + "\(PrivacyNames.accessibilityWithFormerName) and "
                                  + "Full Disk Access, one at a time.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)

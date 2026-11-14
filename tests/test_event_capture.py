@@ -32,6 +32,15 @@ def plans(rows=None, records=None, *, now=MON+10, settings=None):
 
 
 @pytest.fixture
+def mail_captures_itself(monkeypatch):
+    """These tests drive AUTOMATIC capture of a mail candidate: the mechanics kept for when
+    mail may act. In this release mail never captures by itself (MAIL_CAPTURES_ITSELF;
+    tests/test_capture_mail_stays_a_card.py), so they switch it on."""
+    from service.attention import event_capture
+    monkeypatch.setattr(event_capture, 'MAIL_CAPTURES_ITSELF', True)
+
+
+@pytest.fixture
 def ledger(tmp_path):
     return Ledger(tmp_path / 'attention.db')
 
@@ -124,6 +133,7 @@ async def run_capture(c, ledger, *, result=None, fresh=None, current=lambda: Tru
     return row, calls
 
 
+@pytest.mark.usefixtures('mail_captures_itself')
 async def test_pair_is_once_across_restart_resync_and_new_message(ledger):
     c = plans()[0]
     preview(c, ledger, MON+10)
@@ -135,6 +145,7 @@ async def test_pair_is_once_across_restart_resync_and_new_message(ledger):
     assert ledger.capture_count_since(MON) == 1
 
 
+@pytest.mark.usefixtures('mail_captures_itself')
 @pytest.mark.parametrize('kind', ['calendar', 'reminder'])
 async def test_partial_native_outcome_persists_and_never_blind_retries(ledger, kind):
     c = plans()[0]
@@ -145,6 +156,7 @@ async def test_partial_native_outcome_persists_and_never_blind_retries(ledger, k
     assert again['state'] == 'unknown' and calls == []
 
 
+@pytest.mark.usefixtures('mail_captures_itself')
 async def test_verified_failure_discloses_other_effect_success(ledger):
     row, _ = await run_capture(plans()[0], ledger, result={'reminder': {'ok': False, 'status': 'failed'}})
     assert row['state'] == 'partial'
@@ -152,6 +164,7 @@ async def test_verified_failure_discloses_other_effect_success(ledger):
     assert row['detail']['effects']['reminder']['status'] == 'failed'
 
 
+@pytest.mark.usefixtures('mail_captures_itself')
 async def test_start_only_event_gets_reminder_but_no_invented_calendar_duration(ledger):
     c = plans([mail('STAT 5 Exam next Wednesday at 3pm')])[0]
     row, calls = await run_capture(c, ledger)
@@ -159,6 +172,7 @@ async def test_start_only_event_gets_reminder_but_no_invented_calendar_duration(
     assert row['detail']['effects']['calendar']['status'] == 'needs_duration'
 
 
+@pytest.mark.usefixtures('mail_captures_itself')
 @pytest.mark.parametrize('source,expected', [('calendar', 'reminder'), ('reminders', 'calendar')])
 async def test_existing_destination_does_not_hide_missing_other_effect(ledger, source, expected):
     c = plans()[0]
@@ -168,6 +182,7 @@ async def test_existing_destination_does_not_hide_missing_other_effect(ledger, s
     assert row['state'] == 'created' and [k for k, *_ in calls] == [expected]
 
 
+@pytest.mark.usefixtures('mail_captures_itself')
 async def test_claim_survives_crash_without_dispatching_again(ledger):
     c = plans()[0]
     ledger.claim(c.capture_key, now=MON-1000, detail={'effects': {'calendar': {'status': 'claimed'}}})
@@ -176,12 +191,14 @@ async def test_claim_survives_crash_without_dispatching_again(ledger):
     assert row['state'] == 'unknown' and calls == []
 
 
+@pytest.mark.usefixtures('mail_captures_itself')
 async def test_stale_source_refused_before_claim(ledger):
     with pytest.raises(ValueError, match='source changed'):
         await run_capture(plans()[0], ledger, current=lambda: False)
     assert ledger.get(plans()[0].capture_key) is None
 
 
+@pytest.mark.usefixtures('mail_captures_itself')
 async def test_source_invalidation_between_effects_prevents_second_write(ledger):
     checks = iter([True, True, False])
     row, calls = await run_capture(plans()[0], ledger, current=lambda: next(checks))
@@ -189,6 +206,7 @@ async def test_source_invalidation_between_effects_prevents_second_write(ledger)
     assert row['detail']['effects']['reminder']['status'] == 'blocked'
 
 
+@pytest.mark.usefixtures('mail_captures_itself')
 async def test_pair_daily_cap_counts_one_pair_not_its_preview_mirror(ledger):
     c = plans()[0]
     preview(c, ledger, MON+10)
@@ -197,6 +215,7 @@ async def test_pair_daily_cap_counts_one_pair_not_its_preview_mirror(ledger):
     assert ledger.count_since(MON) == 2  # ordinary recent rows include the display mirror
 
 
+@pytest.mark.usefixtures('mail_captures_itself')
 async def test_native_receipt_title_is_not_duplicated_in_capture_history(ledger):
     c = plans()[0]
     preview(c, ledger, MON+10)
@@ -221,6 +240,7 @@ def test_refresh_preview_updates_displayed_fields_but_never_finished_effects(led
     assert preview(c, ledger, MON+40)['title'] == revised.title
 
 
+@pytest.mark.usefixtures('mail_captures_itself')
 async def test_legacy_reminder_attempt_consumes_paired_daily_cap(ledger):
     ledger.claim('msg:legacy', now=MON+1)
     ledger.finish('msg:legacy', 'created', now=MON+1)
@@ -351,6 +371,7 @@ async def test_old_reminder_live_optin_never_writes_calendar(wired):
     assert w.writes == []
 
 
+@pytest.mark.usefixtures('mail_captures_itself')
 async def test_new_source_after_automatic_pair_optin_captures_without_explicit_token(wired):
     w = wired
     w.client.put('/assistant/attention/settings', json={'mode': 'live', 'capture_events': True})
@@ -434,6 +455,7 @@ def test_generic_institutional_event_needs_review_of_participation():
     assert 'review participation' in got[0].when
 
 
+@pytest.mark.usefixtures('mail_captures_itself')
 async def test_revoking_auto_capture_between_effects_blocks_reminder(wired, monkeypatch):
     w = wired
     w.client.put('/assistant/attention/settings', json={'mode': 'live', 'capture_events': True})
@@ -513,6 +535,7 @@ def test_unrelated_participation_and_third_party_role_never_authorize_event(text
     assert plans([], [message('Hi', ts=MON-HOUR, direction='outgoing', guid='h'), message(text)]) == []
 
 
+@pytest.mark.usefixtures('mail_captures_itself')
 async def test_distinct_explicit_times_same_course_same_day_are_separate_events(ledger):
     a = plans([mail('STAT 5 exam next Wednesday at 10am for 1 hour')])[0]
     b = plans([mail('STAT 5 exam next Wednesday at 3pm for 1 hour', message_id='<other@example.test>')])[0]

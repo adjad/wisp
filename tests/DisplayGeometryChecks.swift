@@ -67,6 +67,23 @@ struct DisplayGeometryChecks {
             }
         }
         check(l.expandedFrame(contentHeight: 4000).height <= d.frame.height - SurfaceLayout.screenMargin, "\(name): tall content clamped")
+        // On a notch the bar, the panel and the wide panel sit dead centre on
+        // the camera housing, on whole points. Half a point out, the bar had
+        // one wing wider than the other and a close stepped sideways onto it.
+        if style == .notch {
+            let centre = d.frame.midX
+            func whole(_ r: CGRect) -> Bool { r.minX == r.minX.rounded() && r.maxX == r.maxX.rounded() }
+            check(l.barFrame.midX == centre && whole(l.barFrame),
+                  "\(name): bar dead centre on the notch: \(l.barFrame) for centre \(centre)")
+            let wrap = l.notchSize.width + 2 * SurfaceLayout.wing
+            check(l.barFrame.width >= wrap && l.barFrame.width < wrap + 2,
+                  "\(name): bar wraps the notch with equal wings of 6 to 7 pt: \(l.barFrame.width) for \(wrap)")
+            for wide in [false, true] {
+                let f = l.widened(wide).expandedFrame(contentHeight: 300)
+                check(f.midX == centre && whole(f),
+                      "\(name): \(wide ? "wide " : "")panel shares the bar's centre: \(f) for centre \(centre)")
+            }
+        }
     }
 
     static func main() {
@@ -79,6 +96,10 @@ struct DisplayGeometryChecks {
         checkLayout("Air 13.6", notched(1470, 956), style: .notch)
         checkLayout("Air 15.3", notched(1710, 1107), style: .notch)
         checkLayout("Air 13.6 larger text", notched(1280, 832), style: .notch)
+        // An odd-width scaled mode, and a notch that is not a whole number of points.
+        checkLayout("MBP 14 largest text", notched(1147, 745, notch: 141), style: .notch)
+        checkLayout("MBP 16 fractional notch", notched(1728, 1117, notch: 184.5), style: .notch)
+        checkLayout("MBP 14 odd mode, even notch", notched(1147, 745, notch: 140), style: .notch)
 
         let real = SurfaceLayout.make(for: notched(1512, 982))
         tabScrollCapChecks()
@@ -102,7 +123,14 @@ struct DisplayGeometryChecks {
         check(SurfaceLayout.make(for: notched(1512, 982)).hoverDwell == HoverIntent.dwell, "Notch keeps its dwell")
 
         check(real.notchSize == CGSize(width: 185, height: 32), "Reads the physical notch")
-        check(real.barFrame.width == 185 + 2 * SurfaceLayout.wing, "Bar wraps the notch")
+        check(real.barFrame.width == 198 && real.barFrame.minX == 657,
+              "Bar wraps the notch, a point wider than notch plus wings so it sits dead centre")
+        let sixteen = SurfaceLayout.make(for: notched(1728, 1117))
+        check(sixteen.barFrame == CGRect(x: 765, y: 1085, width: 198, height: 32),
+              "On a 16-inch display the bar leaves 6.5 pt either side of the notch (771.5 to 956.5)")
+        check(SurfaceLayout.centrable(197, in: 1728, .up) == 198 && SurfaceLayout.centrable(640, in: 1728, .down) == 640
+              && SurfaceLayout.centrable(640, in: 1147, .down) == 639 && SurfaceLayout.centrable(152.2, in: 1147, .up) == 153,
+              "A width takes the display's parity, moving the way it was rounded")
         check(real.barFrame.height == 32, "Bar covers the full notch height")
         check(SurfaceLayout.make(for: notched(1512, 982, top: 34)).barFrame.height == 34, "Reads a taller notch")
 
@@ -450,25 +478,27 @@ struct DisplayGeometryChecks {
         check(tiny.pageContentCap(headerHeight: header) == SurfaceLayout.minTabScroll, "Floor on a tiny display")
     }
 
-    /// The overlay wraps Brief and Day, and only them, in the capped scroll.
+    /// The overlay wraps Brief, Day and Meet, and only them, in the capped scroll.
     static func tabScrollSourceChecks() {
         let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("app/Sources/WispApp")
         guard let overlay = try? String(contentsOf: app.appendingPathComponent("OverlayView.swift"), encoding: .utf8),
               let cards = try? String(contentsOf: app.appendingPathComponent("ProactiveCards.swift"), encoding: .utf8)
         else { preconditionFailure("tab scroll: read the overlay's source") }
-        check(overlay.contains("case .brief:\n                tabScroll { NotchBriefView(model: model, today: todayModel, wide: briefIsWide) }"),
+        check(overlay.contains("case .brief:\n            tabScroll { NotchBriefView(model: model, today: todayModel, wide: briefIsWide) }"),
               "Brief sits in the tab scroll")
-        check(overlay.contains("case .day:\n                tabScroll { NotchDayView(model: model, today: todayModel) }"),
+        check(overlay.contains("case .day:\n            tabScroll { NotchDayView(model: model, today: todayModel) }"),
               "Day sits in the tab scroll")
-        check(overlay.components(separatedBy: "tabScroll {").count - 1 == 2, "only Brief and Day scroll as a tab")
-        check(overlay.contains("CappedScroll(cap: layout.tabScrollCap(headerHeight: headerHeight), reveals: true)"),
+        check(overlay.contains("case .meet:\n            tabScroll { NotchMeetingView(model: MeetingModel.shared) }"),
+              "Meet sits in the tab scroll")
+        check(overlay.components(separatedBy: "tabScroll {").count - 1 == 3, "only Brief, Day and Meet scroll as a tab")
+        check(overlay.contains("CappedScroll(cap: layout.tabScrollCap(headerHeight: headerHeight), reveals: true,"),
               "the tab scroll is capped from the display's geometry")
         check(overlay.contains("bottom: SurfaceLayout.panelBottomPadding"), "the cap and the panel share one bottom padding")
         // Permissions and Settings are capped at the page limit and scroll inside themselves.
         check(overlay.contains("NotchPermissionsView(model: model, cap: layout.pageContentCap(headerHeight: headerHeight))"),
               "Permissions gets the page cap")
-        check(overlay.contains("QuickSettingsView(model: model, settings: settings,\n                                  cap: layout.pageContentCap(headerHeight: headerHeight))"),
+        check(overlay.contains("QuickSettingsView(model: model, settings: settings,\n                              cap: layout.pageContentCap(headerHeight: headerHeight))"),
               "Settings gets the page cap")
         for page in ["NotchPermissionsView.swift", "QuickSettingsView.swift"] {
             let text = (try? String(contentsOf: app.appendingPathComponent(page), encoding: .utf8)) ?? ""
@@ -476,7 +506,7 @@ struct DisplayGeometryChecks {
         }
         // The header is outside the scroll, so it stays put.
         let panel = overlay.components(separatedBy: "private var expandedPanel: some View {")[1]
-        check(panel.hasPrefix("\n        VStack(alignment: .leading, spacing: 0) {\n            header\n"), "header stays fixed")
+        check(panel.contains("return VStack(alignment: .leading, spacing: 0) {\n            header\n"), "header stays fixed")
         // Fits: no indicator, no bounce. Composer and draft scroll into sight, unanimated.
         check(cards.contains(".scrollIndicators(height > cap ? .automatic : .never)"), "no indicator while it fits")
         check(cards.contains(".scrollBounceBehavior(.basedOnSize)"), "no bounce while it fits")

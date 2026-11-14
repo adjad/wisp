@@ -104,6 +104,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// stays this long for reading it, and then closes unless the pointer came back.
     private var collapseHeldForAnswer = false
     private var answerReadDelay: TimeInterval = 60
+    /// When the close being held for an answer first came due. An answer holds
+    /// it for at most `answerHoldCeiling`: a turn the service keeps alive past
+    /// that (heartbeats with nothing else) no longer keeps the notch over the
+    /// person's work. Cleared when the answer settles.
+    private var answerHeldSince: Date?
+    /// Ten minutes, the chat stream's own limit for silence (WispClient's
+    /// timeoutInterval for /agent); no answer worth waiting for runs longer.
+    private var answerHoldCeiling: TimeInterval = 600
     private var answerEnded: AnyCancellable?
     // Whether the pointer is over the expanded panel. Replaceable so the motion
     // checks, which host no real panel, can exercise both answers.
@@ -137,9 +145,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var activityReader: ActivityReader?
     private var nativeSourceReadersStarted = false
     private static let autoCollapseDelay: TimeInterval = 2
-    /// The content's fade at the start of a close: well inside the 0.28 s
-    /// retraction, so the shape never carries text for most of its travel.
-    static let closeFade: TimeInterval = 0.08
+    /// The content's fade at the start of a close. The shape is already
+    /// moving (the close has no hold), slowly at first, so its edge crosses
+    /// the fading content for these first frames; the content's layers are
+    /// taken out soon after (OverlayPanel.contentHideDelay).
+    static let closeFade: TimeInterval = 0.05
+    /// The content's fade at an open: it waits `openFadeDelay` while the shape
+    /// grows out of the notch, then fades in as the shape nears full size, so
+    /// the growing edge never wipes across live text.
+    static let openFadeDelay: TimeInterval = 0.07
+    static let openFade: TimeInterval = 0.16
+
+    /// A close with the content veiled for it (OverlayModel.contentVeiled):
+    /// the content fades in the first part of the close, so the retracting
+    /// shape carries only the surface. The veil lifts whenever the close ends,
+    /// finished or cut short, as the collapsed bar replaces the content.
+    /// `rollUp` is the panel's close; `then` runs once the bar is in the model.
+    static func veiledClose(model: OverlayModel, animated: Bool,
+                            rollUp: (@escaping () -> Void) -> Void, then: @escaping () -> Void) {
+        if animated {
+            withAnimation(.easeOut(duration: closeFade)) { model.contentVeiled = true }
+        }
+        rollUp {
+            model.contentVeiled = false
+            model.collapsed = true
+            then()
+        }
+    }
+
+    /// An open with the content veiled for it: the content stays behind the
+    /// surface while the shape grows out of the notch, then fades in. The fade
+    /// is started with the open itself, not at its end, so nothing can leave
+    /// the content hidden, and an open always clears a veil left behind.
+    /// `dropOpen` is the panel's open; `then` is its completion.
+    static func veiledOpen(model: OverlayModel, animated: Bool,
+                           dropOpen: @escaping (@escaping () -> Void) -> Void, then: @escaping () -> Void) {
+        model.contentVeiled = animated
+        model.collapsed = false
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation(.easeOut(duration: openFade).delay(openFadeDelay)) { model.contentVeiled = false }
+            }
+            dropOpen(then)
+        }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // One Wisp at a time. A second launch used to terminate the first one's
@@ -331,6 +380,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // post again, and their launch-time posts went out before it was
                 // listening. Post them now, then load what was waiting.
                 self.resyncAllReaders()
+                StageMode.shared.pushIfOn()    // the service keeps Demo mode in memory only
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     await self.todayModel.refresh()
@@ -1226,6 +1276,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                            action: #selector(changeSetupFromMenu), keyEquivalent: "")
         changeSetupMenuItem?.isHidden = true
         menu.addItem(.separator())
+        // Demo mode (StageMode.swift): a checkmark while on, and one plain line under it.
+        demoModeMenuItem = menu.addItem(withTitle: StageMode.menuTitle,
+                                        action: #selector(toggleDemoModeFromMenu), keyEquivalent: "")
+        demoModeNoteItem = menu.addItem(withTitle: "", action: nil, keyEquivalent: "")
+        demoModeNoteItem?.isEnabled = false
+        refreshDemoModeMenuItems()
+        menu.addItem(.separator())
         menu.addItem(withTitle: "Report a Problem…", action: #selector(reportProblem), keyEquivalent: "")
         menu.addItem(withTitle: Self.exportDebugLogTitle, action: #selector(exportDebugLogFromMenu), keyEquivalent: "")
             .toolTip = SettingsView.debugLogPrivacyLine
@@ -1251,6 +1308,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.post(name: .wispExportDebugLog, object: nil)
     }
     private var changeSetupMenuItem: NSMenuItem?
+    private var demoModeMenuItem: NSMenuItem?
+    private var demoModeNoteItem: NSMenuItem?
+
+    @objc private func toggleDemoModeFromMenu() {
+        StageMode.shared.set(!StageMode.shared.isOn)
+    }
+
+    /// The checkmark and the line under it, current each time the menu opens.
+    private func refreshDemoModeMenuItems() {
+        let stage = StageMode.shared
+        demoModeMenuItem?.state = stage.isOn ? .on : .off
+        demoModeNoteItem?.title = StageMode.menuNote(on: stage.isOn, remaining: stage.remaining,
+                                                     problem: stage.problem)
+    }
 
     /// The setup window again at Permissions, for someone already set up. It never
     /// switches or tests their model (FirstRunSetup.drivesModel).
@@ -1308,6 +1379,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 setupMenuItem?.title = "Finish Setup…"
             }
+            refreshDemoModeMenuItems()
             statusItem.menu = menu
             statusItem.button?.performClick(nil)
             statusItem.menu = nil
@@ -1415,6 +1487,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func collapse() {
         // A delayed focus/hover callback from chat must not cancel Search.
         guard presentation.desired == .chat else { return }
+        // Closed, the panel holds nothing for the answer any more; if it opens
+        // again during the same answer, its hold starts over.
+        collapseHeldForAnswer = false
+        answerHeldSince = nil
         requestPresentation(.bar)
     }
 
@@ -1509,18 +1585,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if step.from == .chat {
             guard let panel else { finishPresentation(step); return }
             panel.makeFirstResponder(nil)
-            // The content fades in the first part of the close, so the
-            // retracting shape carries only the surface (see OverlayModel.closing).
-            if !panel.reduceMotion() {
-                withAnimation(.easeOut(duration: Self.closeFade)) { model.closing = true }
-            }
-            panel.rollUp { [weak self] in
-                guard let self else { return }
-                self.model.closing = false
-                self.model.collapsed = true
+            Self.veiledClose(model: model, animated: !panel.reduceMotion(), rollUp: { panel.rollUp($0) }) { [weak self] in
                 DispatchQueue.main.async {
                     panel.settleToBar()
-                    self.finishPresentation(step)
+                    self?.finishPresentation(step)
                 }
             }
         } else if step.from == .search {
@@ -1540,10 +1608,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 createPanelIfNeeded()
                 guard let panel else { finishPresentation(step); return }
                 if !panel.isVisible { panel.present() }
-                model.closing = false
-                model.collapsed = false
-                DispatchQueue.main.async { [weak self] in
-                    panel.dropOpen { self?.finishPresentation(step) }
+                Self.veiledOpen(model: model, animated: !panel.reduceMotion(), dropOpen: { panel.dropOpen($0) }) { [weak self] in
+                    self?.finishPresentation(step)
                 }
             case .search:
                 createSearchPanelIfNeeded()
@@ -1594,8 +1660,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Don't hide a pinned panel, an unfinished edit (typed input, a
             // message draft being edited) or an answer being written out from
             // under the user.
-            if self.model.answerInFlight { self.collapseHeldForAnswer = true; return }
-            if self.model.holdsOpen { return }
+            // Past the answer's ceiling only the person's own holds remain.
+            if self.holdForAnswer() { return }
+            if self.model.holdsOpenBesidesAnswer { return }
             // A menu opened from the panel (the chat switcher) runs outside it,
             // so the pointer leaving the panel is not the person leaving. Hold
             // the collapse until the menu closes (see installMenuTrackingObservers).
@@ -1612,26 +1679,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func answerSettled() {
         guard collapseHeldForAnswer else { return }
         collapseHeldForAnswer = false
+        answerHeldSince = nil
         guard !model.collapsed, !pointerInPanel() else { return }
         pendingCollapse?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self, !self.model.collapsed, !self.menuTracking else { return }
-            if self.model.answerInFlight { self.collapseHeldForAnswer = true; return }
-            if self.model.holdsOpen { return }
+            if self.holdForAnswer() { return }
+            if self.model.holdsOpenBesidesAnswer { return }
             self.collapse()
         }
         pendingCollapse = work
         DispatchQueue.main.asyncAfter(deadline: .now() + answerReadDelay, execute: work)
     }
 
-    /// Watches for the end of the answer a close is waiting on. @Published sends
-    /// before the value is stored, so this reads it on the next turn.
+    /// Watches for the end of the answer a close is waiting on. It follows the
+    /// values sent (@Published sends before it stores them), each in order, so
+    /// an answer that ends and a queued one that starts in the same turn of the
+    /// run loop still read as an end and a start: the queued one gets its own
+    /// hold, not what is left of the last one's.
     private func watchForAnswerEnding() {
         guard answerEnded == nil else { return }
-        answerEnded = model.$phase.receive(on: DispatchQueue.main).sink { [weak self] _ in
-            guard let self, !self.model.answerInFlight else { return }
-            self.answerSettled()
+        answerEnded = model.$phase.map(OverlayModel.inFlight)
+            .combineLatest(model.$briefComposing) { $0 || $1 }
+            .removeDuplicates()
+            .dropFirst()
+            .receive(on: DispatchQueue.main).sink { [weak self] generating in
+                guard let self else { return }
+                if generating { self.answerHeldSince = nil } else { self.answerSettled() }
+            }
+    }
+
+    /// Holds an automatic close while Wisp is writing (OverlayModel.generating),
+    /// for at most `answerHoldCeiling` from when the first close came due; then
+    /// the close goes ahead as usual. True while it holds. The turn's own state
+    /// ends the hold (answerSettled), not a flag of this one.
+    private func holdForAnswer() -> Bool {
+        guard model.generating else { return false }
+        let since = answerHeldSince ?? Date()
+        let left = answerHoldCeiling - Date().timeIntervalSince(since)
+        guard left > 0 else { return false }
+        if answerHeldSince == nil {
+            answerHeldSince = since
+            // Look again at the ceiling, in case the answer never ends.
+            DispatchQueue.main.asyncAfter(deadline: .now() + left) { [weak self] in
+                guard let self, self.collapseHeldForAnswer, self.answerHeldSince == since,
+                      !self.model.collapsed, !self.pointerInPanel() else { return }
+                self.scheduleCollapse()
+            }
         }
+        collapseHeldForAnswer = true
+        return true
     }
 
     private func pointerEnteredPanel() {
@@ -2276,6 +2373,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // Stopping the engine unloads any models and frees its ~2GB baseline too.
         Task {
+            // A meeting being recorded: stop the microphone and the call audio first, and let
+            // the last window reach the service before it is stopped (bounded, about 6 s).
+            await MeetingModel.shared.stopForQuit()
             // Let any just-fired Settings change (role/model) finish
             // persisting to ~/.moe/config.yaml before the backend that writes it
             // gets killed — see PendingConfigWrites' docstring for the race this
@@ -2593,7 +2693,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.addButton(withTitle: "Not Now")
         } else {
             alert.messageText = "Wisp has all the access it can use"
-            alert.informativeText = "Screen Recording, Accessibility and Full Disk Access are on."
+            alert.informativeText = "Screen Recording, \(PrivacyNames.accessibility) and Full Disk Access are on."
             alert.addButton(withTitle: "OK")
         }
         NSApp.activate(ignoringOtherApps: true)
@@ -2768,8 +2868,24 @@ extension AppDelegate {
             delegate.model.phase = phase
             return delegate
         }
-        for delegate in [idle, pinned, typing, editing, addingTask, picking] + answering { delegate.scheduleCollapse() }
+        // The Brief being composed holds like an answer; a turn that fails lets go;
+        // a turn that never ends holds only up to the ceiling.
+        let composing = opened()
+        composing.model.qaSetBriefComposing(true)
+        let failing = opened()
+        failing.model.phase = .working
+        let hung = opened()
+        hung.model.phase = .streaming
+        hung.answerHoldCeiling = 0.3
+        for delegate in [idle, pinned, typing, editing, addingTask, picking, composing, failing, hung] + answering {
+            delegate.scheduleCollapse()
+        }
         try? await Task.sleep(for: .seconds(autoCollapseDelay + 0.5))
+        precondition(composing.presentation.desired == .chat && composing.collapseHeldForAnswer,
+                     "The Brief being written must hold the panel open")
+        precondition(failing.presentation.desired == .chat && failing.collapseHeldForAnswer,
+                     "A turn running tools must hold the panel open")
+        precondition(hung.presentation.desired == .chat, "Inside its ceiling an answer still holds")
         precondition(idle.presentation.desired == .bar, "Control: an idle panel must auto-collapse")
         for (delegate, what) in [(pinned, "a pin"), (typing, "typed input"), (editing, "a draft being edited"),
                                  (addingTask, "a Day task being typed"), (picking, "an open file dialog")] {
@@ -2781,18 +2897,45 @@ extension AppDelegate {
         }
         // Done: it stays long enough to read, then closes; the pointer coming back keeps it.
         let reading = answering[2]
-        reading.answerReadDelay = 0.3
-        reading.watchForAnswerEnding()
+        // A queued turn that starts in the same run-loop turn as the last one ends
+        // gets a hold of its own, not what was left of the last one's.
+        let queued = answering[0]
+        let firstHold = queued.answerHeldSince
+        precondition(firstHold != nil, "A held answer records when its hold began")
+        for delegate in [reading, failing, composing, queued] {
+            delegate.answerReadDelay = 0.3
+            delegate.watchForAnswerEnding()
+        }
         reading.model.phase = .done
+        failing.model.phase = .error
+        composing.model.qaSetBriefComposing(false)
+        queued.model.phase = .done
+        queued.model.phase = .routing
         try? await Task.sleep(for: .seconds(0.1))
-        precondition(!reading.collapseHeldForAnswer && reading.presentation.desired == .chat,
-                     "A finished answer stays up to be read")
+        precondition(!queued.collapseHeldForAnswer && queued.answerHeldSince == nil && queued.presentation.desired == .chat,
+                     "An answer ending lets its hold go even when the next starts at once")
+        for (delegate, what) in [(reading, "A finished answer"), (failing, "A failed turn"), (composing, "A composed Brief")] {
+            precondition(!delegate.collapseHeldForAnswer && delegate.presentation.desired == .chat,
+                         "\(what) stays up to be read: the close timer starts again at the turn's end")
+        }
         try? await Task.sleep(for: .seconds(0.5))
-        precondition(reading.presentation.desired == .bar, "A finished answer doesn't hold the panel forever")
+        for (delegate, what) in [(reading, "A finished answer"), (failing, "A failed turn"), (composing, "A composed Brief")] {
+            precondition(delegate.presentation.desired == .bar, "\(what) doesn't hold the panel forever")
+        }
+        precondition(queued.presentation.desired == .chat && queued.collapseHeldForAnswer
+                     && (queued.answerHeldSince ?? .distantPast) > firstHold!,
+                     "The queued turn holds the panel from its own start")
         // An explicit close still closes, and a window of Wisp's doesn't during an answer.
-        let closing = answering[0]
+        let closing = answering[1]
         closing.collapse()
         precondition(closing.presentation.desired == .bar, "The chevron, Esc and the hotkey still close during an answer")
+        precondition(closing.model.phase == .working, "Closing the notch mid-answer leaves the answer running")
+        precondition(!closing.collapseHeldForAnswer && closing.answerHeldSince == nil,
+                     "A close lets the answer's hold go, so opening again starts it over")
+        // The hung turn: past its ceiling the usual close goes ahead, the turn untouched.
+        try? await Task.sleep(for: .seconds(autoCollapseDelay + 0.6))
+        precondition(hung.presentation.desired == .bar && hung.model.phase == .streaming,
+                     "An answer that never ends holds the notch open only up to the ceiling")
         pinned.collapse()
         precondition(!pinned.model.pinned, "An explicit collapse must unpin")
         precondition(pinned.presentation.desired == .bar, "An explicit collapse still collapses a pinned panel")
@@ -2817,7 +2960,7 @@ extension AppDelegate {
         addingTask.model.tab = .research
         addingTask.model.prepareTab(byHover: false)
         precondition(addingTask.model.tab == .ask, "⌥Space opens Ask")
-        print("PASS: AppDelegate collapse holds (pin, typing, draft, Day task, file dialog), unpins on collapse and dismiss; tabs reopen as designed")
+        print("PASS: AppDelegate collapse holds (pin, typing, draft, Day task, file dialog, answers and the Brief up to a ceiling; done or failed turns restart the close), unpins on collapse and dismiss; tabs reopen as designed")
     }
 
     /// A reply written in the Brief holds the panel open until it is sent or

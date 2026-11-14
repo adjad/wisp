@@ -934,7 +934,9 @@ struct SetupGuideChecks {
                   "With nothing to download, a tested catalogue model may be switched to")
             check(existing(running: true, recommended: "OTHER", download: true, tested: true).existingOmlx
                     == .offering(model: "G", label: "G"),
-                  "With a download on offer, another tested model is only offered")
+                  "With a download on offer, another tested model is only offered "
+                  + "(0.5.0, decided: base Gemma in the person's oMLX.app while Gemma Wisp is offered "
+                  + "is one click, never switched to by itself)")
             check(existing(running: true, roles: [("MISSING", "local"), ("x", "local_provider")]).existingOmlx
                     == .offering(model: "G", label: "G"),
                   "A role on another app is never repointed silently")

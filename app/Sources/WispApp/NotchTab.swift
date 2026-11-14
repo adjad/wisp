@@ -1,16 +1,17 @@
 import Foundation
 
 /// The notch panel's tabs. Ask is the conversation; Brief is what's going on,
-/// read only; Day is the rest of today, hour by hour. Research is not in the
+/// read only; Day is the rest of today, hour by hour; Meet listens to a meeting
+/// and writes its notes. Research is not in the
 /// strip: it is a mode of Ask (`/research`, a job opened from the window, New
 /// research), reached through `.research` and left by choosing a tab.
 ///
 /// Pure logic, checked by tests/NotchTabChecks.swift without the app.
 enum NotchTab: Int, CaseIterable, Equatable {
-    case ask, brief, day, research
+    case ask, brief, day, research, meet
 
-    /// The tabs shown in the strip, in order, with ⌘1 to ⌘3.
-    static let strip: [NotchTab] = [.ask, .brief, .day]
+    /// The tabs shown in the strip, in order, with ⌘1 to ⌘4.
+    static let strip: [NotchTab] = [.ask, .brief, .day, .meet]
 
     var title: String {
         switch self {
@@ -18,19 +19,78 @@ enum NotchTab: Int, CaseIterable, Equatable {
         case .brief: return "Brief"
         case .day: return "Day"
         case .research: return "Research"
+        case .meet: return "Meet"
         }
     }
 
     /// The strip tab drawn as selected. Research is a mode of Ask.
     var stripTab: NotchTab { self == .research ? .ask : self }
 
-    /// ⌘1 to ⌘3 while the panel has focus; Research has none.
+    /// ⌘1 to ⌘4 while the panel has focus; Research has none.
     var shortcutDigit: Character? {
         Self.strip.firstIndex(of: self).map { Character(String($0 + 1)) }
     }
 
     /// Brief and Day load and show the day, not a prompt field.
     var showsDay: Bool { self == .brief || self == .day }
+
+    /// Ask and Research have the prompt field; the cursor goes there when they open.
+    var hasPrompt: Bool { self == .ask || self == .research }
+}
+
+/// What fills the open panel under its header. Tabs sit side by side, in strip
+/// order; quick settings is pushed over a tab and a permission page over either.
+/// The reset card and Getting to know you replace a tab in place.
+enum NotchPage: Hashable {
+    case tab(NotchTab)
+    case settings
+    case permissions
+    case reset
+    case knowYou
+
+    /// How far down the push stack: tabs and cards 0, settings 1, permissions 2.
+    var depth: Int {
+        switch self {
+        case .tab, .reset, .knowYou: return 0
+        case .settings: return 1
+        case .permissions: return 2
+        }
+    }
+
+    /// The page shown for the panel's state, most specific first, as
+    /// OverlayView.expandedPanel lays them out.
+    static func shown(tab: NotchTab, settings: Bool, permissions: Bool, reset: Bool, knowYou: Bool) -> NotchPage {
+        if reset { return .reset }
+        if knowYou { return .knowYou }
+        if permissions { return .permissions }
+        if settings { return .settings }
+        return .tab(tab)
+    }
+
+    /// How a change from one page to another slides (NotchPageMotion).
+    /// - A deeper page pushes in from the trailing edge; the page under it
+    ///   drifts a step toward the leading edge as it fades.
+    /// - Going back is the mirror: the page leaves to the trailing edge, and the
+    ///   one under it returns from a step to the leading side.
+    /// - Tabs slide a step by strip order (Research counts as Ask).
+    /// - The reset card and Getting to know you crossfade in place.
+    static func motion(from old: NotchPage, to new: NotchPage) -> NotchPageMotion {
+        guard old != new else { return .none }
+        if new.depth > old.depth { return NotchPageMotion(insertion: 3, removal: -1) }
+        if new.depth < old.depth { return NotchPageMotion(insertion: -1, removal: 3) }
+        guard case .tab(let from) = old, case .tab(let to) = new,
+              let a = NotchTab.strip.firstIndex(of: from.stripTab),
+              let b = NotchTab.strip.firstIndex(of: to.stripTab), a != b else { return .none }
+        return b > a ? NotchPageMotion(insertion: 1, removal: -1) : NotchPageMotion(insertion: -1, removal: 1)
+    }
+}
+
+/// Where an arriving page starts and a leaving page ends, in slide steps
+/// (Theme.Motion.slideStep): positive toward the trailing edge. Both fade.
+struct NotchPageMotion: Equatable {
+    var insertion: Double
+    var removal: Double
+    static let none = NotchPageMotion(insertion: 0, removal: 0)
 }
 
 /// Which tab the panel opens on. ⌥Space and the menu-bar icon always open Ask.
