@@ -457,3 +457,81 @@ def test_this_file_is_in_the_simulation_manifest():
     from pathlib import Path
     manifest = (Path(__file__).resolve().parents[1] / "scripts" / "run_simulation_qa.py").read_text()
     assert '"tests/test_study_generate.py"' in manifest
+
+
+# --- Gemini structured output schemas ----------------------------------------------------
+
+def _conforms(value, schema):
+    """A small checker for the schema subset Study uses."""
+    if "anyOf" in schema:
+        return any(_conforms(value, s) for s in schema["anyOf"])
+    kinds = schema["type"] if isinstance(schema["type"], list) else [schema["type"]]
+    py = {"string": str, "integer": int, "number": (int, float), "boolean": bool,
+          "object": dict, "array": list, "null": type(None)}
+    if not any(isinstance(value, py[k]) for k in kinds):
+        return False
+    if isinstance(value, dict):
+        props = schema.get("properties", {})
+        return (set(schema.get("required", [])) <= set(value) and set(value) <= set(props)
+                and all(_conforms(v, props[k]) for k, v in value.items()))
+    if isinstance(value, list):
+        return (schema.get("minItems", 0) <= len(value) <= schema.get("maxItems", 10 ** 9)
+                and all(_conforms(v, schema["items"]) for v in value))
+    if "enum" in schema:
+        return value in schema["enum"]
+    return True
+
+
+SAMPLES = {
+    "quiz": {"title": "Cells", "questions": [
+        {"prompt": f"Q{i}?", "choices": ["a", "b", "c", "d"], "answer": i % 4, "why": "Because."}
+        for i in range(3)]},
+    "flashcards": {"title": "Terms", "cards": [{"front": f"T{i}", "back": f"D{i}"} for i in range(4)]},
+    "lesson": {"title": "Loops", "steps": [
+        {"title": "Start", "explain": "A loop repeats.", "example": None, "check": None},
+        {"title": "For", "explain": "for x in y.", "example": "for i in range(3)",
+         "check": {"prompt": "Runs?", "choices": ["0", "3", "4"], "answer": 1, "why": "range(3)."}}]},
+    "guide": {"title": "Unit 1", "summary": "Basics.", "sections": [
+        {"heading": "A", "points": ["one", "two", "three"]}, {"heading": "B", "points": ["four"]}],
+        "key_terms": [{"term": "cell", "meaning": "unit of life"}], "practice": ["Explain a cell."]},
+}
+COUNTS = {"quiz": 3, "flashcards": 4, "lesson": 2, "guide": None}
+
+
+@pytest.mark.parametrize("kind", G.KINDS)
+def test_schema_matches_what_validate_accepts(kind):
+    schema = G.schema_for(kind, COUNTS[kind] or "4 to 6")
+    assert _conforms(SAMPLES[kind], schema)
+    G.validate(kind, SAMPLES[kind])
+
+
+def test_exact_counts_are_enforced_by_the_schema():
+    quiz = G.schema_for("quiz", 5)["properties"]["questions"]
+    assert quiz["minItems"] == quiz["maxItems"] == 5
+    assert quiz["items"]["properties"]["choices"]["minItems"] == 4
+
+
+def test_make_and_extract_pass_their_schemas_to_a_connector_that_takes_them():
+    seen = []
+
+    async def complete(system, user, *, max_tokens=6000, **kw):
+        seen.append(kw)
+        if kw.get("schema_name") == "study_page":
+            return {"kind": "other", "courses": [], "assignments": []}
+        return SAMPLES["flashcards"]
+
+    asyncio.run(G.make("flashcards", course=None, assignment=None, topic="Cells", count=4,
+                       complete=complete))
+    assert seen[0]["schema_name"] == "study_flashcards"
+    assert seen[0]["schema"] == G.schema_for("flashcards", 4)
+    asyncio.run(G.extract_school_data("https://school.instructure.com/x", "Page", "text",
+                                      now=0.0, timezone="UTC", complete=complete))
+    assert seen[1] == {"schema": G.EXTRACT_SCHEMA, "schema_name": "study_page"}
+
+
+def test_an_older_stand_in_without_schema_still_works():
+    async def complete(system, user, *, max_tokens=6000):
+        return SAMPLES["flashcards"]
+    made = asyncio.run(G.make("flashcards", course=None, assignment=None, topic="Cells", count=4,
+                              complete=complete))
+    assert len(made["body"]["cards"]) == 4

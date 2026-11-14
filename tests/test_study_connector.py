@@ -561,3 +561,33 @@ def test_this_file_is_in_the_simulation_manifest():
     from pathlib import Path
     manifest = (Path(__file__).resolve().parents[1] / "scripts" / "run_simulation_qa.py").read_text()
     assert '"tests/test_study_connector.py"' in manifest
+
+
+# --- Gemini structured output ------------------------------------------------------------
+
+SCHEMA = {"type": "object", "properties": {"ok": {"type": "integer"}}, "required": ["ok"],
+          "additionalProperties": False}
+
+
+def test_gemini_with_a_schema_asks_for_structured_output():
+    server = Server(reply('{"ok": 1}'))
+    assert call(server, schema=SCHEMA, schema_name="study_quiz") == {"ok": 1}
+    assert server.body(0)["response_format"] == {
+        "type": "json_schema", "json_schema": {"name": "study_quiz", "schema": SCHEMA, "strict": True}}
+
+
+def test_a_model_other_than_gemini_keeps_json_mode():
+    C.set_choice("openrouter", "anthropic/claude-haiku-5.5")
+    server = Server(reply('{"ok": 1}'))
+    assert call(server, schema=SCHEMA) == {"ok": 1}
+    assert server.body(0)["response_format"] == {"type": "json_object"}
+
+
+def test_a_refused_schema_steps_down_to_json_mode_then_drops_it():
+    server = Server(httpx.Response(400, text="Invalid JSON schema"),
+                    httpx.Response(400, text="response_format unsupported"), reply('{"ok": 1}'))
+    assert call(server, schema=SCHEMA) == {"ok": 1}
+    assert server.body(0)["response_format"]["type"] == "json_schema"
+    assert server.body(1)["response_format"] == {"type": "json_object"}
+    assert "reasoning_effort" in server.body(1)
+    assert "response_format" not in server.body(2)
