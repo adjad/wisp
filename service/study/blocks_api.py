@@ -24,6 +24,8 @@ from service.study.store import study_exists, study_store
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/study", tags=["study"])
 
+# Off: the routes are not registered and Day blocks carry no "added" key (the app hides the button).
+ENABLED = True
 META = "calendar_blocks"
 PREFIX = "study-block:"
 GONE = "That study time isn't free any more. Refresh Day and try again."
