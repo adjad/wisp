@@ -405,4 +405,146 @@ func studyChecks(_ check: (Bool, String) -> Void) {
     clean.mark(known: true); clean.mark(known: true); clean.mark(known: true)
     check(StudyText.flashResult(clean) == "You knew all 3 cards.", "a clean pass")
     check(clean.firstPassKnown == 3 && FlashRun(deck: deck).firstPassKnown == 3, "a clean pass knows every card first time")
+
+    studySourceChecks(check, now: now, calendar: calendar)
+}
+
+/// Sources, Drive and long context (docs/STUDY_TAB.md): decoding from a new and
+/// an old backend, grouping, the ids "Use my sources" sends, and the progress line.
+func studySourceChecks(_ check: (Bool, String) -> Void, now: Date, calendar: Calendar) {
+    func decode<T: Decodable>(_ type: T.Type, _ json: String) -> T? {
+        try? JSONDecoder().decode(T.self, from: Data(json.utf8))
+    }
+
+    // MARK: Decoding, new backend
+
+    let withSources = decode(StudyState.self, """
+    {
+      "connector": {"provider": "gemini", "model_id": "gemini-3.8-pro", "ready": true, "source": "study",
+                    "providers": [], "long_context": true},
+      "courses": [{"id": "c1", "name": "Biology", "code": "BIO 10"}, {"id": "c2", "name": "History"}],
+      "sources": [
+        {"id": "src_a", "course_id": "c1", "kind": "drive", "title": "Cell notes",
+         "url": "https://docs.google.com/document/d/abc/edit", "chars": 12000, "created_at": 300.0},
+        {"id": "src_b", "course_id": null, "kind": "drive", "title": "Lecture slides",
+         "url": "https://docs.google.com/presentation/d/xyz/edit", "chars": 36000, "created_at": 200.0},
+        {"id": "src_c", "course_id": "c2", "kind": "page", "title": "Syllabus",
+         "url": "https://canvas.example.edu/courses/2", "chars": 800, "created_at": 100.0},
+        {"id": "src_d", "course_id": "gone", "title": "Orphan", "created_at": 50},
+        {"title": "no id, dropped"}
+      ]
+    }
+    """)
+    check(withSources != nil, "a state with sources decodes")
+    if let state = withSources {
+        check(state.connector.longContext, "connector long_context decodes")
+        check(state.sources.count == 4, "a source without an id is dropped, the rest kept")
+        let a = state.sources[0]
+        check(a.id == "src_a" && a.courseID == "c1" && a.kind == "drive" && a.title == "Cell notes"
+              && a.chars == 12000 && a.createdAt == 300 && !a.isSlides && a.symbol == "doc.richtext",
+              "source fields decode")
+        check(state.sources[1].courseID == nil && state.sources[1].isSlides
+              && state.sources[1].symbol == "play.rectangle", "a Slides link reads as a deck")
+        check(state.sources[2].symbol == "globe", "a school page has its own glyph")
+        let orphan = state.sources[3]
+        check(orphan.kind == "drive" && orphan.chars == 0 && orphan.url == nil, "missing source fields default")
+        check(state.hasData, "sources alone count as data")
+
+        let groups = state.sourceGroups()
+        check(groups.map(\.id) == ["c1", "c2", ""] && groups[0].title == "BIO 10"
+              && groups[2].title == StudyText.notInCourse
+              && groups[2].items.map(\.id) == ["src_b", "src_d"],
+              "sources group by course, then not in a course (with unknown courses)")
+        check(state.sourceGroups(courseID: "c1").map(\.id) == ["c1", ""], "a picked course keeps its group and the loose one")
+        check(state.sources(inCourse: nil).map(\.id) == ["src_b"], "sources(inCourse: nil) is the unassigned ones")
+
+        check(state.sourceIDs(for: nil) == ["src_a", "src_b", "src_c", "src_d"], "no course: every source, newest first")
+        check(state.sourceIDs(for: "c1") == ["src_a", "src_b"], "a course: its sources and the unassigned ones")
+        check(state.sourceIDs(for: "") == state.sourceIDs(for: nil), "an empty course id means no course")
+        check(state.sourceIDs(for: nil, limit: 2) == ["src_a", "src_b"], "the ids are capped")
+        check(state.sourceChars(["src_a", "src_b", "nope"]) == 48000, "chars add up over known ids")
+    }
+
+    // MARK: Decoding, old backend
+
+    let old = decode(StudyState.self, """
+    {"connector": {"provider": "openrouter", "model_id": "x", "ready": true, "source": "study", "providers": []},
+     "courses": [], "assignments": [], "materials": []}
+    """)
+    check(old != nil && old?.sources == [] && old?.connector.longContext == false,
+          "an old backend: no sources and no long context")
+    check(old?.hasData == false && old?.sourceGroups() == [] && old?.sourceIDs(for: nil) == [],
+          "no sources: nothing to group or send")
+    check(StudyState.empty.sources.isEmpty && !StudyConnectorState.empty.longContext, "the empty state has neither")
+    let badSources = decode(StudyState.self, #"{"sources": "nope", "connector": {"long_context": "yes"}}"#)
+    check(badSources?.sources == [] && badSources?.connector.longContext == false,
+          "wrongly typed sources and long_context fall back")
+
+    // MARK: Drive replies
+
+    let status = decode(StudyDriveStatus.self, #"{"connected": true, "drive": true, "account": "a@b.edu"}"#)
+    check(status?.blocker == nil && status?.account == "a@b.edu", "a connected Drive has no blocker")
+    check(decode(StudyDriveStatus.self, "{}")?.blocker == StudyText.driveNotConnected, "no Google: not connected")
+    check(decode(StudyDriveStatus.self, #"{"connected": true, "drive": false}"#)?.blocker == StudyText.driveNeedsScope,
+          "Google without Drive says so")
+    check(decode(StudyDriveStatus.self, #"{"connected": false, "message": "  Reconnect Google.  "}"#)?.blocker
+          == "Reconnect Google.", "the server's own message wins, trimmed")
+
+    let files = decode(StudyDriveFiles.self, """
+    {"files": [{"id": "f1", "name": "Essay draft", "kind": "doc", "modified": 1794600000.5,
+                "url": "https://docs.google.com/document/d/f1"},
+               {"id": "f2", "name": "Unit 3", "kind": "slides", "modified": null, "url": null},
+               {"name": "no id"}]}
+    """)
+    check(files?.files.count == 2 && files?.files[0].modified == 1794600000.5 && files?.files[0].kindLabel == "Doc",
+          "Drive files decode; one without an id is dropped")
+    check(files?.files[1].symbol == "play.rectangle" && files?.files[1].modified == nil, "a deck and a missing date")
+    check(decode(StudyDriveFiles.self, "{}")?.files == [], "no files key: an empty list")
+    let addReply = decode(StudyDriveAddReply.self, """
+    {"source": {"id": "src_z", "kind": "drive", "title": "Essay draft", "chars": 5}, "state": {}}
+    """)
+    check(addReply?.source?.id == "src_z" && addReply?.state == StudyState.empty, "the add reply decodes")
+    check(decode(StudyDriveAddReply.self, #"{"state": {}}"#)?.source == nil, "an add reply without a source still decodes")
+
+    // MARK: Sizes and dates
+
+    check(StudyText.chars(850) == "850 chars" && StudyText.chars(-3) == "0 chars", "small sizes")
+    check(StudyText.chars(4200) == "4.2k chars" && StudyText.chars(1000) == "1k chars", "a few thousand")
+    check(StudyText.chars(48_000) == "48k chars" && StudyText.chars(12_345) == "12k chars", "tens of thousands")
+    check(StudyText.chars(1_200_000) == "1.2M chars" && StudyText.chars(999_600) == "1M chars", "millions")
+    let morning = now.timeIntervalSince1970 - 3600
+    check(StudyText.edited(morning, now: now, calendar: calendar) == "Edited today", "edited today")
+    check(StudyText.edited(morning - 86_400, now: now, calendar: calendar) == "Edited yesterday", "edited yesterday")
+    check(StudyText.edited(calendar.date(from: DateComponents(year: 2026, month: 11, day: 3, hour: 9))!
+              .timeIntervalSince1970, now: now, calendar: calendar) == "Edited Nov 3", "edited earlier")
+    check(StudyText.edited(nil, now: now, calendar: calendar) == "", "no edit date")
+
+    // MARK: Progress line
+
+    let plain = StudyMakePlan(kind: .quiz)
+    check(StudyText.progressDetail(plain) == nil && StudyText.progress(plain) == StudyKind.quiz.verb,
+          "no sources: the kind's own words")
+    let read = StudyMakePlan(kind: .guide, sources: 3, chars: 48_000)
+    check(StudyText.progress(read) == "Reading 3 sources (48k chars)… writing your study guide",
+          "sources: what is read, then what is written")
+    check(StudyText.progressDetail(StudyMakePlan(kind: .flashcards, sources: 1)) == "Reading 1 source",
+          "one source with no size")
+    check(StudyText.progress(StudyMakePlan(kind: .flashcards, sources: 1, chars: 900))
+          == "Reading 1 source (900 chars)… making flash cards", "one small source")
+    let whole = StudyMakePlan(kind: .guide, sources: 2, chars: 120_000, wholeCourse: "BIO 10", assignments: 5,
+                              longContext: true)
+    check(StudyText.progressDetail(whole) == "Reading all of BIO 10: 2 sources (120k chars), 5 assignments, all at once",
+          "whole course with long context")
+    check(StudyText.progress(StudyMakePlan(kind: .lesson, wholeCourse: "History"))
+          == "Reading all of History… writing a lesson", "whole course with nothing counted")
+    check(StudyText.progressDetail(StudyMakePlan(kind: .guide, wholeCourse: "History", assignments: 1))
+          == "Reading all of History: 1 assignment", "whole course, assignments only")
+    check(StudyKind.allCases.allSatisfy { !$0.phrase.isEmpty && $0.phrase == $0.phrase.lowercased() },
+          "every kind has a lower-case phrase")
+
+    // MARK: Drive errors
+
+    check(StudyText.problem(code: "google_missing") == StudyText.driveConnectHint
+          && StudyText.problem(code: "too_large") != StudyText.problem(code: ""),
+          "Drive refusals have their own words")
 }

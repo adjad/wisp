@@ -114,6 +114,16 @@ enum StudyKind: String, Codable, CaseIterable, Identifiable {
         }
     }
 
+    /// `verb` mid-sentence, for the progress line: "writing your study guide".
+    var phrase: String {
+        switch self {
+        case .guide: return "writing your study guide"
+        case .quiz: return "writing a quiz"
+        case .lesson: return "writing a lesson"
+        case .flashcards: return "making flash cards"
+        }
+    }
+
     /// What `count` counts for this kind: "question", "card", "step", "section".
     var unit: String {
         switch self {
@@ -195,10 +205,14 @@ struct StudyConnectorState: Decodable, Equatable {
     /// "study" (its own key), "cloud" (the Intel build's cloud fallback) or "none".
     let source: String
     let providers: [StudyProvider]
+    /// The active Study model reads a whole course at once (a Gemini model).
+    /// False from a backend that does not say.
+    var longContext: Bool = false
 
     enum CodingKeys: String, CodingKey {
         case provider, ready, source, providers
         case modelID = "model_id"
+        case longContext = "long_context"
     }
 
     static let empty = StudyConnectorState(provider: "", modelID: "", ready: false, source: "none", providers: [])
@@ -216,6 +230,7 @@ extension StudyConnectorState {
         ready = c.studyBool(.ready)
         source = c.studyString(.source, "none")
         providers = c.studyList(StudyProvider.self, .providers)
+        longContext = c.studyBool(.longContext)
     }
 }
 
@@ -633,16 +648,19 @@ struct StudyState: Decodable, Equatable {
     var courses: [StudyCourse]
     var assignments: [StudyAssignment]
     var materials: [StudyMaterialSummary]
+    /// What the student chose to study from, newest first. Empty from a backend
+    /// without sources.
+    var sources: [StudySource] = []
 
     enum CodingKeys: String, CodingKey {
-        case connector, sample, courses, assignments, materials
+        case connector, sample, courses, assignments, materials, sources
         case lastImport = "last_import"
     }
 
     static let empty = StudyState(connector: .empty, sample: false, lastImport: nil,
                                   courses: [], assignments: [], materials: [])
 
-    var hasData: Bool { !courses.isEmpty || !assignments.isEmpty || !materials.isEmpty }
+    var hasData: Bool { !courses.isEmpty || !assignments.isEmpty || !materials.isEmpty || !sources.isEmpty }
 
     func course(_ id: String?) -> StudyCourse? {
         guard let id = id else { return nil }
@@ -661,6 +679,53 @@ struct StudyState: Decodable, Equatable {
     func materials(for course: StudyCourse) -> [StudyMaterialSummary] {
         materials.filter { $0.courseID == course.id }
     }
+
+    /// The course's sources; nil gives the ones not in a course.
+    func sources(inCourse id: String?) -> [StudySource] {
+        sources.filter { ($0.courseID ?? "").isEmpty ? id == nil : $0.courseID == id }
+    }
+
+    /// Sources grouped for the Sources section: each course that has any, in
+    /// course order, then "Not in a course"; a source whose course is unknown
+    /// joins the last group. With `courseID`, that course's group and the
+    /// unassigned one only.
+    func sourceGroups(courseID: String? = nil) -> [StudySourceGroup] {
+        var groups: [StudySourceGroup] = []
+        let known = Set(courses.map(\.id))
+        for course in courses where courseID == nil || course.id == courseID {
+            let items = sources(inCourse: course.id)
+            if !items.isEmpty { groups.append(StudySourceGroup(id: course.id, title: course.shortName, items: items)) }
+        }
+        let loose = sources.filter { source in
+            guard let id = source.courseID, !id.isEmpty else { return true }
+            return !known.contains(id)
+        }
+        if !loose.isEmpty {
+            groups.append(StudySourceGroup(id: "", title: StudyText.notInCourse, items: loose))
+        }
+        return groups
+    }
+
+    /// The ids "Use my sources" sends: for a course, its sources and the
+    /// unassigned ones; without one, every source. Newest first, at most `limit`.
+    func sourceIDs(for courseID: String?, limit: Int = StudyState.maxSourceIDs) -> [String] {
+        let chosen: [StudySource]
+        if let courseID, !courseID.isEmpty {
+            chosen = sources.filter { ($0.courseID ?? "").isEmpty || $0.courseID == courseID }
+        } else {
+            chosen = sources
+        }
+        return Array(chosen.sorted { $0.createdAt > $1.createdAt }.prefix(max(0, limit)).map(\.id))
+    }
+
+    /// The backend takes at most this many source ids in one request.
+    static let maxSourceIDs = 20
+
+    /// Total characters of these sources.
+    func sourceChars(_ ids: [String]) -> Int {
+        let wanted = Set(ids)
+        return sources.filter { wanted.contains($0.id) }.reduce(0) { $0 + max(0, $1.chars) }
+    }
 }
 
 extension StudyState {
@@ -676,7 +741,163 @@ extension StudyState {
         courses = c.studyList(StudyCourse.self, .courses)
         assignments = c.studyList(StudyAssignment.self, .assignments)
         materials = c.studyList(StudyMaterialSummary.self, .materials)
+        sources = c.studyList(StudySource.self, .sources)
     }
+}
+
+// MARK: - Sources and Google Drive
+
+/// Text the student chose to study from: a Google Doc or Slides deck ("drive")
+/// or a school page read during an import ("page"). Its text stays on the
+/// backend; the app sees only this summary.
+struct StudySource: Decodable, Equatable, Identifiable {
+    let id: String
+    let courseID: String?
+    /// "drive" or "page" (others kept as sent).
+    let kind: String
+    let title: String
+    let url: String?
+    let chars: Int
+    let createdAt: Double
+
+    enum CodingKeys: String, CodingKey {
+        case id, kind, title, url, chars
+        case courseID = "course_id"
+        case createdAt = "created_at"
+    }
+
+    /// A Slides deck, told by its Drive link.
+    var isSlides: Bool { kind == "drive" && (url ?? "").contains("/presentation/") }
+
+    /// SF Symbol for the source's kind.
+    var symbol: String {
+        if kind == "page" { return "globe" }
+        return isSlides ? "play.rectangle" : "doc.richtext"
+    }
+}
+
+extension StudySource {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        courseID = c.studyOptionalString(.courseID)
+        kind = c.studyString(.kind, "drive")
+        title = c.studyString(.title, "Untitled")
+        url = c.studyOptionalString(.url)
+        chars = c.studyInt(.chars)
+        createdAt = c.studyDouble(.createdAt) ?? 0
+    }
+}
+
+struct StudySourceGroup: Equatable, Identifiable {
+    /// The course id, or "" for "Not in a course".
+    let id: String
+    let title: String
+    let items: [StudySource]
+}
+
+/// `GET /study/drive/status`.
+struct StudyDriveStatus: Decodable, Equatable {
+    let connected: Bool
+    let drive: Bool
+    let account: String?
+    let message: String?
+
+    enum CodingKeys: String, CodingKey { case connected, drive, account, message }
+
+    /// Why Drive can't be listed, or nil when it can.
+    var blocker: String? {
+        if connected && drive { return nil }
+        if let said = message?.trimmingCharacters(in: .whitespacesAndNewlines), !said.isEmpty {
+            return String(said.prefix(300))
+        }
+        return connected ? StudyText.driveNeedsScope : StudyText.driveNotConnected
+    }
+}
+
+extension StudyDriveStatus {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        connected = c.studyBool(.connected)
+        drive = c.studyBool(.drive)
+        account = c.studyOptionalString(.account)
+        message = c.studyOptionalString(.message)
+    }
+}
+
+/// One Google Doc or Slides deck in the picker.
+struct StudyDriveFile: Decodable, Equatable, Identifiable {
+    let id: String
+    let name: String
+    /// "doc" or "slides".
+    let kind: String
+    /// Epoch seconds of the last edit, or nil.
+    let modified: Double?
+    let url: String?
+
+    enum CodingKeys: String, CodingKey { case id, name, kind, modified, url }
+
+    var symbol: String { kind == "slides" ? "play.rectangle" : "doc.richtext" }
+    var kindLabel: String { kind == "slides" ? "Slides" : "Doc" }
+}
+
+extension StudyDriveFile {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = c.studyString(.name, "Untitled")
+        kind = c.studyString(.kind, "doc")
+        modified = c.studyDouble(.modified)
+        url = c.studyOptionalString(.url)
+    }
+}
+
+/// `GET /study/drive/files`.
+struct StudyDriveFiles: Decodable, Equatable {
+    let files: [StudyDriveFile]
+
+    enum CodingKeys: String, CodingKey { case files }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        files = c.studyList(StudyDriveFile.self, .files)
+    }
+}
+
+/// `POST /study/drive/add`'s reply.
+struct StudyDriveAddReply: Decodable, Equatable {
+    let source: StudySource?
+    let state: StudyState
+
+    enum CodingKeys: String, CodingKey { case source, state }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        source = try? c.decodeIfPresent(StudySource.self, forKey: .source)
+        state = try c.decode(StudyState.self, forKey: .state)
+    }
+}
+
+/// What the Drive picker is showing.
+enum StudyDrivePhase: Equatable {
+    case idle
+    case loading
+    case ready
+    /// No Google account, or one without Drive: the sentence to show.
+    case notConnected(String)
+    case failed(String)
+}
+
+/// What a make request reads, so the progress line can say it without asking
+/// the backend.
+struct StudyMakePlan: Equatable {
+    let kind: StudyKind
+    var sources: Int = 0
+    var chars: Int = 0
+    /// The course's short name when making from the whole course.
+    var wholeCourse: String?
+    var assignments: Int = 0
+    var longContext: Bool = false
 }
 
 /// One page the import looked at.
@@ -1060,6 +1281,80 @@ enum StudyText {
         }
     }
 
+    // Sources and Drive
+    static let sourcesHeader = "Sources"
+    static let notInCourse = "Not in a course"
+    static let driveButton = "Add from Google Drive"
+    static let driveHelp = "Pick a Google Doc or Slides deck to study from"
+    static let driveTitle = "Google Drive"
+    static let driveSearch = "Search Docs and Slides"
+    static let driveEmpty = "No Google Docs or Slides found"
+    static let driveEmptySearch = "Nothing matches that. Try another word."
+    static let driveLoading = "Looking in your Drive…"
+    static let driveNotConnected = "Google isn't connected yet."
+    static let driveNeedsScope = "Google is connected without Drive."
+    static let driveConnectHint = "Connect Google in Settings › Accounts and allow Drive, then try again."
+    static let drivePrivacy = "Only the file you pick is read, and its text goes only to your Study model."
+    static let driveUnavailable = "This version of Wisp's service can't reach Google Drive yet."
+    static let driveCourse = "Course"
+    static let driveNoCourse = "None"
+    static let driveAdded = "Added"
+    static let driveMore = "Showing the newest. Search to find others."
+    static let useSources = "Use my sources"
+    static let wholeCourse = "Whole course"
+    static let wholeCourseHelp = "Write a study guide from everything in this course"
+    static let longContextNote = "Gemini reads the whole course at once"
+
+    /// "850 chars", "4.2k chars", "48k chars", "1.2M chars".
+    static func chars(_ n: Int) -> String {
+        let n = max(0, n)
+        if n < 1000 { return "\(n) chars" }
+        func trim(_ value: Double) -> String {
+            let text = String(format: "%.1f", value)
+            return text.hasSuffix(".0") ? String(text.dropLast(2)) : text
+        }
+        if n < 9_950 { return trim(Double(n) / 1000) + "k chars" }
+        if n < 999_500 { return "\(Int((Double(n) / 1000).rounded()))k chars" }
+        return trim(Double(n) / 1_000_000) + "M chars"
+    }
+
+    /// What a make request is reading, or nil when it reads only the course and
+    /// assignment as before: "Reading 3 sources (48k chars)",
+    /// "Reading all of CS 101: 3 sources (48k chars), 5 assignments, all at once".
+    static func progressDetail(_ plan: StudyMakePlan) -> String? {
+        func sourcesPart() -> String {
+            plural(plan.sources, "source") + (plan.chars > 0 ? " (" + chars(plan.chars) + ")" : "")
+        }
+        if let course = plan.wholeCourse {
+            var parts: [String] = []
+            if plan.sources > 0 { parts.append(sourcesPart()) }
+            if plan.assignments > 0 { parts.append(plural(plan.assignments, "assignment")) }
+            if plan.longContext { parts.append("all at once") }
+            let head = "Reading all of " + course
+            return parts.isEmpty ? head : head + ": " + parts.joined(separator: ", ")
+        }
+        guard plan.sources > 0 else { return nil }
+        return "Reading " + sourcesPart()
+    }
+
+    /// The whole progress sentence: "Reading 3 sources (48k chars)… writing your
+    /// study guide", or the kind's own words when nothing extra is read.
+    static func progress(_ plan: StudyMakePlan) -> String {
+        guard let detail = progressDetail(plan) else { return plan.kind.verb }
+        return detail + "… " + plan.kind.phrase
+    }
+
+    /// A Drive file's last edit: "Edited today", "Edited yesterday", "Edited Nov 3", "".
+    static func edited(_ ts: Double?, now: Date, calendar: Calendar) -> String {
+        guard let ts = ts, ts > 0 else { return "" }
+        let date = Date(timeIntervalSince1970: ts)
+        let today = calendar.startOfDay(for: now)
+        let yesterday = calendar.date(byAdding: .day, value: -1, to: today) ?? today.addingTimeInterval(-86_400)
+        if date >= today { return "Edited today" }
+        if date >= yesterday { return "Edited yesterday" }
+        return "Edited " + dayText(date, now: now, calendar: calendar, weekday: false)
+    }
+
     /// The gentle sentence for a backend error code.
     static func problem(code: String) -> String {
         switch code {
@@ -1069,6 +1364,9 @@ enum StudyText {
         case "unreachable": return "Wisp couldn't reach the Study model. Check your connection and try again."
         case "bad_reply": return "The Study model sent back something Wisp couldn't use. Try again."
         case "not_found": return "That isn't here anymore."
+        case "google_missing": return driveConnectHint
+        case "google_error": return "Google Drive didn't answer. Try again in a moment."
+        case "too_large": return "That file is too big for Google to export. Try a shorter one."
         case "bad_request": return "Wisp couldn't send that. Try again."
         case "offline": return "Wisp's service isn't answering right now. Try again in a moment."
         default: return "Something went wrong. Try again."
