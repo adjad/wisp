@@ -862,6 +862,10 @@ def _chat_pipeline(raw):
         def _fit_request(self, *args):
             return args
 
+        def _fit_with_reasoning(self, *args, **kwargs):
+            # A managed (local) client never sends a reasoning option.
+            return (*args, {})
+
         def _payload(self, *args, **kwargs):
             return {}
 

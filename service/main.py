@@ -913,7 +913,7 @@ async def connect_cloud_inference(body: dict[str, Any]) -> dict[str, Any]:
     credential_name = body.get("credential_name")
     roles = body.get("roles")
     super_model_enabled = body.get("super_model_enabled", False)
-    if (provider_name not in {"openrouter", "openai-compatible"}
+    if (provider_name not in {"openrouter", "gemini", "openai-compatible"}
             or not all(isinstance(value, str) for value in (base_url, api_prefix, model_id))
             or not model_id.strip() or isinstance(context_window, bool)
             or not isinstance(context_window, int) or not 512 <= context_window <= 262144

@@ -55,8 +55,11 @@ class PolicyChecks(RemoteFixture):
         with self.assertRaises(TypeError):
             policy.RemoteOnlyProfile()
         source = Path(policy.__file__).read_text()
-        for leftover in ('ts.net', 'tail', 'keychain:gx', 'qwen'):
+        for leftover in ('ts.net', 'keychain:gx', 'qwen'):
             self.assertNotIn(leftover, source)
+        # A tailnet name or host; "tail" inside a word (reasoning_details) is not one.
+        import re
+        self.assertIsNone(re.search(r'\btail', source, re.I))
 
     def test_exact_target_and_all_generation_roles(self):
         for role in policy.remote_only_profile().generation_roles:

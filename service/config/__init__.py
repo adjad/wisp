@@ -1049,7 +1049,8 @@ def cloud_provider_settings() -> dict:
     return {
         "enabled": bool(endpoint_cfg) and endpoint_cfg.get("enabled", True) is True,
         "provider": provider_name,
-        "provider_label": "OpenRouter" if provider_name == "openrouter" else "OpenAI-compatible",
+        "provider_label": {"openrouter": "OpenRouter", "gemini": "Gemini API"}.get(
+            provider_name, "OpenAI-compatible"),
         "base_url": str(endpoint_cfg.get("base_url", "https://openrouter.ai")),
         "api_prefix": str(endpoint_cfg.get("api_prefix", "/api/v1")),
         "model_id": str((first.get("model_id") if everything else None)
