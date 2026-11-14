@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import math
 import re
 import unicodedata
@@ -262,6 +263,87 @@ _SHAPES = {
 - 5 to 12 key terms with one-line meanings, and 3 to 6 practice prompts the student can try.""",
 }
 
+def _str() -> dict:
+    return {"type": "string"}
+
+
+def _opt(schema: dict) -> dict:
+    """The same schema, or null."""
+    return {"anyOf": [schema, {"type": "null"}]}
+
+
+def _obj(props: dict, required: list[str] | None = None) -> dict:
+    return {"type": "object", "properties": props, "required": list(required or props),
+            "additionalProperties": False}
+
+
+def _arr(items: dict, low: int | None = None, high: int | None = None) -> dict:
+    out = {"type": "array", "items": items}
+    if low is not None:
+        out["minItems"] = low
+    if high is not None:
+        out["maxItems"] = high
+    return out
+
+
+def _choice_q(low: int, high: int) -> dict:
+    return _obj({"prompt": _str(), "choices": _arr(_str(), low, high),
+                 "answer": {"type": "integer", "minimum": 0, "maximum": high - 1}, "why": _str()})
+
+
+def schema_for(kind: str, n) -> dict:
+    """Gemini structured output for one material kind: the same shape the prompt describes
+    and validate() checks. Counts are exact when the prompt asks for an exact number.
+    validate() still runs on every reply (a schema bounds the shape, not the content)."""
+    exact = n if isinstance(n, int) else None
+    if kind == "quiz":
+        return _obj({"title": _str(), "questions": _arr(_choice_q(4, 4), exact, exact)})
+    if kind == "flashcards":
+        return _obj({"title": _str(),
+                     "cards": _arr(_obj({"front": _str(), "back": _str()}), exact, exact)})
+    if kind == "lesson":
+        step = _obj({"title": _str(), "explain": _str(), "example": _opt(_str()),
+                     "check": _opt(_choice_q(3, 4))})
+        return _obj({"title": _str(), "steps": _arr(step, exact, exact)})
+    if kind == "guide":
+        low, high = (exact, exact) if exact else (LIMITS["guide"][0], LIMITS["guide"][1])
+        return _obj({"title": _str(), "summary": _str(),
+                     "sections": _arr(_obj({"heading": _str(), "points": _arr(_str(), 1, MAX_POINTS)}),
+                                      low, high),
+                     "key_terms": _arr(_obj({"term": _str(), "meaning": _str()}), 0, MAX_TERMS),
+                     "practice": _arr(_str(), 0, MAX_PRACTICE)})
+    raise ValueError(f"unknown kind {kind!r}")
+
+
+_NULL_STR = {"type": ["string", "null"]}
+_NULL_NUM = {"type": ["number", "null"]}
+EXTRACT_SCHEMA = _obj({
+    "kind": {"type": "string", "enum": ["grades", "course_grades", "assignments", "dashboard",
+                                        "calendar", "other"]},
+    "courses": _arr(_obj({"name": _str(), "code": _NULL_STR, "grade": _NULL_STR,
+                          "score": _NULL_NUM, "url": _NULL_STR}), 0, MAX_COURSES),
+    "assignments": _arr(_obj({
+        "course_name": _NULL_STR, "title": _str(),
+        "kind": {"type": "string", "enum": ["assignment", "quiz", "exam", "project", "discussion",
+                                            "reading"]},
+        "due": _NULL_STR, "points": _NULL_NUM, "score": _NULL_NUM,
+        "status": {"type": "string", "enum": ["upcoming", "submitted", "graded", "missing", "late"]},
+        "details": _str(), "url": _NULL_STR}), 0, MAX_ASSIGNMENTS),
+})
+
+
+def _schema_kwargs(complete, schema: dict, name: str) -> dict:
+    """{"schema", "schema_name"} when ``complete`` takes them (the real connector does;
+    an older stand-in may not), else nothing: the prompt's own shape still applies."""
+    try:
+        params = inspect.signature(complete).parameters
+    except (TypeError, ValueError):
+        return {}
+    if "schema" in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return {"schema": schema, "schema_name": name}
+    return {}
+
+
 _NOUN = {"quiz": "practice quiz", "flashcards": "flash cards", "lesson": "short lesson", "guide": "study guide"}
 
 
@@ -378,7 +460,9 @@ async def make(kind: str, *, course: dict | None, assignment: dict | None, topic
                 break
             # The note is Wisp's own text (validate's messages name only a kind and a count).
             message = user if note is None else f"{user}\n\n{note}"
-            reply = await complete(system, message, max_tokens=MAX_TOKENS[kind])
+            reply = await complete(system, message, max_tokens=MAX_TOKENS[kind],
+                                   **_schema_kwargs(complete, schema_for(kind, _count(kind, count)),
+                                                    f"study_{kind}"))
             try:
                 body = validate(kind, reply if isinstance(reply, dict) else {})
             except ValueError as exc:
@@ -476,7 +560,8 @@ async def extract_school_data(url: str, title: str, text: str, *, now: float, ti
     user = (f"Today is {today:%A %Y-%m-%d %H:%M} ({tz.key}).\n"
             "Read the school page in the data block below.\n\n"
             f"{_OPEN}\n{page}\n{_CLOSE}")
-    reply = await complete(_EXTRACT_SYSTEM, user, max_tokens=6000)
+    reply = await complete(_EXTRACT_SYSTEM, user, max_tokens=6000,
+                           **_schema_kwargs(complete, EXTRACT_SCHEMA, "study_page"))
     if not isinstance(reply, dict):
         raise connector.StudyConnectorError("bad_reply")
     source = _source(url)

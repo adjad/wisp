@@ -46,6 +46,15 @@ Both are OpenAI-compatible `POST {origin}{prefix}/chat/completions` with
 `Authorization: Bearer <key>`, `response_format: {"type": "json_object"}` and
 `reasoning_effort: "low"`. Only these two exact origins are ever contacted.
 
+Structured output: when the Study model is a Gemini model (`gemini-…` or `google/gemini-…`), every
+call sends a JSON schema instead of plain JSON mode: `response_format: {"type": "json_schema",
+"json_schema": {"name": "study_<kind>" | "study_page", "schema": …, "strict": true}}`.
+`generate.schema_for(kind, n)` gives each material's shape (exact item counts when the prompt asks
+for an exact number; 4 choices per quiz question, 3–4 per lesson check) and `generate.EXTRACT_SCHEMA`
+the page-extraction shape. A 400 over the schema steps down to JSON mode, then to no
+`response_format`, within the same POST budget. `validate()` still checks every reply. Other models
+keep JSON mode.
+
 Keychain reads never run on the event loop: `complete_json` reads the key through
 `asyncio.to_thread`, and async routes use `status_async()`. A read that times out or is
 refused (macOS asked and nobody answered, or Deny) is held for 60 s, so a pending prompt is
