@@ -316,12 +316,24 @@ def must_propagate(exc: BaseException) -> bool:
     except Exception:
         pass
     text = str(exc)
-    return "Command buffer execution failed" in text or "kIOGPUCommandBuffer" in text
+    return ("Command buffer execution failed" in text or "kIOGPUCommandBuffer" in text
+            # Upstream lets a cluster rank's failed rollback through on purpose.
+            or "could not roll back its MTP cache" in text)
+
+
+def _reply_key(gen_batch):
+    """The requests a batch is serving. The batch object itself lives as long
+    as the scheduler, so a mark on it alone would outlast the reply."""
+    try:
+        return tuple(getattr(gen_batch, "uids", None) or ())
+    except Exception:
+        return ()
 
 
 def mtp_blocked(gen_batch) -> bool:
-    """Whether this batch, or its model, already left MTP after a failure."""
-    if getattr(gen_batch, "_wisp_mtp_off", False):
+    """Whether this reply, or its model, already left MTP after a failure."""
+    off = getattr(gen_batch, "_wisp_mtp_off", None)
+    if off is not None and off == _reply_key(gen_batch):
         return True
     return id(getattr(gen_batch, "model", None)) in _mtp_off_models
 
@@ -341,7 +353,7 @@ def mtp_failure(gen_batch, exc: BaseException) -> bool:
     model = getattr(gen_batch, "model", None)
     mark = id(model)
     try:
-        gen_batch._wisp_mtp_off = True
+        gen_batch._wisp_mtp_off = _reply_key(gen_batch)
     except Exception:
         pass
     limit = limit_of(exc)

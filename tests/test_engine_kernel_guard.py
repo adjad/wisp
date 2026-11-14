@@ -197,8 +197,8 @@ def test_guard_goes_in_when_mlx_loads_not_before(guard, monkeypatch, tmp_path):
 
 # --- Lightning MTP ---------------------------------------------------------
 
-def batch(model=None):
-    return types.SimpleNamespace(model=model if model is not None else object())
+def batch(model=None, uids=(1,)):
+    return types.SimpleNamespace(model=model if model is not None else object(), uids=list(uids))
 
 
 def test_threadgroup_error_in_mtp_falls_back_and_keeps_the_model_off_mtp(guard):
@@ -220,7 +220,18 @@ def test_other_mtp_errors_cost_the_reply_mtp_and_the_model_after_three(guard):
         assert guard.mtp_blocked(batch(model)) is (attempt == 2)
 
 
+def test_a_failed_reply_does_not_keep_the_next_reply_off_mtp(guard):
+    # The scheduler keeps one batch object for every reply: the mark on it is
+    # for the requests it was serving when MTP failed.
+    current = batch(uids=(7,))
+    assert guard.mtp_failure(current, RuntimeError("anything")) is True
+    assert guard.mtp_blocked(current)
+    current.uids = [8]
+    assert not guard.mtp_blocked(current)
+
+
 @pytest.mark.parametrize("error", [
+    RuntimeError("cluster rank could not roll back its MTP cache"),
     MemoryError("out of memory"),
     RuntimeError("[METAL] Command buffer execution failed: Insufficient Memory"),
     RuntimeError("kIOGPUCommandBufferCallbackErrorSubmissionsIgnored"),
@@ -283,6 +294,11 @@ def test_mtp_step_catches_every_error_and_rebuilds_the_cache():
     # A forward that failed before MTP finished activating may have advanced
     # the cache: the committed state is rebuilt anyway.
     assert single.index("if active is None and wisp_failure:") < single.index("SimpleNamespace(")
+    for handler in handlers:
+        # A failed rebuild re-raises the original error, which the scheduler's
+        # own corruption recovery knows how to handle.
+        body = handler["new"]
+        assert body.index("if wisp_failure:") < body.index("raise exc") < body.index("raise RuntimeError(")
     gates = [e["new"] for e in edits if "_wisp_kernel_guard.mtp_blocked(gen_batch)" in e["new"]]
     assert len(gates) == 1
 
