@@ -45,7 +45,7 @@ def classify(url, title="", type=None, course=COURSE):
     (f"https://drive.google.com/open?id={PDF_ID}", "file", "drive"),
     (f"https://colab.research.google.com/drive/{NB_ID}?usp=sharing", "notebook", "drive"),
     (f"{CANVAS}/pages/week-1-overview?module_item_id=9", "page", "browser"),
-    (f"{CANVAS}/assignments/55", "page", "browser"),
+    (f"{CANVAS}/assignments/55", "other", "none"),   # an assignment can launch an external tool on open
     (f"{CANVAS}/discussion_topics/77", "discussion", "browser"),
     (f"{CANVAS}/files/88", "file", "browser"),
     (f"{CANVAS}/modules/items/123", "page", "browser"),
