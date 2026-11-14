@@ -130,3 +130,12 @@ def test_deck_error_on_failed_sources(tmp_path):
     assert store.sources()[0]["deck_error"].startswith("The file is over 14 MB")
     store.set_deck_status(s["id"], "none")
     assert "deck_error" not in store.sources()[0]
+
+
+def test_add_and_undo_are_audited(env, monkeypatch):
+    client, _, _ = env
+    seen = []
+    monkeypatch.setattr(blocks_api, "_audit", lambda event, **f: seen.append((event, f["ok"])))
+    client.post(f"/study/blocks/{BID}/add", json={"day": DAY, "timezone": TZ})
+    client.post(f"/study/blocks/{BID}/undo", json={})
+    assert seen == [("study_block_calendar_add", True), ("study_block_calendar_undo", True)]

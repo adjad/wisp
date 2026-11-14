@@ -40,6 +40,14 @@ class AddBody(BaseModel):
     timezone: StrictStr = Field(max_length=100)
 
 
+def _audit(event: str, **fields) -> None:
+    try:
+        from service.safety.audit import audit
+        audit(event, **fields)
+    except Exception:  # noqa: BLE001 - auditing never blocks a result
+        pass
+
+
 def _fail(status: str, error: str) -> dict:
     return {"ok": False, "status": status, "error": error}
 
@@ -110,6 +118,8 @@ async def add_block(block_id: str, request: Request):
                 "timezone": body.timezone, "start_ts": start, "duration_min": max(1, round((end - start) / 60)),
                 "all_day": False, "automatic": False}
         result = await _create(plan)
+        _audit("study_block_calendar_add", tool="add_calendar_event", block=block_id, ok=result.get("ok") is True,
+               status=str(result.get("status") or "unknown"), args={"start_ts": start, "duration_min": plan["duration_min"]})
         if result.get("ok") is not True or not str(result.get("source_id") or "").strip():
             return _fail(str(result.get("status") or "failed"),
                          str(result.get("error") or "Calendar didn't confirm the event."))
@@ -119,6 +129,7 @@ async def add_block(block_id: str, request: Request):
         return {"ok": True, "status": "succeeded", "block_id": block_id, "source_id": source_id}
     except Exception as exc:  # noqa: BLE001 - never a 500 for a tap
         log.info("Study block add failed (%s)", type(exc).__name__)
+        _audit("study_block_calendar_add", tool="add_calendar_event", block=block_id, ok=False, status="unknown")
         return _fail("unknown", "Wisp couldn't confirm the calendar event. Check Calendar before trying again.")
     finally:
         _in_flight.discard(block_id)
@@ -133,7 +144,11 @@ async def undo_block(block_id: str):
         return _fail("in_progress", BUSY)
     _in_flight.add(block_id)
     try:
+        if not str(record.get("source_id") or "").strip():
+            return _fail("blocked", NOT_ADDED)
         result = await _delete(record)
+        _audit("study_block_calendar_undo", tool="cancel_calendar_event", block=block_id,
+               ok=result.get("ok") is True, status=str(result.get("status") or "unknown"))
         if result.get("ok") is not True:
             return _fail(str(result.get("status") or "failed"),
                          str(result.get("error") or "Calendar didn't confirm the event was removed."))
