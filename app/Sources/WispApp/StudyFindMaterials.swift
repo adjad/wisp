@@ -842,16 +842,20 @@ struct StudyFoundItem: Decodable, Equatable, Identifiable, Sendable {
     let url: String
     let via: String
     var known: Bool
+    /// Why the server refused a course item it still lists: "tool", "quiz",
+    /// "assignment" or "unknown". Such an item is never opened or added.
+    let reason: String?
 
-    enum CodingKeys: String, CodingKey { case id, kind, title, url, via, known }
+    enum CodingKeys: String, CodingKey { case id, kind, title, url, via, known, reason }
 
-    init(id: String, kind: String, title: String, url: String, via: String, known: Bool) {
+    init(id: String, kind: String, title: String, url: String, via: String, known: Bool, reason: String? = nil) {
         self.id = id
         self.kind = kind
         self.title = title
         self.url = url
         self.via = via
         self.known = known
+        self.reason = reason
     }
 
     init(from decoder: Decoder) throws {
@@ -862,6 +866,7 @@ struct StudyFoundItem: Decodable, Equatable, Identifiable, Sendable {
         title = ((try? c.decodeIfPresent(String.self, forKey: .title)) ?? nil) ?? ""
         via = ((try? c.decodeIfPresent(String.self, forKey: .via)) ?? nil)?.lowercased() ?? "none"
         known = ((try? c.decodeIfPresent(Bool.self, forKey: .known)) ?? nil) ?? false
+        reason = ((try? c.decodeIfPresent(String.self, forKey: .reason)) ?? nil)?.lowercased()
     }
 
     var host: String { URL(string: url)?.host?.lowercased() ?? "" }
@@ -1060,7 +1065,17 @@ enum StudyFindText {
         case "page": return "Course pages"
         case "discussion": return "Discussions"
         case "video": return "Videos"
-        default: return "Other"
+        default: return "Can't open"
+        }
+    }
+
+    /// The row note for an item the server refused.
+    static func refused(_ reason: String) -> String {
+        switch reason {
+        case "tool": return "Can't open: outside tool"
+        case "quiz": return "Can't open: quiz"
+        case "assignment": return "Can't open: assignment"
+        default: return "Can't open: unknown type"
         }
     }
 
@@ -1506,7 +1521,7 @@ final class StudyFindRun: ObservableObject {
     private static func visits(_ items: [StudyFoundItem], target: StudyFindTarget,
                                types: [String: String]) -> [StudyFoundItem] {
         func rank(_ item: StudyFoundItem) -> Int? {
-            guard item.via == "browser", !item.known, let parts = StudyFindTarget.parts(item.url),
+            guard item.via == "browser", item.reason == nil, !item.known, let parts = StudyFindTarget.parts(item.url),
                   target.openableURL(item.url) != nil else { return nil }
             let type = types[StudyFindTarget.pathKey(item.url)]
             if let type, StudyFindReader.isNeverOpened(type) { return nil }
@@ -1644,6 +1659,7 @@ final class StudyFindRun: ObservableObject {
 
     /// Why a row can't be ticked, or nil.
     func blocker(_ item: StudyFoundItem) -> String? {
+        if let reason = item.reason { return StudyFindText.refused(reason) }
         if item.known { return StudyFindText.added }
         if let why = important[item.id] { return StudyFindText.notOpened(why) }
         switch item.via {
