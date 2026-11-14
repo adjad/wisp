@@ -251,3 +251,60 @@ async def read_pages(pdf_bytes: bytes, *, title: str, key_reader: Callable[[str]
             return await asyncio.wait_for(attempt(client), budget)
         except (TimeoutError, asyncio.TimeoutError):
             raise DeckError("unreachable") from None
+
+
+# --- background reading (Find materials) ------------------------------------------------
+
+READ_KINDS = ("slides", "pdf", "doc")   # the Drive kinds pdf_bytes can hand over as one PDF
+
+
+def pages_text(pages: list[dict]) -> str:
+    """A source's text built from its pages (a PDF has no text export)."""
+    lines = []
+    for p in pages:
+        lines.append(f"Page {p['page']}: {p['title']}")
+        lines += [f"- {point}" for point in p["points"]]
+        if p.get("figure"):
+            lines.append(f"Figure: {p['figure']}")
+    return "\n".join(lines)
+
+
+async def read_source(store, source_id: str, file_id: str, kind: str) -> str:
+    """Read one saved Drive source as pages and save them. Returns its deck_status
+    ("ready", "none" or "failed"); never raises. A PDF whose text was empty gets its text from
+    the pages. Only the status code of a failure is logged."""
+    from service.study import drive    # drive never imports deck
+    if kind not in READ_KINDS:
+        store.set_deck_status(source_id, "none")
+        return "none"
+    try:
+        data = await drive.pdf_bytes(file_id, kind)
+    except drive.DriveError as exc:
+        log.info("Study deck: PDF fetch refused (%s)", exc.code)
+        data = None
+    except Exception:  # noqa: BLE001 — a background read must never take the worker down
+        log.info("Study deck: PDF fetch failed")
+        data = None
+    if data is None:
+        store.set_deck_status(source_id, "failed")
+        return "failed"
+    try:
+        source = store.source(source_id)
+        pages = await read_pages(data, title=(source or {}).get("title") or "Untitled")
+    except DeckError as exc:
+        log.info("Study deck: read failed (%s)", exc.code)
+        pages = False
+    except Exception:  # noqa: BLE001
+        log.info("Study deck: read failed")
+        pages = False
+    if pages is False:
+        store.set_deck_status(source_id, "failed")
+        return "failed"
+    if not pages:
+        store.set_deck_status(source_id, "none")
+        return "none"
+    store.save_pages(source_id, pages)
+    source = store.source(source_id)
+    if source is not None and not (source.get("text") or "").strip():
+        store.set_source_text(source_id, pages_text(pages))
+    return "ready"

@@ -15,6 +15,7 @@ IMPORTANT rules:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from datetime import datetime
@@ -380,6 +381,108 @@ async def _stream_bytes(http: httpx.AsyncClient, path: str, params: list[tuple[s
                 return None
             parts.append(chunk)
     return b"".join(parts)
+
+
+# --- by id (Find materials) ---------------------------------------------------------
+
+COLAB = "application/vnd.google.colaboratory"
+NOTEBOOK_MIMES = (COLAB, "application/x-ipynb+json", "application/json", "application/octet-stream",
+                  "text/plain")
+NOTEBOOK_BYTES = 8 * 1024 * 1024
+NOTEBOOK_URL = "https://colab.research.google.com/drive/{id}"
+NOT_A_NOTEBOOK = "That Colab link isn't a notebook Wisp can read."
+NOTEBOOK_TOO_LARGE = "That notebook is too large to add."
+_CELL_CHARS = 50_000
+
+
+async def file_info(file_id: str) -> dict:
+    """{"id", "name", "mime", "url"} for any file the sign-in can see (no download)."""
+    if not valid_id(file_id):
+        raise DriveError(422, "invalid", BAD_ID)
+
+    async def work(http):
+        return await _get_json(http, f"/{file_id}", [("fields", "id,name,mimeType,webViewLink,trashed"),
+                                                     ("supportsAllDrives", "true")])
+    meta = await _bounded(work)
+    if meta.get("trashed"):
+        raise DriveError(404, "not_found", NOT_FOUND)
+    return {"id": file_id, "name": str(meta.get("name") or "Untitled"), "mime": str(meta.get("mimeType") or ""),
+            "url": _link(meta.get("webViewLink"))}
+
+
+def _cell_source(cell: dict) -> str:
+    source = cell.get("source")
+    if isinstance(source, list):
+        source = "".join(part for part in source if isinstance(part, str))
+    return source[:_CELL_CHARS] if isinstance(source, str) else ""
+
+
+def ipynb_text(data: bytes) -> str:
+    """A notebook's text: markdown cells as they are, code cells fenced (``` with the
+    notebook's language), raw cells as text; every output dropped. Raises ValueError for
+    something that is not notebook JSON."""
+    try:
+        nb = json.loads(data.decode("utf-8-sig", errors="replace"))
+    except (ValueError, RecursionError):
+        raise ValueError("not a notebook") from None
+    cells = nb.get("cells") if isinstance(nb, dict) else None
+    if not isinstance(cells, list):
+        # nbformat 3 kept cells under worksheets[0]
+        sheets = nb.get("worksheets") if isinstance(nb, dict) else None
+        cells = sheets[0].get("cells") if isinstance(sheets, list) and sheets and isinstance(sheets[0], dict) else None
+    if not isinstance(cells, list):
+        raise ValueError("not a notebook")
+    meta = nb.get("metadata") if isinstance(nb.get("metadata"), dict) else {}
+    language = ((meta.get("language_info") or {}).get("name") if isinstance(meta.get("language_info"), dict)
+                else None) or ((meta.get("kernelspec") or {}).get("language")
+                               if isinstance(meta.get("kernelspec"), dict) else None) or "python"
+    language = re.sub(r"[^A-Za-z0-9+#_-]", "", str(language))[:20] or "python"
+    parts: list[str] = []
+    size = 0
+    for cell in cells:
+        if not isinstance(cell, dict):
+            continue
+        text = _cell_source(cell).strip("\n")
+        if not text.strip():
+            continue
+        if cell.get("cell_type") == "code":
+            text = f"```{language}\n{text.replace('```', '` ` `')}\n```"
+        parts.append(text)
+        size += len(text) + 2
+        if size >= SOURCE_CHARS:
+            break
+    return "\n\n".join(parts)[:SOURCE_CHARS]
+
+
+async def notebook(file_id: str) -> dict:
+    """{"id", "name", "kind": "notebook", "url", "text"} for one Colab notebook: downloaded
+    (alt=media, drive.readonly) and parsed by ipynb_text."""
+    if not valid_id(file_id):
+        raise DriveError(422, "invalid", BAD_ID)
+
+    async def work(http):
+        meta = await _get_json(http, f"/{file_id}", [("fields", "id,name,mimeType,trashed"),
+                                                     ("supportsAllDrives", "true")])
+        name = str(meta.get("name") or "")
+        mime = meta.get("mimeType")
+        if meta.get("trashed") or not (mime == COLAB or (mime in NOTEBOOK_MIMES and name.lower().endswith(".ipynb"))):
+            raise DriveError(422, "invalid", NOT_A_NOTEBOOK)
+        data = await _stream_bytes(http, f"/{file_id}", [("alt", "media"), ("supportsAllDrives", "true")],
+                                   NOTEBOOK_BYTES)
+        return meta, data
+    meta, data = await _bounded(work)
+    if data is None:
+        raise DriveError(413, "too_large", NOTEBOOK_TOO_LARGE)
+    try:
+        text = ipynb_text(data)
+    except ValueError:
+        raise DriveError(422, "invalid", NOT_A_NOTEBOOK) from None
+    if not text.strip():
+        raise DriveError(422, "invalid", EMPTY)
+    name = str(meta.get("name") or "Untitled")
+    if name.lower().endswith(".ipynb"):
+        name = name[:-6] or "Untitled"
+    return {"id": file_id, "name": name, "kind": "notebook", "url": NOTEBOOK_URL.format(id=file_id), "text": text}
 
 
 async def pdf_bytes(file_id: str, kind: str, *, cap: int = PDF_BYTES,

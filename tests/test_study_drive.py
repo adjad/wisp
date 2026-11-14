@@ -398,6 +398,22 @@ def test_adding_is_native_only(client, google):
     assert google.requests == [] and google.store.saved == []
 
 
+def test_a_notebook_reads_as_markdown_and_fenced_code_without_outputs():
+    nb = {"nbformat": 4, "metadata": {"language_info": {"name": "python"}}, "cells": [
+        {"cell_type": "markdown", "source": ["# Week 3: loops\n", "A loop repeats."]},
+        {"cell_type": "code", "source": "for i in range(3):\n    print(i)",
+         "outputs": [{"output_type": "stream", "text": ["SECRET-OUTPUT"]}]},
+        {"cell_type": "code", "source": ""},
+        {"cell_type": "raw", "source": "plain words"}]}
+    text = drive.ipynb_text(json.dumps(nb).encode())
+    assert text == ("# Week 3: loops\nA loop repeats.\n\n```python\nfor i in range(3):\n    print(i)\n```"
+                    "\n\nplain words")
+    assert "SECRET-OUTPUT" not in text
+    for bad in (b"not json", b"[1, 2]", b'{"cells": 3}'):
+        with pytest.raises(ValueError):
+            drive.ipynb_text(bad)
+
+
 def test_drive_reads_refuse_a_web_page(client, google):
     for path in ("/study/drive/status", "/study/drive/files"):
         assert client.get(path, headers={"origin": "https://evil.example"}).status_code == 403

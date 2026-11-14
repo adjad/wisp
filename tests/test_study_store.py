@@ -419,7 +419,8 @@ def test_handed_in_work_is_never_reopened_by_a_later_looking_deadline(tmp_path):
 
 # --- sources ---------------------------------------------------------------------------
 
-SUMMARY_KEYS = {"id", "course_id", "kind", "title", "url", "chars", "created_at", "pages", "deck_status"}
+SUMMARY_KEYS = {"id", "course_id", "kind", "title", "url", "chars", "created_at", "pages", "deck_status",
+                "week", "topic", "summary"}
 
 
 def drive(url="https://docs.google.com/document/d/abc", **values):
@@ -490,6 +491,68 @@ def test_an_old_database_gains_the_sources_table(tmp_path):
     reopened = StudyStore(path)
     assert [c["id"] for c in reopened.courses()] == ["canvas:1"] and reopened.sources() == []
     assert reopened.save_source(drive())["kind"] == "drive"
+
+
+def test_find_materials_kinds_labels_and_reading_status(store):
+    for kind in ("slides", "doc", "pdf", "notebook", "article", "page", "discussion", "file", "video", "other"):
+        store.save_source({"kind": kind, "url": f"https://example.edu/{kind}", "title": kind, "text": "t"})
+    with pytest.raises(ValueError):
+        store.save_source({"kind": "podcast", "url": "https://example.edu/p", "title": "p", "text": "t"})
+    deck = next(s for s in store.sources() if s["kind"] == "slides")
+    assert (deck["week"], deck["topic"], deck["summary"]) == (None, None, None)
+    store.set_deck_status(deck["id"], "reading")
+    assert store.set_labels(deck["id"], week=5, topic="  Sampling   bias ", summary="Why samples mislead.")
+    got = store.source(deck["id"])
+    assert (got["deck_status"], got["week"], got["topic"], got["summary"]) == (
+        "reading", 5, "Sampling bias", "Why samples mislead.")
+    store.set_labels(deck["id"], week=True, topic=3, summary="x" * 999)
+    got = store.source(deck["id"])
+    assert got["week"] is None and got["topic"] is None and len(got["summary"]) == 300
+    assert not store.set_labels("src_missing", week=1)
+
+
+def test_resaving_by_id_keeps_the_row_and_its_labels(store):
+    old = store.save_source({"kind": "drive", "url": "https://docs.google.com/presentation/d/AbCdEfGhIjK1/edit",
+                             "title": "Lecture 1", "text": "old"})
+    store.set_labels(old["id"], week=1, topic="Intro", summary="The first lecture.")
+    store.save_pages(old["id"], [{"page": 1, "title": "Hi", "points": ["a"], "figure": None, "topics": ["x"]}])
+    new = store.save_source({"id": old["id"], "kind": "slides", "url": "https://docs.google.com/presentation/d/"
+                             "AbCdEfGhIjK1", "title": "Lecture 1", "text": "new", "course_id": "canvas:7"})
+    assert new["id"] == old["id"] and new["kind"] == "slides" and new["week"] == 1 and new["pages"] == 1
+    assert len(store.sources()) == 1 and store.source(old["id"])["text"] == "new"
+    store.set_source_text(old["id"], "from pages")
+    assert store.source(old["id"])["chars"] == len("from pages")
+
+
+def test_an_old_sources_table_gains_the_label_columns(tmp_path):
+    import sqlite3
+    path = tmp_path / "study" / "study.db"
+    path.parent.mkdir()
+    db = sqlite3.connect(path)
+    db.execute("CREATE TABLE sources (id TEXT PRIMARY KEY, course_id TEXT, kind TEXT NOT NULL, title TEXT NOT NULL"
+               " DEFAULT '', url TEXT, text TEXT NOT NULL DEFAULT '', chars INTEGER NOT NULL DEFAULT 0,"
+               " created_at REAL NOT NULL, deck_status TEXT NOT NULL DEFAULT 'none', UNIQUE (kind, url))")
+    db.execute("INSERT INTO sources VALUES ('src_old', NULL, 'drive', 'Old', 'u', 't', 1, 1.0, 'ready')")
+    db.commit()
+    db.close()
+    got = StudyStore(path).sources()[0]
+    assert got["deck_status"] == "ready" and (got["week"], got["topic"], got["summary"]) == (None, None, None)
+    StudyStore(path)   # opening twice is fine
+
+
+def test_remove_school_data_clears_pages_misses_and_labels(store):
+    src = store.save_source({"kind": "slides", "url": "https://docs.google.com/presentation/d/AbCdEfGhIjK2",
+                             "title": "Deck", "text": "t"})
+    store.save_pages(src["id"], [{"page": 1, "title": "Hi", "points": ["a"], "figure": None, "topics": ["x"]}])
+    store.set_labels(src["id"], week=2, topic="T", summary="S")
+    quiz = store.save_material({"kind": "quiz", "title": "Q", "body": {"questions": []}})
+    store.record_misses(quiz["id"], [{"question": 0, "source_id": src["id"], "page": 1}])
+    other = store.save_source({"kind": "article", "url": "https://news.example.org/a", "title": "A", "text": "t"})
+    store.save_pages(other["id"], [{"page": 1, "title": "Hi", "points": ["a"], "figure": None, "topics": ["x"]}])
+    assert store.delete_source(other["id"]) and store.pages(other["id"]) == []
+    store.clear()
+    assert store.sources() == [] and store.pages(src["id"]) == [] and store.misses() == []
+    assert store.search_pages("hi") == []
 
 
 def test_this_file_is_in_the_simulation_manifest():
