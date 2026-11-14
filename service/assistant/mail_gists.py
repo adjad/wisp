@@ -51,10 +51,12 @@ Rules:
   code or a security notice stays out (counted, never read): a credential is not
   a message. So the written summary is private content at rest in
   `~/.moe/cache/mail_gists.json` (mode 0600) and reaches the Brief (and a paired
-  phone, through the gateway's pass-through of `/assistant/today`). It is only
-  ever requested from the local fast-role model: for the summary,
+  phone, through the gateway's pass-through of `/assistant/today`). It is
+  requested from the local fast-role model only: for the summary,
   `_resident_reply(local_only=True)` stands down in remote-only mode and for
-  any engine that isn't loopback-managed.
+  any engine that isn't loopback-managed. One exception, the owner's decision:
+  in cloud-everything mode (a remote-only profile with `remote_parity` on) the
+  summary goes to the user's chosen cloud model, like the other gist kinds.
 - The summary stays compact, like `summarize_emails`: a few short sentences,
   who wrote and what changed. A reply that is an input line (or starts with the
   `From <sender>:` form) is dropped for `mail_prose`, which also covers private
@@ -621,15 +623,17 @@ async def _resident_reply(system: str, material: str, abort, *,
     from service.inference.remote_policy import remote_only_profile
     model = role_to_model("fast")
     client = _c()
+    from service.inference.remote_policy import remote_parity
     remote = remote_only_profile() is not None
     if local_only:
         # The inbox summary carries the user's mail, private mail included. It
-        # may only ever reach the engine on this Mac: never the remote-only
-        # server, never a non-loopback endpoint.
-        if remote:
+        # stays on this Mac (never a remote-only server, never a non-loopback
+        # endpoint) unless the owner chose cloud-everything mode: a remote-only
+        # profile with remote_parity on sends it to that one chosen model.
+        if remote and not remote_parity():
             _stood_down("remote-only inference is on; the inbox summary stays on this Mac")
             return None
-        if getattr(client, "managed", True) is not True:
+        if not remote and getattr(client, "managed", True) is not True:
             _stood_down("the engine isn't this Mac's own; the inbox summary stays on this Mac")
             return None
     if remote:

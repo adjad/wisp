@@ -137,6 +137,7 @@ class MemoryWorker:
     async def run(self, client):
         from service import idle
         from service.config import role_to_model
+        from service.inference.remote_policy import remote_only_profile, remote_parity
         self.reconcile_deleted_sources()
         self.queue.recover()
         self.connections.recover()
@@ -156,7 +157,10 @@ class MemoryWorker:
                     investigation = self.connections.next()
                 from service.config.endpoints import role_target
                 selected = role_target(investigation['model_role'] if investigation else 'fast')
-                if not selected.endpoint.managed:
+                # Cloud-everything mode (remote-only profile + remote_parity): the
+                # chosen cloud model is the target and has no residency to wait on.
+                cloud = remote_only_profile() is not None and remote_parity()
+                if not selected.endpoint.managed and not cloud:
                     self.state = 'waiting for local investigation model'
                     continue
                 model = selected.model
@@ -166,9 +170,9 @@ class MemoryWorker:
                 if not investigation and not self.queue.has_ready():
                     self.state = 'idle'
                     continue
-                loaded = await client.loaded_models()
                 # Neither capture nor the experimental path cold-loads/swaps a
                 # foreground model. Leave jobs queued while the model is absent.
+                loaded = [model] if cloud else await client.loaded_models()
                 if model not in loaded or idle.foreground_busy():
                     self.state = 'waiting for resident model'
                     continue

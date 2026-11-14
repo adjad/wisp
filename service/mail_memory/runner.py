@@ -19,9 +19,12 @@ index and files costs nothing. Three levels (docs/plans/2026-10-26-email-digest-
            (`_run`): the same gates, no scheduler tick needed.
 
 IMPORTANT rules:
-- Never loads or evicts a model. The fast role must stay local
+- Never loads or evicts a model. The fast role stays local
   (`role_target`), and under a remote-only profile the walk stands down, so
-  mail never reaches a cloud model.
+  mail never reaches a cloud model. One exception, the owner's decision: in
+  cloud-everything mode (a remote-only profile with `remote_parity` on) the
+  walk runs on the user's chosen cloud model, with no local residency checks;
+  mail text goes nowhere else and the facts stay in facts.db.
 - One email that keeps failing (no reply, a truncated reply, an unreadable
   file) is retried once and then retired; it never holds up the queue.
 - A user's turn wins: the call is cancelled the moment one starts.
@@ -281,9 +284,13 @@ async def _stand_down() -> str | None:
     profile, the model not resident, something else resident (another app's model on
     the user's oMLX.app doesn't count), or the model busy."""
     from service import memory_saver
-    from service.inference.remote_policy import remote_only_profile
-    if remote_only_profile() is not None:
+    from service.inference.remote_policy import remote_only_profile, remote_parity
+    cloud = remote_only_profile() is not None
+    if cloud and not remote_parity():
         return "remote_only"
+    if cloud:
+        # Cloud-everything mode: no local residency to protect; only a busy model waits.
+        return None if _model_free(_model_key()) else "busy"
     from service.assistant.brief import _c
     from service.config import role_to_model
     model = role_to_model("fast")
@@ -481,8 +488,8 @@ async def tick(*, now: float | None = None) -> float:
     busy = busy_reason(_model_key(), power=power)
     lvl = "busy" if busy else level(_model_key(), hid_idle_s=hid, power=power)
     gap = step_gap(lvl, power)
-    from service.inference.remote_policy import remote_only_profile
-    if remote_only_profile() is not None:
+    from service.inference.remote_policy import remote_only_profile, remote_parity
+    if remote_only_profile() is not None and not remote_parity():
         note_skip("remote_only", now=now)
         return FAILURE_GAP_S                      # the walk stands down entirely
 
