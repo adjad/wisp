@@ -2476,7 +2476,11 @@ async def run_agent(
             # Tools run one at a time; a note left by a prefetch or a call
             # that emitted no result must not ride on this call's result.
             access_needed.drain(access_noted)
-            with strict_host_fetch(strict_fetch):
+            # The cap this result gets below, so a whole read (cloud-everything)
+            # sizes itself to it instead of being head-cut mid-email.
+            from service.model_only import ask_result_limit, tool_result_budget
+            result_cap = ask_result_limit(tool.name) if ask_quality else _MAX_TOOL_RESULT_CHARS
+            with strict_host_fetch(strict_fetch), tool_result_budget(result_cap):
                 if private_shell_read_only:
                     result = await run_tool(tool, args, private_shell_read_only=True)
                 else:
@@ -2869,9 +2873,10 @@ async def run_agent(
         if force_first_tool or direct_calls or required_tool_groups:
             raise ValueError("An owned execution plan must retain its controlled route")
         from service.router.model_led import (
-            CapabilityCatalog, DiscoveryState, DISCOVERY_TOOL, MAX_DISCOVERIES,
+            CapabilityCatalog, DiscoveryState, DISCOVERY_TOOL, max_discoveries,
             SelectionError, discovery_schema, registry_specs, stub_schema, stub_selection,
         )
+        MAX_DISCOVERIES = max_discoveries()
         from service.tools.registry import REGISTRY
 
         def fresh_capability_catalog():
@@ -4107,7 +4112,7 @@ async def run_agent(
         left the retry after a guard refusal the same size as the request that
         was refused. What the step must carry is never scaled away."""
         from service.config import model_context_window
-        from service.model_only import ASK_HISTORY_RESERVE, ASK_PROMPT_BUDGET
+        from service.model_only import ask_history_reserve, ask_prompt_budget
         real = [sch for sch in offered if sch["function"]["name"] not in stubs]
         floor = (_est_tokens(msgs[:len(system_prefix)]) + _est_tokens(real)
                  + max(int(_ASK_STEP_MESSAGE_FLOOR * scale),
@@ -4116,8 +4121,8 @@ async def run_agent(
                   or model_context_window(model))
         # Earlier conversation gets its own room: without it a tool result
         # evicted every earlier turn (see ASK_HISTORY_RESERVE).
-        reserve = int(ASK_HISTORY_RESERVE * scale) if _ask_has_history else 0
-        return min(window, max(int(ASK_PROMPT_BUDGET * scale), floor) + max_tokens + reserve)
+        reserve = int(ask_history_reserve() * scale) if _ask_has_history else 0
+        return min(window, max(int(ask_prompt_budget() * scale), floor) + max_tokens + reserve)
 
     def _ask_results_text() -> str:
         from service.model_only import compact_results
@@ -4134,8 +4139,10 @@ async def run_agent(
         the step that replaces a raw tool dump. With `direct`, the same step
         for a turn with no tool result (its steps came back empty, e.g. a call
         to a tool that was not offered, which oMLX drops). "" when it fails."""
-        from service.model_only import (ASK_HISTORY_RESERVE, ASK_PROMPT_BUDGET,
+        from service.inference.remote_policy import cloud_output_budget
+        from service.model_only import (ask_history_reserve, ask_prompt_budget,
                                         salvage_answer, strip_think)
+        out_budget = cloud_output_budget(700)   # room for a cloud model's reasoning
         nudge = {"role": "user", "content": (
             "Answer my last question directly now, briefly and helpfully, from what you "
             "know. Do not call any tool. If it needs my personal data you have not "
@@ -4146,13 +4153,13 @@ async def run_agent(
             "Do not call any tool and do not paste raw tool output.")}
         try:
             fitted, _, out_tokens = _fit_window(
-                msgs + [nudge], [], 700, model, None,
+                msgs + [nudge], [], out_budget, model, None,
                 protected_prefix_count=len(system_prefix), history_end=turn_history_end,
-                context_window=int((ASK_PROMPT_BUDGET + (ASK_HISTORY_RESERVE if _ask_has_history
-                                                         else 0)) * ask_scale) + 700,
+                context_window=int((ask_prompt_budget() + (ask_history_reserve() if _ask_has_history
+                                                           else 0)) * ask_scale) + out_budget,
                 min_output_tokens=400)
             answer, thought, _ = await _run_step(
-                client, model, fitted, [], "auto", min(out_tokens, 700), emit,
+                client, model, fitted, [], "auto", min(out_tokens, out_budget), emit,
                 stream_content=False, temperature=temperature, no_thinking=True,
                 think_off=True, debug=debug)
         except Exception:  # noqa: BLE001 - the compact fallback follows
@@ -5331,10 +5338,10 @@ async def run_agent(
                     # The Ask step budget may have trimmed the earlier result
                     # out of context; "returned earlier" would then point at
                     # nothing. Hand the same result back, bounded.
-                    from service.model_only import ASK_TOOL_RESULT_CHARS
+                    from service.model_only import ask_result_limit
                     result = (f"({name} already ran with these exact arguments; it was NOT run "
                               "again. Same result as before, answer from it now:)\n"
-                              + _fit_tool_result(ask_read_cache[read_key], name, ASK_TOOL_RESULT_CHARS))
+                              + _fit_tool_result(ask_read_cache[read_key], name, ask_result_limit(name)))
                 audit("reject_repeated_read", tool=name, args=args)
                 prev_step_refusals += 1
                 await emit({"type": "tool_result", "id": cid, "result": result})
@@ -5853,13 +5860,13 @@ async def run_agent(
                              and result != "The user denied this action."))):
                 executed_strict_reads[name] = executed_strict_reads.get(name, 0) + 1
             if ask_quality:
-                from service.model_only import (ASK_TOOL_RESULT_CHARS, argument_fix_hint,
+                from service.model_only import (argument_fix_hint, ask_result_limit,
                                                 web_degradation_hint)
                 # Smaller results (each one is re-sent on every later step),
                 # and a rejected argument comes back with a repair hint so the
                 # model fixes its own call instead of asking the user.
                 msgs.append({"role": "tool", "tool_call_id": cid,
-                             "content": _fit_tool_result(result, name, ASK_TOOL_RESULT_CHARS)
+                             "content": _fit_tool_result(result, name, ask_result_limit(name))
                              + argument_fix_hint(name, args, result)
                              + web_degradation_hint(name, result)})
             else:

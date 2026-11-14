@@ -987,6 +987,8 @@ print('fresh process retained original native fallback')
         E.configure_external_accounts({})
         E.cache_emails(header("iCloud", "Earlier native snapshot", native_id="native-cloud"))
         E.set_email_availability(True, read_source="local_index")
+        # Current for the Brief, but older than one sync interval: a question asks again.
+        E._native_headers_at = time.time() - 400
         async def native(event):
             self.assertEqual(event, {"type": "sync_assistant_sources_now", "sources": ["email"]})
             E.cache_emails(header("iCloud", "New local-index arrival", native_id="native-cloud"))

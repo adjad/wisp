@@ -416,6 +416,56 @@ def _without_tool_extras(messages):
             for row in messages]
 
 
+def _cache_marked_system(messages):
+    """OpenRouter's Anthropic models: one prompt-cache breakpoint at the end of the
+    first (stable) system message, so the tools and rules before it are reused from
+    the cache on every later step and turn. Copies that one row only."""
+    if (not messages or not isinstance(messages[0], dict) or messages[0].get("role") != "system"
+            or not isinstance(messages[0].get("content"), str) or not messages[0]["content"]):
+        return messages
+    marked = {**messages[0], "content": [{"type": "text", "text": messages[0]["content"],
+                                          "cache_control": {"type": "ephemeral"}}]}
+    return [marked, *messages[1:]]
+
+
+# Under cloud-everything a provider's readiness (its model list answered with this
+# key) is proven once for a few minutes, not twice before every turn's first token.
+# A provider that fails meanwhile still fails the request itself, with the same
+# message; invalidate_connections and a 401/403 from the provider forget the proof.
+REMOTE_READY_SECONDS = 300.0
+_REMOTE_READY: dict[tuple, float] = {}
+
+
+# About one prompt token per 300 base64 characters of 16 kHz, 16-bit mono WAV
+# (32 tokens a second of audio at the provider), with a floor for the part itself.
+_AUDIO_B64_CHARS_PER_TOKEN = 300
+_AUDIO_TOKEN_FLOOR = 16
+
+
+def _audio_estimates(messages):
+    """`messages` itself when no message carries a recording; else a copy in which each
+    recording's base64 is replaced by text of about its token cost, for measuring the
+    window only. The copy is never sent."""
+    if not isinstance(messages, list) or not any(
+            isinstance(m, dict) and isinstance(m.get("content"), list)
+            and any(isinstance(p, dict) and p.get("type") == "input_audio" for p in m["content"])
+            for m in messages):
+        return messages
+    out = []
+    for m in messages:
+        if isinstance(m, dict) and isinstance(m.get("content"), list):
+            parts = []
+            for p in m["content"]:
+                if isinstance(p, dict) and p.get("type") == "input_audio":
+                    data = (p.get("input_audio") or {}).get("data")
+                    tokens = (len(data) if isinstance(data, str) else 0) // _AUDIO_B64_CHARS_PER_TOKEN
+                    p = {"type": "text", "text": "a" * (4 * (tokens + _AUDIO_TOKEN_FLOOR))}
+                parts.append(p)
+            m = {**m, "content": parts}
+        out.append(m)
+    return out
+
+
 def _split_inline_thought(message: dict) -> None:
     content = message.get("content")
     if not isinstance(content, str) or _ThoughtSplitter.OPEN not in content:
@@ -510,8 +560,14 @@ class OMLXClient:
                 raise EndpointConfigurationError("An explicit remote URL requires its own credential")
         self.api_key = api_key
         from .attributed_transport import CredentialTransport
+        from service.inference.remote_policy import cloud_everything_active
+        # Under cloud-everything a remote https provider's connections are kept alive
+        # and shared by every client in the process (one TLS handshake, not one a turn).
+        # The managed engine and every other path keep their own, unshared, pool.
+        shared = (not self.managed and self.base_url.startswith("https://")
+                  and cloud_everything_active())
         self._credential_transport = CredentialTransport(self.base_url, api_key,
-            managed=self.managed, key_loader=key_loader)
+            managed=self.managed, key_loader=key_loader, shared=shared)
         self._client = guard_client(httpx.AsyncClient(
             base_url=self.base_url,
             transport=(self._credential_transport if self.managed
@@ -543,6 +599,9 @@ class OMLXClient:
         # Residency is unknown after a connection reset (engine restart path).
         with engine_epoch.operation():
             self._credential_transport.invalidate()
+        key = self._ready_key() if not self.managed else None
+        if key is not None:
+            _REMOTE_READY.pop(key, None)
 
     def _check_response(self, response):
         if self.managed and response.headers.get("x-wisp-guard-refusal") == "1":
@@ -553,6 +612,11 @@ class OMLXClient:
             if response.status_code == 507:
                 raise ModelMemoryLimitError() from None
         if not self.managed and not response.is_success:
+            if response.status_code in (401, 403):
+                # A key the provider now refuses: health must not keep vouching for it.
+                key = self._ready_key()
+                if key is not None:
+                    _REMOTE_READY.pop(key, None)
             # Provider-controlled redirect locations and error bodies may echo
             # private data. Do not retain the real request either: it contains
             # the prompt. Shared error handling receives only this synthetic
@@ -860,9 +924,52 @@ class OMLXClient:
         except (KeyError, ValueError, TypeError):
             raise ModelLoadError("Invalid inference model inventory") from None
 
+    def _ready_key(self) -> tuple | None:
+        """The readiness-cache key, only for a remote client under cloud-everything."""
+        if self.managed or self.target is None:
+            return None
+        from service.inference.remote_policy import cloud_everything_active
+        if not cloud_everything_active():
+            return None
+        ep = self.target.endpoint
+        return (ep.base_url, ep.api_prefix, ep.credential_ref)
+
+    def _recently_ready(self) -> bool:
+        import time
+        key = self._ready_key()
+        seen = _REMOTE_READY.get(key) if key is not None else None
+        return seen is not None and time.monotonic() - seen < REMOTE_READY_SECONDS
+
+    async def _remote_models_ready(self, *, always: bool = False) -> None:
+        """The remote inventory read that proves endpoint and key, skipped while a
+        recent one still stands (cloud-everything only) unless `always`."""
+        if not always and self._recently_ready():
+            return
+        await self.models()
+        key = self._ready_key()
+        if key is not None:
+            import time
+            _REMOTE_READY[key] = time.monotonic()
+
+    async def warm(self) -> None:
+        """Open (or refresh) a kept-alive connection to the remote provider before a
+        turn needs it. The answer does not matter, only the connection: the Gemini
+        API's short model list (which also proves the key), else a HEAD on the API
+        prefix (OpenRouter's model list is large). Remote clients only. The request
+        is always sent: an idle kept-alive connection expires long before the
+        readiness proof does (/inference/warm rate-limits the calls)."""
+        if self.managed:
+            return
+        if self.wire == "gemini":
+            await self._remote_models_ready(always=True)
+            return
+        response = await self._client.request("HEAD", self.api_prefix,
+                                              headers={"Accept-Encoding": "identity"})
+        await response.aclose()
+
     async def health(self) -> dict[str, Any]:
         if not self.provider.omlx_health:
-            await self.models()
+            await self._remote_models_ready()
             return {"status": "ok"}
         data = await self._readiness_mapping("/health", 64 * 1024)
         if data.get("status") not in ("ok", "healthy"):
@@ -937,7 +1044,7 @@ class OMLXClient:
                     # missing from it is not refused: Gemini's OpenAI-compatible
                     # list leaves Gemma out though it serves it, and a model the
                     # provider truly lacks fails on the request itself.
-                    await self.models()
+                    await self._remote_models_ready()
                     return
                 await self._ensure_managed(model, settle_timeout=settle_timeout,
                                            exclusive=exclusive, emit=emit)
@@ -1207,7 +1314,16 @@ class OMLXClient:
         reply is fetched whole (`_whole_reply_events`), so the reasoning_details it
         returns with tool calls are exactly the provider's, ready to send back.
         """
-        if not self.managed and self._replays_reasoning(model):
+        # Under cloud-everything a call that offers no tools can return no tool calls,
+        # so nothing would be replayed: it streams, even for those models. Its
+        # reasoning stays unshown, as it is when the reply is fetched whole.
+        whole_reply = not self.managed and self._replays_reasoning(model)
+        quiet_reasoning = False
+        if whole_reply and not tools:
+            from service.inference.remote_policy import cloud_everything_active
+            if cloud_everything_active():
+                whole_reply, quiet_reasoning = False, True
+        if whole_reply:
             async for event in self._whole_reply_events(
                     model, messages, tools=tools, tool_choice=tool_choice,
                     temperature=temperature, max_tokens=max_tokens,
@@ -1296,7 +1412,7 @@ class OMLXClient:
                         # text is neither shown nor kept: it may end in tool calls, and
                         # then only the details are held, for replay (see the end of
                         # this stream).
-                        if not (has_reasoning_details and not self.managed):
+                        if not (has_reasoning_details and not self.managed) and not quiet_reasoning:
                             reasoning_parts.append(t)
                             yield {"kind": "reasoning", "text": t}
                     if (t := delta.get("content")):
@@ -1490,8 +1606,8 @@ class OMLXClient:
                             use_remaining_context: bool = False):
         """`_fit_request`, plus the remote profile's reasoning option when its model
         has one (remote_policy.REASONING_EFFORT_MODELS: `reasoning` on OpenRouter,
-        `reasoning_effort` on the Gemini API), with the messages in the provider's
-        wire shape (`_wire_messages`).
+        `reasoning_effort` on the Gemini API), plus the provider's wire shape
+        (`_wire_messages`, `_wire_fields`).
 
         The provider gives reasoning half of max_tokens (at least 1024) and needs
         max_tokens above that, so a reasoning request carries at least
@@ -1504,17 +1620,34 @@ class OMLXClient:
         it would only add latency and cost to a call that needs a few words."""
         model, messages, tools, max_tokens, fields = self._fit_reasoning_only(
             model, messages, tools, max_tokens, use_remaining_context=use_remaining_context)
-        return model, self._wire_messages(messages), tools, max_tokens, fields
+        return (model, self._wire_messages(model, messages), tools, max_tokens,
+                {**fields, **self._wire_fields()})
 
-    def _wire_messages(self, messages):
-        """The request's messages in this provider's wire shape (copies of changed rows
-        only): the Gemini API's thought signatures on its tool steps, and never on
-        another provider's. A managed client's messages go unchanged."""
+    def _wire_fields(self) -> dict:
+        """Provider options every request of this client carries: OpenRouter's
+        latency-first provider routing, under cloud-everything only."""
+        from service.inference.remote_policy import OPENROUTER_PROVIDER_ROUTING, cloud_everything_active
+        if (not self.managed and getattr(self, "wire", None) == "openrouter"
+                and cloud_everything_active()):
+            return {"provider": dict(OPENROUTER_PROVIDER_ROUTING)}
+        return {}
+
+    def _wire_messages(self, model, messages):
+        """The request's messages in this provider's wire shape (copies of changed
+        rows only): the Gemini API's thought signatures on its tool steps, never on
+        another provider's; one prompt-cache mark for OpenRouter's Anthropic models
+        under cloud-everything. A managed client's messages go unchanged."""
         if self.managed:
             return messages
-        if getattr(self, "wire", None) == "gemini":
+        wire = getattr(self, "wire", None)
+        if wire == "gemini":
             return _gemini_wire_messages(messages)
-        return _without_tool_extras(messages)
+        messages = _without_tool_extras(messages)
+        if wire == "openrouter" and isinstance(model, str) and model.startswith("anthropic/"):
+            from service.inference.remote_policy import cloud_everything_active
+            if cloud_everything_active():
+                return _cache_marked_system(messages)
+        return messages
 
     def _fit_reasoning_only(self, model, messages, tools, max_tokens, *,
                             use_remaining_context: bool = False):
@@ -1562,19 +1695,27 @@ class OMLXClient:
         fit_options = ({"min_output_tokens": 1}
                        if self.endpoint_name == "local_provider" else {})
         original_messages = messages
+        # A recording's base64 is not prompt text: the window is measured with it
+        # stood in for by its rough token cost, and the real request is sent.
+        estimated = _audio_estimates(messages)
         messages, fitted_tools, max_tokens = _fit_window(
-            messages, tools or [], max_tokens, model, None,
+            estimated, tools or [], max_tokens, model, None,
             context_window=self.target.context_window,
-            protected_prefix_count=next((i for i, m in enumerate(messages)
-                                         if m.get("role") != "system"), len(messages)),
+            protected_prefix_count=next((i for i, m in enumerate(estimated)
+                                         if m.get("role") != "system"), len(estimated)),
             **fit_options)
-        if remote_profile is not None and messages != original_messages:
+        if estimated is not original_messages and messages != estimated:
+            # A request carrying a recording is sent whole or not at all.
+            raise EndpointConfigurationError("Request cannot fit the target context window")
+        if remote_profile is not None and messages != estimated:
             raise EndpointConfigurationError("Remote-only context cannot discard selected messages or tool results")
         # Never silently drop required tool schemas or send an overfull prompt.
         if len(fitted_tools) != len(tools or []):
             raise EndpointConfigurationError("Target context is too small for the requested tools")
         cost = sum(_est_tokens(m.get("content") or "") + _est_tokens(m.get("tool_calls") or [])
                    for m in messages) + _est_tokens(fitted_tools)
+        if estimated is not original_messages:
+            messages = original_messages
         if remote_profile is None and use_remaining_context and not self.managed and self.endpoint_name != "local_provider":
             # Direct cloud answers should not inherit Wisp's historical fixed
             # 8k generation ceiling. After fitting the prompt, offer the model

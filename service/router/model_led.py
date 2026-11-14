@@ -19,6 +19,33 @@ MAX_SCHEMAS = 24
 # only a head start: every other admitted tool stays reachable as a stub.
 MAX_PRELOAD = 12
 MAX_SCHEMA_BYTES = 32_000
+# Cloud-everything (remote_policy.cloud_everything_active): a 1M window holds a
+# wider menu and more discovery rounds.
+CLOUD_MAX_DISCOVERIES = 4
+CLOUD_MAX_SCHEMAS = 40
+CLOUD_MAX_PRELOAD = 16
+CLOUD_MAX_SCHEMA_BYTES = 64_000
+
+
+def _cloud() -> bool:
+    from service.inference.remote_policy import cloud_everything_active
+    return cloud_everything_active()
+
+
+def max_discoveries() -> int:
+    return CLOUD_MAX_DISCOVERIES if _cloud() else MAX_DISCOVERIES
+
+
+def max_schemas() -> int:
+    return CLOUD_MAX_SCHEMAS if _cloud() else MAX_SCHEMAS
+
+
+def max_preload() -> int:
+    return CLOUD_MAX_PRELOAD if _cloud() else MAX_PRELOAD
+
+
+def max_schema_bytes() -> int:
+    return CLOUD_MAX_SCHEMA_BYTES if _cloud() else MAX_SCHEMA_BYTES
 MAX_INDEX_BYTES = 24_000
 _NAME = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 
@@ -526,7 +553,7 @@ def discovery_schema(catalog: CapabilityCatalog) -> dict:
             "families": {"type": "array", "items": {"type": "string", "enum": list(catalog.families)},
                          "minItems": 1, "maxItems": 3, "uniqueItems": True},
             "tools": {"type": "array", "items": {"type": "string"},
-                      "minItems": 1, "maxItems": MAX_SCHEMAS, "uniqueItems": True}},
+                      "minItems": 1, "maxItems": max_schemas(), "uniqueItems": True}},
             "required": ["families"], "additionalProperties": False}}}
 
 
@@ -577,9 +604,9 @@ class DiscoveryState:
         for name in names:
             if name in catalog.tools and name not in picked:
                 picked.append(name)
-            if len(picked) == MAX_PRELOAD:
+            if len(picked) == max_preload():
                 break
-        while picked and len(json.dumps([catalog.tools[n].schema() for n in picked]).encode("utf-8")) > MAX_SCHEMA_BYTES:
+        while picked and len(json.dumps([catalog.tools[n].schema() for n in picked]).encode("utf-8")) > max_schema_bytes():
             picked.pop()
         self.selected = tuple(picked)
         return self.selected
@@ -589,7 +616,7 @@ class DiscoveryState:
         if DISCOVERY_TOOL not in step_offered:
             raise SelectionError("Schema discovery was not offered on this step")
         self.attempts += 1
-        if self.attempts > MAX_DISCOVERIES:
+        if self.attempts > max_discoveries():
             raise SelectionError("Schema discovery budget exhausted; use existing schemas or clarify")
         if not isinstance(args, dict) or set(args) - {"families", "tools"}:
             raise SelectionError("Expected only families and optional tools")
@@ -597,17 +624,17 @@ class DiscoveryState:
         if any(f not in catalog.families for f in families):
             raise SelectionError("Unknown, excluded or unavailable capability family")
         family_names = {n for f in families for n in catalog.families[f]}
-        requested = (_string_list(args, "tools", MAX_SCHEMAS) if "tools" in args
+        requested = (_string_list(args, "tools", max_schemas()) if "tools" in args
                      else sorted(family_names))
         if not set(requested) <= family_names:
             raise SelectionError("Requested tools must belong to the selected admitted families")
         # Revalidate the entire previous selection against this step's fresh
         # catalog. Removed/unavailable/excluded registrations never survive.
         names = tuple(dict.fromkeys([*(n for n in self.selected if n in catalog.tools), *requested]))
-        if len(names) > MAX_SCHEMAS:
-            raise SelectionError("Selection exceeds 24 schemas; request specific tools from these families")
+        if len(names) > max_schemas():
+            raise SelectionError(f"Selection exceeds {max_schemas()} schemas; request specific tools from these families")
         schemas = tuple(catalog.tools[n].schema() for n in names)
-        if len(json.dumps(schemas).encode("utf-8")) > MAX_SCHEMA_BYTES:
+        if len(json.dumps(schemas).encode("utf-8")) > max_schema_bytes():
             raise SelectionError("Selection exceeds schema byte budget; request fewer specific tools")
         self.selected = names
         return Expansion(tuple(families), names, schemas)

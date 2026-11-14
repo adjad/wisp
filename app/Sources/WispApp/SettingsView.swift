@@ -253,6 +253,12 @@ final class SettingsLoader: ObservableObject {
     private var confirmedIdleMinutes: Double = 5
     private var idleSaveGeneration = 0
     @Published var humanizerEnabled = false
+    /// "Gemini handles everything" (Advanced): a Gemini API connection exists to run
+    /// it on, whether it is saved on, and a switch in flight or its last problem.
+    @Published var geminiEverythingAvailable = false
+    @Published var geminiEverythingEnabled = false
+    @Published var geminiEverythingBusy = false
+    @Published var geminiEverythingProblem: String?
     @Published var behaviorEnabled: Bool? = nil
     @Published var behaviorChanging = false
     @Published var behaviorStatus: String?
@@ -384,6 +390,7 @@ final class SettingsLoader: ObservableObject {
             await self.refreshAttachmentBackground()
             await self.refreshCloud()
             await self.refreshLocalProvider()
+            await self.refreshGeminiEverything()
         }
     }
 
@@ -1032,6 +1039,39 @@ final class SettingsLoader: ObservableObject {
         }
     }
 
+    func refreshGeminiEverything() async {
+        guard !geminiEverythingBusy,
+              let object = try? await request("GET", path: "inference/cloud/everything") else { return }
+        geminiEverythingAvailable = object["available"] as? Bool == true
+        geminiEverythingEnabled = object["enabled"] as? Bool == true
+    }
+
+    /// Saves the switch, then restarts Wisp's service so every part of Wisp moves to
+    /// (or back from) the cloud model together. Turning it on reads and tests the
+    /// Gemini key first, so it can wait on macOS's Keychain question.
+    func setGeminiEverything(_ on: Bool) async {
+        guard !geminiEverythingBusy else { return }
+        geminiEverythingBusy = true
+        geminiEverythingProblem = nil
+        defer { geminiEverythingBusy = false }
+        do {
+            let object = try await request("POST", path: "inference/cloud/everything",
+                                           body: ["enabled": on], timeout: 200)
+            geminiEverythingAvailable = object["available"] as? Bool == true
+            geminiEverythingEnabled = object["enabled"] as? Bool == true
+            if object["restart_required"] as? Bool == true {
+                NotificationCenter.default.post(name: .wispRestartBackend, object: nil)
+            }
+        } catch {
+            geminiEverythingProblem = (error as? CloudSettingsError)?.localizedDescription
+                ?? "Wisp couldn't change this setting. Try again."
+            if let object = try? await request("GET", path: "inference/cloud/everything") {
+                geminiEverythingAvailable = object["available"] as? Bool == true
+                geminiEverythingEnabled = object["enabled"] as? Bool == true
+            }
+        }
+    }
+
     func setHumanizerEnabled(_ on: Bool) {
         humanizerEnabled = on
         Task { self.humanizerEnabled = await client.setHumanizerEnabled(on) }
@@ -1588,6 +1628,79 @@ struct SettingsView: View {
     @ObservedObject private var browserPrivacySync = BrowserHistoryReader.delivery
     @ObservedObject private var contactsPrivacySync = ContactsReader.delivery
     @State private var confirmForgetBehavior = false
+    @State private var confirmGeminiEverything = false
+    /// Set once the person has read and accepted what leaves the Mac; later turns
+    /// on skip the question. Turning it off never asks.
+    @AppStorage("WispGeminiEverythingConsented") private var geminiEverythingConsented = false
+
+    /// What leaves the Mac while Gemini handles everything, said before it is turned on.
+    static let geminiEverythingDisclosure =
+        "While this is on, everything Wisp reads to answer you goes to Google's Gemini API: "
+        + "your questions, and the mail, messages, calendar, reminders, notes, files, pictures "
+        + "and screen captures it uses for them, plus what it reads in the background for the "
+        + "Brief and Day. Google's terms for your API key apply. Turn it off to keep everything "
+        + "on this Mac again; the local model stays installed."
+
+    @ViewBuilder private var geminiEverythingRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(isOn: Binding(
+                get: { loader.geminiEverythingEnabled },
+                set: { on in
+                    if on && !geminiEverythingConsented {
+                        confirmGeminiEverything = true
+                    } else {
+                        Task { await loader.setGeminiEverything(on) }
+                    }
+                })) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Gemini handles everything")
+                        .font(.system(size: 14, weight: .medium))
+                    Text(loader.geminiEverythingEnabled
+                         ? "On. Ask, Brief, Day, pictures, voice and background work run on "
+                           + "Gemini through your API key, and your data goes to Google to do it. "
+                           + "Turn off to go back to the private on-device model."
+                         : loader.geminiEverythingAvailable
+                         ? "Off. Everything runs on the on-device model and stays on this Mac."
+                         : "Off. Connect a Gemini API key in Models › Cloud first.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if loader.geminiEverythingBusy {
+                        Text(loader.geminiEverythingEnabled ? "Switching back to this Mac…"
+                                                            : "Checking your Gemini key…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let problem = loader.geminiEverythingProblem {
+                        Text(problem)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .toggleStyle(.switch)
+            .tint(palette.accent)
+            .disabled(loader.geminiEverythingBusy
+                      || (!loader.geminiEverythingAvailable && !loader.geminiEverythingEnabled))
+            if !loader.geminiEverythingAvailable && !loader.geminiEverythingEnabled {
+                Button("Set up Gemini in Cloud…") {
+                    selectedPane = "models"
+                    modelsPane = "cloud"
+                }
+                .controlSize(.small)
+            }
+        }
+        .alert("Let Gemini handle everything?", isPresented: $confirmGeminiEverything) {
+            Button("Cancel", role: .cancel) {}
+            Button("Turn On") {
+                geminiEverythingConsented = true
+                Task { await loader.setGeminiEverything(true) }
+            }
+        } message: {
+            Text(Self.geminiEverythingDisclosure)
+        }
+    }
 
     var body: some View {
         if embedded {
@@ -2348,6 +2461,10 @@ struct SettingsView: View {
                             }
                             .frame(width: 130)
                         }
+
+                        Divider()
+
+                        geminiEverythingRow
 
                         Divider()
 

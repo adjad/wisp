@@ -370,9 +370,16 @@ def cache_messages(lines: str, available: bool, reason: str = "", kind: str = ""
             _publication_authority.publish()
 
 
+# Messages one conversation read returns under cloud-everything (at most).
+CLOUD_CONVERSATION_MESSAGES = 5000
 _STRUCTURED_PREFIX = "V3 | "
 _STRUCTURED_MAX_LINE = 300_000
-_STRUCTURED_MAX_RECORDS = 2000
+# The Intel reader sends up to 10000 records in 16 MB, 10 years back from 100000
+# rows; Apple silicon sends 2000 in 4 MB from 365 days and 20000 rows.
+_STRUCTURED_MAX_RECORDS = 10_000
+_STRUCTURED_MAX_BYTES = 16_000_000
+_STRUCTURED_MAX_WINDOW_DAYS = 3650
+_STRUCTURED_MAX_ROWS = 100_000
 
 
 def structured_messages_snapshot() -> dict:
@@ -1527,6 +1534,26 @@ def recent_priority_message_rows(*, now: float | None = None) -> list[tuple[floa
             if now - _RECENT_SUMMARY_SECONDS <= row[0] <= now]
 
 
+def conversation_rows(context: str, *, since: float = float("-inf")) -> list[tuple[float, str, str]]:
+    """Every synced message of one conversation since `since`, oldest first, with
+    sign-in codes redacted. Callers choose the conversation from the filtered
+    priority rows, so junk and promo senders never reach here."""
+    return conversation_threads({context}, since=since).get(context, [])
+
+
+def conversation_threads(contexts: set[str], *, since: float = float("-inf"),
+                         until: float = float("inf"),
+                         drop_noise: bool = False) -> dict[str, list[tuple[float, str, str]]]:
+    """conversation_rows for several conversations in one pass over the cache;
+    with `drop_noise`, without the messages summaries leave out
+    (is_summary_noise_message, judged before codes are redacted)."""
+    threads: dict[str, list[tuple[float, str, str]]] = {}
+    for ts, _identity, ctx, text, _state in _parse_records():
+        if ctx in contexts and since <= ts <= until and not (drop_noise and is_summary_noise_message(text)):
+            threads.setdefault(ctx, []).append((ts, ctx, redact_summary_codes(text)))
+    return {ctx: sorted(rows, key=lambda row: row[0]) for ctx, rows in threads.items()}
+
+
 def _conversation_aliases(label: str) -> set[str]:
     def normalized(value: str) -> str:
         return " ".join(re.findall(r"[\w@+.-]+", value.casefold()))
@@ -1860,10 +1887,13 @@ async def _summarize(rows: list[tuple[float, str, str]], header_label: str) -> s
         model = role_to_model("fast")
         request = [{"role": "system", "content": _TOPIC_SYS},
                    {"role": "user", "content": json.dumps(candidates, ensure_ascii=False)}]
+        from service.inference.remote_policy import cloud_call_timeout, cloud_output_budget
+        budget = cloud_output_budget(user_facing_summary_budget(model, 600))
         response = await asyncio.wait_for(
-            _c().chat(model, request, max_tokens=user_facing_summary_budget(model, 600),
+            _c().chat(model, request, max_tokens=budget,
                       temperature=0,
-                      **user_facing_summary_kwargs(model)), timeout=_SUMMARY_TIMEOUT_SECONDS)
+                      **user_facing_summary_kwargs(model)),
+            timeout=cloud_call_timeout(_SUMMARY_TIMEOUT_SECONDS, budget))
         debug_capture.record("model_call", model=model, request=request, response=response)
         choice = response["choices"][0]
         content = choice["message"]["content"]
@@ -2159,7 +2189,7 @@ async def _summarize_unread_messages(day: str | None = None, count: int = 30,
 
 
 async def view_messages_impl(query: str | None = None, day: str | None = None,
-                             count: int = 20, period: str | None = None,
+                             count: int | None = None, period: str | None = None,
                              unread: bool = False,
                              conversation: str | None = None) -> str:
     from service.assistant.sync_status import ensure_sources
@@ -2216,10 +2246,21 @@ async def view_messages_impl(query: str | None = None, day: str | None = None,
     # label over August-only lines, would report that nothing happened in July.
     # Same principle as the agent loop's _fit_tool_result: a silent truncation
     # produces a confident wrong answer, which is worse than a noisy one.
+    explicit = count is not None
     try:
-        count = max(1, int(count))
+        count = max(1, int(count)) if explicit else 20
     except (TypeError, ValueError):
-        count = 20
+        count, explicit = 20, False
+    whole_budget = 0
+    if conversation and not query:
+        from service.model_only import whole_read_budget
+        whole_budget = whole_read_budget()
+    if whole_budget:
+        # Cloud-everything, for a caller that keeps a whole read: the conversation
+        # as far back as synced (or the `count` asked for), newest first up to
+        # the budget, then shown in time order.
+        return note + _newest_within(rows, count if explicit else CLOUD_CONVERSATION_MESSAGES,
+                                     whole_budget, label)
     if (period or day or query or unread or conversation) and len(rows) > count:
         note += (f"(showing the {count} most recent of {len(rows)} messages in "
                  f"{label} — the earlier ones are NOT shown, so do not say "
@@ -2231,6 +2272,35 @@ async def view_messages_impl(query: str | None = None, day: str | None = None,
         when = datetime.fromtimestamp(ts).strftime("%a %b %-d, %-I:%M %p")
         lines.append(f"[{when}] {ctx} — {text}")
     return note + "\n".join(lines)
+
+
+# Room kept for the coverage note in a whole conversation read.
+_WHOLE_NOTE_CHARS = 600
+
+
+def _newest_within(rows: list[tuple[float, str, str]], count: int, budget: int, label: str) -> str:
+    """The newest of `rows` (oldest first), at most `count` of them, that fit
+    `budget` characters, in time order, with a note saying exactly what was kept."""
+    room = max(1, budget - _WHOLE_NOTE_CHARS)
+    kept: list[str] = []
+    first_ts = 0.0
+    used = 0
+    for ts, ctx, text in reversed(rows[-count:]):
+        when = datetime.fromtimestamp(ts).strftime("%a %b %-d, %-I:%M %p")
+        line = f"[{when}] {ctx} — {text}"
+        if kept and used + len(line) + 1 > room:
+            break
+        kept.append(line[:room])
+        used += len(line) + 1
+        first_ts = ts
+    kept.reverse()
+    note = ""
+    if len(kept) < len(rows):
+        since = datetime.fromtimestamp(first_ts).strftime("%a %b %-d, %Y")
+        note = (f"(showing the latest {len(kept)} of {len(rows)} messages in {label}, from "
+                f"{since} — the earlier ones are NOT shown, so do not say nothing happened "
+                f"before then. Use `period` or `day` to read an earlier stretch.)\n\n")
+    return note + "\n".join(kept)
 
 
 @register(
@@ -2257,7 +2327,7 @@ async def view_messages_impl(query: str | None = None, day: str | None = None,
     category="messages_read",
 )
 async def view_messages(query: str | None = None, day: str | None = None,
-                        count: int = 20, period: str | None = None,
+                        count: int | None = None, period: str | None = None,
                         unread: bool = False,
                         conversation: str | None = None) -> str:
     return await view_messages_impl(query, day, count, period, unread, conversation)
@@ -2424,9 +2494,9 @@ def behavior_messages_snapshot_with_receipt(*, expected_generation=None, expecte
                 or any(type(coverage.get(k)) is not int or coverage[k] < 0 for k in fields)
                 or coverage["malformed"] != 0 or type(coverage.get("reached_row_limit")) is not bool
                 or not 1 <= coverage["limit"] <= _STRUCTURED_MAX_RECORDS
-                or not 1 <= coverage["byte_limit"] <= 4_000_000
-                or not 1 <= coverage["window_days"] <= 365
-                or not 1 <= coverage["row_limit"] <= 20000
+                or not 1 <= coverage["byte_limit"] <= _STRUCTURED_MAX_BYTES
+                or not 1 <= coverage["window_days"] <= _STRUCTURED_MAX_WINDOW_DAYS
+                or not 1 <= coverage["row_limit"] <= _STRUCTURED_MAX_ROWS
                 or not coverage["emitted"] == len(rows) <= coverage["limit"]
                 or not coverage["emitted"]+coverage["skipped"] <= coverage["attempted"] <= coverage["row_limit"]
                 or coverage["truncated"] < coverage["attempted"]-coverage["emitted"]-coverage["skipped"]

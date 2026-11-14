@@ -22,6 +22,7 @@ from __future__ import annotations
 import math
 import os
 import re
+from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import date, timedelta
 from typing import NamedTuple
@@ -114,14 +115,108 @@ ASK_PROMPT_BUDGET = 8000
 # (memory/context.DIGEST_MAX_CHARS, ~1,200) almost whole; the step stays
 # around 9k estimated tokens, far under the window and the guard's 32k.
 ASK_HISTORY_RESERVE = 1200
+# Cloud-everything (remote_policy.cloud_everything_active): no prefill guard and a
+# 1M window, but each step's input still costs time to first token, so the step
+# grows moderately and Ask stays quick.
+CLOUD_ASK_PROMPT_BUDGET = 24000
+CLOUD_ASK_HISTORY_RESERVE = 6000
+
+
+def ask_prompt_budget() -> int:
+    """ASK_PROMPT_BUDGET, or the cloud value under cloud-everything."""
+    from service.inference.remote_policy import cloud_everything_active
+    return CLOUD_ASK_PROMPT_BUDGET if cloud_everything_active() else ASK_PROMPT_BUDGET
+
+
+def ask_history_reserve() -> int:
+    """ASK_HISTORY_RESERVE, or the cloud value under cloud-everything."""
+    from service.inference.remote_policy import cloud_everything_active
+    return CLOUD_ASK_HISTORY_RESERVE if cloud_everything_active() else ASK_HISTORY_RESERVE
+
+
 # Per-result cap in the model's context (the general loop allows 12,000).
 ASK_TOOL_RESULT_CHARS = 6000
+# Under cloud-everything, reading an email thread or a Messages conversation
+# comes back whole; every other Ask result keeps the cap above, for speed.
+WHOLE_READ_TOOLS = frozenset({"view_emails", "view_messages"})
+# Still bounded: at most about 100k tokens, and at most a third of the active
+# profile's window (4 characters a token), so two whole reads in one turn still
+# leave room for the prompt, the schemas and the reply.
+CLOUD_WHOLE_READ_CHARS = 400_000
+# Under this a "whole" read cannot hold one long thread; tools keep their digest.
+WHOLE_READ_MIN_CHARS = 50_000
+
+
+def cloud_whole_read_chars() -> int:
+    """Characters one whole read may carry under cloud-everything: CLOUD_WHOLE_READ_CHARS,
+    or less on a smaller window or byte budget (the same profile limits
+    documents.cloud_text_chars reads). 0 with the gate off."""
+    from service.inference.remote_policy import cloud_everything_active, remote_only_profile
+    if not cloud_everything_active():
+        return 0
+    try:
+        profile = remote_only_profile()
+        by_window = int(profile.context_window) * 4 // 3
+        by_bytes = (int(profile.aggregate_bytes) - 16_384) // 4 // 3   # worst-case UTF-8
+    except Exception:  # noqa: BLE001 — no readable profile: no whole reads
+        return 0
+    return max(0, min(CLOUD_WHOLE_READ_CHARS, by_window, by_bytes))
+
+
+def ask_result_limit(name: str) -> int:
+    """The Ask cap for one result of tool `name`."""
+    if name in WHOLE_READ_TOOLS:
+        return max(ASK_TOOL_RESULT_CHARS, cloud_whole_read_chars())
+    return ASK_TOOL_RESULT_CHARS
+
+
+# The cap the agent loop applies to the result of the tool now running, so a tool
+# that can return a whole read sizes it to what its caller keeps. None outside the
+# loop: such callers get the tools' small, digested results.
+_RESULT_BUDGET: ContextVar[int | None] = ContextVar("wisp_tool_result_budget", default=None)
+
+
+@contextmanager
+def tool_result_budget(chars: int | None):
+    token = _RESULT_BUDGET.set(chars)
+    try:
+        yield
+    finally:
+        _RESULT_BUDGET.reset(token)
+
+
+def whole_read_budget() -> int:
+    """Characters a whole read may return for the running call: the caller's cap,
+    within cloud_whole_read_chars(). 0 when whole reads do not apply: gate off, no
+    caller budget, or an effective cap under WHOLE_READ_MIN_CHARS (summarize_emails
+    in Ask, non-Ask turns), where the tool keeps its old digested path."""
+    whole = cloud_whole_read_chars()
+    caller = _RESULT_BUDGET.get()
+    if not whole or caller is None:
+        return 0
+    budget = min(whole, int(caller))
+    return budget if budget >= WHOLE_READ_MIN_CHARS else 0
+
+
 # Calls to ONE tool per turn. The corpus raw dumps were turns that called
 # get_upcoming / view_emails eight times with shuffled arguments.
 ASK_MAX_SAME_TOOL_CALLS = 3
 # Real schemas a model-led turn starts with, and name-only stubs beyond them.
 ASK_PRELOAD = 6
 ASK_STUBS = 24
+# The same under cloud-everything: the window holds a wider menu.
+CLOUD_ASK_PRELOAD = 16
+CLOUD_ASK_STUBS = 40
+
+
+def ask_preload() -> int:
+    from service.inference.remote_policy import cloud_everything_active
+    return CLOUD_ASK_PRELOAD if cloud_everything_active() else ASK_PRELOAD
+
+
+def ask_stubs() -> int:
+    from service.inference.remote_policy import cloud_everything_active
+    return CLOUD_ASK_STUBS if cloud_everything_active() else ASK_STUBS
 # Name-only stubs always offered, whatever the lexical rank: the everyday
 # personal sources and lookups a short prompt most often needs.
 ASK_CORE_STUBS = frozenset({

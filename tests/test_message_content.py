@@ -78,9 +78,10 @@ def test_behavior_message_subset_keeps_strict_inventory_and_original_receipt(liv
 
 @pytest.mark.parametrize("change", [
     {"attempted": 0}, {"emitted": 0}, {"skipped": 1}, {"attempted": 2},
-    {"limit": 0}, {"limit": True}, {"limit": 2001}, {"byte_limit": 1},
-    {"byte_limit": 4_000_001}, {"window_days": 0}, {"window_days": 366},
-    {"row_limit": 0}, {"row_limit": 20001}, {"reached_row_limit": True},
+    # The maxima are the Intel reader's (10000 records, 16 MB, 3650 days, 100000 rows).
+    {"limit": 0}, {"limit": True}, {"limit": 10_001}, {"byte_limit": 1},
+    {"byte_limit": 16_000_001}, {"window_days": 0}, {"window_days": 3651},
+    {"row_limit": 0}, {"row_limit": 100_001}, {"reached_row_limit": True},
 ])
 def test_behavior_message_subset_rejects_inconsistent_carrier_counts(live_message_publication, change):
     messages, _ = live_message_publication
@@ -437,3 +438,18 @@ print(a.message.identity)
     second = subprocess.run([sys.executable, "-B", "-c", script], cwd=FIXTURES.parents[2], capture_output=True, text=True)
     assert first.returncode == second.returncode == 0, first.stderr + second.stderr
     assert first.stdout == second.stdout
+
+
+def test_intel_sized_message_coverage_is_accepted(live_message_publication):
+    """The Intel reader's larger window and limits pass the receipt checks; the
+    Apple silicon sizes above still do, and anything past the new maxima is refused."""
+    messages, _ = live_message_publication
+    intel = dict(limit=10_000, byte_limit=16_000_000, window_days=3650, row_limit=100_000)
+    messages.cache_messages(v3_carrier([record()], coverage=intel), True)
+    assert messages.behavior_messages_snapshot_with_receipt() is not None
+    for key, value in (("limit", 10_001), ("byte_limit", 16_000_001),
+                       ("window_days", 3651), ("row_limit", 100_001)):
+        messages.cache_messages(v3_carrier([record()], coverage={**intel, key: value}), True)
+        assert messages.behavior_messages_snapshot_with_receipt() is None, key
+    messages.cache_messages(v3_carrier([record()]), True)
+    assert messages.behavior_messages_snapshot_with_receipt() is not None

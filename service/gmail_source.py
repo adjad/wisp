@@ -112,6 +112,27 @@ HISTORY_LIMIT = 2000         # ~2y cap; first walk is the only expensive one
 HISTORY_DAYS = 730
 BODY_CAP = 20000
 FETCH_CONCURRENCY = 4        # metadata get = 5 quota units; the cap is 250/s
+# Cloud-everything (remote_policy.cloud_everything_active): deeper bodies and
+# history for the 1M window, history at 10000 per account (about 50k quota units
+# for the first walk).
+CLOUD_RAW_LIMIT = 200
+CLOUD_WEEK_RAW_DAYS = 30
+CLOUD_WEEK_RAW_LIMIT = 600
+CLOUD_HISTORY_LIMIT = 10_000
+CLOUD_HISTORY_DAYS = 3650
+CLOUD_BODY_CAP = 200_000
+# Fetches one cloud pass makes, newest first, so it ends inside run()'s 30-second
+# part timeout; a pass that leaves some behind publishes what it has and the next
+# one (a minute later) carries on. Fetched bodies are kept as they land, so a
+# timeout or cancel loses none. History resumes from the header lines already
+# cached (they carry each message's Gmail id), so a restart fetches only new mail.
+CLOUD_RAW_FETCHES_PER_PASS = 150
+CLOUD_HISTORY_FETCHES_PER_PASS = 200
+
+
+def _cloud() -> bool:
+    from service.inference.remote_policy import cloud_everything_active
+    return cloud_everything_active()
 
 HEADERS_EVERY = 300
 # The user's own sent mail (headers only), so a thread they answered from
@@ -775,7 +796,7 @@ def extract_body(payload: dict) -> str:
         text = re.sub(r"(?is)<(script|style).*?</\1>", " ", "\n".join(markup))
         text = html.unescape(re.sub(r"(?s)<[^>]+>", " ", text))
     text = re.sub(r"[ \t]+", " ", text.replace("\x01", " ").replace("\x02", " "))
-    return re.sub(r"\n\s*\n+", "\n\n", text).strip()[:BODY_CAP]
+    return re.sub(r"\n\s*\n+", "\n\n", text).strip()[:CLOUD_BODY_CAP if _cloud() else BODY_CAP]
 
 
 MAX_ATTACHMENT_BYTES = 32 * 1024 * 1024
@@ -1063,15 +1084,22 @@ def _with_read_state(record: str, unread: bool) -> str:
 
 async def _sync_raw(http, account: str) -> None:
     from service.tools import email_tools
-    newest = await _list_ids(http, RAW_LIMIT)
-    week = await _list_ids(http, WEEK_RAW_LIMIT, query=f"newer_than:{WEEK_RAW_DAYS}d")
+    cloud = _cloud()
+    raw_limit = CLOUD_RAW_LIMIT if cloud else RAW_LIMIT
+    week_limit = CLOUD_WEEK_RAW_LIMIT if cloud else WEEK_RAW_LIMIT
+    week_days = CLOUD_WEEK_RAW_DAYS if cloud else WEEK_RAW_DAYS
+    newest = await _list_ids(http, raw_limit)
+    week = await _list_ids(http, week_limit, query=f"newer_than:{week_days}d")
     ids = list(dict.fromkeys(newest + week))
-    known = _raw.get(account, {})
+    known = _raw.setdefault(account, {}) if cloud else _raw.get(account, {})
     missing = [i for i in ids if i not in known]
     # Every listed id is among the newest RAW_LIMIT + WEEK_RAW_LIMIT unread inbox
     # messages if it is unread at all, so one list call re-reads the read state of
     # the cached ones instead of a full fetch each.
-    unread = set(await _list_ids(http, RAW_LIMIT + WEEK_RAW_LIMIT, unread=True)) if len(missing) < len(ids) else set()
+    unread = set(await _list_ids(http, raw_limit + week_limit, unread=True)) if len(missing) < len(ids) else set()
+    if cloud:
+        await _sync_raw_pass(http, account, ids, known, missing, unread)
+        return
     gate = asyncio.Semaphore(FETCH_CONCURRENCY)
 
     async def one(message_id: str) -> dict:
@@ -1090,17 +1118,98 @@ async def _sync_raw(http, account: str) -> None:
     _last.setdefault(account, {})["raw"] = time.time()
 
 
+async def _sync_raw_pass(http, account: str, ids: list[str], store: dict[str, str],
+                         missing: list[str], unread: set[str]) -> None:
+    """Cloud-everything raw sync: at most CLOUD_RAW_FETCHES_PER_PASS of the newest
+    missing bodies, each kept in `store` (`_raw[account]`) the moment it lands, then
+    every listed body held so far published newest first. Done (`_last`) only once
+    nothing is missing, so the next run continues a busy inbox where this one stopped."""
+    from service.tools import email_tools
+    batch = missing[:CLOUD_RAW_FETCHES_PER_PASS]        # `ids` lists newest first
+    fresh: set[str] = set()
+    gate = asyncio.Semaphore(FETCH_CONCURRENCY)
+
+    async def one(message_id: str) -> None:
+        async with gate:
+            message = await _get(http, f"messages/{message_id}", [("format", "full")])
+        if _still_connected():
+            store[message_id] = raw_record(message, account)
+            fresh.add(message_id)
+            _remember_auth(account, message_id, parse_metadata(message))
+
+    await asyncio.gather(*(one(i) for i in batch))
+    if not _still_connected():
+        return
+    records = {i: store[i] if i in fresh else _with_read_state(store[i], i in unread)
+               for i in ids if i in store}
+    _raw[account] = records
+    email_tools.cache_external_emails(account=account, raw=_RS.join(records.values()))
+    if len(records) == len(ids):
+        _last.setdefault(account, {})["raw"] = time.time()
+
+
+def _cached_history_lines(account: str) -> dict[str, str]:
+    """This account's published history header lines by Gmail id (the H2 record's
+    last field), from the cache restored at launch: a header never changes under
+    its id, so a resumed walk fetches only the ids it has not seen."""
+    from service.tools import email_tools
+    text = (email_tools._external_accounts.get(account) or {}).get("history") or ""
+    lines: dict[str, str] = {}
+    for line in str(text).splitlines():
+        parts = line.split(_FS)
+        if len(parts) == 10 and parts[0] == "H2" and parts[3] == account and parts[9]:
+            lines[parts[9]] = line
+    return lines
+
+
+def _with_header_read_state(line: str, unread: bool) -> str:
+    parts = line.split(_FS)
+    parts[2] = "U" if unread else "R"
+    return _FS.join(parts)
+
+
 async def _sync_history(http, account: str) -> None:
     from service.tools import email_tools
-    ids = await _list_ids(http, HISTORY_LIMIT, query=f"newer_than:{HISTORY_DAYS}d")
-    unread = set(await _list_ids(http, HISTORY_LIMIT, unread=True))
+    cloud = _cloud()
+    limit = CLOUD_HISTORY_LIMIT if cloud else HISTORY_LIMIT
+    days = CLOUD_HISTORY_DAYS if cloud else HISTORY_DAYS
+    ids = await _list_ids(http, limit, query=f"newer_than:{days}d")
+    unread = set(await _list_ids(http, limit, unread=True))
+    if cloud:
+        await _sync_history_pass(http, account, ids, unread, limit)
+        return
     await _ensure_meta(http, ids)
     if not _still_connected():
         return
-    cap = int(len(ids) >= HISTORY_LIMIT)
+    cap = int(len(ids) >= limit)
     history = _lines(ids, unread, account) + f"\nC2\x01{account}\x01{account}\x01{len(ids)}\x010\x01{cap}"
     email_tools.cache_external_emails(account=account, history=history)
     _last.setdefault(account, {})["history"] = time.time()
+
+
+async def _sync_history_pass(http, account: str, ids: list[str], unread: set[str], limit: int) -> None:
+    """Cloud-everything history: resume from the cached header lines, fetch at most
+    CLOUD_HISTORY_FETCHES_PER_PASS unseen headers (newest first), and publish every
+    line held so far. A partial walk carries the cap flag, so coverage says there is
+    more; it is done (`_last`) only once every listed id has a line."""
+    from service.tools import email_tools
+    prior = _cached_history_lines(account)
+    unseen = [i for i in ids if (account, i) not in _meta and i not in prior]
+    await _ensure_meta(http, unseen[:CLOUD_HISTORY_FETCHES_PER_PASS])
+    if not _still_connected():
+        return
+    rows = []
+    for i in ids:
+        if (account, i) in _meta:
+            rows.append(header_line(_meta[(account, i)], account, i in unread))
+        elif i in prior:
+            rows.append(_with_header_read_state(prior[i], i in unread))
+    done = len(rows) == len(ids)
+    cap = int(len(ids) >= limit or not done)
+    history = "\n".join(rows) + f"\nC2\x01{account}\x01{account}\x01{len(rows)}\x010\x01{cap}"
+    email_tools.cache_external_emails(account=account, history=history)
+    if done:
+        _last.setdefault(account, {})["history"] = time.time()
 
 
 async def _sync_account(account: str, parts: tuple[str, ...]) -> bool:

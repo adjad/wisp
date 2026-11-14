@@ -426,3 +426,20 @@ def test_a_text_only_turn_never_touches_vision(agent_env, monkeypatch):
     assert agent_env.stub.calls == []
     assert len(agent_env.agent_calls) == 1 and agent_env.picture_turns == [False]
     assert agent_env.agent_calls[0]["picture_reading"] is None
+
+
+def test_in_cloud_everything_mode_the_cloud_models_reading_reaches_its_own_turn(agent_env, monkeypatch):
+    """Cloud-everything mode with a model that reads pictures: the same chosen cloud
+    model made the reading, so the turn carries it instead of the local-only notice."""
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    agent_env.target = replace(agent_env.target,
+                               endpoint=replace(agent_env.target.endpoint, managed=False))
+    monkeypatch.setattr(main, "_cloud_reads_pictures", lambda target: target is agent_env.target)
+    monkeypatch.setattr(main, "OMLXClient", lambda **kwargs: SimpleNamespace(aclose=AsyncMock()))
+    events = agent_env.request("add this to my calendar", image=url())
+    texts = [e["text"] for e in events if e["type"] == "text"]
+    assert main.PICTURE_LOCAL_ONLY_NOTICE not in texts
+    assert len(agent_env.agent_calls) == 1
+    assert agent_env.agent_calls[0]["picture_reading"].startswith("TEXT:\nLunch Fri 12:30")

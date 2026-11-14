@@ -87,7 +87,10 @@ class MainChecks(RemoteFixture):
         tree=ast.parse(SOURCE.read_text())
         agent=next(n for n in tree.body if isinstance(n,ast.AsyncFunctionDef) and n.name=='agent')
         summary=next(n for n in ast.walk(agent) if isinstance(n,ast.If) and any(isinstance(c,ast.Call) and isinstance(c.func,ast.Name) and c.func.id=='maybe_summarize' for c in ast.walk(n)))
-        self.assertIn('remote_only_profile() is None',ast.unparse(summary.test))
+        # Off on remote inference, except cloud-everything, which folds on the cloud model.
+        self.assertIn('cloud_everything_active()',ast.unparse(summary.test))
+        self.assertEqual(len(summary.orelse),1)
+        self.assertIn('remote_only_profile() is None',ast.unparse(summary.orelse[0].test))
         calls=[n for n in ast.walk(agent) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=='run_agent']
         self.assertEqual(len(calls),1)
         self.assertTrue({'include_memory_context', 'allow_skill_context',
@@ -161,8 +164,11 @@ class MainChecks(RemoteFixture):
                     profile = policy.remote_only_profile() if remote else None
                     remote_profile = Mock(return_value=profile)
                     bindings = {'test_mode': False, 'remote_only_profile': remote_profile,
-                                'literal_envelope': literal}
+                                'literal_envelope': literal, 'cloud_everything_active': lambda: False}
                     self.assertIs(evaluate_context_keyword('allow_skill_context', bindings),
                                   not remote and not literal)
                     remote_profile.assert_called_once_with()
+                    # Cloud-everything (parity) gives skills their instructions too.
+                    parity = dict(bindings, cloud_everything_active=lambda: remote)
+                    self.assertIs(evaluate_context_keyword('allow_skill_context', parity), not literal)
                     self.assertIs(evaluate_context_keyword('include_identity_context', bindings), True)

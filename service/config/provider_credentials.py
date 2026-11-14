@@ -1,6 +1,7 @@
 """Read origin-bound provider secrets from macOS Keychain without secret argv."""
 import asyncio
 import hashlib
+import platform
 import subprocess
 import threading
 import time
@@ -23,6 +24,21 @@ CONNECT_LOCK_WAIT_S = 10.0
 FAILURE_HOLD_S = 20.0
 _READ_LOCK = threading.Lock()
 _RECENT_FAILURE: dict[str, float] = {}
+# Intel only (every answer is a cloud call): a key read in the last few minutes is used
+# again instead of running `security` before each turn's first token. Connect (`wait`)
+# always reads Keychain afresh, and a Connect restarts the service, which clears this;
+# saving or removing a cloud connection also forgets it (forget_reused_keys).
+SUCCESS_REUSE_S = 300.0
+_RECENT_SUCCESS: dict[str, tuple[float, str]] = {}
+
+
+def forget_reused_keys() -> None:
+    """Drop every key held for reuse: the next read goes to Keychain again."""
+    _RECENT_SUCCESS.clear()
+
+
+def _reuse_enabled() -> bool:
+    return platform.machine() == "x86_64"
 
 
 def keychain_account(name: str, base_url: str) -> str:
@@ -47,6 +63,10 @@ def resolve_keychain(name: str, base_url: str, *, wait: bool = False) -> str:
         on_loop = True
     except RuntimeError:
         on_loop = False
+    if not wait and _reuse_enabled():
+        held = _RECENT_SUCCESS.get(account)
+        if held is not None and time.monotonic() - held[0] < SUCCESS_REUSE_S:
+            return held[1]
     limit = CONNECT_LOCK_WAIT_S if wait else (0 if on_loop else LOCK_WAIT_S)
     if not _READ_LOCK.acquire(timeout=limit):
         raise EndpointConfigurationError("Provider credential unavailable")
@@ -69,8 +89,11 @@ def resolve_keychain(name: str, base_url: str, *, wait: bool = False) -> str:
                 raise ValueError
         except (OSError, subprocess.SubprocessError, ValueError):
             _RECENT_FAILURE[account] = time.monotonic()
+            _RECENT_SUCCESS.pop(account, None)
             raise EndpointConfigurationError("Provider credential unavailable") from None
         _RECENT_FAILURE.pop(account, None)
+        if _reuse_enabled():
+            _RECENT_SUCCESS[account] = (time.monotonic(), value)
         return value
     finally:
         _READ_LOCK.release()

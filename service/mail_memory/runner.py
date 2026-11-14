@@ -19,9 +19,12 @@ index and files costs nothing. Three levels (docs/plans/2026-10-26-email-digest-
            (`_run`): the same gates, no scheduler tick needed.
 
 IMPORTANT rules:
-- Never loads or evicts a model. The fast role must stay local
+- Never loads or evicts a model. The fast role stays local
   (`role_target`), and under a remote-only profile the walk stands down, so
-  mail never reaches a cloud model.
+  mail never reaches a cloud model. One exception, the owner's decision: in
+  cloud-everything mode (a remote-only profile with `remote_parity` on) the
+  walk runs on the user's chosen cloud model, with no local residency checks;
+  mail text goes nowhere else and the facts stay in facts.db.
 - One email that keeps failing (no reply, a truncated reply, an unreadable
   file) is retried once and then retired; it never holds up the queue.
 - A user's turn wins: the call is cancelled the moment one starts.
@@ -77,6 +80,14 @@ log = logging.getLogger("wisp.mail_memory")
 MODES = ("off", "shadow", "live")
 SETTINGS_PATH = MOE_DIR / "mail_memory" / "settings.json"
 WINDOW_DAYS = 90
+# Cloud-everything (remote_policy.cloud_everything_active) reads further back: the
+# app's index answers at most 200 days (MailMemoryReader.maxDays).
+CLOUD_WINDOW_DAYS = 200
+
+
+def window_days() -> int:
+    from service.inference.remote_policy import cloud_everything_active
+    return CLOUD_WINDOW_DAYS if cloud_everything_active() else WINDOW_DAYS
 INDEX_EVERY_S = 6 * 3600
 BETWEEN_GAP_S = 90
 AWAY_GAP_S = 5
@@ -281,9 +292,13 @@ async def _stand_down() -> str | None:
     profile, the model not resident, something else resident (another app's model on
     the user's oMLX.app doesn't count), or the model busy."""
     from service import memory_saver
-    from service.inference.remote_policy import remote_only_profile
-    if remote_only_profile() is not None:
+    from service.inference.remote_policy import remote_only_profile, remote_parity
+    cloud = remote_only_profile() is not None
+    if cloud and not remote_parity():
         return "remote_only"
+    if cloud:
+        # Cloud-everything mode: no local residency to protect; only a busy model waits.
+        return None if _model_free(_model_key()) else "busy"
     from service.assistant.brief import _c
     from service.config import role_to_model
     model = role_to_model("fast")
@@ -449,7 +464,7 @@ async def _gmail_excluded() -> frozenset:
     and the header guess to decide."""
     try:
         from service import gmail_source
-        found = await gmail_source.tab_message_ids(WINDOW_DAYS)
+        found = await gmail_source.tab_message_ids(window_days())
     except Exception:  # noqa: BLE001
         found = None
     return frozenset(found or ())
@@ -481,8 +496,8 @@ async def tick(*, now: float | None = None) -> float:
     busy = busy_reason(_model_key(), power=power)
     lvl = "busy" if busy else level(_model_key(), hid_idle_s=hid, power=power)
     gap = step_gap(lvl, power)
-    from service.inference.remote_policy import remote_only_profile
-    if remote_only_profile() is not None:
+    from service.inference.remote_policy import remote_only_profile, remote_parity
+    if remote_only_profile() is not None and not remote_parity():
         note_skip("remote_only", now=now)
         return FAILURE_GAP_S                      # the walk stands down entirely
 
@@ -493,7 +508,7 @@ async def tick(*, now: float | None = None) -> float:
     saving = low or (not on_ac and pct is not None and pct < 30)
     last_index = float(st.meta("last_index") or 0)
     if not saving and now - last_index >= INDEX_EVERY_S:
-        rows, capped = await read_index(WINDOW_DAYS)
+        rows, capped = await read_index(window_days())
         excluded = await _gmail_excluded()
         merged = await asyncio.to_thread(st.upsert_index, rows, lambda r: extract.tier(r, excluded), now)
         merged["gmail_tab"] = await asyncio.to_thread(st.exclude, excluded) if excluded else 0
@@ -660,7 +675,7 @@ def _forget_gone_accounts(st, rows: list[dict], now: float) -> dict | None:
     with_text = {spelled.get(a, a) for a in attachment_store.accounts() if a not in here}
     still, gone = {}, set()
     for account in (st.candidate_accounts() - seen - {""}) | with_text:
-        if now - newest.get(account, 0) > (WINDOW_DAYS - QUIET_MARGIN_DAYS) * 86400:
+        if now - newest.get(account, 0) > (window_days() - QUIET_MARGIN_DAYS) * 86400:
             # Quiet, not gone: it would fall out of the window anyway. This is also what
             # keeps a reading owned by a Gmail address (never in Mail's index, so its
             # newest is 0) from ever counting as a Mail account that left.

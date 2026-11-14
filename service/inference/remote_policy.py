@@ -80,12 +80,16 @@ _CREDENTIAL_REF = re.compile(r"keychain:[A-Za-z][A-Za-z0-9_-]{0,63}")
 # The only models a request may ask to reason, and the one effort each gets. The
 # value is sent as the top-level `reasoning` option; it comes from this constant
 # alone, never from a prompt, a tool result or a model reply.
+# Gemini always reasons; "low" bounds it so agent steps stay quick and leave room
+# for the answer inside max_tokens.
 # On OpenRouter the option is `reasoning: {effort}`; on the Gemini API (bare ids, see
 # GEMINI_API_MODELS) it is `reasoning_effort` (see reasoning_fields). Gemini 3 and 4
-# always reason and cannot turn thinking off there, so "low" is the least it can be
-# asked for; it keeps agent steps quick and leaves room for the answer.
+# cannot turn thinking off there, so "low" is the least it can be asked for.
 REASONING_EFFORT_MODELS = {
     "anthropic/claude-haiku-5.5": "medium",
+    "google/gemini-3.8-flash": "low",
+    "google/gemini-4-carbon": "low",
+    "google/gemini-4-argon": "low",
     "gemini-3.8-flash": "low",
     "gemini-4-carbon": "low",
     "gemini-4-argon": "low",
@@ -93,6 +97,11 @@ REASONING_EFFORT_MODELS = {
 # The models the app offers on the Gemini API itself, by their bare ids. They get the
 # Gemini API's options only, and only on its origin; OpenRouter's ids never do.
 GEMINI_API_MODELS = frozenset({"gemini-3.8-flash", "gemini-4-carbon", "gemini-4-argon"})
+# The entries that apply on every remote-only path: the one that predates
+# cloud-everything, and the Gemini API's own ids (that wire always sends its effort).
+# OpenRouter's Gemini entries apply only under cloud-everything, so the
+# WISP_REMOTE_ONLY launcher path without remote_parity sends what it did before.
+_UNGATED_REASONING_MODELS = frozenset({"anthropic/claude-haiku-5.5", *GEMINI_API_MODELS})
 # The provider sets the reasoning budget to half of max_tokens (at least 1024) and
 # requires max_tokens strictly above it, so a reasoning request needs at least this.
 REASONING_MIN_MAX_TOKENS = 2049
@@ -110,18 +119,222 @@ REPLAY_REASONING_MODELS = frozenset({
 })
 # Where the inference client keeps the Gemini API's per-call `extra_content` (its
 # thought signatures) for the next request of the same turn. Private like the key above.
+# The Gemini API's replies are streamed: each signature arrives whole on its call.
 REPLAY_TOOL_EXTRA_KEY = "_replay_tool_call_extra"
 # Google's documented stand-in signature for a function call the model did not make
 # (one Wisp synthesizes, or one whose signature was lost): it tells the API to skip
 # validating that step instead of refusing the whole request.
 GEMINI_SKIP_SIGNATURE = "skip_thought_signature_validator"
+# OpenRouter's provider routing under cloud-everything: the fastest-answering host.
+OPENROUTER_PROVIDER_ROUTING = {"sort": "latency"}
 REASONING_REPLAY_TOO_LARGE = ("This model's reasoning is too large to continue the answer; "
                               "try a shorter request or another model")
 
+# What each offered cloud model takes as input, from OpenRouter's public model list
+# (input_modalities, read 2026-11-13). The one place Wisp decides whether a picture
+# or a recording may go to the chosen model; a model not listed is text only.
+REMOTE_INPUT_MODALITIES = {
+    "google/gemini-3.8-flash": frozenset({"text", "image", "video", "file", "audio"}),
+    "google/gemini-4-carbon": frozenset({"text", "image", "video", "file", "audio"}),
+    "google/gemini-4-argon": frozenset({"text", "image", "video", "file", "audio"}),
+    "anthropic/claude-haiku-5.5": frozenset({"text", "image", "file"}),
+    "anthropic/claude-sonnet-5.5": frozenset({"text", "image", "file"}),
+    "openai/gpt-6-luna": frozenset({"text", "image", "file"}),
+    # The same models on the Gemini API (bare ids).
+    "gemini-3.8-flash": frozenset({"text", "image", "video", "file", "audio"}),
+    "gemini-4-carbon": frozenset({"text", "image", "video", "file", "audio"}),
+    "gemini-4-argon": frozenset({"text", "image", "video", "file", "audio"}),
+}
+_TEXT_ONLY = frozenset({"text"})
+# The context window Wisp uses for each offered cloud model: OpenRouter lists every
+# one at 1,000,000 tokens or more. Mirrors IntelCloudPreset.contextWindows in the
+# app. An unlisted model keeps the window it was saved with.
+REMOTE_CONTEXT_WINDOWS = {
+    "google/gemini-3.8-flash": 1_000_000,
+    "google/gemini-4-carbon": 1_000_000,
+    "google/gemini-4-argon": 1_000_000,
+    "anthropic/claude-haiku-5.5": 1_000_000,
+    "anthropic/claude-sonnet-5.5": 1_000_000,
+    "openai/gpt-6-luna": 1_000_000,
+    "gemini-3.8-flash": 1_000_000,
+    "gemini-4-carbon": 1_000_000,
+    "gemini-4-argon": 1_000_000,
+}
+# The window older Intel builds saved for every model.
+LEGACY_CLOUD_CONTEXT_WINDOW = 32_000
+# Pictures and recordings in a request (cloud-everything mode only, see
+# validate_payload). Each picture is a base64 data URL of a PNG, JPEG or WebP, never
+# a link; each recording is base64 WAV or MP3. Their encoded bytes are left out of
+# the transcript budget (aggregate_bytes) and counted against REMOTE_MEDIA_TOTAL_BYTES
+# instead, so a screenshot never crowds out the conversation and the whole body stays
+# below request_bytes + replayed reasoning (response_bytes) + REMOTE_MEDIA_TOTAL_BYTES.
+REMOTE_IMAGE_MAX_BYTES = 5 * 1024 * 1024        # decoded, per picture
+REMOTE_IMAGES_PER_REQUEST = 9                   # a large screen: overview plus 8 sections
+REMOTE_AUDIO_MAX_BYTES = 10 * 1024 * 1024       # decoded, per recording (30 s WAV is ~1 MB)
+REMOTE_AUDIO_PER_REQUEST = 1
+REMOTE_AUDIO_FORMATS = frozenset({"wav", "mp3"})
+REMOTE_MEDIA_TOTAL_BYTES = 16 * 1024 * 1024     # encoded, every picture and recording together
+REMOTE_CONTENT_PARTS = 32
+# The least output a picture, recording or document call asks the cloud model for:
+# the default model always reasons first, and its reasoning counts against max_tokens,
+# so the few hundred tokens a local model needs would end the reply before it starts.
+REMOTE_MEDIA_MIN_TOKENS = 4096
+_IMAGE_DATA_URL = re.compile(r"data:image/(?:png|jpeg|webp);base64,")
+_BASE64 = re.compile(r"[A-Za-z0-9+/]*={0,2}")
+
+
+def remote_input_modalities(model_id) -> frozenset:
+    """What `model_id` takes as input; text only for a model not in the table."""
+    return REMOTE_INPUT_MODALITIES.get(model_id, _TEXT_ONLY) if isinstance(model_id, str) else _TEXT_ONLY
+
+
+def remote_context_window(model_id) -> int | None:
+    """The window Wisp uses for an offered cloud model, or None for an unlisted one."""
+    return REMOTE_CONTEXT_WINDOWS.get(model_id) if isinstance(model_id, str) else None
+
+
+def cloud_everything_active() -> bool:
+    """All of Wisp runs on the cloud model (remote-only profile plus remote_parity).
+    The on-device limits that only protect a small local model are lifted under it."""
+    try:
+        return remote_only_profile() is not None and remote_parity()
+    except Exception:  # noqa: BLE001 — an unreadable profile keeps the local limits
+        return False
+
+
+def cloud_output_budget(asked: int) -> int:
+    """max_tokens for a short text call (a summary, a JSON plan). Under
+    cloud-everything it leaves room for the model's reasoning, which counts
+    inside max_tokens; elsewhere it is `asked` unchanged."""
+    return cloud_media_budget(asked) if cloud_everything_active() else asked
+
+
+# The cloud model writes about 150 tokens a second; reasoning counts as output.
+CLOUD_TOKENS_PER_SECOND = 150
+_CLOUD_NETWORK_S = 15.0
+
+
+# Reading the prompt (prefill) takes about a second per 25k input tokens (~4
+# characters a token); a huge input (a whole document) adds at most this much.
+CLOUD_PREFILL_TOKENS_PER_SECOND = 25_000
+_CLOUD_CHARS_PER_TOKEN = 4
+CLOUD_PREFILL_MAX_S = 120.0
+
+
+def cloud_call_timeout(local_s: float, out_tokens: int, *, input_chars: int = 0) -> float:
+    """A timeout for a call asking `out_tokens` from a prompt of `input_chars`
+    characters: `local_s` unchanged, except under cloud-everything, where it covers
+    reading the prompt (CLOUD_PREFILL_TOKENS_PER_SECOND, at most CLOUD_PREFILL_MAX_S),
+    writing every output token, plus the network."""
+    if not cloud_everything_active():
+        return local_s
+    chars = input_chars if type(input_chars) is int and input_chars > 0 else 0
+    prefill = min(CLOUD_PREFILL_MAX_S,
+                  chars / _CLOUD_CHARS_PER_TOKEN / CLOUD_PREFILL_TOKENS_PER_SECOND)
+    return max(local_s, out_tokens / CLOUD_TOKENS_PER_SECOND + prefill + _CLOUD_NETWORK_S)
+
+
+def cloud_media_allowed(kind: str) -> bool:
+    """Whether a `kind` ("image" or "audio") may go to the cloud model right now:
+    a remote-only profile is active, the owner chose cloud-everything mode
+    (remote_parity) and the profile's model takes that input."""
+    profile = remote_only_profile()
+    return (profile is not None and remote_parity()
+            and kind in remote_input_modalities(profile.model_id))
+
+
+def cloud_media_budget(asked: int) -> int:
+    """max_tokens for a picture, recording or document call on the cloud model."""
+    profile = remote_only_profile()
+    if profile is None:
+        return asked
+    return min(profile.max_tokens, max(asked, REMOTE_MEDIA_MIN_TOKENS))
+
+
+def _b64_size(data, cap: int) -> int:
+    """Decoded size of strict base64 `data` (at most `cap`), or refuse. Never logs it."""
+    if type(data) is not str or not data or len(data) % 4:
+        _refuse("Invalid remote-only media part")
+    if len(data) > (cap * 4) // 3 + 4:
+        _refuse("A picture or recording is too large for the cloud model")
+    if not _BASE64.fullmatch(data):
+        _refuse("Invalid remote-only media part")
+    size = len(data) // 4 * 3 - (len(data) - len(data.rstrip("=")))
+    if not 0 < size <= cap:
+        _refuse("A picture or recording is too large for the cloud model")
+    return size
+
+
+def _content_parts(parts, model_id: str, counts: dict | None = None) -> int:
+    """Check one user message's content parts; return the encoded media bytes in it.
+    `counts` carries the picture and recording totals across the whole request."""
+    if not remote_parity():
+        _refuse("Remote-only inference accepts text and tool transcripts only")
+    if type(parts) is not list or not 1 <= len(parts) <= REMOTE_CONTENT_PARTS:
+        _refuse("Invalid remote-only content parts")
+    accepts = remote_input_modalities(model_id)
+    counts = {"images": 0, "audio": 0} if counts is None else counts
+    media = 0
+    images, audio = counts["images"], counts["audio"]
+    for part in parts:
+        kind = part.get("type") if type(part) is dict else None
+        if kind == "text":
+            if set(part) != {"type", "text"} or type(part["text"]) is not str:
+                _refuse("Invalid remote-only content parts")
+        elif kind == "image_url":
+            if "image" not in accepts:
+                _refuse("The chosen cloud model can't read pictures")
+            inner = part.get("image_url")
+            if (set(part) != {"type", "image_url"} or type(inner) is not dict
+                    or set(inner) != {"url"} or type(inner["url"]) is not str):
+                _refuse("Invalid remote-only content parts")
+            head = _IMAGE_DATA_URL.match(inner["url"])
+            if head is None:
+                _refuse("Remote-only pictures must be PNG, JPEG or WebP data, never a link")
+            images += 1
+            if images > REMOTE_IMAGES_PER_REQUEST:
+                _refuse("Too many pictures for one cloud request")
+            _b64_size(inner["url"][head.end():], REMOTE_IMAGE_MAX_BYTES)
+            media += len(inner["url"])
+        elif kind == "input_audio":
+            if "audio" not in accepts:
+                _refuse("The chosen cloud model can't hear audio")
+            inner = part.get("input_audio")
+            if (set(part) != {"type", "input_audio"} or type(inner) is not dict
+                    or set(inner) != {"data", "format"} or inner.get("format") not in REMOTE_AUDIO_FORMATS):
+                _refuse("Invalid remote-only content parts")
+            audio += 1
+            if audio > REMOTE_AUDIO_PER_REQUEST:
+                _refuse("Too many recordings for one cloud request")
+            _b64_size(inner["data"], REMOTE_AUDIO_MAX_BYTES)
+            media += len(inner["data"])
+        else:
+            _refuse("Unsupported remote-only content part")
+    counts["images"], counts["audio"] = images, audio
+    return media
+
+
+def _without_media(row: dict) -> dict:
+    """`row` with every picture and recording payload emptied, for the transcript budget."""
+    content = row.get("content")
+    if type(content) is not list:
+        return row
+    out = []
+    for part in content:
+        if part.get("type") == "image_url":
+            part = {"type": "image_url", "image_url": {"url": ""}}
+        elif part.get("type") == "input_audio":
+            part = {"type": "input_audio", "input_audio": {"data": "", "format": part["input_audio"]["format"]}}
+        out.append(part)
+    return {**row, "content": out}
+
 
 def reasoning_option(model_id: str) -> dict | None:
-    """The `reasoning` option for this model, or None when it gets none."""
+    """The `reasoning` option for this model, or None when it gets none. OpenRouter's
+    Gemini entries apply only under cloud-everything (_UNGATED_REASONING_MODELS)."""
     effort = REASONING_EFFORT_MODELS.get(model_id)
+    if effort and model_id not in _UNGATED_REASONING_MODELS and not cloud_everything_active():
+        return None
     return {"effort": effort} if effort else None
 
 
@@ -219,10 +432,12 @@ class RemoteOnlyProfile:
         return min(value, self.max_tokens)
 
     def validate_payload(self, payload: dict) -> None:
-        wire_name = self.wire
+        wire = self.wire
         allowed = {"model", "messages", "max_tokens", "stream", "temperature", "tools", "tool_choice"}
-        # Each provider's own reasoning option, on that provider only.
-        allowed |= {"reasoning_effort"} if wire_name == "gemini" else {"reasoning"}
+        # Each provider's own options, on that provider only.
+        allowed |= {"reasoning_effort"} if wire == "gemini" else {"reasoning"}
+        if wire == "openrouter":
+            allowed.add("provider")
         if not isinstance(payload, dict) or set(payload) - allowed:
             _refuse("Unsupported remote-only inference options")
         if payload.get("model") != self.model_id or type(payload.get("stream")) is not bool:
@@ -232,7 +447,7 @@ class RemoteOnlyProfile:
             _refuse("Remote-only output budget exceeds the profile limit")
         if "reasoning" in payload:
             # Exactly the constant's option for this model, with room for its budget.
-            wanted = reasoning_fields(wire_name, payload["model"]).get("reasoning")
+            wanted = reasoning_fields(wire, payload["model"]).get("reasoning")
             got = payload["reasoning"]
             if (wanted is None or type(got) is not dict or set(got) != {"effort"}
                     or type(got["effort"]) is not str or got != wanted
@@ -240,30 +455,46 @@ class RemoteOnlyProfile:
                 _refuse("Unsupported remote-only reasoning option")
         if "reasoning_effort" in payload:
             # The Gemini API's form of the same constant, for its bare ids only.
-            wanted = reasoning_fields(wire_name, payload["model"]).get("reasoning_effort")
+            wanted = reasoning_fields(wire, payload["model"]).get("reasoning_effort")
             got = payload["reasoning_effort"]
             if wanted is None or type(got) is not str or got != wanted or value < REASONING_MIN_MAX_TOKENS:
                 _refuse("Unsupported remote-only reasoning option")
+        if "provider" in payload and payload["provider"] != OPENROUTER_PROVIDER_ROUTING:
+            _refuse("Unsupported remote-only provider routing")
         messages = payload.get("messages")
         if not isinstance(messages, list) or not 1 <= len(messages) <= self.messages:
             _refuse("Remote-only message budget exceeded")
+        media_bytes = 0
+        media_counts = {"images": 0, "audio": 0}
         for row in messages:
             if not isinstance(row, dict) or not isinstance(row.get("role"), str):
                 _refuse("Invalid remote-only message")
             if row["role"] not in {"system", "user", "assistant", "tool"}:
                 _refuse("Unsupported remote-only message role")
             content = row.get("content")
-            if not isinstance(content, str) and not (row["role"] == "assistant" and row.get("tool_calls") and content is None):
+            if (row["role"] == "system" and type(content) is list and wire == "openrouter"
+                    and self.model_id.startswith("anthropic/")):
+                # One prompt-cache breakpoint on a system message's text (OpenRouter's
+                # Anthropic models): exactly one text part marked ephemeral, no more.
+                part = content[0] if len(content) == 1 else None
+                if (type(part) is not dict or set(part) != {"type", "text", "cache_control"}
+                        or part["type"] != "text" or type(part["text"]) is not str
+                        or part["cache_control"] != {"type": "ephemeral"}):
+                    _refuse("Invalid remote-only system message")
+            elif row["role"] == "user" and isinstance(content, list):
+                # Pictures and recordings: cloud-everything mode, a model that takes
+                # them, data only, bounded (see REMOTE_INPUT_MODALITIES and the caps).
+                media_bytes += _content_parts(content, self.model_id, media_counts)
+                if media_bytes > REMOTE_MEDIA_TOTAL_BYTES:
+                    _refuse("The pictures and recordings are too large for one cloud request")
+            elif not isinstance(content, str) and not (row["role"] == "assistant" and row.get("tool_calls") and content is None):
                 _refuse("Remote-only inference accepts text and tool transcripts only")
             if REPLAY_REASONING_KEY in row or REPLAY_TOOL_EXTRA_KEY in row:
                 _refuse("Invalid remote-only message")
-            calls = row.get("tool_calls")
-            if calls is not None and not isinstance(calls, list):
-                _refuse("Invalid remote-only message")
-            for call in calls or []:
+            for call in row.get("tool_calls") or []:
                 if not isinstance(call, dict) or REPLAY_TOOL_EXTRA_KEY in call:
                     _refuse("Invalid remote-only message")
-                if "extra_content" in call and (row["role"] != "assistant" or wire_name != "gemini"
+                if "extra_content" in call and (row["role"] != "assistant" or wire != "gemini"
                                                 or not _valid_tool_extra(call["extra_content"])):
                     # The Gemini API's thought signature, sent back unchanged on the call
                     # it came with (same turn only). Nowhere else, never to another host.
@@ -292,10 +523,11 @@ class RemoteOnlyProfile:
         # Replayed reasoning has its own cap (response_bytes: it is one reply's worth
         # of provider output) and is left out of the transcript budget, so a turn
         # that fits is never refused only because the model reasoned at length. The
-        # whole body stays bounded: request_bytes plus at most response_bytes.
+        # whole body stays bounded: request_bytes plus at most response_bytes. The
+        # same for pictures and recordings, capped above by REMOTE_MEDIA_TOTAL_BYTES.
         try:
             reasoning_bytes = replay_reasoning_bytes(messages)
-            transcript = [_without_replay(row) for row in messages]
+            transcript = [_without_media(_without_replay(row)) for row in messages]
             wire = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
             aggregate = json.dumps({"messages": transcript, "tools": tools}, ensure_ascii=False,
                                    separators=(",", ":"), allow_nan=False).encode("utf-8")
@@ -303,7 +535,8 @@ class RemoteOnlyProfile:
             _refuse("Invalid bounded remote-only payload")
         if reasoning_bytes > self.response_bytes:
             _refuse(REASONING_REPLAY_TOO_LARGE)
-        if len(wire) > self.request_bytes + reasoning_bytes or len(aggregate) > self.aggregate_bytes:
+        if (len(wire) > self.request_bytes + reasoning_bytes + media_bytes
+                or len(aggregate) > self.aggregate_bytes):
             _refuse("Remote-only transcript/schema byte budget exceeded")
 
 
@@ -383,10 +616,31 @@ def remote_only_profile() -> RemoteOnlyProfile | None:
         if not (cfg.get("remote_parity") is True and isinstance(profile, dict)
                 and profile.get("enabled", True) is True):
             return None
+        # Opted in from Settings, not the launcher: a profile this build refuses (one
+        # left by an older build, a hand edit) must not keep the service from starting,
+        # or Settings could never reach it to reconnect. Run without the cloud model
+        # and say why in the log. The launcher's WISP_REMOTE_ONLY=1 still refuses.
+        from service.config.endpoints import EndpointConfigurationError
+        from service.config import upgrade_cloud_profile
+        # An older Intel build saved a 32k window and smaller limits: raise them once.
+        profile = upgrade_cloud_profile() or profile
+        try:
+            return profile_from_config(profile)
+        except EndpointConfigurationError as exc:
+            _log.warning("Cloud model not used: its saved settings are invalid (%s). "
+                         "Reconnect it in Settings > Models > Cloud.", exc)
+            print(f"[remote] cloud model not used: saved settings are invalid ({exc})", flush=True)
+            return None
     inference = models_config().get("inference", {})
     if not isinstance(inference, dict):
         _refuse("Invalid inference configuration")
     return profile_from_config(inference.get("remote_only"))
+
+
+def launched_remote_only() -> bool:
+    """Whether the launcher itself forced remote-only mode (WISP_REMOTE_ONLY=1), as
+    opposed to the Settings opt-in. Only the forced mode fails closed at startup."""
+    return _FORCED_MODE == "1"
 
 
 def require_generation_role(role: str) -> None:

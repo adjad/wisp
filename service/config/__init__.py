@@ -1107,14 +1107,22 @@ def set_cloud_provider(endpoint_cfg: dict, model_id: str, context_window: int,
             "context_window": context_window,
         },
     }})
+    from service.config.provider_credentials import forget_reused_keys
+    forget_reused_keys()                      # a new connection never reuses an old read
 
 
 CLOUD_EVERYTHING = "everything"
 # Generous limits for the whole-Wisp cloud profile: remote_parity keeps full
 # history and every tool, so the request bounds only stop runaway payloads.
-_EVERYTHING_LIMITS = {"max_tokens": 8192, "request_bytes": 8 * 1024 * 1024, "messages": 1000,
-                      "aggregate_bytes": 4 * 1024 * 1024, "tools": 128,
+# Sized for a 1M-token window (about 4 bytes a token, plus JSON escaping). The
+# cloud model reasons inside max_tokens, so long writing needs the larger output.
+_EVERYTHING_LIMITS = {"max_tokens": 16384, "request_bytes": 16 * 1024 * 1024, "messages": 1000,
+                      "aggregate_bytes": 12 * 1024 * 1024, "tools": 128,
                       "response_bytes": 8 * 1024 * 1024}
+# What older builds saved; the startup upgrade below raises exactly these.
+_OLD_EVERYTHING_LIMITS = {"max_tokens": 8192, "request_bytes": 8 * 1024 * 1024,
+                          "aggregate_bytes": 4 * 1024 * 1024}
+_OPENROUTER_ORIGIN = "https://openrouter.ai"
 
 
 def set_cloud_everything(endpoint_cfg: dict, model_id: str, context_window: int) -> None:
@@ -1134,6 +1142,57 @@ def set_cloud_everything(endpoint_cfg: dict, model_id: str, context_window: int)
         "remote_only": profile,
         "super_model": {"enabled": False, "model_id": model_id, "context_window": context_window},
     }})
+    from service.config.provider_credentials import forget_reused_keys
+    forget_reused_keys()                      # a new connection never reuses an old read
+
+
+def upgraded_cloud_profile(cfg: dict) -> dict | None:
+    """The saved cloud-everything profile with an older build's limits raised, or
+    None when nothing changes. Only on an Intel Mac, and only an OpenRouter or Gemini
+    API model in the known window table saved with the old 32000 window, is upgraded;
+    other values are left alone."""
+    from service.inference.remote_policy import LEGACY_CLOUD_CONTEXT_WINDOW, remote_context_window
+    if not isinstance(cfg, dict) or cfg.get("remote_parity") is not True:
+        return None
+    profile = (cfg.get("inference") or {}).get("remote_only")
+    from service.inference.providers import GEMINI_ORIGIN
+    if not isinstance(profile, dict) or profile.get("base_url") not in {_OPENROUTER_ORIGIN, GEMINI_ORIGIN}:
+        return None
+    # Only the Intel build ever saved the old 32k window; an Apple silicon Mac's
+    # Settings > Everything profile saved at 32000 was chosen there and is kept.
+    if not _intel_mac():
+        return None
+    window = remote_context_window(profile.get("model_id"))
+    if window is None or profile.get("context_window") != LEGACY_CLOUD_CONTEXT_WINDOW:
+        return None
+    upgraded = {**profile, "context_window": window}
+    for key, old in _OLD_EVERYTHING_LIMITS.items():
+        if profile.get(key) == old:
+            upgraded[key] = _EVERYTHING_LIMITS[key]
+    return upgraded
+
+
+def _intel_mac() -> bool:
+    import platform
+    return platform.machine() == "x86_64"
+
+
+def upgrade_cloud_profile() -> dict | None:
+    """Save upgraded_cloud_profile() once at startup. Returns the saved profile, or
+    None when there was nothing to upgrade or it could not be saved."""
+    try:
+        cfg = models_config()
+        upgraded = upgraded_cloud_profile(cfg)
+        if upgraded is None:
+            return None
+        from service.inference.remote_policy import profile_from_config
+        profile_from_config(upgraded)        # never save a profile this build refuses
+        _save_overlay({"inference": {"remote_only": upgraded,
+                                     "super_model": {"context_window": upgraded["context_window"]}}})
+        return upgraded
+    except Exception as exc:  # noqa: BLE001 — the old profile still works
+        print(f"[remote] cloud profile not upgraded ({type(exc).__name__})", flush=True)
+        return None
 
 
 def cloud_everything_enabled() -> bool:
@@ -1156,7 +1215,56 @@ def cloud_super_model_enabled() -> bool:
             and super_cfg.get("enabled", False) is True)
 
 
+def gemini_everything_connection() -> dict | None:
+    """The saved, enabled Gemini API connection the "Gemini handles everything" switch
+    runs on: {"endpoint": its endpoint config, "model_id", "context_window",
+    "credential_name"}, or None when there is none. Reads config only, never a key."""
+    from service.inference.providers import wire_provider
+    cfg = models_config().get("inference", {})
+    endpoint_cfg = cfg.get("endpoints", {}).get("cloud", {})
+    if not isinstance(endpoint_cfg, dict) or endpoint_cfg.get("enabled", True) is not True:
+        return None
+    settings = cloud_provider_settings()
+    if wire_provider(settings["provider"], settings["base_url"].rstrip("/")) != "gemini":
+        return None
+    model_id = settings["model_id"].strip()
+    if not model_id or not str(endpoint_cfg.get("credential_ref", "")).startswith("keychain:"):
+        return None
+    return {"endpoint": dict(endpoint_cfg), "model_id": model_id,
+            "context_window": settings["context_window"],
+            "credential_name": settings["credential_name"]}
+
+
+def enable_gemini_everything(connection: dict, context_window: int) -> None:
+    """Turn the "Gemini handles everything" switch on: the remote-only profile plus
+    remote_parity on the saved Gemini connection (set_cloud_everything), keeping the
+    Super Model setting it replaces so turning the switch off puts it back. Takes
+    effect when the backend restarts."""
+    super_cfg = models_config().get("inference", {}).get("super_model", {})
+    prior = dict(super_cfg) if isinstance(super_cfg, dict) else {}
+    set_cloud_everything(connection["endpoint"], connection["model_id"], context_window)
+    _save_overlay({"gemini_everything": {"switch": True, "prior_super_model": prior}})
+
+
+def disable_gemini_everything() -> None:
+    """Turn the switch off: no remote-only profile and no remote_parity, so every
+    cloud_everything_active() path is off again after the restart, and the Super
+    Model setting saved when it was turned on is restored. The Gemini connection
+    itself (and any cloud roles) stays as it was."""
+    saved = models_config().get("gemini_everything")
+    prior = saved.get("prior_super_model") if isinstance(saved, dict) else None
+    update = {"remote_parity": False, "inference": {"remote_only": {"enabled": False}},
+              "gemini_everything": {"switch": False, "prior_super_model": {}}}
+    if isinstance(prior, dict) and prior:
+        update["inference"]["super_model"] = prior
+    _save_overlay(update)
+    from service.config.provider_credentials import forget_reused_keys
+    forget_reused_keys()
+
+
 def disable_cloud_provider() -> None:
+    from service.config.provider_credentials import forget_reused_keys
+    forget_reused_keys()                      # a removed connection's key is not sent again
     if cloud_everything_enabled():
         # Back to local models at the next backend restart.
         _save_overlay({"remote_parity": False, "inference": {
