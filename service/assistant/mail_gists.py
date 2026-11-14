@@ -293,11 +293,10 @@ def _user_addresses() -> set[str]:
 
 
 def _from_user(row: dict, mine: set[str]) -> bool:
-    address = (row.get("sender_address", "") or "").casefold()
-    if not address:
-        found = re.search(r"<([^>]+@[^>]+)>", row.get("sender", "") or "")
-        address = found.group(1).casefold() if found else ""
-    return bool(address) and address in mine
+    """The user's own mail: its real address is theirs and the name is not dressed up
+    as an address (service.mail_sender). An odd sender is never read as the user."""
+    from service import mail_sender
+    return mail_sender.is_own(row.get("sender", "") or "", row.get("sender_address", "") or "", mine)
 
 
 def _people_mail(rows: list[dict]):
@@ -868,14 +867,31 @@ def schedule_tick() -> asyncio.Task | None:
     if idle.foreground_busy():
         _stood_down("a turn is in progress")
         return None
+    if _demo_hold():
+        _stood_down("paused while Demo mode is on")
+        return None
     if not hub.has_subscribers:
         _stood_down("the app isn't connected to the event stream")
         return None
     if not brief_pace.may_start("gists"):
         _stood_down("the user was just chatting")
         return None
-    _task = asyncio.create_task(refresh())
+    _task = asyncio.create_task(refresh(abort=_scheduled_abort))
     return _task
+
+
+def _demo_hold() -> bool:
+    """Demo mode (service/stage_mode.py) holds this scheduled tick only. The proactive
+    cycle's own calls (refresh_all, refresh_changed, _resident_reply) never ask this."""
+    from service import stage_mode
+    return stage_mode.holds_background()
+
+
+def _scheduled_abort() -> bool:
+    """The scheduled tick's abort: a turn, or Demo mode turned on mid-call (the request
+    is cancelled at the next 0.5 s check, exactly as for a turn; the gist is due again)."""
+    from service import idle
+    return idle.foreground_busy() or _demo_hold()
 
 
 # --- what the Brief shows -----------------------------------------------------------

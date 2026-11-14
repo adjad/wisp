@@ -371,7 +371,14 @@ def _clauses(text: str) -> tuple[Clause, ...]:
 def _explicit(text: str) -> bool:
     root = _lexical(text)
     command = _matches(r"^(?:" + _LOOKUP_CANONICAL + r"|web\s+search|do|perform|run|give|show|tell)\b", root)
-    return command and bool(re.search(r"\b" + _SOURCE_CUE + r"\b", _root(text), re.I))
+    # "online" as a state is not a source: "Tell me if Mom is online right
+    # now" and "show me who is online" ask nobody to search the web.
+    sourced = re.sub(r"\b(?:is|are|am|be|been|being|was|were|gets?|got|goes|went|came|comes?|back|still|"
+                     r"stays?|appears?|shows?(?:\s+up)?|who'?s|it'?s)\s+(?:[a-z]+\s+)?online\b"
+                     # "Mom's online", "Mom's still online": the 's is "is". Not "Dana's bakery online".
+                     r"|\b[a-z]+'s\s+(?:still\s+|back\s+|currently\s+|even\s+|now\s+)?online\b",
+                     " ", _root(text), flags=re.I)
+    return command and bool(re.search(r"\b" + _SOURCE_CUE + r"\b", sourced, re.I))
 
 
 def _governing_consent(text: str) -> bool:
@@ -1192,6 +1199,23 @@ def _parse_request(text: str, last_user: str | None = None, *,
             # words only (router.routing_guard_contract, the agent loop's
             # public_fact_query_problem). Never ``allowed``.
             provenance, query, public_possessive = Provenance.PRIVATE, None, True
+        else:
+            from service.model_only import (holiday_question, personal_owner,
+                                            personal_possessive_question, public_owner_request)
+            if personal_possessive_question(text) or personal_owner(text):
+                # The owner is someone of the user's own ("Is Mom's open on
+                # Sunday?", "What time is Mom's flight tomorrow?", "Is the
+                # doctor's office open on Monday?"): private, with no flag and
+                # no question about which public topic was meant.
+                provenance, query, clarification = Provenance.PRIVATE, None, ""
+            elif (current and public_owner_request(text)) or holiday_question(text):
+                # An 's that is plainly public ("Who won Sunday's game?",
+                # "What's Apple's stock price today?"). A model-led turn no
+                # longer leaves unknown ownership open to the web (see
+                # router.routing_guard_contract), so these keep one thing:
+                # a search of the user's own words, as the store-hours
+                # questions above do.
+                provenance, query, public_possessive = Provenance.PRIVATE, None, True
     if provenance == Provenance.UNKNOWN:
         if (explicit or current or fragment or last_user) and not opted_out:
             clarification = "Which public topic should I look up? Is this source public or private/local?"
@@ -1218,6 +1242,24 @@ def _parse_request(text: str, last_user: str | None = None, *,
         # agent path active so an unverified model claim cannot stream or render.
         acknowledgement_without_offer = False
         provenance, query, clarification = Provenance.PRIVATE, None, None
+    names_the_web = explicit and bool(re.search(
+        r"\b(?:web|websites?|internet|google|bing|wikipedia|external\s+(?:sources?|requests?))\b"
+        r"|\b(?:look(?:ing)?\s*up|search(?:ing)?|find|research|check)\b.*\bonline\b", text, re.I))
+    if (provenance in (Provenance.EXTERNAL, Provenance.UNKNOWN) and not names_the_web and not opted_out
+            and not write_intent):
+        from service.model_only import (lookalike_possessive, personal_reference,
+                                        without_leading_recipient)
+        # Someone the request only names as a recipient ("email Mom the latest
+        # news; don't send it") is not its subject.
+        # Only at the start of the request, where it is an instruction:
+        # "Did the hospital call Mom today?" is about Mom.
+        about = without_leading_recipient(text)
+        if personal_reference(about) or lookalike_possessive(text):
+            # A question about someone in the user's life is not a public
+            # lookup, whatever time word it carries ("How is Grandma doing
+            # today?", "Is Mom home yet?"). Nor is one whose 's hides behind a
+            # lookalike apostrophe, which no ownership check above could read.
+            provenance, query, clarification = Provenance.PRIVATE, None, None
     return WebRequest(source, clauses, explicit, current, opted_out, provenance, public,
                       independent, inherited, scopes, delivery, query, continuations, write_intent, clarification,
                       acknowledgement_without_offer, cancelled, composed.presentations, pending_offer,
@@ -1235,4 +1277,19 @@ def classify(text: str, last_user: str | None = None, *,
 
     History is parsed here, never downstream and never from tool-result text.
     """
-    return _parse_request(text, last_user, recent_users=recent_users, last_assistant=last_assistant)
+    return _parse_request(bounded_quotes(text), last_user, recent_users=recent_users,
+                          last_assistant=last_assistant)
+
+
+_QUOTE_RUN = re.compile("(['\"\u2018\u2019\u201c\u201d`])\\1{8,}")
+
+
+def bounded_quotes(text: str) -> str:
+    """`text` with any run of nine or more of the same quote character cut to
+    eight, or to seven when the run was odd, so what is inside and outside
+    quotes stays the same. No request needs more, and thousands in a row made
+    the quote-aware parsing take seconds (5,000 apostrophes: 1.2 s here and
+    2.5 s in the routing guard, in rc2 as well)."""
+    if not isinstance(text, str) or len(text) < 9:
+        return text
+    return _QUOTE_RUN.sub(lambda m: m.group()[:8 - len(m.group()) % 2], text)

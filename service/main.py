@@ -380,6 +380,11 @@ async def lifespan(app: FastAPI):
     client = OMLXClient()
     profile = remote_only_profile()
     started_tasks = []
+    if is_bundled() and remote_only_profile() is None:
+        # Hash pinned downloads once, off the loop, so setup's cached checks know after a restart.
+        # Read-only; cancelled at shutdown (a hash already running finishes, a few seconds at most).
+        from service.engine.downloads import warm_checks
+        started_tasks.append(asyncio.create_task(asyncio.to_thread(warm_checks)))
     if profile is not None:
         try:
             await _prepare_remote_inference(client)
@@ -1330,6 +1335,23 @@ def _setup_roles() -> dict[str, dict[str, str]]:
     return roles
 
 
+def _without_failed_downloads(installed: list[str]) -> list[str]:
+    """Built-in engine only: a pinned catalogue model whose engine folder failed Wisp's
+    check (files missing, or not the files Wisp tested) is not installed as far as setup
+    goes. Uses only hashes already made (the downloads check, startup's warm_checks);
+    /setup/apply runs the full check. Runs in a worker thread (disk reads)."""
+    from service.engine.downloads import check_failed
+    kept = []
+    for model_id in installed:
+        try:
+            if check_failed(model_id, cached_only=True):
+                continue
+        except Exception:  # noqa: BLE001 — an unreadable folder is the engine's to report
+            pass
+        kept.append(model_id)
+    return kept
+
+
 @app.get("/setup/status")
 async def setup_status() -> dict[str, Any]:
     installed: list[str] = []
@@ -1350,6 +1372,7 @@ async def setup_status() -> dict[str, Any]:
         on_disk = [m for m in on_disk if m not in installed]
         if on_disk:
             installed, source = installed + on_disk, "disk"
+    installed = await asyncio.to_thread(_without_failed_downloads, installed)
     from service.config import tool_capable_models
     status = setup_guide.build_status(
         hardware=current_hardware(),
@@ -1424,6 +1447,12 @@ async def setup_apply(body: dict[str, Any]) -> dict[str, Any]:
     lowered = model.lower()
     if model not in available or "embedding" in lowered or "rerank" in lowered:
         raise HTTPException(status_code=400, detail="Choose a chat model that is installed in oMLX.")
+    # The engine lists a downloaded folder whether or not it passed Wisp's check; this is
+    # where a pinned model that failed it (missing files, or not the tested files) is refused.
+    from service.engine.downloads import check_failed
+    if await asyncio.to_thread(check_failed, model):
+        raise HTTPException(status_code=409, detail="That model's files aren't the ones Wisp was tested with, "
+                                                    "or some are missing. Download it again in setup.")
     with _local_provider_operation_lock:
         from service.config import ConfigurationPreconditionFailed
         assignments = {role: model for role in setup_guide.TEXT_ROLES}
@@ -1453,15 +1482,47 @@ async def get_mode() -> dict[str, Any]:
     return {"read_only": read_only(), "full_access": full_access()}
 
 
+# Shown in Wisp's own Settings when the app itself could not be confirmed, and returned to any
+# other program that tries: it says what to do in the first case and nothing useful in the second.
+_APP_ONLY = ("Wisp couldn't confirm this came from the Wisp app, so nothing changed. "
+             "Quit and reopen Wisp, then try again.")
+
+
+def _require_wisp_app(request: Request, reason: str) -> None:
+    """The caller is the Wisp app that launched this service, proven from the kernel's socket
+    table (wisp_reset.caller_is_parent_app), or 403 with `reason`. For a change that lets Wisp
+    do MORE without asking: another program on this Mac, or a command the assistant runs, must
+    not be able to make it through this service. A change that only tightens never asks for
+    this, so taking a permission back never depends on the proof succeeding."""
+    client, server = request.scope.get("client"), request.scope.get("server")
+    try:
+        from service.wisp_reset import caller_is_parent_app, names_another_caller
+        # A forwarded-for header could stand in for the caller's address: never the app's own.
+        proven = bool(not names_another_caller(request) and client and server and len(client) == 2 and len(server) == 2
+                      and client[0] == "127.0.0.1" and server[0] == "127.0.0.1"
+                      and type(client[1]) is int and type(server[1]) is int
+                      and caller_is_parent_app((client[0], client[1]), (server[0], server[1])) is True)
+    except Exception:  # noqa: BLE001 — unproven is refused
+        proven = False
+    if not proven:
+        raise HTTPException(status_code=403, detail=reason)
+
+
 @app.post("/mode")
-async def set_mode(body: dict[str, Any]) -> dict[str, Any]:
+async def set_mode(request: Request, body: dict[str, Any]) -> dict[str, Any]:
     """The user's access choice. Saved (service/safety/policy.choose_mode), so it
-    survives a restart instead of falling back to policy.yaml's default."""
+    survives a restart instead of falling back to policy.yaml's default.
+
+    Turning Full access ON, or view-only OFF, lets Wisp do more without asking: only the
+    Wisp app itself may ask for that. Turning Full access off or view-only on is open to
+    the app's ordinary request, like every other route."""
     from service.safety import read_only, full_access, choose_mode
     chosen = {key: body[key] for key in ("read_only", "full_access") if key in body}
     if any(type(value) is not bool for value in chosen.values()):
         # bool("false") is True, and the choice is now saved across restarts.
         raise HTTPException(status_code=422, detail="read_only and full_access must be true or false.")
+    if chosen.get("full_access") is True or chosen.get("read_only") is False:
+        _require_wisp_app(request, _APP_ONLY)
     try:
         choose_mode(chosen)
     except OSError:
@@ -1469,6 +1530,38 @@ async def set_mode(body: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail="Wisp changed this for now, but couldn't save it, "
                                                     "so it will go back when Wisp restarts.") from None
     return {"read_only": read_only(), "full_access": full_access()}
+
+
+@app.get("/stage_mode")
+async def get_stage_mode() -> dict[str, Any]:
+    """Demo mode (service/stage_mode.py): on or off, and how long it has left."""
+    from service import stage_mode
+    return stage_mode.state()
+
+
+@app.put("/stage_mode")
+async def set_stage_mode(request: Request, body: dict[str, Any]) -> dict[str, Any]:
+    """The app's own switch. It lifts every power and memory saving, so turning it ON is the
+    Wisp app's alone (the same proof as widening /mode); off is open to the ordinary request.
+    Memory only: the app pushes it again when the service comes back."""
+    from service import stage_mode
+    on = body.get("enabled")
+    if type(on) is not bool:
+        raise HTTPException(status_code=422, detail="enabled must be true or false.")
+    if on:
+        _require_wisp_app(request, _APP_ONLY)
+        try:
+            # A GPU cap already on a running request is lifted at once, not when it ends.
+            from service.inference import power_tier
+            stage_mode.on_change(power_tier.stage_mode_changed)
+        except Exception:  # noqa: BLE001 — the cap then ends with that request
+            pass
+        try:
+            from service import stage_warm     # registers the load-and-warm listener
+            stage_warm.install(client)
+        except Exception:  # noqa: BLE001 — the switch still works without the warm-up
+            pass
+    return stage_mode.set_active(on)
 
 
 @app.post("/voice/transcribe")
@@ -1816,6 +1909,57 @@ UNRESOLVED_ACTION_REASON = (
     "until the user has checked it")
 
 
+# A request that only reads ("is there any email about enrollment?", "what's
+# on my calendar"). While actions are held it is answered as usual, without
+# the notice: in the 2026-11-04 debug export every later answer in the chat,
+# reads included, opened with it and told the user to start a new chat.
+_READ_QUESTION = re.compile(
+    r"^(?:what(?:'s|s)?|when|where|who(?:'s)?|which|how\s+(?:many|much|long|late|far|old|did|do|does|is|are|was|were)"
+    r"|is|are|was|were|does|do\s+i\s+have|did|has|have\s+i|any|anything|show|list|summari[sz]e|read|check"
+    r"|find|search|look\s+up|tell\s+me\s+(?:what|when|who|where|which|how|about|if|whether))\b", re.I)
+
+
+# A question about the held action itself ("did it send?", "did my email to Sam
+# go through?", "what's the status?") is not a plain read: the notice is what
+# answers it, and without it the model could say "yes, sent" of a send whose
+# outcome nobody knows. A bare "it" or "that" counts, since it most likely
+# points at the action.
+# Not "fall", "spring" or "term": "did that fall through" asks after the action.
+_TIME_WORD = (r"(?:week|weekend|month|year|morning|afternoon|evening|night|time|semester|quarter|summer|"
+              r"winter|monday|tuesday|wednesday|thursday|friday|saturday|sunday|day)s?")
+_SENT_THING = r"(?:e-?mail|mail|message|text|imessage|forward|reply|note)"
+_ABOUT_EARLIER_ACTION = re.compile(
+    # A pronoun that most likely points at the action ("did it send?"), not a
+    # date ("this week", "that day").
+    r"\b(?:it|that|this)\b(?!\s+" + _TIME_WORD + r"\b)"
+    r"|\b(?:sen[dt]|sends|sending|go(?:es|ne)?\s+through|went\s+through|going\s+through|"
+    r"deliver(?:ed|y|s)?|forward(?:ed|s|ing)?|repl(?:y|ied|ies)|respon[ds]e?d?|status|outcome|result|"
+    r"work(?:ed|s|ing)?|finish(?:ed)?|complete[d]?|happen(?:ed|s)?|fail(?:ed|s)?|succeed(?:ed)?|"
+    r"success(?:ful)?|receive[ds]?|arrive[ds]?|landed|went\s+out|go\s+out|gone\s+out|earlier|"
+    r"f[ae]ll\s+through|fallen\s+through|"
+    r"last\s+(?:action|one)|any\s+word|heard\s+(?:back|anything|from))\b"
+    # Whether the other side has the user's own message ("did Sam get my
+    # email?", "did Sam see my text?", "is my message out?").
+    r"|\b(?:get|got|gets|see|sees|saw|seen|read|reads|open(?:ed)?)\s+my\s+" + _SENT_THING + r"\b"
+    r"|\bmy\s+" + _SENT_THING + r"\s+(?:is\s+|was\s+|has\s+)?(?:out|gone|there|ok|okay|through|up)\b"
+    r"|\b(?:is|was|has)\s+my\s+" + _SENT_THING + r"\s+(?:out|gone|there|ok|okay|through)\b"
+    r"|\bthe\s+mail\s+app\b",
+    re.I)
+
+
+def _plain_read_request(prompt: str) -> bool:
+    """`prompt` asks to read or look something up, changes nothing, and is not
+    about an earlier action's outcome."""
+    try:
+        from service.model_only import normalize_day_words
+        from service.router.router import has_write_intent, mask_quoted
+        text = normalize_day_words(mask_quoted(prompt or "")).strip()
+        return (bool(text) and not has_write_intent(text) and bool(_READ_QUESTION.match(text))
+                and not _ABOUT_EARLIER_ACTION.search(text))
+    except Exception:  # noqa: BLE001 - unsure means the notice is shown
+        return False
+
+
 def _answer_prefixed(emit, prefix: str):
     """emit, with `prefix` put in front of the answer the user sees: the first
     answer delta or text event, again after a clear_answer discards a step."""
@@ -1994,11 +2138,34 @@ def _ask_tool_rank(prompt: str, previous: str = "") -> tuple[list[str], list[str
                                  ("search_reminders", reminders_first(prompt))):
                 if wanted and lead in REGISTRY:
                     head = [lead, *(n for n in head if n != lead)]
-        from service.model_only import public_possessive_question
-        if not writing and public_possessive_question(prompt) and "web_search" in REGISTRY:
+        from service.model_only import public_possessive_question, web_first
+        if (not writing and "web_search" in REGISTRY
+                and (public_possessive_question(prompt)
+                     or (web_first(prompt) and not (mail_first(prompt) or calendar_first(prompt)
+                                                    or reminders_first(prompt))))):
             # "What are Costco's hours?" ranked weather and stock tools first
-            # and left web_search a name stub: the search leads instead.
+            # and left web_search a name stub: the search leads instead. So it
+            # does for a public fact that changes ("Is Costco open on Sunday?",
+            # "who is the president?"), which was answered from stale memory.
             head = ["web_search", *(n for n in head if n != "web_search")]
+        from service.model_only import direct_leads
+        if leads := [n for n in direct_leads(prompt) if n in REGISTRY]:
+            # "what did mom say", "set a timer for 5 minutes", "email Dana the
+            # notes": the tool the request names leads, whatever the lexical rank.
+            head = [*leads, *(n for n in head if n not in leads)]
+        from service.model_only import ONE_REMINDER_DELETE_TOOL, single_reminder_delete
+        if single_reminder_delete(prompt) and ONE_REMINDER_DELETE_TOOL in REGISTRY:
+            # "Delete the dentist reminder" is one item by title, not a bulk clear.
+            head = [ONE_REMINDER_DELETE_TOOL, *(n for n in head if n != ONE_REMINDER_DELETE_TOOL)]
+        from service.model_only import email_reply_sender
+        if email_reply_sender(prompt) and {"view_emails", "reply_to_email"} <= set(REGISTRY):
+            # "Reply to Dana's last email and say yes": read her mail, then reply in its thread.
+            lead_reply = ["view_emails", "reply_to_email"]
+            head = [*lead_reply, *(n for n in head if n not in lead_reply)]
+        from service.model_only import emails_to_answer_question
+        if emails_to_answer_question(prompt) and DAY_PLAN_TOOL in REGISTRY:
+            # "Any emails I need to answer?" reads the Brief's needs-reply items, not a mail search.
+            head = [DAY_PLAN_TOOL, *(n for n in head if n != DAY_PLAN_TOOL)]
         from service.model_only import reply_reads
         if lead_reads := [n for n in reply_reads(prompt) if n in REGISTRY]:
             # A reply draft reads the conversation it answers before drafting.
@@ -2150,9 +2317,10 @@ async def agent(body: dict[str, Any]):
         fact_store.bind_source(req_id, sid, persisted_user_idx)
         return persisted_user_idx
 
-    from service.answer_text import AnswerEdgeTrimmer
+    from service.answer_text import AnswerEdgeTrimmer, HeadingFixer
     from service.tools.registry import DisplayOnlyToolResult as _DisplayOnly
     answer_edges = AnswerEdgeTrimmer()
+    answer_headings = HeadingFixer()
 
     async def emit(ev: dict):
         # No blank lines above or below the answer, however it is produced
@@ -2160,15 +2328,22 @@ async def agent(body: dict[str, Any]):
         # Whitespace inside the answer is left exactly as written.
         t = ev.get("type")
         if t == "delta" and isinstance(ev.get("text"), str):
-            piece = answer_edges.delta(ev["text"])
+            piece = answer_headings.feed(answer_edges.delta(ev["text"]))
             if not piece:
                 return
             ev = {**ev, "text": piece}
         elif t == "text" and isinstance(ev.get("text"), str) and not isinstance(
                 ev["text"], _DisplayOnly):
-            ev = {**ev, "text": AnswerEdgeTrimmer.whole(ev["text"])}
+            # Ask shows lists and bold labels only: "### Title" becomes "**Title**".
+            ev = {**ev, "text": HeadingFixer.whole(AnswerEdgeTrimmer.whole(ev["text"]))}
+            answer_headings.reset()
         elif t == "clear_answer":
             answer_edges.reset()
+            answer_headings.reset()
+        elif t == "done":
+            tail = answer_headings.flush()
+            if tail:
+                await emit({"type": "delta", "text": tail})
         if trace is not None:
             diagnostic_event = ({**ev, "name": tool_names_by_id.get(str(ev.get("id", "")), "")}
                                 if ev.get("type") == "tool_result" else ev)
@@ -2995,11 +3170,12 @@ async def agent(body: dict[str, Any]):
                 await emit({"type": "done"})
             elif decision.needs_tools:
                 agent_emit = emit
-                if model_led_turn and unresolved_block:
+                if model_led_turn and unresolved_block and not _plain_read_request(prompt):
                     # The action tools are withheld below; say so plainly
                     # instead of letting the model refuse with no reason
                     # (0.5.0-rc3 audit M2). The barrier is an earlier action
-                    # in this chat whose outcome was never confirmed.
+                    # in this chat whose outcome was never confirmed. A plain
+                    # read is answered without it: nothing it asked for is held.
                     agent_emit = _answer_prefixed(emit, UNRESOLVED_ACTION_NOTICE + "\n\n")
                 # create_tool generates code with its own inference client.
                 # Model-selected calls are already warm from the agent step;
@@ -3083,6 +3259,17 @@ async def agent(body: dict[str, Any]):
                     ask_stub_rank = [n for n in ask_stub_rank if n not in lead]
                 if ask_quality and subject_tools:
                     ask_stub_rank = list(dict.fromkeys([*ask_stub_rank, *subject_tools]))
+                ask_pending_write = ""
+                if ask_quality and not offered_creations and not draft_bound:
+                    # "Demo point 4" answering "What should the bullet say?": the
+                    # request it completes keeps its tools (it ranked calculate
+                    # and mail tools, and the note was never changed).
+                    from service.model_only import ASK_PRELOAD, pending_write_request
+                    ask_pending_write = pending_write_request(prompt, previous_prompt, last_assistant)
+                    if ask_pending_write:
+                        lead, more = _ask_tool_rank(ask_pending_write, "")
+                        ask_preload = [*lead, *(n for n in ask_preload if n not in lead)][:ASK_PRELOAD]
+                        ask_stub_rank = list(dict.fromkeys([*more, *ask_stub_rank]))
                 if ask_quality:
                     from service.model_only import ASK_STYLE_HINT, wisp_self_hint, wisp_self_question
                     synthesis_guidance.insert(0, ASK_STYLE_HINT)
@@ -3091,6 +3278,9 @@ async def agent(body: dict[str, Any]):
                     from service.model_only import ASK_DAY_PLAN_HINT, day_plan_question
                     if day_plan_question(prompt, previous_prompt):
                         synthesis_guidance.insert(1, ASK_DAY_PLAN_HINT)
+                    if ask_pending_write:
+                        from service.model_only import pending_write_hint
+                        synthesis_guidance.insert(1, pending_write_hint(ask_pending_write))
                 ask_forbidden: frozenset[str] = frozenset()
                 ask_direct = False
                 if ask_quality:
@@ -3101,6 +3291,19 @@ async def agent(body: dict[str, Any]):
                     # gets no reads (a [Name] placeholder covers what it lacks),
                     # and one with no destination gets no write/draft/send.
                     ask_forbidden = ask_forbidden_tools(prompt, REGISTRY)
+                    from service.model_only import (chat_reminder, chat_reminder_hint, email_reply_hint,
+                                                    email_reply_sender)
+                    if that_title := chat_reminder(prompt, previous_prompt, last_assistant or ""):
+                        synthesis_guidance.insert(1, chat_reminder_hint(that_title))
+                    from service.tools.self_send import user_names_self
+                    if user_names_self(prompt):
+                        from service.model_only import SELF_SEND_HINT
+                        synthesis_guidance.insert(1, SELF_SEND_HINT)
+                    if reply_sender := email_reply_sender(prompt):
+                        synthesis_guidance.insert(1, email_reply_hint(reply_sender))
+                    from service.model_only import EMAILS_TO_ANSWER_HINT, emails_to_answer_question
+                    if emails_to_answer_question(prompt):
+                        synthesis_guidance.insert(1, EMAILS_TO_ANSWER_HINT)
                     if pure_writing(prompt):
                         synthesis_guidance.insert(1, ASK_COMPOSE_HINT)
                     from service.model_only import ASK_KNOWLEDGE_HINT, compose_only, knowledge_question
@@ -4418,9 +4621,13 @@ async def get_permissions() -> dict[str, Any]:
     }
 
 
+_RULES_APP_ONLY = _APP_ONLY
+
+
 @app.post("/permissions")
-async def set_permission(body: dict[str, Any]) -> dict[str, Any]:
-    """Add a standing grant without waiting to be asked mid-conversation."""
+async def set_permission(request: Request, body: dict[str, Any]) -> dict[str, Any]:
+    """Add a standing grant without waiting to be asked mid-conversation. An "Always allow"
+    only from the Wisp app itself; an "Always block" from the app's ordinary request."""
     from service.safety import grants
     tool = str(body.get("tool") or "")
     if not tool:
@@ -4428,13 +4635,25 @@ async def set_permission(body: dict[str, Any]) -> dict[str, Any]:
     decision = str(body.get("decision") or "allow")
     if decision not in ("allow", "deny"):
         return {"ok": False, "error": "decision must be allow or deny"}
+    if decision == "allow":
+        _require_wisp_app(request, _RULES_APP_ONLY)
     return grants.grant(tool, body.get("args") or {}, decision=decision,
                         scoped=bool(body.get("scoped", True)))
 
 
 @app.delete("/permissions/{tool}")
-async def revoke_permission(tool: str, scope: str | None = None) -> dict[str, Any]:
+async def revoke_permission(request: Request, tool: str, scope: str | None = None) -> dict[str, Any]:
+    """Remove a standing rule. Removing an "Always allow" only tightens; removing an "Always
+    block" lets the action through again, so that is the Wisp app's alone."""
     from service.safety import grants
+    try:
+        blocks = (grants.all_grants().get(tool) or {}).get("deny") or []
+        lifts_a_block = any(isinstance(rule, dict) and (scope is None or rule.get("scope", "") == scope)
+                            for rule in blocks)
+    except Exception:  # noqa: BLE001 — unreadable rules: assume it might
+        lifts_a_block = True
+    if lifts_a_block:
+        _require_wisp_app(request, _RULES_APP_ONLY)
     return {"ok": grants.revoke(tool, scope)}
 
 

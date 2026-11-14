@@ -26,6 +26,14 @@ ARGS = {
 
 
 @pytest.fixture(autouse=True)
+def forward_bridge_path(monkeypatch):
+    # These pin the app-bridge receipts of all four sends. The Apple Mail
+    # forward is held back as shipped (tests/test_send_recipient_preflight.py),
+    # so its bridge path is switched on here.
+    monkeypatch.setattr(A, "APPLE_MAIL_FORWARD_READY", True)
+
+
+@pytest.fixture(autouse=True)
 def isolated_effects(monkeypatch):
     def forbidden(*args, **kwargs):
         raise AssertionError("No network, native process, or personal source in outbound fixtures")

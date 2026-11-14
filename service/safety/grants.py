@@ -72,7 +72,10 @@ _NEVER_GRANTABLE = {"send_email", "send_message", "create_tool",
                     "manage_contacts",
                     # Saves a file somebody else sent onto this Mac: each one is
                     # confirmed on a card naming that file (policy.ALWAYS_CONFIRM_FILE_TOOLS).
-                    "save_email_attachment"}
+                    "save_email_attachment",
+                    # Deletes a note: each one is confirmed on a card naming the
+                    # note and its folder (policy.ALWAYS_CONFIRM_DELETE_TOOLS).
+                    "delete_note"}
 
 # Tools that absorbed several single-purpose tools in the 100-tool
 # consolidation: (argument that selects the behaviour, its default, the

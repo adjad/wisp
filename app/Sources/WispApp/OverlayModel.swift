@@ -484,9 +484,12 @@ final class OverlayModel: ObservableObject {
     // (typed input, a message draft being edited, a reply being written in the
     // Brief), the setup card is open, or an answer is being written (the person
     // is waiting for it, and said so).
-    var holdsOpen: Bool {
-        answerInFlight
-            || pinned || pickingFile || !input.trimmingCharacters(in: .whitespaces).isEmpty || messageDraft?.isEditing == true
+    var holdsOpen: Bool { answerInFlight || holdsOpenBesidesAnswer }
+
+    /// Everything in `holdsOpen` but an Ask turn in flight: what the person is
+    /// doing, which no time limit lets the notch close over.
+    var holdsOpenBesidesAnswer: Bool {
+        pinned || pickingFile || !input.trimmingCharacters(in: .whitespaces).isEmpty || messageDraft?.isEditing == true
             || voice.isActive || speaker.speaking
             || (tab == .day && !todayTaskTitle.trimmingCharacters(in: .whitespaces).isEmpty)
             || (tab == .brief && ProactiveActions.shared.replyInProgress)
@@ -568,7 +571,19 @@ final class OverlayModel: ObservableObject {
     }
 
     /// An answer is on its way, or waiting on the person's confirmation.
-    var answerInFlight: Bool { [Phase.routing, .working, .streaming, .confirming].contains(phase) }
+    var answerInFlight: Bool { Self.inFlight(phase) }
+    static func inFlight(_ phase: Phase) -> Bool { [Phase.routing, .working, .streaming, .confirming].contains(phase) }
+
+    /// Wisp is writing something the person is waiting to read in the panel: an
+    /// Ask turn (thinking, running tools, streaming, or a card waiting for their
+    /// answer) or the Brief being composed. The notch's automatic close waits for
+    /// it (AppDelegate.scheduleCollapse). Both end on their own: done, an error,
+    /// a dropped stream, or the request's timeout.
+    var generating: Bool { answerInFlight || briefComposing }
+
+    #if WISP_MOTION_APP_DELEGATE_CHECKS
+    func qaSetBriefComposing(_ on: Bool) { briefComposing = on }
+    #endif
 
     /// False while a turn is in flight. The Wisp window and the chat switcher
     /// read the saved history, which the service writes only at the end of a turn.
@@ -584,7 +599,13 @@ final class OverlayModel: ObservableObject {
     }
 
     /// Slash commands the Ask field's text could still become. /corpus only in Debug Mode.
-    var commandSuggestions: [NotchCommand] { NotchCommand.suggestions(for: input, includeCorpus: debugMode, includeScreen: screenCommandAvailable) }
+    var commandSuggestions: [NotchCommand] {
+        // Nothing typed starts with "/" on almost every update: answer that
+        // without asking macOS about Screen Recording (screenCommandAvailable),
+        // a privacy-service call the panel made on every redraw.
+        guard input.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") else { return [] }
+        return NotchCommand.suggestions(for: input, includeCorpus: debugMode, includeScreen: screenCommandAvailable)
+    }
 
     /// Sources Wisp can't read right now ("calendar", "email"), refreshed each
     /// time the panel opens, so a starter never asks about a denied source. Nil
@@ -2682,6 +2703,14 @@ final class OverlayModel: ObservableObject {
                 .filter { !$0.isEmpty }.joined(separator: "\n")
             return await Notifications.deliver(id: "attention:" + ev.str("source_id"),
                                                title: "Added a reminder: \(title)", body: body)
+        case "wisp_did":
+            // Wisp did something by itself behind "Let Wisp act for me" (service/proactive/acting.py,
+            // announce): it is already done and recorded. Say what, so the person sees it happen;
+            // the card with Undo is in the Brief. Nothing here acts.
+            let title = ev.str("title")
+            guard !title.isEmpty, !ev.str("record").isEmpty else { return false }
+            return await Notifications.deliver(id: "wispdid:" + ev.str("record"), title: "Wisp did this",
+                                               body: [title, ev.str("detail")].filter { !$0.isEmpty }.joined(separator: "\n"))
         case "create_apple_reminder":
             return false
         case "update_apple_reminder":
@@ -3015,6 +3044,9 @@ final class OverlayModel: ObservableObject {
         let map = [
             "Agents-A1-4B-oQe6": "A1-4B",
             "gemma-4-E4B-it-qat-4bit": "G4-E4B",
+            "gemma-4-E4B-it-oQ4e-mtp": "G4-E4B",
+            "Gemma-Wisp": "G-Wisp",
+            "gemma-4-E4B-it-r5-step-01800-oQ4e-mtp": "G-Wisp",
             "Qwen3.6-27B-oQ3": "Q3.6-27B",
             "LFM2.5-2.6B-MLX-6bit": "LFM-2.6B",
         ]

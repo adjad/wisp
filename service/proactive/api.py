@@ -71,6 +71,104 @@ def _item_id(item_id: str) -> str:
     return item_id
 
 
+class Act(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    enabled: bool
+    # "Yes, these too" on the card about new actions: add to a yes that is in force, never
+    # turn everything back on if the person switched it off meanwhile.
+    only_new: bool = False
+
+
+def _act_state() -> dict:
+    """What the switch shows: the gate (service/proactive/acting.py) and what Wisp did lately."""
+    import time
+    from service.proactive import acting, autoadd
+    state = acting.state()
+    state["per_cycle"] = autoadd.MAX_PER_CYCLE
+    try:
+        from service.proactive.store import store
+        state["recent"] = acting.recent(store(), time.time())
+        # What Wisp did in the last day (a rolling day), for the Brief's "N today".
+        state["today"] = acting.done_since(store(), time.time() - acting.DAY_S)
+    except Exception:  # noqa: BLE001 — the list is a courtesy; the switch still works without it
+        state["recent"] = []
+        state["today"] = 0
+    # While adding from texts is agreed to, say when it can't work (Contacts off or not synced).
+    try:
+        state["note"] = autoadd.contacts_note() if acting.enabled("add") else ""
+    except Exception:  # noqa: BLE001
+        state["note"] = ""
+    return state
+
+
+@router.get("/act")
+def act():
+    """Whether Wisp may act without asking, since when, and what it did lately."""
+    return _act_state()
+
+
+@router.put("/act")
+async def set_act(request: Request):
+    """The person's own answer to "Let Wisp act for me": their standing approval, or its end.
+
+    The app's own JSON request only, and a yes only from the app itself. It changes one
+    thing, the gate's own file, and a yes records its time so only later messages are acted on. What
+    Wisp may do stays in each action's own code, which reads the setting again right
+    before it writes. Off takes effect at once."""
+    body = await _body(request, Act)
+    if body.enabled:
+        # Giving consent takes more than "no Origin header": the caller must be the Wisp app
+        # that launched this service, proven from the kernel's socket table. Another program
+        # on this Mac cannot say yes for the person. Taking consent back stays open to the
+        # app's ordinary request, so off never depends on that proof succeeding.
+        _require_app(request)
+    from service.proactive import acting
+    try:
+        acting.set_enabled(body.enabled, only_new=body.enabled and body.only_new)
+    except acting.NotOn as exc:
+        raise HTTPException(409, "Letting Wisp act for you was turned off meanwhile, so nothing changed. "
+                                 "You can turn it on in Settings.") from exc
+    except Exception as exc:  # noqa: BLE001 — whatever failed, the reply says what is true now
+        # Every reply is the gate as it really is (_act_state reads it again), never what was
+        # asked for. A failed yes leaves the gate off (acting.set_enabled), so the words are true.
+        if acting.enabled():                 # unreachable by design (both paths leave it off); never claim off
+            raise HTTPException(409, "Wisp couldn't save this change. Letting Wisp act for you is still on.") from exc
+        if body.enabled:
+            raise HTTPException(409, "Wisp couldn't save your yes (~/.moe/act_for_me.json). Until it can, "
+                                     "Wisp does nothing on its own.") from exc
+        # An off that went wrong somewhere but is in fact off is a success.
+    return _act_state()
+
+
+def _require_app(request: Request) -> None:
+    from service.wisp_reset import caller_is_parent_app
+    client, server = request.scope.get("client"), request.scope.get("server")
+    try:
+        from service.wisp_reset import names_another_caller
+        # Exactly the connection's own (host, port) pairs go to the check: loopback, real int ports.
+        # A forwarded-for header could stand in for them: never the app's own request.
+        proven = bool(not names_another_caller(request) and client and server and len(client) == 2 and len(server) == 2
+                      and client[0] == "127.0.0.1" and server[0] == "127.0.0.1"
+                      and type(client[1]) is int and type(server[1]) is int
+                      and caller_is_parent_app((client[0], client[1]), (server[0], server[1])) is True)
+    except Exception:  # noqa: BLE001 — unproven is refused
+        proven = False
+    if not proven:
+        raise HTTPException(403, "Only the Wisp app can turn this on.")
+
+
+@router.post("/act/asked")
+async def act_asked(request: Request):
+    """The question was shown and put aside without a yes. It is not asked again."""
+    await _body(request, Empty)
+    from service.proactive import acting
+    try:
+        acting.mark_asked()
+    except Exception:  # noqa: BLE001 — it will simply be asked once more
+        pass
+    return _act_state()                     # the true state from disk, whatever happened above
+
+
 @router.get("")
 def proactive(account: str | None = None):
     from service.proactive.cycle import snapshot

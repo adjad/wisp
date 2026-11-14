@@ -56,7 +56,7 @@ def fingerprint(profile: dict) -> str:
 
 
 def profiled_models() -> list[catalog.CatalogModel]:
-    return [m for m in catalog.PRIMARY_MODELS if m.engine_profile]
+    return [m for m in (*catalog.PRIMARY_MODELS, *catalog.KEPT_MODELS) if m.engine_profile]
 
 
 def _read(path: Path) -> dict:

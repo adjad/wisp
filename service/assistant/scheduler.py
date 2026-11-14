@@ -154,6 +154,9 @@ def _start_behavior_tick() -> asyncio.Task | None:
     if not enabled():
         _behavior_task = asyncio.get_running_loop().create_task(_age_out_only(behavior_runtime))
         return _behavior_task
+    from service import stage_mode
+    if stage_mode.holds_background():
+        return None                  # Demo mode: the tick (interpreter, phraser) waits for the next pass
     # behavior_runtime.tick catches every exception itself, so the task never
     # ends with an unretrieved error. Its model calls (the interpreter and the
     # phraser) are background work; the task inherits the tier.

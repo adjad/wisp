@@ -180,3 +180,30 @@
         symbols: {regex: '^(?=.*{stock_a})(?=.*{stock_b})'}
   answer: {contains_any: ["142.88", "231.45", "448.10"]}
   trap: "real-usage 1G #81: both held tickers fetched, not one and not a guess"
+
+# ---- 0.5.0: store hours and office holders on the first message ----
+# These were allowed to search but answered from memory or with no tool
+# ("who is the president?" in the 2026-11-04 debug export), and a business
+# name with 's asked as "Is ... open" got no web tools at all. The case grades
+# the call only: the fake search has no hours to quote.
+- id: web_open_sunday
+  prompt: "Is Costco open on Sunday?"
+  expect: [{tool: web_search, args: {query: {icontains: costco}}}]
+  forbid: [run_shell]
+- id: web_possessive_open_holiday
+  prompt: "Is Trader Joe's open on Thanksgiving?"
+  expect: [{tool: web_search, args: {query: {icontains: "trader joe"}}}]
+  forbid: [web_fetch, run_shell]
+- id: web_possessive_close_tonight
+  prompt: "When does Macy's close tonight?"
+  expect: [{tool: web_search, args: {query: {icontains: macy}}}]
+  forbid: [web_fetch, run_shell]
+- id: web_who_is_president
+  prompt: "who is the president?"
+  expect: [{tool: web_search, args: {query: {icontains: president}}}]
+  forbid: [run_shell]
+  trap: "the model's memory of who holds an office is stale; an answer with no search is a miss"
+- id: web_moms_open_stays_private
+  prompt: "Is Mom's open on Sunday?"
+  forbid: [web_search, web_fetch]
+  trap: "a relation's 's is the user's own; nothing about it goes to the web"

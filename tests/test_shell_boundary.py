@@ -259,8 +259,11 @@ class ShellBoundary(unittest.TestCase):
                     # the actual command here writes only its disposable marker.
                     with patch.object(builtin.subprocess, "run", wraps=subprocess.run) as run:
                         builtin.run_shell(cmd)
-                self.assertTrue(run.call_args.kwargs["shell"])
-                self.assertEqual(run.call_args.args[0], cmd)
+                # The same `/bin/sh -c` that shell=True ran, behind run_shell's write guard
+                # where a sandbox can be applied (service/safety/shell_sandbox.py).
+                self.assertFalse(run.call_args.kwargs["shell"])
+                self.assertEqual(run.call_args.args[0][-3:], ["/bin/sh", "-c", cmd])
+                self.assertEqual(run.call_count, 1)
                 self.assertEqual(marker.read_text(), "fixture-only")
 
     def test_a_grant_never_covers_a_compound_or_interpreter_command(self):

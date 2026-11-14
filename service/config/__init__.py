@@ -124,9 +124,37 @@ from . import authority_changes as _authority_changes
 from service.publication_authority import mutating as _publication_mutation, revocation as _publication_revocation
 
 
+def _stranded_roles(config: dict, overlay: dict) -> dict:
+    """Code-default roles name base Gemma, which 0.5.0 no longer offers. With no roles of
+    the person's own (a fresh or lost overlay) on a built-in-engine Mac where base is
+    missing but Wisp's tuned Gemma is on disk, the roles that name base move to it, so
+    the Mac isn't pointed at a model it doesn't have. Nothing is written."""
+    if "roles" in overlay:
+        return config
+    try:
+        from service.engine import mode
+        if not mode.is_bundled():
+            return config        # an oMLX.app folder may need macOS permission to list
+        from service.setup import catalog
+        from service.setup.local_models import catalogue_models_on_disk
+        base = catalog.GEMMA_E4B_MTP.id
+        tuned = (catalog.GEMMA_E4B_WISP.id, catalog.GEMMA_E4B_WISP_PRERELEASE.id)
+        roles = config.get("roles") or {}
+        if base not in roles.values():
+            return config
+        found = catalogue_models_on_disk([mode.engine_data_dir() / "models"], wanted=(base, *tuned))
+        use = next((m for m in tuned if m in found), None)
+        if base in found or use is None:
+            return config
+    except Exception:  # noqa: BLE001 — an unreadable folder is no reason to change roles
+        return config
+    return {**config, "roles": {r: (use if m == base else m) for r, m in roles.items()}}
+
+
 @lru_cache
 def _effective_config() -> dict:
-    return _deep_merge(_packaged_config(), _user_overlay())
+    overlay = _user_overlay()
+    return _stranded_roles(_deep_merge(_packaged_config(), overlay), overlay)
 
 
 _raw_overlay_cache_clear = _user_overlay.cache_clear
@@ -208,7 +236,8 @@ def _write_overlay(update: dict, *, precondition=None) -> dict:
         # writer. Cached config and an earlier endpoint check cannot fence a
         # settings change made while setup awaited the engine's model list.
         if precondition is not None:
-            precondition(_deep_merge(_packaged_config(), current or {}))
+            # The same roles the configuration token saw (models_config applies _stranded_roles).
+            precondition(_stranded_roles(_deep_merge(_packaged_config(), current or {}), current or {}))
         merged = _deep_merge(current or {}, update)
         fd, path = tempfile.mkstemp(prefix=".config-", dir=USER_CONFIG.parent)
         try:
@@ -242,7 +271,7 @@ def _save_overlay(update: dict, *, precondition=None) -> None:
         if token is not None:
             _authority_changes.finish(token)
     if not relevant:
-        _authority_changes.observe(_authority_projection(_deep_merge(_packaged_config(), merged)),
+        _authority_changes.observe(_authority_projection(_stranded_roles(_deep_merge(_packaged_config(), merged), merged)),
                                    valid=True, expected=before)
 
 
@@ -331,22 +360,15 @@ def set_behavior_enabled(enabled: bool) -> bool:
 
 
 def proactive_auto_add_enabled() -> bool:
-    """Whether the background Brief may add a missed, time-sensitive event or
-    deadline to Calendar/Reminders on its own and report it after
-    (service/proactive/autoadd.py). Default False: the same items arrive as
-    tap-to-add cards. Only an explicit ``proactive_auto_add: true`` in the user
-    overlay is the standing approval to write to Calendar/Reminders unasked.
-    An overlay that exists but cannot be read fails closed."""
-    if not user_overlay_valid():
-        return False
-    return models_config().get("proactive_auto_add") is True
-
-
-def set_proactive_auto_add(enabled: bool) -> bool:
-    if type(enabled) is not bool:
-        raise ValueError("proactive_auto_add must be a boolean")
-    _save_overlay({"proactive_auto_add": enabled})
-    return enabled
+    """Whether "Let Wisp act for me" is on: only a report of the gate in
+    service/proactive/acting.py (``acting.enabled()``), which also covers
+    auto-add (service/proactive/autoadd.py). Default False: the same items
+    arrive as tap-to-add cards. The yes lives in the gate's own private file
+    (~/.moe/act_for_me.json, written only by the switch), read from disk on
+    every check. Nothing in config.yaml counts: not ``act_for_me``, not the
+    older ``proactive_auto_add: true`` key, in any overlay."""
+    from service.proactive import acting
+    return acting.enabled("add")
 
 
 def omlx_base_url() -> str:

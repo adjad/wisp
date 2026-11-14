@@ -57,8 +57,10 @@ def test_the_label_is_never_stored():
     assert "summary" not in grants.GRANTS_PATH.read_text()
 
 
-def test_the_permissions_reply_carries_the_label_and_remove_still_works():
+def test_the_permissions_reply_carries_the_label_and_remove_still_works(monkeypatch):
     _seed()
+    # This remove also drops a block rule of the same scope, which only the Wisp app may do.
+    monkeypatch.setattr(main, "_require_wisp_app", lambda request, reason: None)
     client = TestClient(main.app, base_url="http://127.0.0.1:8765", raise_server_exceptions=False)
     rows = client.get("/permissions").json()["grants"]["move_path"]["allow"]
     assert [r.get("summary") for r in rows if r["scope"] == ""] == [grants.INERT_MOVE_RULE]

@@ -116,6 +116,17 @@ def account_of(raw: str | None, *, linked: set[str] | None = None, own: str | No
 # --- mail -----------------------------------------------------------------------
 
 _PREFIX = re.compile(r"^\s*(?:re|fwd?|aw|sv)\s*:\s*", re.I)
+# Any reply or forward marker, in the forms mail clients write ("Re[2]:", "WG:", "TR:", "RES:",
+# "Antw:", "VS:", "RV:", "回复：", a full-width colon), read after Unicode folding. Wider than
+# _PREFIX on purpose and used only to decide that a subject is NOT a thread's first message
+# (_subject_ts, _is_reply): a wrong yes here only means a tap card, while widening
+# bare_subject would change which threads are grouped together.
+_REPLY_PREFIX = re.compile(r"^\s*(?:(?:re|fwd?|fw|aw|sv|wg|tr|res|antw|vs|r|rv|回复|转发|答复)(?:\[\d+\])?\s*[:：]\s*)+", re.I)
+
+
+def is_reply_subject(subject) -> bool:
+    import unicodedata
+    return bool(_REPLY_PREFIX.match(unicodedata.normalize("NFKC", str(subject or ""))))
 
 
 def sent_rows() -> list[dict]:
@@ -200,11 +211,31 @@ def bare_subject(subject: str) -> str:
 
 
 def _address(row: dict) -> str:
-    address = str(row.get("sender_address") or "").strip()
-    if not address:
-        found = re.search(r"<([^>]+@[^>]+)>", str(row.get("sender") or ""))
-        address = found.group(1) if found else (str(row.get("sender") or "") if "@" in str(row.get("sender") or "") else "")
-    return address.strip().casefold()
+    """The address a mail row was really sent from, "" when there is none to
+    trust (service/mail_sender.py: the one strict reading every caller shares)."""
+    from service import mail_sender
+    return mail_sender.real_address(row.get("sender"), row.get("sender_address"))
+
+
+def odd_sender(row: dict) -> bool:
+    """The display name is dressed up as an address, or the From value can't be
+    read cleanly (mail_sender.is_odd). Such mail is shown by its real address and
+    nothing is done on its strength without a tap (autoadd.plan_for)."""
+    from service import mail_sender
+    return mail_sender.is_odd(row.get("sender"), row.get("sender_address"))
+
+
+def shown_sender(row: dict) -> str:
+    """Who a mail row is from, as shown: the name, or for an odd sender the real address alone."""
+    from service import mail_sender
+    return clean(mail_sender.shown(row.get("sender"), row.get("sender_address")), 80) or "Unknown sender"
+
+
+def _is_mine(row: dict, mine) -> bool:
+    """The row is the user's own: its real address is theirs AND it is not odd
+    (mail_sender.is_own). A row with no real address is never the user's."""
+    from service import mail_sender
+    return mail_sender.is_own(row.get("sender"), row.get("sender_address"), mine)
 
 
 def reply_ref_for_row(row: dict) -> dict | None:
@@ -483,6 +514,91 @@ def _sentences(text: str) -> list[str]:
     return [clean(p, 300) for p in parts if len(clean(p)) >= 3]
 
 
+# --- when the newest message's own words arrived (autoadd.acting.allows) -------------------
+#
+# The newest message's body is cut at its quoted history (_QUOTED_HISTORY), but a
+# cut can miss history: an unmarked quote, HTML turned into text, a client whose
+# header block the pattern does not know. Two checks follow it. A sentence that
+# also appears in an EARLIER message in view takes that message's time (its word
+# 3-grams, hashed: no extra mail text is kept on the item). A body whose history
+# still can't be told apart has no known time at all, so nothing in it is ever
+# acted on without a tap.
+
+GRAM_N = 3
+MAX_GRAMS = 200            # per earlier message, from its start (its own words come first)
+MAX_EARLIER = 4            # earlier in-view messages kept per item
+# What is left of quoted history after the cut: a header line, an attribution, a
+# separator, a quote mark (also as HTML text). Any of these: the body's time is unknown.
+# Linear on hostile bodies, like _QUOTED_HISTORY: a line start takes only [ \t]
+# (possessively), and a header's value may sit on the next line, but only one.
+_HISTORY_HINT = re.compile(
+    r"(?im)^[ \t]*+(?:\*{0,2}(?:from|sent|von|de|da|envoyé|gesendet)[ \t]*:\*{0,2}[ \t]*(?:\r?\n[ \t]*)?\S"
+    r"[^\n]*?(?:@|\[mailto:|\bsent\b)|"
+    r"\*{0,2}sent[ \t]*:\*{0,2}[ \t]*(?:\r?\n[ \t]*)?\S|"
+    r"(?:>|&gt;|\|)|--[^\n]*?(?:forwarded|original|reply)|_{8,}+[ \t\r]*$|"
+    r"(?:on|am|le|el)\b[^\n]*?\b(?:wrote|schrieb|a écrit|escribió)[ \t]*:?[ \t\r]*$)"
+    r"|\b(?:wrote|schrieb|a écrit|escribió)[ \t]*:[ \t\r]*$")
+_HEADER_LINE = re.compile(r"(?im)^[ \t]*+\*{0,2}(?:from|sent|to|cc|date|subject)[ \t]*:\*{0,2}[ \t]*(?:\r?\n[ \t]*)?\S")
+# Quoting anywhere in the raw body: the message is a reply or a forward.
+_QUOTING = re.compile(r"(?m)^[ \t]*+(?:>|&gt;)")
+
+
+def quote_grams(text: str) -> list[str]:
+    """The hashed word 3-grams of `text`, in order, de-duplicated: compared by
+    autoadd against a candidate sentence, never shown or sent anywhere."""
+    words = re.findall(r"[a-z0-9]+", str(text or "").casefold())
+    out, seen = [], set()
+    for i in range(max(0, len(words) - GRAM_N + 1)):
+        digest = hashlib.blake2b(" ".join(words[i:i + GRAM_N]).encode(), digest_size=4).hexdigest()
+        if digest not in seen:
+            seen.add(digest)
+            out.append(digest)
+    return out
+
+
+def _history_unclear(row: dict, cut: str) -> bool:
+    """The body's own words can't be told apart from its quoted history: a
+    header-looking or attribution line, a separator or a quote mark survived the cut."""
+    if _HISTORY_HINT.search(cut):
+        return True
+    return len(_HEADER_LINE.findall(cut)) >= 2
+
+
+def _is_reply(row: dict) -> bool:
+    """The message itself is a reply or a forward: its own subject has a prefix,
+    or its raw body quotes something."""
+    return is_reply_subject(row.get("subject")) or bool(_QUOTING.search(str(row.get("body") or "")))
+
+
+def _subject_ts(messages: list[dict]) -> float | None:
+    """The arrival of the earliest in-view message whose own subject has no
+    reply/forward prefix: when the subject's words were first written. None when
+    every message in view is a "Re:"/"Fwd:" of something older."""
+    firsts = [float(m["ts"]) for m in messages if not is_reply_subject(m.get("subject"))]
+    return min(firsts) if firsts else None
+
+
+def _body_timing(messages: list[dict], newest: dict | None) -> dict:
+    """{"body_ts", "mail_earlier"} for the newest incoming message shown in the
+    item's text. body_ts is that message's arrival, or None when its own words
+    can't be told apart from history it carries: a history line survived the
+    cut, or it is a reply/forward and nothing earlier in the thread is in view
+    to compare its sentences with. mail_earlier is [[ts, grams]] for up to
+    MAX_EARLIER in-view messages before it (any sender, the user's included)."""
+    if newest is None:
+        return {"body_ts": None, "mail_earlier": []}
+    from service.assistant.daily_workspace import _QUOTED_HISTORY
+    from service.tools.imessage_tools import redact_summary_codes
+    index = next(i for i, m in enumerate(messages) if m is newest)
+    earlier = messages[:index]
+    body = str(newest.get("body") or "")
+    cut = _QUOTED_HISTORY.split(body)[0]
+    unclear = _history_unclear(newest, cut) or (_is_reply(newest) and not earlier)
+    kept = [[float(m["ts"]), quote_grams(redact_summary_codes(str(m.get("body") or "")))[:MAX_GRAMS]]
+            for m in earlier[-MAX_EARLIER:]]
+    return {"body_ts": None if unclear else float(newest["ts"]), "mail_earlier": kept}
+
+
 def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
                linked: set[str] | None = None, own: str | None = None,
                counts: dict | None = None, sent: list[dict] | None = None) -> list[dict]:
@@ -509,7 +625,7 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
     zone = ZoneInfo(tz)
     items = []
     for (bucket, account, thread_subject), messages in threads.items():
-        incoming = [m for m in messages if _address(m) not in mine]
+        incoming = [m for m in messages if not _is_mine(m, mine)]
         if not incoming:
             continue
         # A person wrote, or a school sent something with a deadline: anything
@@ -537,13 +653,16 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
         last_in = (people or critical or recalled)[-1]
         reason = None if people or critical else recall_reason(last_in)
         last = messages[-1]
-        replied = _address(last) in mine and last["ts"] >= last_in["ts"]
+        replied = _is_mine(last, mine) and last["ts"] >= last_in["ts"]
         if not replied and sent:
             replied = answered_by_sent(sent, account=account, subject=str(last_in.get("subject") or ""),
                                        message_id=str(last_in.get("message_id") or ""), after=float(last_in["ts"]),
                                        sender=_address(last_in))
         raw_subject = redact_summary_codes(clean(last_in.get("subject"), 200))
-        who = display_name(last_in.get("sender"), _address(last_in)) or "Unknown sender"
+        who = shown_sender(last_in)
+        # Any row of the thread, the ones posing as the user included; a row with no
+        # real address at all is as untrustworthy as one dressed up.
+        odd = any(odd_sender(m) or not _address(m) for m in messages)
         if reason == "doc_comment":
             who = _DOC_APP.sub("", who).strip() or who
         subject = shown_title(raw_subject, who, school=reason == "school" or school_mail(last_in))
@@ -568,7 +687,7 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
                               account=bucket, raw_account=account, who=who, title=title, text=text, lines=[], received_ts=float(last_in["ts"]),
                               replied=replied, ref=ref, reply_ref=reply_ref_for_row(last_in),
                               unread=last_in.get("unread"), person=False, critical=True, secret=secret,
-                              user_wrote=any(_address(m) in mine for m in messages),
+                              user_wrote=any(_is_mine(m, mine) for m in messages),
                               hash=_digest(text, replied, last_in["ts"])))
             continue
         if entries:
@@ -584,26 +703,49 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
                               hash=_digest(text, replied)))
             continue
         blocks, quotes = [], [subject]
+        head = f"Subject: {subject}\n"
+        offset, shown_in = len(head), []          # incoming messages whose block header survives the cap
         for message in messages[-3:]:
-            from_user = _address(message) in mine
-            speaker = "You (the user)" if from_user else (display_name(message.get("sender"), _address(message)) or "Unknown sender")
+            from_user = _is_mine(message, mine)
+            speaker = "You (the user)" if from_user else shown_sender(message)
             if not from_user and reason == "doc_comment":
                 speaker = _DOC_APP.sub("", speaker).strip() or speaker
             stamp = datetime.fromtimestamp(message["ts"], zone).strftime("%a %b %-d %-I:%M %p")
             excerpt = _excerpt(message) if message.get("body") else ""
-            blocks.append(f"From {speaker} · {stamp}:\n{excerpt or '(subject only)'}")
+            header = f"From {speaker} · {stamp}:\n"
+            blocks.append(header + (excerpt or "(subject only)"))
+            if not from_user and offset + len(header) <= MAX_ITEM_CHARS:
+                shown_in.append(message)
+            offset += len(blocks[-1]) + 1
             if not from_user and excerpt:
                 quotes.extend(_sentences(excerpt))
-        text = f"Subject: {subject}\n" + "\n".join(blocks)
+        text = head + "\n".join(blocks)
         text = text[:MAX_ITEM_CHARS]
+        timing = _body_timing(messages, shown_in[-1] if shown_in else None)
+        timing["mail_blocks_in"] = len(shown_in)
         # A doc comment came from Google's no-reply address: nothing to answer by email.
         reply_ref = None if reason == "doc_comment" else reply_ref_for_row(last_in)
         items.append(dict(id=item_id, source="mail", account=bucket,
                           raw_account=account, who=who, title=subject, text=text, lines=quotes,
                           received_ts=float(last_in["ts"]), replied=replied, ref=ref, reply_ref=reply_ref,
+                          # A sender name made to look like someone else's address (odd_sender).
+                          odd_sender=odd,
+                          # The newest incoming message was fetched by Wisp's own Google sign-in
+                          # for a linked account (not a Mail.app copy): its sender and Message-ID
+                          # are gmail_source's own reading, and only such mail can carry proof.
+                          google_fetched=bool(fetched_by_gmail(last_in, linked or set())),
+                          # A thread's subject is as old as the first message that carried it
+                          # without a Re:/Fwd: prefix; None when no such message is in view
+                          # (the original is older than the mail window, or was never seen).
+                          subject_ts=_subject_ts(messages),
+                          # When the newest incoming block's own words arrived, and the
+                          # hashed 3-grams of earlier in-view messages (_body_timing).
+                          **timing,
                           unread=last_in.get("unread"),
                           person=bool(people) or reason == "doc_comment", secret=secret,
-                          user_wrote=any(_address(m) in mine for m in messages),
+                          # The newest incoming message's To header ("" when the cache has none).
+                          to_header=str(last_in.get("to") or "")[:2000],
+                          user_wrote=any(_is_mine(m, mine) for m in messages),
                           **({"recall": reason} if reason else {}),
                           hash=_digest(text, replied)))
     items.sort(key=lambda i: i["received_ts"], reverse=True)
@@ -619,28 +761,41 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
 # --- texts ----------------------------------------------------------------------
 
 
-def text_records() -> list[tuple[float, str, str, str, bool | None]]:
-    """(ts, conversation, "Sender: text", chat guid, unread) for every cached
-    message, oldest first. The chat guid comes from the native record with the
-    same timestamp (the V3 feed), "" when there is none; unread is None when
-    the cache has no read state."""
+def text_records() -> list[tuple]:
+    """(ts, conversation, "Sender: text", chat guid, unread, service, sender handle)
+    for every cached message, oldest first. The chat guid, the delivery service
+    ("iMessage", "SMS", "RCS") and the sender's own handle (the number or address
+    an incoming message came from; "" for the user's own) come from the native
+    record with the same timestamp (the V3 feed). Two native records at one
+    timestamp that disagree give "" for all three: nothing is guessed. unread is
+    None when the cache has no read state.
+
+    The join is by timestamp only because the two rows share no other key: a
+    plain V2 row names its conversation by SQLite row id ("chat:12",
+    "handle:3", "message:9"), while a V3 record carries the chat GUID and the
+    message GUID and no row id. A proper join needs the reader to put one shared
+    key on both (the V2 conversationId, or the message GUID, on the V3 record)."""
     from service.tools import imessage_tools as im
     if im.messages_sync_state() != "ready":
         return []
-    guids: dict[float, set[str]] = {}
+    native: dict[float, set[tuple[str, str, str]]] = {}
     try:
         for record in im.structured_messages_snapshot().get("records") or []:
             stamp = record.get("timestamp")
             if isinstance(stamp, str):
                 stamp = datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
             if _finite(stamp) and isinstance(record.get("conversation"), str):
-                guids.setdefault(round(float(stamp), 3), set()).add(record["conversation"])
+                service = record.get("service") if isinstance(record.get("service"), str) else ""
+                sender = record.get("sender") if record.get("direction") == "incoming" \
+                    and isinstance(record.get("sender"), str) else ""
+                native.setdefault(round(float(stamp), 3), set()).add((record["conversation"], service, sender))
     except Exception:  # noqa: BLE001 — no native ids: no text replies, everything else stands
-        guids = {}
+        native = {}
     out = []
     for ts, _identity, context, text, unread in im._parse_records():
-        found = guids.get(round(float(ts), 3)) or set()
-        out.append((float(ts), context, text, next(iter(found)) if len(found) == 1 else "", unread))
+        found = native.get(round(float(ts), 3)) or set()
+        guid, service, sender = next(iter(found)) if len(found) == 1 else ("", "", "")
+        out.append((float(ts), context, text, guid, unread, service, sender))
     return sorted(out, key=lambda r: r[0])
 
 
@@ -655,6 +810,58 @@ def chat_handle(guids: set[str]) -> str:
     if not sep or not handle or handle.casefold().startswith("chat"):
         return ""
     return handle.strip()
+
+
+_SERVICES = ("iMessage", "SMS", "RCS")
+
+
+ORIGIN_LINES = 3      # the newest lines a decider reads, and so the lines whose origin must be known
+
+
+def text_origin(item: dict, count: int = ORIGIN_LINES) -> tuple[str, str]:
+    """(handle, service) of the last `count` quoted lines of a text item, the
+    lines a decider reads, only when EVERY one of them joined to the same
+    one-to-one chat and the same known delivery service; else ("", "").
+
+    Deciders (automatic adds, anything that trusts who sent a line) use this,
+    never item["handle"] or item["service"]: those summarize the whole window
+    for display and reply cards, and an older line must neither spoil nor
+    vouch for the newest ones."""
+    lines = list(item.get("lines") or [])
+    chats = list(item.get("line_chat") or [])
+    services = list(item.get("line_service") or [])
+    if item.get("group") or count <= 0 or not lines or not (len(lines) == len(chats) == len(services)):
+        return "", ""
+    chats, services = chats[-count:], services[-count:]
+    if any(not isinstance(c, str) or not c for c in chats) or len(set(chats)) != 1:
+        return "", ""
+    if any(s not in _SERVICES for s in services) or len(set(services)) != 1:
+        return "", ""
+    handle = chat_handle({chats[0]})
+    return (handle, services[0]) if handle else ("", "")
+
+
+def line_origin(item: dict, line_ts, count: int = ORIGIN_LINES) -> tuple[str, str, str]:
+    """(chat guid, service, sender handle) of the ONE quoted line that arrived at
+    `line_ts`, among the last `count` lines; ("", "", "") when that time is not
+    known, no line has it, the lists do not line up, or two lines with that time
+    disagree. For a group chat, where each line has its own sender."""
+    lines = list(item.get("lines") or [])
+    stamps = list(item.get("line_ts") or [])
+    chats = list(item.get("line_chat") or [])
+    services = list(item.get("line_service") or [])
+    senders = list(item.get("line_sender") or [])
+    if type(line_ts) not in (int, float) or count <= 0 or not lines \
+            or not (len(lines) == len(stamps) == len(chats) == len(services) == len(senders)):
+        return "", "", ""
+    found = {(chats[i], services[i], senders[i]) for i in range(max(0, len(lines) - count), len(lines))
+             if stamps[i] == line_ts}
+    if len(found) != 1:
+        return "", "", ""
+    chat, service, sender = next(iter(found))
+    if not all(isinstance(v, str) and v for v in (chat, service, sender)) or service not in _SERVICES:
+        return "", "", ""
+    return chat, service, sender.strip()
 
 
 _LITERAL_LABEL = re.compile(r"^[+\d(][\d() .+-]{2,}$|^\S+@\S+$")
@@ -712,6 +919,8 @@ def text_items(records: list[tuple], *, now: float, own: str | None = None,
     own = own_account() if own is None else own
     conversations: dict[str, list[tuple[float, str, str]]] = {}
     chats: dict[str, set[str]] = {}
+    services: dict[str, set[str]] = {}       # every in-window line's delivery service ("" = not known)
+    origins: dict[str, list[tuple[str, str, str]]] = {}  # (chat guid, service, sender handle) per in-window row
     ever_sent: set[str] = set()
     raw_texts: dict[str, list[tuple[float, str, str]]] = {}
     unread_at: dict[tuple[str, float], bool | None] = {}
@@ -726,6 +935,11 @@ def text_items(records: list[tuple], *, now: float, own: str | None = None,
             raw_texts.setdefault(context, []).append((ts, context, text))
             if guid:
                 chats.setdefault(context, set()).add(guid)
+            service = str(record[5]) if len(record) > 5 and record[5] else ""
+            services.setdefault(context, set()).add(service)
+            sender = str(record[6]) if len(record) > 6 and isinstance(record[6], str) else ""
+            origins.setdefault(context, []).append((guid if isinstance(guid, str) else "",
+                                                    service if service in _SERVICES else "", sender))
     items = []
     for context, rows in conversations.items():
         # A sender who is only a number or a short code that the user never
@@ -739,8 +953,11 @@ def text_items(records: list[tuple], *, now: float, own: str | None = None,
             if counts is not None:
                 tally(counts, own, filtered=1)
             continue
+        row_origins = origins.get(context, [])[-MAX_TEXT_LINES:]
         rows = rows[-MAX_TEXT_LINES:]
-        incoming = [r for r in rows if r[2].partition(":")[0].strip() != "Me"]
+        incoming = [(r, o) for r, o in zip(rows, row_origins) if r[2].partition(":")[0].strip() != "Me"]
+        incoming_origins = [o for _, o in incoming]
+        incoming = [r for r, _ in incoming]
         if not incoming:
             continue
         group = context.startswith("Group ")
@@ -748,11 +965,23 @@ def text_items(records: list[tuple], *, now: float, own: str | None = None,
         replied = rows[-1][2].partition(":")[0].strip() == "Me"
         rendered = _render(rows)
         text = ("Conversation: " + label + (" (group)" if group else "") + "\n" + "\n".join(rendered))[:MAX_ITEM_CHARS]
-        quotes = []
-        for _, _, line in incoming:
+        # line_ts: when each quoted line itself arrived, one per entry of `lines`. An item's
+        # received_ts is only its NEWEST line; a rule about when something arrived (acting.allows)
+        # must use the time of the line it is reading, never the conversation's latest.
+        # line_chat / line_service: the chat GUID and delivery service of each quoted line
+        # ("" = not known), also one per entry of `lines`. Deciders read these through
+        # text_origin(), never the whole-conversation `handle` / `service` below.
+        # line_sender: the handle each quoted line itself came from ("" = not known). In a group
+        # chat this is the only thing that says WHO wrote a line: the name in front of it is a label.
+        quotes, line_ts, line_chat, line_service, line_sender = [], [], [], [], []
+        for (stamp, _, line), (chat, service, sender_handle) in zip(incoming, incoming_origins):
             sender, _, body = line.partition(":")
             if body.strip():
                 quotes.append(clean(body, 300))
+                line_ts.append(float(stamp))
+                line_chat.append(chat)
+                line_service.append(service)
+                line_sender.append(sender_handle)
         # The incoming lines since the user's own last line: what a reply card is
         # about. An earlier ask the user already answered must not headline it.
         # Empty when the user hasn't written in this window: then every line is
@@ -765,10 +994,20 @@ def text_items(records: list[tuple], *, now: float, own: str | None = None,
         speaker = last_in[2].partition(":")[0].strip()
         who = label if not group else (f"{speaker} in {label}" if speaker else label)
         items.append(dict(id="messages:" + _digest(context), source="messages", account=own, raw_account="",
-                          who=who, title=label, text=text, lines=quotes, pending=pending, received_ts=last_in[0],
+                          who=who, title=label, text=text, lines=quotes, line_ts=line_ts,
+                          line_chat=line_chat, line_service=line_service, line_sender=line_sender, pending=pending,
+                          received_ts=last_in[0],
                           replied=replied, group=group, person=True, unread=unread_at.get((context, last_in[0])),
                           user_wrote=any(r[2].partition(":")[0].strip() == "Me" for r in rows),
+                          # Whom a reply goes to: the one one-to-one chat among the lines that
+                          # joined to a chat ("" for a group or a mix). For reply cards and display
+                          # only; a decider that trusts the sender uses text_origin(item).
                           handle="" if group else chat_handle(chats.get(context, set())),
+                          # How the conversation's lines were delivered: one service when every line
+                          # in view says the same, else "". Display/compatibility summary only:
+                          # deciders use text_origin(item), which reads the per-line lists (only an
+                          # iMessage's sender is one Apple verified; an SMS sender can be forged).
+                          service=next(iter(services.get(context) or {""})) if len(services.get(context) or ()) == 1 else "",
                           # Read from the raw lines before redaction: Wisp's own
                           # "(private details omitted)" alone never withholds a chat.
                           secret=_raw_secret("\n".join(r[2] for r in raw_texts.get(context, [])[-MAX_TEXT_LINES:])),

@@ -59,7 +59,7 @@ async def test_a_confirmed_self_send_still_goes(world):
     args, problem = action_tools.prepare_send_recipient(
         TEXT, {"to": "My Card", "text": "Hi", "confirmed_self_send": True})
     assert problem is None
-    assert await action_tools.send_message(**args) == f"Message sent to My Card ({ME})."
+    assert await action_tools.send_message(**args) == f"Message sent to My Card ({ME}). " + action_tools.MESSAGE_HANDED_OVER
     assert world == [("send_message", {"to": ME, "text": "Hi"})]
 
 

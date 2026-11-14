@@ -324,8 +324,17 @@ def hold(card: dict, *, now: float, store=None) -> dict:
         task = store.today_save_task(values)
     except (ValueError, KeyError) as exc:
         return {"ok": False, "status": "blocked", "error": str(exc)}
-    saved = store.today_task(task.get("id")) if task.get("id") else None
+    task_id = task.get("id") if isinstance(task, dict) else None
+    if not isinstance(task_id, str) or not task_id:
+        return {"ok": False, "status": "failed", "error": "The Day task wasn't saved."}
+    # From here a task WAS saved: a failure names it (`saved_task_id`), so a later
+    # "already" can be told apart from a block the person pinned themselves.
+    try:
+        saved = store.today_task(task_id)
+    except Exception:  # noqa: BLE001 — saved, but whether it is right can't be read
+        return {"ok": False, "status": "unknown", "error": "Wisp couldn't check the Day task. Check Day.",
+                "saved_task_id": task_id}
     if not (isinstance(saved, dict) and saved.get("pinned_start") == float(start)
             and saved.get("duration_minutes") == minutes and saved.get("status") == "active"):
-        return {"ok": False, "status": "failed", "error": "The Day task wasn't saved."}
+        return {"ok": False, "status": "failed", "error": "The Day task wasn't saved.", "saved_task_id": task_id}
     return {"ok": True, "status": "succeeded", "task_id": saved["id"]}

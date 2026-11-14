@@ -1091,7 +1091,9 @@ def prepare_turn(client, prompt: str, history=(), *, req_id: str | None = None) 
     last_tools = store.last_assistant_tools(sid)
 
     # The source/authority envelope, before any recovery reader.
-    forbidden, bindings = routing_guard_contract(prompt)
+    # As production's model-led turn does (service/main.py): the guard's model-led
+    # contract, not the rules route's, or a turn it opens is scored as forbidden.
+    forbidden, bindings = routing_guard_contract(prompt, model_led=True)
     if memory_excluded(prompt):
         forbidden |= frozenset({"recall", "search_memory", "search_conversations", "remember", "forget",
                                 "clear_memory"})

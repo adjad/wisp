@@ -431,7 +431,421 @@ def wisp_self_question(prompt: str) -> bool:
     text = prompt or ""
     if _MEMORY_SELF.search(text):
         return False
-    return capability_question(text) or bool(_WISP_SELF.search(text))
+    return capability_question(text) or bool(_WISP_SELF.search(text)) or bool(own_question(text))
+
+
+# --- A write the assistant asked about, then never made ---------------------
+# 2026-11-13 run: "Add one more bullet to the Wisp test note" -> "What should
+# it say?" -> "Demo point 4" -> "four bullets are saved", with only a note
+# search run. The answer to Wisp's own question carries no write word, so the
+# turn lost the write's tools and the claim check did not see a requested
+# change. A turn that answers such a question keeps the earlier request.
+_NEW_REQUEST = re.compile(
+    r"^\W*(?:(?:please|ok(?:ay)?|hey\s+wisp|wisp)[,\s]+)*(?:what|when|where|who|why|how|which|is|are|do|does|did|can|could|"
+    r"will|would|show|list|find|search|read|check|tell)\b", re.I)
+_PENDING_DECLINE = re.compile(r"^\W*(?:no|nope|cancel|stop|never\s*mind|don't|do\s+not|forget\s+it|nothing)\b", re.I)
+
+
+def pending_write_request(prompt: str, previous: str, last_assistant: str | None) -> str:
+    """The earlier request this message completes, else "". True only when the
+    person's previous message asked for a change, the assistant's last reply
+    ENDED with a question, and this message is a plain answer to it: not a
+    decline, not a question and not a new request of its own."""
+    from service.router.router import has_write_intent
+    text = " ".join((prompt or "").replace("’", "'").split())
+    earlier = (previous or "").strip()
+    asked = (last_assistant or "").strip()
+    if not text or not earlier or not asked or len(text) > 300 or "?" in text:
+        return ""
+    if "?" not in asked or re.search(r"[A-Za-z0-9]", asked[asked.rfind("?") + 1:]):
+        return ""
+    if _PENDING_DECLINE.search(text) or _NEW_REQUEST.search(text) or has_write_intent(text):
+        return ""
+    return earlier if has_write_intent(earlier) else ""
+
+
+def pending_write_hint(earlier: str) -> str:
+    return ("STILL OPEN: the user's last message answers the question you asked. Their request is "
+            f"still not done: \"{earlier[:300]}\". Their answer is the missing detail. Make the tool call "
+            "for that request now, with their answer; do not search again, and do not say it is done "
+            "until the tool result says so.")
+
+
+# A change stated in any form, for a turn where the person asked for one and
+# no tool made it: "The note now has four bullets.", "Demo point 4 was added
+# to your note.", "Your four bullets are saved." claimed_effect covers the
+# first-person and lead forms; this covers the rest.
+_WRITE_DONE = (r"(?:set|created|added|appended|scheduled|rescheduled|sent|moved|deleted|removed|cancel+ed|booked|"
+               r"saved|updated|edited|changed|renamed|archived|forwarded|written|recorded|logged|completed|"
+               r"marked\s+(?:as\s+)?(?:done|complete|completed))")
+_WRITE_THING = (r"(?:reminders?|timers?|alarms?|events?|meetings?|appointments?|notes?|messages?|texts?|e-?mails?|"
+                r"drafts?|bullets?|bullet\s+points?|lines?|items?|entr(?:y|ies)|lists?|calendar)")
+_WRITE_PASSIVE = re.compile(
+    rf"\b{_WRITE_THING}\b[^.?!\n]{{0,80}}\b(?:is|are|was|were|has\s+been|have\s+been|got|gets)\s+"
+    rf"(?:now\s+|successfully\s+|all\s+)?{_WRITE_DONE}\b"
+    rf"|\b(?:is|are|was|were|has\s+been|have\s+been)\s+(?:now\s+|successfully\s+)?{_WRITE_DONE}\b"
+    rf"[^.?!\n]{{0,60}}\b{_WRITE_THING}\b"
+    rf"|\b{_WRITE_THING}\b[^.?!\n]{{0,40}}\bnow\s+(?:has|have|contains?|includes?|reads?|shows?|lists?|says?)\b"
+    rf"|\bnow\s+(?:has|have|contains?|includes?)\b[^.?!\n]{{0,40}}\b{_WRITE_THING}\b"
+    rf"|^(?:i(?:'ve|\s+have)?(?:\s+(?:just|now|also|already|gone\s+ahead\s+and))?\s+)?"
+    rf"(?:appended|edited|changed|renamed|written|wrote|recorded|logged|put|completed)\b[^.?!\n]{{0,80}}\b{_WRITE_THING}\b",
+    re.I)
+_WRITE_MODAL = re.compile(
+    r"\b(?:i'll|i\s+will|i\s+can|i\s+could|can\s+i|should\s+i|shall\s+i|would\s+you|want\s+me|let\s+me|"
+    r"going\s+to|about\s+to|ready\s+to|will\s+be|can\s+be|could\s+be|to\s+be|needs?\s+to|once|before\s+i)\b", re.I)
+
+
+# A change said to be under way or promised, with nothing behind it (2026-11-13
+# real-model run: "Move my 3pm with Alex Chen today to 4" -> "I'm moving your
+# Coffee with Alex Chen from 3:00 PM to 4:00 PM today… I'll let you know as
+# soon as that change is confirmed." Only a calendar read had run). A turn has
+# no later step: what is not done when the answer is written is not done.
+_WRITE_DOING = (r"(?:moving|sending|adding|appending|creating|scheduling|rescheduling|deleting|removing|"
+                r"cancel+ing|booking|saving|updating|setting|texting|e-?mailing|messaging|forwarding|replying|"
+                r"changing|renaming|writing|putting|marking|completing|archiving)")
+_WRITE_PROGRESS = re.compile(
+    rf"\bi(?:'m|\s+am)\s+(?:now\s+|just\s+|currently\s+|also\s+|going\s+ahead\s+and\s+)*{_WRITE_DOING}\b"
+    rf"|^(?:now\s+)?{_WRITE_DOING}\s+(?:it|that|this|your|the)\b[^.?!\n]{{0,80}}\b(?:now|\.\.\.|…)"
+    r"|\bi(?:'ll|\s+will)\s+(?:let\s+you\s+know|confirm|update\s+you|tell\s+you|report\s+back)\b[^.?!\n]{0,80}"
+    r"\b(?:confirmed|done|complete|completed|finished|through|moved|sent|saved|added|deleted|updated|set|ready)\b",
+    re.I)
+_PROGRESS_HEDGE = re.compile(r"\?|\b(?:not|never|nothing)\b|n't\b|^(?:if|should|would)\b", re.I)
+
+
+def claimed_write(text: str) -> str:
+    """The sentence where the reply states a change was made, in any form,
+    else "". Only for a turn where the person asked for a change: on a read it
+    would catch narrated data ("the event was moved by Dana")."""
+    for line in (text or "").replace("’", "'").splitlines():
+        stripped = line.strip().lstrip("-*• ").strip()
+        if not stripped or stripped.startswith((">", '"', "`", "“")):
+            continue
+        for sentence in re.split(r"(?<=[.!?])\s+", stripped):
+            body = _CLAIM_PREFIX.sub("", sentence).strip().strip("*").strip()
+            if body and _WRITE_PROGRESS.search(body) and not _PROGRESS_HEDGE.search(body):
+                return sentence.strip()
+            if not body or _CLAIM_HEDGE.search(body) or _WRITE_MODAL.search(body):
+                continue
+            if _CLAIM_I.search(body) or _CLAIM_LEAD.search(body) or _WRITE_PASSIVE.search(body):
+                return sentence.strip()
+    return ""
+
+
+# --- One named reminder is deleted by cancel_event, never a bulk clearer ----
+# "Delete the Wisp test reminder" got a card for clear_past_reminders
+# ("permanently deletes 0 past-due items"). cancel_event removes ONE reminder
+# or event by title, in Reminders.app too; the past-due clearer only sees items
+# whose time has gone by.
+_ONE_REMINDER = re.compile(
+    r"\b(?:delete|remove|cancel|erase|trash|get\s+rid\s+of|drop)\s+(?:the|my|that|this)\s+"
+    r"(?:[^.?!\n,]{1,60}?\s+)?reminder\b(?!s)", re.I)
+_MANY_REMINDERS = re.compile(
+    r"\b(?:all|every|each|overdue|old|older|past[-\s]due|past|expired|stale|completed|finished|done|"
+    r"today's|tomorrow's|reminders)\b", re.I)
+# clear_reminders with the title as `query` stays: its card lists exactly the
+# matching reminder (tests/test_conversation_authority_contract.py).
+BULK_REMINDER_CLEARERS = frozenset({"clear_past_reminders"})
+ONE_REMINDER_DELETE_TOOL = "cancel_event"
+
+
+def single_reminder_delete(prompt: str) -> bool:
+    """The person asks to delete ONE named reminder ("Delete the dentist
+    reminder"), not many ("clear my overdue reminders")."""
+    text = " ".join((prompt or "").replace("’", "'").split())
+    return bool(_ONE_REMINDER.search(text)) and not _MANY_REMINDERS.search(text)
+
+
+# --- "Delete that reminder", right after one was made in this chat -----------
+# 2026-11-13 real-model run: after "Remind me to call the dentist tomorrow at
+# 9am", "Delete that reminder" went to clear_reminders and then to cancel_event
+# with no usable title; nothing was removed. The reminder is found in the
+# store by what this chat just said, and cancel_event is bound to its title.
+_THAT_REMINDER = re.compile(
+    r"^\W*(?:(?:please|ok(?:ay)?|actually|wait|no|never\s*mind|hey\s+wisp|wisp)[,.\s]+)*"
+    r"(?:(?:can|could|would)\s+you\s+)?(?:delete|remove|cancel|erase|trash|get\s+rid\s+of|drop)\s+"
+    r"(?:that|this|the)\s+(?:last\s+|new\s+)?reminder"
+    r"(?:\s+(?:i|you|we)\s+just\s+(?:made|set|added|created))?(?:\s+please)?\W*$", re.I)
+ALL_REMINDER_CLEARERS = frozenset({"clear_past_reminders", "clear_reminders"})
+CHAT_REMINDER_WINDOW_S = 3600
+
+
+def _recent_reminders() -> list[dict]:
+    """Reminders first seen in the last hour, newest first. Read-only."""
+    import time
+    try:
+        from service.assistant.store import assistant_store
+        return [r for r in assistant_store.recently_added(time.time() - CHAT_REMINDER_WINDOW_S)
+                if r.get("kind") == "reminder"]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def chat_reminder(prompt: str, previous: str, last_assistant: str | None) -> str:
+    """The title of the reminder "delete that reminder" points at: the newest
+    reminder added in the last hour whose title this chat's previous exchange
+    names. "" when the message names a reminder itself or nothing matches."""
+    text = " ".join((prompt or "").replace("’", "'").split())
+    if not text or not _THAT_REMINDER.search(text):
+        return ""
+    said = set(re.findall(r"[a-z0-9]+", f"{previous or ''} {last_assistant or ''}".casefold()))
+    for row in _recent_reminders():
+        title = " ".join(str(row.get("title") or "").split())
+        words = [w for w in re.findall(r"[a-z0-9]+", title.casefold()) if len(w) > 2]
+        if words and all(w in said for w in words):
+            return title
+    return ""
+
+
+def chat_reminder_hint(title: str) -> str:
+    return (f"THAT REMINDER: the user means the reminder made earlier in this chat, \"{title[:120]}\". "
+            f"Call cancel_event with title=\"{title[:120]}\" now. Do not ask which one and do not use a "
+            "tool that clears many reminders.")
+
+
+# --- "Reply to Dana's last email and say yes" --------------------------------
+# Same run: only view_emails ran, searching for the instruction's own words
+# ("Reply to Dana"), and the answer was that nothing was found. The sender's
+# name is the search; the newest email from them is the one to answer.
+_REPLY_VERB = r"(?:reply|respond|write\s+back|answer)"
+_REPLY_WHO = (r"((?-i:[A-Z][\w.-]*(?:\s+[A-Z][\w.-]*)?)|(?:my\s+)?(?:mom|mum|dad|mother|father|sister|brother|"
+              r"boss|manager|professor|prof|teacher|landlord|roommate|wife|husband|partner|girlfriend|boyfriend))")
+_REPLY_NEWEST = r"(?:(?:last|latest|most\s+recent|recent|newest)\s+)?"
+_EMAIL_REPLY = re.compile(
+    rf"\b{_REPLY_VERB}\s+(?:to\s+)?{_REPLY_WHO}'s\s+{_REPLY_NEWEST}e-?mail\b"
+    rf"|\b{_REPLY_VERB}\s+(?:to\s+)?(?:the\s+|that\s+)?{_REPLY_NEWEST}e-?mail\s+from\s+{_REPLY_WHO}", re.I)
+_REPLY_WORDS = re.compile(r"\b(?:repl\w+|respon\w+|answer\w*|e-?mails?|last|latest|recent|newest|say\w*)\b", re.I)
+
+
+def email_reply_sender(prompt: str) -> str:
+    """Whose email a "reply to X's (last) email" instruction answers, else "".
+    Not a writing request ("Draft a reply to..."): reply_reads covers those."""
+    text = " ".join((prompt or "").replace("’", "'").split())
+    if not text or len(text) > 400 or _WRITING.match(text) or _COMPOSE.match(text):
+        return ""
+    found = _EMAIL_REPLY.search(text)
+    if not found:
+        return ""
+    name = (found.group(1) or found.group(2) or "").strip()
+    name = re.sub(r"^my\s+", "", name, flags=re.I)
+    return "" if name.casefold() in {"the", "that", "this", "my", "an", "a"} else name
+
+
+# --- "Any emails I need to answer?" -----------------------------------------
+# The Brief's reply cards and the day plan's "waiting on a reply" rows come from
+# the Brief snapshot's threads (needs_reply). A bare mail search has no such
+# state and said there were none. These questions read the day plan instead.
+_OWE_REPLY = re.compile(
+    r"\b(?:any|which|what|are\s+there\s+any|do\s+i\s+have\s+any|have\s+i\s+got\s+any)\s+"
+    r"(?:unanswered\s+|new\s+|important\s+|urgent\s+)?(?:e-?mails?|messages?|mail)\b[^.?!]{0,40}?"
+    r"\b(?:need|needs|require|requires|waiting\s+(?:on|for))\b[^.?!]{0,20}?\b(?:answer\w*|repl\w+|respon\w+)\b"
+    r"|\b(?:any|which|what)\s+(?:e-?mails?|mail)\b[^.?!]{0,30}\b(?:i\s+(?:need|have|should|must|ought)\s+to|should\s+i)\s+"
+    r"(?:answer|repl\w+|respond)\b"
+    r"|\bdo\s+i\s+owe\s+(?:anyone|anybody|someone|people)\s+(?:a\s+|an\s+)?(?:repl\w+|answer|response|e-?mail)\b"
+    r"|\bwho\s+(?:is|are)\s+(?:waiting\s+(?:on|for)\s+(?:a\s+)?(?:repl\w+|response|answer)|"
+    r"(?:still\s+)?waiting\s+to\s+hear)\b"
+    r"|\bwho\s+(?:do|should)\s+i\s+(?:need\s+to\s+)?(?:repl\w+\s+to|respond\s+to|answer|write\s+back)\b"
+    r"|\b(?:e-?mails?|mail)\s+(?:that\s+)?(?:i\s+)?(?:still\s+)?(?:need|needs|have)\s+to\s+(?:be\s+)?(?:answer\w*|repl\w+|respon\w+)", re.I)
+
+
+def emails_to_answer_question(prompt: str) -> bool:
+    """"Any emails I need to answer?", "which emails need a reply?", "do I owe
+    anyone a reply?": a question about replies owed, not a request to reply."""
+    text = " ".join((prompt or "").replace("\u2019", "'").split())
+    if not text or len(text) > 200 or _WRITING.match(text) or _COMPOSE.match(text):
+        return False
+    return bool(_OWE_REPLY.search(text))
+
+
+EMAILS_TO_ANSWER_HINT = (
+    "EMAILS TO ANSWER: call get_my_day_plan(day='today') once and answer from its people-waiting-on-a-reply "
+    "items: those are the same emails the Brief marks as needing a reply. Name each sender and what they "
+    "asked, newest first. Do not answer from a plain mail search, which cannot tell what needs a reply; say "
+    "there are none only when the plan lists nobody waiting."
+)
+
+
+def reply_search_args(args: dict, sender: str) -> dict:
+    """view_emails arguments for a reply turn: the search is the sender's name
+    when the model searched for the instruction's words or for nothing."""
+    query = str((args or {}).get("query") or "")
+    if query and sender.casefold() in query.casefold() and not _REPLY_WORDS.search(query):
+        return args
+    return {**(args or {}), "query": sender}
+
+
+def email_reply_hint(sender: str) -> str:
+    return (f"REPLY TO AN EMAIL: first call view_emails with query=\"{sender}\" (the sender's name only, "
+            f"never the words of the instruction). The newest email from {sender} is the one to answer: "
+            "take its Message-ID and call reply_to_email with that message_id and the reply text in `body`, "
+            "written as the user would send it. Never say nothing was found before searching by the name.")
+
+
+# --- A tool call written as plain text in an answer -------------------------
+# "What's on my calendar tomorrow?" ended with `get_my_day_plan(day='tomorrow')`
+# printed in the reply. Only a registered tool's name followed by a call's
+# brackets is removed, with its backticks.
+_CALL_TEXT = re.compile(r"`{0,3}\s*(?:print\s*\(\s*)?\b([A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+)\s*"
+                        r"\((?:[^()\n`]|\([^()\n`]*\)){0,300}\)\s*\)?\s*`{0,3}")
+_CALL_FENCE = re.compile(r"```(?:tool_code|tool_call|python|json)?\s*```", re.I)
+
+
+def strip_call_text(text: str, tool_names) -> str:
+    """The reply without tool calls written as text (`tool_name(arg='x')`)."""
+    names = set(tool_names or ())
+    if not text or "(" not in text or not names:
+        return text or ""
+    out = _CALL_TEXT.sub(lambda m: "" if m.group(1) in names else m.group(0), text)
+    if out == text:
+        return text
+    out = _CALL_FENCE.sub("", out)
+    if out.count("```") % 2:
+        # The call took its closing fence with it: drop the opening one too.
+        out = re.sub(r"(?m)^[ \t]*```\w*[ \t]*\n?", "", out, count=1)
+    lines = [line.rstrip() for line in out.splitlines()]
+    # A line left with only list or label debris ("- ", "Calling:") goes too.
+    debris = re.compile(r"\s*(?:[-*•]\s*)?(?:(?:calling|tool\s+call|call)\s*:?)?\s*[.:]?\s*", re.I)
+    lines = [line for line in lines if not line.strip() or not debris.fullmatch(line)]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+# --- Wisp's own permissions and switches ------------------------------------
+# Ask has no tool for any of these: Full access, view-only, a standing "always
+# allow" / "stop asking" rule, "Let Wisp act for me", Demo mode. Only the
+# person changes them, in the app. A request to change one is answered with
+# OWN_SWITCH_ANSWER and never reaches the model (2026-11-13 run: "Turn on Full
+# access and always allow sending email" was answered as done, with no tool
+# call), and a reply that claims such a change is replaced by it.
+OWN_SWITCH_ANSWER = (
+    "**I can't change that myself.** Wisp's own permissions and switches are changed only by "
+    "you, in the app. Nothing was changed.\n\n"
+    "- **Full access** and **Let Wisp act for me**: Settings › Privacy, or the notch's "
+    "settings (the gear).\n"
+    "- **Demo mode**: the menu-bar icon's menu.\n"
+    "- **Always allow**: a button on an approval card, when the card offers one.\n"
+    "- **Sending**: every email and text asks you every time. It can't be set to always allow."
+)
+_OWN_NAMED = r"(?:full\s+access|view[-\s]only|read[-\s]only\s+mode|demo\s+mode)"
+_OWN_TOGGLE = (r"(?:turn(?:ing|ed)?|switch(?:ing|ed)?|enabl\w+|disabl\w+|activat\w+|deactivat\w+|toggl\w+"
+               r"|start(?:ing)?|stop(?:ping)?|exit|leave|enter|go(?:ing)?\s+(?:in)?to"
+               r"|(?:put|set|give|grant|allow)\s+(?:yourself|you|u|wisp)"
+               r"|take\s+(?:yourself|you|wisp)\s+out\s+of)")
+# "Give Dana full access to the folder" is someone else's access, not Wisp's.
+_OWN_OTHER_ACCESS = re.compile(
+    r"\bfull\s+access\s+to\s+(?!you\b|u\b|wisp\b|everything\b|(?:my|this|the)\s+mac\b)", re.I)
+_OWN_NAMED_REQUEST = re.compile(
+    rf"\b{_OWN_TOGGLE}\b[^.?!\n]{{0,60}}\b{_OWN_NAMED}\b|\b{_OWN_NAMED}\s+(?:back\s+)?(?:on|off)\b"
+    rf"|\b{_OWN_NAMED}\b[^.?!\n]{{0,30}}\b(?:turned|switched)\s+(?:on|off)\b", re.I)
+_OWN_ACT_REQUEST = re.compile(
+    rf"\b{_OWN_TOGGLE}\b[^.?!\n]{{0,40}}\bact(?:ing)?\s+for\s+me\b"
+    r"|^\W*(?:(?:yes|ok(?:ay)?|sure|please|hey\s+wisp|wisp)[,\s]+)*(?:let\s+(?:wisp|you|yourself)\s+act\s+for\s+me"
+    r"|(?:start\s+)?act(?:ing)?\s+for\s+me|act\s+on\s+your\s+own)\b"
+    r"|\b(?:you|u|wisp)\s+(?:can|may|should)\s+(?:now\s+)?act\s+(?:for\s+me|on\s+your\s+own)\b"
+    r"|\bi\s*(?:want|would\s+like|'d\s+like)\s+(?:you|wisp)\s+to\s+act\s+(?:for\s+me|on\s+your\s+own)\b", re.I)
+_OWN_STANDING_REQUEST = re.compile(
+    r"\balways\s+allow\b|\bstop\s+asking(?!\s+(?:me\s+)?(?:about|how|what|if|whether|why|questions?)\b)"
+    r"|\b(?:don't|do\s+not|never|no\s+need\s+to|quit)\s+ask(?:ing)?\s+(?:me\s+)?"
+    r"(?:again|every\s*time|each\s+time|any\s*more|before\s+(?:you\s+)?(?:send\w*|text\w*|e-?mail\w*|reply\w*)"
+    r"|for\s+(?:permission|confirmation|approval|my\s+ok(?:ay)?))\b"
+    r"|\b(?:from\s+now\s+on|always|every\s*time)\b[^.?!\n]{0,60}\bwithout\s+(?:asking|confirm\w+|my\s+(?:ok(?:ay)?|approval|permission))\b"
+    r"|\bwithout\s+(?:asking|confirm\w+|my\s+(?:ok(?:ay)?|approval|permission))\b[^.?!\n]{0,40}\b(?:from\s+now\s+on|always|every\s*time)\b"
+    r"|\bauto[-\s]?(?:approve|confirm|send)\b|\bskip\s+(?:the\s+)?confirm\w+"
+    r"|\b(?:turn|switch)\s+off\s+(?:the\s+|all\s+)?(?:confirm\w+|approval\w*)\b", re.I)
+# A question about a switch ("Is Full access on?", "What does Demo mode do?")
+# is not a request to change it. "How do I…" and "Can you…" are: the fixed
+# answer says where it is done.
+_OWN_STATE_QUESTION = re.compile(
+    r"^\W*(?:(?:so|and|hey\s+wisp|wisp)[,\s]+)*(?:what|why|when|which|who|is|are|was|does|do|did|has|have"
+    r"|how\s+(?:much|many|does|is|long))\b", re.I)
+
+
+def own_switch_request(prompt: str) -> bool:
+    """The person asks Wisp to change one of its OWN permissions or switches
+    (Full access, view-only, Demo mode, "Let Wisp act for me", or a standing
+    always-allow / stop-asking rule). Not a question about one, and not access
+    to something else ("give Dana full access to the folder")."""
+    text = " ".join((prompt or "").replace("’", "'").split())
+    if not text or len(text) > 400 or _OWN_STATE_QUESTION.search(text):
+        return False
+    named = _OWN_OTHER_ACCESS.sub(" ", text)
+    return bool(_OWN_NAMED_REQUEST.search(named) or _OWN_ACT_REQUEST.search(text)
+                or _OWN_STANDING_REQUEST.search(text))
+
+
+_OWN_THING = (r"(?:full\s+access|view[-\s]only|read[-\s]only\s+mode|demo\s+mode|act(?:ing)?\s+for\s+(?:you|me)"
+              r"|always[-\s]allow\w*|standing\s+rule|without\s+asking|auto[-\s]?(?:approv\w+|send\w*))")
+_OWN_DID = (r"(?:\bi(?:'ve|\s+have)?(?:\s+(?:just|now|also|already))?\s+(?:turned|switched|enabled|disabled|activated"
+            r"|allowed|set|granted|updated|changed|added|saved|stopped|started|put|given)\b"
+            r"|\b(?:is|are)\s+now\s+(?:on|off|enabled|disabled|active|allowed|set|in\s+place)\b"
+            r"|\b(?:has|have)\s+been\s+(?:turned|switched|enabled|disabled|activated|allowed|set|granted|saved)\b"
+            r"|\b(?:both|all)\s+(?:are|of\s+(?:those|them)\s+are)\s+(?:now\s+)?(?:on|enabled|set)\b)")
+_OWN_PROMISE = re.compile(
+    r"\bi\s*(?:won't|will\s+not|(?:'ll|\s+will)\s+no\s+longer|(?:'ll|\s+will)\s+stop)\s+ask(?:ing)?\b"
+    r"|\bi(?:'ll|\s+will)\s+(?:now\s+|always\s+)?(?:send|text|e-?mail|reply)\b[^.?!\n]{0,60}\bwithout\s+asking\b"
+    r"|\bi(?:'ll|\s+will)\s+always\s+allow\b", re.I)
+_OWN_CLAIM = re.compile(rf"{_OWN_DID}[^.?!\n]{{0,80}}\b{_OWN_THING}|\b{_OWN_THING}\b[^.?!\n]{{0,60}}{_OWN_DID}", re.I)
+_OWN_CLAIM_HEDGE = re.compile(
+    r"\?|\b(?:can't|cannot|can\s+not|couldn't|unable|not|never|nothing|haven't|hasn't|didn't)\b"
+    r"|^(?:if|once|when|whenever|after|to)\b", re.I)
+
+
+def own_switch_claim(text: str) -> bool:
+    """The reply says Wisp changed one of its own permissions or switches, or
+    promises a standing rule ("I won't ask again"). No tool can do either, so
+    the claim is false whatever ran this turn."""
+    for line in (text or "").replace("’", "'").splitlines():
+        for sentence in re.split(r"(?<=[.!?])\s+", line.strip()):
+            body = _CLAIM_PREFIX.sub("", sentence).strip().strip("*").strip()
+            if not body:
+                continue
+            if _OWN_PROMISE.search(body):
+                return True
+            if _OWN_CLAIM.search(body) and not _OWN_CLAIM_HEDGE.search(body):
+                return True
+    return False
+
+
+# --- Questions about what Wisp does on its own ------------------------------
+# Answered by Wisp's own report (service/wisp_about.own_answer), written from
+# live state, so the reply cannot claim more than is built. The 2026-11-13 run
+# had Ask unable to explain "Let Wisp act for me", and "Will you reply to my
+# emails for me?" ended in "Which source?".
+_Q_LEAD = (r"^\W*(?:(?:so|and|ok(?:ay)?|hey\s+wisp|wisp|hey)[,\s]+)*(?:how\s+much|what|do|does|will|would|can|could"
+           r"|is|are|when|which|tell\s+me|explain)\b")
+_OWN_ALONE = (r"(?:on\s+(?:your|its)\s+own|by\s+(?:yourself|itself)|without\s+(?:me\s+)?(?:asking|being\s+asked)"
+              r"|without\s+asking\s+me|automatically|unprompted|act(?:ing|s)?\s+for\s+me)")
+_ACTING_Q = re.compile(rf"{_Q_LEAD}[^\n]*\b{_OWN_ALONE}\b", re.I)
+_ABOUT_WISP = re.compile(r"\b(?:you|u|wisp|yourself)\b|\bact(?:ing|s)?\s+for\s+me\b", re.I)
+_REPLIES_Q = re.compile(
+    r"^\W*(?:(?:so|and|hey\s+wisp|wisp)[,\s]+)*(?:will|do|does|can|could|would)\s+(?:you|u|wisp)\s+"
+    r"(?:ever\s+|automatically\s+|just\s+|also\s+)*(?:reply|respond|answer|write\s+back)\s+(?:to\s+)?"
+    r"(?:(?:all\s+)?my|all|any|people's|incoming)?\s*(?:e-?mails|texts|messages|mail|people)\b", re.I)
+_LEAVES_Q = re.compile(
+    r"\b(?:leave|leaves|leaving)\s+(?:this|my|the)\s+(?:mac|macbook|computer|laptop|device|machine)\b"
+    r"|\bstay(?:s|ing)?\s+on\s+(?:this|my|the)\s+(?:mac|macbook|computer|laptop|device|machine)\b"
+    r"|\b(?:sent|go(?:es)?|uploaded)\s+(?:off|away\s+from)\s+(?:this|my|the)\s+(?:mac|macbook|computer|laptop|device)\b",
+    re.I)
+_WHATS_NEW_Q = re.compile(
+    r"\bwhat(?:'s|\s+is|\s+has)\s+(?:new|changed)\s+(?:in|with|about)\s+(?:wisp|you|this\s+(?:version|release|update|build))\b"
+    r"|\bwhat(?:'s|\s+is)\s+new\s+(?:in\s+)?(?:0\.5|this\s+version)\b"
+    r"|\bwhat\s+changed\s+in\s+(?:wisp|this\s+(?:version|release|update))\b", re.I)
+
+
+def own_question(prompt: str) -> str:
+    """Which of Wisp's own reports answers this question: "acting" (what it
+    does on its own), "replies" (will it answer mail for you), "leaves"
+    (does anything leave this Mac), "whats_new", else ""."""
+    text = " ".join((prompt or "").replace("’", "'").split())
+    if not text or len(text) > 200:
+        return ""
+    if _WHATS_NEW_Q.search(text):
+        return "whats_new"
+    if _REPLIES_Q.search(text):
+        return "replies"
+    if _LEAVES_Q.search(text) and (text.endswith("?") or re.search(_Q_LEAD, text, re.I)):
+        return "leaves"
+    if _ACTING_Q.search(text) and _ABOUT_WISP.search(text):
+        return "acting"
+    return ""
 
 
 def wisp_self_hint() -> str:
@@ -455,6 +869,16 @@ def wisp_self_hint() -> str:
     if reports:
         lines.append("- Answer from Wisp's own report, not from memory: call " + "; ".join(reports)
                      + ". Its text is written for the user; pass it on in your words.")
+    try:
+        from service.proactive import acting
+        lines.append(f"- What you do on your own: nothing unless \"Let Wisp act for me\" is on (it is "
+                     f"{'on' if acting.enabled() else 'off'} now; the person switches it in Settings › Privacy). "
+                     "With it on, with no limit per day: " + " ".join(acting.DOES)
+                     + " " + acting.NEVER + " You draft replies; the person sends them.")
+    except Exception:  # noqa: BLE001 - say less rather than guess
+        pass
+    lines.append("- You cannot change your own permissions or switches (Full access, Let Wisp act for me, "
+                 "Demo mode, an always-allow rule). Never say you did; say where the person does it.")
     lines.append("- Never call yourself GPT, Claude, Siri or another assistant, and never "
                  "invent a setting, menu or shortcut.")
     return "\n".join(lines) + "\n" + ASK_CAPABILITY_HINT
@@ -595,6 +1019,41 @@ COMPOSE_ONLY_FORBIDDEN_CATEGORIES = frozenset({
 })
 
 
+# The channel is the person's word: "Email Priya Shah that I'll be ten minutes
+# late" was sent as a text 1 run in 3 (2026-11-13 real-model run). An
+# instruction that opens with "email <someone>" and never says text or message
+# is not offered the text send, and the reverse.
+_CHANNEL_LEAD = r"^\W*(?:(?:please|pls|hey\s+wisp|wisp|ok(?:ay)?|can\s+you|could\s+you|quickly|just)[,\s]+)*"
+_EMAIL_SOMEONE = re.compile(_CHANNEL_LEAD + r"(?:send\s+(?:an?\s+)?e-?mail\s+to|e-?mail)\s+\w", re.I)
+_TEXT_SOMEONE = re.compile(_CHANNEL_LEAD + r"(?:send\s+(?:a\s+)?(?:text|i?message)\s+to|text|i?message)\s+\w", re.I)
+_EMAIL_WORD = re.compile(r"\be-?mail\w*|\bmail\b|\binbox\b", re.I)
+_TEXT_WORD = re.compile(r"\btext\w*|\bi?messag\w+|\bsms\b", re.I)
+
+
+NOTE_WRITERS = frozenset({"create_note", "append_note", "delete_note"})
+_IN_NOTES = re.compile(r"\b(?:in|to|into|from)\s+(?:my\s+|the\s+)?notes\b|\bnotes\s+app\b|\bmy\s+[\w\s]{0,30}note\b", re.I)
+
+
+def other_channel_sends(prompt: str) -> frozenset[str]:
+    """The send and draft of the channel the person did NOT name: the text
+    ones for "email Priya …", the email ones for "text Priya …". Empty when both or
+    neither are named."""
+    text = " ".join((prompt or "").split())
+    # "Email myself a note saying Wisp test 3" made a Notes note (2026-11-13,
+    # real Mac): after "email"/"text", "a note saying …" is the message.
+    notes = frozenset() if _IN_NOTES.search(text) else NOTE_WRITERS
+    if _EMAIL_SOMEONE.search(text) and not _TEXT_WORD.search(text):
+        return frozenset({"send_message", "draft_message"}) | notes
+    if _TEXT_SOMEONE.search(text) and not _EMAIL_WORD.search(text):
+        return frozenset({"send_email", "draft_email"}) | notes
+    return frozenset()
+
+
+SELF_SEND_HINT = ("SEND TO THE USER: the user named themselves as the recipient. Call the send tool now with "
+                  "to=\"me\"; Wisp fills in their own address. Do not ask for an address or a number, and do not "
+                  "use any words of the message as the recipient. Text after a colon is the message itself.")
+
+
 def ask_forbidden_tools(prompt: str, registry: dict) -> frozenset[str]:
     """Tools a model-only Ask turn may not offer for this request: every read
     (except contact lookups) for a pure writing request, and every write, draft
@@ -606,6 +1065,10 @@ def ask_forbidden_tools(prompt: str, registry: dict) -> frozenset[str]:
                            or n in WRITING_FORBIDDEN_READS)}
     if compose_only(prompt):
         forbidden |= {n for n, t in registry.items() if t.category in COMPOSE_ONLY_FORBIDDEN_CATEGORIES}
+    forbidden |= other_channel_sends(prompt) & set(registry)
+    if single_reminder_delete(prompt):
+        # One named reminder: cancel_event deletes it; the past-due clearer cannot see it.
+        forbidden |= {n for n in BULK_REMINDER_CLEARERS if n in registry}
     return frozenset(forbidden)
 
 
@@ -864,6 +1327,69 @@ def personal_event_question(prompt: str) -> bool:
     party on Saturday"): it reads the calendar and reminders, never the web."""
     text = _ascii_text(prompt).strip()
     return bool(text.isascii() and _OWN_EVENT.match(text))
+
+
+# Everyday wordings whose tool the lexical head start left out of its six real
+# schemas (2026-11-12 probe of demo-style questions): "what did mom say" led
+# with lookup_contact and travel_time, "set a timer for 5 minutes" with
+# plan_meeting, "email Dana the notes" had no send_email at all. Each entry is
+# (pattern, tools to lead with). They only order tools the turn already has.
+# "what did you say", "what did the president say": not someone who texts the user.
+_NOT_A_SENDER = r"(?!(?:you|i|we|it|this|that|the|a|an|wisp|they|there)\b)"
+_DIRECT_LEADS = (
+    # What someone said or whether they answered: their texts first, then mail.
+    (re.compile(r"^(?:what\s+did|what\s+has|did|has|have)\s+" + _NOT_A_SENDER + r"[a-z][\w'.-]*(?:\s+[a-z][\w'.-]*){0,2}\s+"
+                r"(?:say|said|texted|text|messaged?|repl(?:y|ied)|respond(?:ed)?|answer(?:ed)?|"
+                r"wr(?:ite|ote)|g(?:e|o)t\s+back)\b", re.I),
+     ("view_messages", "view_emails")),
+    (re.compile(r"\b(?:any|new|unread|latest|recent)\s+(?:new\s+|unread\s+)?(?:texts?|messages?|imessages?)\b"
+                r"|\b(?:texts?|messages?)\s+from\b|\bwho\s+(?:texted|messaged)\b", re.I),
+     ("view_messages", "summarize_messages")),
+    (re.compile(r"^(?:did|has|have)\s+" + _NOT_A_SENDER + r"[a-z][\w'.-]*(?:\s+[a-z][\w'.-]*){0,2}\s+e-?mail(?:ed)?\b"
+                r"|\b(?:any|new|unread|latest)\s+e-?mails?\s+from\b|\bgrade\s+updates?\b", re.I),
+     ("view_emails", "summarize_emails")),
+    # "email <someone> ..." as an instruction. Never a question, and never
+    # "email from Dana", "email about the W-9", "email Dana sent yesterday" or
+    # "email addresses": those ask about mail, and send_email must not lead a read.
+    (re.compile(r"^(?:please\s+)?(?:can\s+you\s+|could\s+you\s+)?e-?mail\s+"
+                r"(?!(?:me|address(?:es)?|from|about|re|regarding|threads?|that|which|the|in|on|with|to|for|"
+                r"sent|and|or|is|was|of)\b)"
+                r"[a-z][\w'.-]*(?!\s+(?:sent|send|sends|wrote|emailed|forwarded|replied|said|got|received)\b)\b",
+                re.I),
+     ("send_email",), "instruction"),
+    (re.compile(r"\b(?:set|start|put)\s+(?:a|an|the|another)?\s*(?:[\w-]+\s+){0,3}?timer\b"
+                r"|\btimer\s+for\b|\b(?:set|wake)\b.*\balarm\b|\balarm\s+(?:for|at)\b", re.I),
+     ("set_timer", "manage_timers"), "timer"),
+    (re.compile(r"\b(?:do\s+i\s+have|any|show|list|what\s+are)\b.*\breminders?\b|\bwhat(?:'s|\s+is)\s+overdue\b", re.I),
+     ("search_reminders",)),
+    # An index by name. The price tool only: a web search leads through
+    # web_first, which has the privacy checks this pattern does not.
+    (re.compile(r"\b(?:s\s*&\s*p(?:\s*500)?|s\s+and\s+p\s+500|dow\s+jones|the\s+dow|nasdaq)\b", re.I),
+     ("get_stock_price",)),
+)
+# A request worded as a question ("did I set an alarm for 7?", "email from
+# Dana?"): it reads, so a tool that sends or creates never leads it.
+_ASKS = re.compile(r"^(?:did|do|does|is|are|was|were|has|have|had|how|what|when|where|who|which|why|any|"
+                   r"can\s+i|could\s+i|should\s+i|will)\b|\?\s*$", re.I)
+
+
+def direct_leads(prompt: str) -> list[str]:
+    """Tools that lead the Ask head start for an everyday wording (see
+    _DIRECT_LEADS), most wanted first. Empty for anything else."""
+    text = _ascii_text(normalize_day_words(prompt or "")).strip()
+    if not text.isascii() or len(text.split()) > 24:
+        return []
+    asks = bool(_ASKS.search(text))
+    out: list[str] = []
+    for pattern, tools, *kind in _DIRECT_LEADS:
+        if not pattern.search(text):
+            continue
+        if kind == ["instruction"] and asks:
+            continue                            # a question never leads with a send
+        if kind == ["timer"] and asks:
+            tools = ("manage_timers",)          # a question reads the timers; it sets none
+        out.extend(n for n in tools if n not in out)
+    return out
 
 
 def reminders_first(prompt: str) -> bool:
@@ -1261,14 +1787,35 @@ def public_fact_question(prompt: str) -> bool:
 # return policy is a public fact. The owner is at most four words and never a
 # relation or a pronoun; the head is only one of these public business facts
 # (never a number, address, schedule or plan).
+_POSSESSIVE_OWNER = r"(?P<owner>[a-z0-9][a-z0-9&-]*(?:\s+[a-z][a-z0-9&-]*){0,3})'s"
+_POSSESSIVE_DAY = (r"(?:\s+(?:today|tomorrow|tonight|now|right\s+now|this\s+weekend|"
+                   r"on\s+(?:mondays?|tuesdays?|wednesdays?|thursdays?|fridays?|saturdays?|sundays?|"
+                   r"christmas(?:\s+eve)?|thanksgiving|easter|new\s+year'?s(?:\s+(?:day|eve))?)))?\s*[?.!]?$")
+# A counter inside the business, between its name and the question.
+_POSSESSIVE_DEPT = (r"(?:\s+(?:pharmacy|bakery|deli|cafe|food\s+court|gas\s+station|tire\s+center|"
+                    r"garden\s+center|auto\s+center|optical|drive-?thru|store))?")
 _PUBLIC_POSSESSIVE = re.compile(
     r"^(?:(?:what|when)\s+(?:are|is)\s+|what'?s\s+)?(?:the\s+)?"
-    r"(?P<owner>[a-z0-9][a-z0-9&-]*(?:\s+[a-z][a-z0-9&-]*){0,3})'s\s+"
+    + _POSSESSIVE_OWNER + r"\s+"
     r"(?:(?:opening|store|holiday|business|weekend|pharmacy|regular|normal|current)\s+)?"
     r"(?:hours|opening\s+times|menu|return\s+policy)"
-    r"(?:\s+(?:today|tomorrow|tonight|now|this\s+weekend|"
-    r"on\s+(?:mondays?|tuesdays?|wednesdays?|thursdays?|fridays?|saturdays?|sundays?|"
-    r"christmas(?:\s+eve)?|thanksgiving|easter|new\s+year'?s(?:\s+(?:day|eve))?)))?\s*[?.!]?$", re.I)
+    + _POSSESSIVE_DAY, re.I)
+# The same public fact asked as a yes/no or a time ("Is Trader Joe's open on
+# Thanksgiving?", "When does Costco's pharmacy close?", "How late is Lowe's
+# open?"): rc2 knew only the "<name>'s hours" wording, so these stayed private
+# and got no search on the first message of a chat.
+_PUBLIC_POSSESSIVE_OPEN = tuple(re.compile(r"^" + lead + _POSSESSIVE_DAY, re.I) for lead in (
+    r"(?:is|are)\s+(?:the\s+)?" + _POSSESSIVE_OWNER + _POSSESSIVE_DEPT + r"\s+(?:still\s+)?(?:open|closed)(?:\s+late)?",
+    r"(?:when|what\s+time)\s+(?:does|do|will)\s+(?:the\s+)?" + _POSSESSIVE_OWNER + _POSSESSIVE_DEPT
+    + r"\s+(?:open|close)",
+    r"how\s+late\s+(?:is|are)\s+(?:the\s+)?" + _POSSESSIVE_OWNER + _POSSESSIVE_DEPT + r"\s+open",
+))
+
+
+def _possessive_match(text: str):
+    """The match of either public possessive wording; its `owner` group is the name."""
+    return _PUBLIC_POSSESSIVE.match(text) or next(
+        (m for pattern in _PUBLIC_POSSESSIVE_OPEN if (m := pattern.match(text))), None)
 # Owners that are people in the user's life (or not a name at all).
 _RELATION_OWNERS = frozenset("""
 mom mum mommy mummy mama ma dad daddy papa pa mother father parents grandma grandpa granny gran nana
@@ -1283,8 +1830,10 @@ monday tuesday wednesday thursday friday saturday sunday
 
 
 def _possessive_owner_is_personal(text: str) -> bool:
-    m = _PUBLIC_POSSESSIVE.match(text)
-    return bool(m and any(w.lower() in _RELATION_OWNERS for w in m.group("owner").split()))
+    m = _possessive_match(text)
+    if not m or _KIN_PUBLIC.fullmatch(m.group("owner").lower() + "'s"):     # "Papa John's" is a shop
+        return False
+    return any(w.lower() in _RELATION_OWNERS for w in m.group("owner").split())
 
 
 # An owner that is a phone number or a street address is the user's detail,
@@ -1325,10 +1874,11 @@ def _known_people_tokens() -> set[str] | None:
 
 
 def _possessive_owner_is_known_person(owner: str) -> bool:
-    """Every word of the owner (titles aside) is a word of a name Wisp knows:
-    "Dana" or "Dr Patel" when Dana or a Patel is in the profile or contacts.
-    A failed lookup counts as known; no people data at all counts as unknown,
-    which leaves the words-only search rule as the only check."""
+    """The owner (titles aside) starts with, or is made only of, words of a
+    name Wisp knows: "Dana", "Dr Patel", and "Dana Lee" when a Dana Smith is in
+    the profile or contacts. "Trader Joe" is not, with a Joe known. A failed
+    lookup counts as known; no people data at all counts as unknown, which
+    leaves the words-only search rule as the only check."""
     words = [w for w in owner.lower().split() if w not in _OWNER_TITLES]
     if not words:
         return True
@@ -1336,7 +1886,7 @@ def _possessive_owner_is_known_person(owner: str) -> bool:
         tokens = _known_people_tokens()
     except Exception:  # noqa: BLE001 — an unreadable profile or cache fails closed
         return True
-    return bool(tokens) and all(w in tokens for w in words)
+    return bool(tokens) and (words[0] in tokens or all(w in tokens for w in words))
 
 
 def public_possessive_question(prompt: str) -> bool:
@@ -1347,11 +1897,438 @@ def public_possessive_question(prompt: str) -> bool:
     Wisp knows locally."""
     text = _ascii_text(prompt).strip()
     if not (text.isascii() and len(text.split()) <= _FACT_MAX_WORDS
-            and (m := _PUBLIC_POSSESSIVE.match(text)) and not _FIRST_PERSON.search(text)
+            and (m := _possessive_match(text)) and not _FIRST_PERSON.search(text)
             and not _possessive_owner_is_personal(text)):
         return False
     owner = m.group("owner")
     return not (_possessive_owner_is_contact_detail(owner) or _possessive_owner_is_known_person(owner))
+
+
+# A public question whose answer changes, so the model's own memory is stale:
+# opening hours ("Is Costco open on Sunday?", "When does Target close?"), who
+# holds an office now ("Who is the president?"), the newest version of a
+# product, today's news. In the 2026-11-04 debug export "who is the president?"
+# was answered from memory with no search. These lead the Ask head start with
+# web_search (service/main._ask_tool_rank); they open nothing a turn did not
+# already have.
+_WEB_FIRST = re.compile(
+    r"^(?:"
+    r"(?:is|are)\s+(?:the\s+)?[a-z0-9][a-z0-9&' -]{1,40}?\s+(?:still\s+)?(?:open|closed)\b.*"
+    r"|(?:when|what\s+time)\s+(?:does|do|will)\s+(?:the\s+)?[a-z0-9][a-z0-9&' -]{1,40}?\s+(?:open|close)\b.*"
+    r"|how\s+late\s+(?:is|are)\s+(?:the\s+)?[a-z0-9][a-z0-9&' -]{1,40}?\s+open\b.*"
+    r"|[a-z0-9][a-z0-9&' -]{1,40}?\s+(?:store\s+|opening\s+|holiday\s+)?hours\b.*"
+    r"|who(?:\s+is|'s|\s+are)\s+(?:the\s+)?(?:current\s+|new\s+|next\s+)?(?:us\s+|u\.s\.\s+)?"
+    r"(?:president|vice\s+president|prime\s+minister|governor|mayor|senators?|chancellor|pope|king|queen|"
+    r"secretary\s+of\s+[a-z ]+|speaker\s+of\s+the\s+house|ceo|chief\s+executive|chairman|head\s+coach)\b.*"
+    # The newest of a product line, or of a named thing's versions: never "the
+    # latest on <a topic>", which may be a deal or a project of the user's own.
+    r"|(?:what(?:'s|\s+is)|which\s+is)\s+the\s+(?:latest|newest|most\s+recent)\s+(?:"
+    r"(?:version|release|update|model|generation)\s+of\s+[a-z0-9][a-z0-9 .+-]{1,30}"
+    r"|(?:apple\s+|samsung\s+|google\s+)?(?:iphone|ipad|macbook|imac|mac|macos|ios|ipados|watchos|apple\s+watch|"
+    r"airpods|pixel|galaxy|android|windows|playstation|xbox|kindle)\b[a-z0-9 .+-]{0,20})\s*[?.!]?"
+    # The day's news, with no topic: "any news on <x>" names a topic that may be private.
+    r"|(?:what(?:'s|\s+is)\s+(?:the\s+|in\s+the\s+)?|today'?s\s+|top\s+|latest\s+)?"
+    r"(?:news|headlines)(?:\s+(?:today|tonight|now|right\s+now|this\s+morning))?\s*[?.!]?"
+    r")$", re.I)
+
+
+def web_first(prompt: str) -> bool:
+    """A short public question whose answer changes (see _WEB_FIRST), with
+    nothing of the user's in it: the search leads the Ask head start."""
+    text = _ascii_text(prompt).strip()
+    if not (text.isascii() and len(text.split()) <= _FACT_MAX_WORDS
+            and not _FIRST_PERSON.search(text) and _WEB_FIRST.match(text)
+            and not _possessive_owner_is_personal(text)):
+        return False
+    words = set(re.findall(r"[a-z]+", text.lower()))
+    # A relation, a thing of the user's own (their mail, their door), something
+    # "from" or "with" someone, or "open to" an idea is not a web question.
+    if (words & (_RELATION_OWNERS - _WEB_FIRST_PLAIN) or words & _WEB_FIRST_OWN
+            or words & {"from", "with"} or re.search(r"\b(?:open|closed)\s+(?:to|for|about)\b", text, re.I)
+            or asks_personal_data(prompt)):
+        return False
+    try:                                        # a person Wisp knows is not a business
+        known = _known_people_tokens()
+    except Exception:  # noqa: BLE001 — an unreadable profile or cache: no head start
+        return False
+    return not (known and words & known)
+
+
+# Things that are the user's own even with no "my" ("the latest email from
+# Sam", "is the garage door open", "office hours with the TA").
+_WEB_FIRST_OWN = frozenset("""
+email emails mail inbox message messages text texts imessage reminder reminders calendar event events
+meeting meetings class classes office ta note notes file files folder document documents doc docs
+order package delivery door window garage gate account appointment schedule flight trip homework
+assignment exam midterm quiz grade grades chat thread task tasks todo timer alarm brief
+deal deals project projects ticket tickets case cases application applications offer offers claim claims
+status issue issues bug bugs request requests position role job listing sale contract proposal
+budget budgets spreadsheet spreadsheets resume cv draft drafts plan report essay paper thesis
+enrollment registration poll survey invoice order orders pr
+""".split())
+# Relation words that are also ordinary words of a public question.
+_WEB_FIRST_PLAIN = frozenset("it that there here what who this these those today tomorrow tonight "
+                             "yesterday monday tuesday wednesday thursday friday saturday sunday".split())
+
+
+def personal_possessive_question(prompt: str) -> bool:
+    """The request has the shape of a public possessive question but its owner
+    is the user's own: a relation, a contact detail or a person Wisp knows
+    ("Is Mom's open on Sunday?", "When does Dana's close tonight?"). It is the
+    user's private matter and nothing about it goes to the web. With a time
+    word the classifier used to leave these of unknown ownership, where a
+    model-led turn could still search them (real-model run, 2026-11-12: a
+    search for "Mom's operating hours on Sunday")."""
+    text = _ascii_text(prompt).strip()
+    return bool(text.isascii() and len(text.split()) <= _FACT_MAX_WORDS
+                and _possessive_match(text) and not public_possessive_question(text))
+
+
+# ---- Whose question is it? The checks below only ever tighten web access, so
+# they carry none of the ASCII or length gates of the public shapes above: a
+# request they cannot read is not thereby public.
+
+# People in the user's life, as a word of the request ("How is Grandma doing
+# today?", "Is Mom home yet?"). Narrower than _RELATION_OWNERS: "team",
+# "doctor" and "teacher" are also words of public questions.
+_KIN = frozenset("""
+mom mum mommy mummy mama mamma dad daddy papa mother father parents grandma grandpa granny gran nana
+grandmother grandfather sister brother sis bro son daughter wife husband spouse boyfriend girlfriend
+fiance fiancee aunt auntie uncle cousin niece nephew bestie roommate landlord babysitter nanny
+""".split())
+# The same words inside a public name.
+_KIN_PUBLIC = re.compile(
+    r"\b(?:mother'?s\s+day|father'?s\s+day|uncle\s+sam|big\s+brother|papa\s+john'?s?|papa\s+murphy'?s?|"
+    r"auntie\s+anne'?s?|sister\s+act|sister\s+wives|mamma\s+mia|mama\s+mia|brother\s+printers?|"
+    r"son\s+of\s+\w+|son\s+heung-?min|father\s+of\s+the\s+bride|mother\s+of\s+the\s+bride|"
+    r"mother\s+teresa|mother\s+nature|father\s+time|dad'?s\s+army|daddy\s+yankee|papa\s+roach|"
+    r"big\s+mama|mama\s+june|father\s+christmas|mother\s+goose|brother\s+hl-?\w+|brother\s+mfc-?\w+)\b")
+_KIN_PUBLIC_CASED = re.compile(_KIN_PUBLIC.pattern, re.I)
+# Owners of an 's that are a person in the user's life (the relation words
+# that are not pronouns or dates).
+_PERSON_OWNERS = frozenset(_RELATION_OWNERS - frozenset("""
+it that there here what who he she they his her their your its this these those everyone everybody
+someone somebody nobody today tomorrow tonight yesterday monday tuesday wednesday thursday friday
+saturday sunday
+""".split()))
+# A contraction's first word, never an owner ("what's", "it's", "let's").
+_CONTRACTED = frozenset("what who it that there here he she how where when why let".split())
+_LOOSE_APOSTROPHES = str.maketrans({c: "'" for c in "\u2018\u2019\u02bc\u02b9\u02bb\u2032\u00b4`\uff07\u055a\u07f4"})
+# An apostrophe lookalike before a possessive s: the public shapes do not read
+# it, so the request would pass as having no owner at all.
+_LOOKALIKE_BACKTICK = re.compile(r"[A-Za-z]`s\b")
+_LOOKALIKE_SITE = re.compile(r"[A-Za-z]([^\x00-\x7f])s\b")
+_LOOSE_POSSESSIVE = re.compile(r"(?<![a-z0-9&.'-])([a-z0-9][a-z0-9&.-]{0,40})'s?(?=\s|$|[?.!,;:])")
+
+
+def _loose_cased(text: str) -> str:
+    """Accents removed and every apostrophe-like mark a plain one, casing kept."""
+    import unicodedata
+    plain = unicodedata.normalize("NFKD", unicodedata.normalize("NFKC", text or ""))
+    plain = "".join(c for c in plain if not unicodedata.combining(c))
+    return plain.translate(_LOOSE_APOSTROPHES)
+
+
+def _loose_text(text: str) -> str:
+    """_loose_cased, lower-cased: "Is Mam\u00e1\u02b9s open?" reads as "is mama's open?"."""
+    return _loose_cased(text).lower()
+
+
+# The longest text the ownership checks read. A question about someone is
+# short; a cap keeps every pattern below linear in what it is given.
+_OWNER_TEXT_CAP = 600
+_KIN_ALT = "|".join(sorted(_KIN, key=len, reverse=True))
+# Family words that are just as often ordinary words ("baby formula", "pop
+# music", "kids menu", "partner visa"). They count only where what follows
+# shows a person is meant ("Is the baby asleep yet?", "Are the kids home yet?").
+_SOFT_KIN = frozenset("kid kids baby twins pop pops partner hubby wifey granddad grandad grandson "
+                      "granddaughter grandparents grandkids toddler".split())
+_SOFT_ALT = "|".join(sorted(_SOFT_KIN, key=len, reverse=True))
+_ANY_KIN_ALT = "|".join(sorted(_KIN | _SOFT_KIN, key=len, reverse=True))
+# "my mom", "our landlord", "my little sister", "my kids".
+_KIN_MINE = re.compile(rf"\b(?:my|our)\s+(?:[a-z]+\s+)?(?:{_ANY_KIN_ALT})\b")
+# A question lead: "is", "when will", "how's", and with words between,
+# "how old is", "which hospital is", "what time does".
+_KIN_AUX = (r"(?:is|are|was|were|did|does|do|has|have|had|will|would|can|could|should|might|may|"
+            r"isn't|aren't|wasn't|didn't|doesn't|hasn't|won't|can't)")
+_KIN_LEAD = (rf"(?:(?:how|where|when|why|who|which|what)(?:'s|\s+{_KIN_AUX})?"
+             rf"|(?:how|what|which)\s+[a-z]+(?:\s+[a-z]+)?\s+{_KIN_AUX}|{_KIN_AUX})")
+# The kin word in subject position, right after a question lead at the start
+# of a clause: "How is Grandma doing", "When will Dad be home", "Is Mom mad at
+# me", "How old is Mom", "Which hospital is Grandma at". Whatever follows, the
+# question is about them, unless what follows makes the kin word the start of
+# a name (see personal_reference).
+_KIN_SUBJECT = re.compile(rf"^{_KIN_LEAD}\s+(?:the\s+)?(?P<kin>{_KIN_ALT})\b", re.I)
+_SOFT_SUBJECT = re.compile(rf"^{_KIN_LEAD}\s+(?:the\s+)?(?:{_SOFT_ALT})\b\s*(?P<next>[a-z']*)", re.I)
+# The same with the verb dropped: "Mom home yet?", "Dad ok?", and with any
+# -ing or -ed word when the clause is a question or carries a time word
+# ("Mom feeling better today?", "Dad landed yet?").
+_KIN_STATE = (r"(?:home|ok|okay|alright|back|here|there|awake|asleep|up|coming|free|busy|sick|better|fine|"
+              r"around|in|out|still|safe|ready|done|yet)")
+_KIN_BARE = re.compile(rf"^(?:the\s+)?(?:{_ANY_KIN_ALT})\s+{_KIN_STATE}\b", re.I)
+_KIN_BARE_VERB = re.compile(rf"^(?:the\s+)?(?:{_ANY_KIN_ALT})\s+[a-z]+(?:ing|ed)\b", re.I)
+_TIME_WORD = re.compile(r"\b(?:today|tonight|tomorrow|yet|now|lately|recently|this\s+(?:morning|afternoon|"
+                        r"evening|week|weekend)|right\s+now|so\s+far)\b", re.I)
+# Words that may follow a kin subject with a capital letter and still not make
+# it a name ("Is Mom OK", "Is Dad Home"), and that show a soft kin word is a person.
+_KIN_FOLLOW = frozenset("""
+doing home ok okay alright fine well sick better worse awake asleep up free busy coming going here
+there back around out in at on still yet now today tonight tomorrow right call called calling text
+texted texting message messaged email emailed reply replied say said saying arrive arrived land
+landed leave left leaving get got getting make made want wants wanted need needs needed feel feeling
+sleep sleeping eat eating work working visit visiting drive driving fly flying send sent know see
+ask asked like have has go come stay staying move moved moving plan planning pick picking mention
+mentioned write wrote tell told think thinks and or with up be been mad upset lonely sad happy angry
+tired hurt safe ready done late early eaten take taken pay paid fall fell i
+""".split())
+# The kin word as the one something was done to, in a question ("Did the
+# hospital call Mom today?", "Will they let Dad go home today?").
+_KIN_OBJECT = re.compile(
+    rf"^(?:did|does|do|has|have|had|will|would|can|could|should|is|are|was|were|when|why|how)\b[^.!?\n]{{0,200}}?\b"
+    rf"(?:call(?:ed|ing)?|text(?:ed|ing)?|let|see|seen|saw|visit(?:ed|ing)?|help(?:ed|ing)?|pick(?:ed|ing)?\s+up|"
+    rf"told|tell|ask(?:ed|ing)?|e-?mail(?:ed|ing)?|message[d]?|messaging|release[d]?|discharg(?:e|ed|ing)|"
+    rf"admit(?:ted)?|take|took|taking|bring|brought|drive|drove|driving|pay|paid|charge[d]?|evict(?:ed|ing)?)\s+"
+    rf"(?:the\s+)?(?:{_KIN_ALT})\b")
+# The same inside a clause: "Tell me if Mom is online right now", "do you know when Dad lands".
+_KIN_CLAUSE = re.compile(
+    rf"\b(?:if|whether|when|where|why|how|what|that)\s+(?:the\s+)?(?:{_ANY_KIN_ALT})\s+"
+    rf"(?:is|are|was|were|has|had|will|would|did|does|can|could|got|gets|said|says|wants|needs|called|"
+    rf"texted|arrived|arrives|landed|lands|left|leaves)\b")
+# News of them, at the end: "any news from mom", "any word from Dad yet?".
+_KIN_FROM = re.compile(
+    rf"\b(?:from|with)\s+(?:the\s+)?(?:{_KIN_ALT})\b"
+    rf"(?:\s+(?:today|tonight|yet|now|lately|recently|so\s+far|at\s+all|this\s+[a-z]+|right\s+now))*\s*[?.!]*$")
+# With them, anywhere in a question: "Is dinner with Dad still on tonight?".
+_KIN_WITH = re.compile(rf"\bwith\s+(?:the\s+)?(?:{_KIN_ALT})\b")
+# Looking in on them: "check on mom", "check in on grandma today".
+_KIN_CHECK = re.compile(rf"\bcheck(?:ing)?\s+(?:in\s+|up\s+)?on\s+(?:the\s+)?(?:{_ANY_KIN_ALT})\b")
+# The 's left out, or no 's at all, before something that is theirs: "is moms
+# flight on time today", "mom flight today", "grandma hospital today".
+_KIN_THEIRS = (r"(?:flight|flights|surgery|appointment|appointments|hospital|doctor|meds|medication|"
+               r"prescription|birthday|address|number|package|house|place|apartment|car|test|results?|"
+               r"diagnosis|treatment|therapy|recovery|fever|schedule|trip|visit|rent|lease)")
+_KIN_NOUN = re.compile(rf"\b(?:{_KIN_ALT})s?\s+{_KIN_THEIRS}\b")
+# The subject after an auxiliary anywhere, when a state or action word follows:
+# "xyzzy is mom ok today?" has no clause start to match, and is about Mom.
+_KIN_MID = re.compile(
+    rf"\b(?:is|are|was|were|did|does|has|have|had|will|would|can|could|should|how's|where's)\s+"
+    rf"(?:the\s+)?(?:{_ANY_KIN_ALT})\s+(?P<next>[a-z']+)")
+# Words at the start of a clause that are not part of the question.
+_CLAUSE_FILLER = re.compile(
+    r"^(?:(?:hi|hey|hello|yo|ok|okay|so|and|also|but|btw|by\s+the\s+way|wisp|please|um+|uh+|er+|well|"
+    r"quick\s+question|one\s+more\s+thing|good\s+(?:morning|afternoon|evening)|morning|"
+    r"sorry(?:\s+to\s+bother\s+you)?|thanks|thank\s+you|actually|anyway|oh|hmm+|now|then)\b[\s,!]*"
+    r"|(?:[-*>]+|\d{1,2}[.)])\s*)+", re.I)
+_CLAUSE_END = re.compile(r"[.!?:;,\n\"()\[\]]+|\s[-–—]+\s")
+
+
+def _clauses(cased: str):
+    """(clause, is_question) for each sentence or clause of `cased`: split at
+    . ! ? : ; , quotes, brackets and spaced dashes, with greetings, fillers
+    and list markers removed from the front of each."""
+    start = 0
+    for m in [*_CLAUSE_END.finditer(cased), None]:
+        end = m.start() if m else len(cased)
+        clause = _CLAUSE_FILLER.sub("", cased[start:end].strip(), count=1).strip()
+        if clause:
+            yield clause, bool(m and "?" in m.group())
+        if m is None:
+            break
+        start = m.end()
+
+
+def _readable(prompt: str) -> str:
+    """The text the ownership checks read: accents and apostrophes folded,
+    zero-width and other format characters and emoji removed, capped."""
+    import unicodedata
+    cased = _loose_cased((prompt or "")[:_OWNER_TEXT_CAP * 2])
+    cased = "".join(" " if unicodedata.category(c) in {"So", "Sk", "Cs", "Co"} else c
+                    for c in cased if unicodedata.category(c) != "Cf")
+    return cased[:_OWNER_TEXT_CAP]
+
+
+def personal_reference(prompt: str) -> bool:
+    """The request is ABOUT someone in the user's life, named by a kin word:
+    with "my" or "our" ("my mom", "our landlord"); in subject position after
+    a question lead at the start of any sentence or clause, whatever follows
+    ("How is Grandma doing today?", "Hi, is Mom home yet?", "How old is
+    Mom", "Which hospital is Grandma at today?"), or with the verb dropped
+    ("Mom home yet?", "Dad landed yet?"); as the one something was done to
+    in a question ("Did the hospital call Mom today?"); inside a clause
+    ("Tell me if Mom is online"); with them in a question ("Is dinner with
+    Dad still on tonight?"); looked in on ("check on grandma"); or before
+    something that is theirs with the 's left out ("is moms flight on time").
+
+    A kin word that merely appears is not one: "best gifts for dad",
+    "husband pillow reviews", "Brother printer". In subject position it is
+    still a name when it starts one on the public list (_KIN_PUBLIC) or when,
+    in the text as typed, the next word is capitalised and is not an ordinary
+    word ("Is Sister Rosetta Tharpe touring?"). An 's is personal_owner's.
+
+    No ASCII gate, and greetings, list markers, quotes, emoji and zero-width
+    characters do not hide a question. A bare first name is not recognised:
+    reading the know-you profile for every request would break the host's
+    rule that routing loads no saved context in test mode or after an opt-out."""
+    cased = _KIN_PUBLIC_CASED.sub(lambda m: " " * len(m.group()), _readable(prompt))
+    loose = cased.lower()
+    if (_KIN_MINE.search(loose) or _KIN_CLAUSE.search(loose) or _KIN_FROM.search(loose.strip())
+            or _KIN_CHECK.search(loose) or _KIN_NOUN.search(loose)):
+        return True
+    if any(m.group("next").strip("'") in _KIN_FOLLOW for m in _KIN_MID.finditer(loose)):
+        return True
+    whole_is_question = "?" in loose
+    for clause, asked in _clauses(cased):
+        low = clause.lower()
+        if _KIN_OBJECT.match(low) or _KIN_BARE.match(low):
+            return True
+        if (asked or whole_is_question or _TIME_WORD.search(low)) and _KIN_BARE_VERB.match(low):
+            return True
+        if (asked or whole_is_question) and _KIN_WITH.search(low) and re.match(_KIN_LEAD + r"\b", low):
+            return True
+        soft = _SOFT_SUBJECT.match(low)
+        if soft and soft.group("next").strip("'") in _KIN_FOLLOW:
+            return True
+        m = _KIN_SUBJECT.match(clause)
+        if m:
+            following = re.match(r"\s+([A-Z][\w'-]*)", clause[m.end():])
+            # "Is Sister Rosetta ..." is a name; "Is Mom OK" and "Is Dad Home" are not.
+            if not (following and following.group(1).lower().strip("'") not in _KIN_FOLLOW):
+                return True
+    return False
+
+
+_LEADING_RECIPIENT = re.compile(
+    r"^\s*(?:(?:please|hey|ok|okay|wisp|can\s+you|could\s+you|would\s+you)[, ]+)*"
+    r"(?:e-?mail|text|message|msg|tell|send|forward|notify|ping|call|remind|let)\s+"
+    r"(?:to\s+)?(?:my\s+|our\s+)?(?!(?:if|whether|when|where|what|why|how|that|me|us)\b)[A-Za-z]+\b", re.I)
+
+
+def without_leading_recipient(text: str) -> str:
+    """`text` without the person an instruction at its start is addressed to
+    ("text mom the bitcoin price", "send my dad the news"): the recipient of
+    a delivery is not whom the request is about. Only at the start, so "Did
+    the hospital call Mom today?" keeps its Mom."""
+    return _LEADING_RECIPIENT.sub(" ", text or "", count=1)
+
+
+def personal_owner(prompt: str) -> bool:
+    """Some 's in the request belongs to a person in the user's life: a
+    relation ("the doctor's office"), a kin word, a known person, or a contact
+    detail. No ASCII or length gate; a failed people lookup counts as personal."""
+    loose = _KIN_PUBLIC.sub(" ", _readable(prompt).lower())
+    for owner in _LOOSE_POSSESSIVE.findall(loose):
+        owner = owner.strip(".-&")
+        if not owner or owner in _CONTRACTED:
+            continue
+        if (owner in _PERSON_OWNERS or owner in _KIN or _possessive_owner_is_contact_detail(owner)
+                or _possessive_owner_is_known_person(owner)):
+            return True
+    return False
+
+
+def lookalike_possessive(prompt: str) -> bool:
+    """An 's written with an apostrophe lookalike: a backtick, or any
+    non-ASCII character that is not an ordinary letter or a real apostrophe,
+    between an ASCII letter and "s" (U+02B9, a prime, the saltillo U+A78C,
+    U+02BD, U+02C8, U+2035). "caf\u00e9s" is a word, not a possessive."""
+    import unicodedata
+    text = (prompt or "")[:_OWNER_TEXT_CAP * 2]
+    if _LOOKALIKE_BACKTICK.search(text):
+        return True
+    for mark in _LOOKALIKE_SITE.findall(text):
+        if mark in "\u2019\u2018\uff07":            # real apostrophes: read as one everywhere
+            continue
+        if mark in "\ua78c\ua78b" or unicodedata.category(mark) in {"Lm", "Sk", "Po", "Pf", "Pi", "Mn", "Mc", "Cf"}:
+            return True
+    return False
+
+
+# What an owner has that is the user's own business, whoever the owner is.
+_PERSONAL_HEADS = frozenset("""
+address addresses number numbers birthday anniversary flight flights package packages
+parcel appointment appointments schedule plans place house home apartment room car kids wedding party
+location whereabouts salary password diagnosis results result health surgery visit trip itinerary
+reservation booking ticket tickets order orders delivery account accounts email emails mail text texts
+message messages call calls note notes file files folder document documents fever recovery interview
+test tests exam treatment therapy medication pregnancy baby funeral divorce date dates
+""".split())
+# What an owner has that is public whoever the owner is. An 's of unknown
+# ownership reopens a search only with one of these: "Is Ben's fever down
+# today?" names none, and stays closed.
+_PUBLIC_HEADS = frozenset("""
+stock stocks share shares price prices market cap valuation earnings revenue sales profit dividend
+ipo game games match matches score scores standings record season playoffs final finals race
+album albums song songs single tour concert concerts show shows movie movies film films episode
+episodes series trailer premiere menu hours release launch event events keynote lineup roster
+ratio ratios ceo headquarters founder showing airing streaming playing
+phone phones laptop laptops tablet console version update model models product products
+burger burgers flavor flavors flavour flavours sandwich breakfast brunch drive-thru
+""".split())
+# A holiday written with an 's: its date is public.
+_HOLIDAY = re.compile(r"\b(?:mother|father|valentine|st\.?\s+patrick|new\s+year|president|veteran|"
+                      r"grandparent|sibling|women|men|children|april\s+fool)s?'?s?\s+(?:day|eve)\b")
+_FRESH_WORDS = frozenset("new newest latest current upcoming next".split())
+_OWNER_REQUEST_MAX_WORDS = 16
+
+
+_HOLIDAY_CASED = re.compile(_HOLIDAY.pattern, re.I)
+
+
+def holiday_question(prompt: str) -> bool:
+    """A question about a public holiday written with an 's ("When is Father's
+    Day?", "Mother's Day brunch near me today", "Valentine's Day gift ideas"):
+    its date and customs are public, with or without a time word.
+
+    The holiday excuses only itself. With its name taken out, the rest must
+    hold nobody and nothing of anyone's: no other possessive ('s or s'), no
+    family word of either set, no he/she/him/her/his/hers, no "with <Name>",
+    no street address (a number before a capitalised word), no my or our, no
+    long number that is not a year. "Grandma fell on Mother's Day, is she
+    ok?" and "Dana's Mother's Day plans today" are not holiday questions."""
+    text = _ascii_text(prompt).strip()
+    if not (text.isascii() and len(text.split()) <= _OWNER_REQUEST_MAX_WORDS
+            and _HOLIDAY.search(text.lower())) or lookalike_possessive(prompt):
+        return False
+    rest_cased = _HOLIDAY_CASED.sub(" ", text)
+    rest = rest_cased.lower()
+    words = set(re.findall(r"[a-z0-9&-]+", rest))
+    if "'" in rest or words & (_KIN | _SOFT_KIN | _PERSON_OWNERS):
+        return False
+    if words & {"my", "our", "mine", "ours", "he", "she", "him", "her", "his", "hers"}:
+        return False
+    if re.search(r"\bwith\s+[A-Z][a-z]+", rest_cased) or re.search(r"\b\d+[a-z]?\s+[A-Z][a-z]+", rest_cased):
+        return False
+    if personal_reference(rest_cased) or personal_owner(rest_cased):
+        return False
+    return not any(re.fullmatch(r"(?:19|20)\d{2}", run) is None for run in re.findall(r"\d{4,}", text))
+
+
+def public_owner_request(prompt: str) -> bool:
+    """A request with an 's of unknown ownership that is still plainly public:
+    "Who won Sunday's game?", "What's Apple's stock price today?", "What is
+    Tesla's market cap right now?", "What's Google's latest phone this year?".
+    Plain ASCII, short, no first person, nobody of the user's own, a public
+    noun (_PUBLIC_HEADS) or a "new"/"latest" thing, and nothing that is
+    anyone's private business (an address, a flight, a fever). It reopens only
+    a search of the user's own words (see web_request._parse_request)."""
+    text = _ascii_text(prompt).strip()
+    if not (text.isascii() and len(text.split()) <= _OWNER_REQUEST_MAX_WORDS
+            and not _FIRST_PERSON.search(text)):
+        return False
+    if personal_reference(prompt) or personal_owner(prompt) or lookalike_possessive(prompt):
+        return False
+    words = set(re.findall(r"[a-z0-9&-]+", _KIN_PUBLIC.sub(" ", text.lower())))
+    if words & _PERSONAL_HEADS or words & _WEB_FIRST_OWN or words & (_PERSON_OWNERS | _KIN):
+        return False
+    # A public noun, not merely "new" or "latest": "Is Ben's new puppy okay today?" has none.
+    if not (words & _PUBLIC_HEADS or _HOLIDAY.search(text.lower())):
+        return False
+    # Every long number must itself be a year: one year does not excuse a phone number.
+    if any(not re.fullmatch(r"(?:19|20)\d{2}", run) for run in re.findall(r"\d{4,}", text)):
+        return False
+    if _PHONE_GROUP.search(text) or re.search(r"\d{3}[\s.)]+\d{3}[\s.-]+\d{4}\b", text):
+        return False                            # "415-555-2019" ends in a year-like group
+    return bool(re.search(r"[a-z0-9]'(?:s\b|(?=\s|$|[?.!,]))", text.lower()))
 
 
 # Words a search for a public fact may add to the user's own: the query of a
@@ -1364,6 +2341,8 @@ score scores result results final game games match series standings
 rate rates exchange convert conversion usd eur gbp jpy inr cad aud cny chf mxn
 dollar dollars euro euros pound pounds yen rupee rupees peso pesos franc francs yuan
 stock stocks share shares crypto cryptocurrency market
+hours open opens opening close closes closing closed time times store holiday menu return policy
+monday tuesday wednesday thursday friday saturday sunday
 """.split())
 # The only characters a public-fact search may contain, after NFKC folding:
 # anything else (Cyrillic, other scripts' digits) is invisible to a word check.

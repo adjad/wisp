@@ -59,7 +59,9 @@ def test_a_reply_that_may_have_gone_out_offers_no_second_send():
     unconfirmed = FIRE[FIRE.index("case .unconfirmed(let line):"):FIRE.index("case .retry(let line):")]
     assert "fires[card.id] = .unconfirmed(line)" in unconfirmed
     # Neither the card's own button nor the draft's Send is drawn in that state.
-    assert "if let action, !sendInDraft, !isUnconfirmed(fire) { fireButton(card, action, fire) }" in CARD_VIEW
+    # (A grouped "Wisp did this" card has no button of its own: each row carries its Undo.)
+    assert "if let action, !card.isGroup, !sendInDraft, !isUnconfirmed(fire) { fireButton(card, action, fire) }" in CARD_VIEW
+    assert "if let action = member.action, !isUnconfirmed(fire) { fireButton(member, action, fire) }" in CARDS
     assert "if withSend, !isUnconfirmed(fire) {" in DRAFT_EDITOR
     assert CARDS.count("fireButton(card, action, fire)") == 2
     assert "if case .unconfirmed(let line) = fire" in CARD_VIEW

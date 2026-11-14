@@ -132,7 +132,8 @@ _SCHEDULE_ITEMS = re.compile(r"\b(?:events?|meetings?|appointments?|class(?:es)?
 
 _SEND_CATEGORIES = frozenset({"email_send", "messages_send", "scheduled_send"})
 _DELETE_TOOLS = frozenset({"cancel_event", "clear_reminders", "clear_past_reminders", "delete_path",
-                           "delete_knowledge", "cancel_scheduled_send", "clear_memory", "forget"})
+                           "delete_knowledge", "cancel_scheduled_send", "clear_memory", "forget",
+                           "delete_note"})
 _IMMEDIATE_SENDS = frozenset({"send_message", "send_email"})
 
 

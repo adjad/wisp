@@ -2878,7 +2878,7 @@ _WRITE_TOOL_DOMAIN = {
     "send_message": "messages", "draft_message": "messages",
     "send_email": "email", "reply_to_email": "email", "draft_email": "email",
     "email_triage": "email",
-    "create_note": "notes", "append_note": "notes",
+    "create_note": "notes", "append_note": "notes", "delete_note": "notes",
 }
 
 
@@ -3649,7 +3649,7 @@ _DOMAIN_WRITE_TOOLS = {
     # reached a subset of exactly ["search_notes"] and the model either wrote a
     # text file to disk with write_file — which is not where the user keeps
     # notes and does not sync — or said it couldn't.
-    "notes": ["create_note", "append_note", "search_notes"],
+    "notes": ["create_note", "append_note", "delete_note", "search_notes"],
 }
 
 # "When am I free" — an availability question, not a schedule read-out. The
@@ -3707,6 +3707,11 @@ _NOTE_WRITE_RE = re.compile(
     r"\badd\s+.{1,40}\bto\s+(?:my\s+)?\w*\s*(?:list|note)\b|"
     r"\btack\s+.{1,40}\bonto\s+(?:my\s+)?\w*\s*(?:list|note)\b|"
     r"\bscan\b.{0,20}\binto\s+(?:my\s+)?notes?\b|"
+    # Deleting a note in words _WRITE_INTENT_RE has no verb for ("get rid of the
+    # old meeting note", "trash my ideas note"): the lookup rule offered only
+    # search_notes, so delete_note was unreachable by its own aliases.
+    r"\b(?:get\s+rid\s+of|trash|bin|delete|remove|erase)\s+(?:the|my|that|this|a)\s+"
+    r"(?:[^.?!\n]{0,40}?\s+)?note\b|"
     # "save/create/write/add a note", "note: ...", "save this to my notes": the
     # everyday wordings, anchored to an imperative start so a READ such as "what
     # did I save in my notes" never arms the write tools. Without these a request
@@ -4944,7 +4949,7 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
             and any(x.startswith("draft_") for x in subset)):
         subset = [x for x in subset if x not in _SEND_TOOLS]
     if _PLAIN_TEXT_FILE_RE.search(t):
-        subset = [x for x in subset if x not in {"create_note", "append_note", "scan_to_note"}]
+        subset = [x for x in subset if x not in {"create_note", "append_note", "delete_note", "scan_to_note"}]
     # Channel still unknown -> withhold every tool that would COMMIT to one, so
     # asking is the only move left. The reads stay, so the model can still
     # gather what it needs and ask an informed question in the same turn; only
@@ -6086,7 +6091,8 @@ def _checklist_ownership(text: str) -> tuple[list[str], str | None, set[str], se
         if rejected_here:
             domain = match.group("domain").lower()
             if domain.startswith("note"):
-                rejected_destinations.update({"search_notes", "create_note", "append_note", "scan_to_note"})
+                rejected_destinations.update({"search_notes", "create_note", "append_note", "delete_note",
+                                              "scan_to_note"})
             elif domain.startswith("reminder"):
                 rejected_destinations.update(_REMINDER_ROUTE_TOOLS)
             elif domain != "wisp":
@@ -6218,7 +6224,7 @@ def _apply_notes_todo_exclusion(decision: RouteDecision, text: str) -> None:
         return
     allow_calendar_read = _positive_notes_todo_calendar_read(text)
     forbidden = set(decision.forbidden_tools) | {
-        "search_notes", "create_note", "append_note", "scan_to_note",
+        "search_notes", "create_note", "append_note", "delete_note", "scan_to_note",
         *_ALL_SOURCES, "daily_brief",
     }
     if allow_calendar_read:
@@ -6587,7 +6593,7 @@ def _apply_execution_contract(decision: RouteDecision, text: str, web_request: _
         conditionals.append(("get_weather", "add_reminder", "rain_chance_above", 0))
     if _PLAIN_TEXT_FILE_RE.search(t) and _NOTES_INTENT_RE.search(t):
         require("search_notes"); require("write_file")
-        forbidden |= {"create_note", "append_note", "scan_to_note"}
+        forbidden |= {"create_note", "append_note", "delete_note", "scan_to_note"}
     if re.search(r"\bremind\s+me\b", t, re.I) and _SELF_SEND_RE.search(t):
         require("add_reminder"); require("draft_email")
         forbidden |= {"send_email"}
@@ -6753,6 +6759,8 @@ def routing_guard_contract(text: str, *, model_led: bool = False) -> tuple[froze
     """
     from service.tools.registry import REGISTRY
     from service.router.model_led import family_for, registry_specs
+    from service.router.web_request import bounded_quotes
+    text = bounded_quotes(text)
 
     if (history_reads := _history_read_contract(text)) is not None:
         return frozenset(set(REGISTRY) - set(history_reads)), {}
@@ -6850,8 +6858,26 @@ def routing_guard_contract(text: str, *, model_led: bool = False) -> tuple[froze
         forbidden.update(name for name, tool in REGISTRY.items()
                          if not tool.category.endswith("read"))
     web = _classify_web_request(t)
+    if model_led and not web.explicit and not web.private:
+        # The classifier reads quoted text as data, so a question sent inside
+        # quotes ('"Is Mom home yet?"') did not reach its ownership checks.
+        # They read the text as typed here.
+        from service.model_only import (lookalike_possessive, personal_owner, personal_reference,
+                                        without_leading_recipient)
+        about = without_leading_recipient(text)
+        if personal_reference(about) or personal_owner(about) or lookalike_possessive(text):
+            from service.router.model_led import PRIVATE_WEB_TOOLS
+            forbidden.update(PRIVATE_WEB_TOOLS)
+    if model_led and web.provenance.name == "UNKNOWN" and not web.explicit:
+        # Whose it is could not be told ("Did Sam's package arrive today?").
+        # The rules route asks which public topic was meant and offers no web
+        # tool meanwhile; a model-led turn has no such step, and used to leave
+        # every web tool open. It offers none now. An explicit "search the web
+        # for ..." is not this case.
+        from service.router.model_led import UNOWNED_EGRESS_TOOLS
+        forbidden.update(UNOWNED_EGRESS_TOOLS)
     if web.opted_out or web.private:
-        forbidden.update({"web_fetch", "http_request"})
+        forbidden.update({"web_fetch", "http_request", "wikipedia_summary"})
         if not (model_led and web.public_possessive and not web.opted_out):
             forbidden.add("web_search")
         # "What are Costco's hours?" stays private: on a model-led turn only
@@ -6883,7 +6909,7 @@ def routing_guard_contract(text: str, *, model_led: bool = False) -> tuple[froze
         forbidden.update(_REMINDER_ROUTE_TOOLS)
         bindings["get_upcoming"] = {"calendar_only": True}
     if _notes_todo_destination_is_excluded(t):
-        forbidden.update({"search_notes", "create_note", "append_note", "scan_to_note"})
+        forbidden.update({"search_notes", "create_note", "append_note", "delete_note", "scan_to_note"})
     if re.search(r"\bdo\s+not\b[^.?!]{0,80}\bopen\s+(?:a\s+)?different\s+app\b", t, re.I):
         forbidden.update({"open_app", "switch_app"})
     if re.search(r"\bnot\s+(?:the\s+)?calendar\s+event\b", t, re.I):

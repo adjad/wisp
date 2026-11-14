@@ -12,6 +12,7 @@ import math
 import re
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
@@ -160,6 +161,46 @@ def _number(value, ceiling: float) -> float:
     return 0
 
 
+_FAILED = "Download failed. Check your connection and free disk space."
+# The engine's error text is matched, never forwarded: it can carry paths, tokens and
+# repository text. Each kind maps to a fixed sentence naming only catalogue values.
+_OFFLINE_MARKERS = ("connecterror", "connectionerror", "connection error", "connection refused",
+                    "connection reset", "connection aborted", "failed to resolve", "name resolution",
+                    "nodename nor servname", "max retries exceeded", "network is unreachable",
+                    "timed out", "timeout", "temporary failure", "offline")
+
+
+def _failure(error, model_id: str) -> tuple[str, str]:
+    """(reason, message) for a failed catalogue download, from the engine's error text."""
+    text = error.lower() if isinstance(error, str) else ""
+    model = catalog.by_id(model_id)
+    name = model.label if model else "This model"
+    page = f"huggingface.co/{model.repo}" if model and model.repo else "Hugging Face"
+    if "is gated" in text or "gated repo" in text or ("401 client error" in text and "restricted" in text):
+        return "gated", f"{page} asks for a Hugging Face sign-in, which Wisp's downloader doesn't have."
+    if "repository not found" in text or "404 client error" in text:
+        return "not_found", (f"{name} isn't available on Hugging Face right now ({page}). "
+                             "It may not be published yet.")
+    if "no space left" in text or "errno 28" in text or "enospc" in text:
+        size = f" ({model.size_gb:.1f} GB)" if model and model.size_gb else ""
+        return "no_space", f"Not enough free disk space for {name}{size}. Free some space, then try again."
+    if any(marker in text for marker in _OFFLINE_MARKERS):
+        return "offline", "Wisp couldn't reach huggingface.co. Check your internet connection."
+    return "other", _FAILED
+
+
+# A finished download under this share of the catalogue size fetched a repo that doesn't
+# hold the model yet (a README-only repo "completes" in a second, leaving no weights).
+_INCOMPLETE_SHARE = 0.5
+# Reasons Wisp gives a task the engine itself reports as completed.
+_ENGINE_COMPLETED = {"incomplete", "mismatch"}
+
+
+def _incomplete(model_id: str, downloaded: int, total: int) -> bool:
+    model = catalog.by_id(model_id)
+    return bool(model and model.size_gb) and max(downloaded, total) < _INCOMPLETE_SHARE * model.size_gb * 1e9
+
+
 def _tasks(payload: dict) -> list[tuple[float, str, dict]]:
     rows = payload.get("tasks")
     if not isinstance(rows, list) or len(rows) > 1000:
@@ -182,10 +223,15 @@ def _tasks(payload: dict) -> list[tuple[float, str, dict]]:
             "downloaded_bytes": int(_number(row.get("downloaded_size"), 10**13)),
             "total_bytes": int(_number(row.get("total_size"), 10**13)),
             "bytes_per_second": _number(row.get("speed_bps"), 10**12),
-            # No button name: each surface adds its own (Retry, Retry download, Try again).
-            "message": ("Download failed. Check your connection and free disk space."
-                        if state == "failed" else None),
         }
+        # No button name: each surface adds its own (Retry, Retry download, Try again).
+        task["reason"], task["message"] = (_failure(row.get("error"), catalogue[repo])
+                                           if state == "failed" else (None, None))
+        if state == "completed" and _incomplete(task["model"], task["downloaded_bytes"], task["total_bytes"]):
+            known = catalog.by_id(task["model"])
+            task.update(state="failed", reason="incomplete", message=(
+                f"{known.label}'s files aren't all on Hugging Face yet (huggingface.co/{known.repo}). "
+                "Try again once they are."))
         created = _number(row.get("created_at"), 10**12)
         old = latest.get(repo)
         if old is None or created >= old[0]:
@@ -193,8 +239,150 @@ def _tasks(payload: dict) -> list[tuple[float, str, dict]]:
     return list(latest.values())
 
 
+# A completed catalogue download is checked on disk before Wisp calls it finished:
+# every promised shard present, and each pinned file's sha256 as tested.
+_MESSAGES_AFTER_COMPLETION = {
+    "incomplete": "{label}'s download is missing files (huggingface.co/{repo}). Try again.",
+    "mismatch": ("The files downloaded for {label} aren't the ones Wisp was tested with "
+                 "(huggingface.co/{repo}), so Wisp won't use them."),
+}
+
+
+def _named(names: list[str]) -> str:
+    """Up to three local file names, shortened and stripped to plain characters."""
+    shown = [re.sub(r"[^A-Za-z0-9._ -]", "?", n)[:40] for n in names[:3]]
+    return ", ".join(shown) + (f" and {len(names) - 3} more" if len(names) > 3 else "")
+
+
+def models_dir():
+    """Where the engine's downloader writes: oMLX's HFDownloader gets model_dir=dir_list[0],
+    the first of the engine's model_dirs, which manager.engine_settings makes Wisp's own
+    layout.models_dir (tests/test_engine_downloads.py pins this against oMLX's source)."""
+    layout = getattr(runtime._manager, "layout", None)
+    return layout.models_dir if layout is not None else mode.engine_data_dir() / "models"
+
+
+def _model_folder(model: "catalog.CatalogModel"):
+    return models_dir() / model.repo
+
+
+def check_failed(model_id: str, *, cached_only: bool = False) -> str | None:
+    """Built-in engine: why a pinned catalogue model's downloaded folder can't be used, or
+    None (unpinned, not Wisp's download, or it passes). A folder placed elsewhere by hand
+    is the person's own and stays trusted."""
+    from service.setup.local_models import verify_download
+    known = catalog.by_id(model_id)
+    if not mode.is_bundled() or known is None or not known.pinned_files or not known.repo:
+        return None
+    folder = _model_folder(known)
+    return verify_download(folder, known, cached_only=cached_only) if folder.is_dir() else None
+
+
+def warm_checks() -> None:
+    """Startup, in the background: hash pinned downloads once so setup's cached checks know."""
+    for model in catalog.PRIMARY_MODELS:
+        try:
+            check_failed(model.id)
+        except Exception:  # noqa: BLE001 — a check that can't run now runs at the next poll
+            pass
+
+
+def _check_finished(tasks) -> list:
+    from service.setup.local_models import verify_download
+    for _, _, task in tasks:
+        known = catalog.by_id(task["model"])
+        if task["state"] != "completed" or known is None or not known.repo:
+            continue
+        folder = _model_folder(known)
+        if not folder.is_dir():
+            if known.pinned_files:   # finished, yet not where the engine downloads: never usable
+                task.update(state="failed", reason="incomplete",
+                            message=_MESSAGES_AFTER_COMPLETION["incomplete"].format(label=known.label, repo=known.repo))
+            continue      # unpinned: setup's "hasn't appeared" route covers it
+        reason = verify_download(folder, known)
+        if reason:
+            message = _MESSAGES_AFTER_COMPLETION[reason].format(label=known.label, repo=known.repo)
+            from service.setup.local_models import extra_files
+            extras = extra_files(folder, known) if reason == "mismatch" else []
+            # Retry unlinks plain files only (never a recursive delete), so a folder or link
+            # the tested model didn't have is the user's to remove; saying so avoids a loop.
+            by_hand = [n for n in extras if (folder / n).is_symlink() or not (folder / n).is_file()]
+            files = [n for n in extras if n not in by_hand]
+            if files:
+                message += f" It has files the tested model didn't: {_named(files)}. Try again to remove them."
+            if by_hand:
+                one = len(by_hand) == 1
+                where = str(folder).replace(str(Path.home()), "~", 1)
+                message += (f" It has {'a folder' if one else 'folders'} the tested model didn't: "
+                            f"{_named(by_hand)}. Remove {'it' if one else 'them'} in Finder "
+                            f"(in {where}), then try again.")
+            task.update(state="failed", reason=reason, message=message)
+    return tasks
+
+
+def _contained_folder(model: "catalog.CatalogModel"):
+    """The catalogue folder, only when nothing between the engine's models folder and it is
+    a symlink (so a deletion can't reach another model's files); else None."""
+    root = models_dir()
+    folder = _model_folder(model)
+    try:
+        if not folder.is_dir():
+            return None
+        rel = folder.relative_to(root)
+        step = root
+        for part in rel.parts:                      # Neo-Arid, then Gemma-Wisp
+            step = step / part
+            if step.is_symlink():
+                return None
+        if not folder.resolve().is_relative_to(root.resolve() / rel):
+            return None
+    except (OSError, ValueError):
+        return None
+    return folder
+
+
+def _deletion_plan(model_id: str) -> list:
+    """What a user's Retry removes before downloading again, worked out (and hashed) without
+    touching anything: each pinned file that fails its check, and each top-level file the
+    tested model didn't have, plus hub's metadata for them. Regular files only, never a
+    symlink, never outside the contained catalogue folder or its hub metadata folder."""
+    from service.setup.local_models import bad_pinned_files, extra_files
+    known = catalog.by_id(model_id)
+    if known is None or not known.pinned_files or not known.repo:
+        return []
+    folder = _contained_folder(known)
+    if folder is None:
+        return []
+    meta = folder / ".cache" / "huggingface" / "download"
+    meta_ok = all(not p.is_symlink() for p in (folder / ".cache", folder / ".cache" / "huggingface", meta))
+    names = [*bad_pinned_files(folder, known), *extra_files(folder, known)]
+    plan = []
+    for name in names:
+        path = folder / name
+        if path.is_file() and not path.is_symlink() and path.parent == folder:
+            plan.append(path)
+        record = meta / f"{name}.metadata"
+        if meta_ok and record.is_file() and not record.is_symlink():
+            plan.append(record)
+    return plan
+
+
+def _delete(plan: list) -> list:
+    """Quick: unlink what the plan named (no hashing here)."""
+    gone = []
+    for path in plan:
+        try:
+            if path.is_file() and not path.is_symlink():
+                path.unlink()
+                gone.append(path.name)
+        except OSError:
+            pass
+    return gone
+
+
 async def _inventory() -> list:
-    return _tasks(await _call("GET", "/admin/api/hf/tasks"))
+    tasks = _tasks(await _call("GET", "/admin/api/hf/tasks"))
+    return await asyncio.to_thread(_check_finished, tasks)
 
 
 def _display(tasks) -> dict:
@@ -335,7 +523,24 @@ async def download_model(request: Request):
                 previous = next(((task_id, task) for _, task_id, task in tasks if task["model"] == model), None)
                 if previous is not None and previous[1]["state"] in _ACTIVE:
                     return _display(tasks)  # double click/reopened setup never queues a duplicate
-                if previous is not None and previous[1]["state"] in {"failed", "cancelled"}:
+                if previous is not None and previous[1].get("reason") in _ENGINE_COMPLETED:
+                    # The engine finished this task, so it refuses a retry (400): drop the row
+                    # and download again, which fetches what is missing or changed. Hub skips a
+                    # local file whose saved metadata matches the remote, without hashing it, so
+                    # a pinned file damaged on disk is removed first or it would survive.
+                    # Hash first (slow, changes nothing); a timeout here leaves the disk as it was.
+                    plan = await asyncio.to_thread(_deletion_plan, model)
+                    try:
+                        await _call("DELETE", f"/admin/api/hf/task/{previous[0]}")
+                    except DownloadError:
+                        # Gone already, or still active ("still active" is a 404 too): look again,
+                        # and never queue a second download beside an active one.
+                        tasks = await _inventory()
+                        if any(t["model"] == model and t["state"] in _ACTIVE for _, _, t in tasks):
+                            return _display(tasks)
+                    await asyncio.to_thread(_delete, plan)     # quick: unlinks only
+                    await _call("POST", "/admin/api/hf/download", {"repo_id": _catalogue()[model]})
+                elif previous is not None and previous[1]["state"] in {"failed", "cancelled"}:
                     await _call("POST", f"/admin/api/hf/retry/{previous[0]}", {})
                 else:
                     await _call("POST", "/admin/api/hf/download", {"repo_id": _catalogue()[model]})

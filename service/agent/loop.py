@@ -7,6 +7,7 @@ engine and the audit log. Emits structured events for the frontend.
 """
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import json
 import hashlib
@@ -2140,6 +2141,7 @@ async def run_agent(
     # The current request's own words decide whether a public lookup was asked
     # for. Computed once from the incoming messages, never from tool output.
     current_public_lookup = False
+    unknown_owner_now = False
     public_fact_text: str | None = None
     if model_led_discovery:
         from service.router.web_request import classify as classify_public_lookup
@@ -2147,7 +2149,13 @@ async def run_agent(
                            if isinstance(m, dict) and m.get("role") == "user"
                            and isinstance(m.get("content"), str)), "")
         try:
-            current_public_lookup = bool(classify_public_lookup(_last_user).allowed)
+            _current_web = classify_public_lookup(_last_user)
+            current_public_lookup = bool(_current_web.allowed)
+            # Whose the request is could not be told ("Did Sam's package arrive
+            # today?") and the user did not ask for a search: the turn starts
+            # private for web egress, as main's routing guard already withholds
+            # the web tools from it (router.routing_guard_contract).
+            unknown_owner_now = bool(_current_web.provenance.name == "UNKNOWN" and not _current_web.explicit)
         except Exception:  # noqa: BLE001 — an unclassifiable request is not a lookup request
             current_public_lookup = False
         if not current_public_lookup and re.search(r"https?://\S+", _last_user or ""):
@@ -2168,6 +2176,17 @@ async def run_agent(
                 _lookup = classify_public_lookup(_last_user)
                 public_fact_text = (_last_user if _lookup.explicit_unknown_owner or _lookup.public_possessive or (
                     public_fact_question(_last_user) and not _lookup.private) else None)
+                if public_fact_text is None and len((_last_user or "").split()) <= 8:
+                    # A short follow-up ("And what about Monday?") continues the previous
+                    # typed question; both are the user's own words, same words-only rule.
+                    _prev = [m.get("content") for m in messages
+                             if isinstance(m, dict) and m.get("role") == "user"
+                             and isinstance(m.get("content"), str)][-2:-1]
+                    if _prev and not _lookup.private:
+                        _pl = classify_public_lookup(_prev[0])
+                        if _pl.explicit_unknown_owner or _pl.public_possessive or (
+                                public_fact_question(_prev[0]) and not _pl.private):
+                            public_fact_text = _prev[0] + " " + _last_user
             except Exception:  # noqa: BLE001 — unclassifiable means no exemption
                 public_fact_text = None
         # Hosts the user typed in this message. In a turn that starts private,
@@ -2195,7 +2214,12 @@ async def run_agent(
 
     def private_web_problem(tool, args=None):
         """Turn-start private context: public egress needs explicit intent."""
-        from service.router.model_led import PRIVATE_WEB_TOOLS
+        from service.router.model_led import PRIVATE_WEB_TOOLS, UNOWNED_EGRESS_TOOLS
+        if unknown_owner_now and tool.name in UNOWNED_EGRESS_TOOLS:
+            # main's routing guard already withholds these from the turn; the
+            # loop holds the same line for any caller that did not apply it.
+            return ("It isn't clear whose this is, so nothing about it is looked up online. "
+                    "Answer from the user's own sources, or ask what they mean.")
         if (private_at_start and not private_read_in_turn and not searched_in_turn[0]
                 and not typed_hosts and (current_public_lookup or public_fact_text is not None)
                 and tool.name in {"web_fetch", "http_request"}
@@ -2631,6 +2655,30 @@ async def run_agent(
     # user's requested memory context.
     memory_query = next((str(m.get("content") or "") for m in reversed(messages)
                          if m.get("role") == "user"), "")
+    # The person's own words decide whether "me"/"myself" is the recipient of a
+    # send this turn (service/tools/self_send.py); never model text.
+    from service.tools import self_send as _self_send
+    _self_send.mark_turn(memory_query)
+    if ask_quality and not test_mode and not ask_direct and picture_reading is None:
+        # Wisp's own permissions and switches, and what it does on its own:
+        # answered by fixed, true text before any model step. No tool changes
+        # a permission, so a model answer here could only be a claim.
+        from service.model_only import OWN_SWITCH_ANSWER, own_question, own_switch_request
+        from service.model_only import pure_writing as _own_writing
+        from service.router.router import mask_quoted as _own_mask
+        own_text = ""
+        if _own_writing(memory_query):
+            pass  # "Write IT an email asking them to enable full access" is writing
+        elif own_switch_request(_own_mask(memory_query)):
+            own_text, own_kind = OWN_SWITCH_ANSWER, "switch"
+        elif own_kind := own_question(memory_query):
+            from service import wisp_about
+            own_text = wisp_about.own_answer(own_kind)
+        if own_text:
+            audit("ask_own_answer", kind=own_kind)
+            await emit({"type": "text", "text": own_text})
+            await emit({"type": "done"})
+            return own_text
     # The user's own words for service/safety/intent_guard: this request, the
     # message before it, and the assistant turn it answers.
     _said = [i for i, m in enumerate(messages) if m.get("role") == "user"]
@@ -2638,6 +2686,17 @@ async def run_agent(
     guard_previous_user = _message_text(messages[_said[-2]]) if len(_said) > 1 else ""
     guard_last_assistant = next((_message_text(m) for m in reversed(messages[:_said[-1]] if _said else [])
                                  if m.get("role") == "assistant"), "")
+    # "Delete that reminder" after one was made in this chat, and "Reply to
+    # Dana's last email": what the person's own words point at is bound here,
+    # not left to the model's arguments.
+    _chat_reminder = _reply_sender = ""
+    if ask_quality:
+        from service.model_only import (ALL_REMINDER_CLEARERS, chat_reminder as _find_chat_reminder,
+                                        email_reply_sender as _find_reply_sender)
+        _chat_reminder = _find_chat_reminder(guard_prompt, guard_previous_user, guard_last_assistant)
+        if _chat_reminder:
+            forbidden_tools = frozenset(forbidden_tools) | ALL_REMINDER_CLEARERS
+        _reply_sender = _find_reply_sender(guard_prompt)
     # The model may choose stock arguments for a mixed delivery request. Keep
     # the user's negative clause at the execution boundary, including direct
     # calls supplied by the router, rather than trusting the proposed list.
@@ -2657,6 +2716,11 @@ async def run_agent(
         from service.router.router import has_write_intent as _has_write_intent
         _ask_wanted_change = bool(_has_write_intent(memory_query)
                                   or _answers_offer(guard_prompt, guard_last_assistant))
+        if not _ask_wanted_change:
+            # The answer to the assistant's own question about a change the
+            # person asked for ("What should the bullet say?" -> "Demo point 4").
+            from service.model_only import pending_write_request as _pending_write
+            _ask_wanted_change = bool(_pending_write(guard_prompt, guard_previous_user, guard_last_assistant))
 
     def _ask_unbacked_claim(text: str):
         """The sentence of an ask_quality final that says a change was made
@@ -2671,6 +2735,12 @@ async def run_agent(
         if pure_writing(memory_query):
             return None
         claim = claimed_effect(text)
+        if claim is None and _ask_wanted_change:
+            # Any other wording of "it is done" ("The note now has four
+            # bullets.") on a turn that asked for a change and made none.
+            from service.model_only import _CLAIM_BACKREF, EffectClaim, claimed_write
+            if said := claimed_write(text):
+                claim = EffectClaim(said, bool(_CLAIM_BACKREF.search(said)), True)
         if claim is None:
             return None
         if earlier_effects and (claim.backref or not _ask_wanted_change):
@@ -2717,7 +2787,7 @@ async def run_agent(
     # Web egress treats only real private content as a turn-start signal:
     # history, or remembered facts. The identity block does not count.
     if model_led_discovery:
-        private_at_start = bool(history_private or memory_hint)
+        private_at_start = bool(history_private or memory_hint or unknown_owner_now)
 
     # Skills stay on the managed model. When this run talks to an external local
     # inference app (the unauthenticated loopback provider), none of their content
@@ -3237,6 +3307,12 @@ async def run_agent(
             # A missing receipt proves neither sent nor not sent. Stop before
             # the generic verifier can replace it with a definite negative.
             return uncertain[-1].text
+        if "BLOCKED by safety policy" in (text or ""):
+            # A denied tool's line is for the model, never the answer.
+            if ask_blocked & {"web_search", "web_fetch", "http_request"} or "Private data is in context" in text:
+                return ("I couldn't look that up on the web in this chat because it has your "
+                        "private mail or messages in it. Ask it in a new chat and I'll search.")
+            return "I couldn't do that: a safety rule stopped it."
         from service.agent.verification import verify_delivery_claims
         text = verify_delivery_claims(text, tool_outcomes)
         if (require_fresh_personal or fresh_personal_scope) and not fresh_personal_evidence and not test_mode:
@@ -4605,6 +4681,11 @@ async def run_agent(
                         # The call was only text, so nothing ran: a "sent it"
                         # around it is false and never reaches the user.
                         text = ""
+                from service.model_only import strip_call_text
+                if (plain := strip_call_text(text, list(_registry()))) != text:
+                    # `get_my_day_plan(day='tomorrow')` printed in the answer.
+                    audit("ask_call_text", step=_step)
+                    text, wrote_call = plain, wrote_call or not plain
                 from service.router.router import has_write_intent
                 asks_change = has_write_intent(memory_query)
                 if (wrote_call and not text and not ask_text_call_nudged and _step < max_steps - 1
@@ -4829,6 +4910,15 @@ async def run_agent(
                 audit("ask_unknown_personal_fact", step=_step)
                 from service.model_only import ASK_UNKNOWN_MESSAGE
                 text = ASK_UNKNOWN_MESSAGE
+            if ask_quality and not test_mode:
+                from service.model_only import OWN_SWITCH_ANSWER, own_switch_claim
+                if own_switch_claim(text):
+                    # "I've turned on Full access": no tool changes Wisp's own
+                    # permissions or switches, so this is never true.
+                    audit("ask_own_switch_claim", step=_step)
+                    if content_streamed:
+                        await emit({"type": "clear_answer"})
+                    text = OWN_SWITCH_ANSWER
             if _ask_unbacked_claim(text) is not None:
                 # Still claims a change no tool made: say plainly it was not
                 # done, never the claim (the user looked for a reminder that
@@ -5485,6 +5575,12 @@ async def run_agent(
                     _OUTBOUND_PREVIEW_TOOLS, human_reviewed_content,
                     outbound_content_problem)
 
+                if _chat_reminder and name == "cancel_event":
+                    # "that reminder" is the one made in this chat, by its title.
+                    args = {**args, "title": _chat_reminder}
+                elif _reply_sender and name == "view_emails":
+                    from service.model_only import reply_search_args
+                    args = reply_search_args(args, _reply_sender)
                 dec = tool_policy(tool, args)
                 await emit({"type": "tool_call", "id": cid, "name": name,
                             "args": args, "decision": dec.tier.value, "reason": dec.reason})
@@ -5503,7 +5599,10 @@ async def run_agent(
                 if dec.tier is Tier.DENY:
                     result = f"BLOCKED by safety policy: {dec.reason}"
                     audit("deny", tool=name, args=args, reason=dec.reason)
-                    ask_blocked.add(name)
+                    # A query that only needs fewer words is fixable: the retry must run.
+                    if not str(dec.reason).startswith(
+                            "Private data is in context, so a public lookup may only search"):
+                        ask_blocked.add(name)
                 elif _no_recipient:
                     result = _no_recipient
                     audit("recipient_preflight", tool=name, args=args, reason=str(_no_recipient))
@@ -5611,6 +5710,20 @@ async def run_agent(
                             continue
                         action["args"] = json.loads(json.dumps(args, allow_nan=False))
                         action["fingerprint"] = _action_fingerprint(name, args)
+                    elif name == "delete_note":
+                        # Name the one matching note's folder on the card and bind
+                        # the delete to that folder.
+                        from service.tools.notes_write import delete_note_card
+                        try:
+                            _card = await asyncio.to_thread(delete_note_card, args)
+                        except Exception:  # noqa: BLE001
+                            # A failed lookup never loses the card: it keeps the
+                            # policy's line, and the tool re-checks before deleting.
+                            _card = None
+                        if _card is not None:
+                            args, action["reason"] = _card
+                            action["args"] = json.loads(json.dumps(args))
+                            action["fingerprint"] = _action_fingerprint(name, args)
                     elif name == "clear_past_reminders":
                         # A bulk delete has to show its whole list, not a
                         # count: the user asked for "old reminders" and only

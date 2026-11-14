@@ -464,13 +464,22 @@ final class TodayModel: ObservableObject {
     }
 
     private static func dayString(_ date: Date, in zone: TimeZone) -> String {
-        let formatter = DateFormatter()
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = zone
-        formatter.dateFormat = "yyyy-MM-dd"
+        let formatter = dayFormatters[zone.identifier] ?? {
+            let formatter = DateFormatter()
+            formatter.calendar = Calendar(identifier: .gregorian)
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = zone
+            formatter.dateFormat = "yyyy-MM-dd"
+            dayFormatters[zone.identifier] = formatter
+            return formatter
+        }()
         return formatter.string(from: date)
     }
+
+    /// One formatter per time zone, kept: `day`, `isShowingCurrentDay` and
+    /// `dayInterval` are read many times in every Day and Brief update, and a
+    /// new DateFormatter each time was the largest cost of a tab switch's first frame.
+    private static var dayFormatters: [String: DateFormatter] = [:]
 
     private var currentKey: DayKey {
         let zone = timezone

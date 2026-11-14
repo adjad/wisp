@@ -35,6 +35,9 @@ struct QuickSettingsView: View {
     @AppStorage(ReadAloudVoice.rateKey) private var voiceRate = 1.0
     /// The title and switcher's laid-out height, which grows with Text size.
     @State private var fixedHeight: CGFloat = 0
+    @ObservedObject private var acting = ActForMeModel.shared
+    /// The person flipped "Let Wisp act for me" on and has not confirmed yet.
+    @State private var confirmingAct = false
     /// Decides whether the Google row shows at all (new users only).
     @StateObject var google = NotchGoogleModel()
     @AppStorage(VoiceReplyMode.defaultsKey) private var voiceRepliesRaw = VoiceReplyMode.afterVoice.rawValue
@@ -74,7 +77,7 @@ struct QuickSettingsView: View {
             voicePreview.stop()
             chosen.save()
         }
-        .onAppear { voices = ReadAloudVoice.installed() }
+        .onAppear { voices = ReadAloudVoice.installedForOpening { voices = $0 } }
         .onDisappear { voicePreview.stop() }
         .task {
             guard refreshes else { return }
@@ -176,6 +179,8 @@ struct QuickSettingsView: View {
             switch section {
             case .general:
                 fullAccessRow
+                hairline
+                actForMeRow
                 hairline
                 learningRow
                 hairline
@@ -337,6 +342,60 @@ struct QuickSettingsView: View {
                 .disabled(settings.fullAccessPending)
             }
         }
+    }
+
+    /// "Let Wisp act for me" (service/proactive/acting.py). On asks once more, in the row itself
+    /// (a dialog would cover the notch); off is immediate. Unknown state offers Check and Turn off.
+    private var actForMeRow: some View {
+        let state = acting.state
+        let help = state?.consent ?? "Wisp does a few things without asking, each with an Undo."
+        if confirmingAct, acting.problem == nil, let state {
+            // Confirmed in place; the full text must stay readable, so this does not use row().
+            return AnyView(VStack(alignment: .leading, spacing: 8) {
+                Text(ActForMe.title).font(.wisp(.reading, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                Text(state.confirmation).font(.wisp(.body)).foregroundStyle(Theme.textSecondary)
+                    .lineLimit(nil).fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 6) {
+                    pillButton("Turn on", primary: true) { confirmingAct = false; acting.set(true) }
+                    pillButton("Cancel") { confirmingAct = false }
+                }
+            }
+            .help(help)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14).padding(.vertical, 11)
+            .accessibilityElement(children: .contain)
+            .task { await acting.refresh() })
+        }
+        return AnyView(row(ActForMe.title, help: help) {
+            if let problem = acting.problem {
+                Text(problem)
+            } else if let state {
+                Text(!state.enabled ? "Off · none of this without your tap"
+                     : state.new.isEmpty ? "On · every action has an Undo"
+                     : state.new.count == 1 ? "On · one action waits for your yes"
+                     : "On · \(state.new.count) actions wait for your yes")
+            } else {
+                Text("Wisp couldn't check this yet.")
+            }
+        } control: {
+            if confirmingAct {
+                HStack(spacing: 6) {
+                    pillButton("Turn on", primary: true) { confirmingAct = false; acting.set(true) }
+                    pillButton("Cancel") { confirmingAct = false }
+                }
+            } else if let state {
+                Toggle(ActForMe.title, isOn: Binding(get: { state.enabled },
+                                                    set: { on in if on { confirmingAct = true } else { acting.set(false) } }))
+                    .toggleStyle(NotchSwitch())
+                    .disabled(acting.pending)
+            } else {
+                HStack(spacing: 6) {
+                    pillButton("Check") { Task { await acting.refresh() } }
+                    pillButton("Turn off") { acting.set(false) }
+                }
+            }
+        }
+        .task { await acting.refresh() })
     }
 
     private var learningRow: some View {

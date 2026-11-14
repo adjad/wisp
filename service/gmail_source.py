@@ -135,6 +135,13 @@ _sent: dict[str, list[dict]] = {}
 # account -> {Gmail message id: its raw record}, only the ids the last raw sync
 # listed. Dropped with the account's other caches on reconnect, disconnect and erase.
 _raw: dict[str, dict[str, str]] = {}
+# (account, bare casefolded RFC Message-ID) -> {gmail_id, sender_address, auth_results} for
+# every message this process fetched, or None when two different Gmail messages share that
+# Message-ID (a sender chooses its own Message-ID, so it could copy an authenticated one's).
+# In memory only, never persisted: after a restart a message has no evidence until the next
+# sync fetches it again (no evidence = no proof). Dropped with _meta on reconnect, disconnect
+# and erase. See auth_results_for / authenticated_for and service/mail_auth.py.
+_auth: dict[tuple[str, str], dict | None] = {}
 _access: dict[str, dict] = {}
 _epochs: dict[str, int] = {}
 _locks: dict[tuple[str, str], asyncio.Lock] = {}
@@ -612,28 +619,131 @@ def _decode(value: str) -> str:
 
 def _header(payload: dict, name: str) -> str:
     for item in (payload or {}).get("headers", []):
-        if item.get("name", "").lower() == name.lower():
-            return item.get("value", "")
+        if isinstance(item, dict) and str(item.get("name", "")).lower() == name.lower():
+            value = item.get("value", "")
+            return value if isinstance(value, str) else ""
     return ""
+
+
+_AUTH_HEADER = "authentication-results"
+_AUTH_KEEP = 16
+# One character past service/mail_auth.MAX_HEADER_CHARS (a test pins them together); mail_auth
+# itself is imported only where a verdict is asked for, so loading this module stays light.
+_AUTH_VALUE_CAP = 8193
+
+
+def _auth_results(payload: dict) -> list[str]:
+    """Every Authentication-Results value, in the order the API lists them, unaltered.
+
+    A value that is not a string is kept as "" in its place, so it still counts (and
+    service/mail_auth.py refuses the set) instead of silently vanishing. At most
+    _AUTH_KEEP values, each cut one character past mail_auth's cap so an oversized
+    one still reads as oversized."""
+    headers = (payload or {}).get("headers") if isinstance(payload, dict) else None
+    out: list[str] = []
+    for item in headers if isinstance(headers, list) else []:
+        if isinstance(item, dict) and str(item.get("name", "")).lower() == _AUTH_HEADER:
+            value = item.get("value")
+            out.append(value[:_AUTH_VALUE_CAP] if isinstance(value, str) else "")
+    if len(out) > _AUTH_KEEP:
+        return out[:_AUTH_KEEP] + [""]   # "" makes mail_auth refuse a set it cannot see whole
+    return out
+
+
+def _sender_address(raw_from: str) -> str:
+    """The address `parseaddr` reads from the raw From header, casefolded ("" if none).
+
+    Parsed BEFORE encoded words are decoded: a name that decodes to "<", "@" or ","
+    cannot move it. Carried on every row as `sender_address`, so readers never take
+    an address back out of the display name (see service/mail_sender.py)."""
+    address = _clean(parseaddr(raw_from or "")[1]).casefold()
+    return address if "@" in address and not any(c.isspace() for c in address) else ""
 
 
 def parse_metadata(message: dict) -> dict:
     payload = message.get("payload") or {}
-    name, address = parseaddr(_decode(_header(payload, "From")))
+    raw_from = _header(payload, "From")
+    name, address = parseaddr(_decode(raw_from))
     return {"id": message.get("id", ""),
             "ts": int(message.get("internalDate", 0)) / 1000.0,
             "name": _clean(name), "address": _clean(address),
+            "sender_address": _sender_address(raw_from),
             "to": _clean(_decode(_header(payload, "To"))),
             "subject": _clean(_decode(_header(payload, "Subject"))),
             "message_id": _clean(_header(payload, "Message-ID")),
             "in_reply_to": _clean(_header(payload, "In-Reply-To")),
+            "auth_results": _auth_results(payload),
             "unread": "UNREAD" in (message.get("labelIds") or [])}
 
 
+def _sender_field(meta: dict) -> str:
+    """The full From for rows that carry NO separate address: "Name <address>", using the
+    address read from the RAW header (never one decoded out of an encoded word), or the
+    address alone, or the name alone when there is no clean address."""
+    address = meta.get("sender_address") or ""
+    if meta["name"] and address:
+        return f"{meta['name']} <{address}>"
+    if address:
+        return address
+    # No clean address: the name alone, unless the name itself reads like an address or a
+    # bracket, which would then pass for one. Such a sender has nothing to show.
+    name = str(meta["name"] or "")
+    return "" if any(mark in name for mark in "@<>") else name
+
+
+def _mid_key(message_id) -> str:
+    return str(message_id or "").strip().strip("<>").strip().casefold()
+
+
+def _remember_auth(account: str, gmail_id: str, meta: dict) -> None:
+    key = (str(account or "").casefold(), _mid_key(meta.get("message_id")))
+    if not key[0] or not key[1] or not gmail_id:
+        return
+    if key in _auth:
+        known = _auth[key]
+        if known is None or known["gmail_id"] != gmail_id:
+            _auth[key] = None          # two messages, one Message-ID: neither has evidence
+            return
+    _auth[key] = {"gmail_id": gmail_id, "sender_address": meta.get("sender_address") or "",
+                  "auth_results": list(meta.get("auth_results") or [])}
+
+
+def _forget_auth(account: str) -> None:
+    account = str(account or "").casefold()
+    for key in list(_auth):
+        if key[0] == account:
+            _auth.pop(key, None)
+
+
+def auth_results_for(account: str, message_id: str) -> list[str] | None:
+    """The Authentication-Results values Gmail returned for this account's message with
+    this RFC Message-ID, in API order; None when unknown (not fetched by this process,
+    disconnected, or the Message-ID is shared by two messages). None is no proof."""
+    entry = _auth.get((str(account or "").casefold(), _mid_key(message_id)))
+    return list(entry["auth_results"]) if entry else None
+
+
+def authenticated_for(account: str, message_id: str, from_address: str) -> tuple[bool, str] | None:
+    """mail_auth's verdict for that message, or None when there is no evidence (as above).
+
+    `from_address` is the row's real sender (mail_sender.real_address). It must equal the
+    address this process read from the fetched message's own From, so a row cannot borrow
+    another message's evidence by repeating its Message-ID."""
+    entry = _auth.get((str(account or "").casefold(), _mid_key(message_id)))
+    if not entry:
+        return None
+    if not entry["sender_address"] or str(from_address or "").strip().casefold() != entry["sender_address"]:
+        return False, "sender differs from the fetched message"
+    from service import mail_auth
+    return mail_auth.authenticated(entry["auth_results"], from_address=entry["sender_address"],
+                                   provider="gmail")
+
+
 def header_line(meta: dict, account: str, unread: bool) -> str:
-    # Same H2 record MailReader.swift emits (10 fields).
+    # Same H2 record MailReader.swift emits (10 fields). The address field is the
+    # one parsed from the raw From header, so header rows' sender_address matches it.
     return _FS.join(["H2", str(int(meta["ts"])), "U" if unread else "R", account,
-                     account, meta["name"], meta["address"], meta["message_id"],
+                     account, meta["name"], meta.get("sender_address") or "", meta["message_id"],
                      meta["subject"], meta["id"]])
 
 
@@ -742,7 +852,7 @@ def _worth_listing(item: dict) -> bool:
 
 def raw_record(message: dict, account: str) -> str:
     meta = parse_metadata(message)
-    sender = f"{meta['name']} <{meta['address']}>" if meta["name"] else meta["address"]
+    sender = _sender_field(meta)
     body = extract_body(message.get("payload") or {})
     line = attached_line([(a["name"], a["size"]) for a in attachment_parts(message.get("payload") or {})
                           if _worth_listing(a)])
@@ -768,10 +878,12 @@ def _attachment_message(account: str, message: dict) -> dict | None:
     if _HIDDEN_LABELS & set(message.get("labelIds") or []):
         return None
     meta = parse_metadata(message)
-    sender = f"{meta['name']} <{meta['address']}>" if meta["name"] else meta["address"]
+    # Full "Name <address>" and NO separate sender_address: mail_attachments shows this
+    # string and merges it with Apple Mail's "Name <address>" form, and attachment_save
+    # compares it exactly. A row never carries both a full From and a separate address.
     return {"account": account, "message_id": meta["id"], "rfc_message_id": meta["message_id"],
-            "ts": meta["ts"], "sender": sender, "subject": meta["subject"],
-            "attachments": attachment_parts(message.get("payload") or {})}
+            "ts": meta["ts"], "sender": _sender_field(meta),
+            "subject": meta["subject"], "attachments": attachment_parts(message.get("payload") or {})}
 
 
 async def search_attachments(account: str, terms: list[str], start: float | None, end: float | None,
@@ -867,8 +979,12 @@ async def _ensure_meta(http, ids: list[str]) -> None:
             data = await _get(http, f"messages/{message_id}", [
                 ("format", "metadata"), ("metadataHeaders", "From"),
                 ("metadataHeaders", "To"), ("metadataHeaders", "Subject"),
-                ("metadataHeaders", "Message-ID"), ("metadataHeaders", "In-Reply-To")])
-            _meta[(account, message_id)] = parse_metadata(data)
+                ("metadataHeaders", "Message-ID"), ("metadataHeaders", "In-Reply-To"),
+                # Read by service/mail_auth.py; same gmail.readonly scope, no new consent.
+                ("metadataHeaders", "Authentication-Results")])
+            meta = parse_metadata(data)
+            _meta[(account, message_id)] = meta
+            _remember_auth(account, message_id, meta)
 
     await asyncio.gather(*(one(i) for i in missing))
 
@@ -966,6 +1082,8 @@ async def _sync_raw(http, account: str) -> None:
     if not _still_connected():
         return
     fetched = {i: raw_record(m, account) for i, m in zip(missing, messages)}
+    for i, m in zip(missing, messages):
+        _remember_auth(account, i, parse_metadata(m))
     records = {i: fetched[i] if i in fetched else _with_read_state(known[i], i in unread) for i in ids}
     _raw[account] = records
     email_tools.cache_external_emails(account=account, raw=_RS.join(records[i] for i in ids))
@@ -1246,6 +1364,7 @@ async def _finish(client_id, client_secret, code, verifier, redirect, *,
         _last.pop(email, None)
         _sent.pop(email, None)
         _raw.pop(email, None)
+        _forget_auth(email)
         _errors.pop(email, None)       # e.g. the expired sign-in this replaces
         # Every sign-in serves the Workspace tools too: its refresh token is
         # copied for the Workspace server (sync_credentials below). An older
@@ -1468,6 +1587,7 @@ async def disconnect(account: str = "") -> dict:
             for key in list(_meta):
                 if key[0] == email:
                     _meta.pop(key, None)
+            _forget_auth(email)
         if accounts or cfg.get("client_id"):
             # The user's own OAuth client stays after the last account goes, so
             # "Connect Google" in the notch still works after an erase. It holds
@@ -1542,6 +1662,7 @@ def erase_account_data(account: str, *, attachment_text: bool = True) -> dict:
             _meta.pop(key, None)
     _sent.pop(account, None)
     _raw.pop(account, None)
+    _forget_auth(account)
     try:
         from service import google_workspace
         google_workspace.credentials_path(account).unlink(missing_ok=True)

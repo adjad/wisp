@@ -366,6 +366,11 @@ def _own_address_guard(to: str, tool: str, confirmed_self_send: bool = False,
     addr = (to or "").strip().lower()
     if not addr or confirmed_self_send:
         return None
+    # The person's own words this turn named themselves ("email myself …"):
+    # that is the confirmation, and the card that follows is still the approval.
+    from service.tools.self_send import named_self
+    if named_self():
+        return None
     try:
         from service.memory.identity import user_emails
         own = {e.strip().lower() for e in (user_emails() or []) if e}
@@ -588,11 +593,73 @@ def _not_sent(text: str, *, question: str = "", needs_recipient: bool = False) -
     return _NotSentResult(text, question=question, needs_recipient=needs_recipient)
 
 
+# What a model passes as `to` when the person said "text myself": "me", "my
+# number", "my own email". The person's own name is checked separately.
+_SELF_RECIPIENT_RE = re.compile(
+    r"^(?:to\s+)?(?:me|myself|self|the\s+user|(?:my|the\s+user'?s)\s+(?:own\s+)?(?:number|phone(?:\s+number)?|"
+    r"cell(?:\s+number)?|mobile|e-?mail(?:\s+address)?|address|inbox|account|apple\s+id))$", re.I)
+_APPLE_ID_DOMAINS = frozenset({"icloud.com", "me.com", "mac.com"})
+_NO_OWN_HANDLE_EMAIL = ("I don't know your own email address: Wisp takes it from the accounts "
+                        "set up in Mail, and none has synced yet. What address should I use?")
+_NO_OWN_HANDLE_TEXT = ("I don't know your own number or address: Wisp has no phone number for "
+                       "you, and takes your address from the accounts set up in Mail, where "
+                       "none has synced yet. What number or address should I use?")
+
+
+def _names_user(name: str) -> bool:
+    """`name` is the person's own name: full, first, or what they asked to be called."""
+    typed = " ".join(name.split()).casefold()
+    own = set()
+    try:
+        from service.memory import identity
+        names = (identity.user_name(), identity._preferred_name())
+    except Exception:  # noqa: BLE001 - no identity: not their name
+        return False
+    for full in names:
+        if full := " ".join(str(full or "").split()).casefold():
+            own |= {full, full.split()[0]}
+    return bool(typed) and typed in own
+
+
+def _own_recipient(name: str, *, want_email: bool = False) -> tuple[str, str] | None:
+    """(the person's own handle, "") for "me"/"myself"/their own name when their
+    own words this turn named themselves; ("", not-sent) when no own handle is
+    known; None when this is not a send to themselves (resolve as a contact).
+
+    Read-only identity: no phone number is known to Wisp, so a text goes to an
+    own address (an Apple ID one first, since iMessage reaches those)."""
+    from service.tools.self_send import named_self
+    typed = (name or "").strip().strip(".!?\"'")
+    if not named_self() or not (_SELF_RECIPIENT_RE.match(typed) or _names_user(typed)):
+        return None
+    try:
+        from service.memory.identity import user_emails
+        emails = [e.strip() for e in user_emails() or [] if _EMAIL_RE.match(e.strip())]
+    except Exception:  # noqa: BLE001 - no identity yet: asked for below
+        emails = []
+    if not want_email:
+        emails = ([e for e in emails if e.rsplit("@", 1)[-1].lower() in _APPLE_ID_DOMAINS]
+                  + [e for e in emails if e.rsplit("@", 1)[-1].lower() not in _APPLE_ID_DOMAINS])
+    if emails:
+        return emails[0], ""
+    what = "email address" if want_email else "phone number or address"
+    return "", _not_sent(
+        (f"(NOT sent — the user asked to send this to themselves, but Wisp knows no {what} "
+         "of theirs: it has no phone number for them, and their own address comes only from "
+         "the accounts set up in Mail, where none has synced yet. Ask the user which "
+         f"{'address' if want_email else 'number or address'} to use — don't guess, and "
+         "don't look their name up as a contact.)"),
+        question=_NO_OWN_HANDLE_EMAIL if want_email else _NO_OWN_HANDLE_TEXT,
+        needs_recipient=True)
+
+
 def _resolve_recipient(name: str, *, want_email: bool = False) -> tuple[str, str]:
     """A contact NAME -> (handle, ""), or ("", explanation) if it can't be
     resolved unambiguously. The explanation is written for the model to relay;
     it is a lookup failure, so it also proves that nothing was sent.
     """
+    if (own := _own_recipient(name, want_email=want_email)) is not None:
+        return own
     from service.tools import imessage_tools as contacts
     from service.tools.imessage_tools import find_contacts
 
@@ -652,7 +719,21 @@ def _resolve_recipient(name: str, *, want_email: bool = False) -> tuple[str, str
 
 def _is_handle(to: str) -> bool:
     """A literal address or number, as opposed to a contact name to resolve."""
-    return bool(_EMAIL_RE.match(to) or re.fullmatch(r"[+()\-.\s\d]{7,}", to))
+    return bool(_EMAIL_RE.match(to) or re.fullmatch(r"[+()\-.\s\d]{7,}", to) or _typed_short_code(to))
+
+
+def _typed_short_code(to: str) -> bool:
+    """A 3 to 6 digit number the person typed in their own message this turn:
+    a short code ("Text 22821: Wisp test 1" stopped at "no saved contact
+    matches '22821'", 2026-11-13, real Mac). One the model supplied and the
+    person never typed is still not a number."""
+    code = (to or "").strip()
+    if not re.fullmatch(r"\d{3,6}", code):
+        return False
+    from service.tools.self_send import turn_text
+    # Only where a recipient is named: before the message's own words begin.
+    head = re.split(r":|\b(?:saying|says|that|with\s+the\s+(?:text|message|body))\b", turn_text(), 1, flags=re.I)[0]
+    return bool(re.search(rf"(?<![\d.,/-]){code}(?![\d/-]|[.,]\d)", head))
 
 
 def _saved_name(handle: str) -> str:
@@ -732,6 +813,29 @@ def _cc_addresses(cc: str) -> tuple[list[str], str]:
     return resolved, ""
 
 
+def _self_not_invented(to: str, body: str = "") -> str:
+    """`to` with every address or number the person did not type, and that is
+    not their own, read as "me", on a turn where they named themselves as the
+    recipient ("Email myself a test" reached a card addressed to an address
+    the model made up, 2026-11-13 real-model run). Other turns: unchanged."""
+    from service.tools.self_send import named_self, typed_this_turn
+    if not to or not named_self():
+        return to
+    try:
+        from service.memory.identity import user_emails
+        own = {e.strip().casefold() for e in user_emails() or []}
+    except Exception:  # noqa: BLE001 - no identity: nothing is known to be theirs
+        own = set()
+    if not _is_handle(to) and "@" not in to and body and " ".join(to.split()).casefold() in body.casefold():
+        # "Text myself: Wisp test" arrived as to="Wisp test": the body, not a person.
+        return "me"
+    parts = _split_recipients(to) if "@" in to else [to]
+    kept = ["me" if (_is_handle(r) and r.casefold() not in own and not typed_this_turn(r)
+                     and not _saved_name(r)) else r
+            for r in parts]
+    return ", ".join(dict.fromkeys(kept))
+
+
 def prepare_send_recipient(tool, args: dict) -> tuple[dict, str | None]:
     """(args, problem): settle a send's recipient once, BEFORE its card.
 
@@ -753,6 +857,13 @@ def prepare_send_recipient(tool, args: dict) -> tuple[dict, str | None]:
         return args, None
     tool = name
     to = str(args.get("to") or "").strip()
+    if (mine := _self_not_invented(to, " ".join(str(args.get(k) or "") for k in ("text", "body", "subject")))) != to:
+        to = mine
+        args = {**args, "to": to}
+    if not to and _own_recipient("me") is not None:
+        # "Text myself …" with no recipient passed: the person named themselves.
+        to = "me"
+        args = {**args, "to": to}
     if tool == "send_message":
         # Never the model's own value: set here from the lookup, or not at all.
         args = {k: v for k, v in args.items() if k != "resolved_to"}
@@ -1395,6 +1506,16 @@ async def email_triage(message_id: str, action: str) -> str:
     return receipt
 
 
+# The app's forward script is held back on purpose (OutboundSender.swift,
+# unverifiedForwardLookup): its lookup finds no message, so Mail composes
+# nothing and the app can only report an unconfirmed result. That held the
+# whole chat ("An earlier action in this chat may not have finished") for a
+# send that never began. Until a real forward has been checked in Mail, the
+# tool says plainly that nothing was sent. Set True together with the app-side
+# change, after the hand check in docs/releases/0.5.0-hand-checks.md.
+APPLE_MAIL_FORWARD_READY = False
+
+
 @register(
     "forward_email",
     "Forward a specific email to someone else, keeping the original content "
@@ -1430,6 +1551,15 @@ async def forward_email(message_id: str, to: str, note: str = "") -> str:
         if problem:
             return problem
         resolved.append(handle)
+    if not APPLE_MAIL_FORWARD_READY:
+        # Returned before the app is asked for anything: proof nothing was sent,
+        # so the chat is not held for an unconfirmed send.
+        return _not_sent(
+            "(the forward was NOT sent: this build cannot forward an email through Apple Mail yet. "
+            "Nothing was sent and nothing changed. Offer to send the email's text as a new email "
+            "with send_email instead, and do not call forward_email again in this chat.)",
+            question="I can't forward an email through Mail yet, so nothing was sent. "
+                     "Want me to send its text as a new email instead?")
     note = note or ""
     if _unreviewed():  # as send_email: an approved note goes out as its card showed it
         note = _degarble(note)
@@ -1446,6 +1576,11 @@ async def forward_email(message_id: str, to: str, note: str = "") -> str:
         return _not_sent(f"(the forward was NOT sent: {res.get('error') or 'unknown error'})")
     return f"Forwarded to {', '.join(_named(r) for r in resolved)}."
 
+
+
+MESSAGE_HANDED_OVER = "Messages accepted it; delivery isn't confirmed here."
+TEXT_FORWARDING_HINT = ("To send SMS texts from this Mac, turn on Text Message Forwarding for it "
+                        "on your iPhone: Settings › Apps › Messages › Text Message Forwarding.")
 
 @register(
     "send_message",
@@ -1528,6 +1663,23 @@ async def send_message(to: str, text: str, confirmed_self_send: bool = False,
                 "Message outcome unknown — sending was not confirmed. Check Messages before trying again; do not retry automatically.",
                 operation="send_message", action_id=res.get("action_id") or "")
         return _not_sent(f"(the message was NOT sent: {res.get('error') or 'unknown error'})")
-    return f"Message sent to {display}."
+    # Messages accepting a text is not the text going out: a short code with
+    # no SMS relay was accepted and then marked Not Delivered on the real app.
+    # The app reads the message's own row back from Messages and says which.
+    delivery = res.get("delivery")
+    by_sms = bool(re.fullmatch(r"\d{3,6}", to)) or res.get("delivery_service") in ("SMS", "RCS")
+    if delivery == "no_sms_account":
+        # The app's script stopped before any send.
+        return _not_sent(f"(the text to {display} was NOT sent: this Mac can't send SMS texts. "
+                         f"{TEXT_FORWARDING_HINT})")
+    if delivery == "failed":
+        return (f"The text to {display} was not delivered: Messages shows it as Not Delivered."
+                + (f" {TEXT_FORWARDING_HINT}" if by_sms else "")
+                + " Check Messages before trying again; do not retry automatically.")
+    if delivery == "delivered":
+        return f"Message sent to {display}. Messages shows it as delivered."
+    if delivery == "sent":
+        return f"Message sent to {display}."
+    return f"Message sent to {display}. {MESSAGE_HANDED_OVER}"
 
 

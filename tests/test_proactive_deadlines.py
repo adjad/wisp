@@ -240,7 +240,7 @@ def test_read_counts_every_mail_and_text_looked_at_including_the_bulk_left_out()
     me = "me@example.com"
 
     def row(i, sender, address, subject, body):
-        return dict(ts=now - 3600 - i, account="iCloud", account_id="a", sender=f"{sender} <{address}>",
+        return dict(ts=now - 3600 - i, account="iCloud", account_id="a", sender=sender,
                     sender_address=address, to=me, subject=subject, message_id=f"m{i}", body=body, unread=True)
     rows = [row(i, "Shop Weekly", "news@shop.example", f"Sale {i}", "Big sale! Unsubscribe here.") for i in range(5)]
     rows.append(row(9, "Sam Lee", "sam@example.com", "Coffee?", "Want to grab coffee Friday?"))

@@ -788,7 +788,10 @@ def choose_mode(chosen: dict[str, bool]) -> None:
             set_read_only(chosen["read_only"])
         if "full_access" in chosen:
             set_full_access(chosen["full_access"])
-        _save_mode({**_saved_mode(), **chosen})
+        # Both keys, as they are in force now, every time. Saving only the key that was chosen
+        # left the other to policy.yaml's default at the next start: after a damaged file had
+        # forced Full access off, choosing view-only alone would have brought Full access back.
+        _save_mode({"read_only": bool(_READ_ONLY), "full_access": bool(_FULL_ACCESS)})
 
 
 def _rules(key: str, default: list[str]) -> list[str]:
@@ -1015,6 +1018,11 @@ ALWAYS_CONFIRM_TOOLS = frozenset({"run_applescript"})
 # unasked under full access; this file is confirmed on a card naming it in every
 # mode, and never grantable (grants._NEVER_GRANTABLE).
 ALWAYS_CONFIRM_FILE_TOOLS = frozenset({"save_email_attachment"})
+# Deletes a note. Its category is notes_write (view-only and the ordinary note
+# rules apply), but notes_write runs unasked under full access; a delete is
+# confirmed on a card naming the note and its folder in every mode, and never
+# grantable (grants._NEVER_GRANTABLE).
+ALWAYS_CONFIRM_DELETE_TOOLS = frozenset({"delete_note"})
 
 
 # Where keys, tokens and Wisp's own grants live. Reading one puts a secret in
@@ -1029,6 +1037,12 @@ def _credential_roots() -> list[Path]:
     for moe in dict.fromkeys((MOE_DIR, home / ".moe")):
         roots += [moe / "gmail.json", moe / "mcp.json", moe / "google_workspace",
                   moe / "grants.json", moe / "access_mode.json",
+                  # "Let Wisp act for me" (service/proactive/acting.py): writing it would give, or
+                  # backdate, the person's consent for Wisp to act without asking.
+                  moe / "act_for_me.json",
+                  # "Not now" for the same question: it can turn nothing on, only stop the
+                  # question being shown, and is kept with the gate for one rule.
+                  moe / "act_for_me_asked.json",
                   # /resetwisp's commit marker: its presence erases Wisp's data at the next start.
                   moe / ".reset-pending"]
     return roots
@@ -1037,7 +1051,7 @@ def _credential_roots() -> list[Path]:
 _SHELL_SECRET = [
     r"(?<![\w-])\.(?:ssh|aws|gnupg|netrc)(?![\w-])",
     r"\.config/(?:gh|gcloud)\b", r"\bkeychains?\b", r"\bsecurity\s+(?:find|dump|export)-",
-    r"\b(?:gmail|mcp|grants|access_mode)\.json\b", r"\bgoogle_workspace\b", r"\.reset-pending\b",
+    r"\b(?:gmail|mcp|grants|access_mode|act_for_me(?:_asked)?)\.json\b", r"\bgoogle_workspace\b", r"\.reset-pending\b",
 ]
 # The ~/.moe folder itself (not a file in it): moving or replacing it swaps
 # grants.json and access_mode.json without naming them (#409 audit). Any run
@@ -1151,13 +1165,244 @@ def _grep_file_operands(cmd: str) -> str:
     return " ".join(files)
 
 
+# The protected files inside Wisp's own folder, by name. A wildcard that the shell could
+# expand to one of them names it just as surely as spelling it out.
+_MOE_PROTECTED_NAMES = ("gmail.json", "mcp.json", "grants.json", "access_mode.json", "act_for_me.json",
+                        "act_for_me_asked.json",
+                        ".reset-pending", "google_workspace")
+_SHELL_WORD_BREAK = re.compile(r"[\s'\";|&()<>`]+")
+# Shell settings under which `*`, `?` and `[...]` also match a leading dot: bash's dotglob
+# (and GLOBIGNORE, which turns dotglob on), zsh's GLOB_DOTS (any case, any underscores)
+# and its per-pattern `(D)` qualifier, as in `*(D)` or `*(.D)`.
+_SHELL_DOTGLOB = re.compile(r"(?i:dotglob|glob_*dots|globignore)|[*?\]]\((?:#q)?[^()\s]*D")
+_GLOB_BRACE = re.compile(r"\{([^{}]*)\}")
+_GLOB_SEQUENCE = re.compile(r"^(-?\d+|[A-Za-z])\.\.(-?\d+|[A-Za-z])(?:\.\.-?\d+)?$")
+_GLOB_EXPANSIONS = 256          # brace alternatives looked at per word
+_GLOB_BUDGET = 100_000          # characters of brace expansion worked through per command
+_GLOB_WORD_CHARS = 4096         # a longer word is not expanded: judged by what it could name
+_GLOB_SEGMENT_CHARS = 1024      # a longer pattern segment is assumed to match
+_GLOB_BARE_WORDS = 1024         # distinct bare wildcards judged per command; more asks
+
+
+def _brace_options(word: str, budget: int) -> tuple[list[str], int] | None:
+    """`word` with `{a,b}` and `{a..c}` brace expansion applied over the whole word, as
+    the shell does before globbing, and the characters of work that took. None when it
+    grows past _GLOB_EXPANSIONS alternatives or `budget` characters (the caller then
+    judges the word by what it could name). A `{x}` with no comma is literal to the
+    shell; here it is opened too, which can only find more."""
+    options, done, spent = [word], [], 0
+    while options:
+        option = options.pop()
+        spent += len(option)
+        if spent > budget:
+            return None
+        found = _GLOB_BRACE.search(option)          # innermost group: no nested braces inside
+        if not found:
+            done.append(option)
+        else:
+            inner, parts = found.group(1), None
+            if (seq := _GLOB_SEQUENCE.match(inner)):
+                lo, hi = seq.group(1), seq.group(2)
+                if lo.lstrip("-").isdigit() and hi.lstrip("-").isdigit():
+                    a, b = int(lo), int(hi)
+                    if abs(b - a) >= _GLOB_EXPANSIONS:
+                        return None
+                    parts = [str(n) for n in range(min(a, b), max(a, b) + 1)]
+                elif lo.isalpha() and hi.isalpha():
+                    a, b = sorted((ord(lo), ord(hi)))
+                    parts = [chr(n) for n in range(a, b + 1)]       # A..z also covers [\]^_`
+            if parts is None:
+                parts = inner.split(",")
+            options += [option[:found.start()] + part + option[found.end():] for part in parts]
+        if len(options) + len(done) > _GLOB_EXPANSIONS:
+            return None
+    return done, spent
+
+
+_GLOB_ANY = "\x00"             # stands for text this check could not read: it may be anything
+_GLOB_GROUP = re.compile(r"\([^()]*\)")        # innermost first; spaces and quotes inside included
+
+
+def _glob_brackets(segment: str) -> str:
+    """`segment` with every bracket expression replaced by `?`. fnmatch and the shell read
+    brackets differently (`[^x]` negates in bash and is literal in fnmatch; fnmatch knows no
+    `[[:alpha:]]`, `[[.x.]]` or `[[=x=]]`), so a bracket is taken to match any one character,
+    which can only find more. A `[` that never closes is literal, as in the shell."""
+    out, i, n = [], 0, len(segment)
+    while i < n:
+        if segment[i] != "[":
+            out.append(segment[i])
+            i += 1
+            continue
+        j = i + 1
+        if j < n and segment[j] in "!^":
+            j += 1
+        if j < n and segment[j] == "]":
+            j += 1                                   # a `]` first is a member, not the end
+        while j < n and segment[j] != "]":
+            if segment[j] == "[" and j + 1 < n and segment[j + 1] in ":.=":
+                close = segment.find(segment[j + 1] + "]", j + 2)
+                if close < 0:
+                    break
+                j = close + 2
+            else:
+                j += 1
+        if j < n and segment[j] == "]":
+            out.append("?")
+            i = j + 1
+        else:
+            out.append("[[]")                        # literal `[`, spelled so fnmatch agrees
+            i += 1
+    return "".join(out)
+
+
+def _glob_segment_matches(name: str, segment: str, dotglob: bool) -> bool:
+    """Whether one path segment of a glob (already casefolded) can match the file or folder
+    called `name` (casefolded). Like the shell, a name that starts with `.` is matched only
+    by a segment that starts with `.` too, unless dotglob is on or the segment's start is
+    text this check could not read (_GLOB_ANY: a brace group cut by quoting)."""
+    import fnmatch
+    if len(segment) > _GLOB_SEGMENT_CHARS:
+        return True
+    loose = segment.startswith(_GLOB_ANY)
+    if name.startswith(".") and not dotglob and not loose and not segment.startswith("."):
+        return False
+    return fnmatch.fnmatchcase(name, _glob_brackets(segment).replace(_GLOB_ANY, "*"))
+
+
+def _glob_unbalanced(word: str) -> str:
+    """A word whose braces do not pair up is a piece of a brace group that quoting or an
+    escaped separator split (`x.{json,"a b"}` arrives as `x.{json,` then `a`, `b}`). What
+    the missing part held is unknown, so it becomes _GLOB_ANY: everything from the first
+    unpaired `{` on, and everything up to the last unpaired `}`."""
+    opens, last_close = [], -1
+    for index, char in enumerate(word):
+        if char == "{":
+            opens.append(index)
+        elif char == "}":
+            if opens:
+                opens.pop()
+            else:
+                last_close = index
+    if opens:
+        word = word[:opens[0]] + _GLOB_ANY
+    if last_close >= 0:
+        word = _GLOB_ANY + word[last_close + 1:]
+    return word
+
+
+def _moe_glob_hit(form: str) -> str | None:
+    """A wildcard that can expand to a protected file in Wisp's folder.
+
+    - a wildcard in the file name: `~/.moe/act_for*.json`, `~/.moe/*.json`, `~/.moe/a[c]t*`;
+    - a wildcard in the FOLDER name too: `~/.m?e/act*`, `~/.*/gra*`;
+    - braces, anywhere in the word: `~/.moe/{grants,act_for_me}.json`, `~/.{moe,x}/act*`,
+      also when quoting cut the group in pieces (`act_for_me.{json,"a b"}`);
+    - through `..`: `~/.moe/cache/../act_for_me.js?n` (each spelling is normalized);
+    - a relative wildcard after the folder was named elsewhere in the command, on ANY of its
+      segments: `cd ~/.moe && cat act*`, `cd ~/.moe/cache && cp f ../act_for_m?.json`,
+      `cd ~/.moe/cache && cp f ../goog*/token.json`. `~+/…` and `~-/…` (the current and the
+      previous folder) are relative too;
+    - a parenthesised group glued into a word, which zsh reads as alternatives with no option
+      set: `~/.moe/(act_for_me|x).json`, `act_for_me.js(o)n`. What it holds is not read: it
+      counts as any text. (bash's extglob `@(a|b)` and zsh's extendedglob operators need an
+      option turned on first; they are covered only as far as this same rule reaches.)
+    Case does not matter (APFS is case-insensitive by default: `~/.MOE/act*` is the same
+    folder). Every `[...]` is read as "any one character". As in the shell, `*` and `?` do
+    not match a leading dot unless the command turns on dotglob/GLOB_DOTS, so `cat */*.json`
+    and `rm -rf ~/.cache/*/*` cannot reach ~/.moe and are untouched; a custom Wisp folder
+    (WISP_HOME) whose name has no dot can be matched by any wildcard. A word too large to
+    expand asks whenever the folder is named. Errs toward a hit: a hit means "ask first",
+    never "refuse".
+
+    This reads the command's TEXT. It cannot see a name built at run time (a variable, an
+    interpreter, `$'\\x2e'`, find's own matching): it is not what keeps the files safe by
+    itself, only what makes the plain spellings ask."""
+    dotglob = bool(_SHELL_DOTGLOB.search(form))           # before casefolding: zsh's (D) is upper case
+    form = form.casefold()
+    # Two readings, and either one asks. First the text as it stands, where parentheses break
+    # words: a subshell or `$(…)` is then read through, `(cat>~/.moe/act*)`. Then with every
+    # group in parentheses taken as "any text" glued into its word, which is how zsh reads
+    # `~/.moe/(act_for_me| x).json` (alternatives; spaces and quotes allowed inside). The
+    # second reading alone would hide what is inside a subshell, so it never replaces the first.
+    if (hit := _moe_glob_pass(form, dotglob)) is not None:
+        return hit
+    grouped = form
+    for _ in range(8):                                    # nested groups, innermost first
+        grouped, found = _GLOB_GROUP.subn(_GLOB_ANY, grouped)
+        if not found:
+            break
+    return _moe_glob_pass(grouped, dotglob) if grouped != form else None
+
+
+def _moe_glob_pass(form: str, dotglob: bool) -> str | None:
+    """One reading of a casefolded command for _moe_glob_hit (see there)."""
+    import posixpath
+    from service.paths import MOE_DIR
+    hit = "a protected Wisp file (wildcard)"
+    folders = tuple(dict.fromkeys((".moe", str(MOE_DIR).rstrip("/").rsplit("/", 1)[-1].casefold())))
+    names = tuple(name.casefold() for name in _MOE_PROTECTED_NAMES)
+
+    def is_folder(segment: str) -> bool:
+        return any(_glob_segment_matches(folder, segment, dotglob) for folder in folders)
+
+    def is_protected(segment: str) -> bool:
+        return any(_glob_segment_matches(name, segment, dotglob) for name in names)
+
+    budget, names_folder, skipped, tails = _GLOB_BUDGET, False, False, set()
+    for word in _SHELL_WORD_BREAK.split(form):
+        if not any(mark in word for mark in "*?[{}" + _GLOB_ANY):
+            # A word with no wildcard can still name the folder for a later relative wildcard.
+            names_folder = names_folder or any(part in folders for part in word.split("/"))
+            continue
+        word = _glob_unbalanced(word)
+        expanded = _brace_options(word, budget) if budget > 0 and len(word) <= _GLOB_WORD_CHARS else None
+        if expanded is None:
+            # Too big to expand. It asks if it could itself be the folder, or (at the end) if
+            # the folder is named anywhere in the command.
+            # (A `..` is a brace range, `{0..300}`, which can never produce a dot.)
+            if dotglob or "." in word.replace("..", "") or _GLOB_ANY in word or any(not f.startswith(".") for f in folders):
+                return hit
+            skipped = True
+            budget -= len(word)
+            continue
+        options, spent = expanded
+        budget -= spent
+        for option in options:
+            # As written, and with `..` resolved: either spelling may be the one that lands.
+            for spelling in dict.fromkeys((option, posixpath.normpath(option))):
+                parts = [part for part in spelling.split("/") if part not in ("", ".")]
+                for index, part in enumerate(parts):
+                    if part != ".." and is_folder(part):
+                        # A segment that is ALL unread text (`{print` in an awk program) does not
+                        # by itself name the folder; right before a protected name it still asks.
+                        names_folder = names_folder or part.strip(_GLOB_ANY) != ""
+                        if index + 1 < len(parts) and is_protected(parts[index + 1]):
+                            return hit
+                # A relative path lands wherever the command stands, which may be the folder or
+                # a folder inside it: any of its segments may be the protected name. `~/…` and
+                # `/…` are absolute; `~+/…`, `~-/…` and anything else are not.
+                if parts and not spelling.startswith(("/", "~/")) and spelling != "~":
+                    for part in parts:
+                        if part == "..":
+                            continue
+                        if len(tails) < _GLOB_BARE_WORDS:
+                            tails.add(part)
+                        else:
+                            skipped = True
+    if names_folder and (skipped or any(is_protected(part) for part in tails)):
+        return hit                                         # a relative wildcard, the folder named elsewhere
+    return None
+
+
 def shell_secret_hit(args: dict) -> str | None:
     """The credential location a shell-category call names, or None."""
     cmd = str(args.get("cmd") or "")
     folder = not (not args.get("script") and _only_lists(cmd))
 
     def hit_in(form: str) -> str | None:
-        return _first_match(_SHELL_SECRET, form) or (_moe_folder_hit(form) if folder else None)
+        return (_first_match(_SHELL_SECRET, form) or _moe_glob_hit(form)
+                or (_moe_folder_hit(form) if folder else None))
 
     if not args.get("script") and len(cmd) <= SHELL_TEXT_LIMIT:
         if read_only_shell_argv(cmd) is not None:
@@ -3812,6 +4057,7 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
             return Decision(Tier.DENY, f"you blocked {tool} for this target")
         if (verdict == "allow" and category not in ALWAYS_CONFIRM_CATEGORIES
                 and tool not in ALWAYS_CONFIRM_TOOLS and tool not in ALWAYS_CONFIRM_FILE_TOOLS
+                and tool not in ALWAYS_CONFIRM_DELETE_TOOLS
                 and not destructive and not outbound and not secret and not cut_off
                 and grants.is_grantable(tool, args)):
             return Decision(Tier.ALLOW, f"you allowed {tool} for this target")
@@ -3843,6 +4089,12 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
             return Decision(Tier.DENY, "view-only mode: saving files is disabled")
         return Decision(Tier.CONFIRM, "saves a file somebody sent onto this Mac — always confirmed; "
                         "the card names the exact file")
+
+    if tool in ALWAYS_CONFIRM_DELETE_TOOLS:
+        if read_only():
+            return Decision(Tier.DENY, "view-only mode: changing notes is disabled")
+        from service.tools.notes_write import delete_note_reason
+        return Decision(Tier.CONFIRM, delete_note_reason(args.get("title"), args.get("folder")))
 
     if outbound and tool == "open_app":
         if read_only():

@@ -55,7 +55,7 @@ def test_the_list_shows_every_rule_with_its_scope(client):
     }
 
 
-def test_remove_drops_only_the_one_rule(client):
+def test_remove_drops_only_the_one_rule(client, monkeypatch):
     _seed()
     before = _rules(client)
     # A tool-wide rule goes; the same tool's folder rule stays.
@@ -67,11 +67,41 @@ def test_remove_drops_only_the_one_rule(client):
     assert _remove(client, "write_file", FOLDER).json() == {"ok": True}
     assert _rules(client) == before - {("allow", "write_file", ""), ("allow", "write_file", FOLDER)}
     assert grants.check("write_file", {"path": f"{FOLDER}/c.txt"}) is None
-    # A block rule can be removed the same way; the others are untouched.
+    # A block rule can be removed the same way, by the Wisp app only (lifting a block lets the
+    # action through again); the others are untouched.
+    refused = _remove(client, "open_app", "")
+    assert refused.status_code == 403 and "couldn't confirm this came from the Wisp app" in refused.json()["detail"]
+    assert ("deny", "open_app", "") in _rules(client)
+    monkeypatch.setattr(main, "_require_wisp_app", lambda request, reason: None)     # the app's own request
     assert _remove(client, "open_app", "").json() == {"ok": True}
     assert _rules(client) == {("allow", "move_path", ""), ("allow", "web_fetch", "example.invalid")}
     # A rule that is already gone is not an error the row has to explain.
     assert _remove(client, "open_app", "").json() == {"ok": False}
+
+
+def test_only_the_wisp_app_can_add_an_always_allow_or_lift_a_block(client, monkeypatch):
+    _seed()
+    before = _rules(client)
+    reason = main._APP_ONLY
+    assert "couldn't confirm this came from the Wisp app" in reason and "Quit and reopen Wisp" in reason
+    # A local program that is not the app: no new "Always allow", by default or by name.
+    for body in ({"tool": "run_shell", "scoped": False}, {"tool": "run_shell", "decision": "allow", "scoped": False},
+                 {"tool": "write_file", "args": {"path": "/Users/sam/x/a.txt"}, "decision": "allow"}):
+        refused = client.post("/permissions", json=body)
+        assert refused.status_code == 403 and refused.json()["detail"] == reason
+    # ...and no lifting a block, with the scope or without it.
+    assert client.delete("/permissions/open_app").status_code == 403
+    assert _remove(client, "open_app", "").status_code == 403
+    assert _rules(client) == before and grants.check("run_shell", {"cmd": "ls"}) is None
+    # Tightening stays open to the ordinary request: a new block, and removing an allow.
+    assert client.post("/permissions", json={"tool": "quit_app", "decision": "deny", "scoped": False}).json()["ok"] is True
+    assert _remove(client, "web_fetch", "example.invalid").json() == {"ok": True}
+    assert client.get("/permissions").status_code == 200                    # reading stays open
+    # The app's own request does all of it.
+    monkeypatch.setattr(main, "_require_wisp_app", lambda request, why: None)
+    assert client.post("/permissions", json={"tool": "write_file", "args": {"path": f"{FOLDER}/z.txt"}}).json()["ok"] is True
+    assert _remove(client, "open_app", "").json() == {"ok": True}
+    assert ("deny", "open_app", "") not in _rules(client)
 
 
 def test_the_scope_is_what_keeps_a_remove_to_one_rule(client):

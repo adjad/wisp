@@ -769,10 +769,29 @@ enum BriefFix {
     /// Contacts is on in Wisp's Settings (ContactsReader.enabledKey). Reads the
     /// status only; never asks.
     static func contactsAccess() -> SourceAccess? {
-        let status = CNContactStore.authorizationStatus(for: .contacts)
+        let status = contactsStatus()
         let enabled = UserDefaults.standard.object(forKey: ContactsReader.enabledKey) as? Bool ?? true
         return SourceAccess.contacts(denied: status == .denied || status == .restricted, enabled: enabled)
     }
+
+    /// Contacts' status, asked of macOS at most every 5 seconds. Brief and Day
+    /// build this row in every update, and the question goes to the privacy
+    /// service each time, which held a tab switch's first frame back.
+    private static func contactsStatus() -> CNAuthorizationStatus {
+        contactsMemo.lock.lock(); defer { contactsMemo.lock.unlock() }
+        let now = ProcessInfo.processInfo.systemUptime
+        if let known = contactsMemo.status, now - contactsMemo.at < 5 { return known }
+        let status = CNContactStore.authorizationStatus(for: .contacts)
+        contactsMemo.status = status
+        contactsMemo.at = now
+        return status
+    }
+    private final class ContactsMemo: @unchecked Sendable {
+        let lock = NSLock()
+        var status: CNAuthorizationStatus?
+        var at: TimeInterval = 0
+    }
+    private static let contactsMemo = ContactsMemo()
 }
 
 /// A Brief row's trailing control (the Top 3's Needs you rows, and the proactive

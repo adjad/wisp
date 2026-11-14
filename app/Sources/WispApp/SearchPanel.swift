@@ -289,12 +289,12 @@ struct SearchView: View {
             Text("Wisp can't read this window yet")
                 .font(.wisp(size: 13, weight: .medium))
                 .foregroundStyle(Theme.textPrimary)
-            Text("Grant Accessibility to search text inside other apps. Without it, "
+            Text("Grant \(PrivacyNames.accessibilityWithFormerName) to search text inside other apps. Without it, "
                  + "Wisp can only read what's visible on screen.")
                 .font(.wisp(size: 11))
                 .foregroundStyle(Theme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Button("Open Accessibility Settings…") {
+            Button("Open \(PrivacyNames.accessibility) Settings…") {
                 Permissions.requestAccessibility()
             }
             .buttonStyle(.plain)

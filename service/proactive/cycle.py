@@ -33,7 +33,7 @@ Rules:
   failed idle probe counts as "in use".
 - Auto-add (autoadd.py) runs last, in this background cycle only and never
   once a turn has started. Off by default, a missed, time-sensitive event or
-  deadline becomes a tap-to-add card; with `proactive_auto_add: true` it goes
+  deadline becomes a tap-to-add card; once the person lets Wisp act for them (acting.py) it goes
   on Calendar/Reminders through the verified writes, and its "Wisp did this"
   card leads the cards (it counts toward the 5).
 """
@@ -56,6 +56,9 @@ from service.proactive.prepare import todo_id
 JUDGE_EVERY_S = 30 * 60
 TICK_GAP_S = 120
 IDLE_GAP_S = 300
+# Between builds while "Let Wisp act for me" is on: a light cycle is what adds a dated text
+# (_light_add), so it runs this often and a text is acted on about a minute after it syncs.
+ACTING_GAP_S = 60
 MAX_THREADS = 30
 _MAIL_GIST_HOLD_S = 90
 _PATIENT_WAIT_S = 600
@@ -277,6 +280,87 @@ def _survivor(item: dict, store, offline_results: dict) -> dict | None:
     if not isinstance(result, dict) or result.get("junk") or result.get("sensitive"):
         return None
     return {"item": item, "result": result}
+
+
+def _add_candidates(items: list[dict], survivors: list[dict], store) -> list[dict]:
+    """What auto-add may look at: the survivors, plus every mail or text whose triage reading
+    FAILED (the model's reply could not be trusted) and so has no result at all.
+
+    Without this, a dated text was eligible only when the model's reading of it happened to
+    validate, while with no model every item got a rule result: the model path was the weaker
+    one. A failed reading gets the same neutral result the rule path gives (not junk, not
+    sensitive), marked `add_only`: it earns no card, summary or reply from this, only a look
+    by autoadd.plan_for, whose own code decides everything (saved contact, iMessage, an
+    explicit date in the sender's words, after the yes, the caps) and still refuses anything
+    withheld, secret or sensitive. A reading that came back "sensitive", a stand-down, or an
+    item never read yet is not included."""
+    have = {s["item"].get("id") for s in survivors}
+    extra = []
+    for item in items:
+        if item.get("id") in have or item.get("source") not in ("mail", "messages"):
+            continue
+        try:
+            entry = store.triage_get(item["id"], _tkey(item))
+        except Exception:  # noqa: BLE001 — unreadable: not a candidate
+            continue
+        if isinstance(entry, dict) and entry.get("status") == "failed" and entry.get("result") is None:
+            extra.append({"item": item, "add_only": True,
+                          "result": {"junk": False, "sensitive": False, "title": "", "summary": "",
+                                     "asks_of_me": "", "fallback": True}})
+    return survivors + extra
+
+
+def _light_candidates(items: list[dict], store) -> list[dict]:
+    """What a LIGHT cycle may add from: texts only, each with the model's stored reading of
+    this exact content when there is one, else the neutral reading a failed one gets.
+
+    IMPORTANT rules:
+    - Texts only. Email is added in a build: its proof reads Sent mail and the provider's result.
+    - A stored "sensitive" reading leaves the text out; a stored "junk" one is refused by
+      autoadd.plan_for. A text the model has not read yet has no such veto: plan_for's own code
+      decides (saved contact, an explicit date in the sender's words, after the yes, not withheld
+      or secret, no sensitive sentence), exactly as for a reading that failed (_add_candidates).
+    - Every one is `add_only`: it may be added or left alone, and earns no card from this."""
+    neutral = {"junk": False, "sensitive": False, "title": "", "summary": "", "asks_of_me": "", "fallback": True}
+    out = []
+    for item in items:
+        if item.get("source") != "messages":
+            continue
+        try:
+            entry = store.triage_get(item["id"], _tkey(item))
+        except Exception:  # noqa: BLE001 — unreadable: not a candidate
+            continue
+        if isinstance(entry, dict) and entry.get("status") == "sensitive":
+            continue
+        stored = entry.get("result") if isinstance(entry, dict) else None
+        out.append({"item": item, "add_only": True, "result": dict(stored) if isinstance(stored, dict) else dict(neutral)})
+    return out
+
+
+async def _light_add(items: list[dict], sched: dict, *, now: float, tz: str, store, abort) -> None:
+    """Auto-add in a light cycle (autoadd.step, texts only). Never fails the cycle."""
+    try:
+        from service.proactive import autoadd
+        if not autoadd.enabled():
+            return
+        candidates = _light_candidates(items, store)
+        if not candidates or abort():
+            return
+        out = await autoadd.step(candidates, sched, now=now, tz=tz, store=store, abort=abort)
+        added = len(out.get("added") or []) if isinstance(out, dict) else 0
+        if added:
+            _log(f"between builds: added {added} from texts")
+    except Exception:  # noqa: BLE001 — nothing added this time; the next cycle looks again
+        traceback.print_exc()
+
+
+def _light_gap() -> float:
+    """How long until the next light cycle: a minute while Wisp acts for the person, else IDLE_GAP_S."""
+    try:
+        from service.proactive import autoadd
+        return ACTING_GAP_S if autoadd.enabled() else IDLE_GAP_S
+    except Exception:  # noqa: BLE001
+        return IDLE_GAP_S
 
 
 def _key_items(survivors: list[dict]) -> list[str]:
@@ -727,6 +811,14 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
     # cycle (a slot goes stale as the day moves), filling what replies leave.
     # Runs even when the judge yielded to a turn: it is code only, and skipping
     # it would save the state without any deadline card until the next cycle.
+    # Before anything acts (holds here, adds and reply reminders in step 4): every kind's write
+    # that an earlier cycle began and never recorded becomes "unknown", so this cycle's caps
+    # and "already acted" checks all see it. Every cycle, whether or not deadlines are read.
+    try:
+        from service.proactive import acting as _acting
+        _acting.settle(store, now)
+    except Exception:  # noqa: BLE001 — each kind still treats "dispatching" as landed
+        traceback.print_exc()
     if deadline_fn is not None:
         decided = store.decisions()
         skip = set(decided["dismissed"]) | set(decided["fired"])
@@ -737,6 +829,18 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
         except Exception:  # noqa: BLE001 — no deadline cards this time
             traceback.print_exc()
             found = []
+        # Hold time (autohold.py): once the person lets Wisp act for them, the slot is
+        # pinned on Day without a tap and its "Wisp did this" card replaces the tap card.
+        # Wisp-local, code only, so a light cycle holds too (its done card is merged just
+        # below, by _merge_done); never in a cycle that yielded to a turn or while one runs.
+        try:
+            from service.proactive import autohold
+            found = autohold.without_undone(found, store)
+            if not (yielded or abort()):
+                held = autohold.step(found, now=now, tz=tz, store=store, abort=abort)
+                found = [c for c in found if c["id"] not in held]
+        except Exception:  # noqa: BLE001 — the tap cards stand as they were
+            traceback.print_exc()
         for acct in accounts:
             keep = [c for c in cards_by_account.get(acct, []) if c["action"]["method"] != "block_time"]
             taken = {c.get("todo_id") for c in keep}
@@ -745,9 +849,17 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
     # 4. Auto-add (autoadd.py): a missed, time-sensitive event or deadline goes
     # on Calendar/Reminders through the verified writes, then a "Wisp did this"
     # card leads. Never once a turn has started; every write re-checks it.
-    if not light:      # acting waits for a build; without it the cards stay as they are
-        await _auto_add(cards_by_account, accounts, own, survivors, sched, now=now, tz=tz, store=store,
+    if not light:      # adding from mail and texts waits for a build
+        await _auto_add(cards_by_account, accounts, own, _add_candidates(items, survivors, store), sched,
+                        now=now, tz=tz, store=store,
                         abort=abort, autoadd_fn=None if yielded or abort() else autoadd_fn)
+    else:
+        # A light cycle adds from texts only (_light_add), by code alone; email waits for a
+        # build. What it added, and an hour it just held (step 3), show their "Wisp did this"
+        # card with Undo now, not at the next build.
+        if autoadd_fn is not None and not (yielded or abort()):
+            await _light_add(items, sched, now=now, tz=tz, store=store, abort=abort)
+        _merge_done(cards_by_account, accounts, own, store, now)
     # What Wisp looked at, bulk mail it skipped included. An injected collect
     # (tests) reports nothing, so its items stand in.
     if not looked:
@@ -845,8 +957,40 @@ def order_cards(cards: list[dict], deadline_cards: list[dict], limit: int = prep
 
 
 async def _default_autoadd(survivors, sched, *, now, tz, store, abort) -> dict:
-    from service.proactive import autoadd
-    return await autoadd.step(survivors, sched, now=now, tz=tz, store=store, abort=abort)
+    from service.proactive import autoadd, followups
+    auto = await autoadd.step(survivors, sched, now=now, tz=tz, store=store, abort=abort)
+    # A failed triage reading is only ever a candidate for auto-add (cycle._add_candidates).
+    survivors = [s for s in survivors if not s.get("add_only")]
+    # Follow-up reminders (followups.py) stand behind the same gate and run after auto-add, so a
+    # message auto-add acted on is skipped there: one message, at most one action of Wisp's own.
+    try:
+        await followups.step(survivors, sched, now=now, tz=tz, store=store, abort=abort)
+    except Exception:  # noqa: BLE001 — no follow-ups this time; auto-add's result stands
+        traceback.print_exc()
+    return auto
+
+
+def _merge_done(cards_by_account: dict, accounts: list[str], own: str, store, now: float) -> None:
+    """In a light cycle: put the current "Wisp did this" cards in each account's list in place
+    of the earlier ones, and drop a "Block time?" card for an hour Wisp now holds. Nothing else
+    moves: the tap-to-add cards and every other card the last build wrote stay as they are.
+    Never fails the cycle."""
+    try:
+        from service.proactive import autoadd
+        done = autoadd.done_cards(store, now)
+        held = autoadd.held_items(store)
+    except Exception:  # noqa: BLE001 — the cards stand as they were
+        traceback.print_exc()
+        return
+    for acct in accounts:
+        previous = cards_by_account.get(acct, [])
+        mine = [c for c in done if (c.get("account") or own) == acct]
+        if not mine and not any(c.get("auto_added") for c in previous):
+            continue
+        ref = lambda c: str(((c.get("sources") or [{}])[0] or {}).get("ref") or "")      # noqa: E731
+        rest = [c for c in previous if not c.get("auto_added")
+                and not (ref(c) in held and (c.get("action") or {}).get("method") in autoadd._HOLD_METHODS)]
+        cards_by_account[acct] = (mine + rest)[:prepare_mod.MAX_CARDS]
 
 
 async def _auto_add(cards_by_account: dict, accounts: list[str], own: str, survivors: list[dict], sched: dict, *,
@@ -864,18 +1008,26 @@ async def _auto_add(cards_by_account: dict, accounts: list[str], own: str, survi
     done = autoadd.done_cards(store, now)
     added_items = set(auto.get("items") or set())
     for record in store.auto_added().values():
-        if isinstance(record, dict) and record.get("status") == "added" and record.get("item_id"):
+        # Only an event or reminder auto-add itself made hides the message's add-card. A reply
+        # reminder or a held hour on the same item leaves the date still to be offered.
+        if (isinstance(record, dict) and record.get("status") == "added" and record.get("item_id")
+                and record.get("kind") in ("calendar", "reminder")):
             added_items.add(record["item_id"])
+    try:
+        held = autoadd.held_items(store)
+    except Exception:  # noqa: BLE001 — unreadable: the cards stand
+        held = set()
     for acct in accounts:
         mine_done = [c for c in done if (c.get("account") or own) == acct]
         mine_tap = [{**c, "auto_add_tap": True} for c in auto.get("tap") or [] if (c.get("account") or own) == acct]
         previous = cards_by_account.get(acct, [])
         refs = {str(((c.get("sources") or [{}])[0] or {}).get("ref") or "") for c in previous}
-        if not (mine_done or mine_tap or refs & added_items
+        if not (mine_done or mine_tap or refs & added_items or refs & held
                 or any(c.get("auto_added") or c.get("auto_add_tap") for c in previous)):
             continue
         rest = [c for c in previous if not c.get("auto_added") and not c.get("auto_add_tap")]
-        cards_by_account[acct] = autoadd.merge_cards(mine_done, mine_tap, rest, added_items, prepare_mod.MAX_CARDS)
+        cards_by_account[acct] = autoadd.merge_cards(mine_done, mine_tap, rest, added_items, prepare_mod.MAX_CARDS,
+                                                    held)
 
 
 def _default_deadlines(now: float, tz: str, skip: set[str], own: str, linked: set[str]) -> list[dict]:
@@ -1063,9 +1215,14 @@ async def _return_tick() -> None:
 
 async def _light_tick() -> None:
     """Between builds: the Brief kept current with no model call."""
-    global _next_tick_at
+    global _next_tick_at, _rerun
     await run_cycle(light=True)
-    _next_tick_at = time.time() + IDLE_GAP_S
+    _next_tick_at = time.time() + _light_gap()
+    while _rerun is not None:
+        # Analyze now was pressed while this light cycle ran: the full cycle it asked for runs now.
+        request, _rerun = _rerun, None
+        _log("analyze: starting (it was queued)")
+        await run_cycle(force=True, patient=True, account=request.get("account"))
 
 
 async def _build_tick() -> None:
@@ -1100,7 +1257,7 @@ async def _build_tick() -> None:
             traceback.print_exc()
     store.save_state(built_for=now, idle_refresh_at=now, idle_refresh_inputs=refresh_inputs(store, now))
     return_refresh.caught_up()
-    _next_tick_at = time.time() + IDLE_GAP_S
+    _next_tick_at = time.time() + _light_gap()       # the light cycles that follow a build keep their pace
     await return_refresh.announce()
 
 
@@ -1110,6 +1267,7 @@ async def _tick() -> None:
     _next_tick_at = time.time() + (TICK_GAP_S if result.get("status") in ("yielded",) else IDLE_GAP_S)
     while _rerun is not None:
         request, _rerun = _rerun, None
+        _log("analyze: starting (it was queued)")
         await run_cycle(force=True, patient=True, account=request.get("account"))
 
 
@@ -1228,6 +1386,7 @@ def schedule_tick() -> asyncio.Task | None:
 
 ANALYZE_RETRIES = 3
 ANALYZE_RETRY_S = 15.0
+ANALYZE_BUSY_POLL_S = 0.5
 
 
 def analyze(account: str | None = None, **kwargs) -> dict:
@@ -1236,12 +1395,26 @@ def analyze(account: str | None = None, **kwargs) -> dict:
     global _task, _rerun
     if running():
         _rerun = {"account": account}
+        _log("analyze: queued behind a running cycle")
         return {"ok": True, "state": "working", "queued": True, "progress": _status["progress"]}
+
+    async def full(request_account):
+        # Never dropped: a cycle already running (a light tick that started in the same
+        # moment) answers "busy". Wait for it to end, then run the full cycle that was asked for.
+        result = await run_cycle(force=True, patient=True, account=request_account, **kwargs)
+        deadline = time.monotonic() + _PATIENT_WAIT_S
+        while isinstance(result, dict) and result.get("status") == "busy" and time.monotonic() < deadline:
+            _log("analyze: waiting for a running cycle to end")
+            while _running and time.monotonic() < deadline:
+                await asyncio.sleep(ANALYZE_BUSY_POLL_S)
+            result = await run_cycle(force=True, patient=True, account=request_account, **kwargs)
+        return result
 
     async def go():
         global _rerun
         retries = 0
-        result = await run_cycle(force=True, patient=True, account=account, **kwargs)
+        _log("analyze: starting")
+        result = await full(account)
         while True:
             if _rerun is None and isinstance(result, dict) and result.get("status") == "yielded" \
                     and retries < ANALYZE_RETRIES:
@@ -1252,7 +1425,7 @@ def analyze(account: str | None = None, **kwargs) -> dict:
             if _rerun is None:
                 break
             request, _rerun = _rerun, None
-            result = await run_cycle(force=True, patient=True, account=request.get("account"), **kwargs)
+            result = await full(request.get("account"))
 
     _status.update(state="working", phase="starting", account=account, progress={"done": 0, "total": 0})
     _task = asyncio.create_task(go())
@@ -1474,8 +1647,18 @@ def snapshot(*, account: str | None = None, now: float | None = None, tz: str | 
         view_state = "ready"
     else:
         view_state = "unavailable"
+    # What Wisp did is shown in at most two cards (autoadd.group_done). Only here, as the Brief is
+    # served: the stored cards stay one per action, which is what each row's Undo fires.
+    shown = cards
+    try:
+        from service.proactive import autoadd
+        shown = autoadd.group_done(cards, store, now, tz)
+    except Exception:  # noqa: BLE001 — the cards are shown one by one, as before
+        traceback.print_exc()
     result = {"state": view_state, "as_of": state.get("as_of"), "progress": dict(_status["progress"]),
-              "accounts": accounts, "owner": {"id": own, "label": sources.owner_label()}, "summary": summary, "cards": [_public(c) for c in cards],
+              "accounts": accounts, "owner": {"id": own, "label": sources.owner_label()}, "summary": summary,
+              "cards": [{**_public(c), "members": [_public(m) for m in c["members"]]} if c.get("members") else _public(c)
+                        for c in shown],
               "todos": [_public(t) for t in todos], "threads": [{k: v for k, v in t.items() if k != "asks"} for t in threads],
               "lede": _lede(cards, todos, summary, now, tz), "stats": _stats(state, cards, todos, account),
               "updating": _updating()}

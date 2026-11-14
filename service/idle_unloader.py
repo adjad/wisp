@@ -28,65 +28,74 @@ log = logging.getLogger(__name__)
 async def run(client: OMLXClient, poll_seconds: float = 30.0) -> None:
     while True:
         await asyncio.sleep(poll_seconds)
-        if not getattr(client, "managed", True):
-            continue
-        try:
-            await memory_saver.tick(client)
-        except Exception as exc:  # noqa: BLE001 — oMLX briefly unreachable isn't fatal
-            log.debug("memory saver tick failed: %s", type(exc).__name__)
-        minutes = idle.get_idle_minutes()
-        if minutes <= 0:
-            continue
-        cutoff = time.monotonic() - minutes * 60
+        await _pass(client)
 
-        on_omlx_app = memory_saver.omlx_app(client)
-        releasable: set[str] = set()
-        try:
-            if on_omlx_app:
-                rows = (await client.status())["models"]
-                memory_saver.note_omlx_rows(rows)
-                loaded = [r["id"] for r in rows if r.get("loaded", False)]
-                releasable = {r["id"] for r in rows
-                              if r.get("loaded", False) and memory_saver.wisp_may_release(r)}
-            else:
-                loaded = await client.loaded_models()
-        except Exception:  # noqa: BLE001 — oMLX being briefly unreachable isn't fatal
-            continue
 
-        keep_warm = client.keep_warm()
-        now = time.monotonic()
-        for model in loaded:
-            # Keep-warm models (the always-on summarizer) are exempt from
-            # idle-unloading by design — the whole point is that they stay
-            # resident for an instant response.
-            if model in keep_warm:
+async def _pass(client: OMLXClient) -> None:
+    """One poll: Save memory's tick, then the idle timer. While Demo mode is on
+    (service/stage_mode.py) the timer unloads nothing; the saved minutes are untouched."""
+    if not getattr(client, "managed", True):
+        return
+    try:
+        await memory_saver.tick(client)
+    except Exception as exc:  # noqa: BLE001 — oMLX briefly unreachable isn't fatal
+        log.debug("memory saver tick failed: %s", type(exc).__name__)
+    from service import stage_mode
+    if stage_mode.active():
+        return
+    minutes = idle.get_idle_minutes()
+    if minutes <= 0:
+        return
+    cutoff = time.monotonic() - minutes * 60
+
+    on_omlx_app = memory_saver.omlx_app(client)
+    releasable: set[str] = set()
+    try:
+        if on_omlx_app:
+            rows = (await client.status())["models"]
+            memory_saver.note_omlx_rows(rows)
+            loaded = [r["id"] for r in rows if r.get("loaded", False)]
+            releasable = {r["id"] for r in rows
+                          if r.get("loaded", False) and memory_saver.wisp_may_release(r)}
+        else:
+            loaded = await client.loaded_models()
+    except Exception:  # noqa: BLE001 — oMLX being briefly unreachable isn't fatal
+        return
+
+    keep_warm = client.keep_warm()
+    now = time.monotonic()
+    for model in loaded:
+        # Keep-warm models (the always-on summarizer) are exempt from
+        # idle-unloading by design — the whole point is that they stay
+        # resident for an instant response.
+        if model in keep_warm:
+            continue
+        if on_omlx_app and model not in releasable:
+            continue
+        last = idle.last_used(model)
+        if last is None:
+            # First time seeing this model resident (e.g. loaded before
+            # this loop started, or via a manual /models load) — start its
+            # clock now rather than unloading it immediately.
+            idle.touch(model)
+            continue
+        if idle.in_flight(model) > 0:
+            # A generation is currently running on this model. Its last_used
+            # clock only advances at request boundaries, so a single long
+            # generation can age past the cutoff while still streaming —
+            # unloading here is exactly the mid-stream eviction we must not
+            # do. Leave it resident; it'll be reconsidered once idle.
+            continue
+        if idle.own_access_active(model):
+            # An embedding, rerank or load of Wisp's own is running on it:
+            # /unload would abort that request too.
+            continue
+        if last < cutoff:
+            # /unload aborts running requests, whoever's they are.
+            if on_omlx_app and not await memory_saver.engine_idle(client):
                 continue
-            if on_omlx_app and model not in releasable:
+            try:
+                await client.unload(model)
+            except Exception:  # noqa: BLE001
                 continue
-            last = idle.last_used(model)
-            if last is None:
-                # First time seeing this model resident (e.g. loaded before
-                # this loop started, or via a manual /models load) — start its
-                # clock now rather than unloading it immediately.
-                idle.touch(model)
-                continue
-            if idle.in_flight(model) > 0:
-                # A generation is currently running on this model. Its last_used
-                # clock only advances at request boundaries, so a single long
-                # generation can age past the cutoff while still streaming —
-                # unloading here is exactly the mid-stream eviction we must not
-                # do. Leave it resident; it'll be reconsidered once idle.
-                continue
-            if idle.own_access_active(model):
-                # An embedding, rerank or load of Wisp's own is running on it:
-                # /unload would abort that request too.
-                continue
-            if last < cutoff:
-                # /unload aborts running requests, whoever's they are.
-                if on_omlx_app and not await memory_saver.engine_idle(client):
-                    continue
-                try:
-                    await client.unload(model)
-                except Exception:  # noqa: BLE001
-                    continue
-                idle.forget(model)
+            idle.forget(model)

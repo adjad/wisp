@@ -25,7 +25,7 @@ OWNER = sources.OWN
 
 
 def row(mid, sender, address, subject, body, *, account, account_id, native_id=None, ago_h=2):
-    r = dict(ts=NOW - ago_h * 3600, account=account, account_id=account_id, sender=f"{sender} <{address}>",
+    r = dict(ts=NOW - ago_h * 3600, account=account, account_id=account_id, sender=sender,
              sender_address=address, to=UCSC, subject=subject, message_id=mid, body=body, unread=True)
     if native_id:
         r["native_id"] = native_id

@@ -377,7 +377,7 @@ def test_view_only_promises_nothing_is_added(monkeypatch):
         monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: auto_add)
         for text in (wisp_about.privacy(), wisp_about.overview()):
             assert "In View Only, nothing is added to your calendar or reminders without your OK" in text
-            assert ROUTINE_ON_MY_OWN not in text and "auto-add is on" not in text
+            assert ROUTINE_ON_MY_OWN not in text and "you let me act for you" not in text
 
 
 def test_full_access_during_the_routine_hold(monkeypatch):
@@ -403,8 +403,8 @@ def test_auto_add_combines_with_routine_actions(monkeypatch):
     _access(monkeypatch, full=True, held=False)
     monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: True)
     text = wisp_about.privacy()
-    assert ("On my own I may add a time-sensitive event or deadline to your Calendar or Reminders "
-            "(auto-add is on); and reminders or Tentative holds in Wisp's own schedule, from your routine, "
+    assert ("On my own I may add a time-sensitive event or deadline from an iMessage to your Calendar or Reminders, a reminder to reply to an email in a Google account you linked, and a held hour on my own Day plan "
+            "(you let me act for you); and reminders or Tentative holds in Wisp's own schedule, from your routine, "
             "and tell you "
             "each time.") in text
     assert CALENDAR_PROMISE not in text
@@ -461,7 +461,8 @@ def test_with_learning_off_and_no_auto_add_calendar_changes_wait(monkeypatch):
     monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: True)
     for text in (wisp_about.privacy(), wisp_about.overview()):
         assert "change your calendar" not in text and "calendar changes" not in text
-        assert "auto-add is on" in text and "Undo" in text
+        assert "you let me act for you" in text and "Undo" in text
+        assert "Day plan (never on your calendar)" in text          # the hold is said too, and where it lives
 
 
 # The models report (wisp_status) and the self-answers read one cloud_state(),
@@ -598,6 +599,27 @@ def test_caught_for_you_live_adds_reminders(monkeypatch):
         assert ("From what Caught for you finds in your mail and messages, I may add reminders on my "
                 "own and tell you.") in text
         assert CALENDAR_PROMISE not in text and "Calendar events" not in text
+
+
+def test_gate_on_caught_for_you_live_is_not_claimed(monkeypatch):
+    # one_path turns live into shadow while the gate is on: only the gate's sentence.
+    for attention in (LIVE, LIVE_EVENTS):
+        _access(monkeypatch, full=True, learning=False, attention=attention)
+        monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: True)
+        for text in (wisp_about.privacy(), wisp_about.overview()):
+            assert "Because you let me act for you" in text
+            assert "Caught for you" not in text and "Calendar events" not in text
+
+
+def test_gate_off_caught_for_you_live_is_claimed_gate_off_shadow_or_off_is_not(monkeypatch):
+    monkeypatch.setattr(wisp_about, "_auto_add_on", lambda: False)
+    _access(monkeypatch, full=True, learning=False, attention=LIVE)
+    assert "Caught for you" in wisp_about.privacy()
+    for attention in ('{"mode": "shadow"}', '{"mode": "off"}'):
+        _access(monkeypatch, full=True, learning=False, attention=attention)
+        text = wisp_about.privacy()
+        assert "Caught for you" not in text and "let me act for you" not in text
+        assert CALENDAR_PROMISE in text
 
 
 def test_caught_for_you_live_with_events_adds_calendar_events(monkeypatch):

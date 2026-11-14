@@ -150,13 +150,18 @@ final class MessagesReader {
         let messageGUID = hasColumn(db, table: "message", name: "guid") ? "m.guid" : "NULL"
         let chatGUID = hasColumn(db, table: "chat", name: "guid") ? "c.guid" : "NULL"
         let dateEdited = hasColumn(db, table: "message", name: "date_edited") ? "m.date_edited" : "0"
+        // How each message was delivered ("iMessage", "SMS", "RCS"). A chat GUID no longer says:
+        // newer systems name every one-to-one chat "any;-;<handle>". An iMessage's sender handle
+        // is one Apple verified; an SMS's sender number can be forged. NULL when the store has no
+        // such column, which the service reads as unknown.
+        let messageService = hasColumn(db, table: "message", name: "service") ? "m.service" : "NULL"
         let sql = """
         SELECT m.date, m.text, m.attributedBody, m.is_from_me,
                h.id AS handle_id, c.display_name AS chat_name, c.chat_identifier,
                c.ROWID AS chat_id, COALESCE(m.is_read, 0) AS is_read,
                m.ROWID AS message_id, COALESCE(m.handle_id, 0) AS handle_row_id,
                \(messageGUID) AS message_guid, \(chatGUID) AS chat_guid,
-               \(dateEdited) AS date_edited
+               \(dateEdited) AS date_edited, \(messageService) AS service
         FROM message m
         LEFT JOIN handle h ON m.handle_id = h.ROWID
         LEFT JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
@@ -218,6 +223,7 @@ final class MessagesReader {
             let handleRowId = sqlite3_column_int64(stmt, 10)
             let messageGuid = columnText(stmt, 11)
             let chatGuid = columnText(stmt, 12)
+            let service = columnText(stmt, 14)
             // Namespace each SQLite table explicitly. Their ROWIDs are only
             // unique within one table, so a bare/negative number can merge an
             // orphan handle and an unrelated orphan message.
@@ -259,6 +265,8 @@ final class MessagesReader {
                 // A GUID is a read-only native locator. There is no supported
                 // Messages URL for opening an existing message by GUID.
                 "navigation_url": NSNull(),
+                // The message's own delivery service, as Messages recorded it.
+                "service": service as Any? ?? NSNull(),
             ]
             let wire = Self.wire([
                 "version": 1, "kind": "record", "record": record, "source": source,
@@ -596,6 +604,106 @@ final class MessagesReader {
         URLSession.shared.dataTask(with: req) { [weak self] _, _, error in
             self?.backendRetry.handle(error: error) { self?.sync() }
         }.resume()
+    }
+}
+
+/// What Messages' own store says happened to a text Wisp just handed over.
+///
+/// Rules:
+/// - Read-only, like every other read of chat.db here.
+/// - The row is the newest one from this Mac's user to that handle, dated at or
+///   after the send, whose text is the text that was sent.
+/// - `failed` is Messages' own error on the row (what it shows as Not
+///   Delivered). `delivered` only when Messages recorded delivery. `sent` when
+///   it recorded the send with no error; SMS rarely goes further than that.
+/// - No row, no access, or still pending when the window ends is `unknown`,
+///   never a guess.
+enum MessageDeliveryCheck {
+    enum State: String { case delivered, sent, failed, pending, unknown }
+
+    struct Reading: Equatable {
+        let state: State
+        let service: String
+    }
+
+    static let storePath = (NSHomeDirectory() as NSString)
+        .appendingPathComponent("Library/Messages/chat.db")
+
+    /// message.date for a moment: nanoseconds since 2001-01-01.
+    static func storeDate(_ date: Date) -> Int64 {
+        Int64(date.timeIntervalSinceReferenceDate * 1_000_000_000)
+    }
+
+    static func sameHandle(_ stored: String, _ to: String) -> Bool {
+        let wanted = to.trimmingCharacters(in: .whitespacesAndNewlines)
+        if stored.contains("@") || wanted.contains("@") {
+            return stored.caseInsensitiveCompare(wanted) == .orderedSame
+        }
+        let a = stored.filter(\.isNumber), b = wanted.filter(\.isNumber)
+        if a.isEmpty || b.isEmpty { return false }
+        if a == b { return true }
+        // "+1 650…" against "650…": the same number with and without a country code.
+        return a.count >= 7 && b.count >= 7 && (a.hasSuffix(b) || b.hasSuffix(a))
+    }
+
+    static let query = """
+        SELECT h.id, m.text, m.attributedBody, COALESCE(m.is_sent, 0),
+               COALESCE(m.is_delivered, 0), COALESCE(m.error, 0), COALESCE(m.service, '')
+        FROM message m JOIN handle h ON m.handle_id = h.ROWID
+        WHERE m.is_from_me = 1 AND m.date >= ?
+        ORDER BY m.date DESC LIMIT 50
+        """
+
+    /// One look at the store.
+    static func read(dbPath: String, to: String, text: String, sinceNs: Int64) -> Reading {
+        let none = Reading(state: .unknown, service: "")
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+            sqlite3_close(db)
+            return none
+        }
+        defer { sqlite3_close(db) }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, query, -1, &stmt, nil) == SQLITE_OK else { return none }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int64(stmt, 1, sinceNs)
+        let wanted = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            guard let h = sqlite3_column_text(stmt, 0), sameHandle(String(cString: h), to) else { continue }
+            var body = sqlite3_column_text(stmt, 1).map { String(cString: $0) }
+            if body == nil, let blob = sqlite3_column_blob(stmt, 2) {
+                body = TypedStreamText.decode(Data(bytes: blob, count: Int(sqlite3_column_bytes(stmt, 2))))
+            }
+            // A row whose text can't be read is not taken as this message.
+            guard let body, body.trimmingCharacters(in: .whitespacesAndNewlines) == wanted else { continue }
+            let service = sqlite3_column_text(stmt, 6).map { String(cString: $0) } ?? ""
+            let state: State = sqlite3_column_int64(stmt, 5) != 0 ? .failed
+                : sqlite3_column_int(stmt, 4) != 0 ? .delivered
+                : sqlite3_column_int(stmt, 3) != 0 ? .sent : .pending
+            return Reading(state: state, service: service)
+        }
+        return none
+    }
+
+    /// Watches the row for a short window. A failure or a delivery ends it at
+    /// once; a plain "sent" is given a few seconds to turn into either.
+    static func settle(dbPath: String = storePath, to: String, text: String, sinceNs: Int64,
+                       window: TimeInterval = 9, step: TimeInterval = 0.5,
+                       sentGrace: TimeInterval = 3) -> Reading {
+        let started = Date()
+        var sentAt: Date?
+        var last = Reading(state: .unknown, service: "")
+        while true {
+            last = read(dbPath: dbPath, to: to, text: text, sinceNs: sinceNs)
+            if last.state == .failed || last.state == .delivered { return last }
+            if last.state == .sent {
+                if sentAt == nil { sentAt = Date() }
+                if Date().timeIntervalSince(sentAt!) >= sentGrace { return last }
+            }
+            if Date().timeIntervalSince(started) + step > window { break }
+            Thread.sleep(forTimeInterval: step)
+        }
+        return last.state == .sent ? last : Reading(state: .unknown, service: last.service)
     }
 }
 

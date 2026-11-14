@@ -2,6 +2,25 @@ import AVFoundation
 import SwiftUI
 
 extension ReadAloudVoice {
+    /// The installed voices as last read, for a view that is opening: asking
+    /// macOS for its voices took a noticeable share of quick settings' first
+    /// frame. The first call reads them; later calls return what was read and
+    /// read again half a second later, once the panel has drawn and settled.
+    @MainActor static func installedForOpening(_ update: @escaping @MainActor ([Candidate]) -> Void) -> [Candidate] {
+        if let kept = keptVoices {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                let fresh = installed()
+                keptVoices = fresh
+                if fresh != kept { update(fresh) }
+            }
+            return kept
+        }
+        let fresh = installed()
+        keptVoices = fresh
+        return fresh
+    }
+    @MainActor private static var keptVoices: [Candidate]?
+
     /// The Mac's installed speech voices, as Candidates.
     static func installed() -> [Candidate] {
         AVSpeechSynthesisVoice.speechVoices().map { voice in

@@ -45,7 +45,7 @@ def store(tmp_path):
 
 def mail(mid, sender, address, subject, body, ago_h, account="adnjain@ucsc.edu", to=ME, **extra):
     return dict(ts=NOW - ago_h * 3600, account=account, account_id="acct-1" if account != LINKED else "",
-                sender=f"{sender} <{address}>", sender_address=address, to=to, subject=subject,
+                sender=sender, sender_address=address, to=to, subject=subject,
                 message_id=mid, body=body, unread=True) | extra
 
 

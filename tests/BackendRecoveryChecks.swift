@@ -138,6 +138,22 @@ enum BackendRecoveryChecks {
         )
         precondition(env["PYTHONUNBUFFERED"] == "1", "backend logs must stay unbuffered")
         precondition(env["PATH"] == "/usr/bin", "inherited environment must be preserved")
+        // The Mac's region reaches the service as a plain two-letter code, never an inherited value.
+        // Python never loads from the per-user site-packages or from an inherited path.
+        let inherited = BackendManager.backendEnvironment(base: [
+            "PYTHONPATH": "/tmp/planted", "PYTHONHOME": "/tmp/planted", "PYTHONSTARTUP": "/tmp/x.py",
+            "PYTHONUSERBASE": "/tmp/planted", "PYTHONEXECUTABLE": "/tmp/python", "PYTHONNOUSERSITE": "",
+            "PATH": "/usr/bin",
+        ], home: "/Users/sam")
+        precondition(inherited["PYTHONNOUSERSITE"] == "1")
+        for key in ["PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE", "PYTHONEXECUTABLE"] {
+            precondition(inherited[key] == nil, key)
+        }
+        precondition(inherited["PATH"] == "/usr/bin")
+        precondition(inherited["PYTHONPYCACHEPREFIX"] == "/Users/sam/.moe/cache/pycache")
+        precondition(BackendManager.backendEnvironment(base: ["WISP_REGION": "ZZ"], region: "gb")["WISP_REGION"] == "GB")
+        precondition(BackendManager.backendEnvironment(base: ["WISP_REGION": "US"], region: nil)["WISP_REGION"] == nil)
+        precondition(BackendManager.backendEnvironment(base: [:], region: "en_US; rm")["WISP_REGION"] == nil)
         precondition(
             BackendManager.backendEnvironment(
                 base: ["PYTHONPYCACHEPREFIX": "/inside/Wisp.app"], home: "/tmp/wisp-home-fixture"
