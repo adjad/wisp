@@ -189,6 +189,24 @@ final class StudyModel: ObservableObject {
         } else if !sourceIds.isEmpty {
             fields["source_ids"] = Array(sourceIds.prefix(StudyState.maxSourceIDs))
         }
+        await generate(fields)
+    }
+
+    /// Makes material from chosen deck pages (at most 40), the same way `make` does.
+    func makeFromPages(_ kind: StudyKind, pages: [StudySlideRef], count: Int? = nil, title: String? = nil) async {
+        guard busy == nil, !pages.isEmpty else { return }
+        busy = .making(kind)
+        notice = nil
+        making = StudyMakePlan(kind: kind)
+        defer {
+            busy = nil
+            making = nil
+        }
+        await generate(StudySlides.generateBody(kind, pages: pages, count: count, title: title))
+    }
+
+    /// `POST /study/generate`, then opens the material and refreshes the state.
+    private func generate(_ fields: [String: Any]) async {
         guard let body = try? JSONSerialization.data(withJSONObject: fields) else { return }
         let request = makeRequest("POST", "study/generate", body: body, timeout: Self.makeTimeout)
         guard let material = await send(request, as: StudyMaterial.self) else { return }
