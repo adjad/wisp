@@ -333,8 +333,8 @@ final class SettingsLoader: ObservableObject {
                             baseURL: "https://openrouter.ai", apiPrefix: "/api/v1"),
         CloudProviderPreset(id: "openai", label: "OpenAI", provider: "openai-compatible",
                             baseURL: "https://api.openai.com", apiPrefix: "/v1"),
-        CloudProviderPreset(id: "gemini", label: "Google Gemini", provider: "openai-compatible",
-                            baseURL: "https://generativelanguage.googleapis.com", apiPrefix: "/v1beta/openai"),
+        CloudProviderPreset(id: "gemini", label: CloudProvider.gemini.label, provider: CloudProvider.gemini.provider,
+                            baseURL: CloudProvider.gemini.baseURL, apiPrefix: CloudProvider.gemini.apiPrefix),
         CloudProviderPreset(id: "custom", label: "OpenAI-compatible", provider: "openai-compatible",
                             baseURL: "", apiPrefix: "/v1"),
     ]
@@ -386,6 +386,19 @@ final class SettingsLoader: ObservableObject {
     func savedModelLabel(for role: String) -> String {
         guard let model = roles[role], !model.isEmpty else { return "Model unknown" }
         return OverlayModel.abbrev(model)
+    }
+
+    /// A cloud row's model: the cloud model's name when "everything" is saved (the
+    /// local roles still hold their on-device defaults then), else the role's own.
+    func cloudRowLabel(for role: String) -> String {
+        guard savedCloudRoles.contains("everything") else { return savedModelLabel(for: role) }
+        return Self.cloudModelName(cloudModelID)
+    }
+
+    /// The cloud model's name ("Gemini 3.8 Flash"); a plain fallback before it is known.
+    nonisolated static func cloudModelName(_ id: String) -> String {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "Cloud model" : CloudModelName.model(trimmed)
     }
 
     func refresh() {
@@ -778,6 +791,8 @@ final class SettingsLoader: ObservableObject {
         let provider = object["provider"] as? String ?? "openrouter"
         if provider == "openrouter" {
             cloudPreset = "openrouter"
+        } else if CloudProvider.saved(provider: provider, baseURL: cloudBaseURL) == .gemini {
+            cloudPreset = "gemini"
         } else if cloudBaseURL == "https://api.openai.com" {
             cloudPreset = "openai"
         } else if cloudBaseURL == "https://generativelanguage.googleapis.com" {
@@ -1607,6 +1622,16 @@ struct SettingsView: View {
     static let paneKey = "WispSettingsPane"
     static let modelsPaneKey = "WispModelsPane"
     private var palette: ThemePalette { embedded ? .wispWindow : .notch }
+    /// An Intel build with no engine: Wisp runs on OpenRouter, so engine, local-model
+    /// and setup-guide controls lead nowhere.
+    private var intelNoEngine: Bool {
+        QuickSettingsText.noLocalEngine(remoteOnly: false, compiledForIntel: IntelCloudPreset.compiledForIntel,
+                                        engineAvailable: setup?.status?.bundledEngine?.available)
+    }
+    /// No model runs on this Mac: remote-only, or the Intel build with no engine.
+    private var noLocalEngine: Bool {
+        intelNoEngine || setup?.status?.remoteOnly == true
+    }
     @ObservedObject private var sync = SyncProgress.shared
     // Keep the last-used settings pane so reopening Settings returns to the
     // user's context when the window opens again.
@@ -1742,7 +1767,10 @@ struct SettingsView: View {
                     Text("Models").font(.title2.weight(.medium))
                     VStack(alignment: .leading, spacing: 14) {
                         if modelsPane == "assignments" {
-                        EngineSettingsView()
+                        EngineSettingsView(
+                            cloudOnly: intelNoEngine,
+                            cloudModelName: loader.cloudModelID.isEmpty
+                                ? nil : SettingsLoader.cloudModelName(loader.cloudModelID))
                         Text("Pick the expert for each kind of task")
                             .font(.callout)
                             .foregroundStyle(.secondary)
@@ -1775,9 +1803,15 @@ struct SettingsView: View {
                                         .font(.system(size: 12, weight: .medium))
                                         .foregroundStyle(.secondary)
                                         .frame(width: 190, alignment: .trailing)
-                                } else if loader.savedCloudRoles.contains(role) {
-                                    Label("Cloud · \(loader.savedModelLabel(for: role))",
+                                } else if RoleModelChoices.onCloud(role, savedCloudRoles: loader.savedCloudRoles) {
+                                    Label("Cloud · \(loader.cloudRowLabel(for: role))",
                                           systemImage: "cloud.fill")
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 190, alignment: .trailing)
+                                } else if intelNoEngine {
+                                    // No model on this Mac to pick: the key isn't connected yet.
+                                    Label("Not connected", systemImage: "cloud")
                                         .font(.system(size: 12, weight: .medium))
                                         .foregroundStyle(.secondary)
                                         .frame(width: 190, alignment: .trailing)
@@ -1810,17 +1844,24 @@ struct SettingsView: View {
                         }
                         Divider()
                         HStack {
-                            Text("Manage downloaded models and cloud keys")
+                            // An Intel build with no engine has nothing to download or set
+                            // up here: only the cloud key, which Cloud… holds.
+                            Text(intelNoEngine ? "Manage your OpenRouter key and model"
+                                               : "Manage downloaded models and cloud keys")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                             Spacer()
-                            Button("Local models…") { modelsPane = "local" }
+                            if !intelNoEngine {
+                                Button("Local models…") { modelsPane = "local" }
+                            }
                             Button("Cloud…") { modelsPane = "cloud" }
-                            Button("Setup guide…") {
-                                if setup != nil {
-                                    modelsPane = "setup"
-                                } else {
-                                    NotificationCenter.default.post(name: .wispOpenSetupGuide, object: nil)
+                            if !intelNoEngine {
+                                Button("Setup guide…") {
+                                    if setup != nil {
+                                        modelsPane = "setup"
+                                    } else {
+                                        NotificationCenter.default.post(name: .wispOpenSetupGuide, object: nil)
+                                    }
                                 }
                             }
                         }
@@ -2218,7 +2259,7 @@ struct SettingsView: View {
 
                         Divider()
 
-                        MailMemorySettingsRow()
+                        MailMemorySettingsRow(cloud: noLocalEngine)
 
                         Divider()
 
@@ -2355,6 +2396,9 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     Text("Advanced").font(.title3.weight(.medium))
                     VStack(alignment: .leading, spacing: 14) {
+                        // Nothing runs on this Mac to unload when every answer comes from
+                        // the cloud.
+                        if !noLocalEngine {
                         HStack(alignment: .center) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Auto-unload idle models")
@@ -2382,6 +2426,7 @@ struct SettingsView: View {
                         }
 
                         Divider()
+                        }
 
                         Toggle(isOn: Binding(
                             get: { loader.humanizerEnabled },

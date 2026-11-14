@@ -62,7 +62,8 @@ def visible_test_answer(payload: object) -> str:
 
 def remote_model() -> dict | None:
     """The model every answer comes from when Wisp is remote-only: its id and the
-    provider's host, for the app to name it ("Gemini 3.8 Flash · OpenRouter"). No
+    provider's host and name ("OpenRouter", "Gemini API", else the host), for the app
+    to name it ("Gemini 3.8 Flash · OpenRouter"). No
     credential and no path; None when Wisp isn't remote-only."""
     try:
         from urllib.parse import urlsplit
@@ -70,7 +71,11 @@ def remote_model() -> dict | None:
         profile = remote_only_profile()
         if profile is None:
             return None
-        return {"id": profile.model_id, "host": urlsplit(profile.base_url).hostname or ""}
+        host = urlsplit(profile.base_url).hostname or ""
+        from service.inference.providers import wire_provider
+        wire = wire_provider(getattr(profile, "provider", "openai-compatible"), profile.base_url)
+        provider = {"gemini": "Gemini API", "openrouter": "OpenRouter"}.get(wire, host)
+        return {"id": profile.model_id, "host": host, "provider": provider}
     except Exception:  # noqa: BLE001 — setup status must answer regardless
         return None
 
@@ -160,6 +165,12 @@ def build_status(*, hardware: Hardware, omlx: OmlxState, installed: list[str],
         checks.append({"id": "engine", "state": "warn", "title": "oMLX isn't running",
                        "detail": "It is installed. Start it and Wisp can use it.",
                        "action": "start_engine"})
+    elif platform.machine() == "x86_64":
+        # An Intel Mac: the engine needs Apple silicon, whatever the macOS version.
+        checks.append({"id": "engine", "state": "todo", "title": "This Mac can't run Wisp's built-in engine",
+                       "detail": ("The built-in engine needs a Mac with Apple silicon. This build runs on "
+                                  "a cloud model with your own key instead: OpenRouter or the Gemini API."),
+                       "action": "unsupported_macos"})
     elif (host := host_macos_major()) is not None and host < OMLX_MIN_MACOS:
         # Neither the built-in engine nor a current oMLX can run here; sending the
         # user to download oMLX would only strand them.

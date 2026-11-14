@@ -1049,7 +1049,8 @@ def cloud_provider_settings() -> dict:
     return {
         "enabled": bool(endpoint_cfg) and endpoint_cfg.get("enabled", True) is True,
         "provider": provider_name,
-        "provider_label": "OpenRouter" if provider_name == "openrouter" else "OpenAI-compatible",
+        "provider_label": {"openrouter": "OpenRouter", "gemini": "Gemini API"}.get(
+            provider_name, "OpenAI-compatible"),
         "base_url": str(endpoint_cfg.get("base_url", "https://openrouter.ai")),
         "api_prefix": str(endpoint_cfg.get("api_prefix", "/api/v1")),
         "model_id": str((first.get("model_id") if everything else None)
@@ -1111,9 +1112,15 @@ def set_cloud_provider(endpoint_cfg: dict, model_id: str, context_window: int,
 CLOUD_EVERYTHING = "everything"
 # Generous limits for the whole-Wisp cloud profile: remote_parity keeps full
 # history and every tool, so the request bounds only stop runaway payloads.
-_EVERYTHING_LIMITS = {"max_tokens": 8192, "request_bytes": 8 * 1024 * 1024, "messages": 1000,
-                      "aggregate_bytes": 4 * 1024 * 1024, "tools": 128,
+# Sized for a 1M-token window (about 4 bytes a token, plus JSON escaping). The
+# cloud model reasons inside max_tokens, so long writing needs the larger output.
+_EVERYTHING_LIMITS = {"max_tokens": 16384, "request_bytes": 16 * 1024 * 1024, "messages": 1000,
+                      "aggregate_bytes": 12 * 1024 * 1024, "tools": 128,
                       "response_bytes": 8 * 1024 * 1024}
+# What older builds saved; the startup upgrade below raises exactly these.
+_OLD_EVERYTHING_LIMITS = {"max_tokens": 8192, "request_bytes": 8 * 1024 * 1024,
+                          "aggregate_bytes": 4 * 1024 * 1024}
+_OPENROUTER_ORIGIN = "https://openrouter.ai"
 
 
 def set_cloud_everything(endpoint_cfg: dict, model_id: str, context_window: int) -> None:
@@ -1133,6 +1140,55 @@ def set_cloud_everything(endpoint_cfg: dict, model_id: str, context_window: int)
         "remote_only": profile,
         "super_model": {"enabled": False, "model_id": model_id, "context_window": context_window},
     }})
+
+
+def upgraded_cloud_profile(cfg: dict) -> dict | None:
+    """The saved cloud-everything profile with an older build's limits raised, or
+    None when nothing changes. Only on an Intel Mac, and only an OpenRouter or Gemini
+    API model in the known window table saved with the old 32000 window, is upgraded;
+    other values are left alone."""
+    from service.inference.remote_policy import LEGACY_CLOUD_CONTEXT_WINDOW, remote_context_window
+    if not isinstance(cfg, dict) or cfg.get("remote_parity") is not True:
+        return None
+    profile = (cfg.get("inference") or {}).get("remote_only")
+    from service.inference.providers import GEMINI_ORIGIN
+    if not isinstance(profile, dict) or profile.get("base_url") not in {_OPENROUTER_ORIGIN, GEMINI_ORIGIN}:
+        return None
+    # Only the Intel build ever saved the old 32k window; an Apple silicon Mac's
+    # Settings > Everything profile saved at 32000 was chosen there and is kept.
+    if not _intel_mac():
+        return None
+    window = remote_context_window(profile.get("model_id"))
+    if window is None or profile.get("context_window") != LEGACY_CLOUD_CONTEXT_WINDOW:
+        return None
+    upgraded = {**profile, "context_window": window}
+    for key, old in _OLD_EVERYTHING_LIMITS.items():
+        if profile.get(key) == old:
+            upgraded[key] = _EVERYTHING_LIMITS[key]
+    return upgraded
+
+
+def _intel_mac() -> bool:
+    import platform
+    return platform.machine() == "x86_64"
+
+
+def upgrade_cloud_profile() -> dict | None:
+    """Save upgraded_cloud_profile() once at startup. Returns the saved profile, or
+    None when there was nothing to upgrade or it could not be saved."""
+    try:
+        cfg = models_config()
+        upgraded = upgraded_cloud_profile(cfg)
+        if upgraded is None:
+            return None
+        from service.inference.remote_policy import profile_from_config
+        profile_from_config(upgraded)        # never save a profile this build refuses
+        _save_overlay({"inference": {"remote_only": upgraded,
+                                     "super_model": {"context_window": upgraded["context_window"]}}})
+        return upgraded
+    except Exception as exc:  # noqa: BLE001 — the old profile still works
+        print(f"[remote] cloud profile not upgraded ({type(exc).__name__})", flush=True)
+        return None
 
 
 def cloud_everything_enabled() -> bool:

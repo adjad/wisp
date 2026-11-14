@@ -323,14 +323,117 @@ def replay_reasoning_details(client, message: dict) -> list | None:
 
 def without_replay_reasoning(value):
     """A copy of a message, or a list of messages, with no held or replayed provider
-    reasoning: for everything that is shown, exported or kept."""
-    from service.inference.remote_policy import REPLAY_REASONING_KEY
+    reasoning (nor the Gemini API's per-call thought signatures): for everything that
+    is shown, exported or kept."""
+    from service.inference.remote_policy import REPLAY_REASONING_KEY, REPLAY_TOOL_EXTRA_KEY
     if isinstance(value, list):
         return [without_replay_reasoning(item) for item in value]
-    if isinstance(value, dict) and (REPLAY_REASONING_KEY in value or "reasoning_details" in value):
-        return {k: v for k, v in value.items()
-                if k not in (REPLAY_REASONING_KEY, "reasoning_details")}
-    return value
+    if not isinstance(value, dict):
+        return value
+    private = (REPLAY_REASONING_KEY, REPLAY_TOOL_EXTRA_KEY, "reasoning_details")
+    calls = value.get("tool_calls")
+    signed = isinstance(calls, list) and any(isinstance(c, dict) and "extra_content" in c for c in calls)
+    if not signed and not any(key in value for key in private):
+        return value
+    out = {k: v for k, v in value.items() if k not in private}
+    if signed:
+        out["tool_calls"] = [{k: v for k, v in c.items() if k != "extra_content"}
+                             if isinstance(c, dict) else c for c in calls]
+    return out
+
+
+def _hold_tool_extras(message: dict) -> None:
+    """A Gemini API reply's tool calls: take each call's `extra_content` (its thought
+    signature) off the call and keep the valid ones, exactly as received, under the
+    private replay key, paired with their call ids. Nothing of it stays readable on
+    the message itself."""
+    from service.inference.remote_policy import REPLAY_TOOL_EXTRA_KEY, _valid_tool_extra
+    calls = message.get("tool_calls")
+    if not isinstance(calls, list):
+        return
+    pairs = []
+    for index, call in enumerate(calls):
+        if not isinstance(call, dict) or "extra_content" not in call:
+            continue
+        extra = call.pop("extra_content")
+        if _valid_tool_extra(extra):
+            pairs.append((index, call.get("id"), extra))
+    if pairs:
+        message[REPLAY_TOOL_EXTRA_KEY] = ReplayReasoning(pairs)
+
+
+def replay_tool_calls(client, message: dict, tool_calls):
+    """`tool_calls` for the call row the next request of this turn sends: copies of
+    the calls that came with a held Gemini API `extra_content` carry it back,
+    unchanged. Only a remote client's, only when the reply held one; otherwise
+    `tool_calls` itself."""
+    from service.inference.remote_policy import REPLAY_TOOL_EXTRA_KEY
+    if (getattr(client, "managed", True) is not False or not isinstance(message, dict)
+            or not isinstance(tool_calls, list)):
+        return tool_calls
+    held = message.get(REPLAY_TOOL_EXTRA_KEY)
+    if not isinstance(held, ReplayReasoning):
+        return tool_calls
+    by_id = {call_id: extra for _index, call_id, extra in held.details if call_id}
+    if not by_id:
+        return tool_calls
+    return [{**call, "extra_content": by_id[call["id"]]}
+            if isinstance(call, dict) and call.get("id") in by_id else call
+            for call in tool_calls]
+
+
+def _gemini_wire_messages(messages):
+    """The Gemini API needs a thought signature on the first call of every tool step
+    of the current turn. A step whose calls carry none (one Wisp made up, or a path
+    that rebuilt the calls) gets Google's documented skip value on its first call
+    instead of a 400. Copies only the rows it changes."""
+    from service.inference.remote_policy import GEMINI_SKIP_SIGNATURE
+    out = None
+    for index, row in enumerate(messages or []):
+        if not isinstance(row, dict) or row.get("role") != "assistant":
+            continue
+        calls = row.get("tool_calls")
+        if not isinstance(calls, list) or not calls or not isinstance(calls[0], dict):
+            continue
+        if any(isinstance(c, dict) and "extra_content" in c for c in calls):
+            continue
+        if out is None:
+            out = list(messages)
+        first = {**calls[0], "extra_content": {"google": {"thought_signature": GEMINI_SKIP_SIGNATURE}}}
+        out[index] = {**row, "tool_calls": [first, *calls[1:]]}
+    return messages if out is None else out
+
+
+def _without_tool_extras(messages):
+    """`messages` with no tool-call `extra_content`: never sent to another provider."""
+    if not any(isinstance(row, dict) and isinstance(row.get("tool_calls"), list)
+               and any(isinstance(c, dict) and "extra_content" in c for c in row["tool_calls"])
+               for row in messages or []):
+        return messages
+    return [{**row, "tool_calls": [{k: v for k, v in c.items() if k != "extra_content"}
+                                   if isinstance(c, dict) else c for c in row["tool_calls"]]}
+            if isinstance(row, dict) and isinstance(row.get("tool_calls"), list) else row
+            for row in messages]
+
+
+def _cache_marked_system(messages):
+    """OpenRouter's Anthropic models: one prompt-cache breakpoint at the end of the
+    first (stable) system message, so the tools and rules before it are reused from
+    the cache on every later step and turn. Copies that one row only."""
+    if (not messages or not isinstance(messages[0], dict) or messages[0].get("role") != "system"
+            or not isinstance(messages[0].get("content"), str) or not messages[0]["content"]):
+        return messages
+    marked = {**messages[0], "content": [{"type": "text", "text": messages[0]["content"],
+                                          "cache_control": {"type": "ephemeral"}}]}
+    return [marked, *messages[1:]]
+
+
+# Under cloud-everything a provider's readiness (its model list answered with this
+# key) is proven once for a few minutes, not twice before every turn's first token.
+# A provider that fails meanwhile still fails the request itself, with the same
+# message; invalidate_connections forgets the proof.
+REMOTE_READY_SECONDS = 300.0
+_REMOTE_READY: dict[tuple, float] = {}
 
 
 # About one prompt token per 300 base64 characters of 16 kHz, 16-bit mono WAV
@@ -441,6 +544,10 @@ class OMLXClient:
         from .providers import provider
         self.provider = provider(ep.provider if ep else "omlx")
         self.api_prefix = ep.api_prefix if ep else self.provider.api_prefix
+        from .providers import wire_provider
+        # The provider's wire format ("gemini", "openrouter", ...), told from the exact
+        # origin: a remote-only profile records no provider name.
+        self.wire = wire_provider(self.provider.name, self.base_url)
         key_loader = None
         if api_key is None:
             if ep and ep.credential_ref.startswith("keychain:"):
@@ -453,8 +560,14 @@ class OMLXClient:
                 raise EndpointConfigurationError("An explicit remote URL requires its own credential")
         self.api_key = api_key
         from .attributed_transport import CredentialTransport
+        from service.inference.remote_policy import cloud_everything_active
+        # Under cloud-everything a remote https provider's connections are kept alive
+        # and shared by every client in the process (one TLS handshake, not one a turn).
+        # The managed engine and every other path keep their own, unshared, pool.
+        shared = (not self.managed and self.base_url.startswith("https://")
+                  and cloud_everything_active())
         self._credential_transport = CredentialTransport(self.base_url, api_key,
-            managed=self.managed, key_loader=key_loader)
+            managed=self.managed, key_loader=key_loader, shared=shared)
         self._client = guard_client(httpx.AsyncClient(
             base_url=self.base_url,
             transport=(self._credential_transport if self.managed
@@ -486,6 +599,9 @@ class OMLXClient:
         # Residency is unknown after a connection reset (engine restart path).
         with engine_epoch.operation():
             self._credential_transport.invalidate()
+        key = self._ready_key() if not self.managed else None
+        if key is not None:
+            _REMOTE_READY.pop(key, None)
 
     def _check_response(self, response):
         if self.managed and response.headers.get("x-wisp-guard-refusal") == "1":
@@ -743,6 +859,11 @@ class OMLXClient:
                     raise IncompleteStreamError("Invalid inference response data")
                 total = cls._bounded_remote_value(
                     total, call["function"].get("arguments"), maximum)
+                if "extra_content" in call:
+                    # A per-call thought signature (the Gemini API): metadata, bounded
+                    # with the structured reasoning above.
+                    metadata_total = cls._bounded_remote_json(
+                        metadata_total, call["extra_content"], maximum)
 
     async def _readiness_mapping(self, path, maximum):
         # Bound the wire stream before JSON parsing. Reject compression rather
@@ -798,9 +919,50 @@ class OMLXClient:
         except (KeyError, ValueError, TypeError):
             raise ModelLoadError("Invalid inference model inventory") from None
 
+    def _ready_key(self) -> tuple | None:
+        """The readiness-cache key, only for a remote client under cloud-everything."""
+        if self.managed or self.target is None:
+            return None
+        from service.inference.remote_policy import cloud_everything_active
+        if not cloud_everything_active():
+            return None
+        ep = self.target.endpoint
+        return (ep.base_url, ep.api_prefix, ep.credential_ref)
+
+    def _recently_ready(self) -> bool:
+        import time
+        key = self._ready_key()
+        seen = _REMOTE_READY.get(key) if key is not None else None
+        return seen is not None and time.monotonic() - seen < REMOTE_READY_SECONDS
+
+    async def _remote_models_ready(self) -> None:
+        """The remote inventory read that proves endpoint and key, skipped while a
+        recent one still stands (cloud-everything only)."""
+        if self._recently_ready():
+            return
+        await self.models()
+        key = self._ready_key()
+        if key is not None:
+            import time
+            _REMOTE_READY[key] = time.monotonic()
+
+    async def warm(self) -> None:
+        """Open (or refresh) a kept-alive connection to the remote provider before a
+        turn needs it. The answer does not matter, only the connection: the Gemini
+        API's short model list (which also proves the key), else a HEAD on the API
+        prefix (OpenRouter's model list is large). Remote clients only."""
+        if self.managed:
+            return
+        if self.wire == "gemini":
+            await self._remote_models_ready()
+            return
+        response = await self._client.request("HEAD", self.api_prefix,
+                                              headers={"Accept-Encoding": "identity"})
+        await response.aclose()
+
     async def health(self) -> dict[str, Any]:
         if not self.provider.omlx_health:
-            await self.models()
+            await self._remote_models_ready()
             return {"status": "ok"}
         data = await self._readiness_mapping("/health", 64 * 1024)
         if data.get("status") not in ("ok", "healthy"):
@@ -875,7 +1037,7 @@ class OMLXClient:
                     # missing from it is not refused: Gemini's OpenAI-compatible
                     # list leaves Gemma out though it serves it, and a model the
                     # provider truly lacks fails on the request itself.
-                    await self.models()
+                    await self._remote_models_ready()
                     return
                 await self._ensure_managed(model, settle_timeout=settle_timeout,
                                            exclusive=exclusive, emit=emit)
@@ -1089,6 +1251,9 @@ class OMLXClient:
                             message["reasoning_content"] = message["reasoning"]
                     if not self.managed:
                         _split_inline_thought(message)
+                        if self.wire == "gemini":
+                            # The Gemini API's thought signatures, held for this turn only.
+                            _hold_tool_extras(message)
                     if hold_reasoning:
                         _hold_provider_reasoning(message, held_details,
                                                  required=self._replays_reasoning(model))
@@ -1142,7 +1307,16 @@ class OMLXClient:
         reply is fetched whole (`_whole_reply_events`), so the reasoning_details it
         returns with tool calls are exactly the provider's, ready to send back.
         """
-        if not self.managed and self._replays_reasoning(model):
+        # Under cloud-everything a call that offers no tools can return no tool calls,
+        # so nothing would be replayed: it streams, even for those models. Its
+        # reasoning stays unshown, as it is when the reply is fetched whole.
+        whole_reply = not self.managed and self._replays_reasoning(model)
+        quiet_reasoning = False
+        if whole_reply and not tools:
+            from service.inference.remote_policy import cloud_everything_active
+            if cloud_everything_active():
+                whole_reply, quiet_reasoning = False, True
+        if whole_reply:
             async for event in self._whole_reply_events(
                     model, messages, tools=tools, tool_choice=tool_choice,
                     temperature=temperature, max_tokens=max_tokens,
@@ -1231,7 +1405,7 @@ class OMLXClient:
                         # text is neither shown nor kept: it may end in tool calls, and
                         # then only the details are held, for replay (see the end of
                         # this stream).
-                        if not (has_reasoning_details and not self.managed):
+                        if not (has_reasoning_details and not self.managed) and not quiet_reasoning:
                             reasoning_parts.append(t)
                             yield {"kind": "reasoning", "text": t}
                     if (t := delta.get("content")):
@@ -1253,9 +1427,17 @@ class OMLXClient:
                             if ((tc.get("function") or {}).get("name") and calls
                                     and calls[index]["name"]):
                                 index += 1
-                        slot = calls.setdefault(index, {"id": "", "name": "", "arguments": ""})
+                        slot = calls.setdefault(index, {"id": "", "name": "", "arguments": "",
+                                                        "extra": None})
                         if tc.get("id"):
                             slot["id"] = tc["id"]
+                        if not self.managed and self.wire == "gemini" and "extra_content" in tc:
+                            # The call's thought signature arrives whole, on one chunk.
+                            from service.inference.remote_policy import _valid_tool_extra
+                            metadata_size = self._bounded_remote_json(
+                                metadata_size, tc["extra_content"], output_limit)
+                            if _valid_tool_extra(tc["extra_content"]):
+                                slot["extra"] = tc["extra_content"]
                         fn = tc.get("function") or {}
                         if fn.get("name"):
                             slot["name"] = fn["name"]
@@ -1298,10 +1480,11 @@ class OMLXClient:
                 if not call["id"] or call["id"] in seen_ids or not call["name"] or not isinstance(args, dict):
                     raise IncompleteStreamError("Invalid completed tool call")
                 seen_ids.add(call["id"])
+        named = [s for _, s in sorted(calls.items()) if s["name"]]
         tool_calls = [
             {"id": s["id"], "type": "function",
              "function": {"name": s["name"], "arguments": s["arguments"]}}
-            for _, s in sorted(calls.items()) if s["name"]
+            for s in named
         ]
         final_message = {
             "role": "assistant",
@@ -1312,6 +1495,10 @@ class OMLXClient:
         if tool_calls and not self.managed and has_reasoning_details and replay_valid:
             # Only with tool calls: a final answer ends the turn, and its details go.
             _hold_provider_reasoning(final_message, replay_details)
+        if tool_calls and not self.managed and any(s["extra"] is not None for s in named):
+            from service.inference.remote_policy import REPLAY_TOOL_EXTRA_KEY
+            final_message[REPLAY_TOOL_EXTRA_KEY] = ReplayReasoning(
+                [(i, s["id"], s["extra"]) for i, s in enumerate(named) if s["extra"] is not None])
         # Same correction as `chat()`. Live deltas for this case have already
         # gone out (nothing can un-send them), but every consumer of the FINAL
         # message — the agent loop's empty-content retry, main.py's
@@ -1341,7 +1528,7 @@ class OMLXClient:
         reasoning; the final message holds the reply's reasoning_details (exactly as
         parsed from that one body) under the private replay key when it has tool
         calls. The calls get the same checks as streamed ones."""
-        from service.inference.remote_policy import REPLAY_REASONING_KEY
+        from service.inference.remote_policy import REPLAY_REASONING_KEY, REPLAY_TOOL_EXTRA_KEY
         data = await self.chat(model, messages, tools=tools, tool_choice=tool_choice,
                                temperature=temperature, max_tokens=max_tokens,
                                use_remaining_context=use_remaining_context, **extra)
@@ -1384,6 +1571,11 @@ class OMLXClient:
                          "tool_calls": tool_calls or None}
         if tool_calls and isinstance(message.get(REPLAY_REASONING_KEY), ReplayReasoning):
             final_message[REPLAY_REASONING_KEY] = message[REPLAY_REASONING_KEY]
+        if tool_calls and isinstance(message.get(REPLAY_TOOL_EXTRA_KEY), ReplayReasoning):
+            # Paired by position; a call whose id was filled in here takes that id.
+            final_message[REPLAY_TOOL_EXTRA_KEY] = ReplayReasoning(
+                [(i, tool_calls[i]["id"], extra) for i, _id, extra in message[REPLAY_TOOL_EXTRA_KEY].details
+                 if i < len(tool_calls)])
         if finish_reason == "length" and not tool_calls and not content.strip():
             final_message["_truncated"] = True
         yield {"kind": "final", "message": final_message}
@@ -1405,8 +1597,10 @@ class OMLXClient:
 
     def _fit_with_reasoning(self, model, messages, tools, max_tokens, *,
                             use_remaining_context: bool = False):
-        """`_fit_request`, plus the remote profile's `reasoning` option when its model
-        has one (remote_policy.REASONING_EFFORT_MODELS).
+        """`_fit_request`, plus the remote profile's reasoning option when its model
+        has one (remote_policy.REASONING_EFFORT_MODELS: `reasoning` on OpenRouter,
+        `reasoning_effort` on the Gemini API), plus the provider's wire shape
+        (`_wire_messages`, `_wire_fields`).
 
         The provider gives reasoning half of max_tokens (at least 1024) and needs
         max_tokens above that, so a reasoning request carries at least
@@ -1417,11 +1611,44 @@ class OMLXClient:
         asked, without reasoning. A small tool-free call (a connection probe, a title,
         a background one-liner) keeps its budget and goes without reasoning: raising
         it would only add latency and cost to a call that needs a few words."""
-        from service.inference.remote_policy import (REASONING_MIN_MAX_TOKENS, reasoning_option,
+        model, messages, tools, max_tokens, fields = self._fit_reasoning_only(
+            model, messages, tools, max_tokens, use_remaining_context=use_remaining_context)
+        return (model, self._wire_messages(model, messages), tools, max_tokens,
+                {**fields, **self._wire_fields()})
+
+    def _wire_fields(self) -> dict:
+        """Provider options every request of this client carries: OpenRouter's
+        latency-first provider routing, under cloud-everything only."""
+        from service.inference.remote_policy import OPENROUTER_PROVIDER_ROUTING, cloud_everything_active
+        if (not self.managed and getattr(self, "wire", None) == "openrouter"
+                and cloud_everything_active()):
+            return {"provider": dict(OPENROUTER_PROVIDER_ROUTING)}
+        return {}
+
+    def _wire_messages(self, model, messages):
+        """The request's messages in this provider's wire shape (copies of changed
+        rows only): the Gemini API's thought signatures on its tool steps, never on
+        another provider's; one prompt-cache mark for OpenRouter's Anthropic models
+        under cloud-everything. A managed client's messages go unchanged."""
+        if self.managed:
+            return messages
+        wire = getattr(self, "wire", None)
+        if wire == "gemini":
+            return _gemini_wire_messages(messages)
+        messages = _without_tool_extras(messages)
+        if wire == "openrouter" and isinstance(model, str) and model.startswith("anthropic/"):
+            from service.inference.remote_policy import cloud_everything_active
+            if cloud_everything_active():
+                return _cache_marked_system(messages)
+        return messages
+
+    def _fit_reasoning_only(self, model, messages, tools, max_tokens, *,
+                            use_remaining_context: bool = False):
+        from service.inference.remote_policy import (REASONING_MIN_MAX_TOKENS, reasoning_fields,
                                                      remote_only_profile)
         self._check_replay_budget(messages)
         profile = remote_only_profile()
-        option = (reasoning_option(profile.model_id)
+        option = (reasoning_fields(getattr(self, "wire", profile.wire), profile.model_id) or None
                   if profile is not None and not self.managed and self.target is not None
                   and model == profile.model_id else None)
         if option is not None and profile.max_tokens >= REASONING_MIN_MAX_TOKENS:
@@ -1439,7 +1666,8 @@ class OMLXClient:
                 except EndpointConfigurationError:
                     fitted = None
                 if fitted is not None and fitted[3] >= REASONING_MIN_MAX_TOKENS:
-                    return (*fitted, {"reasoning": dict(option)})
+                    import copy
+                    return (*fitted, copy.deepcopy(option))
         return (*self._fit_request(model, messages, tools, max_tokens,
                                    use_remaining_context=use_remaining_context), {})
 

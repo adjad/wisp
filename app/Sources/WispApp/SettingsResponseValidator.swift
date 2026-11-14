@@ -15,11 +15,11 @@ enum SettingsResponseValidator {
 
     /// Check the numeric value before any integer conversion, including NSNumber
     /// values supplied directly rather than through JSONSerialization.
-    static func contextValue(_ value: Any?, minimum: Int = 0) -> Int? {
+    static func contextValue(_ value: Any?, minimum: Int = 0, maximum: Int = 262_144) -> Int? {
         guard let number = value as? NSNumber,
               CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
         let value = number.doubleValue
-        guard value.isFinite, value >= Double(minimum), value <= 262_144,
+        guard value.isFinite, value >= Double(minimum), value <= Double(maximum),
               value.rounded(.towardZero) == value else { return nil }
         let integer = Int(value)
         guard number.compare(NSNumber(value: integer)) == .orderedSame else { return nil }
@@ -103,9 +103,22 @@ enum SettingsResponseValidator {
         return saved ? .savedMatchUnconfirmed : .failed
     }
 
+    /// The largest window a cloud reply may carry when all of Wisp runs on it
+    /// (roles ["everything"]): the backend's remote-profile limit
+    /// (service/inference/remote_policy.py LIMITS["context_window"]). Every other
+    /// reply keeps 262,144.
+    static let maximumEverythingContext = 1_048_576
+
+    /// Cloud providers a live cloud reply may name.
+    static let cloudProviders: Set<String> = ["openrouter", "openai-compatible", "gemini"]
+
     static func valid(_ object: [String: Any], path: String) -> Bool {
         func bool(_ key: String) -> Bool { boolean(object[key]) != nil }
-        func integer(_ key: String) -> Bool { contextValue(object[key], minimum: 512) != nil }
+        let everything = path == "inference/cloud" && (object["roles"] as? [String]) == ["everything"]
+        func integer(_ key: String) -> Bool {
+            contextValue(object[key], minimum: 512,
+                         maximum: everything ? maximumEverythingContext : 262_144) != nil
+        }
         func string(_ key: String) -> Bool { object[key] is String }
         if path == "inference/local-provider/qualify" {
             guard let qualified = boolean(object["qualified"]),
@@ -180,7 +193,7 @@ enum SettingsResponseValidator {
         guard let name = object["credential_name"] as? String,
               name.range(of: "^[A-Za-z][A-Za-z0-9_-]{0,63}$", options: .regularExpression) != nil,
               let provider = object["provider"] as? String,
-              ["openrouter", "openai-compatible"].contains(provider),
+              cloudProviders.contains(provider),
               let model = object["model_id"] as? String,
               !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let rawURL = object["base_url"] as? String,

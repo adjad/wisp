@@ -53,8 +53,14 @@ final class NotchGoogleModel: ObservableObject {
         }
     }
 
-    var consentLine: String {
-        "Gmail, Calendar, Drive, Docs and Chat, read-only. Wisp builds your to-dos on this Mac."
+    var consentLine: String { Self.consentLine(cloud: false, cloudModel: nil) }
+
+    /// The row's line. On the cloud (remote-only, or the Intel build) it names the
+    /// cloud model that reads Google instead of saying it stays on this Mac. Pure.
+    nonisolated static func consentLine(cloud: Bool, cloudModel: String?) -> String {
+        guard cloud else { return "Gmail, Calendar, Drive, Docs and Chat, read-only. Wisp builds your to-dos on this Mac." }
+        return "Gmail, Calendar, Drive, Docs and Chat, read-only. "
+            + GoogleToDoCopy.line(cloud: true, cloudModel: cloudModel)
     }
 
     func connect() {
@@ -169,6 +175,10 @@ enum NotchGoogleStage: Equatable {
 /// unverified-app notice before the browser opens and the sign-in's progress.
 struct NotchConnectGoogle: View {
     @ObservedObject var model: NotchGoogleModel
+    /// The cloud model every answer comes from (OverlayModel.cloudModel); nil on this Mac.
+    var cloudModel: String? = nil
+
+    private var cloud: Bool { cloudModel != nil || IntelCloudPreset.compiledForIntel }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -177,7 +187,7 @@ struct NotchConnectGoogle: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Google account").font(.system(size: 12.5, weight: .semibold))
                         .foregroundStyle(Theme.textPrimary)
-                    Text(model.consentLine)
+                    Text(NotchGoogleModel.consentLine(cloud: cloud, cloudModel: cloudModel))
                         .font(.system(size: 11)).foregroundStyle(Theme.textMuted)
                         .fixedSize(horizontal: false, vertical: true)
                 }

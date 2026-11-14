@@ -1809,9 +1809,7 @@ def _message_rows(now: float, limit: int = 0) -> list[tuple[float, str, str, str
     for ts, context, text in (recent[:limit] if limit else recent):
         sender, sep, body = text.partition(":")
         sender, body = sender.strip(), (body if sep else text).strip()
-        context = _clean(context, 40)
-        group = context.startswith("Group ")
-        label = context[len("Group "):].strip('"') if group else context
+        group, label = _conversation_label(context)
         if sender == "Me":
             speaker = "you"
         elif group or sender.lower() != label.lower():
@@ -1820,6 +1818,13 @@ def _message_rows(now: float, limit: int = 0) -> list[tuple[float, str, str, str
             speaker = ""      # 1:1 incoming — the conversation label IS the sender
         out.append((ts, label, speaker, _clean(body, 110)))
     return out
+
+
+def _conversation_label(context: str) -> tuple[bool, str]:
+    """(is a group, the name shown) for a cached Messages conversation context."""
+    context = _clean(context, 40)
+    group = context.startswith("Group ")
+    return group, (context[len("Group "):].strip('"') if group else context)
 
 
 def _conversations(now: float) -> list[dict]:

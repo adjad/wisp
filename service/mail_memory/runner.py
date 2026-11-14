@@ -80,6 +80,14 @@ log = logging.getLogger("wisp.mail_memory")
 MODES = ("off", "shadow", "live")
 SETTINGS_PATH = MOE_DIR / "mail_memory" / "settings.json"
 WINDOW_DAYS = 90
+# Cloud-everything (remote_policy.cloud_everything_active) reads further back: the
+# app's index answers at most 200 days (MailMemoryReader.maxDays).
+CLOUD_WINDOW_DAYS = 200
+
+
+def window_days() -> int:
+    from service.inference.remote_policy import cloud_everything_active
+    return CLOUD_WINDOW_DAYS if cloud_everything_active() else WINDOW_DAYS
 INDEX_EVERY_S = 6 * 3600
 BETWEEN_GAP_S = 90
 AWAY_GAP_S = 5
@@ -456,7 +464,7 @@ async def _gmail_excluded() -> frozenset:
     and the header guess to decide."""
     try:
         from service import gmail_source
-        found = await gmail_source.tab_message_ids(WINDOW_DAYS)
+        found = await gmail_source.tab_message_ids(window_days())
     except Exception:  # noqa: BLE001
         found = None
     return frozenset(found or ())
@@ -500,7 +508,7 @@ async def tick(*, now: float | None = None) -> float:
     saving = low or (not on_ac and pct is not None and pct < 30)
     last_index = float(st.meta("last_index") or 0)
     if not saving and now - last_index >= INDEX_EVERY_S:
-        rows, capped = await read_index(WINDOW_DAYS)
+        rows, capped = await read_index(window_days())
         excluded = await _gmail_excluded()
         merged = await asyncio.to_thread(st.upsert_index, rows, lambda r: extract.tier(r, excluded), now)
         merged["gmail_tab"] = await asyncio.to_thread(st.exclude, excluded) if excluded else 0
@@ -667,7 +675,7 @@ def _forget_gone_accounts(st, rows: list[dict], now: float) -> dict | None:
     with_text = {spelled.get(a, a) for a in attachment_store.accounts() if a not in here}
     still, gone = {}, set()
     for account in (st.candidate_accounts() - seen - {""}) | with_text:
-        if now - newest.get(account, 0) > (WINDOW_DAYS - QUIET_MARGIN_DAYS) * 86400:
+        if now - newest.get(account, 0) > (window_days() - QUIET_MARGIN_DAYS) * 86400:
             # Quiet, not gone: it would fall out of the window anyway. This is also what
             # keeps a reading owned by a Gmail address (never in Mail's index, so its
             # newest is 0) from ever counting as a Mail account that left.

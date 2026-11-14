@@ -207,6 +207,28 @@ private final class EngineSettingsLoader: ObservableObject {
 
 struct EngineSettingsView: View {
     @StateObject private var loader = EngineSettingsLoader()
+    /// The Intel build with no engine (Settings' own reading of /setup/status): Wisp
+    /// runs on OpenRouter, so no engine choice, dashboard or setup link is offered.
+    var cloudOnly = false
+    /// The cloud model's name ("Gemini 3.8 Flash"), when known.
+    var cloudModelName: String?
+
+    init(cloudOnly: Bool = false, cloudModelName: String? = nil) {
+        self.cloudOnly = cloudOnly
+        self.cloudModelName = cloudModelName
+    }
+
+    /// The engine line when everything runs on OpenRouter. Pure.
+    nonisolated static func cloudLine(modelName: String?) -> String {
+        guard let modelName, !modelName.isEmpty else { return "Running on OpenRouter" }
+        return "Running on OpenRouter · \(modelName)"
+    }
+
+    /// No engine controls: an Intel build whose built-in engine isn't available (an
+    /// Intel Mac can't run it or oMLX), by Settings' reading or the engine's own. Pure.
+    nonisolated static func showsCloudOnly(cloudOnly: Bool, compiledForIntel: Bool, bundledAvailable: Bool?) -> Bool {
+        cloudOnly || (compiledForIntel && bundledAvailable == false)
+    }
 
     private var selectedMode: Binding<EngineMode> {
         Binding(
@@ -235,7 +257,11 @@ struct EngineSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if let engine = loader.engine {
+            if Self.showsCloudOnly(cloudOnly: cloudOnly, compiledForIntel: IntelCloudPreset.compiledForIntel,
+                                   bundledAvailable: loader.engine?.bundledAvailable) {
+                Label(Self.cloudLine(modelName: cloudModelName), systemImage: "cloud.fill")
+                    .font(.callout)
+            } else if let engine = loader.engine {
                 HStack {
                     Label("Running on \(engine.mode.title)",
                           systemImage: engine.running ? "checkmark.circle.fill" : "circle.dashed")

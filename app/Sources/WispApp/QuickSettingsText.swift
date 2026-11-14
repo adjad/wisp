@@ -118,11 +118,43 @@ enum QuickSettingsSection: String, CaseIterable, Identifiable {
     }
 
     func save(in defaults: UserDefaults = .standard) { defaults.set(rawValue, forKey: Self.defaultsKey) }
+
+    /// The sections offered. With no model on this Mac (everything on the cloud, or an
+    /// Intel build with no engine) Power has nothing to cap or unload, so it is left out.
+    static func shown(localEngine: Bool) -> [QuickSettingsSection] {
+        localEngine ? allCases : allCases.filter { $0 != .power }
+    }
 }
 
 /// Quick settings' one-line descriptions. Each keeps the states the service can
 /// be in (waiting for confirmation, not confirmed) instead of guessing "off".
 enum QuickSettingsText {
+    /// No model runs on this Mac: every answer comes from a remote model (remote-only),
+    /// or this is an Intel build whose engine isn't available (no Intel Mac runs the
+    /// built-in engine; unknown counts as absent there). Power and Auto-unload hide then.
+    static func noLocalEngine(remoteOnly: Bool, compiledForIntel: Bool, engineAvailable: Bool?) -> Bool {
+        remoteOnly || (compiledForIntel && engineAvailable != true)
+    }
+
+    /// Advanced › Model provider's line: where all of Wisp runs now. `checked` is nil
+    /// while checking and false when the saved connection couldn't be read.
+    static func modelProvider(checked: Bool?, connected: Bool, provider: CloudProvider?, modelID: String) -> String {
+        guard let checked else { return "Checking…" }
+        guard checked else { return "Wisp couldn't check this yet." }
+        guard connected else { return "Not connected" }
+        let model = modelID.isEmpty ? nil : CloudModelName.model(modelID)
+        let name = provider?.label ?? "Another provider"
+        return model.map { "\(name) · \($0)" } ?? name
+    }
+
+    static let modelProviderHelp = "Where Wisp's AI runs. Switching needs that provider's key; "
+        + "Wisp restarts on it, and Ask and Brief show the new model."
+
+    /// Shown once a switch works, until Ask and Brief catch up.
+    static func modelProviderSwitched(_ provider: CloudProvider?) -> String {
+        "Switched. Wisp restarts on \(provider?.label ?? "the new provider"); Ask and Brief show the new model in a moment."
+    }
+
     /// The notch's Setup row: always there, unlike the menu bar's two-day Change Setup….
     static let setupHelp = "Open setup again to change permissions, Google, About you or open at login. "
         + "Your model stays as it is."
@@ -365,6 +397,12 @@ enum RoleModelChoices {
     ]
     /// Roles whose model no chat role can use.
     static let nonChatRoles = ["embedding", "reranker"]
+
+    /// A role answers on the cloud model: saved for it, or "everything" saved (the
+    /// Intel build and Settings' Everything put all of Wisp there).
+    static func onCloud(_ role: String, savedCloudRoles: Set<String>) -> Bool {
+        savedCloudRoles.contains("everything") || savedCloudRoles.contains(role)
+    }
 
     static func isChatModel(_ id: String, roles: [String: String] = [:]) -> Bool {
         let name = id.lowercased()

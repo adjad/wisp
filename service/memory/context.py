@@ -375,6 +375,7 @@ async def maybe_summarize(client: OMLXClient, sid: str, model: str, prepare=None
     needed. Best-effort: never raises. Input, output and retries are bounded —
     see "BOUNDING AND FAILING THE ROLLING SUMMARY" above.
     """
+    from service.inference.remote_policy import cloud_output_budget
     try:
         sess = store.get_session(sid)
         if not sess:
@@ -429,7 +430,7 @@ async def maybe_summarize(client: OMLXClient, sid: str, model: str, prepare=None
             model,
             [{"role": "system", "content": "You compress conversations into terse notes."},
              {"role": "user", "content": prompt}],
-            max_tokens=400,
+            max_tokens=cloud_output_budget(400),   # room for a cloud model's reasoning
             **no_thinking_kwargs(model),
         )
         choice = resp["choices"][0]

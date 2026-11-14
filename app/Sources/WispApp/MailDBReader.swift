@@ -96,16 +96,23 @@ final class MailDBReader {
     // Matches MailReader's own constants so the two paths produce
     // comparably-scoped output regardless of which one answers a given tick.
     private let headerLimitPerAccount = 200
-    private let historyCutoffDays = 730
+    // Intel (cloud model): the whole history (MailHistoryWindow, end of this file).
+    private let historyCutoffDays = MailHistoryWindow.days
     // Safety ceiling on total rows fetched in one query — this is a single
     // indexed SQL scan (milliseconds), not the multi-minute AppleScript batch
     // walk it replaces, so there's no real cost pressure to keep this tight;
     // it exists purely so a truly enormous mailbox can't produce an
     // unbounded payload.
-    private let totalRowCap = 30000
+    private let totalRowCap = MailHistoryWindow.totalRows
     // Same per-account ceiling as MailReader.historyCap, so either history
     // source reports truncation for the same account at the same depth.
-    private let historyCap = 12000
+    private let historyCap = MailHistoryWindow.perAccount
+
+    /// The index and its write-ahead log, for `MailIndexPostThrottle`; empty when there is no index.
+    func indexFiles() -> [String] {
+        guard let path = envelopeIndexPath() else { return [] }
+        return [path, path + "-wal"]
+    }
 
     private func envelopeIndexPath() -> String? {
         let mailDir = mailDirectory
@@ -648,5 +655,67 @@ enum MailReadPlan: Equatable {
     static func openIfPlanned(_ plan: MailReadPlan, launcher: () -> Bool) -> Bool {
         guard plan == .openHiddenThenAppleScript else { return plan == .appleScript }
         return launcher()
+    }
+}
+
+/// How far back this reader goes. The on-device model needed small windows; the Intel
+/// build's cloud model holds about a million tokens, so there it reads (practically) the
+/// whole history: ten years, with ceilings that keep one sync a sane size. Kept in this
+/// file because the reader is also compiled on its own for its checks.
+enum MailHistoryWindow {
+    #if arch(x86_64)
+    static let days = 3650, perAccount = 50_000, totalRows = 120_000
+    #else
+    static let days = 730, perAccount = 12_000, totalRows = 30_000
+    #endif
+}
+
+/// Intel only: with Mail closed the index is read on the 5-minute sync. Ten years of
+/// history is not read and sent again while the index files are unchanged; a post is
+/// still made at least every `maxSkip` seconds, so a restarted backend is refilled.
+final class MailIndexPostThrottle {
+    #if arch(x86_64)
+    static let enabledByDefault = true
+    #else
+    static let enabledByDefault = false
+    #endif
+    private let lock = NSLock()
+    private var lastSignature: [String]?
+    private var lastPost: Date?
+    private let enabled: Bool
+    private let maxSkip: TimeInterval
+
+    init(enabled: Bool = MailIndexPostThrottle.enabledByDefault, maxSkip: TimeInterval = 1800) {
+        self.enabled = enabled
+        self.maxSkip = maxSkip
+    }
+
+    /// Path, modification time and size of each file; a missing file reads as absent.
+    static func signature(paths: [String]) -> [String] {
+        paths.map { path in
+            let attributes = try? FileManager.default.attributesOfItem(atPath: path)
+            let modified = (attributes?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+            let size = (attributes?[.size] as? NSNumber)?.int64Value ?? -1
+            return "\(path)|\(modified)|\(size)"
+        }
+    }
+
+    func shouldSkip(_ signature: [String], now: Date = Date()) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard enabled, !signature.isEmpty, let last = lastSignature, let at = lastPost else { return false }
+        return last == signature && now.timeIntervalSince(at) < maxSkip
+    }
+
+    func recordPost(_ signature: [String], now: Date = Date()) {
+        lock.lock(); defer { lock.unlock() }
+        lastSignature = signature
+        lastPost = now
+    }
+
+    /// Another source posted mail since: the next index read must post again.
+    func reset() {
+        lock.lock(); defer { lock.unlock() }
+        lastSignature = nil
+        lastPost = nil
     }
 }

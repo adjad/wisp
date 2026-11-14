@@ -43,10 +43,29 @@ struct QuickSettingsView: View {
     @AppStorage(VoiceReplyMode.defaultsKey) private var voiceRepliesRaw = VoiceReplyMode.afterVoice.rawValue
     /// The panel's Text size scale (Theme.textScale reads the same key).
     @AppStorage(Theme.textSizeKey) private var textSize: Double = 1.0
+    /// Advanced › Model provider (everything on the cloud only).
+    @StateObject private var cloudSwitch = CloudProviderSwitch()
 
     enum BriefSlot { case morning, evening }
 
     private static let spacing: CGFloat = 12
+
+    /// No model on this Mac: remote-only, where Ask names its cloud model, or the
+    /// Intel build, which has no engine.
+    private var noLocalEngine: Bool {
+        QuickSettingsText.noLocalEngine(remoteOnly: model.cloudModel != nil,
+                                        compiledForIntel: IntelCloudPreset.compiledForIntel, engineAvailable: nil)
+    }
+
+    /// The sections offered: no Power with no model on this Mac.
+    private var sections: [QuickSettingsSection] {
+        QuickSettingsSection.shown(localEngine: !noLocalEngine)
+    }
+
+    /// The section showing: a saved Power reads as General once Power isn't offered.
+    private var shownSection: QuickSettingsSection {
+        sections.contains(section) ? section : .general
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Self.spacing) {
@@ -75,7 +94,12 @@ struct QuickSettingsView: View {
             picking = nil
             choosingVoice = false
             voicePreview.stop()
+            cloudSwitch.cancel()
             chosen.save()
+        }
+        .task(id: noLocalEngine) {
+            guard refreshes, noLocalEngine else { return }
+            await cloudSwitch.refresh()
         }
         .onAppear { voices = ReadAloudVoice.installedForOpening { voices = $0 } }
         .onDisappear { voicePreview.stop() }
@@ -122,10 +146,10 @@ struct QuickSettingsView: View {
     /// One row where all five fit, two where they don't (a narrow panel, large text).
     private var sectionSwitcher: some View {
         ViewThatFits(in: .horizontal) {
-            sectionButtons(QuickSettingsSection.allCases)
+            sectionButtons(sections)
             VStack(alignment: .leading, spacing: 4) {
-                sectionButtons(Array(QuickSettingsSection.allCases.prefix(3)))
-                sectionButtons(Array(QuickSettingsSection.allCases.dropFirst(3)))
+                sectionButtons(Array(sections.prefix(3)))
+                sectionButtons(Array(sections.dropFirst(3)))
             }
         }
         .accessibilityElement(children: .contain)
@@ -135,7 +159,7 @@ struct QuickSettingsView: View {
     private func sectionButtons(_ sections: [QuickSettingsSection]) -> some View {
         HStack(spacing: 0) {
             ForEach(sections) { option in
-                let chosen = option == section
+                let chosen = option == shownSection
                 Button { section = option } label: {
                     Text(option.title)
                         .font(.wisp(.body, weight: chosen ? .semibold : .regular))
@@ -161,8 +185,8 @@ struct QuickSettingsView: View {
     private var sectionCard: some View {
         NotchSettingsChrome.card {
             ZStack(alignment: .top) {
-                ForEach(QuickSettingsSection.allCases) { option in
-                    if option == section {
+                ForEach(sections) { option in
+                    if option == shownSection {
                         rows(option)
                     } else {
                         rows(option).hidden()
@@ -171,7 +195,7 @@ struct QuickSettingsView: View {
             }
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(section.title)
+        .accessibilityLabel(shownSection.title)
     }
 
     private func rows(_ section: QuickSettingsSection) -> some View {
@@ -195,7 +219,7 @@ struct QuickSettingsView: View {
                     // Disconnect & erase live in Settings ▸ Google
                     // (NotchGoogleVisibility).
                     hairline
-                    NotchConnectGoogle(model: google)
+                    NotchConnectGoogle(model: google, cloudModel: model.cloudModel)
                 }
             case .brief:
                 dailySummaryRow
@@ -214,6 +238,10 @@ struct QuickSettingsView: View {
                 hairline
                 saveMemoryRow
             case .advanced:
+                if noLocalEngine {
+                    modelProviderRow
+                    hairline
+                }
                 replyDetailsRow
                 hairline
                 memoryRow
@@ -237,6 +265,98 @@ struct QuickSettingsView: View {
         } control: {
             pillButton("Open") { NotificationCenter.default.post(name: .wispOpenPermissions, object: nil) }
         }
+    }
+
+    /// Advanced › Model provider: OpenRouter or the Gemini API, for all of Wisp. The
+    /// other provider's chip opens its key, models and Connect under the row.
+    @ViewBuilder private var modelProviderRow: some View {
+        row("Model provider", help: QuickSettingsText.modelProviderHelp) {
+            Text(QuickSettingsText.modelProvider(checked: cloudSwitch.checked, connected: cloudSwitch.connected,
+                                                 provider: cloudSwitch.current, modelID: cloudSwitch.currentModelID))
+        } control: {
+            HStack(spacing: 6) {
+                ForEach(CloudProvider.allCases) { provider in
+                    let on = cloudSwitch.choosing.map { $0 == provider }
+                        ?? (cloudSwitch.connected && cloudSwitch.current == provider)
+                    choiceChip(provider.label, chosen: on) { cloudSwitch.open(provider) }
+                        .accessibilityLabel(provider.label)
+                }
+            }
+            .disabled(cloudSwitch.busy)
+        }
+        if let provider = cloudSwitch.choosing {
+            providerForm(provider).revealInPanel("provider-form")
+        } else if cloudSwitch.switched {
+            Text(QuickSettingsText.modelProviderSwitched(cloudSwitch.current))
+                .font(.wisp(.footnote)).foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14).padding(.bottom, 11)
+        }
+    }
+
+    private func providerForm(_ provider: CloudProvider) -> some View {
+        let connector = cloudSwitch.connector
+        let busy = cloudSwitch.busy
+        return VStack(alignment: .leading, spacing: 8) {
+            Text(provider.disclosure)
+                .font(.wisp(.footnote)).foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            SecureField(provider.keyPlaceholder, text: $cloudSwitch.choice.key)
+                .textFieldStyle(.roundedBorder)
+                .font(.wisp(.body))
+                .disabled(busy)
+                .accessibilityLabel(provider.keyPlaceholder)
+                .onSubmit { if cloudSwitch.choice.hasKey { Task { await cloudSwitch.connect(useSavedKey: false) } } }
+            CloudKeyHint(provider: provider, font: .wisp(.footnote))
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 4)], spacing: 4) {
+                ForEach(provider.models, id: \.id) { option in
+                    modelChip(CloudModelName.model(option.id), id: option.id)
+                }
+            }
+            .disabled(busy)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Model")
+            if busy {
+                Text("Testing the key and model… If macOS asks for your login password, choose Always Allow.")
+                    .font(.wisp(.footnote)).foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let error = connector.error {
+                Text(error).font(.wisp(.footnote)).foregroundStyle(Theme.bad)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 6) {
+                pillButton(busy ? "Connecting…" : "Connect", primary: true) {
+                    Task { await cloudSwitch.connect(useSavedKey: false) }
+                }
+                .disabled(busy || !cloudSwitch.choice.hasKey)
+                if cloudSwitch.savedKeyName != nil {
+                    pillButton("Use saved key") { Task { await cloudSwitch.connect(useSavedKey: true) } }
+                        .disabled(busy)
+                        .help("Connect with the \(provider.label) key you saved before.")
+                }
+                Spacer(minLength: 0)
+                pillButton("Cancel") { cloudSwitch.cancel() }
+                    .disabled(busy)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 14).padding(.bottom, 11)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Switch to \(provider.label)")
+    }
+
+    private func modelChip(_ title: String, id: String) -> some View {
+        let chosen = cloudSwitch.choice.modelID == id
+        return Button { cloudSwitch.choice.modelID = id } label: {
+            Text(title).lineLimit(1).font(.wisp(.body, weight: chosen ? .semibold : .regular))
+                .foregroundStyle(chosen ? Color.black : Theme.textPrimary)
+                .frame(maxWidth: .infinity).padding(.vertical, 4).padding(.horizontal, 6)
+                .background(RoundedRectangle(cornerRadius: 7).fill(chosen ? Theme.textPrimary : Theme.chipFill))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(chosen ? [.isButton, .isSelected] : .isButton)
     }
 
     private var replyDetailsRow: some View {

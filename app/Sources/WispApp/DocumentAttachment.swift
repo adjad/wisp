@@ -11,13 +11,18 @@ import UniformTypeIdentifiers
 //  - Memory only. Nothing here writes to disk. The file is sent as raw bytes and
 //    the service extracts the text.
 //  - A PDF with no text layer (a scan) is sent as up to four rendered pages
-//    instead (JPEG, at most 1568 px on the longest side).
+//    instead (JPEG, at most 1568 px on the longest side). The Intel build runs
+//    on the cloud model, which takes eight (the backend's cloud cap).
 //  - A locked PDF, an old .xls/.ppt, or a file over 20 MB is refused with a plain
 //    sentence, never read.
 
 enum DocumentAttachment {
     static let maxFileBytes = 20 * 1024 * 1024
+    #if arch(x86_64)
+    static let maxScanPages = 8
+    #else
     static let maxScanPages = 4
+    #endif
 
     static func tooLarge(bytes: Int) -> Bool { bytes > maxFileBytes }
 
@@ -125,7 +130,7 @@ enum DocumentAttachment {
         return .attached(.document(name: name, data: nil, pages: pages))
     }
 
-    /// The first up to four pages as JPEG, at most `MediaAttachment.maxImageSide` px.
+    /// The first up to `maxScanPages` pages as JPEG, at most `MediaAttachment.maxImageSide` px.
     static func renderPages(of pdf: PDFDocument, maxPages: Int = maxScanPages) -> [Data] {
         var out: [Data] = []
         for index in 0..<min(pdf.pageCount, maxPages) {

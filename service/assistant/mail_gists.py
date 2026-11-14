@@ -99,6 +99,24 @@ _SUMMARY_THINKING_TOKENS = 1600
 _SUMMARY_CHARS = (40, 340)
 _SUMMARY_EMAILS = 10
 _EXCERPT_CHARS = 220
+# Cloud-everything (remote_policy.cloud_everything_active): more of the mail, each
+# with its whole body and quoted thread, bounded per email.
+CLOUD_SUMMARY_EMAILS = 25
+CLOUD_BODY_CHARS = 20_000
+# And the texts gist reads whole Messages threads: up to this many of the day's
+# important conversations (chosen exactly as without the gate, from the filtered
+# priority rows), each over the last CLOUD_THREAD_DAYS, newest first within its
+# share of CLOUD_TEXTS_CHARS and at most CLOUD_LINES_PER_CONVERSATION lines.
+CLOUD_TEXT_CONVERSATIONS = 20
+CLOUD_THREAD_DAYS = 30
+CLOUD_LINES_PER_CONVERSATION = 2000
+CLOUD_TEXTS_CHARS = 200_000
+_CLOUD_MESSAGE_CHARS = 2000
+
+
+def _cloud() -> bool:
+    from service.inference.remote_policy import cloud_everything_active
+    return cloud_everything_active()
 KINDS = ("summary", "inbox", "texts")
 
 _attempts: dict[str, int] = {}
@@ -365,6 +383,13 @@ _MAILED_BECAUSE = re.compile(r"\b(?:you(?:'re| are) receiving this (?:email|mess
 
 def _excerpt(row: dict) -> str:
     from service.assistant.daily_workspace import _QUOTED_HISTORY
+    if _cloud():
+        # The whole body, quoted thread included, for the cloud model. Every line
+        # after the first is indented under a bar, so a body line such as
+        # "- From Boss: ..." can never read as another input line.
+        text = re.sub(r"[ \t]+", " ", _shown(str(row.get("body") or "")) or "").strip()
+        text = text[:CLOUD_BODY_CHARS] + "…" if len(text) > CLOUD_BODY_CHARS else text
+        return re.sub(r"\s*\n\s*", "\n    | ", text)
     body = _QUOTED_HISTORY.split(str(row.get("body") or ""))[0]
     text = re.sub(r"\s+", " ", _shown(body) or "").strip()
     return text[:_EXCERPT_CHARS].rsplit(" ", 1)[0] + "…" if len(text) > _EXCERPT_CHARS else text
@@ -375,7 +400,7 @@ def summary_lines(rows: list[dict]) -> list[str]:
     with what it says when the body is known, then mass mail counted by sender."""
     people, bulk, withheld, _ = _people_mail(rows)
     lines = []
-    for sender, subject, row, _ in people[:_SUMMARY_EMAILS]:
+    for sender, subject, row, _ in people[:CLOUD_SUMMARY_EMAILS if _cloud() else _SUMMARY_EMAILS]:
         excerpt = _excerpt(row)
         if _PRIVATE.search(excerpt) or excerpt == subject:
             excerpt = ""
@@ -441,6 +466,56 @@ def recent_texts(now: float) -> list[dict]:
     return list(conversations.values())
 
 
+def attach_threads(conversations: list[dict], now: float) -> list[dict]:
+    """Under cloud-everything, the first CLOUD_TEXT_CONVERSATIONS of recent_texts'
+    conversations each also carry their whole recent thread (`thread`); the list
+    is returned unchanged otherwise."""
+    if _cloud():
+        _attach_threads(conversations[:CLOUD_TEXT_CONVERSATIONS], now)
+    return conversations
+
+
+def _attach_threads(conversations: list[dict], now: float) -> None:
+    """Each conversation's whole thread over CLOUD_THREAD_DAYS as (speaker, text),
+    oldest first. Only conversations already chosen from the filtered priority
+    rows; noise messages (codes, promos) are left out as in those rows, codes are
+    redacted, and each message is one line so none can pose as another."""
+    from service.assistant.brief import _conversation_label
+    from service.tools.imessage_tools import conversation_threads, recent_priority_message_rows
+    wanted = {c["label"] for c in conversations}
+    contexts: dict[str, str] = {}
+    for _ts, context, _text in recent_priority_message_rows(now=now):
+        label = _conversation_label(context)[1]
+        if label in wanted:
+            contexts.setdefault(context, label)
+    if not contexts:
+        return
+    rows = conversation_threads(set(contexts), since=now - CLOUD_THREAD_DAYS * 86400, until=now,
+                                drop_noise=True)
+    by_label: dict[str, list[tuple[float, str, str]]] = {}
+    for context, thread in rows.items():
+        by_label.setdefault(contexts[context], []).extend(thread)
+    share = CLOUD_TEXTS_CHARS // max(1, len(conversations))
+    for convo in conversations:
+        thread = sorted(by_label.get(convo["label"], []), key=lambda r: r[0])
+        kept: list[tuple[str, str]] = []
+        used = 0
+        for _ts, _ctx, text in reversed(thread):
+            if len(kept) >= CLOUD_LINES_PER_CONVERSATION:
+                break
+            sender, sep, body = text.partition(":")
+            who = ("You" if sender.strip() == "Me" else " ".join(sender.split())[:40]) if sep else ""
+            body = " ".join((body if sep else text).split())[:_CLOUD_MESSAGE_CHARS]
+            if not body:
+                continue
+            if kept and used + len(body) + len(who) + 30 > share:
+                break
+            kept.append((who, body))
+            used += len(body) + len(who) + 30
+        if kept:
+            convo["thread"] = kept[::-1]
+
+
 def texts_fallback(conversations: list[dict]) -> str:
     """"Texts with Priya and Mom", "Texts with Priya, Mom and 3 others", "Quiet"."""
     names = [c["label"] for c in conversations if c["label"]]
@@ -455,11 +530,23 @@ def texts_fallback(conversations: list[dict]) -> str:
 
 
 def texts_lines(conversations: list[dict]) -> list[str]:
+    if any("thread" in c for c in conversations):
+        # Cloud-everything (attach_threads): the whole threads.
+        lines = []
+        for index, convo in enumerate(conversations[:CLOUD_TEXT_CONVERSATIONS], 1):
+            for who, body in convo.get("thread") or [("", b) for b in convo["bodies"]]:
+                lines.append(f"- Conversation {index}: " + (f"{who}: " if who else "") + body)
+        return lines
     lines = []
     for index, convo in enumerate(conversations[:8], 1):
         for body in convo["bodies"]:
             lines.append(f"- Conversation {index}: {body}")
     return lines[:_MAX_LINES]
+
+
+def _texts_of(convo: dict) -> list[str]:
+    """Every message text the gist checks a conversation against."""
+    return [*convo["bodies"], *(body for _who, body in convo.get("thread", ()))]
 
 
 def _key(lines: list[str]) -> str:
@@ -549,9 +636,10 @@ def _names(conversations: list[dict]) -> set[str]:
     group speaker, and each capitalized word inside a message except its first."""
     names: set[str] = set()
     for convo in conversations:
-        for who in [convo.get("label") or "", *convo.get("names", [])]:
+        speakers = [who for who, _body in convo.get("thread", ()) if who and who != "You"]
+        for who in [convo.get("label") or "", *convo.get("names", []), *speakers]:
             names.update(w.casefold() for w in re.findall(r"[\w']+", who) if len(w) > 1)
-        for body in convo["bodies"]:
+        for body in _texts_of(convo):
             words = re.findall(r"[\w']+", body)
             names.update(re.sub(r"'s$", "", w).casefold() for w in words[1:] if w[:1].isupper())
     return names
@@ -571,7 +659,7 @@ def texts_gist_ok(gist: str, conversations: list[dict]) -> bool:
     words = re.findall(r"[\w']+", lowered)
     runs = {" ".join(words[i:i + 4]) for i in range(len(words) - 3)}
     for convo in conversations:
-        for body in convo["bodies"]:
+        for body in _texts_of(convo):
             body_words = " " + " ".join(re.findall(r"[\w']+", body.casefold())) + " "
             if any(f" {run} " in body_words for run in runs):
                 return False
@@ -661,6 +749,8 @@ async def _resident_reply(system: str, material: str, abort, *,
         _stood_down("a turn is in progress")
         return None
     budget = tokens[0] if _thinking_off(model) else tokens[1]
+    from service.inference.remote_policy import cloud_output_budget
+    budget = cloud_output_budget(budget)        # room for a cloud model's reasoning
     from service.inference.power_tier import BRIEF, power_tier
     with power_tier(BRIEF):
         request = asyncio.ensure_future(client.chat(
@@ -715,7 +805,7 @@ def _jobs(now: float, *, force: bool = False) -> list[dict]:
     if lines:
         jobs.append(dict(kind="inbox", lines=lines, key=_key(lines), rules=MAIL_RULES,
                          ok=lambda gist, lines=lines: mail_gist_ok(gist, lines)))
-    conversations = recent_texts(now)
+    conversations = attach_threads(recent_texts(now), now)
     tlines = texts_lines(conversations)
     if tlines:
         jobs.append(dict(kind="texts", lines=tlines, key=_key(tlines), rules=TEXTS_RULES,

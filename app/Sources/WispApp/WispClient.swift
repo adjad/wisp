@@ -918,6 +918,22 @@ final class WispClient {
         req.timeoutInterval = 5   // the endpoint returns at once; the load continues server-side
         req.httpBody = Data("{}".utf8)
         Task { _ = try? await URLSession.shared.data(for: req) }
+        #if arch(x86_64)
+        warmCloud()
+        #endif
+    }
+
+    /// POST /inference/warm: on the Intel build every answer comes from the cloud model,
+    /// so opening Ask opens the connection to the provider (TLS included) while the
+    /// person types, and the first answer skips that wait. The service does nothing
+    /// unless the cloud runs everything, and at most once every 20 s.
+    func warmCloud() {
+        var req = URLRequest(url: Self.baseURL.appendingPathComponent("inference/warm"))
+        req.httpMethod = "POST"
+        req.timeoutInterval = 6   // the endpoint returns at once; the warm-up runs server-side
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = Data("{}".utf8)
+        Task { _ = try? await URLSession.shared.data(for: req) }
     }
 
     /// The Ask model's encoders: audio hears a voice question, vision reads a

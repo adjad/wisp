@@ -40,8 +40,9 @@ final class MessagesReader {
         let partial: Bool
     }
 
-    private static let structuredLimit = 2000
-    private static let structuredByteLimit = 4_000_000
+    // Intel (cloud model): the whole history (MessagesHistoryWindow, end of this file).
+    private static let structuredLimit = MessagesHistoryWindow.structured
+    private static let structuredByteLimit = MessagesHistoryWindow.structuredBytes
     private static let structuredTextLimit = 8192
     private static let structuredLinkLimit = 32
     private static let structuredURLLimit = 8192
@@ -53,6 +54,7 @@ final class MessagesReader {
     /// Why the last `readRecentMessages` returned nil, from the error itself.
     private(set) var lastFailure: MessagesReadFailure?
     private let backendRetry = NativeBackendRetry()
+    private let deepReadThrottle = MessagesDeepReadThrottle()
 
     init(dbPath: String = (NSHomeDirectory() as NSString)
         .appendingPathComponent("Library/Messages/chat.db")) {
@@ -71,7 +73,8 @@ final class MessagesReader {
             DispatchQueue.main.asyncAfter(deadline: .now() + d) { [weak self] in self?.sync() }
         }
         DispatchQueue.main.async { [weak self] in
-            self?.timer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { _ in
+            self?.timer = Timer.scheduledTimer(withTimeInterval: MessagesHistoryWindow.syncInterval,
+                                               repeats: true) { _ in
                 self?.sync()
             }
         }
@@ -87,6 +90,9 @@ final class MessagesReader {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             defer { self?.inFlight = false }
             guard let self else { return }
+            // Taken before the read: a change during it differs next time and is read then.
+            let signature = MessagesDeepReadThrottle.signature(paths: [self.dbPath, self.dbPath + "-wal"])
+            if self.deepReadThrottle.shouldSkip(signature) { return }
             guard let scan = self.readRecentMessages() else {
                 let failure = self.lastFailure ?? MessagesReadFailure.classify(
                     systemErrno: 0, sqliteCode: SQLITE_ERROR, sqliteMessage: "")
@@ -99,8 +105,8 @@ final class MessagesReader {
                 "truncated": scan.truncated,
                 "limit": Self.structuredLimit,
                 "byte_limit": Self.structuredByteLimit,
-                "window_days": 365, "row_limit": 20000,
-                "reached_row_limit": scan.attempted == 20000,
+                "window_days": MessagesHistoryWindow.days, "row_limit": MessagesHistoryWindow.rows,
+                "reached_row_limit": scan.attempted == MessagesHistoryWindow.rows,
             ]
             let structured = [Self.wire(coverage)] + scan.structured
             // V3 occupies the leading, reader-controlled block. Message text
@@ -110,6 +116,7 @@ final class MessagesReader {
             self.post(lines: (structured + scan.lines).joined(separator: "\n"),
                       diagnostics: ["available": true, "count": scan.lines.count,
                                     "attempted": scan.attempted, "skipped": scan.skipped])
+            self.deepReadThrottle.recordPost(signature)
         }
     }
 
@@ -125,7 +132,8 @@ final class MessagesReader {
     // now far above the expected year's volume instead of the binding
     // constraint. This is a local SQLite read (no AppleScript, no network),
     // so a year's rows costs milliseconds, not the minutes Mail's scan does.
-    func readRecentMessages(days: Int = 365, limit: Int = 20000) -> MessageScan? {
+    func readRecentMessages(days: Int = MessagesHistoryWindow.days,
+                            limit: Int = MessagesHistoryWindow.rows) -> MessageScan? {
         var db: OpaquePointer?
         lastFailure = nil
         // SQLITE_OPEN_READONLY: never write to a database Messages.app owns.
@@ -868,5 +876,68 @@ struct MessagesReadFailure: Equatable {
         let detail = !sqliteMessage.isEmpty ? sqliteMessage
             : systemErrno != 0 ? String(cString: strerror(systemErrno)) : "unknown error"
         return MessagesReadFailure(kind: .unreadable, reason: "Couldn't read Messages: \(detail).")
+    }
+}
+
+/// How far back this reader goes. The on-device model needed small windows; the Intel
+/// build's cloud model holds about a million tokens, so there it reads (practically) the
+/// whole history: ten years, with ceilings that keep one sync a sane size. Kept in this
+/// file because the reader is also compiled on its own for its checks.
+enum MessagesHistoryWindow {
+    #if arch(x86_64)
+    static let days = 3650, rows = 100_000, structured = 10_000, structuredBytes = 16_000_000
+    #else
+    static let days = 365, rows = 20_000, structured = 2000, structuredBytes = 4_000_000
+    #endif
+    /// The periodic read. Intel's ten-year read is large, so it runs every 15 minutes
+    /// (and only when chat.db changed: `MessagesDeepReadThrottle`); a read asked for by a
+    /// question or the Brief still runs at once.
+    #if arch(x86_64)
+    static let syncInterval: TimeInterval = 900
+    #else
+    static let syncInterval: TimeInterval = 300
+    #endif
+}
+
+/// Intel only: skips a read when the database files are unchanged since the last post,
+/// so ten years of history is not re-read and re-sent while nothing changed. A post is
+/// still made at least every `maxSkip` seconds, so a restarted backend is refilled.
+final class MessagesDeepReadThrottle {
+    #if arch(x86_64)
+    static let enabledByDefault = true
+    #else
+    static let enabledByDefault = false
+    #endif
+    private let lock = NSLock()
+    private var lastSignature: [String]?
+    private var lastPost: Date?
+    private let enabled: Bool
+    private let maxSkip: TimeInterval
+
+    init(enabled: Bool = MessagesDeepReadThrottle.enabledByDefault, maxSkip: TimeInterval = 1800) {
+        self.enabled = enabled
+        self.maxSkip = maxSkip
+    }
+
+    /// Path, modification time and size of each file; a missing file reads as absent.
+    static func signature(paths: [String]) -> [String] {
+        paths.map { path in
+            let attributes = try? FileManager.default.attributesOfItem(atPath: path)
+            let modified = (attributes?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+            let size = (attributes?[.size] as? NSNumber)?.int64Value ?? -1
+            return "\(path)|\(modified)|\(size)"
+        }
+    }
+
+    func shouldSkip(_ signature: [String], now: Date = Date()) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard enabled, let last = lastSignature, let at = lastPost else { return false }
+        return last == signature && now.timeIntervalSince(at) < maxSkip
+    }
+
+    func recordPost(_ signature: [String], now: Date = Date()) {
+        lock.lock(); defer { lock.unlock() }
+        lastSignature = signature
+        lastPost = now
     }
 }

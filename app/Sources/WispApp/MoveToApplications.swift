@@ -225,8 +225,9 @@ enum MoveToApplications {
         let xattr = Process()
         xattr.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
         xattr.arguments = ["-dr", "com.apple.quarantine", target.path]
-        try? xattr.run()
-        xattr.waitUntilExit()
+        // A process that never started can't be waited on (waitUntilExit would abort
+        // Wisp): the mark then stays, which only means macOS's usual first-open check.
+        if (try? xattr.run()) != nil { xattr.waitUntilExit() }
         if let original, original.standardizedFileURL != target.standardizedFileURL {
             try? fm.trashItem(at: original, resultingItemURL: nil)
         }

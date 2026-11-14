@@ -760,6 +760,69 @@ struct FirstRunSetupChecks {
               && !remoteHeading.contains("download that model"), "Remote-only: no download, no local-model claim")
         check(FirstRunBrain.welcomeSubtitle(remoteOnly: false).contains("download that model once"),
               "A local setup still hears about its one download")
+        check(FirstRunBrain.welcomeSubtitle(remoteOnly: false, keyOnly: false)
+              == FirstRunBrain.welcomeSubtitle(remoteOnly: false), "A local setup's heading is unchanged")
+        let keyHeading = FirstRunBrain.welcomeSubtitle(remoteOnly: false, keyOnly: true)
+        check(keyHeading.contains("OpenRouter") && keyHeading.contains("nothing to download")
+              && !keyHeading.contains("runs on this Mac") && !keyHeading.contains("download that model"),
+              "Waiting for the OpenRouter key: cloud wording, no local-model claim")
+
+        // Intel / cloud copy: every on-this-Mac claim has a cloud variant; local wording is unchanged.
+        check(FirstRunSetupView.helpsYourDay(cloudProvider: nil).map(\.line) == FirstRunSetupView.helpsYourDay.map(\.line),
+              "On this Mac, How to use keeps its cards")
+        let cloudCards = FirstRunSetupView.helpsYourDay(cloudProvider: "OpenRouter")
+        check(!cloudCards.contains { $0.title == FirstRunSetupView.privacyTitle || $0.line.contains("runs on this Mac") }
+              && cloudCards.contains { $0.title == FirstRunSetupView.cloudPrivacyTitle && $0.line.contains("OpenRouter")
+                                       && $0.line.contains("mail") && $0.line.contains("audio") },
+              "On the cloud, the privacy card says what goes to OpenRouter")
+        check(cloudCards.count == FirstRunSetupView.helpsYourDay.count, "Only the privacy card changes on the cloud")
+        check(FirstRunSetupView.cloudProvider(host: nil, intel: true) == "OpenRouter"
+              && FirstRunSetupView.cloudProvider(host: "openrouter.ai", intel: false) == "OpenRouter"
+              && FirstRunSetupView.cloudProvider(host: "api.example.com", intel: false) == "api.example.com",
+              "The cloud provider is named from the build or the remote model's host")
+        check(RoleModelChoices.onCloud("fast", savedCloudRoles: ["everything"])
+              && RoleModelChoices.onCloud("research", savedCloudRoles: ["everything"])
+              && RoleModelChoices.onCloud("reasoning", savedCloudRoles: ["reasoning"])
+              && !RoleModelChoices.onCloud("fast", savedCloudRoles: ["reasoning"])
+              && !RoleModelChoices.onCloud("fast", savedCloudRoles: []),
+              "Everything on the cloud covers every role row")
+        check(SettingsLoader.cloudModelName("google/gemini-3.8-flash") == "Gemini 3.8 Flash"
+              && SettingsLoader.cloudModelName("") == "Cloud model", "Cloud role rows name the cloud model")
+        check(EngineSettingsView.cloudLine(modelName: "Gemini 3.8 Flash") == "Running on OpenRouter · Gemini 3.8 Flash"
+              && EngineSettingsView.cloudLine(modelName: nil) == "Running on OpenRouter",
+              "Intel's engine line names OpenRouter and the model")
+        check(EngineSettingsView.showsCloudOnly(cloudOnly: false, compiledForIntel: true, bundledAvailable: false)
+              && EngineSettingsView.showsCloudOnly(cloudOnly: true, compiledForIntel: false, bundledAvailable: nil)
+              && !EngineSettingsView.showsCloudOnly(cloudOnly: false, compiledForIntel: false, bundledAvailable: false)
+              && !EngineSettingsView.showsCloudOnly(cloudOnly: false, compiledForIntel: true, bundledAvailable: true),
+              "Engine controls hide only on Intel with no engine")
+        check(QuickSettingsText.noLocalEngine(remoteOnly: true, compiledForIntel: false, engineAvailable: true)
+              && QuickSettingsText.noLocalEngine(remoteOnly: false, compiledForIntel: true, engineAvailable: nil)
+              && !QuickSettingsText.noLocalEngine(remoteOnly: false, compiledForIntel: false, engineAvailable: nil)
+              && !QuickSettingsText.noLocalEngine(remoteOnly: false, compiledForIntel: true, engineAvailable: true),
+              "No local engine: remote-only, or Intel without one; Apple silicon with a model keeps its controls")
+        check(QuickSettingsSection.shown(localEngine: true) == QuickSettingsSection.allCases
+              && !QuickSettingsSection.shown(localEngine: false).contains(.power)
+              && QuickSettingsSection.shown(localEngine: false).count == QuickSettingsSection.allCases.count - 1,
+              "Power hides with no local engine, and only then")
+        check(!NotchSetupView.keyOnlyWelcome.contains("this Mac") && NotchSetupView.keyOnlyWelcome.contains("OpenRouter")
+              && NotchSetupView.connectTitle == "Connect OpenRouter", "The notch card offers the OpenRouter key")
+        check(ResearchView.privacyLine(cloud: false, model: nil)
+              == "Research runs on this Mac. Only search queries and page requests leave it."
+              && !ResearchView.privacyLine(cloud: true, model: "Gemini 3.8 Flash").contains("this Mac")
+              && ResearchView.privacyLine(cloud: true, model: "Gemini 3.8 Flash").contains("Gemini 3.8 Flash"),
+              "Research says where it runs")
+        check(GoogleToDoCopy.line(cloud: false, cloudModel: nil).contains("on this Mac")
+              && GoogleToDoCopy.line(cloud: true, cloudModel: "Gemini 3.8 Flash")
+                == "Wisp's cloud model (Gemini 3.8 Flash) reads them to build your to-dos; Wisp asks before anything changes.",
+              "Google's to-do line names the cloud model on the cloud")
+        check(NotchGoogleModel.consentLine(cloud: false, cloudModel: nil).hasSuffix("Wisp builds your to-dos on this Mac.")
+              && !NotchGoogleModel.consentLine(cloud: true, cloudModel: nil).contains("this Mac"),
+              "The notch's Google row has a cloud variant")
+        check(MailMemorySettingsRow.readsLine(cloud: false).contains("90 days, on this Mac")
+              && !MailMemorySettingsRow.readsLine(cloud: true).contains("this Mac")
+              && !MailMemorySettingsRow.readsLine(cloud: true).contains("90 days"),
+              "Mail suggestions: no on-this-Mac or 90-day promise on the cloud")
 
         // Return on step 1 belongs to Download/Retry only while one is waiting.
         check(FirstRunBrain.from(status: status(), downloads: []).waitsForDownloadClick, "Download waits for its click")
@@ -1194,6 +1257,7 @@ struct FirstRunSetupChecks {
         try? FileManager.default.removeItem(at: scratch)
 
         dev8OnboardingChecks()
+        geminiProviderChecks()
 
         // /resetwisp brings all of the above back to a fresh Mac (tests/WispResetChecks.swift).
         WispResetChecks.run()
@@ -1445,6 +1509,9 @@ struct FirstRunSetupChecks {
               && IntelCloudPreset.roles == ["everything"]
               && IntelCloudPreset.modelID == "google/gemini-3.8-flash",
               "The preset is exactly OpenRouter, /api/v1, 32000 tokens, everything, Gemini 3.8 Flash")
+        check(IntelCloudPreset.models.allSatisfy { IntelCloudPreset.contextWindow(for: $0.id) == 1_000_000 }
+              && IntelCloudPreset.contextWindow(for: "vendor/unlisted") == 32_000,
+              "Every listed cloud model gets a one-million-token window; unlisted keep 32k")
         check(IntelCloudPreset.models.map(\.id) == ["google/gemini-3.8-flash", "anthropic/claude-haiku-5.5",
                                                     "openai/gpt-6-luna", "anthropic/claude-sonnet-5.5",
                                                     "google/gemini-4-carbon", "google/gemini-4-argon"]
@@ -1497,6 +1564,10 @@ struct FirstRunSetupChecks {
               "An update with the same identity keeps every grant")
         check(!IntelFirstLaunch.permissionsResetDue(compiledForIntel: true, engineBundled: false, recorded: nil, current: ""),
               "An empty requirement is unknown: no reset")
+        // Old backends must be gone before ~/.moe moves: a process that no longer exists
+        // counts as exited at once; this process is never in the list.
+        check(IntelFirstLaunch.waitForExit([Int32.max - 7], seconds: 0.2).isEmpty, "A gone process has exited")
+        check(!IntelFirstLaunch.wispBackendPIDs(excluding: getpid()).contains(getpid()), "This process is never a leftover")
         check(!IntelFirstLaunch.permissionsResetDue(compiledForIntel: false, engineBundled: false, recorded: nil, current: identity)
               && !IntelFirstLaunch.permissionsResetDue(compiledForIntel: true, engineBundled: true, recorded: nil, current: identity)
               && !IntelFirstLaunch.permissionsResetDue(compiledForIntel: true, engineBundled: false, recorded: nil, current: nil),
@@ -1525,5 +1596,119 @@ struct FirstRunSetupChecks {
         check(IntelFirstLaunch.onboardingNote(backup: nil) == nil
               && IntelFirstLaunch.onboardingNote(backup: ".moe-backup-20261113-101500")?.contains("~/.moe-backup-20261113-101500") == true,
               "The first step says so only when data was moved")
+    }
+
+    /// The Intel build's second provider: the Gemini API beside OpenRouter.
+    static func geminiProviderChecks() {
+        // Both providers' constants, exactly as the backend expects them.
+        let openRouter = CloudProvider.openRouter
+        check(openRouter.provider == "openrouter" && openRouter.label == "OpenRouter"
+              && openRouter.baseURL == IntelCloudPreset.baseURL && openRouter.apiPrefix == IntelCloudPreset.apiPrefix
+              && openRouter.models.map(\.id) == IntelCloudPreset.models.map(\.id)
+              && openRouter.defaultModelID == IntelCloudPreset.modelID
+              && openRouter.keyPlaceholder == "OpenRouter API key" && openRouter.keySource == "openrouter.ai/keys"
+              && openRouter.keyURL.absoluteString == "https://openrouter.ai/keys"
+              && openRouter.disclosure == IntelCloudPreset.disclosure,
+              "OpenRouter's provider is the existing preset, unchanged")
+        let gemini = CloudProvider.gemini
+        check(gemini.provider == "gemini" && gemini.label == "Gemini API"
+              && gemini.baseURL == "https://generativelanguage.googleapis.com" && gemini.apiPrefix == "/v1beta/openai"
+              && gemini.models.map(\.id) == ["gemini-3.8-flash", "gemini-4-carbon", "gemini-4-argon"]
+              && gemini.defaultModelID == "gemini-3.8-flash"
+              && gemini.models.first?.label == "Gemini 3.8 Flash (default)"
+              && gemini.keyPlaceholder == "Gemini API key" && gemini.keySource == "aistudio.google.com/apikey"
+              && gemini.keyURL.absoluteString == "https://aistudio.google.com/apikey",
+              "The Gemini API: provider gemini, Google's origin, /v1beta/openai, bare ids, Flash first")
+        check(gemini.disclosure.contains("sent to Google") && gemini.disclosure.contains("screenshots, pictures and recorded audio")
+              && !gemini.disclosure.contains("OpenRouter"),
+              "The Gemini key card says what goes to Google")
+        check(CloudProvider.allCases.first == .openRouter && CloudKeyChoice().provider == .openRouter
+              && CloudKeyChoice().modelID == IntelCloudPreset.modelID, "OpenRouter stays the default")
+        for provider in CloudProvider.allCases {
+            for model in provider.models {
+                check(IntelCloudPreset.contextWindow(for: model.id) == 1_000_000, "\(model.id) gets a one-million-token window")
+                check(model.id.range(of: "^\(IntelCloudPreset.backendModelIDPattern)$", options: .regularExpression) != nil,
+                      "\(model.id) passes the backend's model-id rule")
+                check(provider.offers(model: model.id), "\(provider.label) offers \(model.id)")
+            }
+            check(CloudConnection.requestBody(
+                    provider: provider.provider, baseURL: provider.baseURL, apiPrefix: provider.apiPrefix,
+                    modelID: provider.defaultModelID, contextWindow: IntelCloudPreset.contextWindow(for: provider.defaultModelID),
+                    roles: IntelCloudPreset.roles, superModelEnabled: false, credentialName: "cloud-x")["provider"] as? String
+                  == provider.rawValue, "\(provider.label)'s Connect names its provider")
+        }
+        check(!CloudProvider.gemini.offers(model: "google/gemini-3.8-flash")
+              && !CloudProvider.openRouter.offers(model: "gemini-3.8-flash"),
+              "Each provider offers only its own ids")
+
+        // Switching provider clears the key and resets the model; the same one changes nothing.
+        var choice = CloudKeyChoice()
+        choice.key = "sk-or-typed"
+        choice.modelID = "anthropic/claude-haiku-5.5"
+        choice.choose(.openRouter)
+        check(choice.key == "sk-or-typed" && choice.modelID == "anthropic/claude-haiku-5.5",
+              "Choosing the current provider keeps the key and model")
+        check(choice.hasKey && !CloudKeyChoice().hasKey, "A typed key counts; an empty one doesn't")
+        choice.choose(.gemini)
+        check(choice.provider == .gemini && choice.key.isEmpty && choice.modelID == "gemini-3.8-flash",
+              "Switching to the Gemini API clears the key and picks Gemini 3.8 Flash")
+        choice.modelID = "gemini-4-argon"
+        choice.key = "AIza-typed"
+        choice.choose(.openRouter)
+        check(choice.provider == .openRouter && choice.key.isEmpty && choice.modelID == IntelCloudPreset.modelID,
+              "Switching back clears the key and picks OpenRouter's default")
+        check(CloudKeyChoice(provider: .gemini).modelID == "gemini-3.8-flash", "A Gemini choice starts on its default")
+
+        // The saved connection's provider (GET /inference/cloud).
+        check(CloudProvider.saved(provider: "openrouter", baseURL: "https://openrouter.ai") == .openRouter
+              && CloudProvider.saved(provider: "gemini", baseURL: "https://generativelanguage.googleapis.com") == .gemini
+              && CloudProvider.saved(provider: "openai-compatible", baseURL: "https://generativelanguage.googleapis.com/") == .gemini
+              && CloudProvider.saved(provider: "openai-compatible", baseURL: "https://api.openai.com") == nil
+              && CloudProvider.saved(provider: nil, baseURL: nil) == nil,
+              "The saved provider is read from its id, or Settings' older Gemini preset from its URL")
+
+        // Model names for the bare Gemini ids.
+        check(CloudModelName.model("gemini-3.8-flash") == "Gemini 3.8 Flash"
+              && CloudModelName.model("gemini-4-carbon") == "Gemini 4 Carbon"
+              && CloudModelName.model("gemini-4-argon") == "Gemini 4 Argon"
+              && CloudModelName.display(["id": "gemini-3.8-flash", "host": "generativelanguage.googleapis.com"])
+                == "Gemini 3.8 Flash"
+              && CloudModelName.model("google/gemini-3.8-flash") == "Gemini 3.8 Flash",
+              "Bare Gemini ids get their names, as do OpenRouter's")
+
+        // The notch's Advanced › Model provider line.
+        check(QuickSettingsText.modelProvider(checked: nil, connected: false, provider: nil, modelID: "") == "Checking…"
+              && QuickSettingsText.modelProvider(checked: false, connected: false, provider: nil, modelID: "")
+                == "Wisp couldn't check this yet."
+              && QuickSettingsText.modelProvider(checked: true, connected: false, provider: nil, modelID: "") == "Not connected"
+              && QuickSettingsText.modelProvider(checked: true, connected: true, provider: .gemini, modelID: "gemini-4-carbon")
+                == "Gemini API · Gemini 4 Carbon"
+              && QuickSettingsText.modelProvider(checked: true, connected: true, provider: .openRouter,
+                                                 modelID: "google/gemini-3.8-flash") == "OpenRouter · Gemini 3.8 Flash"
+              && QuickSettingsText.modelProvider(checked: true, connected: true, provider: nil, modelID: "vendor/x")
+                == "Another provider · x",
+              "Model provider says where Wisp runs now")
+        check(QuickSettingsText.modelProviderSwitched(.gemini).contains("Gemini API"), "A switch names its provider")
+
+        // Every Connect outlasts the server's own Connect (lock wait, key question, probes).
+        check(IntelKeyConnector.connectTimeout >= 200, "Connect waits at least 200 seconds")
+
+        // The reply validator accepts the Gemini API with its million-token window.
+        let reply: [String: Any] = [
+            "enabled": true, "provider": "gemini", "provider_label": "Gemini API",
+            "base_url": "https://generativelanguage.googleapis.com", "api_prefix": "/v1beta/openai",
+            "model_id": "gemini-3.8-flash", "context_window": 1_000_000,
+            "credential_name": "cloud-0123", "roles": ["everything"],
+            "super_model_enabled": false, "super_model_router": "disabled",
+        ]
+        check(SettingsResponseValidator.valid(reply, path: "inference/cloud"), "The Gemini API reply is accepted")
+        var unknown = reply
+        unknown["provider"] = "google"
+        check(!SettingsResponseValidator.valid(unknown, path: "inference/cloud"), "An unknown provider is not")
+        check(CloudCredentialStore.account(name: "", baseURL: "https://generativelanguage.googleapis.com/")
+              == CloudCredentialStore.account(name: "", baseURL: CloudProvider.gemini.baseURL)
+              && CloudCredentialStore.account(name: "", baseURL: CloudProvider.gemini.baseURL)
+                != CloudCredentialStore.account(name: "", baseURL: CloudProvider.openRouter.baseURL),
+              "Saved keys are told apart by provider origin")
     }
 }

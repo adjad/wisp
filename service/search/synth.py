@@ -503,6 +503,8 @@ async def _answer(client: OMLXClient, question: str, chunks: list[Chunk],
         {"role": "user", "content": f"{passages}\n\nQuestion: {question}"},
     ]
     max_tokens = _LONG_DOC_MAX_TOKENS if long_doc else _SHORT_DOC_MAX_TOKENS
+    from service.inference.remote_policy import cloud_call_timeout, cloud_output_budget
+    max_tokens = cloud_output_budget(max_tokens)     # cloud-everything: room for reasoning
     # THINKING OFF, not reasoning_effort="low".
     #
     # Re-measured 2026-10-13 on Ling-3.0-tiny-Wisp-V3-merged-oQ4e with
@@ -545,7 +547,7 @@ async def _answer(client: OMLXClient, question: str, chunks: list[Chunk],
             resp = await asyncio.wait_for(
                 client.chat(model, messages, max_tokens=max_tokens,
                             **extra),
-                timeout=_ANSWER_TIMEOUT_S)
+                timeout=cloud_call_timeout(_ANSWER_TIMEOUT_S, max_tokens))
             raw = (resp["choices"][0]["message"].get("content") or "").strip()
             break
         except asyncio.TimeoutError:

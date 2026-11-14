@@ -120,6 +120,13 @@ def endpoint_from_config(name: str, cfg: dict) -> Endpoint:
             or parsed.username or parsed.password or parsed.query or parsed.fragment
             or parsed.path not in {"", "/"}):
         raise EndpointConfigurationError(f"Invalid base URL for endpoint {name}")
+    if profile.name == "gemini":
+        # Google's own origin and OpenAI-compatible prefix, exactly: a Gemini key's
+        # Keychain item is bound to this URL, and nothing else speaks this profile.
+        from service.inference.providers import GEMINI_API_PREFIX, GEMINI_ORIGIN
+        if url != GEMINI_ORIGIN or api_prefix != GEMINI_API_PREFIX:
+            raise EndpointConfigurationError("The Gemini API profile requires "
+                                             f"{GEMINI_ORIGIN} and {GEMINI_API_PREFIX}")
     managed = name == "local" and is_loopback(url)
     if managed and (profile.name != "omlx" or api_prefix != "/v1"):
         raise EndpointConfigurationError("Managed local inference requires the oMLX profile")

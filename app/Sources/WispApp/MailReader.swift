@@ -64,6 +64,7 @@ private final class MailIdentityCaptureOrder {
 final class MailReader {
     private var timer: Timer?
     private let dbReader = MailDBReader()
+    private let indexPostThrottle = MailIndexPostThrottle()
 
     // 200 (not 25) so a full day's mail is actually covered, not just the
     // newest handful — a summary of "today" needs everything from today, not
@@ -1421,6 +1422,9 @@ final class MailReader {
             return true
         }
         let generation = captured.generation
+        // Taken before the read: a change during it differs next time and is read then.
+        let signature = MailIndexPostThrottle.signature(paths: dbReader.indexFiles())
+        if indexPostThrottle.shouldSkip(signature) { return true }
         guard let (headers, history) = dbReader.readHeadersAndHistory() else { return false }
         // A completed read is complete even for an empty or old
         // index. File modification time cannot tell us whether a
@@ -1434,6 +1438,7 @@ final class MailReader {
         post(headers: headers, available: true, reason: "",
              readSource: "local_index", history: history,
              historyGeneration: generation)
+        indexPostThrottle.recordPost(signature)
         return true
     }
 
@@ -1444,6 +1449,7 @@ final class MailReader {
         // The launch header read has reached a terminal state, so the history
         // walk may start (see syncHistory).
         markHeadersCompleted()
+        if readSource != "local_index" { indexPostThrottle.reset() }
         let url = WispClient.baseURL.appendingPathComponent("assistant/sync/emails")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"

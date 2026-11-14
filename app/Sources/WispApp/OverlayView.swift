@@ -294,7 +294,7 @@ struct OverlayView: View {
         case .research:
             if model.showingResearch {
                 ResearchView(model: researchModel, compact: true,
-                             onBack: { model.returnToChat() })
+                             onBack: { model.returnToChat() }, cloudModel: model.cloudModel)
             } else {
                 transientNotice
                 promptArea

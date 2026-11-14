@@ -69,6 +69,28 @@ LONG_BODY_CHARS = 4000
 MAX_DIGESTS_PER_CALL = 1
 # The whole result has to fit the tightest tool-result cap (model-led Ask).
 RESULT_BUDGET_CHARS = 6000
+# Cloud-everything: an email read whose caller keeps a large result
+# (model_only.whole_read_budget) comes back whole, quoted thread included, with no
+# digest, in at most this much (the budget less a margin for the agent's notes).
+CLOUD_RESULT_BUDGET_CHARS = 380_000
+
+
+def _whole_budget() -> int:
+    from service.model_only import whole_read_budget
+    return whole_read_budget()
+
+
+def whole_mail_reads() -> bool:
+    """Whether this email read skips the digest and returns whole bodies: only
+    under cloud-everything, and only for a caller whose cap holds a whole read."""
+    return _whole_budget() > 0
+
+
+def result_budget_chars() -> int:
+    budget = _whole_budget()
+    if not budget:
+        return RESULT_BUDGET_CHARS
+    return min(CLOUD_RESULT_BUDGET_CHARS, budget - max(2_000, budget // 20))
 # Below this a cut body says too little; the lowest-ranked row becomes a header
 # line instead, so the rows above it keep something worth reading.
 _MIN_BODY_SHARE = 500

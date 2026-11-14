@@ -14,7 +14,36 @@ struct NotchSetupView: View {
     @ObservedObject var notices: NotchSetupNotices = .shared
     static let host = "notch"
 
-    private var ready: Bool { setup.statusIsCurrent && setup.status?.ready == true }
+    /// Wisp can answer: a ready local model, or every answer on a remote model.
+    private var ready: Bool { setup.statusIsCurrent && setup.status?.canAnswer == true }
+
+    /// A build with no local engine that still needs its OpenRouter key: the card
+    /// offers the key instead of an engine, a model download and a test.
+    private var keyOnly: Bool {
+        IntelCloudPreset.offersKeyOnlySetup(status: setup.status) && setup.status?.remoteOnly != true
+    }
+
+    /// The key-only card's lines. Pure.
+    nonisolated static let keyOnlyWelcome = "In this build Wisp's AI runs on OpenRouter. Connect your OpenRouter key to start."
+    nonisolated static let keyOnlyDetail = "What you ask, and the mail, texts, calendar, notes, screenshots, pictures and audio "
+        + "Wisp reads to answer, are sent to OpenRouter and the model you choose."
+    nonisolated static let keyOnlyLater = "Connect your OpenRouter key so it can answer."
+    nonisolated static let connectTitle = "Connect OpenRouter"
+
+    /// Connect OpenRouter: the setup window's key card while first-run setup is
+    /// unfinished, else Settings › Models › Cloud, which holds the same key.
+    @MainActor static func openKeyCard() {
+        let defaults = UserDefaults.standard
+        if FirstRunSetup.isUnfinished({ defaults.bool(forKey: $0) }) {
+            // The key card is on step 1 (Model); a window already open keeps its own step.
+            defaults.set(OnboardingStep.brain.rawValue, forKey: FirstRunSetup.stepKey)
+            NotificationCenter.default.post(name: .wispContinueFirstRun, object: nil)
+        } else {
+            defaults.set("models", forKey: SettingsView.paneKey)
+            defaults.set("cloud", forKey: SettingsView.modelsPaneKey)
+            NotificationCenter.default.post(name: .wispOpenSettings, object: nil)
+        }
+    }
 
     var body: some View {
         Group {
@@ -55,6 +84,7 @@ struct NotchSetupView: View {
     /// Set aside mid-download, the line says how the model is coming along (or
     /// that the Mac slept on it).
     private var laterDetail: String {
+        if keyOnly { return Self.keyOnlyLater }
         let brain = FirstRunBrain.from(status: setup.status, downloads: setup.downloads)
         if let slept = sleepLine(brain) { return slept }
         if brain.isArriving, case .working(let text) = brain.footer(stalled: false) { return text }
@@ -72,6 +102,7 @@ struct NotchSetupView: View {
     /// The download is mentioned only to someone who has no model yet: with one
     /// installed, setup is a Start or a test.
     private var welcomeDetail: String {
+        if keyOnly { return Self.keyOnlyWelcome }
         let needsDownload = setup.status?.models.installed.isEmpty ?? true
         return needsDownload
             ? "Wisp needs a model before it can answer: a one-time download. Everything runs on this Mac."
@@ -90,7 +121,9 @@ struct NotchSetupView: View {
                 Spacer(minLength: 8)
                 if setup.status != nil { pill(setup.readinessLabel, on: ready) }
             }
-            if let status = setup.status {
+            if keyOnly {
+                keyStep
+            } else if let status = setup.status {
                 engineStep(status)
                 modelStep(status)
                 testStep(status)
@@ -114,8 +147,11 @@ struct NotchSetupView: View {
 
     private var footer: some View {
         HStack(spacing: 8) {
-            chip("More options  ⤢") {
-                NotificationCenter.default.post(name: .wispOpenSetupGuide, object: nil)
+            // The detailed guide sets up engines and downloads: nothing for a build with none.
+            if !keyOnly {
+                chip("More options  ⤢") {
+                    NotificationCenter.default.post(name: .wispOpenSetupGuide, object: nil)
+                }
             }
             Spacer(minLength: 8)
             if let busy = setup.busy {
@@ -133,6 +169,14 @@ struct NotchSetupView: View {
     }
 
     // MARK: Steps
+
+    /// The one step a build with no local engine has: its OpenRouter key.
+    private var keyStep: some View {
+        step("1", Self.connectTitle, state: "todo") {
+            detail(Self.keyOnlyDetail)
+            chip(Self.connectTitle + "  ⤢", primary: true) { Self.openKeyCard() }
+        }
+    }
 
     private func engineStep(_ s: SetupStatus) -> some View {
         let check = s.checks.first { $0.id == "engine" }

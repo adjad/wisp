@@ -28,6 +28,10 @@ IMPORTANT rules:
   back to stopped with its transcript, and the notes can be written again.
 - Transcription is a foreground call (voice.transcribe_wav holds the gate), so
   background model work yields while a meeting is being heard.
+- Cloud-everything mode (remote-only profile plus remote_parity) writes the notes
+  from the whole transcript in one call (up to _CLOUD_ONE_CALL_CHARS, less if the
+  profile's window is smaller), with more output room and time. Longer ones are
+  noted in parts of that size first. Local behaviour is unchanged.
 """
 from __future__ import annotations
 
@@ -50,6 +54,11 @@ _WINDOW_TIMEOUT_S = 45.0            # one window's wait for the engine plus its 
 _STALE_RECORDING_S = 120.0          # no window for this long: the recording was abandoned
 _CHUNK_CHARS = 6000                 # transcript per model call (about 1,500 tokens)
 _NOTES_TIMEOUT_S = 120.0
+# Cloud-everything mode: one call holds a whole meeting, and the model reasons
+# inside max_tokens, so it gets more output room and time.
+_CLOUD_ONE_CALL_CHARS = 400_000
+_CLOUD_NOTES_TOKENS = 4096
+_CLOUD_NOTES_TIMEOUT_S = 180.0
 _MAX_KEPT = 200
 _ID = re.compile(r"^[a-z0-9]{12}$")
 
@@ -227,14 +236,29 @@ def _progress(meeting: dict[str, Any], text: str, heard: bool) -> dict[str, Any]
     return {"text": text, "heard": heard, "heard_s": meeting["heard_s"], "missed_s": meeting["missed_s"]}
 
 
-def _chunks(text: str) -> list[str]:
-    """`text` in pieces of about _CHUNK_CHARS, cut at sentence ends where there is one."""
+def _cloud_notes(client) -> bool:
+    """The write-up runs on the cloud model in cloud-everything mode."""
+    from service import documents
+    return voice._is_cloud(client) and documents.cloud_everything_active()
+
+
+def _one_call_chars(client) -> int:
+    """Transcript one write-up call may carry: _CHUNK_CHARS, or far more on the cloud model."""
+    if not _cloud_notes(client):
+        return _CHUNK_CHARS
+    from service import documents
+    return max(_CHUNK_CHARS, documents.cloud_text_chars(_CLOUD_NOTES_TOKENS, _CLOUD_ONE_CALL_CHARS))
+
+
+def _chunks(text: str, size: int | None = None) -> list[str]:
+    """`text` in pieces of about `size` (_CHUNK_CHARS), cut at sentence ends where there is one."""
+    size = size or _CHUNK_CHARS
     pieces, rest = [], text.strip()
-    while len(rest) > _CHUNK_CHARS:
-        cut = max(rest.rfind(mark, 0, _CHUNK_CHARS) for mark in (". ", "? ", "! "))
-        cut = cut + 1 if cut > _CHUNK_CHARS // 2 else rest.rfind(" ", 0, _CHUNK_CHARS)
+    while len(rest) > size:
+        cut = max(rest.rfind(mark, 0, size) for mark in (". ", "? ", "! "))
+        cut = cut + 1 if cut > size // 2 else rest.rfind(" ", 0, size)
         if cut <= 0:
-            cut = _CHUNK_CHARS
+            cut = size
         pieces.append(rest[:cut].strip())
         rest = rest[cut:].strip()
     if rest:
@@ -314,7 +338,8 @@ async def write_notes(text: str, *, client, model: str, deadline: float,
 
     `held` is the day of the meeting, so "by Thursday" can become a date."""
     held = held or datetime.now().date()
-    pieces = _chunks(text)
+    cloud = _cloud_notes(client)
+    pieces = _chunks(text, _one_call_chars(client))
     if len(pieces) > 1:
         partial = []
         for piece in pieces:
@@ -325,7 +350,7 @@ async def write_notes(text: str, *, client, model: str, deadline: float,
     else:
         material = untrusted.fence(pieces[0], MEETING_TRANSCRIPT)
     system = _NOTES_SYSTEM + f"\nThe meeting was held on {held:%A, %Y-%m-%d}."
-    reply = await _ask(client, model, system, material, 900, deadline)
+    reply = await _ask(client, model, system, material, _CLOUD_NOTES_TOKENS if cloud else 900, deadline)
     notes = parse_notes(reply)
     for item in notes["action_items"]:          # a date before the meeting is a misreading, not a deadline
         if item["due"] and item["due"] < held.isoformat():
@@ -369,8 +394,9 @@ async def _write_up(meeting_id: str, meeting: dict[str, Any]) -> dict[str, Any]:
     else:
         try:
             client, model = voice._resolve()
+            timeout = _CLOUD_NOTES_TIMEOUT_S if _cloud_notes(client) else _NOTES_TIMEOUT_S
             notes = await write_notes(text, client=client, model=model,
-                                      deadline=time.monotonic() + _NOTES_TIMEOUT_S,
+                                      deadline=time.monotonic() + timeout,
                                       held=datetime.fromtimestamp(meeting["started_at"]).date())
         except voice.VoiceUnavailable as unavailable:
             error = str(unavailable)

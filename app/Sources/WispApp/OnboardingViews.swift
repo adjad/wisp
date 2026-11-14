@@ -93,6 +93,18 @@ struct OnboardingPill: View {
 
 // MARK: - Google
 
+/// Where Wisp builds to-dos from Google, for the setup step and the notch's row. Pure.
+enum GoogleToDoCopy {
+    static let local = "Wisp builds your to-dos on this Mac and asks before anything changes."
+
+    /// On the cloud the model reading Google is named when known ("Gemini 3.8 Flash").
+    static func line(cloud: Bool, cloudModel: String?) -> String {
+        guard cloud else { return local }
+        let name = cloudModel.map { " (\($0))" } ?? ""
+        return "Wisp's cloud model\(name) reads them to build your to-dos; Wisp asks before anything changes."
+    }
+}
+
 /// Step 3: connect Google, optional. The same sign-in as Settings ▸ Google
 /// (GoogleAccountModel.connect with Wisp's built-in client), run from here: the
 /// browser opens Google's consent page, this says "Waiting for Google…", and
@@ -101,12 +113,22 @@ struct OnboardingGoogleStep: View {
     @ObservedObject var model: GoogleAccountModel
     /// Off in NotchQA's renders, which must not reach the service.
     var refreshes = true
+    /// Wisp's AI runs on the cloud (remote-only, or the Intel build): the to-do line
+    /// says the cloud model reads Google, not that it stays on this Mac.
+    var cloud = false
+    /// The cloud model's name ("Gemini 3.8 Flash"), when known.
+    var cloudModel: String? = nil
+
+    /// The heading's line. Pure.
+    nonisolated static func subtitle(cloud: Bool, cloudModel: String?) -> String {
+        "Optional. Brief reads your Gmail and Google Calendar, read-only, and Ask can look "
+            + "in Drive, Docs and Sheets. " + GoogleToDoCopy.line(cloud: cloud, cloudModel: cloudModel)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             OnboardingHeading(title: "Connect Google",
-                              subtitle: "Optional. Brief reads your Gmail and Google Calendar, read-only, and Ask can look "
-                                  + "in Drive, Docs and Sheets. Wisp builds your to-dos on this Mac and asks before anything changes.")
+                              subtitle: Self.subtitle(cloud: cloud, cloudModel: cloudModel))
             ForEach(model.status.accounts) { account in accountCard(account) }
             if model.authorizing {
                 // Closing Google's page never reaches Wisp, so the wait can always be

@@ -3657,7 +3657,8 @@ async def view_emails_impl(query: str | None = None, day: str | None = None,
                            unread: bool = False,
                            strict_match: bool = False) -> str:
     from service.tools.email_digest import (HEADER_LINE_CHARS, LONG_BODY_CHARS, MAX_HEADER_LINES,
-                                            RESULT_BUDGET_CHARS, digest_rows, fit_rows, readable_body)
+                                            RESULT_BUDGET_CHARS, digest_rows, fit_rows, readable_body,
+                                            result_budget_chars, whole_mail_reads)
     corpus_identifier = _CORPUS_MAIL_IDENTIFIER.get()
     if corpus_identifier is not None and (
             not isinstance(query, str) or query != corpus_identifier or strict_match is not True):
@@ -3802,6 +3803,12 @@ async def view_emails_impl(query: str | None = None, day: str | None = None,
     # call on list mail unless that is the best it has.
     candidates = ([i for i, r in enumerate(rows) if len(r["body"]) > LONG_BODY_CHARS
                    and (i == 0 or not r.get("_list_mail"))] if ranked else None)
+    # Cloud-everything, for a caller whose cap holds a whole read (view_emails in
+    # Ask): whole bodies, never a digest. summarize_emails(query=...), non-Ask turns
+    # and every small cap keep the digest above (model_only.whole_read_budget).
+    whole = whole_mail_reads()
+    if whole:
+        candidates = []
     try:
         # Best effort: lets "[Attached: ...]" show on mail the Gmail copy doesn't carry.
         from service import mail_attachments
@@ -3813,7 +3820,8 @@ async def view_emails_impl(query: str | None = None, day: str | None = None,
     reserved = (len(note) + len(email_freshness_warning(account, part="raw")) + 2
                 + (_COVERAGE_CHARS if ranked or omitted else 0)
                 + (sum(map(len, extra_lines)) + 200 if extra_lines else 0))
-    fitted = fit_rows(rows, query=query, budget=RESULT_BUDGET_CHARS - reserved, best_first=ranked,
+    budget = result_budget_chars() if whole else RESULT_BUDGET_CHARS
+    fitted = fit_rows(rows, query=query, budget=budget - reserved, best_first=ranked,
                       header_chars=lambda r: len(_email_body_block({**r, "body": ""})))
     line_rows = fitted.header_only[:MAX_HEADER_LINES]
     coverage = _omission_line(query, len(rows), available, limit, omitted, omitted_kind,

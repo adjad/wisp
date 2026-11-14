@@ -93,7 +93,20 @@ struct MailMemorySection: View {
 /// and the text kept from attachments.
 struct MailMemorySettingsRow: View {
     @ObservedObject var memory: MailMemoryModel = MailMemoryCards.model
+    /// Every answer comes from a cloud model (remote-only, or the Intel build): the
+    /// mail is read by that model, not on this Mac.
+    var cloud = false
     @State private var confirmForgetMail = false
+
+    /// What Mail suggestions reads, and where. On the cloud the whole history may be
+    /// read, so no 90-day promise. Pure.
+    nonisolated static func readsLine(cloud: Bool) -> String {
+        cloud
+            ? "Reads your Sent mail and Mail's Primary, Transactions and Updates while you're idle, and "
+                + "sends them to Wisp's cloud model to find what matters. Never spam, trash, archive or promotions."
+            : "Reads your Sent mail and Mail's Primary, Transactions and Updates from the last "
+                + "90 days, on this Mac, while you're idle. Never spam, trash, archive or promotions."
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -111,8 +124,7 @@ struct MailMemorySettingsRow: View {
             .accessibilityLabel("Mail suggestions")
             Text(caption).font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("Reads your Sent mail and Mail's Primary, Transactions and Updates from the last "
-                 + "90 days, on this Mac, while you're idle. Never spam, trash, archive or promotions.")
+            Text(Self.readsLine(cloud: cloud))
                 .font(.caption2).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             if let status = memory.modeStatus {

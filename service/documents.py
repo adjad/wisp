@@ -38,6 +38,10 @@ Rules:
   ends with that module's plain statement of what was covered, never a claim of more.
 - Scanned PDFs (no text layer) arrive as up to MAX_SCANNED_PAGES pictures and
   go through the vision call, framed as document pages.
+- Cloud-everything mode (remote-only profile plus remote_parity) lifts the local
+  window's limits: up to CLOUD_TEXT_CHARS (less if the profile's window or byte
+  budget is smaller) is answered in one call, and a scan may carry up to
+  cloud_scanned_pages() pages. Local behaviour is unchanged.
 """
 from __future__ import annotations
 
@@ -65,6 +69,9 @@ _TIMEOUT_S = 75.0                           # extraction + waiting for the model
 _EXTRACT_TIMEOUT_S = 45.0
 _LARGE_TIMEOUT_S = 150.0                    # a long document: extraction + notes passes + the answer
 _ANSWER_RESERVE_S = 30.0                    # kept back from the notes passes for the final answer
+# Cloud-everything mode: the cloud model's window holds a whole document.
+CLOUD_TEXT_CHARS = 400_000                  # about 100k tokens in one call
+_CLOUD_PROMPT_RESERVE_TOKENS = 2000         # system prompt, question and quoting around the text
 
 TRUNCATED = "\n\n(This document is long, so I read only its first part.)"
 TOO_SLOW = "That document took too long to read. Try a shorter one."
@@ -318,6 +325,49 @@ def local_model():
 _local = local_model
 
 
+# --- cloud-everything scale-up -----------------------------------------------------
+
+def cloud_everything_active() -> bool:
+    """A remote-only profile with remote_parity: all of Wisp runs on the cloud model."""
+    from service.inference.remote_policy import remote_only_profile, remote_parity
+    return remote_only_profile() is not None and remote_parity()
+
+
+def cloud_text_chars(reply_tokens: int, ceiling: int = CLOUD_TEXT_CHARS) -> int:
+    """Characters of text one cloud call may carry with `reply_tokens` of output asked for.
+
+    `ceiling`, or less when the profile's window or byte budget is smaller (the client
+    refuses a request that does not fit). 0 outside cloud-everything mode."""
+    if not cloud_everything_active():
+        return 0
+    from service.inference.remote_policy import cloud_media_budget, remote_only_profile
+    profile = remote_only_profile()
+    room = profile.context_window - cloud_media_budget(reply_tokens) - _CLOUD_PROMPT_RESERVE_TOKENS
+    by_window = room * 4                               # the client's estimate: 4 characters a token
+    by_bytes = (profile.aggregate_bytes - 16_384) // 4  # worst-case UTF-8
+    return max(0, min(ceiling, by_window, by_bytes))
+
+
+def _text_limit(client) -> int:
+    """Text one answer call carries: MAX_TEXT_CHARS, or more on the cloud model."""
+    if client is None or not vision.is_cloud(client):
+        return MAX_TEXT_CHARS
+    return max(MAX_TEXT_CHARS, cloud_text_chars(_MAX_TOKENS))
+
+
+def cloud_scanned_pages() -> int:
+    """Scanned pages one cloud call may carry: the cloud picture cap, within vision's own."""
+    from service.inference.remote_policy import REMOTE_IMAGES_PER_REQUEST
+    return min(REMOTE_IMAGES_PER_REQUEST, vision.MAX_FRAMES)
+
+
+def _scan_limit() -> int:
+    from service.inference.remote_policy import cloud_media_allowed
+    if cloud_everything_active() and cloud_media_allowed("image"):
+        return max(MAX_SCANNED_PAGES, cloud_scanned_pages())
+    return MAX_SCANNED_PAGES
+
+
 async def local_chat(client, model: str, messages: list[dict], max_tokens: int, deadline: float) -> str:
     """One no-tools, thinking-off call on the local model; the reply text, think blocks removed.
 
@@ -350,13 +400,14 @@ async def answer_text(prompt: str, name: str, text: str, *, truncated: bool = Fa
     `coverage` is the plain statement of what a condensed text covers (large_document):
     it goes to the model and ends the reply, in place of the "first part" wording.
     """
-    if coverage is None:
-        truncated = truncated or len(text) > MAX_TEXT_CHARS
-    else:
-        truncated = False
-    text = text[:MAX_TEXT_CHARS]
     if client is None or model is None:
         client, model = local_model()
+    limit = _text_limit(client)
+    if coverage is None:
+        truncated = truncated or len(text) > limit
+    else:
+        truncated = False
+    text = text[:limit]
     deadline = deadline or time.monotonic() + _TIMEOUT_S
     reply = await local_chat(client, model, _messages(prompt, name, text, truncated, coverage),
                              _MAX_TOKENS, deadline)
@@ -379,8 +430,9 @@ async def answer_request(prompt: str, document: dict, *, client=None, model: str
     name = document.get("name") if isinstance(document.get("name"), str) else "document"
     pages = document.get("pages")
     if pages:
-        if not isinstance(pages, list) or len(pages) > MAX_SCANNED_PAGES:
-            raise ValueError(f"Wisp reads at most {MAX_SCANNED_PAGES} pages of a scanned document.")
+        most = _scan_limit()
+        if not isinstance(pages, list) or len(pages) > most:
+            raise ValueError(f"Wisp reads at most {most} pages of a scanned document.")
         return await vision.answer(prompt.strip() or "Summarize this document.", pages, client=client,
                                    model=model, scanned_document=PurePath(name).name[:120])
     started = time.monotonic()
@@ -393,20 +445,28 @@ async def answer_request(prompt: str, document: dict, *, client=None, model: str
     # The `[Pages: N]` line is a fact about the file for page picking, never content. The `[Page n]`
     # lines stay: they let the answer say which page a figure is on.
     text = large_document.without_header(text)
+    limit = _text_limit(client)
     if len(text) <= MAX_TEXT_CHARS:
         return await answer_text(prompt, name, text, truncated=cut, client=client, model=model,
                                  deadline=deadline)
+    if len(text) <= limit:
+        # Cloud-everything mode: the whole text in one call, with the long-document time.
+        return await answer_text(prompt, name, text, truncated=cut, client=client, model=model,
+                                 deadline=started + _LARGE_TIMEOUT_S)
     # Longer than the model's window: bring it down to size first, saying how much that covered.
     deadline = started + _LARGE_TIMEOUT_S
     passes = large_document.PassBudget(deadline=deadline - _ANSWER_RESERVE_S)
 
     async def chat(messages: list[dict], max_tokens: int) -> str:
         return await local_chat(client, model, messages, max_tokens, deadline)
+    # On the cloud model the budget is far larger than a few notes passes could fill,
+    # so it is searched or sampled to size instead, in the one answer call.
+    cloud = limit > MAX_TEXT_CHARS
     idle.begin_foreground()               # one gate across the notes and the answer
     try:
         condensed = await large_document.condense(
-            text, name=name, kind=extract._kind(name), question=prompt, budget=MAX_TEXT_CHARS, chat=chat,
-            passes=passes, extraction_cut=cut)
+            text, name=name, kind=extract._kind(name), question=prompt, budget=limit,
+            chat=None if cloud else chat, passes=None if cloud else passes, extraction_cut=cut)
         return await answer_text(prompt, name, condensed.text, client=client, model=model, deadline=deadline,
                                  coverage=condensed.note or None)
     finally:

@@ -1152,20 +1152,103 @@ def bundled_transport(base_url, api_key):
     return CredentialTransport(base_url, api_key, managed=True) if loopback else None
 
 
+# Remote https providers under cloud-everything (OMLXClient passes shared=True): one
+# keep-alive pool per (scheme, host, port) and event loop for the whole process, so a
+# turn's new client reuses an open TLS connection instead of paying TCP + TLS again.
+# A client's routine close leaves it open for the next; a network error retires it
+# (closed once its last user lets go) and the next request opens a fresh one. The
+# managed engine never shares: its attribution lease and fence are per connection.
+SHARED_MAX_CONNECTIONS = 16
+SHARED_KEEPALIVE_CONNECTIONS = 4
+SHARED_KEEPALIVE_EXPIRY_S = 90.0
+# A request that fails this soon on a kept-alive connection met one the provider had
+# already closed: it is sent once more on a fresh connection, never twice.
+_STALE_RETRY_WINDOW_S = 2.0
+
+
+class _SharedPool:
+    __slots__ = ("pool", "loop", "users", "retired")
+
+    def __init__(self, pool, loop):
+        self.pool, self.loop, self.users, self.retired = pool, loop, 0, False
+
+
+_SHARED_POOLS: dict = {}
+_SHARED_LOCK = threading.Lock()
+
+
+def _shared_remote_pool():
+    return httpcore.AsyncConnectionPool(
+        ssl_context=ssl.create_default_context(cafile=certifi.where()), retries=0,
+        max_connections=SHARED_MAX_CONNECTIONS,
+        max_keepalive_connections=SHARED_KEEPALIVE_CONNECTIONS,
+        keepalive_expiry=SHARED_KEEPALIVE_EXPIRY_S)
+
+
+def _acquire_shared(origin):
+    loop = asyncio.get_running_loop()
+    with _SHARED_LOCK:
+        for key, entry in list(_SHARED_POOLS.items()):
+            if key[3].is_closed():          # a finished event loop's sockets are gone
+                del _SHARED_POOLS[key]
+                entry.retired = True
+        key = (origin.scheme, origin.host, origin.port, loop)
+        entry = _SHARED_POOLS.get(key)
+        if entry is None:
+            entry = _SHARED_POOLS[key] = _SharedPool(_shared_remote_pool(), loop)
+        entry.users += 1
+        return entry
+
+
+def _retire_shared(entry):
+    with _SHARED_LOCK:
+        for key, held in list(_SHARED_POOLS.items()):
+            if held is entry:
+                del _SHARED_POOLS[key]
+        entry.retired = True
+
+
+async def _release_shared(entry):
+    with _SHARED_LOCK:
+        entry.users -= 1
+        close = entry.retired and entry.users <= 0
+    if close and not entry.loop.is_closed() and asyncio.get_running_loop() is entry.loop:
+        await entry.pool.aclose()
+
+
 class CredentialTransport(httpx.AsyncBaseTransport):
-    def __init__(self, base_url, key, *, managed, authority=None, key_loader=None):
+    def __init__(self, base_url, key, *, managed, authority=None, key_loader=None, shared=False):
         self.origin, self.key = httpx.URL(base_url), key
         self.key_loader = key_loader
         self.backend = CheckedBackend(authority or authority_for(self.origin.port), self.origin.port) if managed else None
-        self.pool = httpcore.AsyncConnectionPool(ssl_context=ssl.create_default_context(cafile=certifi.where()),
-                                               network_backend=self.backend, retries=0,
-                                               max_connections=10, max_keepalive_connections=0)
+        # Only a remote https origin may share; everything else keeps its own pool,
+        # built exactly as before.
+        self.shared = bool(shared) and not managed and self.origin.scheme == 'https'
+        self._entry = None
+        self.pool = None if self.shared else httpcore.AsyncConnectionPool(
+            ssl_context=ssl.create_default_context(cafile=certifi.where()),
+            network_backend=self.backend, retries=0,
+            max_connections=10, max_keepalive_connections=0)
 
     def invalidate(self):
         if self.backend:
             self.backend.epoch += 1
             if isinstance(self.backend.authority, RuntimeAuthority):
                 _REUSE.invalidate()     # network error / engine restart: requalify from scratch
+        if self._entry is not None:
+            _retire_shared(self._entry)  # the next request opens a fresh pool
+
+    async def _current_pool(self):
+        if not self.shared:
+            return self.pool
+        loop = asyncio.get_running_loop()
+        held = self._entry
+        if held is not None and (held.retired or held.loop is not loop):
+            self._entry = None
+            await _release_shared(held)
+        if self._entry is None:
+            self._entry = _acquire_shared(self.origin)
+        return self._entry.pool
 
     async def handle_async_request(self, request):
         if (request.url.scheme, request.url.host, request.url.port) != (
@@ -1183,23 +1266,39 @@ class CredentialTransport(httpx.AsyncBaseTransport):
         headers = list(request.headers.raw)
         if self.key:
             headers.append((b'Authorization', ('Bearer ' + self.key).encode('ascii')))
-        try:
-            response = await self.pool.handle_async_request(httpcore.Request(
-                method=request.method, url=httpcore.URL(scheme=request.url.raw_scheme,
-                    host=request.url.raw_host, port=request.url.port, target=request.url.raw_path),
-                headers=headers, content=request.stream, extensions=request.extensions))
-            return httpx.Response(response.status, headers=response.headers,
-                                  stream=ResponseStream(response.stream), extensions=response.extensions)
-        except (httpcore.NetworkError, httpcore.TimeoutException, httpcore.ProtocolError):
-            self.invalidate()
-            raise httpx.ConnectError('Inference connection unavailable') from None
+        # Only a body that can be sent again is ever retried (see _STALE_RETRY_WINDOW_S).
+        retry_stale = self.shared and isinstance(request.stream, httpx.ByteStream)
+        while True:
+            pool = await self._current_pool()
+            started = time.monotonic()
+            try:
+                response = await pool.handle_async_request(httpcore.Request(
+                    method=request.method, url=httpcore.URL(scheme=request.url.raw_scheme,
+                        host=request.url.raw_host, port=request.url.port, target=request.url.raw_path),
+                    headers=headers, content=request.stream, extensions=request.extensions))
+                return httpx.Response(response.status, headers=response.headers,
+                                      stream=ResponseStream(response.stream), extensions=response.extensions)
+            except (httpcore.NetworkError, httpcore.TimeoutException, httpcore.ProtocolError) as error:
+                self.invalidate()
+                if (retry_stale and isinstance(error, (httpcore.RemoteProtocolError, httpcore.ReadError,
+                                                        httpcore.WriteError))
+                        and time.monotonic() - started < _STALE_RETRY_WINDOW_S):
+                    retry_stale = False
+                    continue
+                raise httpx.ConnectError('Inference connection unavailable') from None
 
     async def aclose(self):
         # Closing ends this transport's connections only. The process-wide lease
         # is not transport-scoped, so a routine per-turn client close keeps it.
+        # A shared remote pool stays open for the next client (see _SharedPool).
         if self.backend:
             self.backend.epoch += 1
         try:
-            await self.pool.aclose()
+            if self.shared:
+                held, self._entry = self._entry, None
+                if held is not None:
+                    await _release_shared(held)
+            else:
+                await self.pool.aclose()
         finally:
             _close_inspection_pool()

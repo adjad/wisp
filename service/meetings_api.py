@@ -55,13 +55,17 @@ def _refuse(error: Exception) -> HTTPException:
 
 def audio_destination() -> str | None:
     """Who hears a meeting's audio besides this Mac: the remote-only profile's
-    provider ("OpenRouter", or the server's host name), or None on a local engine."""
+    provider ("OpenRouter", "the Gemini API", or the server's host name), or None on a
+    local engine."""
     from urllib.parse import urlsplit
     from service.inference.remote_policy import cloud_media_allowed, remote_only_profile
     profile = remote_only_profile()
     if profile is None or not cloud_media_allowed("audio"):
         return None
     host = (urlsplit(profile.base_url).hostname or "").lower()
+    from service.inference.providers import wire_provider
+    if wire_provider(getattr(profile, "provider", "openai-compatible"), profile.base_url) == "gemini":
+        return "the Gemini API"
     return "OpenRouter" if host == "openrouter.ai" or host.endswith(".openrouter.ai") else (host or "your cloud provider")
 
 

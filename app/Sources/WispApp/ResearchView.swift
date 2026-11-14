@@ -42,6 +42,26 @@ struct ResearchView: View {
     var onBack: (() -> Void)? = nil
     /// First tap on the trash arms this; a second tap within a few seconds deletes.
     @State private var deleteConfirmation = ResearchDeleteConfirmation()
+    /// The cloud model every answer comes from (OverlayModel.cloudModel), when the
+    /// host passes it; nil when Wisp answers on this Mac or the host doesn't say.
+    var cloudModel: String? = nil
+    /// The same name from a fresh /setup/status (.wispCloudModelChanged).
+    @State private var notedCloudModel: String?
+    @State private var notedCloud = false
+
+    /// Research runs on the cloud: the Intel build (no engine), or a remote-only setup.
+    private var onCloud: Bool { IntelCloudPreset.compiledForIntel || cloudModel != nil || notedCloud }
+
+    /// Where research runs, under its progress. Pure.
+    nonisolated static func privacyLine(cloud: Bool, model: String?) -> String {
+        guard cloud else { return "Research runs on this Mac. Only search queries and page requests leave it." }
+        let name = model.map { " (\($0))" } ?? ""
+        return "Research runs on Wisp's cloud model\(name). Your question and the pages it reads are sent to it."
+    }
+
+    nonisolated static func headerLine(cloud: Bool) -> String {
+        cloud ? "Evidence-backed research" : "Local, evidence-backed research"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -58,6 +78,10 @@ struct ResearchView: View {
         .preferredColorScheme(.dark)
         .onChange(of: model.jobId) { _ in deleteConfirmation.clear() }
         .onDisappear { deleteConfirmation.clear() }
+        .onReceive(NotificationCenter.default.publisher(for: .wispCloudModelChanged)) { note in
+            notedCloudModel = (note.object as? String).map(CloudModelName.model)
+            notedCloud = notedCloudModel != nil
+        }
     }
 
     private var header: some View {
@@ -74,7 +98,7 @@ struct ResearchView: View {
                 Text(model.title.isEmpty ? "Wisp Research" : model.title)
                     .font(.wisp(size: 15, weight: .semibold)).foregroundStyle(Theme.textPrimary)
                     .lineLimit(1)
-                Text(model.status.isEmpty ? "Local, evidence-backed research" : model.status)
+                Text(model.status.isEmpty ? Self.headerLine(cloud: onCloud) : model.status)
                     .font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
             }
             Spacer()
@@ -472,7 +496,7 @@ struct ResearchView: View {
         VStack(spacing: 12) {
             ProgressView().controlSize(.large)
             Text(text).font(.wisp(size: 13)).foregroundStyle(Theme.textSecondary)
-            Text("Research runs on this Mac. Only search queries and page requests leave it.")
+            Text(Self.privacyLine(cloud: onCloud, model: cloudModel ?? notedCloudModel))
                 .font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }

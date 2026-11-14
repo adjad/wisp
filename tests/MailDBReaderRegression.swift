@@ -27,6 +27,23 @@ enum MailDBReaderRegression {
                          "Successful zero-account output must be known empty, not unavailable")
             return
         }
+        // Intel's closed-Mail index post is skipped only while the index is unchanged.
+        let throttle = MailIndexPostThrottle(enabled: true, maxSkip: 1800)
+        let start = Date()
+        let same = ["i|1|2", "i-wal|0|-1"]
+        precondition(!throttle.shouldSkip(same, now: start), "The first index read always posts")
+        throttle.recordPost(same, now: start)
+        precondition(throttle.shouldSkip(same, now: start.addingTimeInterval(300)), "An unchanged index skips")
+        precondition(!throttle.shouldSkip(["i|3|2", "i-wal|0|-1"], now: start.addingTimeInterval(300)),
+                     "A changed index posts")
+        precondition(!throttle.shouldSkip(same, now: start.addingTimeInterval(1801)), "Still posts every 30 minutes")
+        throttle.reset()
+        precondition(!throttle.shouldSkip(same, now: start.addingTimeInterval(300)),
+                     "After another source posted, the index posts again")
+        precondition(!throttle.shouldSkip([], now: start), "No index never skips")
+        let off = MailIndexPostThrottle(enabled: false)
+        off.recordPost(same, now: start)
+        precondition(!off.shouldSkip(same, now: start), "Disabled (Apple silicon) never skips")
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("wisp-mail-db-test-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -202,16 +219,16 @@ enum MailDBReaderRegression {
 
         // The per-account history ceiling matches MailReader.historyCap.
         sql("DELETE FROM messages")
-        sql("WITH RECURSIVE seq(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM seq WHERE x<12001) " +
+        sql("WITH RECURSIVE seq(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM seq WHERE x<\(MailHistoryWindow.perAccount + 1)) " +
             "INSERT INTO messages (date_received, read, subject, sender, mailbox, message_id) " +
             "SELECT \(base) - x, 1, 1, 1, 1, 'cap-'||x FROM seq")
         sql("INSERT INTO messages (date_received, read, subject, sender, mailbox, message_id) " +
             "VALUES (\(base) - 5, 1, 1, 1, 2, 'other-one')")
         let capped = reader.readHistory()!.history.split(separator: "\n")
             .map { String($0).components(separatedBy: "\u{01}") }
-        precondition(capped.filter { $0[0] == "H2" && $0[4] == "fixture-account" }.count == 12000,
+        precondition(capped.filter { $0[0] == "H2" && $0[4] == "fixture-account" }.count == MailHistoryWindow.perAccount,
                      "History keeps at most historyCap rows per account")
-        precondition(capped.contains { $0 == ["C2", "Work", "fixture-account", "12000", "0", "0"] } &&
+        precondition(capped.contains { $0 == ["C2", "Work", "fixture-account", "\(MailHistoryWindow.perAccount)", "0", "0"] } &&
                      capped.contains { $0 == ["C2", "Work", "fixture-account", "0", "0", "1"] },
                      "A capped account reports attempted rows and a separate cap marker")
         precondition(capped.contains { $0 == ["C2", "Home", "other-account", "1", "0", "0"] } &&
@@ -288,8 +305,9 @@ enum MailDBReaderRegression {
         precondition(reader.readHistory() == nil, "Ambiguous duplicate Inbox rows decline")
         sql("DELETE FROM mailboxes WHERE ROWID = 4")
         sql("DELETE FROM messages")
+        // Two mailboxes past the build's total-row cap together (30,000; Intel 120,000).
         for mailbox in 1...2 {
-            sql("WITH RECURSIVE seq(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM seq WHERE x<16000) " +
+            sql("WITH RECURSIVE seq(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM seq WHERE x<\(MailHistoryWindow.totalRows / 2 + 1000)) " +
                 "INSERT INTO messages (date_received, read, subject, sender, mailbox) " +
                 "SELECT \(base) - x, 1, 1, 1, \(mailbox) FROM seq")
         }

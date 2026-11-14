@@ -47,6 +47,44 @@ enum IntelFirstLaunch {
         return false
     }
 
+    /// The process's owner, or nil when it can't be read (gone, or not ours to inspect).
+    static func ownerUID(pid: Int32) -> uid_t? {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+        return info.pbi_uid
+    }
+
+    /// Every running Wisp backend python of this user but this process (by program path).
+    /// Another user's backend uses that user's home, not this one, and can't be signalled.
+    static func wispBackendPIDs(excluding selfPID: Int32) -> [Int32] {
+        let me = getuid()
+        return allWispBackendPIDs(excluding: selfPID).filter { ownerUID(pid: $0) == me }
+    }
+
+    private static func allWispBackendPIDs(excluding selfPID: Int32) -> [Int32] {
+        let capacity = Int(proc_listallpids(nil, 0)) + 64
+        guard capacity > 64 else { return [] }
+        var pids = [Int32](repeating: 0, count: capacity)
+        let count = Int(proc_listallpids(&pids, Int32(capacity * MemoryLayout<Int32>.size)))
+        guard count > 0 else { return [] }
+        return pids.prefix(min(count, capacity)).filter { pid in
+            pid > 0 && pid != selfPID && PortGuard.executablePath(pid: pid).map(isWispBackend(executablePath:)) == true
+        }
+    }
+
+    /// Waits (bounded) for the processes to end; returns those still running.
+    static func waitForExit(_ pids: [Int32], seconds: TimeInterval) -> [Int32] {
+        let deadline = Date().addingTimeInterval(seconds)
+        var running = pids
+        while !running.isEmpty {
+            running = running.filter { kill($0, 0) == 0 || errno != ESRCH }
+            if running.isEmpty || Date() >= deadline { break }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        return running
+    }
+
     static func markerURL(home: String = NSHomeDirectory()) -> URL {
         URL(fileURLWithPath: home).appendingPathComponent(markerFolder).appendingPathComponent(markerName)
     }
@@ -113,25 +151,25 @@ enum IntelFirstLaunch {
             }
         }
 
-        // b. A leftover Wisp backend on the port. Strangers are left alone.
+        // b. Every leftover Wisp backend, found by its program path (one still starting
+        // has no port yet, and one shutting down closes its port first). Each must be
+        // gone before ~/.moe moves: an old process with the databases open would delete
+        // or reuse the new folder's -wal/-shm files by path (a "disk I/O error" at the
+        // next start). Strangers are left alone.
+        let leftovers = wispBackendPIDs(excluding: selfPID)
         var stoppedBackend = false
-        for listener in PortGuard.listeners(port: port) ?? []
-        where listener.pid != selfPID && isWispBackend(executablePath: listener.path) {
-            if kill(listener.pid, SIGTERM) == 0 { stoppedBackend = true }
-        }
-        if stoppedBackend {
-            let deadline = Date().addingTimeInterval(5)
-            while !((PortGuard.listeners(port: port) ?? []).filter({ isWispBackend(executablePath: $0.path) }).isEmpty),
-                  Date() < deadline {
-                Thread.sleep(forTimeInterval: 0.2)
-            }
-        }
+        for pid in leftovers where kill(pid, SIGTERM) == 0 { stoppedBackend = true }
+        var stillRunning = waitForExit(leftovers, seconds: 10)
+        for pid in stillRunning { kill(pid, SIGKILL) }
+        if !stillRunning.isEmpty { stillRunning = waitForExit(stillRunning, seconds: 3) }
 
         // c. ~/.moe moves aside, never deleted.
         var backup: String?
         var moveFailed = false
         let moe = URL(fileURLWithPath: home).appendingPathComponent(".moe")
-        if fm.fileExists(atPath: moe.path) {
+        if !stillRunning.isEmpty {
+            moveFailed = true          // an old backend survived: leave the data where it is
+        } else if fm.fileExists(atPath: moe.path) {
             let name = backupName(for: now)
             do {
                 try fm.moveItem(at: moe, to: URL(fileURLWithPath: home).appendingPathComponent(name))

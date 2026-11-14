@@ -4,6 +4,7 @@ Without parity, or on a local engine, they behave as before."""
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -34,7 +35,9 @@ class Client:
 
 
 def cloud(monkeypatch, *, parity):
-    monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: object())
+    # Only the output limit is read from the profile here (cloud_output_budget).
+    profile = SimpleNamespace(max_tokens=16384)
+    monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: profile)
     monkeypatch.setattr(remote_policy, "remote_parity", lambda: parity)
 
 

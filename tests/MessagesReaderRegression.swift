@@ -18,6 +18,21 @@ enum MessagesReaderRegression {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let path = root.appendingPathComponent("chat.db").path
+        // Intel's deep read is skipped only while the files are unchanged, and never for long.
+        let throttle = MessagesDeepReadThrottle(enabled: true, maxSkip: 1800)
+        let start = Date()
+        let unchanged = ["a|1|2", "a-wal|0|-1"]
+        precondition(!throttle.shouldSkip(unchanged, now: start), "The first read always runs")
+        throttle.recordPost(unchanged, now: start)
+        precondition(throttle.shouldSkip(unchanged, now: start.addingTimeInterval(600)), "Unchanged files skip")
+        precondition(!throttle.shouldSkip(["a|2|2", "a-wal|0|-1"], now: start.addingTimeInterval(600)),
+                     "A changed file reads again")
+        precondition(!throttle.shouldSkip(unchanged, now: start.addingTimeInterval(1801)),
+                     "Unchanged files still post every 30 minutes")
+        let off = MessagesDeepReadThrottle(enabled: false)
+        off.recordPost(unchanged, now: start)
+        precondition(!off.shouldSkip(unchanged, now: start), "Disabled (Apple silicon) never skips")
+        precondition(MessagesDeepReadThrottle.signature(paths: [path]) != [], "A missing file still has a signature")
         let reader = MessagesReader(dbPath: path)
         precondition(reader.readRecentMessages() == nil, "Missing db is unavailable")
         // Why it failed comes from the error itself: a missing file is not a
@@ -355,10 +370,17 @@ enum MessagesReaderRegression {
             "INSERT INTO message (date, text, is_from_me, is_read, associated_message_type, guid) " +
             "SELECT \(date) - (x+3)*1000000000, 'Synthetic row', 0, 1, 0, 'bulk-'||x FROM seq")
         let bounded = reader.readRecentMessages(limit: 5000)!
+        // The 2000-record cap is Apple silicon's; Intel's larger window (10,000) is not reached here.
+        if MessagesHistoryWindow.structured == 2000 {
         precondition(bounded.attempted == 2028 + literalCases.count && bounded.skipped == 1
                      && bounded.structured.count == 2000
                      && bounded.truncated >= 27 + literalCases.count,
                      "Structured carrier has an explicit row cap and partial coverage")
+        } else {
+            precondition(bounded.attempted == 2028 + literalCases.count
+                         && bounded.structured.count <= MessagesHistoryWindow.structured,
+                         "Intel's structured carrier stays within its own cap")
+        }
         try checkTypedStream(root: root)
         checkDelivery(root: root)
         checkBackendRetry()
