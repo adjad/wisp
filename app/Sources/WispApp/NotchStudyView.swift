@@ -59,6 +59,9 @@ struct NotchStudyView: View {
     #if WISP_NOTCH_QA
     /// The motion checks open and close a due row as a click does (`toggle`).
     static let qaToggle = PassthroughSubject<String, Never>()
+    /// The motion checks put the pointer over a due row (nil: over none), as
+    /// `onHover` does, since an off-screen panel gets no mouse.
+    static let qaHover = PassthroughSubject<String?, Never>()
     #endif
 
     init(model: OverlayModel, study: StudyModel, cap: CGFloat? = nil) {
@@ -850,12 +853,21 @@ private struct StudyDueRow: View {
             if expanded { actions.transition(.studyReveal(reduceMotion: reduceMotion)) }
         }
         .padding(.horizontal, 8).padding(.vertical, 2)
-        .background(RoundedRectangle(cornerRadius: 8).fill(rowFill))
+        // The hover fill eases in and out, so a pointer crossing the row (or a
+        // hover dropped and regained for a frame as the row grows under it) never
+        // blinks; opening and closing ease it on the tab's spring.
+        .background(RoundedRectangle(cornerRadius: 8).fill(rowFill)
+            .animation(reduceMotion ? nil : Self.hoverEase, value: hovering))
         // Buttons leaving as the row closes stay inside it, not drawn over the next row.
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(expanded ? Theme.hairline : Color.clear, lineWidth: 1))
         .onHover { hovering = $0 }
+        #if WISP_NOTCH_QA
+        .onReceive(NotchStudyView.qaHover) { id in hovering = id == item.id }
+        #endif
     }
+
+    private static let hoverEase = Animation.easeOut(duration: 0.15)
 
     private var rowFill: Color {
         if expanded { return Theme.raised }

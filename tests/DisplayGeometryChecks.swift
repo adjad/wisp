@@ -540,6 +540,12 @@ struct DisplayGeometryChecks {
         check(cards.contains(".scrollIndicators(height > cap ? (showsMore ? .visible : .automatic) : .never)"),
               "no indicator while it fits; Study's always shows once it scrolls")
         check(cards.contains("var showsMore = false"), "the visible indicator and bottom fade are opt-in")
+        // A row opening across the cap flashed the indicator and popped the fade in
+        // (and out again on close): it flashes once, on arrival, and the fade eases.
+        check(cards.contains(".scrollIndicatorsFlash(trigger: flashes)") && !cards.contains(".scrollIndicatorsFlash(trigger: more(cap))"),
+              "the indicator flashes only when the page first arrives overflowing")
+        check(cards.contains(".opacity(more(cap) ? 1 : 0)") && cards.contains(".animation(moreMotion, value: more(cap))"),
+              "the bottom fade eases in and out with the overflow")
         let study = (try? String(contentsOf: app.appendingPathComponent("NotchStudyView.swift"), encoding: .utf8)) ?? ""
         check(study.contains("CappedScroll(cap: cap, reveals: true, remembers: Self.homeScroll, showsMore: true)")
               && study.contains("CappedScroll(cap: cap.map(scrollCap), showsMore: true)"),
