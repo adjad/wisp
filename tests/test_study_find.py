@@ -48,7 +48,7 @@ def classify(url, title="", type=None, course=COURSE):
     (f"{CANVAS}/assignments/55", "other", "none"),   # an assignment can launch an external tool on open
     (f"{CANVAS}/discussion_topics/77", "discussion", "browser"),
     (f"{CANVAS}/files/88", "file", "browser"),
-    (f"{CANVAS}/modules/items/123", "page", "browser"),
+    (f"{CANVAS}/modules/items/123", "other", "none"),     # no type read: refused
     ("https://www.youtube.com/watch?v=abc", "video", "none"),
     ("https://youtu.be/abc", "video", "none"),
     ("https://player.vimeo.com/video/1", "video", "none"),
@@ -491,3 +491,21 @@ def test_assignment_typed_module_items_are_not_browsed():
     got = F.classify({"url": "https://school.instructure.com/courses/123/modules/items/79",
                       "title": "Problem set 2", "type": "Assignment"}, course)
     assert got["via"] == "none"
+
+
+@_pytest.mark.parametrize("hint", ["", "File", "Attachment", "SubHeader", "SomethingNew", "New Quiz"])
+def test_module_items_of_unknown_or_unsafe_type_are_refused(hint):
+    from service.study import find as F
+    course = {"id": "canvas:123", "url": "https://school.instructure.com/courses/123"}
+    got = F.classify({"url": "https://school.instructure.com/courses/123/modules/items/80",
+                      "title": "Week 4 notes", "type": hint}, course)
+    assert got["via"] == "none"
+
+
+@_pytest.mark.parametrize("hint", ["Page", "WikiPage", "Discussion", "DiscussionTopic", "ExternalUrl"])
+def test_module_items_of_a_safe_type_are_browsed(hint):
+    from service.study import find as F
+    course = {"id": "canvas:123", "url": "https://school.instructure.com/courses/123"}
+    got = F.classify({"url": "https://school.instructure.com/courses/123/modules/items/81",
+                      "title": "Week 4 notes", "type": hint}, course)
+    assert got["via"] == "browser" and got["kind"] == "page"

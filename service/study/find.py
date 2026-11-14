@@ -59,6 +59,10 @@ CANVAS_KIND = {"page": "page", "wikipage": "page", "discussion": "discussion", "
 
 
 # Module item types the walker must never open (Canvas's own type labels, lower-cased letters only).
+# Module item types that are safe to open: anything else (an external tool, a quiz, an assignment, a file, or a
+# type the app could not read) is refused, since opening it can launch a tool with the student's identity.
+SAFE_ITEM_HINTS = frozenset({"page", "wikipage", "wiki page", "discussion", "discussiontopic", "discussion topic",
+                             "externalurl", "external url"})
 TOOL_HINTS = frozenset({"assignment", "externaltool", "external tool", "contextexternaltool", "lti", "quiz", "quizzes",
                         "new quiz", "newquiz", "assessment", "quizzeslti"})
 _TOOL_TITLE = re.compile(r"\b(?:gradescope|pearson|mcgraw|mylab|mastering|webassign|zybooks|cengage|"
@@ -186,7 +190,7 @@ def classify(link: dict, course: dict | None = None) -> dict:
         elif re.fullmatch(r"/modules/items/\d+", rest):
             # An item that launches an external tool or a quiz must never be opened: Canvas would
             # post the student's identity to the tool's site (or start the quiz).
-            if hint in TOOL_HINTS or _TOOL_TITLE.search(title):
+            if hint not in SAFE_ITEM_HINTS or _TOOL_TITLE.search(title):
                 return none | {"key": url, "url": url}
             kind = "page"     # redirects to the real item, which the app reads
         else:
