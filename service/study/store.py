@@ -30,7 +30,10 @@ _ASSIGNMENT_FIELDS = ("course_id", "title", "kind", "due_ts", "all_day", "points
 _BOOL_FIELDS = ("all_day", "sample")
 DETAILS_MAX = 4000
 SOURCE_CHARS = 400_000      # a source's text is cut to this before it is saved
-SOURCE_KINDS = ("drive", "page")
+# "drive" and "page" are the Drive picker's and the school-page import's; the rest are what
+# Find materials adds (service/study/find.py).
+SOURCE_KINDS = ("drive", "page", "slides", "doc", "pdf", "notebook", "article", "discussion", "file",
+                "video", "other")
 _SOURCE_TITLE = 300
 _SOURCE_URL = 4000
 _NUMERIC_ID = re.compile(r"[a-z]+:(\d+)")
@@ -220,6 +223,16 @@ class StudyStore:
                 self._db.execute("ALTER TABLE sources ADD COLUMN deck_status TEXT NOT NULL DEFAULT 'none'")
             except sqlite3.OperationalError:
                 pass   # another opener added it first
+        # A page read cut short by a restart never finishes: show it as failed, not "reading" forever.
+        if "deck_status" in {r[1] for r in self._db.execute("PRAGMA table_info(sources)")}:
+            self._db.execute("UPDATE sources SET deck_status='failed' WHERE deck_status='reading'")
+        # Find materials' labels (a study.db from before them reads null).
+        for column, kind in (("week", "INTEGER"), ("topic", "TEXT"), ("summary", "TEXT")):
+            if column not in cols:
+                try:
+                    self._db.execute(f"ALTER TABLE sources ADD COLUMN {column} {kind}")
+                except sqlite3.OperationalError:
+                    pass   # another opener added it first
 
     # --- courses and assignments ------------------------------------------------
 
@@ -488,19 +501,52 @@ class StudyStore:
         course_id = source.get("course_id")
         course_id = course_id if isinstance(course_id, str) and course_id else None
         now = time.time()
+        replace = source.get("id")
+        cols = "id, deck_status, week, topic, summary"
         with self._lock:
-            old = (self._db.execute("SELECT id, deck_status FROM sources WHERE kind=? AND url=?",
-                                    (kind, url)).fetchone()
-                   if url is not None else None)
+            old = None
+            if isinstance(replace, str) and replace:
+                # Find materials re-adding a source it knows by Drive id or canonical url: that row
+                # keeps its id even when the kind or the url's spelling changed.
+                old = self._db.execute(f"SELECT {cols} FROM sources WHERE id=?", (replace,)).fetchone()
+            if old is None and url is not None:
+                old = self._db.execute(f"SELECT {cols} FROM sources WHERE kind=? AND url=?",
+                                       (kind, url)).fetchone()
             sid = old["id"] if old else "src_" + secrets.token_hex(6)
-            # Re-adding keeps the pages read earlier (and their status) until new ones replace them.
+            if url is not None:
+                # Another row already holding this (kind, url) would be dropped by the REPLACE.
+                twin = self._db.execute("SELECT id FROM sources WHERE kind=? AND url=? AND id<>?",
+                                        (kind, url, sid)).fetchone()
+                if twin is not None:
+                    self._db.execute("DELETE FROM sources WHERE id=?", (twin["id"],))
+                    self._db.execute("DELETE FROM deck_pages WHERE source_id=?", (twin["id"],))
+            # Re-adding keeps the pages read earlier (and their status and labels) until new ones
+            # replace them.
             deck_status = old["deck_status"] if old else "none"
+            labels = (old["week"], old["topic"], old["summary"]) if old else (None, None, None)
             self._db.execute(
-                "INSERT OR REPLACE INTO sources(id,course_id,kind,title,url,text,chars,created_at,deck_status)"
-                " VALUES (?,?,?,?,?,?,?,?,?)",
-                (sid, course_id, kind, title, url, text, len(text), now, deck_status))
+                "INSERT OR REPLACE INTO sources(id,course_id,kind,title,url,text,chars,created_at,deck_status,"
+                "week,topic,summary) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (sid, course_id, kind, title, url, text, len(text), now, deck_status, *labels))
             row = self._db.execute(_SOURCE_SELECT + " WHERE id=?", (sid,)).fetchone()
         return dict(row)
+
+    def set_source_text(self, source_id: str, text: str) -> None:
+        """Replace one source's text (a PDF's text built from its pages), cut to SOURCE_CHARS."""
+        text = text.replace("\x00", "")[:SOURCE_CHARS] if isinstance(text, str) else ""
+        with self._lock:
+            self._db.execute("UPDATE sources SET text=?, chars=? WHERE id=?", (text, len(text), source_id))
+
+    def set_labels(self, source_id: str, *, week=None, topic=None, summary=None) -> bool:
+        """Find materials' labels for one source: week (1..60, else None), topic, one-line summary."""
+        if isinstance(week, bool) or not isinstance(week, int) or not 1 <= week <= 60:
+            week = None
+        topic = (_WS.sub(" ", topic).strip()[:_TOPIC] or None) if isinstance(topic, str) else None
+        summary = (_WS.sub(" ", summary).strip()[:_SUMMARY] or None) if isinstance(summary, str) else None
+        with self._lock:
+            cur = self._db.execute("UPDATE sources SET week=?, topic=?, summary=? WHERE id=?",
+                                   (week, topic, summary, source_id))
+        return cur.rowcount > 0
 
     def sources(self, course_id: str | None = None) -> list[dict]:
         """Summaries (no text), newest first; course_id filters, None means all."""
@@ -570,7 +616,7 @@ class StudyStore:
         return len(rows)
 
     def set_deck_status(self, source_id: str, status: str) -> None:
-        """"none" | "ready" | "failed". "failed" keeps any pages an earlier read saved."""
+        """"none" | "reading" | "ready" | "failed". "failed" keeps any pages an earlier read saved."""
         if status not in DECK_STATUSES:
             raise ValueError("unknown deck status")
         with self._lock:
@@ -721,10 +767,11 @@ _MATERIAL_SELECT = (
 
 _SOURCE_SELECT = ("SELECT id, course_id, kind, title, url, chars, created_at,"
                   " (SELECT COUNT(*) FROM deck_pages p WHERE p.source_id = sources.id) AS pages,"
-                  " deck_status FROM sources")
+                  " deck_status, week, topic, summary FROM sources")
 
-DECK_STATUSES = ("none", "ready", "failed")
+DECK_STATUSES = ("none", "reading", "ready", "failed")
 DECK_ERROR = "Wisp couldn't read the slides."
+_SUMMARY = 300
 PAGE_MAX = 500          # pages kept per source
 _PAGE_TITLE = 200
 _POINT = 500
