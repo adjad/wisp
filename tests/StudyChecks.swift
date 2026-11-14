@@ -547,4 +547,32 @@ func studySourceChecks(_ check: (Bool, String) -> Void, now: Date, calendar: Cal
     check(StudyText.problem(code: "google_missing") == StudyText.driveConnectHint
           && StudyText.problem(code: "too_large") != StudyText.problem(code: ""),
           "Drive refusals have their own words")
+
+    // MARK: Slides as pages
+
+    check(StudyText.slidePages([4]) == "p. 4", "one page")
+    check(StudyText.slidePages([9, 4, 5, 6, 7, 8]) == "pp. 4–9", "a run collapses")
+    check(StudyText.slidePages([7, 2, 5]) == "pp. 2, 5, 7", "separate pages")
+    check(StudyText.slidePages([1, 2, 3, 8, 3, 0, -2]) == "pp. 1–3, 8", "runs, dupes and bad pages")
+    check(StudyText.slidePages([]) == "", "no pages")
+    let ref = decode(StudySlideRef.self, #"{"source_id": "s1", "page": 7}"#)
+    check(ref == StudySlideRef(sourceID: "s1", page: 7), "slide ref decodes")
+    check(decode(StudySlideRef.self, #"{"source_id": "s1"}"#) == nil, "slide ref needs a page")
+    let set = decode(StudySlideSet.self, #"{"source_id": "s1", "deck": "Lecture 7: Pointers", "pages": [4, "x", 5]}"#)
+    check(set?.deck == "Lecture 7: Pointers" && set?.pages == [4, 5], "slide set keeps good pages")
+    let bare = decode(StudySlideSet.self, #"{"source_id": "s2"}"#)
+    check(bare?.deck == "" && bare?.pages == [], "slide set defaults")
+    let deckRefs = (1...45).map { StudySlideRef(sourceID: "s1", page: $0) }
+    check(StudySlides.pagesToSend(selected: [], all: deckRefs).count == 40, "none chosen: all pages, capped at 40")
+    let chosen: Set<StudySlideRef> = [StudySlideRef(sourceID: "s1", page: 9), StudySlideRef(sourceID: "s1", page: 2)]
+    check(StudySlides.pagesToSend(selected: chosen, all: deckRefs).map(\.page) == [2, 9], "chosen pages in deck order")
+    let genBody = StudySlides.generateBody(.quiz, pages: [StudySlideRef(sourceID: "s1", page: 3)], count: 10,
+                                           title: " Lecture 7 ")
+    let sentPages = genBody["pages"] as? [[String: Any]]
+    check(genBody["kind"] as? String == "quiz" && genBody["count"] as? Int == 10
+          && genBody["topic"] as? String == "Lecture 7"
+          && sentPages?.first?["source_id"] as? String == "s1" && sentPages?.first?["page"] as? Int == 3,
+          "generate body from pages")
+    let plainBody = StudySlides.generateBody(.guide, pages: [], count: nil, title: nil)
+    check(plainBody["count"] == nil && plainBody["topic"] == nil, "no count or topic unless given")
 }

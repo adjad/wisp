@@ -558,6 +558,94 @@ extension StudyDeck {
     }
 }
 
+// MARK: - Slides as pages
+
+/// One page of a deck the backend read as pages: `{"source_id", "page"}`.
+struct StudySlideRef: Codable, Equatable, Hashable {
+    let sourceID: String
+    let page: Int
+
+    enum CodingKeys: String, CodingKey {
+        case sourceID = "source_id"
+        case page
+    }
+
+    init(sourceID: String, page: Int) {
+        self.sourceID = sourceID
+        self.page = page
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sourceID = try c.decode(String.self, forKey: .sourceID)
+        guard let page = c.studyOptionalInt(.page) else {
+            throw DecodingError.dataCorruptedError(forKey: .page, in: c, debugDescription: "no page")
+        }
+        self.page = page
+    }
+}
+
+/// Pages of one deck that cover something: `{"source_id", "deck", "pages"}`.
+struct StudySlideSet: Decodable, Equatable {
+    let sourceID: String
+    let deck: String
+    let pages: [Int]
+
+    enum CodingKeys: String, CodingKey {
+        case sourceID = "source_id"
+        case deck, pages
+    }
+
+    init(sourceID: String, deck: String, pages: [Int]) {
+        self.sourceID = sourceID
+        self.deck = deck
+        self.pages = pages
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sourceID = try c.decode(String.self, forKey: .sourceID)
+        deck = c.studyString(.deck)
+        pages = (try? c.decodeIfPresent([StudyLossy<Int>].self, forKey: .pages))?.compactMap { $0.value } ?? []
+    }
+}
+
+enum StudySlides {
+    /// The most pages `POST /study/generate` takes.
+    static let maxPages = 40
+
+    /// The pages a make sends: the chosen ones in deck order, or every page
+    /// when none is chosen; at most `maxPages`.
+    static func pagesToSend(selected: Set<StudySlideRef>, all: [StudySlideRef]) -> [StudySlideRef] {
+        var seen = Set<StudySlideRef>()
+        let ordered = all.filter { seen.insert($0).inserted }
+        let picked: [StudySlideRef]
+        if selected.isEmpty {
+            picked = ordered
+        } else {
+            let inDeck = ordered.filter { selected.contains($0) }
+            let rest = selected.subtracting(inDeck).sorted {
+                ($0.sourceID, $0.page) < ($1.sourceID, $1.page)
+            }
+            picked = inDeck + rest
+        }
+        return Array(picked.prefix(maxPages))
+    }
+
+    /// `POST /study/generate`'s body for material made from pages.
+    static func generateBody(_ kind: StudyKind, pages: [StudySlideRef], count: Int?, title: String?) -> [String: Any] {
+        var fields: [String: Any] = [
+            "kind": kind.rawValue,
+            "pages": pages.prefix(maxPages).map { ["source_id": $0.sourceID, "page": $0.page] as [String: Any] },
+        ]
+        if let count, count > 0 { fields["count"] = count }
+        if let title = title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+            fields["topic"] = String(title.prefix(300))
+        }
+        return fields
+    }
+}
+
 enum StudyBody: Equatable {
     case guide(StudyGuide)
     case quiz(StudyQuiz)
@@ -1306,6 +1394,29 @@ enum StudyText {
     static let longContextNote = "Gemini reads the whole course at once"
 
     /// "850 chars", "4.2k chars", "48k chars", "1.2M chars".
+    /// Compact page label: "p. 4", "pp. 4–9", "pp. 2, 5, 7", "pp. 1–3, 8".
+    /// Sorted, duplicates and pages below 1 dropped; "" for none.
+    static func slidePages(_ pages: [Int]) -> String {
+        let sorted = Array(Set(pages.filter { $0 >= 1 })).sorted()
+        guard let first = sorted.first else { return "" }
+        if sorted.count == 1 { return "p. \(first)" }
+        var runs: [String] = []
+        var start = first
+        var end = first
+        func close() { runs.append(start == end ? "\(start)" : "\(start)–\(end)") }
+        for page in sorted.dropFirst() {
+            if page == end + 1 {
+                end = page
+            } else {
+                close()
+                start = page
+                end = page
+            }
+        }
+        close()
+        return "pp. " + runs.joined(separator: ", ")
+    }
+
     static func chars(_ n: Int) -> String {
         let n = max(0, n)
         if n < 1000 { return "\(n) chars" }
