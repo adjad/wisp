@@ -11,7 +11,12 @@ enum NotchTab: Int, CaseIterable, Equatable {
     case ask, brief, day, research, meet
 
     /// The tabs shown in the strip, in order, with ⌘1 to ⌘4.
-    static let strip: [NotchTab] = [.ask, .brief, .day, .meet]
+    static var strip: [NotchTab] { meetHidden ? [.ask, .brief, .day] : [.ask, .brief, .day, .meet] }
+
+    /// Set once at launch on a build with no on-device engine (the Intel preview):
+    /// meeting notes transcribe with the engine's model, so Meet leaves the strip.
+    nonisolated(unsafe) static var meetHidden = false
+    static let meetHiddenReason = "Meeting notes need Wisp's on-device engine, which this Mac doesn't have."
 
     var title: String {
         switch self {

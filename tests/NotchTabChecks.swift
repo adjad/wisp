@@ -19,6 +19,12 @@ struct NotchTabChecks {
         check(NotchTab.strip.map(\.shortcutDigit) == ["1", "2", "3", "4"], "⌘1 to ⌘4 follow the strip")
         check(NotchTab.strip.map(\.title) == ["Ask", "Brief", "Day", "Meet"], "tab titles")
         check(!NotchTab.strip.contains(.research) && NotchTab.research.shortcutDigit == nil, "Research is out of the strip")
+        // A build with no on-device engine: Meet leaves the strip, the rest keep their keys.
+        NotchTab.meetHidden = true
+        check(NotchTab.strip == [.ask, .brief, .day] && NotchTab.meet.shortcutDigit == nil
+              && NotchTab.day.shortcutDigit == "3", "no engine: the strip reads Ask, Brief, Day")
+        NotchTab.meetHidden = false
+        check(NotchTab.strip.last == .meet, "Meet is back once the flag is clear")
         check(NotchTab.research.stripTab == .ask && NotchTab.day.stripTab == .day, "Research shows as Ask in the strip")
         check(NotchTab.brief.showsDay && NotchTab.day.showsDay && !NotchTab.ask.showsDay && !NotchTab.research.showsDay,
               "Brief and Day show the day; Ask and Research take a prompt")
