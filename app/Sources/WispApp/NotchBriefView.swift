@@ -146,7 +146,8 @@ struct NotchBriefView: View {
                                           scrollCap: uncapped ? nil : Self.proactiveCap,
                                           coverage: Self.coverage(plan), wide: wide,
                                           school: plan.study?.briefHeadline ?? "",
-                                          schoolRows: plan.study?.briefUpcoming ?? StudyUpcomingRows())
+                                          schoolRows: plan.study?.briefUpcoming ?? StudyUpcomingRows(),
+                                          studyCards: plan.study?.briefCards ?? StudyBriefCards())
                     MailMemorySection(memory: MailMemoryCards.model, onResize: { model.onResize() })
                     HStack(spacing: 12) {
                         askChip(plan)
@@ -262,8 +263,8 @@ struct NotchBriefView: View {
                 tileList(tile, shown.detail).id(tile.rawValue)
                     .transition(reduceMotion ? .identity : .opacity)
             } else {
-                topList(brief.top, glance: brief.glance, school: brief.school, unread: brief.unread,
-                        uncheckedMail: brief.uncheckedMail).id("top")
+                topList(brief.top, glance: brief.glance, school: brief.school, studyCards: brief.studyCards,
+                        unread: brief.unread, uncheckedMail: brief.uncheckedMail).id("top")
                     .transition(reduceMotion ? .identity : .opacity)
             }
         }
@@ -366,6 +367,7 @@ struct NotchBriefView: View {
 
     /// The default view: the Top 3, then what mail and texts are about.
     private func topList(_ all: [BriefDetail.Line], glance: [BriefDetail.Line], school: StudyUpcomingRows = StudyUpcomingRows(),
+                         studyCards: StudyBriefCards = StudyBriefCards(),
                          unread: [String] = [], uncheckedMail: UncheckedMail = UncheckedMail()) -> some View {
         // A row the service just confirmed cleared or done leaves at once; the
         // refreshed plan then fills its place.
@@ -388,12 +390,25 @@ struct NotchBriefView: View {
                 Rectangle().fill(Theme.hairline).frame(height: 1).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(glance) { line in
-                        if line.id == "glance-SCHOOL" { schoolGlance(line, rows: school, width: width) }
+                        if line.id == "glance-SCHOOL" {
+                            schoolGlance(line, rows: school, width: width)
+                            // What Study got ready, under the School line.
+                            if !studyCards.isEmpty {
+                                StudyBriefCardsView(cards: studyCards, model: model, leading: width + Self.labelGap,
+                                                    showsMore: school.moreLine == nil)
+                                    .textSelection(.disabled)
+                            }
+                        }
                         else { row(line, width: width) }
                     }
                 }
                 .accessibilityElement(children: .contain)
                 .accessibilityLabel("Mail and texts")
+            }
+            // With no School line (nothing due this week), the study cards stand on their own.
+            if !studyCards.isEmpty && !glance.contains(where: { $0.id == "glance-SCHOOL" }) {
+                StudyBriefCardsView(cards: studyCards, model: model, leading: width + Self.labelGap)
+                    .textSelection(.disabled)
             }
         }
         .textSelection(.enabled)
@@ -661,6 +676,8 @@ struct BriefContent {
     let glance: [BriefDetail.Line]
     /// This week's school work under the School line (today only).
     let school: StudyUpcomingRows
+    /// What Study got ready and the topics to look at again (today only).
+    let studyCards: StudyBriefCards
     /// Today's sources Wisp couldn't read ("calendar", "reminders", "email",
     /// "messages"): the lede and the Top 3 never give an all-clear for them.
     let unread: [String]
@@ -813,6 +830,7 @@ struct BriefContent {
                                           school: isToday ? plan.study?.briefHeadline ?? "" : "")
         glance = BriefTiles.glance(rows, mailProse: isToday ? plan.workspace?.mail_summary?.text : nil)
         school = isToday ? plan.study?.briefUpcoming ?? StudyUpcomingRows() : StudyUpcomingRows()
+        studyCards = isToday ? plan.study?.briefCards ?? StudyBriefCards() : StudyBriefCards()
         summary = composed?.keeping ?? []
         intro = composed?.intro ?? []
     }

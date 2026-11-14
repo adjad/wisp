@@ -547,4 +547,140 @@ func studySourceChecks(_ check: (Bool, String) -> Void, now: Date, calendar: Cal
     check(StudyText.problem(code: "google_missing") == StudyText.driveConnectHint
           && StudyText.problem(code: "too_large") != StudyText.problem(code: ""),
           "Drive refusals have their own words")
+
+    // MARK: Slides as pages
+
+    check(StudyText.slidePages([4]) == "p. 4", "one page")
+    check(StudyText.slidePages([9, 4, 5, 6, 7, 8]) == "pp. 4–9", "a run collapses")
+    check(StudyText.slidePages([7, 2, 5]) == "pp. 2, 5, 7", "separate pages")
+    check(StudyText.slidePages([1, 2, 3, 8, 3, 0, -2]) == "pp. 1–3, 8", "runs, dupes and bad pages")
+    check(StudyText.slidePages([]) == "", "no pages")
+    let ref = decode(StudySlideRef.self, #"{"source_id": "s1", "page": 7}"#)
+    check(ref == StudySlideRef(sourceID: "s1", page: 7), "slide ref decodes")
+    check(decode(StudySlideRef.self, #"{"source_id": "s1"}"#) == nil, "slide ref needs a page")
+    let set = decode(StudySlideSet.self, #"{"source_id": "s1", "deck": "Lecture 7: Pointers", "pages": [4, "x", 5]}"#)
+    check(set?.deck == "Lecture 7: Pointers" && set?.pages == [4, 5], "slide set keeps good pages")
+    let bare = decode(StudySlideSet.self, #"{"source_id": "s2"}"#)
+    check(bare?.deck == "" && bare?.pages == [], "slide set defaults")
+    let deckRefs = (1...45).map { StudySlideRef(sourceID: "s1", page: $0) }
+    check(StudySlides.pagesToSend(selected: [], all: deckRefs).count == 40, "none chosen: all pages, capped at 40")
+    let chosen: Set<StudySlideRef> = [StudySlideRef(sourceID: "s1", page: 9), StudySlideRef(sourceID: "s1", page: 2)]
+    check(StudySlides.pagesToSend(selected: chosen, all: deckRefs).map(\.page) == [2, 9], "chosen pages in deck order")
+    let genBody = StudySlides.generateBody(.quiz, pages: [StudySlideRef(sourceID: "s1", page: 3)], count: 10,
+                                           title: " Lecture 7 ")
+    let sentPages = genBody["pages"] as? [[String: Any]]
+    check(genBody["kind"] as? String == "quiz" && genBody["count"] as? Int == 10
+          && genBody["topic"] as? String == "Lecture 7"
+          && sentPages?.first?["source_id"] as? String == "s1" && sentPages?.first?["page"] as? Int == 3,
+          "generate body from pages")
+    let plainBody = StudySlides.generateBody(.guide, pages: [], count: nil, title: nil)
+    check(plainBody["count"] == nil && plainBody["topic"] == nil, "no count or topic unless given")
+
+    // MARK: Deck pages, settings, misses and slide lines
+
+    let quizWithSlides = decode(StudyQuiz.self, #"""
+    {"questions": [
+      {"prompt": "What does * do?", "choices": ["Dereferences", "Multiplies only"], "answer": 0, "why": "It follows the pointer.",
+       "slide": {"source_id": "src-7", "page": 7}},
+      {"prompt": "What is NULL?", "choices": ["A null pointer", "A number"], "answer": 0, "why": "", "slide": null},
+      {"prompt": "Where does malloc allocate?", "choices": ["Stack", "Heap"], "answer": 1, "why": "", "slide": {"page": 3}}
+    ]}
+    """#)
+    check(quizWithSlides?.questions.count == 3, "questions with slides all decode")
+    check(quizWithSlides?.questions[0].slide == StudySlideRef(sourceID: "src-7", page: 7), "a question's slide decodes")
+    check(quizWithSlides?.questions[1].slide == nil && quizWithSlides?.questions[2].slide == nil,
+          "a null or broken slide is nil, the question kept")
+    let cardWithSlide = decode(StudyDeck.self, #"{"cards": [{"front": "Pointer", "back": "An address", "slide": {"source_id": "s", "page": 2}}, {"front": "a", "back": "b"}]}"#)
+    check(cardWithSlide?.cards.first?.slide?.page == 2 && cardWithSlide?.cards.last?.slide == nil, "card slides decode")
+    let lessonWithSlide = decode(StudyLesson.self, #"{"steps": [{"title": "T", "explain": "E", "check": {"prompt": "P", "choices": ["a", "b"], "answer": 1, "why": "w", "slide": {"source_id": "s", "page": 4}}}]}"#)
+    check(lessonWithSlide?.steps.first?.check?.slide?.page == 4, "a lesson check's slide decodes")
+
+    if let slideQuiz = quizWithSlides {
+        var missRun = QuizRun(quiz: slideQuiz)
+        missRun.choose(1); missRun.next()
+        missRun.choose(0); missRun.next()
+        check(missRun.missed == [0], "missed lists the wrong answers only, so far")
+        missRun.choose(0); missRun.next()
+        check(missRun.finished && missRun.missed == [0, 2] && missRun.correct == 1, "missed after the last question")
+        missRun.restart()
+        check(missRun.missed.isEmpty, "a restart clears the misses")
+    }
+    check(StudyAttempt.missed([3, 1, 1, -1, 9], total: 5) == [1, 3], "misses sent: in range, unique, sorted")
+    check(StudyAttempt.missed([], total: 5).isEmpty, "no misses, nothing sent")
+
+    let sourceJSON = #"{"id": "src-7", "kind": "drive", "title": "Lecture 7: Pointers", "chars": 4200, "pages": 12, "deck_status": "ready"}"#
+    let deckSource = decode(StudySource.self, sourceJSON)
+    check(deckSource?.pages == 12 && deckSource?.deckStatus == "ready" && deckSource?.hasPages == true,
+          "a source read as pages")
+    let oldSource = decode(StudySource.self, #"{"id": "s1", "title": "Notes"}"#)
+    check(oldSource?.pages == 0 && oldSource?.deckStatus == "none" && oldSource?.hasPages == false,
+          "an older source has no pages")
+    check(decode(StudySource.self, #"{"id": "s1", "pages": -3, "deck_status": "failed"}"#)?.hasPages == false,
+          "negative pages are none")
+    let pdf = decode(StudyDriveFile.self, #"{"id": "f1", "name": "Week 5.pdf", "kind": "pdf"}"#)
+    check(pdf?.kindLabel == "PDF" && pdf?.symbol == "doc.text", "a PDF in the Drive list")
+    check(decode(StudyDriveFile.self, #"{"id": "f2", "name": "x", "kind": "sheet"}"#)?.kindLabel == "Doc",
+          "an unknown Drive kind is kept, shown as a doc")
+
+    let deckPages = decode(StudyDeckPages.self, #"""
+    {"pages": [
+      {"page": 2, "title": " Pointers ", "points": ["An address", " ", "Use * to follow"], "figure": "A box and arrow diagram", "topics": ["pointers"]},
+      {"page": 1, "title": "Lecture 7", "points": [], "figure": null, "topics": []},
+      {"title": "no page"},
+      {"page": 2, "title": "dupe"}
+    ]}
+    """#)
+    check(deckPages?.pages.map(\.page) == [1, 2], "deck pages sorted, broken and duplicate pages dropped")
+    check(deckPages?.pages.last?.title == "Pointers" && deckPages?.pages.last?.points == ["An address", "Use * to follow"],
+          "page title trimmed, blank points dropped")
+    check(deckPages?.pages.first?.figure == nil && deckPages?.pages.last?.figure == "A box and arrow diagram",
+          "figure kept only when it says something")
+    check(decode(StudyDeckPages.self, "{}")?.pages.isEmpty == true, "no pages key, no pages")
+    if let page = deckPages?.pages.last {
+        check(StudyText.deckPageHeader(page) == "p. 2 · Pointers", "page header")
+    }
+    check(StudyText.deckPageHeader(StudyDeckPage(page: 5, title: "")) == "p. 5", "page header without a title")
+    check(StudyText.pagesCount(1) == "1 page" && StudyText.pagesCount(12) == "12 pages", "page counts")
+    check(StudyText.deckSelection(0, total: 12) == StudyText.deckAllPages
+          && StudyText.deckSelection(0, total: 55) == "Uses the first 40 pages"
+          && StudyText.deckSelection(3, total: 12) == "Uses 3 pages", "what a make will use")
+
+    check(decode(StudySettings.self, #"{"auto_prepare": true}"#)?.autoPrepare == true, "auto prepare on")
+    check(decode(StudySettings.self, #"{}"#)?.autoPrepare == false, "auto prepare defaults off")
+
+    let ref7 = StudySlideRef(sourceID: "src-7", page: 7)
+    check(StudyText.slideLine(ref7, deck: "Lecture 7: Pointers") == "From Lecture 7: Pointers · p. 7", "slide line")
+    check(StudyText.slideLine(ref7, deck: nil) == "Slide p. 7" && StudyText.slideLine(ref7, deck: " ") == "Slide p. 7",
+          "slide line without a deck")
+    if let source = deckSource {
+        var slideState = StudyState.empty
+        slideState.sources = [source]
+        check(slideState.slideLine(ref7) == "From Lecture 7: Pointers · p. 7", "slide line names the deck from state")
+        check(slideState.slideLine(StudySlideRef(sourceID: "gone", page: 3)) == "Slide p. 3", "unknown deck")
+    }
+
+    // MARK: Refusals
+
+    check(StudyRefusal.message(code: "google_error", said: "Google Drive took too long to answer. Try again in a minute.",
+                               status: 502) == "Google Drive took too long to answer. Try again in a minute.",
+          "a Drive refusal shows the backend's sentence")
+    check(StudyRefusal.message(code: "google_error", said: "  \n ", status: 502) == StudyText.problem(code: "google_error"),
+          "an empty sentence falls back to the fixed copy")
+    let long = String(repeating: "word ", count: 80)
+    let trimmedLong = StudyRefusal.message(code: "google_error", said: long, status: 502)
+    check(trimmedLong.count <= StudyRefusal.maxMessage && trimmedLong.hasSuffix("…"), "an over-long sentence is cut")
+    check(StudyRefusal.cleaned("One.\nTwo.\nThree.") == "One.\nTwo. Three.", "at most one line break")
+    check(StudyRefusal.notConnected("drive_off") && !StudyRefusal.retryable("drive_off")
+          && !StudyRefusal.retryable("google_missing") && StudyRefusal.retryable("google_error"),
+          "drive_off is like google_missing: not connected, not retried")
+    check(StudyRefusal.message(code: "drive_off", said: "Turn on the Google Drive API in Google Cloud.", status: 409)
+          == "Turn on the Google Drive API in Google Cloud.", "drive_off shows its own sentence")
+    check(StudyRefusal.message(code: "busy", said: "Rate limited by provider", status: 429) == StudyText.problem(code: "busy"),
+          "a known non-Drive code keeps the app's sentence")
+    check(StudyRefusal.message(code: "weird", said: "A short reason.", status: 500) == "A short reason."
+          && StudyRefusal.message(code: "weird", said: nil, status: 404) == StudyText.problem(code: "not_found")
+          && StudyRefusal.message(code: nil, said: nil, status: 500) == StudyText.problem(code: ""),
+          "an unknown code keeps today's behaviour")
+    check(StudyRefusal.message(code: "missing", said: "The saved key could not be read from the Keychain.", status: 409)
+          .contains("Keychain"), "a Keychain problem keeps the server's words")
 }

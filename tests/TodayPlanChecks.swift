@@ -752,6 +752,41 @@ struct TodayPlanChecks {
                      "A study block shows beside the workspace's plan")
         let badSchool = try edited { plan in plan["study"] = "not an object" }
         precondition(badSchool.study == nil && badSchool.workspace != nil, "An unreadable study object never blanks the Brief")
+        // Slides as pages: an older service's deadlines and blocks carry none of
+        // the new keys and decode as before, with no slides, covers line or review.
+        precondition(school.deadlines.allSatisfy { $0.slides.isEmpty && $0.covers_text == nil && $0.review == nil }
+                     && school.displayBlocks.allSatisfy { $0.slides.isEmpty && $0.covers_text == nil },
+                     "Old deadlines and blocks: nothing new")
+        let slid = try edited { plan in
+            plan["deadlines"] = [
+                ["id": "study:a1", "title": "Lab 5 · CS 101", "due_ts": 1792990740.0, "source": "study",
+                 "slides": [["source_id": "s7", "deck": "Lecture 7: Pointers", "pages": [4, 5, 6]], "bad"],
+                 "covers_text": "Slides 4–6 of Lecture 7 cover it.",
+                 "review": ["minutes": 15, "pages": [["source_id": "s7", "page": 4], ["source_id": "s7", "page": 5]]]],
+                ["id": "study:a2", "title": "PA 3 · CS 101", "due_ts": 1792990800.0, "source": "study",
+                 "slides": "not a list", "covers_text": 7, "review": "soon"],
+            ]
+            plan["blocks"] = (plan["blocks"] as! [[String: Any]])
+                + [["id": "study-block:a1", "title": "Study: Lab 5", "start": 1792980000.0, "end": 1792982700.0,
+                    "kind": "study", "task_id": NSNull(), "warnings": [] as [String],
+                    "slides": [["source_id": "s7", "deck": "Lecture 7: Pointers", "pages": [4, 5, 6]]],
+                    "covers_text": "Slides 4–6 of Lecture 7 cover it."],
+                   ["id": "study-block:a2", "title": "Study: PA 3", "start": 1792983000.0, "end": 1792985700.0,
+                    "kind": "study", "task_id": NSNull(), "warnings": [] as [String], "slides": 3, "covers_text": NSNull()]]
+        }
+        let lab = slid.deadlines.first { $0.id == "study:a1" }
+        precondition(lab?.slides == [SchoolSlides(sourceID: "s7", deck: "Lecture 7: Pointers", pages: [4, 5, 6])]
+                     && lab?.covers_text == "Slides 4–6 of Lecture 7 cover it." && lab?.review?.minutes == 15
+                     && lab?.review?.pages.count == 2 && lab?.review?.label == "Review (15 min)",
+                     "A school deadline's slides, covers line and review decode")
+        let pa = slid.deadlines.first { $0.id == "study:a2" }
+        precondition(slid.deadlines.count == 2 && pa?.slides.isEmpty == true && pa?.covers_text == nil && pa?.review == nil,
+                     "Odd slide fields never drop a deadline")
+        let studyBlocks = slid.displayBlocks.filter { $0.kind == "study" }
+        precondition(studyBlocks.count == 2 && studyBlocks[0].covers_text == "Slides 4–6 of Lecture 7 cover it."
+                     && studyBlocks[0].slides.first?.pages == [4, 5, 6] && studyBlocks[1].slides.isEmpty
+                     && studyBlocks[1].covers_text == nil,
+                     "A study block's slides and covers line decode; odd ones never drop the block")
         // Only the day and zone it is for are required.
         precondition((try? decode(#"{"timezone":"America/Los_Angeles"}"#)) == nil)
     }

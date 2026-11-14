@@ -742,3 +742,66 @@ def test_this_file_is_in_the_simulation_manifest():
     from pathlib import Path
     manifest = (Path(__file__).resolve().parents[1] / "scripts" / "run_simulation_qa.py").read_text()
     assert '"tests/test_study_api.py"' in manifest
+
+
+# --- slides, misses and the auto-prepare setting ------------------------------------------
+
+
+def _with_pages(store, decks: dict):
+    store.pages = lambda sid: [dict(p) for p in decks.get(sid, [])]
+    store.recorded = []
+    store.record_misses = lambda mid, rows: store.recorded.append((mid, rows)) or len(rows)
+
+
+def test_generate_from_pages_alone_or_with_a_topic(client, fakes):
+    src = fakes.store.save_source({"kind": "drive", "url": "https://drive.example/l7", "title": "Lecture 7",
+                                   "text": "", "course_id": None})
+    _with_pages(fakes.store, {src["id"]: [{"page": 1, "title": "Trees", "points": ["p"], "figure": None,
+                                           "topics": ["trees"]}, {"page": 2, "title": "Heaps", "points": []}]})
+    body = {"kind": "flashcards", "pages": [{"source_id": src["id"], "page": 2}, {"source_id": src["id"], "page": 1}],
+            "count": 8}
+    got = client.post("/study/generate", json=body)
+    assert got.status_code == 200 and got.json()["kind"] == "flashcards"
+    pages = fakes.made[-1]["extra"]["pages"]
+    assert [(p["page"], p["deck"]) for p in pages] == [(2, "Lecture 7"), (1, "Lecture 7")]
+    assert client.post("/study/generate", json=body | {"kind": "quiz", "topic": "Trees"}).status_code == 200
+    assert fakes.made[-1]["topic"] == "Trees" and fakes.made[-1]["extra"]["pages"]
+    missing = client.post("/study/generate", json={"kind": "quiz", "pages": [{"source_id": src["id"], "page": 9}]})
+    assert missing.status_code == 404
+    too_many = [{"source_id": src["id"], "page": 1}] * 41
+    assert client.post("/study/generate", json={"kind": "quiz", "pages": too_many}).status_code == 422
+    assert client.post("/study/generate", json={"kind": "quiz", "pages": [{"source_id": 1, "page": 1}]}
+                       ).status_code == 422
+
+
+def test_attempt_missed_records_each_questions_slide_and_topic(client, fakes):
+    _with_pages(fakes.store, {"src_a": [{"page": 3, "title": "Pointer basics", "topics": ["pointers"]}]})
+    mat = fakes.store.save_material({"kind": "quiz", "title": "CS quiz", "body": {"questions": [
+        {"prompt": "A", "choices": ["1", "2"], "answer": 0, "why": "", "slide": {"source_id": "src_a", "page": 3}},
+        {"prompt": "B", "choices": ["1", "2"], "answer": 0, "why": "", "slide": None},
+        {"prompt": "C", "choices": ["1", "2"], "answer": 0, "why": ""}]}})
+    got = client.post(f"/study/materials/{mat['id']}/attempt", json={"correct": 1, "total": 3, "missed": [0, 1, 7]})
+    assert got.status_code == 200 and got.json() == {"best_score": pytest.approx(1 / 3)}
+    assert fakes.store.recorded == [(mat["id"], [
+        {"question": 0, "source_id": "src_a", "page": 3, "topic": "pointers"},
+        {"question": 1, "source_id": None, "page": None, "topic": "CS quiz"}])]
+    assert client.post(f"/study/materials/{mat['id']}/attempt",
+                       json={"correct": 1, "total": 3, "missed": [-1]}).status_code == 422
+
+
+def test_attempt_missed_on_a_store_without_misses_still_counts(client, fakes):
+    mat = fakes.store.save_material({"kind": "quiz", "title": "Q", "body": QUIZ})
+    got = client.post(f"/study/materials/{mat['id']}/attempt", json={"correct": 2, "total": 3, "missed": [0]})
+    assert got.status_code == 200
+
+
+def test_settings_auto_prepare(client, fakes, monkeypatch):
+    kicked = []
+    monkeypatch.setattr(api.ready, "kick", lambda *a, **k: kicked.append(k) or True)
+    assert client.get("/study/settings").json() == {"auto_prepare": False}
+    assert client.post("/study/settings", json={"auto_prepare": True}).json() == {"auto_prepare": True}
+    assert client.get("/study/settings").json() == {"auto_prepare": True} and kicked
+    assert client.post("/study/settings", json={"auto_prepare": "yes"}).status_code == 422
+    assert client.post("/study/settings", json={"auto_prepare": True},
+                       headers={"origin": "https://evil.example"}).status_code == 403
+    assert client.post("/study/settings", json={"auto_prepare": False}).json() == {"auto_prepare": False}

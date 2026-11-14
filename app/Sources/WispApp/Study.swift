@@ -466,8 +466,10 @@ struct StudyQuestion: Decodable, Equatable {
     /// 0-based index into `choices`.
     let answer: Int
     let why: String
+    /// The deck page it was made from, when it was made from slides.
+    var slide: StudySlideRef? = nil
 
-    enum CodingKeys: String, CodingKey { case prompt, choices, answer, why }
+    enum CodingKeys: String, CodingKey { case prompt, choices, answer, why, slide }
 }
 
 extension StudyQuestion {
@@ -477,6 +479,7 @@ extension StudyQuestion {
         choices = c.studyStrings(.choices)
         answer = c.studyInt(.answer)
         why = c.studyString(.why)
+        slide = (try? c.decodeIfPresent(StudySlideRef.self, forKey: .slide)) ?? nil
     }
 }
 
@@ -533,8 +536,10 @@ extension StudyLesson {
 struct StudyCard: Decodable, Equatable {
     let front: String
     let back: String
+    /// The deck page it was made from, when it was made from slides.
+    var slide: StudySlideRef? = nil
 
-    enum CodingKeys: String, CodingKey { case front, back }
+    enum CodingKeys: String, CodingKey { case front, back, slide }
 }
 
 extension StudyCard {
@@ -542,6 +547,7 @@ extension StudyCard {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         front = c.studyString(.front)
         back = c.studyString(.back)
+        slide = (try? c.decodeIfPresent(StudySlideRef.self, forKey: .slide)) ?? nil
     }
 }
 
@@ -555,6 +561,230 @@ extension StudyDeck {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         cards = c.studyList(StudyCard.self, .cards)
+    }
+}
+
+// MARK: - Slides as pages
+
+/// One page of a deck the backend read as pages: `{"source_id", "page"}`.
+struct StudySlideRef: Codable, Equatable, Hashable {
+    let sourceID: String
+    let page: Int
+
+    enum CodingKeys: String, CodingKey {
+        case sourceID = "source_id"
+        case page
+    }
+
+    init(sourceID: String, page: Int) {
+        self.sourceID = sourceID
+        self.page = page
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sourceID = try c.decode(String.self, forKey: .sourceID)
+        guard let page = c.studyOptionalInt(.page) else {
+            throw DecodingError.dataCorruptedError(forKey: .page, in: c, debugDescription: "no page")
+        }
+        self.page = page
+    }
+}
+
+/// Pages of one deck that cover something: `{"source_id", "deck", "pages"}`.
+struct StudySlideSet: Decodable, Equatable {
+    let sourceID: String
+    let deck: String
+    let pages: [Int]
+
+    enum CodingKeys: String, CodingKey {
+        case sourceID = "source_id"
+        case deck, pages
+    }
+
+    init(sourceID: String, deck: String, pages: [Int]) {
+        self.sourceID = sourceID
+        self.deck = deck
+        self.pages = pages
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sourceID = try c.decode(String.self, forKey: .sourceID)
+        deck = c.studyString(.deck)
+        pages = (try? c.decodeIfPresent([StudyLossy<Int>].self, forKey: .pages))?.compactMap { $0.value } ?? []
+    }
+}
+
+enum StudySlides {
+    /// The most pages `POST /study/generate` takes.
+    static let maxPages = 40
+
+    /// The pages a make sends: the chosen ones in deck order, or every page
+    /// when none is chosen; at most `maxPages`.
+    static func pagesToSend(selected: Set<StudySlideRef>, all: [StudySlideRef]) -> [StudySlideRef] {
+        var seen = Set<StudySlideRef>()
+        let ordered = all.filter { seen.insert($0).inserted }
+        let picked: [StudySlideRef]
+        if selected.isEmpty {
+            picked = ordered
+        } else {
+            let inDeck = ordered.filter { selected.contains($0) }
+            let rest = selected.subtracting(inDeck).sorted {
+                ($0.sourceID, $0.page) < ($1.sourceID, $1.page)
+            }
+            picked = inDeck + rest
+        }
+        return Array(picked.prefix(maxPages))
+    }
+
+    /// `POST /study/generate`'s body for material made from pages.
+    static func generateBody(_ kind: StudyKind, pages: [StudySlideRef], count: Int?, title: String?) -> [String: Any] {
+        var fields: [String: Any] = [
+            "kind": kind.rawValue,
+            "pages": pages.prefix(maxPages).map { ["source_id": $0.sourceID, "page": $0.page] as [String: Any] },
+        ]
+        if let count, count > 0 { fields["count"] = count }
+        if let title = title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+            fields["topic"] = String(title.prefix(300))
+        }
+        return fields
+    }
+}
+
+/// One page of a deck: `GET /study/sources/{id}/pages`'s items.
+struct StudyDeckPage: Decodable, Equatable, Identifiable {
+    let page: Int
+    let title: String
+    let points: [String]
+    let figure: String?
+    let topics: [String]
+
+    var id: Int { page }
+
+    enum CodingKeys: String, CodingKey { case page, title, points, figure, topics }
+
+    init(page: Int, title: String, points: [String] = [], figure: String? = nil, topics: [String] = []) {
+        self.page = page
+        self.title = title
+        self.points = points
+        self.figure = figure
+        self.topics = topics
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        guard let page = c.studyOptionalInt(.page) else {
+            throw DecodingError.dataCorruptedError(forKey: .page, in: c, debugDescription: "no page")
+        }
+        self.page = page
+        title = c.studyString(.title).trimmingCharacters(in: .whitespacesAndNewlines)
+        points = c.studyStrings(.points).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let figure = c.studyOptionalString(.figure)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.figure = (figure?.isEmpty ?? true) ? nil : figure
+        topics = c.studyStrings(.topics)
+    }
+}
+
+/// `GET /study/sources/{id}/pages`: `{"pages": [...]}`, in page order.
+struct StudyDeckPages: Decodable, Equatable {
+    let pages: [StudyDeckPage]
+
+    enum CodingKeys: String, CodingKey { case pages }
+
+    init(pages: [StudyDeckPage]) { self.pages = pages }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        var seen = Set<Int>()
+        pages = c.studyList(StudyDeckPage.self, .pages).sorted { $0.page < $1.page }
+            .filter { seen.insert($0.page).inserted }
+    }
+}
+
+/// A deck opened full-tab: its source and, once fetched, its pages.
+struct StudyOpenDeck: Equatable {
+    let source: StudySource
+    var pages: [StudyDeckPage]
+    var loading: Bool
+
+    var refs: [StudySlideRef] { pages.map { StudySlideRef(sourceID: source.id, page: $0.page) } }
+}
+
+/// `GET /study/settings`: `{"auto_prepare": bool}`.
+struct StudySettings: Decodable, Equatable {
+    let autoPrepare: Bool
+
+    enum CodingKeys: String, CodingKey { case autoPrepare = "auto_prepare" }
+
+    init(autoPrepare: Bool) { self.autoPrepare = autoPrepare }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        autoPrepare = c.studyBool(.autoPrepare)
+    }
+}
+
+/// Which sentence a refused `/study` call shows. The backend writes short,
+/// fixed sentences of its own (never Google's raw text); for Drive refusals
+/// they say more than the app's fixed copy, so they win when present.
+enum StudyRefusal {
+    /// Longest server sentence shown.
+    static let maxMessage = 200
+
+    /// Codes the app has its own sentence for.
+    static let knownCodes: Set<String> = ["missing", "rejected", "busy", "unreachable", "bad_reply",
+                                          "google_missing", "google_error", "too_large"]
+
+    /// Codes whose server sentence is shown in place of the app's own.
+    static let serverWords: Set<String> = ["google_error", "drive_off"]
+
+    /// Google or the Drive API is not set up: shown as "not connected", never
+    /// retried on its own.
+    static func notConnected(_ code: String?) -> Bool {
+        code == "google_missing" || code == "drive_off"
+    }
+
+    /// Whether a refusal is worth trying again as is.
+    static func retryable(_ code: String?) -> Bool {
+        !notConnected(code) && code != "missing" && code != "rejected"
+    }
+
+    /// The server's sentence trimmed, with at most one line break and no more
+    /// than `maxMessage` characters; nil when it says nothing.
+    static func cleaned(_ text: String?) -> String? {
+        guard let text else { return nil }
+        let lines = text.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard let first = lines.first else { return nil }
+        var joined = first
+        if lines.count > 1 { joined += "\n" + lines.dropFirst().joined(separator: " ") }
+        guard joined.count > maxMessage else { return joined }
+        return String(joined.prefix(maxMessage - 1)).trimmingCharacters(in: .whitespaces) + "…"
+    }
+
+    /// The sentence for a failed reply with this code, server message and HTTP status.
+    static func message(code: String?, said: String?, status: Int) -> String {
+        let server = cleaned(said)
+        // A key that is saved but could not be read says so in the server's own words.
+        if code == "missing", let server, server.contains("Keychain") { return server }
+        if let code, serverWords.contains(code), let server { return server }
+        if let code, knownCodes.contains(code) { return StudyText.problem(code: code) }
+        if let server { return server }
+        switch status {
+        case 404: return StudyText.problem(code: "not_found")
+        case 422: return StudyText.problem(code: "bad_request")
+        default: return StudyText.problem(code: "")
+        }
+    }
+}
+
+enum StudyAttempt {
+    /// The misses an attempt sends: in range, unique, ascending.
+    static func missed(_ indices: [Int], total: Int) -> [Int] {
+        Array(Set(indices.filter { $0 >= 0 && $0 < total })).sorted()
     }
 }
 
@@ -667,6 +897,11 @@ struct StudyState: Decodable, Equatable {
         return courses.first { $0.id == id }
     }
 
+    /// "From Lecture 7 · p. 7" with the deck's title from these sources, else "Slide p. 7".
+    func slideLine(_ ref: StudySlideRef) -> String {
+        StudyText.slideLine(ref, deck: sources.first { $0.id == ref.sourceID }?.title)
+    }
+
     func assignment(_ id: String?) -> StudyAssignment? {
         guard let id = id else { return nil }
         return assignments.first { $0.id == id }
@@ -759,12 +994,20 @@ struct StudySource: Decodable, Equatable, Identifiable {
     let url: String?
     let chars: Int
     let createdAt: Double
+    /// Pages read from the deck; 0 when it was not read as pages.
+    var pages: Int = 0
+    /// "none", "ready" or "failed" (others kept as sent).
+    var deckStatus: String = "none"
 
     enum CodingKeys: String, CodingKey {
-        case id, kind, title, url, chars
+        case id, kind, title, url, chars, pages
         case courseID = "course_id"
         case createdAt = "created_at"
+        case deckStatus = "deck_status"
     }
+
+    /// Whether its deck pages can be opened.
+    var hasPages: Bool { pages > 0 }
 
     /// A Slides deck, told by its Drive link.
     var isSlides: Bool { kind == "drive" && (url ?? "").contains("/presentation/") }
@@ -786,6 +1029,8 @@ extension StudySource {
         url = c.studyOptionalString(.url)
         chars = c.studyInt(.chars)
         createdAt = c.studyDouble(.createdAt) ?? 0
+        pages = max(0, c.studyInt(.pages))
+        deckStatus = c.studyString(.deckStatus, "none")
     }
 }
 
@@ -837,8 +1082,20 @@ struct StudyDriveFile: Decodable, Equatable, Identifiable {
 
     enum CodingKeys: String, CodingKey { case id, name, kind, modified, url }
 
-    var symbol: String { kind == "slides" ? "play.rectangle" : "doc.richtext" }
-    var kindLabel: String { kind == "slides" ? "Slides" : "Doc" }
+    var symbol: String {
+        switch kind {
+        case "slides": return "play.rectangle"
+        case "pdf": return "doc.text"
+        default: return "doc.richtext"
+        }
+    }
+    var kindLabel: String {
+        switch kind {
+        case "slides": return "Slides"
+        case "pdf": return "PDF"
+        default: return "Doc"
+        }
+    }
 }
 
 extension StudyDriveFile {
@@ -1127,6 +1384,14 @@ struct QuizRun: Equatable {
         return right
     }
 
+    /// 0-based indices of the questions answered wrong (unanswered ones are not misses).
+    var missed: [Int] {
+        answers.enumerated().compactMap { pair in
+            guard let answer = pair.element, answer != quiz.questions[pair.offset].answer else { return nil }
+            return pair.offset
+        }
+    }
+
     /// "7 of 8".
     var scoreText: String { "\(correct) of \(total)" }
 
@@ -1306,6 +1571,57 @@ enum StudyText {
     static let longContextNote = "Gemini reads the whole course at once"
 
     /// "850 chars", "4.2k chars", "48k chars", "1.2M chars".
+    static let autoPrepareTitle = "Get ready for quizzes automatically"
+    static let autoPrepareNote = "Wisp makes a practice quiz from your slides before a quiz or exam. Uses your Study model."
+    static let deckPagesLoading = "Reading the pages…"
+    static let deckPagesEmpty = "No pages to show."
+    static let deckAllPages = "Uses every page"
+
+    /// "1 page", "12 pages".
+    static func pagesCount(_ n: Int) -> String { n == 1 ? "1 page" : "\(n) pages" }
+
+    /// "Uses 3 pages" for a selection, or the all-pages note (capped at 40).
+    static func deckSelection(_ chosen: Int, total: Int) -> String {
+        if chosen == 0 {
+            return total > StudySlides.maxPages ? "Uses the first \(StudySlides.maxPages) pages" : deckAllPages
+        }
+        return "Uses " + pagesCount(min(chosen, StudySlides.maxPages))
+    }
+
+    /// "p. 7 · Pointers", or "p. 7" with no title.
+    static func deckPageHeader(_ page: StudyDeckPage) -> String {
+        page.title.isEmpty ? "p. \(page.page)" : "p. \(page.page) · \(page.title)"
+    }
+
+    /// "From Lecture 7: Pointers · p. 7", or "Slide p. 7" when the deck is unknown.
+    static func slideLine(_ ref: StudySlideRef, deck: String?) -> String {
+        let deck = deck?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return deck.isEmpty ? "Slide p. \(ref.page)" : "From \(deck) · p. \(ref.page)"
+    }
+
+    /// Compact page label: "p. 4", "pp. 4–9", "pp. 2, 5, 7", "pp. 1–3, 8".
+    /// Sorted, duplicates and pages below 1 dropped; "" for none.
+    static func slidePages(_ pages: [Int]) -> String {
+        let sorted = Array(Set(pages.filter { $0 >= 1 })).sorted()
+        guard let first = sorted.first else { return "" }
+        if sorted.count == 1 { return "p. \(first)" }
+        var runs: [String] = []
+        var start = first
+        var end = first
+        func close() { runs.append(start == end ? "\(start)" : "\(start)–\(end)") }
+        for page in sorted.dropFirst() {
+            if page == end + 1 {
+                end = page
+            } else {
+                close()
+                start = page
+                end = page
+            }
+        }
+        close()
+        return "pp. " + runs.joined(separator: ", ")
+    }
+
     static func chars(_ n: Int) -> String {
         let n = max(0, n)
         if n < 1000 { return "\(n) chars" }

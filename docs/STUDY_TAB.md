@@ -46,6 +46,15 @@ Both are OpenAI-compatible `POST {origin}{prefix}/chat/completions` with
 `Authorization: Bearer <key>`, `response_format: {"type": "json_object"}` and
 `reasoning_effort: "low"`. Only these two exact origins are ever contacted.
 
+Structured output: when the Study model is a Gemini model (`gemini-…` or `google/gemini-…`), every
+call sends a JSON schema instead of plain JSON mode: `response_format: {"type": "json_schema",
+"json_schema": {"name": "study_<kind>" | "study_page", "schema": …, "strict": true}}`.
+`generate.schema_for(kind, n)` gives each material's shape (exact item counts when the prompt asks
+for an exact number; 4 choices per quiz question, 3–4 per lesson check) and `generate.EXTRACT_SCHEMA`
+the page-extraction shape. A 400 over the schema steps down to JSON mode, then to no
+`response_format`, within the same POST budget. `validate()` still checks every reply. Other models
+keep JSON mode.
+
 Keychain reads never run on the event loop: `complete_json` reads the key through
 `asyncio.to_thread`, and async routes use `status_async()`. A read that times out or is
 refused (macOS asked and nobody answered, or Deny) is held for 60 s, so a pending prompt is
@@ -414,6 +423,34 @@ account needs `drive.readonly`, which the Workspace consent already requests.
   Google in Settings), `google_error` 502 (Google unreachable, timed out, or the Drive API is
   off), `too_large` 413 (Google's export size limit), `not_found` 404 (file or course), and
   `invalid` 422 (bad id, bad body, a file that is not a Doc or Slides, or an empty export).
+
+## Slides as pages (Brief, Day and Ask)
+
+- **Reading.** Adding a Drive Slides deck, Doc or PDF on the Gemini API provider (bare `gemini-*` model and a
+  saved Study key) also exports it as PDF (18 MB cap) and sends it once to
+  `POST https://generativelanguage.googleapis.com/v1beta/interactions` as an inline `document` input with a JSON
+  response schema (`deck.PAGE_SCHEMA`: page, title, 1–6 points, figure or null, 1–5 topics), `store: false`.
+  The key goes only in `x-goog-api-key`. The validated index is saved in `deck_pages`; source summaries carry
+  `pages` and `deck_status` (`none` | `ready` | `failed`). OpenRouter, the Intel cloud fallback or no key: text-only
+  source, `deck_status: "none"`, no PDF fetch. A PDF can only be added on the Gemini API.
+- **Search.** `store.search_pages(query, course_id=, limit=)` is local keyword scoring (title and topics 3, deck 2,
+  points and figure 1). `GET /study/sources/{id}/pages` returns a deck's index.
+- **Matching** (`match.py`, pure): assignments to slides by course, "Lecture/Week N" numbers and topic overlap;
+  `covers_text` ("Lectures 7 and 8 cover it.").
+- **Today snapshot.** The `study` object gains `ready` (at most 4: quiz, exam or assignment due within 7 days with
+  matching slides, with a prepared quiz's `material_id` when there is one) and `weak` (at most 3 topics with 2+
+  misses in 14 days). Study deadlines and blocks gain `slides` and `covers_text`; deadlines gain `review`
+  (`{"minutes": 15, "pages": [...]}`).
+- **Preparing ahead** (`ready.py`): only with `auto_prepare` on (`GET/POST /study/settings`, off by default) and
+  the connector ready. One 10-question quiz per quiz or exam due within 48 h, from its matched slides with recently
+  missed pages first; at most 3 per rolling 24 h, once per assignment; a background thread that never blocks a GET.
+- **Making from pages.** `POST /study/generate` takes `pages: [{source_id, page}]` (max 40), with or without a
+  topic. Questions, cards and lesson checks then carry `slide: {source_id, page}`. Attempts take `missed`
+  (0-based); misses are kept in `misses` with the question's slide and topic.
+- **Ask.** `study_slides` (read-only, cites deck and page) and `study_make` (material from cited pages).
+- **Drive errors.** `drive_off` (409) when the Drive API is not enabled in the Google project; every
+  `google_error` has its own message (timed out, unreachable, refused, rate limited, Google down, odd reply), and
+  each failure logs one line with only the status and Google's reason code.
 
 ## App (`app/Sources/WispApp/`)
 
