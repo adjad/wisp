@@ -486,7 +486,8 @@ enum StudyFindReader {
         if role == (kAXStaticTextRole as String) {
             if let value = stringValue(element, kAXValueAttribute as String)
                 ?? stringValue(element, kAXTitleAttribute as String) {
-                if let type = moduleType(value) { note(type, in: &w) }
+                // An item's own title (static text inside its link) never sets its type.
+                if w.captured == nil, let type = moduleType(value) { note(type, in: &w) }
                 if w.captured != nil, w.capturedCharacters < maxTitle {
                     w.captured?.append(value)
                     w.capturedCharacters += value.count + 1
@@ -518,7 +519,7 @@ enum StudyFindReader {
                 // A tool or quiz label wins, so the server drops the item.
                 let pending = w.visited - w.pendingAt < 60 ? w.pendingType : nil
                 let candidates = [pending, description.flatMap(moduleType), help.flatMap(moduleType)].compactMap { $0 }
-                let type = candidates.first(where: isLaunchType) ?? candidates.first
+                let type = candidates.first(where: isNeverOpened) ?? candidates.first
                 w.pendingType = nil
                 w.seenLinks.insert(url)
                 w.links.append(StudyFindLink(title: title, url: url, type: type))
@@ -544,11 +545,10 @@ enum StudyFindReader {
         }
     }
 
-    /// A type label for the next link. A tool or quiz label is never
-    /// replaced by a plainer one from the same row.
+    /// A type label for the next link. A label Wisp never opens (tool, quiz,
+    /// assignment) is never replaced by a plainer one before a link takes it.
     private static func note(_ type: String, in w: inout Walk) {
-        if let pending = w.pendingType, isLaunchType(pending), !isLaunchType(type),
-           w.visited - w.pendingAt < 4 { return }
+        if let pending = w.pendingType, isNeverOpened(pending), !isNeverOpened(type) { return }
         w.pendingType = type
         w.pendingAt = w.visited
     }
