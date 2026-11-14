@@ -124,8 +124,17 @@ AGENT_BODY_LIMIT = 32 * 1024 * 1024
 # /study/import: at most 12 pages of at most 150,000 characters (docs/STUDY_TAB.md), about
 # 1.8 MB of Latin page text, up to about 5.4 MB in three-byte scripts; 6 MB fits both.
 STUDY_IMPORT_BODY_LIMIT = 6 * 1024 * 1024
-_LIMITED_PATHS = {"/agent": AGENT_BODY_LIMIT, "/study/import": STUDY_IMPORT_BODY_LIMIT}
-_TOO_LARGE = {"/study/import": "That's too much page text for Wisp to read at once. Try fewer tabs."}
+# /study/find/add: one batch of up to 60 read pages of at most 150,000 characters (the app sends
+# batches of 60), about 9 MB of Latin text and up to about 27 MB in three-byte scripts.
+STUDY_FIND_ADD_BODY_LIMIT = 28 * 1024 * 1024
+# /study/find/resolve: at most 400 links of a 4,000-character url and a 1,000-character title.
+STUDY_FIND_RESOLVE_BODY_LIMIT = 4 * 1024 * 1024
+_LIMITED_PATHS = {"/agent": AGENT_BODY_LIMIT, "/study/import": STUDY_IMPORT_BODY_LIMIT,
+                  "/study/find/add": STUDY_FIND_ADD_BODY_LIMIT,
+                  "/study/find/resolve": STUDY_FIND_RESOLVE_BODY_LIMIT}
+_TOO_LARGE = {"/study/import": "That's too much page text for Wisp to read at once. Try fewer tabs.",
+              "/study/find/add": "That's too much page text to add at once. Try adding fewer at a time.",
+              "/study/find/resolve": "That's too many links for Wisp to sort at once."}
 
 
 class BodyLimit:

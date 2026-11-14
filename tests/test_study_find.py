@@ -110,7 +110,7 @@ def test_without_a_course_number_nothing_is_a_browser_kind():
 
 def test_resolve_caps_dedupes_drops_junk_and_marks_known():
     links = [{"url": f"https://news.example.org/a{i}", "title": f"Article {i}"} for i in range(80)]
-    links += [{"url": f"{CANVAS}/pages/p{i}", "title": f"Page {i}"} for i in range(30)]
+    links += [{"url": f"{CANVAS}/pages/p{i}", "title": f"Page {i}"} for i in range(120)]
     links += [{"url": f"{CANVAS}/modules", "title": "Modules"}, {"url": "javascript:void(0)", "title": "Menu"},
               {"url": "https://news.example.org/help", "title": "Help"},
               {"url": "https://news.example.org/a0#again", "title": "Article 0 again"}]
@@ -509,3 +509,12 @@ def test_module_items_of_a_safe_type_are_browsed(hint):
     got = F.classify({"url": "https://school.instructure.com/courses/123/modules/items/81",
                       "title": "Week 4 notes", "type": hint}, course)
     assert got["via"] == "browser" and got["kind"] == "page"
+
+
+def test_find_bodies_have_their_own_limits_that_fit_a_full_batch():
+    from service import local_http
+    assert local_http._LIMITED_PATHS["/study/find/add"] == local_http.STUDY_FIND_ADD_BODY_LIMIT
+    assert local_http._LIMITED_PATHS["/study/find/resolve"] == local_http.STUDY_FIND_RESOLVE_BODY_LIMIT
+    # 60 pages of 150k three-byte characters, as JSON, fit the add limit.
+    assert 60 * find.TEXT_CAP * 3 + 60 * 6000 < local_http.STUDY_FIND_ADD_BODY_LIMIT
+    assert find.MAX_FOUND * 6000 < local_http.STUDY_FIND_RESOLVE_BODY_LIMIT

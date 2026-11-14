@@ -27,14 +27,14 @@ log = logging.getLogger(__name__)
 
 KINDS = ("slides", "doc", "pdf", "notebook", "article", "page", "discussion", "file", "video", "other")
 VIAS = ("drive", "web", "browser", "none")
-MAX_LINKS = 60
+MAX_LINKS = 160           # items one add takes (up to 60 drive/web + 100 browser pages)
 ADD_BUDGET_S = 90.0          # the whole add; what is not done by then is "timeout" (partial results)
 ITEM_S = 30.0                # one Drive item
 CONCURRENCY = 6
 LABEL_CHARS = 2000           # of each source's text, for its labels
-LABEL_ITEMS = 60
+LABEL_ITEMS = 100
 LABEL_POSTS = 2
-LABEL_TOKENS = 6000
+LABEL_TOKENS = 10000
 TEXT_CAP = 150_000           # what the app's page reader sends at most (api.PAGE_CHARS)
 
 NO_TEXT = "Wisp got no text for that page. Open it once in your browser, then try again."
@@ -230,7 +230,7 @@ def known_keys(sources: list[dict]) -> dict[str, str]:
 
 MAX_FOUND = 400              # links one resolve may send
 MAX_IMPORTABLE = 60          # drive and web items (and title-only videos) one resolve returns
-MAX_BROWSER = 15             # Canvas pages the app will read in the browser
+MAX_BROWSER = 100            # Canvas pages the app will read in the browser
 _JUNK_TITLE = re.compile(r"^(?:skip to .*|home|modules|next|previous|back|menu|log ?in|log ?out|sign ?in|"
                          r"sign ?out|help|account|dashboard|calendar|inbox|courses|grades|people|syllabus|"
                          r"settings|more|share|print|download)$", re.I)
