@@ -715,6 +715,11 @@ struct NotchDayView: View {
                     Text(detail(item)).font(.wisp(.footnote))
                         .foregroundStyle(status?.failed == true ? Theme.bad : DayInk.detail(item.style))
                         .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                    // A school deadline's or study block's "Lectures 7 and 8 cover it.": one line.
+                    if let covers = schoolCovers(item) {
+                        Text(covers).font(.wisp(.footnote)).foregroundStyle(Theme.textMuted)
+                            .lineLimit(1).truncationMode(.tail)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 // What's over has nothing left to act on; a cancel still in its Undo
@@ -727,7 +732,8 @@ struct NotchDayView: View {
         .padding(.vertical, 5)
         .opacity(over ? 0.45 : 1)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel([item.title, spokenTime(item), detail(item)].filter { !$0.isEmpty }.joined(separator: ", ")
+        .accessibilityLabel([item.title, spokenTime(item), detail(item), schoolCovers(item) ?? ""]
+                                .filter { !$0.isEmpty }.joined(separator: ", ")
                             + (item.members.count > 1 ? ", covers " + item.members.map(\.title).joined(separator: "; ") : "")
                             + (item.past ? ", already over" : ""))
     }
@@ -796,9 +802,29 @@ struct NotchDayView: View {
         }
     }
 
+    /// The school deadline (service/study/day_hook.py) a row draws, if it is one.
+    private func schoolDeadline(_ item: DayItem) -> TodayDeadline? {
+        guard let id = item.needID else { return nil }
+        return plan?.deadlines.first { $0.id == id && $0.source == "study" }
+    }
+
+    /// The covers line under a school deadline or a study block, or nil.
+    private func schoolCovers(_ item: DayItem) -> String? {
+        if let deadline = schoolDeadline(item) { return SchoolSlidesText.covers(deadline.covers_text) }
+        guard item.kind == "study", let id = item.blockID,
+              let block = plan?.displayBlocks.first(where: { $0.id == id }) else { return nil }
+        return SchoolSlidesText.covers(block.covers_text)
+    }
+
     /// The block's main action as a button, and everything else in one ⋯ menu.
     @ViewBuilder private func actions(_ item: DayItem) -> some View {
         HStack(spacing: 4) {
+            if let deadline = schoolDeadline(item), let review = deadline.review, review.offered {
+                NotchChrome.action(review.label, help: "Make flash cards from the slides that cover this, in Study",
+                                   spoken: "\(review.label) for \(deadline.title)") {
+                    SchoolActions.review(review.pages, title: deadline.title, model: model)
+                }
+            }
             switch item.style {
             case .suggested:
                 NotchChrome.small("Keep") { keep(item, laterBy: 0) }.disabled(today.busy)
@@ -1311,6 +1337,35 @@ enum DayInk {
     }
 }
 
+/// What a Brief study card or a Day "Review (15 min)" does: switch to Study,
+/// then open the quiz Study made or make flash cards from the slides. Display
+/// only: nothing here reaches a prompt, a log or a notification.
+@MainActor
+enum SchoolActions {
+    static func refs(_ pages: [SchoolPage]) -> [StudySlideRef] {
+        pages.prefix(SchoolSlidesText.pageCap).map { StudySlideRef(sourceID: $0.sourceID, page: $0.page) }
+    }
+
+    static func run(_ action: StudyBriefCard.Action, model: OverlayModel) {
+        switch action {
+        case .open(let id):
+            model.tab = .study
+            Task { await StudyModel.shared.open(id) }
+        case .review(let pages, let title):
+            review(pages, title: title, model: model)
+        }
+    }
+
+    static func review(_ pages: [SchoolPage], title: String, model: OverlayModel) {
+        let chosen = Self.refs(pages)
+        guard !chosen.isEmpty else { return }
+        model.tab = .study
+        Task {
+            await StudyModel.shared.makeFromPages(.flashcards, pages: chosen, count: StudyBriefCard.reviewCount, title: title)
+        }
+    }
+}
+
 /// Small controls shared by the notch's Brief and Day tabs.
 enum NotchChrome {
     static func notice(_ text: String) -> some View {
@@ -1342,6 +1397,25 @@ enum NotchChrome {
         }
         .buttonStyle(.plain)
         .help(help)
+        .fixedSize()
+    }
+
+    /// A small capsule action with a 24 pt tall hit target: the capsule looks
+    /// like `small`; the clear band around it still takes the click.
+    static func action(_ title: String, help: String, spoken: String? = nil,
+                       action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title).font(.wisp(size: 10.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
+                .lineLimit(1)
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .background(Capsule().fill(Color.black.opacity(0.35)))
+                .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
+                .frame(minHeight: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .accessibilityLabel(spoken ?? title)
         .fixedSize()
     }
 

@@ -654,6 +654,74 @@ func dayChecks(_ check: (Bool, String) -> Void) {
                                  upcomingMore: -4)
     check(capped.upcomingMore == 0 && capped.dayUpcoming(dayStart: dayStart, dayEnd: dayEnd).more == 4,
           "Day shows four of eight; a negative upcoming_more counts as none")
+
+    // Slides as pages (study.ready / study.weak): an older service sends neither,
+    // and the Brief shows exactly what it showed before.
+    check(summary?.ready.isEmpty == true && summary?.weak.isEmpty == true && summary?.briefCards == StudyBriefCards()
+          && week?.briefCards.isEmpty == true && week?.briefCards.moreLine == nil,
+          "no ready or weak keys: no study cards")
+    let readyJSON = #"""
+    {"line": "x", "ready": [
+      {"id": "r1", "kind": "quiz", "assignment_id": "a1", "course": "CS 101", "title": "Quiz 3: Loops", "due_ts": 1700000000,
+       "text": " CS 101 quiz Thursday. I made a 10-question quiz from weeks 5 and 6. ", "material_id": "m1",
+       "slides": [{"source_id": "s5", "deck": "Week 5", "pages": [2, 3]}]},
+      {"id": "r2", "kind": "assignment", "title": "PA 3", "text": "PA 3 is due Friday. Lectures 7 and 8 cover it.",
+       "material_id": null,
+       "slides": [{"source_id": "s7", "deck": "Lecture 7: Pointers", "pages": [4, 5, 5, "x", 0, 6]},
+                  {"source_id": "s8", "deck": "Lecture 8", "pages": [2]}, {"source_id": "s9", "deck": "Lecture 9", "pages": []}]},
+      {"id": "r3", "kind": "seminar", "text": "Something new.", "material_id": null, "slides": []},
+      {"id": "r4", "kind": "quiz", "text": "   "},
+      "not an object"],
+     "weak": [{"id": "w1", "course": "CS 101", "topic": "Pointers", "count": 3,
+               "text": "You missed 3 on pointers; here are those two slides again.",
+               "slides": [{"source_id": "s7", "deck": "Lecture 7: Pointers", "pages": [6, 8]}]},
+              {"id": "w2", "topic": "Limits", "count": "two", "text": "You missed some on limits.", "slides": "bad"}]}
+    """#
+    let withReady = try? JSONDecoder().decode(StudyDaySummary.self, from: Data(readyJSON.utf8))
+    check(withReady?.line == "x" && withReady?.ready.map(\.id) == ["r1", "r2", "r3", "r4"] && withReady?.weak.count == 2,
+          "ready and weak decode; a bad row is skipped: \(withReady?.ready.map(\.id) ?? [])")
+    check(withReady?.ready[1].slides.first?.pages == [4, 5, 6] && withReady?.ready[1].materialID == nil
+          && withReady?.ready[2].kind == "seminar" && withReady?.weak[1].count == 0 && withReady?.weak[1].slides.isEmpty == true,
+          "pages drop repeats and bad values; null material; an unknown kind and odd fields are tolerated")
+    let cards = withReady?.briefCards ?? StudyBriefCards()
+    // r4 has no line, so three ready cards: two shown; one weak shown of two.
+    check(cards.cards.map(\.id) == ["ready:r1", "ready:r2", "weak:w1"] && cards.more == 2
+          && cards.moreLine == "+2 more in Study", "two ready, one weak, then +N: \(cards.cards.map(\.id)) \(cards.more)")
+    check(cards.cards[0].text == "CS 101 quiz Thursday. I made a 10-question quiz from weeks 5 and 6."
+          && cards.cards[0].action == .open(materialID: "m1") && cards.cards[0].actionTitle == "Open quiz",
+          "a ready quiz opens what Study made")
+    check(cards.cards[1].action == .review(pages: [SchoolPage(sourceID: "s7", page: 4), SchoolPage(sourceID: "s7", page: 5),
+                                                   SchoolPage(sourceID: "s7", page: 6), SchoolPage(sourceID: "s8", page: 2)],
+                                           title: "PA 3")
+          && cards.cards[1].actionTitle == "Review slides",
+          "no material: review the slides, flattened in order")
+    check(cards.cards[2].action == .review(pages: [SchoolPage(sourceID: "s7", page: 6), SchoolPage(sourceID: "s7", page: 8)],
+                                           title: "Pointers"),
+          "a weak topic reviews its slides, titled by topic")
+    check(StudyBriefCard(ready: StudyDaySummary.Ready(id: "r", text: "Lecture tomorrow."))?.action == nil
+          && StudyBriefCard(weak: StudyDaySummary.Weak(id: "w", text: "You missed 2."))?.actionTitle == nil,
+          "nothing to open and no slides: the line, with no action")
+    let pagesText: ([Int]) -> String = { $0.count == 1 ? "p. \($0[0])" : "pp. \($0.first!)–\($0.last!)" }
+    check(SchoolSlidesText.line(withReady?.ready[1].slides ?? [], pagesText: pagesText)
+          == "Lecture 7: Pointers · pp. 4–6, Lecture 8 · p. 2 +1",
+          "two decks named, then +N: \(SchoolSlidesText.line(withReady?.ready[1].slides ?? [], pagesText: pagesText) ?? "nil")")
+    check(SchoolSlidesText.line([], pagesText: pagesText) == nil
+          && SchoolSlidesText.line([SchoolSlides(sourceID: "s", deck: "", pages: [])], pagesText: pagesText) == "Slides",
+          "no slides, no line; an unnamed deck reads Slides")
+    let many = [SchoolSlides(sourceID: "a", deck: "A", pages: Array(1...30)),
+                SchoolSlides(sourceID: "b", deck: "B", pages: Array(1...30)), SchoolSlides(sourceID: "", deck: "C", pages: [1])]
+    let flat = SchoolSlidesText.pages(many)
+    check(flat.count == 40 && flat.first == SchoolPage(sourceID: "a", page: 1) && flat.last == SchoolPage(sourceID: "b", page: 10),
+          "slide refs flatten in order and stop at 40")
+    check(SchoolSlidesText.covers("  Lectures 7 and 8 cover it. ") == "Lectures 7 and 8 cover it."
+          && SchoolSlidesText.covers("  ") == nil && SchoolSlidesText.covers(nil) == nil, "the covers line, or none")
+    let review = try? JSONDecoder().decode(SchoolReview.self, from: Data(#"""
+    {"minutes": 20, "pages": [{"source_id": "s7", "page": 4}, {"source_id": "s7", "page": 4}, {"source_id": "s7"}, {"page": 2}]}
+    """#.utf8))
+    check(review?.label == "Review (20 min)" && review?.pages == [SchoolPage(sourceID: "s7", page: 4)] && review?.offered == true,
+          "a review names its minutes; bad and repeated pages drop")
+    let oddReview = try? JSONDecoder().decode(SchoolReview.self, from: Data(#"{"minutes": "soon", "pages": []}"#.utf8))
+    check(oddReview?.label == "Review (15 min)" && oddReview?.offered == false, "odd minutes read as 15; no pages, no review")
 }
 
 /// To-dos from the proactive engine on the Day tab: timed ones on the hour
