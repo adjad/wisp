@@ -59,7 +59,7 @@ CANVAS_KIND = {"page": "page", "wikipage": "page", "discussion": "discussion", "
 
 
 # Module item types the walker must never open (Canvas's own type labels, lower-cased letters only).
-TOOL_HINTS = frozenset({"externaltool", "external tool", "contextexternaltool", "lti", "quiz", "quizzes",
+TOOL_HINTS = frozenset({"assignment", "externaltool", "external tool", "contextexternaltool", "lti", "quiz", "quizzes",
                         "new quiz", "newquiz", "assessment", "quizzeslti"})
 _TOOL_TITLE = re.compile(r"\b(?:gradescope|pearson|mcgraw|mylab|mastering|webassign|zybooks|cengage|"
                          r"turnitin|attendance|respondus|lockdown|proctor|quiz)\b", re.I)
@@ -181,7 +181,7 @@ def classify(link: dict, course: dict | None = None) -> dict:
             kind = "file"
         elif re.fullmatch(r"/discussion_topics/\d+", rest):
             kind = "discussion"
-        elif re.fullmatch(r"/pages/[^/]+|/assignments/\d+", rest):
+        elif re.fullmatch(r"/pages/[^/]+", rest):
             kind = "page"
         elif re.fullmatch(r"/modules/items/\d+", rest):
             # An item that launches an external tool or a quiz must never be opened: Canvas would
