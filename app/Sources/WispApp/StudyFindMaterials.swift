@@ -776,20 +776,16 @@ struct StudyFoundItem: Decodable, Equatable, Identifiable, Sendable {
     let url: String
     let via: String
     var known: Bool
-    /// Why the server refused a course item it still lists: "tool", "quiz",
-    /// "assignment" or "unknown". Such an item is never opened or added.
-    let reason: String?
 
-    enum CodingKeys: String, CodingKey { case id, kind, title, url, via, known, reason }
+    enum CodingKeys: String, CodingKey { case id, kind, title, url, via, known }
 
-    init(id: String, kind: String, title: String, url: String, via: String, known: Bool, reason: String? = nil) {
+    init(id: String, kind: String, title: String, url: String, via: String, known: Bool) {
         self.id = id
         self.kind = kind
         self.title = title
         self.url = url
         self.via = via
         self.known = known
-        self.reason = reason
     }
 
     init(from decoder: Decoder) throws {
@@ -800,7 +796,6 @@ struct StudyFoundItem: Decodable, Equatable, Identifiable, Sendable {
         title = ((try? c.decodeIfPresent(String.self, forKey: .title)) ?? nil) ?? ""
         via = ((try? c.decodeIfPresent(String.self, forKey: .via)) ?? nil)?.lowercased() ?? "none"
         known = ((try? c.decodeIfPresent(Bool.self, forKey: .known)) ?? nil) ?? false
-        reason = ((try? c.decodeIfPresent(String.self, forKey: .reason)) ?? nil)?.lowercased()
     }
 
     var host: String { URL(string: url)?.host?.lowercased() ?? "" }
@@ -930,8 +925,9 @@ enum StudyFindText {
         + "Nothing is added until you choose. "
         + "Linked Google files are read with your Drive sign-in; public articles are fetched without your cookies. "
         + "Opening an item may count as viewing it in Canvas. Course pages may load tools embedded in them, such as "
-        + "video players. Wisp never opens quizzes, assignments or tools inside modules, and opens the outside "
-        + "tools in the course's menu only if you turn that on below."
+        + "video players. It also opens the outside tools in the course's menu (such as Ed Discussion, Gradescope or "
+        + "YuJa), signed in as you, and reads only their links. Wisp never opens quizzes, assignments, tools inside "
+        + "modules, meetings (Zoom), course surveys, badges or exam proctoring."
     static let noCanvasLink = "Wisp doesn't have a Canvas link for this course yet. Read your school tabs first."
     static let needsAddress = "Find materials: open this course in Canvas and press Read again so Wisp knows its address."
     static let openingModules = "Opening the Modules page in your browser"
@@ -940,13 +936,6 @@ enum StudyFindText {
     static func readingPage(_ i: Int, of n: Int) -> String { "Reading course page \(i) of \(n)" }
     static func readingSection(_ name: String, _ i: Int, of n: Int) -> String { "Reading \(name) (\(i) of \(n))" }
     static func readingTool(_ name: String) -> String { "Reading the links in \(name)" }
-    /// Opening the course menu's outside tools is its own choice, off until the
-    /// student turns it on: each launch tells that tool's site who they are.
-    static let toolsKey = "study.findMaterials.outsideTools.v1"
-    static let toolsToggle = "Also open the outside tools in the course's menu"
-    static let toolsExplain = "Such as Ed Discussion, Gradescope or YuJa. They open signed in as you, so Canvas tells "
-        + "each tool's site who you are. Wisp reads only their links. Never Zoom, course surveys, badges or proctoring."
-    static let toolsOff = "turned off"
     static let outsideTool = "Outside tool"
     /// The course menu's outside tools and what happened to each.
     static func toolsLine(_ tools: [StudyFindTool]) -> String {
@@ -1026,17 +1015,7 @@ enum StudyFindText {
         case "page": return "Course pages"
         case "discussion": return "Discussions"
         case "video": return "Videos"
-        default: return "Can't open"
-        }
-    }
-
-    /// The row note for an item the server refused.
-    static func refused(_ reason: String) -> String {
-        switch reason {
-        case "tool": return "Can't open: outside tool"
-        case "quiz": return "Can't open: quiz"
-        case "assignment": return "Can't open: assignment"
-        default: return "Can't open: unknown type"
+        default: return "Other"
         }
     }
     static func kindName(_ kind: String) -> String {
@@ -1484,12 +1463,6 @@ final class StudyFindRun: ObservableObject {
             menuTools.append(StudyFindTool(id: url.absoluteString, name: name,
                                              status: StudyFindTool.skipReason(name).map { .skipped($0) } ?? .waiting))
         }
-        // Off until the student turns it on: each tool is then listed, not opened.
-        if !UserDefaults.standard.bool(forKey: StudyFindText.toolsKey) {
-            for i in menuTools.indices where menuTools[i].status == .waiting {
-                menuTools[i].status = .skipped(StudyFindText.toolsOff)
-            }
-        }
         tools = menuTools
         for i in menuTools.indices where menuTools[i].status == .waiting {
             guard live(gen) else { return }
@@ -1560,7 +1533,7 @@ final class StudyFindRun: ObservableObject {
     private static func visits(_ items: [StudyFoundItem], target: StudyFindTarget,
                                types: [String: String]) -> [StudyFoundItem] {
         func rank(_ item: StudyFoundItem) -> Int? {
-            guard item.via == "browser", item.reason == nil, !item.known, let parts = StudyFindTarget.parts(item.url),
+            guard item.via == "browser", !item.known, let parts = StudyFindTarget.parts(item.url),
                   target.openableURL(item.url) != nil else { return nil }
             let type = types[StudyFindTarget.pathKey(item.url)]
             if let type, StudyFindReader.isNeverOpened(type) { return nil }
@@ -1716,7 +1689,6 @@ final class StudyFindRun: ObservableObject {
 
     /// Why a row can't be ticked, or nil.
     func blocker(_ item: StudyFoundItem) -> String? {
-        if let reason = item.reason { return StudyFindText.refused(reason) }
         if item.known { return StudyFindText.added }
         switch item.via {
         case "drive", "web":
@@ -1966,7 +1938,6 @@ struct StudyFindMaterialsView: View {
 
 private struct StudyFindCard: View {
     @ObservedObject var run: StudyFindRun
-    @AppStorage(StudyFindText.toolsKey) private var openTools = false
     let course: StudyCourse
     let onFinished: () async -> Void
     let onResize: () -> Void
@@ -2044,25 +2015,12 @@ private struct StudyFindCard: View {
                 Text(StudyFindText.consent).font(.wisp(.footnote)).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            toolsChoice
             HStack(spacing: 6) {
                 StudyChrome.pill("Continue", primary: true) { run.consent() }
                     .accessibilityHint("Opens the Modules page in your browser and reads its links")
                 StudyChrome.pill("Cancel") { set { run.close() } }
                 Spacer(minLength: 0)
             }
-        }
-    }
-
-    /// The separate, off-by-default choice to open the course menu's outside tools.
-    private var toolsChoice: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Toggle(StudyFindText.toolsToggle, isOn: $openTools)
-                .toggleStyle(.checkbox)
-                .font(.wisp(.footnote)).foregroundStyle(Theme.textSecondary)
-            Text(StudyFindText.toolsExplain).font(.wisp(.caption)).foregroundStyle(Theme.textMuted)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.leading, 20)
         }
     }
 
@@ -2130,8 +2088,6 @@ private struct StudyFindCard: View {
             if !run.tools.isEmpty {
                 Text(StudyFindText.toolsLine(run.tools)).font(.wisp(.caption)).foregroundStyle(Theme.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
-                // Turned off this run: the choice is here for the next one.
-                if run.tools.contains(where: { $0.status == .skipped(StudyFindText.toolsOff) }) { toolsChoice }
             }
             if run.items.isEmpty {
                 Text(StudyFindText.nothingFound).font(.wisp(.footnote)).foregroundStyle(Theme.textMuted)
