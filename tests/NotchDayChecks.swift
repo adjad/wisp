@@ -556,6 +556,104 @@ func dayChecks(_ check: (Bool, String) -> Void) {
           && WispClock.hour(0, locale: WispClock.fixedLocale) == "12 AM", "hour labels follow the locale")
     check(WispClock.time(at(15.5), zone: utc, locale: gb) == "15:30" && WispClock.time(at(15.5), zone: utc, locale: WispClock.fixedLocale) == "3:30 PM",
           "clock times follow the locale")
+
+    // Study (docs/STUDY_TAB.md): a study block is drawn as your own plan, never as
+    // a Calendar event; a school deadline is due at its time; SCHOOL follows CAL.
+    let studied = window([DayBlockInput(id: "study-block:canvas:1:2", title: "Study: Lab 5", start: at(15), end: at(15.75),
+                                        kind: "study")],
+                         now: now, needs: [DayNeedInput(id: "study:canvas:1:2", title: "Lab 5 · CS 101", source: "study",
+                                                        due: at(23 + 59.0 / 60))])
+    let studyBlock = studied.items.first { $0.id == "block:study-block:canvas:1:2" }
+    check(studyBlock?.style == .task && studyBlock?.detail == "Study block · 45 min" && studyBlock?.taskID == nil,
+          "a study block is a plan row, not a calendar event: \(studyBlock?.detail ?? "missing")")
+    check(studyBlock.map { DayTimeline.agendaDetail($0, now: now, isToday: true, clock: clock) } == "Study block · 45 min",
+          "a study block's agenda line names it")
+    let studyDue = studied.items.first { $0.id == "need:study:canvas:1:2" }
+    check(studyDue?.style == .needsYou && studyDue?.detail == "Due 23:59 · Needs you" && studyDue?.due == at(23 + 59.0 / 60),
+          "a school deadline is due at its time: \(studyDue?.detail ?? "missing")")
+    let schoolLines = DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: []), texts: (ready: true, needing: []),
+                                             soon: .nothing, school: " 2 due today: Lab 5 (CS 101), Essay draft ")
+    check(schoolLines.map(\.tag) == ["CAL", "SCHOOL", "MAIL", "TEXTS", "SOON"]
+          && schoolLines[1].text == "2 due today: Lab 5 (CS 101), Essay draft" && !schoolLines[1].muted,
+          "SCHOOL follows CAL when school work is due: \(schoolLines.map(\.tag))")
+    check(DayTimeline.briefLines(calendar: light, mail: nil, texts: nil, soon: .nothing, school: "  ").map(\.tag)
+            == ["CAL", "MAIL", "TEXTS", "SOON"], "no school line when nothing is due")
+    let schoolGlance = BriefTiles.glance(schoolLines, mailProse: nil)
+    check(schoolGlance.map(\.leading) == ["School", "Mail", "Texts"] && schoolGlance.first?.id == "glance-SCHOOL",
+          "the default Brief view lists School over Mail and Texts: \(schoolGlance.map(\.leading))")
+
+    // The `study` object of /assistant/today, tolerant of missing and odd fields.
+    let studyJSON = #"""
+    {"due_today": [{"id": "canvas:1:2", "title": "Lab 5", "course_name": "CS 101", "due_ts": 1794700740.0,
+                    "all_day": false, "kind": "assignment", "status": "upcoming"},
+                   {"id": "x", "title": "Essay draft", "course_name": null, "due_ts": null}],
+     "due_tomorrow_count": 1, "due_week_count": 4, "missing_count": 0,
+     "next_test": {"id": "canvas:1:9", "title": "Midterm", "course_name": "CS 101", "due_ts": 1794900000.0},
+     "line": "2 due today: Lab 5 (CS 101), Essay draft", "sample": false, "brand_new": [1, 2]}
+    """#
+    let summary = try? JSONDecoder().decode(StudyDaySummary.self, from: Data(studyJSON.utf8))
+    check(summary?.dueToday.map(\.title) == ["Lab 5", "Essay draft"] && summary?.dueToday.first?.courseName == "CS 101"
+          && summary?.dueToday.first?.dueTS == 1794700740.0 && summary?.dueToday.last?.courseName == ""
+          && summary?.dueToday.last?.dueTS == nil, "study due items decode, nulls as defaults")
+    check(summary?.dueTomorrowCount == 1 && summary?.dueWeekCount == 4 && summary?.missingCount == 0
+          && summary?.nextTest?.title == "Midterm" && summary?.briefLine == "2 due today: Lab 5 (CS 101), Essay draft"
+          && summary?.sample == false, "the study summary's counts, next test and line")
+    let bare = try? JSONDecoder().decode(StudyDaySummary.self, from: Data(#"{"line": "", "next_test": null}"#.utf8))
+    check(bare == StudyDaySummary() && bare?.briefLine == nil, "an empty study summary says nothing")
+
+    // This week's school work for Brief and Day (`upcoming`, `upcoming_more`).
+    // An older service sends neither key: no rows, the line as before.
+    check(summary?.upcoming == [] && summary?.upcomingMore == 0 && summary?.briefUpcoming.isEmpty == true
+          && summary?.briefHeadline == "2 due today: Lab 5 (CS 101), Essay draft"
+          && summary?.dayUpcoming(dayStart: dayStart, dayEnd: dayEnd).isEmpty == true,
+          "an older study summary without upcoming decodes to no rows")
+    check(bare?.briefHeadline == "" && bare?.briefUpcoming.isEmpty == true, "no line and nothing upcoming hides SCHOOL")
+    let weekJSON = """
+    {"line": "2 due today: Lab 5 (CS 101), Essay draft", "sample": false,
+     "due_today": [{"id": "lab5", "title": "Lab 5", "course_name": "CS 101", "due_ts": \(at(17))}],
+     "upcoming": [
+       {"id": "lab5", "title": "Lab 5", "course_name": "Intro to Programming", "course_label": "CS 101", "due_ts": \(at(17))},
+       {"id": "essay", "title": "Essay draft", "course_name": "Writing and Rhetoric: Voices and Global Perspectives", "course_label": "", "due_ts": \(at(23.98))},
+       {"id": "quiz3", "title": "Quiz 3", "course_name": "CS 101", "course_label": "CS 101", "due_ts": \(at(34)), "kind": "quiz"},
+       {"id": "pset7", "title": "  ", "course_name": "MATH 110", "course_label": null, "due_ts": \(at(24 * 3)), "all_day": true},
+       {"id": "proj", "title": "Project proposal", "course_name": "CS 101", "course_label": "CS 101", "due_ts": \(at(24 * 5 + 12))},
+       {"id": "read", "title": "Reading 8", "course_name": "WRIT 100", "course_label": "WRIT 100", "due_ts": \(at(24 * 6 + 9))}],
+     "upcoming_more": 2}
+    """
+    let week = try? JSONDecoder().decode(StudyDaySummary.self, from: Data(weekJSON.utf8))
+    check(week?.upcoming.count == 6 && week?.upcomingMore == 2 && week?.sample == false,
+          "upcoming and upcoming_more decode, the sample flag unchanged")
+    check(week?.upcoming.map(\.course) == ["CS 101", "Writing and Rhetoric: Voices and Global Perspectives", "CS 101", "MATH 110", "CS 101", "WRIT 100"],
+          "a row names the course's short label, else its name: \(week?.upcoming.map(\.course) ?? [])")
+    check(week?.upcoming[3].shownTitle == "Untitled" && week?.upcoming[3].allDay == true && week?.upcoming[2].kind == "quiz",
+          "a blank title shows as Untitled; all-day and kind decode")
+    let briefRows = week?.briefUpcoming
+    check(briefRows?.items.map(\.id) == ["lab5", "essay", "quiz3"] && briefRows?.more == 5
+          && briefRows?.moreLine == "+5 more in Study",
+          "the Brief lists three, and the more line counts the hidden rows and upcoming_more: \(briefRows?.more ?? -1)")
+    let dayRows = week?.dayUpcoming(dayStart: dayStart, dayEnd: dayEnd, shownIDs: StudyDaySummary.deadlineIDs(["study:lab5", "pa2"]))
+    check(dayRows?.items.map(\.id) == ["quiz3", "pset7", "proj", "read"] && dayRows?.more == 2,
+          "Day's School this week skips what is due on the day shown, four then the rest: \(dayRows?.items.map(\.id) ?? [])")
+    check(StudyDaySummary.deadlineIDs(["study:lab5", "pa2", "study:canvas:1:2"]) == ["lab5", "canvas:1:2"],
+          "the Day's school deadline ids name their assignments")
+    let byID = StudyDaySummary(upcoming: [StudyDaySummary.Due(id: "late", dueTS: at(30)), StudyDaySummary.Due(id: "next", dueTS: at(40))])
+    check(byID.dayUpcoming(dayStart: dayStart, dayEnd: dayEnd, shownIDs: ["late"]).items.map(\.id) == ["next"],
+          "an item the day already lists by id is not repeated")
+    let onlyToday = StudyDaySummary(line: "1 due today: Lab 5 (CS 101)",
+                                    upcoming: [StudyDaySummary.Due(id: "lab5", title: "Lab 5", dueTS: at(17))])
+    check(onlyToday.briefUpcoming.isEmpty && onlyToday.briefHeadline == "1 due today: Lab 5 (CS 101)"
+          && onlyToday.dayUpcoming(dayStart: dayStart, dayEnd: dayEnd).isEmpty,
+          "one item due today and nothing else: the headline alone, and nothing extra on Day")
+    let quietWeek = StudyDaySummary(upcoming: [StudyDaySummary.Due(id: "proj", title: "Project", dueTS: at(24 * 4))])
+    check(quietWeek.briefHeadline == StudyDaySummary.quietHeadline && quietWeek.briefUpcoming.items.map(\.id) == ["proj"]
+          && quietWeek.briefUpcoming.moreLine == nil,
+          "nothing due today or tomorrow but work later this week: a quiet headline over its row")
+    let threeExactly = StudyDaySummary(line: "x", upcoming: (0..<3).map { StudyDaySummary.Due(id: "a\($0)", dueTS: at(30 + Double($0))) })
+    check(threeExactly.briefUpcoming.items.count == 3 && threeExactly.briefUpcoming.moreLine == nil, "three fit with no more line")
+    let capped = StudyDaySummary(line: "x", upcoming: (0..<8).map { StudyDaySummary.Due(id: "a\($0)", dueTS: at(30 + Double($0))) },
+                                 upcomingMore: -4)
+    check(capped.upcomingMore == 0 && capped.dayUpcoming(dayStart: dayStart, dayEnd: dayEnd).more == 4,
+          "Day shows four of eight; a negative upcoming_more counts as none")
 }
 
 /// To-dos from the proactive engine on the Day tab: timed ones on the hour

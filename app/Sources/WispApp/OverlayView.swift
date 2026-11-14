@@ -280,6 +280,13 @@ struct OverlayView: View {
             tabScroll { NotchDayView(model: model, today: todayModel) }
         case .meet:
             tabScroll { NotchMeetingView(model: MeetingModel.shared) }
+        case .study:
+            // Study stops at half the screen and scrolls inside itself, so an
+            // opened material keeps its back row fixed (SurfaceLayout.studyContentCap).
+            NotchStudyView(model: model, study: StudyModel.shared,
+                           cap: layout.studyContentCap(headerHeight: headerHeight))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, SurfaceLayout.tabTopPadding)
         case .research:
             if model.showingResearch {
                 ResearchView(model: researchModel, compact: true,
@@ -548,6 +555,7 @@ struct OverlayView: View {
         case .brief, .day: return "Open the full planner in the Wisp window (⌘O)"
         case .research: return "Open the research library (⌘O)"
         case .meet: return "Open the Wisp window (⌘O)"
+        case .study: return "Open the Wisp window (⌘O)"
         }
     }
 

@@ -23,7 +23,7 @@ opt-in for some generation tasks: never the default, never silent. Web
 search and fetch are the one routine outbound path.
 
 ## Operating Context
-Notch panel (⌥Space or hover) with the tabs Ask · Brief · Day, a hidden
+Notch panel (⌥Space or hover) with the tabs Ask · Brief · Day · Meet · Study, a hidden
 Research mode and quick settings. When collapsed it is a black bar around the
 camera housing (a virtual notch on built-in screens without one, a capsule on
 external monitors). The Wisp window holds chats, the Today planner, the

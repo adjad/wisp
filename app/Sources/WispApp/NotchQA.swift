@@ -33,7 +33,7 @@ enum NotchQADriver {
         let midnight = calendar.startOfDay(for: Date())
         let now = midnight.addingTimeInterval(10 * 3600 + 32 * 60)
         let dayStart = midnight.timeIntervalSince1970
-        func dayModel(_ proactive: ProactiveFixture) -> TodayModel {
+        func dayModel(_ proactive: ProactiveFixture, study: Bool = false) -> TodayModel {
             TodayModel(now: { now }, timeZoneProvider: { zone }, transport: { request in
                 let components = request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: true) }
                 let ok = { (body: String) in
@@ -50,13 +50,18 @@ enum NotchQADriver {
                 }
                 let body = components?.path == "/assistant/upcoming" ? try fixtureUpcoming(dayStart: dayStart)
                     : try fixturePlan(day: components?.queryItems?.first { $0.name == "day" }?.value ?? "", dayStart: dayStart,
-                                      proactive: proactive)
+                                      proactive: proactive, study: study)
                 return (body, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
             })
         }
         let today = dayModel(.ready)
         let working = dayModel(.working)
         let legacy = dayModel(.none)
+        // The same day with school work from the Study tab: study blocks, school
+        // deadlines and the Brief's SCHOOL line (only the "-study" scenes).
+        let schoolDay = dayModel(.ready, study: true)
+        // The Brief from before the proactive engine, with the same school work.
+        let schoolLegacy = dayModel(.none, study: true)
         // First-day states: a new user's empty day, the same day with Calendar,
         // Reminders, Mail and Messages unreadable, and the service still starting.
         func variantModel(_ variant: DayVariant) -> TodayModel {
@@ -138,7 +143,11 @@ enum NotchQADriver {
             ("brief-blocked-proactive", .brief, { AnyView(NotchBriefView(model: model, today: blockedProactive, actions: state())) }),
             ("day-blocked", .day, { AnyView(NotchDayView(model: model, today: blocked)) }),
             ("day-starting", .day, { AnyView(NotchDayView(model: startingModel, today: starting)) }),
+            ("brief-study", .brief, { AnyView(NotchBriefView(model: model, today: schoolDay, actions: state())) }),
+            ("day-study", .day, { AnyView(NotchDayView(model: model, today: schoolDay)) }),
+            ("brief-legacy-study", .brief, { AnyView(NotchBriefView(model: model, today: schoolLegacy, open: nil)) }),
         ] + NotchQASetup.scenes() + panelScenes(model: model, today: today, state: state)
+            + studyScenes(model: model)
         for scene in scenes {
             let name = scene.name
             // The Brief's two columns render at the wide panel's width.
@@ -171,6 +180,12 @@ enum NotchQADriver {
                 await variant.refreshStoredBrief()
             }
             await starting.refresh()
+            // The "-study" scenes' days load like the rest (they rendered "Starting Wisp…" before).
+            for school in [schoolDay, schoolLegacy] {
+                await school.refresh()
+                await school.refreshUpcoming()
+                await school.refreshStoredBrief()
+            }
             let deadline = Date().addingTimeInterval(5)
             @MainActor func populated() -> Bool {
                 today.currentPlan?.workspace?.proactive?.cards.count == 3 && today.upcomingReply != nil && today.storedBriefChecked &&
@@ -179,7 +194,9 @@ enum NotchQADriver {
                 dayOne.currentPlan != nil && blocked.currentPlan?.unreadSources.count == 4 &&
                 blockedProactive.currentPlan?.workspace?.proactive?.hasReadNothing == true &&
                 starting.currentPlan == nil && starting.error.isEmpty &&
-                attention.items.count == 1 && stale.asks.count == 2
+                attention.items.count == 1 && stale.asks.count == 2 &&
+                schoolDay.currentPlan?.study?.upcoming.isEmpty == false &&
+                schoolLegacy.currentPlan?.study?.upcoming.isEmpty == false
             }
             while !populated() && Date() < deadline {
                 try? await Task.sleep(for: .milliseconds(20))
@@ -513,7 +530,11 @@ enum NotchQADriver {
 
     /// Without `proactive` (the default) this is the Brief from before the
     /// proactive engine, which tests/BriefTimeViewChecks.swift exercises.
-    static func fixturePlan(day: String, dayStart: Double, proactive: ProactiveFixture = .none) throws -> Data {
+    /// With `study` the day also carries the Study tab's blocks, school
+    /// deadlines and SCHOOL summary (the "-study" scenes); without it the plan
+    /// is exactly what it was before Study.
+    static func fixturePlan(day: String, dayStart: Double, proactive: ProactiveFixture = .none,
+                            study withStudy: Bool = false) throws -> Data {
         func at(_ h: Double) -> Double { dayStart + h * 3600 }
         func block(_ id: String, _ title: String, _ start: Double, _ end: Double, _ kind: String,
                    task: String? = nil, pattern: String? = nil, evidence: String? = nil) -> [String: Any] {
@@ -587,7 +608,47 @@ enum NotchQADriver {
         if proactive != .none {
             workspace["proactive"] = fixtureProactive(dayStart: dayStart, working: proactive == .working)
         }
-        let payload: [String: Any] = [
+        // Study (service/study/day_hook.py): two study blocks before what they're
+        // for, both deadlines, and the summary behind the Brief's SCHOOL line.
+        let night = 23 + 59.0 / 60
+        let studyBlocks = [
+            block("study-block:qa:pset6", "Study: Problem set 6", 15.5, 16.25, "study"),
+            block("study-block:qa:lab5", "Study: Lab 5: Lists", 16.5, 17.25, "study"),
+        ]
+        let studyDeadlines: [[String: Any]] = [
+            ["id": "study:qa:pset6", "title": "Problem set 6 · MATH 110", "due_ts": at(17), "source": "study"],
+            ["id": "study:qa:lab5", "title": "Lab 5: Lists · CS 101", "due_ts": at(night), "source": "study"],
+        ]
+        let study: [String: Any] = [
+            "due_today": [
+                ["id": "qa:pset6", "title": "Problem set 6", "course_name": "MATH 110", "due_ts": at(17),
+                 "all_day": false, "kind": "assignment", "status": "upcoming"],
+                ["id": "qa:lab5", "title": "Lab 5: Lists", "course_name": "CS 101", "due_ts": at(night),
+                 "all_day": false, "kind": "assignment", "status": "upcoming"],
+            ],
+            "due_tomorrow_count": 2, "due_week_count": 6, "missing_count": 1,
+            "next_test": ["id": "qa:quiz3", "title": "Quiz 3: Loops", "course_name": "CS 101", "due_ts": at(24 + 10)],
+            "line": "2 due today: Problem set 6 (MATH 110), Lab 5: Lists (CS 101)", "sample": false,
+            // This week's open work, soonest first (today's two among it): the
+            // Brief lists three, Day lists what isn't due today. One course has
+            // no short label, so its row names the course.
+            "upcoming": [
+                ["id": "qa:pset6", "title": "Problem set 6", "course_name": "MATH 110", "course_label": "MATH 110",
+                 "due_ts": at(17), "all_day": false, "kind": "assignment", "status": "upcoming"],
+                ["id": "qa:lab5", "title": "Lab 5: Lists", "course_name": "CS 101", "course_label": "CS 101",
+                 "due_ts": at(night), "all_day": false, "kind": "assignment", "status": "upcoming"],
+                ["id": "qa:quiz3", "title": "Quiz 3: Loops", "course_name": "CS 101", "course_label": "CS 101",
+                 "due_ts": at(24 + 10), "all_day": false, "kind": "quiz", "status": "upcoming"],
+                ["id": "qa:reading4", "title": "Reading response 4: Ways of seeing", "course_name": "Writing and Rhetoric: Voices and Global Perspectives",
+                 "course_label": "", "due_ts": at(24 + night), "all_day": false, "kind": "reading", "status": "upcoming"],
+                ["id": "qa:pset7", "title": "Problem set 7", "course_name": "MATH 110", "course_label": "MATH 110",
+                 "due_ts": at(24 * 3), "all_day": true, "kind": "assignment", "status": "upcoming"],
+                ["id": "qa:proposal", "title": "Project proposal", "course_name": "CS 101", "course_label": "CS 101",
+                 "due_ts": at(24 * 5 + 12), "all_day": false, "kind": "project", "status": "upcoming"],
+            ],
+            "upcoming_more": 1,
+        ]
+        var payload: [String: Any] = [
             "day": day, "timezone": zone.identifier, "generated_at": at(13.1), "revision": 3, "provisional": false,
             "warnings": [], "tasks": [], "blocks": [], "deadlines": [],
             "all_day": [["id": "allday", "title": "PA 2 [CSE-20-04]", "start": at(0), "kind": "calendar", "warnings": []]],
@@ -596,6 +657,11 @@ enum NotchQADriver {
             "preferences": ["start_minute": 540, "end_minute": 1320, "not_before": NSNull()],
             "workspace": workspace,
         ]
+        if withStudy {
+            payload["blocks"] = studyBlocks
+            payload["deadlines"] = studyDeadlines
+            payload["study"] = study
+        }
         return try JSONSerialization.data(withJSONObject: payload)
     }
 
@@ -640,6 +706,263 @@ enum NotchQADriver {
                         "quote": "dinner at 7?", "undoable": false]],
         ]
         return try JSONSerialization.data(withJSONObject: payload)
+    }
+}
+
+// MARK: - Study (docs/STUDY_TAB.md)
+
+/// The Study tab against synthetic coursework: four courses, eight assignments
+/// spread over Missing, Today, Tomorrow and This week (by this Mac's clock, as
+/// the tab groups them), four saved materials about Python lists and loops, and
+/// one full material of each kind. Each scene has its own StudyModel whose
+/// transport answers here; nothing reaches the service, a browser or a key.
+extension NotchQADriver {
+    static func studyScenes(model: OverlayModel) -> [(name: String, tab: NotchTab, view: () -> AnyView)] {
+        let midnight = Calendar.current.startOfDay(for: Date()).timeIntervalSince1970
+        let state = studyState(midnight: midnight)
+        let empty: [String: Any] = [
+            "connector": studyConnector(ready: false), "sample": false, "last_import": NSNull(),
+            "courses": [], "assignments": [], "materials": [],
+        ]
+        // The panel on a 14" MacBook Pro's default screen: a header-sized band, then
+        // the tab capped at half the screen (SurfaceLayout.studyContentCap).
+        let header: CGFloat = 30
+        let side: CGFloat = (1512 - 185) / 2
+        let layout = SurfaceLayout.make(for: DisplayMetrics(
+            frame: CGRect(x: 0, y: 0, width: 1512, height: 982),
+            visibleFrame: CGRect(x: 0, y: 0, width: 1512, height: 950),
+            safeAreaTop: 32, auxLeftWidth: side, auxRightWidth: side, isBuiltIn: true))
+        func scene(_ name: String, state: [String: Any], opened: String? = nil,
+                   connector: Bool = false) -> (name: String, tab: NotchTab, view: () -> AnyView) {
+            (name, .study, {
+                let study = StudyModel(transport: studyTransport(state: state, midnight: midnight), reader: { [] })
+                let decoded = try? JSONDecoder().decode(StudyState.self, from: JSONSerialization.data(withJSONObject: state))
+                let material = opened.flatMap { id in
+                    (try? JSONSerialization.data(withJSONObject: studyMaterial(id, midnight: midnight)))
+                        .flatMap { try? JSONDecoder().decode(StudyMaterial.self, from: $0) }
+                }
+                precondition(decoded != nil && (opened == nil || material != nil), "\(name): the Study fixture must decode")
+                study.show(state: decoded, opened: material)
+                study.showingConnector = connector
+                return AnyView(VStack(alignment: .leading, spacing: 0) {
+                    Text("HEADER (fixed) · 1512×982 pt · Study panel ≤ \(Int(layout.maxStudyPanelHeight))")
+                        .font(.wisp(size: 11, design: .monospaced)).foregroundStyle(Theme.textMuted)
+                        .frame(maxWidth: .infinity, minHeight: header, maxHeight: header, alignment: .leading)
+                    NotchStudyView(model: model, study: study, cap: layout.studyContentCap(headerHeight: header))
+                        .padding(.top, SurfaceLayout.tabTopPadding)
+                }
+                // The driver pads every scene 18 pt; the panel's top inset is the notch's.
+                .padding(.top, layout.contentTopInset - 18))
+            })
+        }
+        return [
+            scene("study", state: state),
+            scene("study-quiz", state: state, opened: "m-quiz"),
+            scene("study-cards", state: state, opened: "m-cards"),
+            scene("study-guide", state: state, opened: "m-guide"),
+            scene("study-lesson", state: state, opened: "m-lesson"),
+            scene("study-setup", state: empty, connector: true),
+        ]
+    }
+
+    /// Answers the routes the tab calls; a write is acknowledged and never kept.
+    static func studyTransport(state: [String: Any], midnight: Double) -> StudyModel.Transport {
+        { request in
+            let path = request.url?.path ?? ""
+            func reply(_ object: Any, status: Int = 200) throws -> (Data, URLResponse) {
+                (try JSONSerialization.data(withJSONObject: object),
+                 HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
+            }
+            let prefix = "/study/materials/"
+            if path.hasPrefix(prefix) {
+                let rest = String(path.dropFirst(prefix.count))
+                if rest.hasSuffix("/attempt") { return try reply(["best_score": 0.83]) }
+                if request.httpMethod == "DELETE" { return try reply(["deleted": true]) }
+                let id = rest.removingPercentEncoding ?? rest
+                if ["m-guide", "m-quiz", "m-lesson", "m-cards"].contains(id) {
+                    return try reply(studyMaterial(id, midnight: midnight))
+                }
+                return try reply(["detail": "not_found", "message": "That material is gone."], status: 404)
+            }
+            if path == "/study/generate" { return try reply(studyMaterial("m-quiz", midnight: midnight)) }
+            if path == "/study/connector" { return try reply(state["connector"] ?? [String: Any]()) }
+            if path == "/study/import" {
+                return try reply(["courses": 0, "assignments": 0, "pages": [], "state": state])
+            }
+            return try reply(state)
+        }
+    }
+
+    static func studyConnector(ready: Bool) -> [String: Any] {
+        [
+            "provider": "openrouter", "model_id": "google/gemini-3.8-flash", "ready": ready,
+            "source": ready ? "study" : "none",
+            "providers": [
+                ["id": "openrouter", "label": "OpenRouter", "default_model": "google/gemini-3.8-flash",
+                 "models": [["id": "google/gemini-3.8-flash", "label": "Gemini 3.8 Flash"]],
+                 "key_url": "https://openrouter.ai/keys", "key_hint": "sk-or-…"],
+                ["id": "gemini", "label": "Gemini API", "default_model": "gemini-3.8-flash",
+                 "models": [["id": "gemini-3.8-flash", "label": "Gemini 3.8 Flash"]],
+                 "key_url": "https://aistudio.google.com/apikey", "key_hint": "AIza…"],
+            ],
+        ]
+    }
+
+    static func studyState(midnight: Double) -> [String: Any] {
+        func at(_ days: Double, _ hour: Double) -> Double { midnight + days * 86400 + hour * 3600 }
+        let night = 23 + 59.0 / 60
+        let courses: [[String: Any]] = [
+            ["id": "qa:cs101", "name": "Introduction to Programming", "code": "CS 101", "grade": "B+", "score": 87.5,
+             "url": "https://canvas.example.edu/courses/101", "due_count": 3, "sample": false],
+            ["id": "qa:math110", "name": "Calculus I", "code": "MATH 110",
+             "grade": "B+", "score": 88.4, "url": "https://canvas.example.edu/courses/102", "due_count": 2, "sample": false],
+            ["id": "qa:writ100", "name": "Writing and Rhetoric", "code": "WRIT 100", "grade": "A", "score": 95.0,
+             "url": "https://canvas.example.edu/courses/103", "due_count": 2, "sample": false],
+            ["id": "qa:phys120", "name": "Introduction to Physics I", "code": "PHYS 120", "grade": "B", "score": 84.1,
+             "url": "https://canvas.example.edu/courses/104", "due_count": 1, "sample": false],
+        ]
+        func item(_ id: String, _ course: String, _ courseName: String, _ title: String, kind: String = "assignment",
+                  due: Double, points: Double, status: String = "upcoming") -> [String: Any] {
+            ["id": "qa:" + id, "course_id": course, "course_name": courseName, "title": title, "kind": kind,
+             "due_ts": due, "all_day": false, "points": points, "score": NSNull(), "status": status,
+             "url": "https://canvas.example.edu/assignments/" + id, "sample": false]
+        }
+        let assignments: [[String: Any]] = [
+            item("lab4", "qa:cs101", "Introduction to Programming", "Lab 4: Strings", due: at(-2, night), points: 20,
+                 status: "missing"),
+            item("pset6", "qa:math110", "Calculus I", "Problem set 6",
+                 due: at(0, 17), points: 30),
+            item("lab5", "qa:cs101", "Introduction to Programming", "Lab 5: Lists", due: at(0, night), points: 20),
+            item("quiz3", "qa:cs101", "Introduction to Programming", "Quiz 3: Loops", kind: "quiz",
+                 due: at(1, 10), points: 10),
+            item("essay", "qa:writ100", "Writing and Rhetoric", "Essay draft: rhetorical analysis", due: at(1, night),
+                 points: 50),
+            item("midterm", "qa:phys120", "Introduction to Physics I", "Midterm 1", kind: "exam", due: at(3, 14),
+                 points: 100),
+            item("reading7", "qa:math110", "Calculus I", "Reading: Section 3.4",
+                 kind: "reading", due: at(4, night), points: 0),
+            item("post5", "qa:writ100", "Writing and Rhetoric", "Discussion post 5", kind: "discussion",
+                 due: at(5, night), points: 5),
+        ]
+        func summary(_ id: String, _ kind: String, _ title: String, count: Int, best: Double?, hoursAgo: Double) -> [String: Any] {
+            ["id": id, "kind": kind, "title": title, "course_id": "qa:cs101", "assignment_id": "qa:lab5",
+             "created_at": midnight + 10 * 3600 - hoursAgo * 3600, "count": count,
+             "best_score": best.map { $0 as Any } ?? (NSNull() as Any), "sample": false]
+        }
+        let materials: [[String: Any]] = [
+            summary("m-quiz", "quiz", "Lists and loops: practice quiz", count: 6, best: 0.83, hoursAgo: 1),
+            summary("m-cards", "flashcards", "Python lists: flash cards", count: 8, best: nil, hoursAgo: 5),
+            summary("m-lesson", "lesson", "Looping over a list, step by step", count: 4, best: nil, hoursAgo: 26),
+            summary("m-guide", "guide", "Lab 5 study guide: lists and loops", count: 4, best: nil, hoursAgo: 50),
+        ]
+        return ["connector": studyConnector(ready: true), "sample": false, "last_import": midnight + 9 * 3600,
+                "courses": courses, "assignments": assignments, "materials": materials]
+    }
+
+    /// One full material of each kind, written for CS 101's Lab 5.
+    static func studyMaterial(_ id: String, midnight: Double) -> [String: Any] {
+        let body: [String: Any]
+        let kind: String
+        let title: String
+        switch id {
+        case "m-guide":
+            kind = "guide"; title = "Lab 5 study guide: lists and loops"
+            body = [
+                "summary": "A list holds values in order, can change after it is made, and is read by position starting at 0. Loops let you visit each item without writing the same line again, which is most of what Lab 5 asks for.",
+                "sections": [
+                    ["heading": "Making and reading lists", "points": [
+                        "Square brackets make a list: scores = [88, 92, 75].",
+                        "Indexing starts at 0, so scores[0] is 88 and scores[-1] is the last item, 75.",
+                        "len(scores) is the number of items, here 3; the last index is always len(scores) - 1."]],
+                    ["heading": "Changing a list", "points": [
+                        "append(x) adds one item to the end; insert(i, x) puts it at position i.",
+                        "pop() removes and returns the last item; remove(x) deletes the first item equal to x.",
+                        "Lists are mutable: scores[1] = 95 changes the list in place. Strings and tuples are not."]],
+                    ["heading": "Looping over a list", "points": [
+                        "for score in scores: visits each item in order; you get the value, not the position.",
+                        "for i in range(len(scores)): gives you positions, useful when you need to change items.",
+                        "enumerate(scores) gives both: for i, score in enumerate(scores)."]],
+                    ["heading": "Common mistakes", "points": [
+                        "scores[len(scores)] raises IndexError: the last index is one less than the length.",
+                        "Removing items from a list while looping over it skips items; loop over a copy instead.",
+                        "b = a does not copy a list; both names point at the same list. Use a.copy() or a[:]."]],
+                ],
+                "key_terms": [
+                    ["term": "index", "meaning": "An item's position in a list, counted from 0."],
+                    ["term": "mutable", "meaning": "Can be changed after it is created, like a list."],
+                    ["term": "slice", "meaning": "Part of a list, such as scores[1:3], which makes a new list."],
+                    ["term": "iteration", "meaning": "One pass through the body of a loop."],
+                ],
+                "practice": [
+                    "Write a loop that adds up the numbers in [4, 8, 15, 16, 23, 42] without using sum().",
+                    "Given names = [\"Ana\", \"Bo\", \"Cy\"], print each name with its position, starting at 1.",
+                    "Make a new list holding only the even numbers from range(1, 21).",
+                ],
+            ]
+        case "m-quiz":
+            kind = "quiz"; title = "Lists and loops: practice quiz"
+            body = ["questions": [
+                ["prompt": "What does nums[-1] give for nums = [3, 6, 9]?",
+                 "choices": ["3", "6", "9", "An IndexError"], "answer": 2,
+                 "why": "A negative index counts from the end, so -1 is the last item, 9."],
+                ["prompt": "After nums = [1, 2] and nums.append([3, 4]), what is len(nums)?",
+                 "choices": ["2", "3", "4", "It raises an error"], "answer": 1,
+                 "why": "append adds its argument as one item, so the list becomes [1, 2, [3, 4]] with 3 items. extend would add 3 and 4 separately."],
+                ["prompt": "How many times does the body of for i in range(2, 10, 3): run?",
+                 "choices": ["2", "3", "4", "8"], "answer": 1,
+                 "why": "range(2, 10, 3) gives 2, 5 and 8, then stops before 10: three passes."],
+                ["prompt": "Which line makes a separate copy of the list a?",
+                 "choices": ["b = a", "b = a.copy()", "b == a", "b = [a]"], "answer": 1,
+                 "why": "b = a gives the same list a second name; a.copy() (or a[:]) makes a new list with the same items."],
+                ["prompt": "What does this print? total = 0, then for x in [2, 4, 6]: total += x, then print(total)",
+                 "choices": ["6", "12", "246", "[2, 4, 6]"], "answer": 1,
+                 "why": "The loop adds 2, then 4, then 6 to total: 0 + 2 + 4 + 6 = 12."],
+                ["prompt": "What is [n * n for n in range(4)]?",
+                 "choices": ["[1, 4, 9, 16]", "[0, 1, 4, 9]", "[0, 1, 2, 3]", "[0, 2, 4, 6]"], "answer": 1,
+                 "why": "range(4) is 0, 1, 2, 3, and squaring each gives 0, 1, 4, 9."],
+            ]]
+        case "m-lesson":
+            kind = "lesson"; title = "Looping over a list, step by step"
+            body = ["steps": [
+                ["title": "A list is a row of numbered boxes",
+                 "explain": "A list keeps values in order. Each one sits at a position called its index, and the first index is 0, not 1.",
+                 "example": "pets = [\"cat\", \"dog\", \"fish\"]\nprint(pets[0])   # cat\nprint(pets[2])   # fish",
+                 "check": ["prompt": "For pets = [\"cat\", \"dog\", \"fish\"], what is pets[1]?",
+                           "choices": ["\"cat\"", "\"dog\"", "\"fish\""], "answer": 1,
+                           "why": "Index 0 is \"cat\", so index 1 is the second item, \"dog\"."]],
+                ["title": "A for loop visits every item",
+                 "explain": "for name in pets: runs the indented lines once for each item, with name set to that item. You don't manage the index yourself.",
+                 "example": "for name in pets:\n    print(\"I have a\", name)",
+                 "check": ["prompt": "How many lines does that loop print?",
+                           "choices": ["1", "2", "3"], "answer": 2,
+                           "why": "The list has three items, so the body runs three times."]],
+                ["title": "Keep a running total",
+                 "explain": "Make a variable before the loop and update it inside. After the loop it holds the answer. This is the pattern behind sums, counts and averages.",
+                 "example": "scores = [80, 90, 100]\ntotal = 0\nfor s in scores:\n    total += s\nprint(total / len(scores))   # 90.0",
+                 "check": ["prompt": "Where must total = 0 go?",
+                           "choices": ["Before the loop", "Inside the loop", "After the loop"], "answer": 0,
+                           "why": "Inside the loop it would reset to 0 on every pass and only the last score would count."]],
+                ["title": "When you need the position too",
+                 "explain": "enumerate gives each item with its index, which you need to change items in place or to print numbered lines.",
+                 "example": "for i, s in enumerate(scores):\n    scores[i] = s + 5   # a 5-point curve",
+                 "check": NSNull()],
+            ]]
+        default:
+            kind = "flashcards"; title = "Python lists: flash cards"
+            body = ["cards": [
+                ["front": "What index does a Python list start at?", "back": "0. The last item is at len(list) - 1, or -1."],
+                ["front": "append vs. extend", "back": "append adds one item (even a whole list); extend adds each item of another list."],
+                ["front": "What does pop() return?", "back": "The item it removes, the last one unless you give an index."],
+                ["front": "nums[1:3] for nums = [10, 20, 30, 40]", "back": "[20, 30]: from index 1 up to, not including, index 3."],
+                ["front": "How do you copy a list?", "back": "a.copy() or a[:]. Plain b = a shares the same list."],
+                ["front": "range(5) gives…", "back": "0, 1, 2, 3, 4: five numbers, stopping before 5."],
+                ["front": "Loop with index and value", "back": "for i, x in enumerate(items):"],
+                ["front": "Why not remove items while looping over a list?", "back": "The list shifts under the loop and items get skipped. Loop over a copy or build a new list."],
+            ]]
+        }
+        return ["id": id, "kind": kind, "title": title, "course_id": "qa:cs101", "assignment_id": "qa:lab5",
+                "created_at": midnight + 9 * 3600, "model": "google/gemini-3.8-flash", "sample": false,
+                "best_score": id == "m-quiz" ? (0.83 as Any) : (NSNull() as Any), "body": body]
     }
 }
 #endif
