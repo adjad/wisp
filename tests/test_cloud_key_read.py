@@ -192,3 +192,29 @@ def test_a_failed_read_forgets_the_reused_key(monkeypatch):
     with pytest.raises(EndpointConfigurationError):
         secrets.resolve_keychain("cloud-a", URL, wait=True)
     assert "cloud-a" not in "".join(secrets._RECENT_SUCCESS)
+
+
+def test_saving_or_removing_a_cloud_connection_forgets_reused_keys(monkeypatch):
+    # Review 2 NOTE 4: a key held for reuse is never sent after its connection changes.
+    import service.config as config
+    from service.inference import remote_policy
+    monkeypatch.setattr(secrets, "_reuse_enabled", lambda: True)
+    calls, run = answer()
+    monkeypatch.setattr(secrets.subprocess, "run", run)
+    monkeypatch.setattr(config, "_save_overlay", lambda overlay: None)
+    monkeypatch.setattr(remote_policy, "require_local_models_disabled", lambda *_a: None)
+    endpoint = {"enabled": True, "provider": "openrouter", "base_url": URL, "api_prefix": "/api/v1",
+                "credential_ref": "keychain:cloud-a", "readiness_timeout": 10}
+    actions = [lambda: config.set_cloud_everything(endpoint, "google/gemini-3.8-flash", 32000),
+               lambda: config.set_cloud_provider(endpoint, "google/gemini-3.8-flash", 32000, ["research"])]
+    for everything in (True, False):
+        actions.append(lambda everything=everything: (
+            monkeypatch.setattr(config, "cloud_everything_enabled", lambda: everything),
+            config.disable_cloud_provider()))
+    for action in actions:
+        secrets.resolve_keychain("cloud-a", URL)
+        assert secrets._RECENT_SUCCESS
+        action()
+        assert secrets._RECENT_SUCCESS == {}
+    secrets.resolve_keychain("cloud-a", URL)
+    assert len(calls) == len(actions) + 1       # each read after a change went to Keychain

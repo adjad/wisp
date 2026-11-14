@@ -97,6 +97,11 @@ REASONING_EFFORT_MODELS = {
 # The models the app offers on the Gemini API itself, by their bare ids. They get the
 # Gemini API's options only, and only on its origin; OpenRouter's ids never do.
 GEMINI_API_MODELS = frozenset({"gemini-3.8-flash", "gemini-4-carbon", "gemini-4-argon"})
+# The entries that apply on every remote-only path: the one that predates
+# cloud-everything, and the Gemini API's own ids (that wire always sends its effort).
+# OpenRouter's Gemini entries apply only under cloud-everything, so the
+# WISP_REMOTE_ONLY launcher path without remote_parity sends what it did before.
+_UNGATED_REASONING_MODELS = frozenset({"anthropic/claude-haiku-5.5", *GEMINI_API_MODELS})
 # The provider sets the reasoning budget to half of max_tokens (at least 1024) and
 # requires max_tokens strictly above it, so a reasoning request needs at least this.
 REASONING_MIN_MAX_TOKENS = 2049
@@ -325,8 +330,11 @@ def _without_media(row: dict) -> dict:
 
 
 def reasoning_option(model_id: str) -> dict | None:
-    """The `reasoning` option for this model, or None when it gets none."""
+    """The `reasoning` option for this model, or None when it gets none. OpenRouter's
+    Gemini entries apply only under cloud-everything (_UNGATED_REASONING_MODELS)."""
     effort = REASONING_EFFORT_MODELS.get(model_id)
+    if effort and model_id not in _UNGATED_REASONING_MODELS and not cloud_everything_active():
+        return None
     return {"effort": effort} if effort else None
 
 

@@ -431,7 +431,7 @@ def _cache_marked_system(messages):
 # Under cloud-everything a provider's readiness (its model list answered with this
 # key) is proven once for a few minutes, not twice before every turn's first token.
 # A provider that fails meanwhile still fails the request itself, with the same
-# message; invalidate_connections forgets the proof.
+# message; invalidate_connections and a 401/403 from the provider forget the proof.
 REMOTE_READY_SECONDS = 300.0
 _REMOTE_READY: dict[tuple, float] = {}
 
@@ -612,6 +612,11 @@ class OMLXClient:
             if response.status_code == 507:
                 raise ModelMemoryLimitError() from None
         if not self.managed and not response.is_success:
+            if response.status_code in (401, 403):
+                # A key the provider now refuses: health must not keep vouching for it.
+                key = self._ready_key()
+                if key is not None:
+                    _REMOTE_READY.pop(key, None)
             # Provider-controlled redirect locations and error bodies may echo
             # private data. Do not retain the real request either: it contains
             # the prompt. Shared error handling receives only this synthetic
@@ -935,10 +940,10 @@ class OMLXClient:
         seen = _REMOTE_READY.get(key) if key is not None else None
         return seen is not None and time.monotonic() - seen < REMOTE_READY_SECONDS
 
-    async def _remote_models_ready(self) -> None:
+    async def _remote_models_ready(self, *, always: bool = False) -> None:
         """The remote inventory read that proves endpoint and key, skipped while a
-        recent one still stands (cloud-everything only)."""
-        if self._recently_ready():
+        recent one still stands (cloud-everything only) unless `always`."""
+        if not always and self._recently_ready():
             return
         await self.models()
         key = self._ready_key()
@@ -950,11 +955,13 @@ class OMLXClient:
         """Open (or refresh) a kept-alive connection to the remote provider before a
         turn needs it. The answer does not matter, only the connection: the Gemini
         API's short model list (which also proves the key), else a HEAD on the API
-        prefix (OpenRouter's model list is large). Remote clients only."""
+        prefix (OpenRouter's model list is large). Remote clients only. The request
+        is always sent: an idle kept-alive connection expires long before the
+        readiness proof does (/inference/warm rate-limits the calls)."""
         if self.managed:
             return
         if self.wire == "gemini":
-            await self._remote_models_ready()
+            await self._remote_models_ready(always=True)
             return
         response = await self._client.request("HEAD", self.api_prefix,
                                               headers={"Accept-Encoding": "identity"})

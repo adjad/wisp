@@ -963,10 +963,14 @@ async def _remote_only_switch_probe(checked, model_id: str, key: str) -> None:
     The request carries only "Reply with OK." and goes to the checked provider origin."""
     import httpx
     from service.inference.attributed_transport import CredentialTransport
+    from service.inference.providers import wire_provider
+    from service.inference.remote_policy import reasoning_fields
     payload: dict[str, Any] = {"model": model_id, "max_tokens": 256, "stream": False,
                                "messages": [{"role": "user", "content": "Reply with OK."}]}
-    if checked.provider == "gemini":
-        payload["reasoning_effort"] = "low"     # Gemini 3 and 4 always reason; keep it short
+    if wire_provider(checked.provider, checked.base_url) == "gemini":
+        # Gemini 3 and 4 always reason, so keep it short; a model with no reasoning
+        # option (Gemma) gets none. Other wires stay as they were (no reasoning field).
+        payload.update(reasoning_fields("gemini", model_id))
     transport = CredentialTransport(checked.base_url, key, managed=False)
     try:
         async with httpx.AsyncClient(base_url=checked.base_url, transport=transport, trust_env=False,

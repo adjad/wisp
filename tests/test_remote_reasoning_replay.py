@@ -223,9 +223,9 @@ class AgentTurns(ReplayBase):
                     self.assertTrue(all(b["stream"] is False for b in self.bodies))   # never streamed
                     self.assert_replayed(expected, parallel)
                     self.assert_no_leak(events, surfaces)
-                    if model in policy.REASONING_EFFORT_MODELS:
-                        effort = policy.REASONING_EFFORT_MODELS[model]
-                        self.assertTrue(all(b.get("reasoning") == {"effort": effort}
+                    option = policy.reasoning_option(model)   # OpenRouter Gemini: gate only
+                    if option is not None:
+                        self.assertTrue(all(b.get("reasoning") == option
                                             and b["max_tokens"] >= policy.REASONING_MIN_MAX_TOKENS
                                             for b in self.bodies))
                     else:
@@ -496,9 +496,12 @@ class PayloadChecks(RemoteFixture):
             with self.subTest(model=bare):
                 self.assertEqual(policy.reasoning_fields("gemini", bare), {"reasoning_effort": "low"})
                 self.assertEqual(policy.reasoning_fields("openrouter", bare), {})
-                self.assertEqual(policy.reasoning_fields("openrouter", "google/" + bare),
-                                 {"reasoning": {"effort": "low"}})
-                self.assertEqual(policy.reasoning_fields("gemini", "google/" + bare), {})
+                # OpenRouter's Gemini ids reason only under cloud-everything (NOTE 1).
+                self.assertEqual(policy.reasoning_fields("openrouter", "google/" + bare), {})
+                with patch.object(policy, "cloud_everything_active", lambda: True):
+                    self.assertEqual(policy.reasoning_fields("openrouter", "google/" + bare),
+                                     {"reasoning": {"effort": "low"}})
+                    self.assertEqual(policy.reasoning_fields("gemini", "google/" + bare), {})
         self.assertEqual(policy.reasoning_fields("openrouter", EFFORT_MODEL), {"reasoning": {"effort": "medium"}})
         self.assertEqual(policy.reasoning_fields("gemini", EFFORT_MODEL), {})
 

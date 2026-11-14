@@ -132,6 +132,22 @@ def test_the_texts_gist_names_nobody_mentioned_in_a_message_or_a_group():
     assert G.texts_gist_ok("Mostly birthday plans and cake", convos), "a sentence's first word isn't a name"
 
 
+def test_a_whole_thread_gist_is_checked_against_names_and_its_newest_lines_only():
+    """Review 2 S2: a month of thread banned every word that opens a sentence."""
+    old = [("Pat", f"old chat {i} about the lake house trip") for i in range(200)]
+    newest = [("Robin", "Sounds good. Dinner at the usual place?"), ("Pat", "Running late. Traffic is bad"),
+              ("You", "ok. Weekend plans still on?"), ("Robin", "we could ask Sam to drive")]
+    newest += [("Pat", f"sure {i}") for i in range(G.GIST_CHECK_THREAD_LINES - len(newest))]
+    convos = [{"label": "Chat", "ts": NOW, "bodies": ["Sounds good. Dinner at the usual place?"],
+               "names": ["Robin"], "thread": old + newest}]
+    assert G.texts_gist_ok("Weekend dinner plans and traffic", convos), "sentence starts aren't names"
+    assert G.texts_gist_ok("Plans for the lake house trip", convos), "lines older than the newest are not copy-checked"
+    assert not G.texts_gist_ok("Dinner at the usual place", convos), "a copied run in the newest lines"
+    assert not G.texts_gist_ok("Asking sam to drive", convos), "a mid-sentence name in the newest lines"
+    assert not G.texts_gist_ok("Mostly pat and dinner", convos), "a speaker anywhere in the thread"
+    assert not G.texts_gist_ok("Robin's dinner plans", convos)
+
+
 # --- the tick ---------------------------------------------------------------------------
 
 

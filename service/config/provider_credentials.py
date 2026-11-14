@@ -26,9 +26,15 @@ _READ_LOCK = threading.Lock()
 _RECENT_FAILURE: dict[str, float] = {}
 # Intel only (every answer is a cloud call): a key read in the last few minutes is used
 # again instead of running `security` before each turn's first token. Connect (`wait`)
-# always reads Keychain afresh, and a Connect restarts the service, which clears this.
+# always reads Keychain afresh, and a Connect restarts the service, which clears this;
+# saving or removing a cloud connection also forgets it (forget_reused_keys).
 SUCCESS_REUSE_S = 300.0
 _RECENT_SUCCESS: dict[str, tuple[float, str]] = {}
+
+
+def forget_reused_keys() -> None:
+    """Drop every key held for reuse: the next read goes to Keychain again."""
+    _RECENT_SUCCESS.clear()
 
 
 def _reuse_enabled() -> bool:

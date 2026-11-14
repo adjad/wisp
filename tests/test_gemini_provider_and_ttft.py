@@ -152,8 +152,12 @@ class GeminiProfile(RemoteFixture):
             self.assertEqual(policy.reasoning_fields("openai-compatible", model), {})
         self.assertNotIn("gemini-3.8-flash", policy.REPLAY_REASONING_MODELS)
         self.assertEqual(policy.reasoning_fields("gemini", "google/gemini-3.8-flash"), {})
-        self.assertEqual(policy.reasoning_fields("openrouter", "google/gemini-3.8-flash"),
-                         {"reasoning": {"effort": "low"}})
+        for gate, expected in ((False, {}), (True, {"reasoning": {"effort": "low"}})):
+            with patch.object(policy, "cloud_everything_active", lambda gate=gate: gate):
+                # OpenRouter's Gemini ids reason under cloud-everything only (NOTE 1).
+                self.assertEqual(policy.reasoning_fields("openrouter", "google/gemini-3.8-flash"), expected)
+                self.assertEqual(policy.reasoning_fields("gemini", "gemini-3.8-flash"),
+                                 {"reasoning_effort": "low"})
 
     def test_connect_accepts_gemini_and_its_listing_proves_the_key(self):
         from service import main
@@ -220,6 +224,10 @@ class GeminiPayload(CloudBase):
             p.validate_payload(self.body(reasoning_effort="low", max_tokens=2048))
         router = policy.profile_from_config({**self.profile, **OPENROUTER})
         rbody = {**self.body(), "model": OPENROUTER["model_id"]}
+        # OpenRouter's Gemini reasoning is cloud-everything only (review 2 NOTE 1).
+        with self.assertRaises(EndpointConfigurationError):
+            router.validate_payload({**rbody, "reasoning": {"effort": "low"}})
+        self.everything(True)
         router.validate_payload({**rbody, "provider": {"sort": "latency"}, "reasoning": {"effort": "low"}})
         for bad in ({"reasoning_effort": "low"}, {"provider": {"sort": "price"}},
                     {"provider": {"sort": "latency", "only": ["x"]}}):
@@ -512,10 +520,11 @@ def test_network_error_retires_the_pool_and_retries_a_stale_connection_once(fake
 
     async def go():
         t = at.CredentialTransport(OPENROUTER_ORIGIN, "k", managed=False, shared=True)
-        await t.handle_async_request(_request())
+        await (await t.handle_async_request(_request())).aclose()
         failures.append(httpcore.RemoteProtocolError("Server disconnected"))
         response = await t.handle_async_request(_request())  # retried on a fresh pool
         assert response.status_code == 200
+        await response.aclose()
         assert len(created) == 2 and created[0].closed and not created[1].closed
         failures.extend([httpcore.ConnectTimeout("x")])
         with pytest.raises(httpx.ConnectError):              # never retried
@@ -526,6 +535,61 @@ def test_network_error_retires_the_pool_and_retries_a_stale_connection_once(fake
         await t.aclose()
     asyncio.run(go())
     assert all(p.closed for p in created[:-1])
+
+
+def test_one_failure_never_closes_a_pool_another_request_is_still_reading(fake_pools):
+    created, failures = fake_pools
+
+    async def go():
+        # One long-lived client (main.py's) carries both requests: E's only user.
+        a = at.CredentialTransport(OPENROUTER_ORIGIN, "k", managed=False, shared=True)
+        x = await a.handle_async_request(_request())         # X streams on pool E
+        failures.append(httpcore.ReadError("stale"))
+        y = await a.handle_async_request(_request())         # Y fails on E, retried on F
+        assert y.status_code == 200 and len(created) == 2
+        old, fresh = created
+        assert old.requests == 2 and fresh.requests == 1
+        assert not old.closed and not fresh.closed           # X is still reading E
+        await x.aclose()                                     # X completes
+        assert old.closed and not fresh.closed
+        await y.aclose()
+        await a.aclose()
+        assert not fresh.closed                              # a routine close keeps it
+    asyncio.run(go())
+
+
+def test_a_second_failure_never_closes_the_fresh_pool(fake_pools):
+    created, _ = fake_pools
+    gate = None
+
+    class Stale(FakePool):
+        async def handle_async_request(self, request):
+            self.requests += 1
+            if self is created[0]:                           # both requests meet stale E
+                await gate.wait()
+                raise httpcore.ReadError("stale")
+            return httpcore.Response(200, headers=[], content=b"{}")
+
+    async def go():
+        nonlocal gate
+        gate = asyncio.Event()
+        with patch.object(at, "_shared_remote_pool", lambda: Stale(created)):
+            a = at.CredentialTransport(OPENROUTER_ORIGIN, "k", managed=False, shared=True)
+            b = at.CredentialTransport(OPENROUTER_ORIGIN, "k", managed=False, shared=True)
+            both = asyncio.gather(a.handle_async_request(_request()), b.handle_async_request(_request()))
+            await asyncio.sleep(0)
+            gate.set()
+            one, two = await both
+            assert one.status_code == two.status_code == 200
+            assert len(created) == 2                         # both retried on the same fresh pool
+            old, fresh = created
+            assert old.closed and not fresh.closed and fresh.requests == 2
+            await one.aclose()
+            await two.aclose()
+            assert not fresh.closed
+            await a.aclose()
+            await b.aclose()
+    asyncio.run(go())
 
 
 def test_only_remote_https_shares_and_others_keep_no_keepalive(fake_pools):
@@ -583,6 +647,12 @@ class SharedGate(CloudBase):
 # --- warm-up, readiness, timeouts ---------------------------------------------------
 
 class Warm(CloudBase):
+    def setUp(self):
+        super().setUp()
+        # Importing main lays out WISP_HOME's state folder, which the credential gate
+        # needs before any remote request; without it each test depends on order.
+        from service import main  # noqa: F401
+
     def warm_paths(self):
         paths = []
 
@@ -674,6 +744,40 @@ class Warm(CloudBase):
                             await client.aclose()
                     asyncio.run(go())
                 self.assertEqual(len(reads), expected)
+
+    def test_warm_always_sends_while_readiness_is_fresh(self):
+        # Review 2 S3: the kept-alive connection expires at 90 s, the proof at 300 s.
+        omlx_client._REMOTE_READY.clear()
+        self.everything(True)
+        self.assertEqual(self.warm_paths(), [("GET", "/v1beta/openai/models")])
+        self.assertEqual(len(omlx_client._REMOTE_READY), 1)                # the proof is fresh
+        self.assertEqual(self.warm_paths(), [("GET", "/v1beta/openai/models")])
+
+    def test_a_refused_key_forgets_the_readiness_proof(self):
+        for status in (401, 403, 500):
+            with self.subTest(status=status):
+                omlx_client._REMOTE_READY.clear()
+                self.everything(True)
+                policy.remote_only_profile.cache_clear()
+
+                def handle(request, status=status):
+                    if request.url.path.endswith("/models"):
+                        return httpx.Response(200, json={"data": [{"id": "gemini-3.8-flash"}]})
+                    return httpx.Response(status, json={"error": "no"})
+                with patch("service.inference.attributed_transport.CredentialTransport",
+                           return_value=httpx.MockTransport(handle)):
+                    client = OMLXClient(target=policy.remote_default_target("agent"))
+
+                async def go(client=client):
+                    try:
+                        await client.health()
+                        self.assertEqual(len(omlx_client._REMOTE_READY), 1)
+                        with self.assertRaises(SanitizedHTTPStatusError):
+                            await client.chat(client.target.model, [{"role": "user", "content": "x"}])
+                    finally:
+                        await client.aclose()
+                asyncio.run(go())
+                self.assertEqual(len(omlx_client._REMOTE_READY), 0 if status in (401, 403) else 1)
 
 
 def test_timeout_scales_with_input_only_under_the_gate(monkeypatch):
@@ -812,6 +916,16 @@ def test_switch_probe_accepts_an_answer_and_sends_gemini_shape(monkeypatch):
     assert seen[0].url.path == "/v1beta/openai/chat/completions"
     assert sent["model"] == "gemini-3.8-flash" and sent["reasoning_effort"] == "low"
     assert "reasoning" not in sent and "provider" not in sent
+
+
+def test_switch_probe_adds_no_reasoning_for_a_model_without_it(monkeypatch):
+    # Review 2 NOTE 2: a Gemini API model with no reasoning (Gemma) must not get it.
+    import asyncio, json
+    main_module, checked, seen = _switch_probe(monkeypatch, 200, {"choices": [{"message": {"content": "OK"}}]})
+    asyncio.run(main_module._remote_only_switch_probe(checked, "gemma-4-31b-it", "k"))
+    sent = json.loads(seen[0].content)
+    assert sent["model"] == "gemma-4-31b-it"
+    assert not {"reasoning_effort", "reasoning", "provider"} & set(sent)
 
 
 def test_switch_probe_refuses_a_bad_key_or_model(monkeypatch):

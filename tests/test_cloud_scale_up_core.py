@@ -59,7 +59,12 @@ def test_context_table_is_one_million_for_every_offered_model():
     assert policy.remote_context_window("vendor/unlisted") is None
 
 
-def test_gemini_steps_reason_low_and_haiku_keeps_medium():
+def test_gemini_steps_reason_low_and_haiku_keeps_medium(monkeypatch):
+    # The launcher path without remote_parity sends no OpenRouter Gemini reasoning (NOTE 1).
+    monkeypatch.setattr(policy, "cloud_everything_active", lambda: False)
+    assert policy.reasoning_option(GEMINI) is None
+    assert policy.reasoning_option("anthropic/claude-haiku-5.5") == {"effort": "medium"}
+    monkeypatch.setattr(policy, "cloud_everything_active", lambda: True)
     assert policy.reasoning_option(GEMINI) == {"effort": "low"}
     assert policy.reasoning_option("anthropic/claude-haiku-5.5") == {"effort": "medium"}
     assert policy.reasoning_option("openai/gpt-6-luna") is None

@@ -1107,6 +1107,8 @@ def set_cloud_provider(endpoint_cfg: dict, model_id: str, context_window: int,
             "context_window": context_window,
         },
     }})
+    from service.config.provider_credentials import forget_reused_keys
+    forget_reused_keys()                      # a new connection never reuses an old read
 
 
 CLOUD_EVERYTHING = "everything"
@@ -1140,6 +1142,8 @@ def set_cloud_everything(endpoint_cfg: dict, model_id: str, context_window: int)
         "remote_only": profile,
         "super_model": {"enabled": False, "model_id": model_id, "context_window": context_window},
     }})
+    from service.config.provider_credentials import forget_reused_keys
+    forget_reused_keys()                      # a new connection never reuses an old read
 
 
 def upgraded_cloud_profile(cfg: dict) -> dict | None:
@@ -1212,6 +1216,8 @@ def cloud_super_model_enabled() -> bool:
 
 
 def disable_cloud_provider() -> None:
+    from service.config.provider_credentials import forget_reused_keys
+    forget_reused_keys()                      # a removed connection's key is not sent again
     if cloud_everything_enabled():
         # Back to local models at the next backend restart.
         _save_overlay({"remote_parity": False, "inference": {

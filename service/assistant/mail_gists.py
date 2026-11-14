@@ -544,9 +544,25 @@ def texts_lines(conversations: list[dict]) -> list[str]:
     return lines[:_MAX_LINES]
 
 
+# The texts gist checks only this many of a thread's newest lines (and the latest
+# messages): over a whole month nearly every topic word and four-word run collides.
+GIST_CHECK_THREAD_LINES = 40
+
+
 def _texts_of(convo: dict) -> list[str]:
-    """Every message text the gist checks a conversation against."""
-    return [*convo["bodies"], *(body for _who, body in convo.get("thread", ()))]
+    """The message texts the gist checks a conversation against: the latest
+    messages and the newest GIST_CHECK_THREAD_LINES lines of its thread."""
+    thread = list(convo.get("thread", ()))[-GIST_CHECK_THREAD_LINES:]
+    return [*convo["bodies"], *(body for _who, body in thread)]
+
+
+def _mid_sentence_capitals(body: str) -> list[str]:
+    """Capitalized words past each sentence's first word: a sentence after
+    `.`, `!` or `?` starts with a capital whether or not it is a name."""
+    words: list[str] = []
+    for sentence in re.split(r"(?<=[.!?])\s+", body):
+        words += [w for w in re.findall(r"[\w']+", sentence)[1:] if w[:1].isupper()]
+    return words
 
 
 def _key(lines: list[str]) -> str:
@@ -633,23 +649,23 @@ def mail_gist_ok(gist: str, lines: list[str]) -> bool:
 
 def _names(conversations: list[dict]) -> set[str]:
     """Words that may name someone: every word of a conversation's label or a
-    group speaker, and each capitalized word inside a message except its first."""
+    speaker, and each capitalized word inside a checked message (_texts_of)
+    except a sentence's first."""
     names: set[str] = set()
     for convo in conversations:
         speakers = [who for who, _body in convo.get("thread", ()) if who and who != "You"]
         for who in [convo.get("label") or "", *convo.get("names", []), *speakers]:
             names.update(w.casefold() for w in re.findall(r"[\w']+", who) if len(w) > 1)
         for body in _texts_of(convo):
-            words = re.findall(r"[\w']+", body)
-            names.update(re.sub(r"'s$", "", w).casefold() for w in words[1:] if w[:1].isupper())
+            names.update(re.sub(r"'s$", "", w).casefold() for w in _mid_sentence_capitals(body))
     return names
 
 
 def texts_gist_ok(gist: str, conversations: list[dict]) -> bool:
     """Topics only: no numbers, no quote marks, no word that may name someone
-    (a conversation, a group speaker, a capitalized word in a message), and no
-    four-word run copied from a message. A refused gist costs only the
-    deterministic sentence."""
+    (a conversation, a speaker, a capitalized word in a message), and no
+    four-word run copied from a message (the latest ones and a thread's newest
+    lines: _texts_of). A refused gist costs only the deterministic sentence."""
     if re.search(r"\d|[\"“”]", gist):
         return False
     lowered = gist.casefold()
