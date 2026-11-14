@@ -510,7 +510,22 @@ class StudyStore:
             else:
                 rows = self._db.execute(_SOURCE_SELECT + " WHERE course_id=? ORDER BY created_at DESC, id",
                                         (course_id,)).fetchall()
-        return [dict(r) for r in rows]
+        out = [dict(r) for r in rows]
+        if any(r.get("deck_status") == "failed" for r in out):
+            errors = self.meta("deck_errors", {}) or {}
+            for r in out:
+                if r.get("deck_status") == "failed":
+                    r["deck_error"] = errors.get(r["id"]) or DECK_ERROR
+        return out
+
+    def set_deck_error(self, source_id: str, message: str | None) -> None:
+        """The plain-language reason a deck could not be read (key-free), or None to clear it."""
+        errors = dict(self.meta("deck_errors", {}) or {})
+        if message:
+            errors[source_id] = str(message)[:300]
+        else:
+            errors.pop(source_id, None)
+        self.set_meta("deck_errors", errors)
 
     def source(self, source_id: str) -> dict | None:
         """The full row, with "text"."""
@@ -709,6 +724,7 @@ _SOURCE_SELECT = ("SELECT id, course_id, kind, title, url, chars, created_at,"
                   " deck_status FROM sources")
 
 DECK_STATUSES = ("none", "ready", "failed")
+DECK_ERROR = "Wisp couldn't read the slides."
 PAGE_MAX = 500          # pages kept per source
 _PAGE_TITLE = 200
 _POINT = 500

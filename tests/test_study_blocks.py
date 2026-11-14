@@ -1,0 +1,132 @@
+"""Study blocks to Calendar (service/study/blocks_api.py) and the Day marks (day_hook).
+
+The Day snapshot, the Calendar bridge and its cancel are faked; no network, no app, no ~/.moe."""
+from __future__ import annotations
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from service.study import blocks_api
+from service.study.store import StudyStore
+
+JSON = {"content-type": "application/json"}
+DAY, TZ = "2026-11-20", "America/Los_Angeles"
+BID = "study-block:asg-1"
+BLOCK = {"id": BID, "title": "Study: Problem set 4", "start": 1_800_000_000.0, "end": 1_800_002_700.0,
+         "kind": "study", "task_id": None, "warnings": [], "added": False, "event_source_id": None}
+
+
+@pytest.fixture
+def env(tmp_path, monkeypatch):
+    store = StudyStore(tmp_path / "study.db")
+    monkeypatch.setattr(blocks_api, "study_store", lambda: store)
+    monkeypatch.setattr(blocks_api, "study_exists", lambda: True)
+    calls = {"create": [], "delete": [], "blocks": [dict(BLOCK)]}
+    monkeypatch.setattr(blocks_api, "_snapshot", lambda day, tz: {"blocks": calls["blocks"]})
+
+    async def create(plan):
+        calls["create"].append(plan)
+        return calls.get("create_result") or {"ok": True, "status": "succeeded", "source_id": "EVT-1"}
+
+    async def delete(record):
+        calls["delete"].append(record)
+        return calls.get("delete_result") or {"ok": True, "status": "succeeded"}
+
+    monkeypatch.setattr(blocks_api, "_create", create)
+    monkeypatch.setattr(blocks_api, "_delete", delete)
+    app = FastAPI()
+    app.include_router(blocks_api.router)
+    return TestClient(app, headers=JSON), store, calls
+
+
+def test_add_books_exactly_the_shown_block_and_records_it(env):
+    client, store, calls = env
+    got = client.post(f"/study/blocks/{BID}/add", json={"day": DAY, "timezone": TZ}).json()
+    assert got == {"ok": True, "status": "succeeded", "block_id": BID, "source_id": "EVT-1"}
+    plan = calls["create"][0]
+    assert plan["title"] == "Study: Problem set 4" and plan["start_ts"] == BLOCK["start"]
+    assert plan["duration_min"] == 45 and plan["automatic"] is False and plan["day"] == DAY
+    assert store.meta(blocks_api.META)[BID]["source_id"] == "EVT-1"
+    again = client.post(f"/study/blocks/{BID}/add", json={"day": DAY, "timezone": TZ}).json()
+    assert again["ok"] is True and len(calls["create"]) == 1     # never booked twice
+
+
+def test_a_block_no_longer_shown_is_refused(env):
+    client, store, calls = env
+    calls["blocks"] = []
+    got = client.post(f"/study/blocks/{BID}/add", json={"day": DAY, "timezone": TZ}).json()
+    assert got["ok"] is False and got["error"] == blocks_api.GONE and not calls["create"]
+
+
+def test_a_failed_booking_records_nothing(env):
+    client, store, calls = env
+    calls["create_result"] = {"ok": False, "status": "blocked", "error": "View-only mode"}
+    got = client.post(f"/study/blocks/{BID}/add", json={"day": DAY, "timezone": TZ}).json()
+    assert got == {"ok": False, "status": "blocked", "error": "View-only mode"}
+    assert not store.meta(blocks_api.META, {})
+
+
+@pytest.mark.parametrize("body", [{}, {"day": "tomorrow", "timezone": TZ}, {"day": DAY, "timezone": "Nowhere/X"},
+                                  {"day": DAY, "timezone": TZ, "title": "x"}])
+def test_bad_bodies_are_refused(env, body):
+    client, _, calls = env
+    assert client.post(f"/study/blocks/{BID}/add", json=body).json()["ok"] is False and not calls["create"]
+
+
+def test_only_study_block_ids(env):
+    client, _, calls = env
+    got = client.post("/study/blocks/cal-123/add", json={"day": DAY, "timezone": TZ}).json()
+    assert got["ok"] is False and not calls["create"]
+
+
+def test_a_web_page_cannot_book(env):
+    client, _, calls = env
+    got = client.post(f"/study/blocks/{BID}/add", json={"day": DAY, "timezone": TZ},
+                      headers={"origin": "https://evil.example"})
+    assert got.status_code >= 400 and not calls["create"]
+
+
+def test_undo_cancels_the_recorded_event_and_forgets_it(env):
+    client, store, calls = env
+    client.post(f"/study/blocks/{BID}/add", json={"day": DAY, "timezone": TZ})
+    got = client.post(f"/study/blocks/{BID}/undo", json={}).json()
+    assert got == {"ok": True, "status": "succeeded", "block_id": BID}
+    assert calls["delete"][0]["source_id"] == "EVT-1" and calls["delete"][0]["start"] == BLOCK["start"]
+    assert BID not in store.meta(blocks_api.META, {})
+
+
+def test_undo_without_a_booking_or_failed_cancel(env):
+    client, store, calls = env
+    assert client.post(f"/study/blocks/{BID}/undo", json={}).json()["error"] == blocks_api.NOT_ADDED
+    client.post(f"/study/blocks/{BID}/add", json={"day": DAY, "timezone": TZ})
+    calls["delete_result"] = {"ok": False, "status": "failed", "error": "Changed in Calendar"}
+    assert client.post(f"/study/blocks/{BID}/undo", json={}).json()["ok"] is False
+    assert BID in store.meta(blocks_api.META)                    # still Wisp's to undo
+
+
+def test_mark_keeps_a_booked_block_and_drops_its_calendar_copy():
+    moved = {**BLOCK, "start": BLOCK["start"] + 3600, "end": BLOCK["end"] + 3600}
+    other = {**BLOCK, "id": "study-block:asg-2", "title": "Study: Essay"}
+    copy = {"id": "cal-9", "title": "Study: Problem set 4", "start": BLOCK["start"], "end": BLOCK["end"],
+            "kind": "calendar"}
+    meeting = {"id": "cal-1", "title": "Lab", "start": 1_799_990_000.0, "end": 1_799_993_600.0, "kind": "calendar"}
+    booked = {BID: {"source_id": "EVT-1", "title": BLOCK["title"], "start": BLOCK["start"], "end": BLOCK["end"],
+                    "day": DAY}, "study-block:old": {"source_id": "E0", "title": "x", "start": 1.0, "end": 2.0,
+                                                       "day": "2026-11-19"}}
+    blocks, others = blocks_api.mark([moved, other], [copy, meeting], DAY, booked)
+    by = {b["id"]: b for b in blocks}
+    assert by[BID]["added"] is True and by[BID]["event_source_id"] == "EVT-1" and by[BID]["start"] == BLOCK["start"]
+    assert by["study-block:asg-2"]["added"] is False and by["study-block:asg-2"]["event_source_id"] is None
+    assert len(blocks) == 2 and others == [meeting]
+
+
+def test_deck_error_on_failed_sources(tmp_path):
+    store = StudyStore(tmp_path / "study.db")
+    s = store.save_source({"kind": "drive", "url": "https://docs.google.com/x", "title": "Lecture 2", "text": "t"})
+    store.set_deck_status(s["id"], "failed")
+    assert store.sources()[0]["deck_error"] == "Wisp couldn't read the slides."
+    store.set_deck_error(s["id"], "The file is over 14 MB, too large to read as slides.")
+    assert store.sources()[0]["deck_error"].startswith("The file is over 14 MB")
+    store.set_deck_status(s["id"], "none")
+    assert "deck_error" not in store.sources()[0]
