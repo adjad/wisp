@@ -8,9 +8,14 @@ import AppKit
 ///
 /// Everything stays inline: the panel is non-activating, so there are no
 /// sheets, alerts or pop-up menus. An opened material takes the whole tab.
+///
+/// The tab scrolls inside `cap` (SurfaceLayout.studyContentCap, half the
+/// screen): the home screen as a whole, an opened material under its fixed
+/// back row and title.
 struct NotchStudyView: View {
     @ObservedObject var model: OverlayModel
     @ObservedObject var study: StudyModel
+    let cap: CGFloat?
 
     /// The course chip picked: filters the due list and the library, and is what
     /// "Make something" writes for.
@@ -18,6 +23,7 @@ struct NotchStudyView: View {
     /// The one due row showing its make buttons.
     @State private var expanded: String?
     @State private var showAllDue = false
+    @State private var showAllMade = false
     /// The inactive courses (nothing due, no grade) are showing in the chips row.
     @State private var showAllCourses = false
     @State private var topic = ""
@@ -32,11 +38,18 @@ struct NotchStudyView: View {
     private var reduceMotion: Bool { reduceMotionOverride ?? systemReduceMotion }
 
     /// Due rows before "Show all".
-    private static let dueRows = 6
+    private static let dueRows = 4
+    /// Library rows before "Show all".
+    private static let madeRows = 3
 
-    init(model: OverlayModel, study: StudyModel) {
+    /// Where the home screen's scroll was left while the panel is open. Opening
+    /// or closing a material forgets it, so each starts at its top.
+    private static let homeScroll = PanelScrollMemory.key(.study)
+
+    init(model: OverlayModel, study: StudyModel, cap: CGFloat? = nil) {
         self.model = model
         self.study = study
+        self.cap = cap
     }
 
     /// The pieces whose coming and going changes the tab's height. Only these
@@ -50,6 +63,7 @@ struct NotchStudyView: View {
         var notice: Bool
         var connector: Bool
         var showAll: Bool
+        var showAllMade: Bool
         var clearing: Bool
         var deleting: String?
         var assignments: Int
@@ -61,26 +75,36 @@ struct NotchStudyView: View {
         return Showing(loaded: state != nil, hasData: state?.hasData == true, sample: state?.sample == true,
                        opened: study.opened?.id, expanded: expanded, course: courseID, busy: study.busy,
                        notice: study.notice != nil, connector: study.showingConnector,
-                       showAll: showAllDue, clearing: confirmingClear, deleting: confirmingDelete,
+                       showAll: showAllDue, showAllMade: showAllMade,
+                       clearing: confirmingClear, deleting: confirmingDelete,
                        assignments: state?.assignments.count ?? 0, materials: state?.materials.count ?? 0)
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if let notice = study.notice { noticeRow(notice).transition(.opacity) }
+        VStack(alignment: .leading, spacing: 0) {
             if let material = study.opened {
-                StudyMaterialPage(study: study, material: material, onResize: model.onResize).transition(.opacity)
+                StudyMaterialPage(study: study, material: material, cap: cap, onResize: model.onResize) {
+                    notice
+                }
+                .transition(.opacity)
             } else {
-                home.transition(.opacity)
+                CappedScroll(cap: cap, reveals: true, remembers: Self.homeScroll, showsMore: true) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        notice
+                        home
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .transition(.opacity)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.bottom, 8)
         .animation(Theme.Motion.panel(reduceMotion: reduceMotion), value: showing)
         .onChange(of: showing) { _, _ in
             now = Date()
             model.onResize()
         }
+        .onChange(of: study.opened?.id) { _, _ in PanelScrollMemory.forget(Self.homeScroll) }
         .onChange(of: topicFocused) { _, focused in study.editing = focused }
         .onChange(of: study.state?.courses.map(\.id) ?? []) { _, ids in
             // A course that left (a clear, a fresh read) is no longer a filter.
@@ -92,6 +116,10 @@ struct NotchStudyView: View {
             await study.refresh()
             model.onResize()
         }
+    }
+
+    @ViewBuilder private var notice: some View {
+        if let notice = study.notice { noticeRow(notice).transition(.opacity) }
     }
 
     // MARK: Home
@@ -107,7 +135,7 @@ struct NotchStudyView: View {
     }
 
     private var intro: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             Text(StudyText.emptyTitle).font(.wisp(.headline, weight: .semibold)).foregroundStyle(Theme.textPrimary)
                 .accessibilityAddTraits(.isHeader)
             Text(Copy.intro)
@@ -161,7 +189,7 @@ struct NotchStudyView: View {
     // MARK: With data
 
     private func content(_ state: StudyState) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 8) {
             VStack(alignment: .leading, spacing: 4) {
                 headerRow(state)
                 if state.sample {
@@ -208,27 +236,26 @@ struct NotchStudyView: View {
     // MARK: Courses
 
     private func coursesRow(_ state: StudyState) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            StudyChrome.label(StudyText.coursesHeader)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    StudyCourseChip(title: Copy.allCourses, grade: nil, chosen: courseID == nil,
-                                    help: Copy.allCoursesHelp) { pickCourse(nil) }
-                    ForEach(shownCourses(state)) { course in
-                        StudyCourseChip(title: course.shortName, grade: StudyText.grade(course),
-                                        chosen: courseID == course.id, help: course.name) {
-                            pickCourse(course.id)
-                        }
-                    }
-                    let folded = foldedCount(state)
-                    if folded > 0 {
-                        StudyCourseChip(title: "+\(folded) more", grade: nil, chosen: false,
-                                        help: Copy.moreCoursesHelp) { showAllCourses = true }
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                StudyCourseChip(title: Copy.allCourses, grade: nil, chosen: courseID == nil,
+                                help: Copy.allCoursesHelp) { pickCourse(nil) }
+                ForEach(shownCourses(state)) { course in
+                    StudyCourseChip(title: course.shortName, grade: StudyText.grade(course),
+                                    chosen: courseID == course.id, help: course.name) {
+                        pickCourse(course.id)
                     }
                 }
-                .padding(.vertical, 1)
+                let folded = foldedCount(state)
+                if folded > 0 {
+                    StudyCourseChip(title: "+\(folded) more", grade: nil, chosen: false,
+                                    help: Copy.moreCoursesHelp) { showAllCourses = true }
+                }
             }
+            .padding(.vertical, 1)
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(StudyText.coursesHeader)
     }
 
     /// Active courses (and the picked one), then the rest once "+N more" is pressed.
@@ -245,6 +272,7 @@ struct NotchStudyView: View {
         courseID = courseID == id ? nil : id
         expanded = nil
         showAllDue = false
+        showAllMade = false
     }
 
     private func selectedCourse(_ state: StudyState) -> StudyCourse? { state.course(courseID) }
@@ -261,57 +289,44 @@ struct NotchStudyView: View {
         return StudyDue.groups(items, now: now, calendar: .current)
     }
 
-    /// The groups cut to the first rows unless "Show all" is on.
-    private func shownGroups(_ groups: [StudyDueGroup]) -> [StudyDueGroup] {
-        if showAllDue { return groups }
-        var left = Self.dueRows
-        var shown: [StudyDueGroup] = []
-        for group in groups where left > 0 {
-            let items = Array(group.items.prefix(left))
-            left -= items.count
-            shown.append(StudyDueGroup(id: group.id, title: group.title, items: items))
-        }
-        return shown
-    }
-
     private func dueSection(_ state: StudyState) -> some View {
-        let groups = dueGroups(state)
-        let total = groups.reduce(0) { $0 + $1.items.count }
-        return VStack(alignment: .leading, spacing: 8) {
-            StudyChrome.label(StudyText.dueHeader)
-            if groups.isEmpty {
+        // One flat list in the groups' order (Missing, Today, Tomorrow, ...): each
+        // row's due text says the day, and missing work says so in the warn color.
+        let rows = dueGroups(state).flatMap { group in group.items.map { (item: $0, missing: group.id == "missing") } }
+        let shown = showAllDue ? rows : Array(rows.prefix(Self.dueRows))
+        return VStack(alignment: .leading, spacing: 2) {
+            sectionHeader(StudyText.dueHeader, showAll: $showAllDue, total: rows.count, over: Self.dueRows)
+            if rows.isEmpty {
                 Text(StudyText.nothingDue).font(.wisp(.body)).foregroundStyle(Theme.textMuted)
             } else {
-                ForEach(shownGroups(groups)) { group in
-                    dueGroup(group, state: state)
-                }
-                if total > Self.dueRows {
-                    Button(showAllDue ? Copy.showFewer : "Show all (\(total))") {
-                        showAllDue.toggle()
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(shown, id: \.item.id) { row in
+                        StudyDueRow(item: row.item, courseLabel: courseLabel(row.item, state: state), now: now,
+                                    missing: row.missing,
+                                    expanded: expanded == row.item.id, busy: study.busy != nil,
+                                    onToggle: { toggle(row.item) },
+                                    onMake: { kind in make(kind, assignment: row.item, state: state) })
                     }
-                    .buttonStyle(.plain)
-                    .font(.wisp(.footnote, weight: .medium)).foregroundStyle(Theme.textSecondary)
-                    .frame(minHeight: 24)
                 }
             }
         }
     }
 
-    private func dueGroup(_ group: StudyDueGroup, state: StudyState) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(group.title)
-                .font(.wisp(.caption, weight: .semibold))
-                .foregroundStyle(group.id == "missing" ? Theme.warn : Theme.textSecondary)
-                .padding(.bottom, 2)
-                .accessibilityAddTraits(.isHeader)
-            ForEach(group.items) { item in
-                StudyDueRow(item: item, courseLabel: courseLabel(item, state: state), now: now,
-                            missing: group.id == "missing",
-                            expanded: expanded == item.id, busy: study.busy != nil,
-                            onToggle: { toggle(item) },
-                            onMake: { kind in make(kind, assignment: item, state: state) })
+    /// A section's caps label with its "Show all (N)" / "Show fewer" toggle on the
+    /// right when the list is longer than `over` rows.
+    private func sectionHeader(_ title: String, showAll: Binding<Bool>, total: Int, over: Int) -> some View {
+        HStack(alignment: .center, spacing: 8) {
+            StudyChrome.label(title)
+            Spacer(minLength: 8)
+            if total > over {
+                Button(showAll.wrappedValue ? Copy.showFewer : "Show all (\(total))") { showAll.wrappedValue.toggle() }
+                    .buttonStyle(.plain)
+                    .font(.wisp(.caption, weight: .medium)).foregroundStyle(Theme.textSecondary)
+                    .frame(minHeight: 24)
+                    .contentShape(Rectangle())
             }
         }
+        .frame(minHeight: 18)
     }
 
     /// Under "All", the course's short name (as on its chip); under one course,
@@ -332,41 +347,49 @@ struct NotchStudyView: View {
         let course = selectedCourse(state)
         let trimmed = topic.trimmingCharacters(in: .whitespacesAndNewlines)
         let ready = !trimmed.isEmpty || course != nil
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                StudyChrome.label(Copy.makeHeader)
-                if let course {
-                    Text("for " + course.shortName).font(.wisp(.caption)).foregroundStyle(Theme.textMuted)
-                }
+        let buttons = StudyKindButtons(disabled: study.busy != nil || !ready) { kind in
+            makeFromTopic(kind, state: state)
+        }
+        // The field and the four kinds on one line; two lines only if they cannot fit.
+        return ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                topicField(course: course, ready: ready, state: state).frame(minWidth: 180)
+                buttons
             }
-            TextField(Copy.topicPlaceholder, text: $topic)
-                .textFieldStyle(.plain)
-                .font(.wisp(size: 13)).foregroundStyle(Theme.textPrimary)
-                .padding(.horizontal, 10).padding(.vertical, 6)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Theme.chipFill))
-                .overlay(RoundedRectangle(cornerRadius: 8)
-                    .stroke(topicFocused ? Color.white.opacity(0.35) : Theme.chipStroke, lineWidth: 1))
-                .focused($topicFocused)
-                .onSubmit { if ready { makeFromTopic(.guide, state: state) } }
-                .accessibilityLabel(Copy.makeHeader)
-            StudyKindButtons(disabled: study.busy != nil || !ready) { kind in
-                makeFromTopic(kind, state: state)
+            VStack(alignment: .leading, spacing: 6) {
+                topicField(course: course, ready: ready, state: state)
+                buttons
             }
         }
+    }
+
+    private func topicField(course: StudyCourse?, ready: Bool, state: StudyState) -> some View {
+        TextField(course.map { "Make something for \($0.shortName)…" } ?? Copy.topicPlaceholder, text: $topic)
+            .textFieldStyle(.plain)
+            .font(.wisp(size: 13)).foregroundStyle(Theme.textPrimary)
+            .padding(.horizontal, 10).padding(.vertical, 4)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Theme.chipFill))
+            .overlay(RoundedRectangle(cornerRadius: 8)
+                .stroke(topicFocused ? Color.white.opacity(0.35) : Theme.chipStroke, lineWidth: 1))
+            .focused($topicFocused)
+            .onSubmit { if ready { makeFromTopic(.guide, state: state) } }
+            .accessibilityLabel(Copy.makeHeader)
+            .help(Copy.topicHelp)
     }
 
     // MARK: Library
 
     private func librarySection(_ state: StudyState) -> some View {
         let materials = libraryItems(state)
-        return VStack(alignment: .leading, spacing: 6) {
-            StudyChrome.label(StudyText.libraryHeader)
+        let shown = showAllMade ? materials : Array(materials.prefix(Self.madeRows))
+        return VStack(alignment: .leading, spacing: 2) {
+            sectionHeader(StudyText.libraryHeader, showAll: $showAllMade, total: materials.count, over: Self.madeRows)
             if materials.isEmpty {
                 Text(StudyText.noMaterials).font(.wisp(.footnote)).foregroundStyle(Theme.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(materials) { item in
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(shown) { item in
                         StudyLibraryRow(item: item, now: now, confirming: confirmingDelete == item.id,
                                         disabled: study.busy != nil,
                                         onOpen: { Task { await study.open(item.id) } },
@@ -392,7 +415,7 @@ struct NotchStudyView: View {
     // MARK: Footer
 
     private func footer(_ state: StudyState?) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 6) {
             Rectangle().fill(Theme.hairline).frame(height: 1)
             HStack(alignment: .center, spacing: 8) {
                 connectorButton
@@ -407,7 +430,10 @@ struct NotchStudyView: View {
             }
             if confirmingClear { clearConfirm.transition(.opacity) }
             if study.showingConnector {
-                StudyConnectorCard(study: study, onResize: model.onResize).transition(.opacity)
+                // Opened at the foot of a scrolling tab: scrolled into sight.
+                StudyConnectorCard(study: study, onResize: model.onResize)
+                    .revealInPanel("study-connector")
+                    .transition(.opacity)
             }
         }
     }
@@ -527,7 +553,8 @@ struct NotchStudyView: View {
         static let moreCoursesHelp = "Show courses with nothing due and no grade"
         static let showFewer = "Show fewer"
         static let makeHeader = "Make something"
-        static let topicPlaceholder = "Any topic, e.g. photosynthesis"
+        static let topicPlaceholder = "Make something on any topic…"
+        static let topicHelp = "Type a topic, or pick a course above, then choose what to make"
         static let addKey = "Add a key to make study material"
         static let clearYes = "Remove"
         static let clearNo = "Keep"
@@ -549,21 +576,45 @@ extension View {
 // MARK: - Opened material
 
 /// A material full-tab: a back bar, its title and kind, then its player or reader.
-private struct StudyMaterialPage: View {
+private struct StudyMaterialPage<Notice: View>: View {
     @ObservedObject var study: StudyModel
     let material: StudyMaterial
+    /// The tab's room under the header; the back row and title stay above the scroll.
+    let cap: CGFloat?
     /// Refits the panel when the page grows or shrinks (an explanation, the
     /// review list, the next lesson step, the finished deck).
     let onResize: () -> Void
+    /// The tab's notice, if any, at the top of the scrolled part.
+    @ViewBuilder let notice: () -> Notice
+    @State private var pinnedHeight: CGFloat = 0
+    private static var spacing: CGFloat { 10 }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            topBar
-            titleBlock
-            materialBody.id(material.id)
+        VStack(alignment: .leading, spacing: Self.spacing) {
+            VStack(alignment: .leading, spacing: 8) {
+                topBar
+                titleBlock
+            }
+            .background(GeometryReader { geo in
+                Color.clear.onAppear { pinnedHeight = geo.size.height }
+                    .onChange(of: geo.size.height) { pinnedHeight = geo.size.height }
+            })
+            CappedScroll(cap: cap.map(scrollCap), showsMore: true) {
+                VStack(alignment: .leading, spacing: 8) {
+                    notice()
+                    materialBody.id(material.id)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .id(material.id)
         }
         .studyReportsHeight(onResize)
         .onExitCommand { study.close() }
+    }
+
+    /// What's left for the material under its fixed back row and title.
+    private func scrollCap(_ cap: CGFloat) -> CGFloat {
+        max(cap - pinnedHeight - Self.spacing, SurfaceLayout.minTabScroll)
     }
 
     private var topBar: some View {
@@ -652,8 +703,8 @@ private struct StudyCourseChip: View {
                 }
             }
             .foregroundStyle(chosen ? Color.black : Theme.textPrimary)
-            .padding(.horizontal, 10)
-            .frame(minHeight: 26)
+            .padding(.horizontal, 9)
+            .frame(minHeight: 22)
             .background(Capsule().fill(fill))
             .overlay(Capsule().stroke(chosen ? Color.clear : Theme.chipStroke, lineWidth: 1))
             .contentShape(Capsule())
@@ -688,8 +739,8 @@ private struct StudyKindButtons: View {
     }
 }
 
-/// One assignment: kind glyph, bold title, course, due label and points.
-/// A click opens its make buttons in place.
+/// One assignment on one line: kind glyph, bold title, course, then the due
+/// text in a right-hand column and the points. A click opens its make buttons in place.
 private struct StudyDueRow: View {
     let item: StudyAssignment
     /// The course as this row names it.
@@ -703,7 +754,7 @@ private struct StudyDueRow: View {
     @State private var hovering = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             Button(action: onToggle) { summary }
                 .buttonStyle(.plain)
                 .accessibilityLabel(spoken)
@@ -711,7 +762,7 @@ private struct StudyDueRow: View {
                 .accessibilityHint("Shows what Study can make for it")
             if expanded { actions.transition(.opacity) }
         }
-        .padding(.horizontal, 8).padding(.vertical, 6)
+        .padding(.horizontal, 8).padding(.vertical, 2)
         .background(RoundedRectangle(cornerRadius: 8).fill(rowFill))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(expanded ? Theme.hairline : Color.clear, lineWidth: 1))
         .onHover { hovering = $0 }
@@ -723,42 +774,36 @@ private struct StudyDueRow: View {
     }
 
     private var summary: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
             Image(systemName: item.symbol).font(.wisp(size: 11))
                 .foregroundStyle(missing ? Theme.warn : Theme.textSecondary)
-                .frame(width: 16).padding(.top, 2)
+                .frame(width: 16)
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.title).font(.wisp(.callout, weight: .semibold)).foregroundStyle(Theme.textPrimary)
-                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
-                    .multilineTextAlignment(.leading)
-                detailLine
+            Text(item.title).font(.wisp(.callout, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+                .lineLimit(1)
+                .layoutPriority(1)
+            Text(courseLabel).font(.wisp(.footnote)).foregroundStyle(Theme.textMuted)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            if item.status == "late" {
+                Text("Late").font(.wisp(.footnote, weight: .medium)).foregroundStyle(Theme.warn)
+                    .fixedSize()
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            if let points = StudyText.points(item) {
-                Text(points).font(.wisp(.caption)).monospacedDigit().foregroundStyle(Theme.textMuted)
-                    .padding(.top, 2)
-            }
+            Text(StudyText.dueShort(item, now: now, calendar: .current))
+                .font(.wisp(.footnote)).monospacedDigit().foregroundStyle(dueColor)
+                .lineLimit(1).fixedSize()
+            Text(StudyText.points(item) ?? "")
+                .font(.wisp(.caption)).monospacedDigit().foregroundStyle(Theme.textMuted)
+                .lineLimit(1)
+                .frame(width: 48, alignment: .trailing)
+                .accessibilityHidden(true)
             Image(systemName: expanded ? "chevron.up" : "chevron.down")
                 .font(.wisp(size: 8, weight: .semibold)).foregroundStyle(Theme.textMuted)
-                .padding(.top, 4)
                 .opacity(hovering || expanded ? 1 : 0)
                 .accessibilityHidden(true)
         }
+        .frame(minHeight: 24)
         .contentShape(Rectangle())
-    }
-
-    private var detailLine: some View {
-        let due = StudyText.due(item, now: now, calendar: .current)
-        return HStack(spacing: 4) {
-            Text(courseLabel).foregroundStyle(Theme.textMuted).lineLimit(1)
-            Text("·").foregroundStyle(Theme.textMuted)
-            Text(due).foregroundStyle(dueColor).lineLimit(1)
-            if item.status == "late" {
-                Text("· Late").foregroundStyle(Theme.warn)
-            }
-        }
-        .font(.wisp(.footnote))
     }
 
     private var dueColor: Color {
@@ -776,7 +821,7 @@ private struct StudyDueRow: View {
                     .help("Opens this assignment in your browser. Wisp never changes anything there.")
             }
         }
-        .padding(.leading, 26)
+        .padding(.leading, 24)
     }
 
     private var spoken: String {
@@ -786,8 +831,8 @@ private struct StudyDueRow: View {
     }
 }
 
-/// One made material: kind glyph, title, count and best score; delete on hover
-/// with a second click to confirm.
+/// One made material on one line: kind glyph, title, then count, age and best
+/// score on the right; delete on hover with a second click to confirm.
 private struct StudyLibraryRow: View {
     let item: StudyMaterialSummary
     let now: Date
@@ -808,28 +853,28 @@ private struct StudyLibraryRow: View {
                 .accessibilityLabel("\(item.kind.title): \(item.title), \(meta)")
             trailing
         }
-        .padding(.horizontal, 8).padding(.vertical, 5)
+        .padding(.horizontal, 8).padding(.vertical, 1)
         .background(RoundedRectangle(cornerRadius: 8).fill(hovering ? Color.white.opacity(0.05) : Color.clear))
         .onHover { hovering = $0 }
     }
 
     private var label: some View {
-        HStack(alignment: .center, spacing: 10) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
             Image(systemName: item.kind.symbol).font(.wisp(size: 11)).foregroundStyle(Theme.textSecondary)
                 .frame(width: 16)
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(item.title).font(.wisp(.body, weight: .medium)).foregroundStyle(Theme.textPrimary)
-                    .lineLimit(1)
-                Text(meta).font(.wisp(.caption)).foregroundStyle(Theme.textMuted).lineLimit(1)
-            }
-            Spacer(minLength: 6)
+            Text(item.title).font(.wisp(.body, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                .lineLimit(1)
+                .layoutPriority(1)
+            Spacer(minLength: 8)
+            Text(meta).font(.wisp(.caption)).foregroundStyle(Theme.textMuted).lineLimit(1)
             if let best = StudyText.best(item.bestScore) {
                 Text(best).font(.wisp(.caption, weight: .medium)).monospacedDigit()
                     .foregroundStyle(Theme.textSecondary)
+                    .fixedSize()
             }
         }
-        .frame(minHeight: 28)
+        .frame(minHeight: 24)
         .contentShape(Rectangle())
     }
 

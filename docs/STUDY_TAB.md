@@ -295,7 +295,7 @@ capped (prompt 600, choice 300, explain 2000).
 | `StudyModel.swift` | `@MainActor final class StudyModel: ObservableObject`, injectable transport |
 | `StudyCredentialStore.swift` | Keychain `com.wisp.study` |
 | `StudyPageReader.swift` | reads the front tab of each open browser window through Accessibility |
-| `NotchStudyView.swift` | the tab: courses, due list, make buttons, library |
+| `NotchStudyView.swift` | the tab: courses, due list (one line per assignment, 4 before Show all), make row, library (3 before Show all) |
 | `StudyMaterialViews.swift` | quiz player, flash cards, guide and lesson readers |
 | `StudyConnectorCard.swift` | key card: provider, key field, model |
 
@@ -319,6 +319,7 @@ struct StudyDaySummary: Decodable, Equatable       // the "study" object of /ass
 
 enum StudyDue { static func groups(_ items: [StudyAssignment], now: Date, calendar: Calendar) -> [StudyDueGroup] }
 //   groups: Missing, Today, Tomorrow, This week, Later, No date — empty groups dropped
+//   StudyText.dueShort: the due list's right column ("Today 11:59 PM", "Mon, Nov 16")
 struct QuizRun: Equatable      // init(quiz:); current, chosen, isLast, choose(_:), next(), finished, correct, total, scoreText
 struct FlashRun: Equatable     // init(deck:); current, flipped, flip(), mark(known:), again queue, finished, knownCount, total
 enum StudyText                 // every user-facing string and formatter (due labels, grade chip, counts, empty states)
@@ -353,7 +354,9 @@ enum StudyCredentialStore { static func save(_ key: String, provider: String) th
                             static func remove(provider: String); static func has(provider: String) -> Bool }
 
 // Views
-struct NotchStudyView: View { init(model: OverlayModel, study: StudyModel) }
+struct NotchStudyView: View { init(model: OverlayModel, study: StudyModel, cap: CGFloat? = nil) }
+//   The panel stops at half the screen on Study (SurfaceLayout.studyScreenShare, studyContentCap)
+//   and the tab scrolls inside it; an opened material keeps its back row and title fixed.
 ```
 
 JSON keys are snake_case; Swift properties are camelCase through explicit

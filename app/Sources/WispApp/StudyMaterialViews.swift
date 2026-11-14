@@ -690,7 +690,7 @@ struct StudyGuideView: View {
     let guide: StudyGuide
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 12) {
             if !guide.summary.isEmpty { summary }
             ForEach(Array(guide.sections.enumerated()), id: \.offset) { pair in
                 section(heading: pair.element.heading, points: pair.element.points)
@@ -713,7 +713,7 @@ struct StudyGuideView: View {
     }
 
     private func section(heading: String, points: [String]) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             StudyInline.text(heading, size: 13.5, weight: .semibold)
                 .foregroundStyle(Theme.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -725,9 +725,9 @@ struct StudyGuideView: View {
     }
 
     private var keyTerms: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             StudyChrome.label(StudyText.keyTerms)
-            StudyChrome.card {
+            StudyChrome.card(padding: 10) {
                 ForEach(Array(guide.keyTerms.enumerated()), id: \.offset) { pair in
                     termRow(term: pair.element.term, meaning: pair.element.meaning)
                 }
@@ -749,7 +749,7 @@ struct StudyGuideView: View {
     }
 
     private var practice: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             StudyChrome.label(StudyText.practice)
             ForEach(Array(guide.practice.enumerated()), id: \.offset) { pair in
                 HStack(alignment: .firstTextBaseline, spacing: 8) {

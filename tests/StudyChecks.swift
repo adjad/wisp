@@ -247,6 +247,20 @@ func studyChecks(_ check: (Bool, String) -> Void) {
     check(StudyText.due(assignment("a", at(13, 9), status: "submitted"), now: now, calendar: calendar) == "Submitted"
           && StudyText.due(assignment("a", at(13, 9), status: "graded"), now: now, calendar: calendar) == "Graded",
           "past work that is in reads as submitted or graded")
+    check(StudyText.dueShort(assignment("a", at(14, 23, 59)), now: now, calendar: calendar) == "Today 11:59 PM"
+          && StudyText.dueShort(assignment("a", at(14, 0), allDay: true), now: now, calendar: calendar) == "Today",
+          "short due: today with and without a time")
+    check(StudyText.dueShort(assignment("a", at(15, 9, 30)), now: now, calendar: calendar) == "Tomorrow 9:30 AM"
+          && StudyText.dueShort(assignment("a", at(15, 0), allDay: true), now: now, calendar: calendar) == "Tomorrow",
+          "short due: tomorrow with and without a time")
+    check(StudyText.dueShort(assignment("a", at(16, 9)), now: now, calendar: calendar) == "Mon, Nov 16"
+          && StudyText.dueShort(assignment("a", at(4, 9, month: 1, year: 2027)), now: now, calendar: calendar)
+          == "Mon, Jan 4, 2027", "short due: a later date drops \"Due\" and keeps the year when it differs")
+    check(StudyText.dueShort(assignment("a", at(12, 23, 59), status: "missing"), now: now, calendar: calendar)
+          == "Missing since Nov 12"
+          && StudyText.dueShort(assignment("a", at(13, 9), status: "graded"), now: now, calendar: calendar) == "Graded"
+          && StudyText.dueShort(assignment("a", nil), now: now, calendar: calendar) == "No date",
+          "short due: missing and handed-in work read as before; no date is short")
 
     func course(grade: String?, score: Double?) -> StudyCourse {
         StudyCourse(id: "c", name: "Course", code: nil, grade: grade, score: score, url: nil, dueCount: 0, sample: false)

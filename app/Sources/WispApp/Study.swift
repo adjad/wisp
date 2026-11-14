@@ -1117,6 +1117,21 @@ enum StudyText {
         return "Due " + dayText(date, now: now, calendar: calendar, weekday: true)
     }
 
+    /// The due list's right-hand column, where the row already says "due":
+    /// "Today 11:59 PM", "Tomorrow", "Mon, Nov 16", "No date". Missing,
+    /// submitted and graded work read as in `due`.
+    static func dueShort(_ a: StudyAssignment, now: Date, calendar: Calendar) -> String {
+        if a.isMissing(now: now) || (a.isDone && a.isPast(now: now)) { return due(a, now: now, calendar: calendar) }
+        guard let date = a.dueDate else { return "No date" }
+        let today = calendar.startOfDay(for: now)
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: today) ?? today.addingTimeInterval(86_400)
+        let dayAfter = calendar.date(byAdding: .day, value: 2, to: today) ?? today.addingTimeInterval(172_800)
+        let at = a.allDay ? "" : " " + time(date, calendar: calendar)
+        if date < tomorrow { return "Today" + at }
+        if date < dayAfter { return "Tomorrow" + at }
+        return dayText(date, now: now, calendar: calendar, weekday: true)
+    }
+
     /// "91%"; 113.4 gives "113%".
     static func percent(_ value: Double) -> String {
         guard value.isFinite else { return "" }

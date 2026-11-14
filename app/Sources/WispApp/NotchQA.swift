@@ -695,6 +695,14 @@ extension NotchQADriver {
             "connector": studyConnector(ready: false), "sample": false, "last_import": NSNull(),
             "courses": [], "assignments": [], "materials": [],
         ]
+        // The panel on a 14" MacBook Pro's default screen: a header-sized band, then
+        // the tab capped at half the screen (SurfaceLayout.studyContentCap).
+        let header: CGFloat = 30
+        let side: CGFloat = (1512 - 185) / 2
+        let layout = SurfaceLayout.make(for: DisplayMetrics(
+            frame: CGRect(x: 0, y: 0, width: 1512, height: 982),
+            visibleFrame: CGRect(x: 0, y: 0, width: 1512, height: 950),
+            safeAreaTop: 32, auxLeftWidth: side, auxRightWidth: side, isBuiltIn: true))
         func scene(_ name: String, state: [String: Any], opened: String? = nil,
                    connector: Bool = false) -> (name: String, tab: NotchTab, view: () -> AnyView) {
             (name, .study, {
@@ -707,7 +715,15 @@ extension NotchQADriver {
                 precondition(decoded != nil && (opened == nil || material != nil), "\(name): the Study fixture must decode")
                 study.show(state: decoded, opened: material)
                 study.showingConnector = connector
-                return AnyView(NotchStudyView(model: model, study: study))
+                return AnyView(VStack(alignment: .leading, spacing: 0) {
+                    Text("HEADER (fixed) · 1512×982 pt · Study panel ≤ \(Int(layout.maxStudyPanelHeight))")
+                        .font(.wisp(size: 11, design: .monospaced)).foregroundStyle(Theme.textMuted)
+                        .frame(maxWidth: .infinity, minHeight: header, maxHeight: header, alignment: .leading)
+                    NotchStudyView(model: model, study: study, cap: layout.studyContentCap(headerHeight: header))
+                        .padding(.top, SurfaceLayout.tabTopPadding)
+                }
+                // The driver pads every scene 18 pt; the panel's top inset is the notch's.
+                .padding(.top, layout.contentTopInset - 18))
             })
         }
         return [

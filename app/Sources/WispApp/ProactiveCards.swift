@@ -1342,11 +1342,14 @@ struct ProactiveBriefSection: View {
 /// (CappedHeight), not learned a pass later: a page that arrives with a slide
 /// is its real height from its first frame, so the panel moves once, not twice.
 /// `remembers` keeps the scroll position under that key while the panel is
-/// open (PanelScrollMemory).
+/// open (PanelScrollMemory). `showsMore` (Study) makes an overflow obvious: the
+/// indicator always shows and flashes on arrival, and a soft fade sits over the
+/// bottom edge, with room under the content so the last line clears it.
 struct CappedScroll<Content: View>: View {
     let cap: CGFloat?
     var reveals = false
     var remembers: String? = nil
+    var showsMore = false
     @ViewBuilder var content: Content
     /// The content's height, for the scroll indicator only.
     @State private var height: CGFloat = 0
@@ -1360,9 +1363,20 @@ struct CappedScroll<Content: View>: View {
                             .background(GeometryReader { geo in
                                 Color.clear.preference(key: CappedScrollHeight.self, value: geo.size.height)
                             })
+                            .padding(.bottom, more(cap) ? Self.fade : 0)
                     }
-                    .scrollIndicators(height > cap ? .automatic : .never)
+                    .scrollIndicators(height > cap ? (showsMore ? .visible : .automatic) : .never)
+                    .scrollIndicatorsFlash(trigger: more(cap))
                     .scrollBounceBehavior(.basedOnSize)
+                    .overlay(alignment: .bottom) {
+                        if more(cap) {
+                            LinearGradient(colors: [Theme.surface.opacity(0), Theme.surface],
+                                           startPoint: .top, endPoint: .bottom)
+                                .frame(height: Self.fade)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                    }
                     .modifier(RemembersScroll(key: remembers))
                     .environment(\.panelReveal, reveals ? PanelReveal { id in
                         // After the panel has grown to fit what just opened. Never
@@ -1379,6 +1393,12 @@ struct CappedScroll<Content: View>: View {
             content
         }
     }
+
+    /// The bottom fade's height (`showsMore`).
+    private static var fade: CGFloat { 24 }
+
+    /// `showsMore` and the content passes the cap.
+    private func more(_ cap: CGFloat) -> Bool { showsMore && height > cap }
 }
 
 /// Lays out one scroll view as tall as its content, up to `cap`. A vertical
@@ -1414,6 +1434,8 @@ enum PanelScrollMemory {
         guard let kept = offsets[key], kept.version == version else { return nil }
         return kept.y
     }
+
+    static func forget(_ key: String) { offsets[key] = nil }
 
     static func forgetAll() { offsets = [:] }
 }
