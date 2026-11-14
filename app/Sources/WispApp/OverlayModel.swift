@@ -2703,6 +2703,14 @@ final class OverlayModel: ObservableObject {
                 .filter { !$0.isEmpty }.joined(separator: "\n")
             return await Notifications.deliver(id: "attention:" + ev.str("source_id"),
                                                title: "Added a reminder: \(title)", body: body)
+        case "wisp_did":
+            // Wisp did something by itself behind "Let Wisp act for me" (service/proactive/acting.py,
+            // announce): it is already done and recorded. Say what, so the person sees it happen;
+            // the card with Undo is in the Brief. Nothing here acts.
+            let title = ev.str("title")
+            guard !title.isEmpty, !ev.str("record").isEmpty else { return false }
+            return await Notifications.deliver(id: "wispdid:" + ev.str("record"), title: "Wisp did this",
+                                               body: [title, ev.str("detail")].filter { !$0.isEmpty }.joined(separator: "\n"))
         case "create_apple_reminder":
             return false
         case "update_apple_reminder":

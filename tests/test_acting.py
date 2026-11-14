@@ -903,3 +903,37 @@ def test_each_writer_names_its_own_action(setting, store, monkeypatch, tmp_path)
     assert autohold.step([{**card, "id": "c2", "sources": [{"kind": "calendar", "ref": "cal:2"}]}], now=NOW, tz="UTC",
                          store=store2, abort=lambda: False, hours=lambda slot, tz: True,
                          hold=lambda c: {"ok": True, "status": "succeeded", "task_id": "t2"}) == {"c2"}
+
+
+# --- announce: a notification for what was just done ----------------------------------------------
+
+def test_recording_a_done_action_with_a_card_announces_it_once(tmp_path, monkeypatch):
+    import asyncio
+    from service import quiet_hold
+    from service.assistant.hub import hub
+    from service.proactive.store import ProactiveStore
+    sent = []
+    monkeypatch.setattr(hub, "publish_sync", lambda event, **kw: sent.append((dict(event), kw)) or event)
+    monkeypatch.setattr(quiet_hold, "_quiet_now", lambda: False)
+    box = ProactiveStore(tmp_path / "p")
+    card = {"meta": "DAY PLAN", "title": "Held 2–3 PM for Worksheet 3", "did": "It's on your Day plan."}
+
+    async def run():
+        acting.record(box, "hold:1", kind="hold", status="dispatching", now=NOW, title="Worksheet 3")   # in flight: silent
+        acting.record(box, "hold:1", kind="hold", status="added", now=NOW, title="Worksheet 3", card=card)
+        acting.record(box, "hold:1", kind="hold", status="added", now=NOW + 5, title="Worksheet 3", card=card)  # again: silent
+        acting.record(box, "hold:2", kind="hold", status="unknown", now=NOW, title="Essay", card=card)  # not done: silent
+    asyncio.run(run())
+    assert sent == [({"type": "wisp_did", "record": "hold:1", "title": "Held 2–3 PM for Worksheet 3", "detail": ""},
+                     {"durable": False})]
+    # Off the service's loop (a worker thread), in quiet hours, or with nothing to say: nothing is sent.
+    acting.announce("hold:3", "Held 4–5 PM for Lab report")
+    monkeypatch.setattr(quiet_hold, "_quiet_now", lambda: True)
+
+    async def quiet():
+        acting.announce("hold:4", "Held 4–5 PM for Lab report")
+        monkeypatch.setattr(quiet_hold, "_quiet_now", lambda: False)
+        acting.announce("hold:5", "")
+        acting.announce("", "Held 4–5 PM for Lab report")
+    asyncio.run(quiet())
+    assert len(sent) == 1

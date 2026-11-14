@@ -1446,6 +1446,7 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
                 entry["title"] = outcome["title"]        # what Reminders read back: undo matches it exactly
             added.append(fp)
             note(item, "added")
+            _announce(fp, entry, now)
         else:
             note(item, f"write {status}")
         store.auto_add_put(fp, entry)
@@ -1455,6 +1456,16 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
              if isinstance(r, dict) and r.get("status") == "added" and r.get("item_id")
              and r.get("kind") in ("calendar", "reminder")}
     return {"tap": tap, "added": added, "items": {"autoadd:" + i for i in items} | items}
+
+
+def _announce(fp: str, entry: dict, now: float) -> None:
+    """A notification for what was just added, in its card's own words (acting.announce)."""
+    try:
+        from service.proactive import acting
+        record = {**entry, "fingerprint": fp}
+        acting.announce(fp, done_card(record, now)["title"], when_words(record, record.get("timezone") or "UTC"))
+    except Exception:  # noqa: BLE001 — a notice is a courtesy; the add and its card stand
+        pass
 
 
 def _allowed(allows, line_ts, action: str) -> bool:

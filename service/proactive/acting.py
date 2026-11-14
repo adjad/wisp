@@ -444,9 +444,42 @@ def record(store, fingerprint: str, *, kind: str, status: str, now: float, title
         entry["show_until"] = float(show_until)
     if undo is not None:
         entry["undo"] = dict(undo)
+    try:
+        before = (store.auto_added().get(fingerprint) or {}).get("status")
+    except Exception:  # noqa: BLE001 — unknown: say nothing twice rather than risk it
+        before = "added"
     store.auto_add_put(fingerprint, entry)
     audit("proactive_act", kind=kind, status=status, ok=status == "added", fingerprint=fingerprint)
+    if status == "added" and before != "added" and card is not None:
+        announce(fingerprint, entry["card"]["title"])
     return entry
+
+
+ANNOUNCED = "wisp_did"                 # the event the app turns into a notification (OverlayModel.swift)
+
+
+def announce(fingerprint: str, title: str, detail: str = "") -> None:
+    """Tell the app the moment Wisp did something, so the person sees it happen: one
+    notification saying what ("Added Dinner at Luigi's to your calendar"). The card with Undo
+    is in the Brief. Called once, right after an action is recorded as done.
+
+    IMPORTANT rules:
+    - It only says what was already done and recorded. It does nothing and decides nothing.
+    - Transient: nothing is stored, so its words are kept nowhere but the action's own record.
+    - Nothing is sent in the person's quiet hours; the card waits in the Brief.
+    - Only from the service's own loop, and it never raises: a notice is a courtesy."""
+    try:
+        import asyncio
+        asyncio.get_running_loop()
+        from service import quiet_hold
+        from service.assistant.hub import hub
+        words = guard.clean_title(str(title or ""))
+        if not words or not fingerprint or quiet_hold._quiet_now():
+            return
+        hub.publish_sync({"type": ANNOUNCED, "record": str(fingerprint), "title": words,
+                          "detail": guard.clean(str(detail or ""), 80)}, durable=False)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def settle(store, now: float) -> int:

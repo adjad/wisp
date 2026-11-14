@@ -1619,3 +1619,65 @@ def test_an_old_sms_or_unplaced_line_does_not_spoil_a_later_imessage(store, yes)
     writers = Writers()
     out, notes = production_step(ProactiveStore(store.base.parent / "mixed"), survivors(mixed), writers)
     assert writers.calls == [] and out["added"] == []
+
+
+# --- the person sees it happen: one notification per thing Wisp did -------------------------------
+
+@pytest.fixture
+def heard(monkeypatch):
+    """Every event the app would be sent, with quiet hours off unless a test turns them on."""
+    from service import quiet_hold
+    from service.assistant.hub import hub
+    sent, state = [], {"quiet": False}
+    monkeypatch.setattr(hub, "publish_sync", lambda event, **kw: sent.append((dict(event), kw)) or event)
+    monkeypatch.setattr(quiet_hold, "_quiet_now", lambda: state["quiet"])
+    return sent, state
+
+
+def test_a_verified_add_is_announced_once_in_its_cards_words_and_stores_nothing(store, heard):
+    sent, _ = heard
+    writers = Writers()
+    step(store, survivors(text("Maya", RECITAL)), writers)
+    [(event, how)] = sent
+    [fp] = list(store.auto_added())
+    assert event == {"type": "wisp_did", "record": fp, "title": "Added Maya's recital to your calendar",
+                     "detail": "Sat, Oct 31, 6–7 PM"}
+    assert how == {"durable": False}                                  # transient: its words are kept nowhere else
+    assert event["title"] == autoadd.done_cards(store, NOW)[0]["title"]
+    step(store, survivors(text("Maya", RECITAL)), writers)            # the next pass adds nothing and says nothing
+    assert len(sent) == 1 and len(writers.calls) == 1
+
+
+@pytest.mark.parametrize("outcome", [{"ok": False, "status": "failed"}, {"ok": False, "status": "unknown"},
+                                     {"ok": False, "status": "blocked"}, {"ok": True, "status": "succeeded"}])
+def test_nothing_is_announced_for_a_write_that_was_not_verified(store, heard, outcome):
+    sent, _ = heard
+    step(store, survivors(text("Maya", RECITAL)), Writers(outcome=outcome))      # the last has no source_id: unverified
+    assert sent == []
+
+
+def test_nothing_is_announced_in_quiet_hours_or_while_off_and_a_broken_hub_never_fails_the_add(store, heard, monkeypatch):
+    sent, state = heard
+    state["quiet"] = True
+    writers = Writers()
+    out = step(store, survivors(text("Maya", RECITAL)), writers)
+    assert len(out["added"]) == 1 and sent == []                      # added, card in the Brief, no notification at night
+    state["quiet"] = False
+    step(ProactiveStore(Path(tempfile.mkdtemp()) / "p"), survivors(text("Maya", RECITAL)), Writers(), on=False)
+    assert sent == []                                                 # off: a tap card, nothing done, nothing said
+    from service.assistant.hub import hub
+
+    def broken(event, **kw):
+        raise RuntimeError("no app")
+    monkeypatch.setattr(hub, "publish_sync", broken)
+    out = step(ProactiveStore(Path(tempfile.mkdtemp()) / "p"), survivors(text("Maya", RECITAL)), Writers())
+    assert len(out["added"]) == 1
+
+
+def test_the_app_turns_the_announcement_into_a_notification_and_does_nothing_else():
+    from service.proactive import acting
+    source = (ROOT / "app/Sources/WispApp/OverlayModel.swift").read_text()
+    case = source.split('case "wisp_did":', 1)[1].split("case \"", 1)[0]
+    assert acting.ANNOUNCED == "wisp_did"
+    assert 'Notifications.deliver(id: "wispdid:" + ev.str("record"), title: "Wisp did this"' in case
+    assert "OutboundSender" not in case and "client." not in case      # it only shows; it never acts
