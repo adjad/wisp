@@ -10,20 +10,30 @@ import SwiftUI
 // (`POST /study/find/resolve`), shows the results grouped by kind with
 // checkboxes, and on Add imports the ticked ones (`POST /study/find/add`).
 //
-// Call site (the integrator adds it; nothing else needs wiring). In
-// NotchStudyView.swift, `content(_:)`, on the line right after
-// `StudyMakeOptions(study: study, state: state, course: selectedCourse(state))`:
+// Call site (the integrator adds it; nothing else needs wiring). Recommended:
+// StudyDriveViews.swift, `StudyMakeOptions.body`, as its last line, right
+// after the `if sourceCount > 0 || whole != nil { HStack { … } }` block that
+// holds the per-course "Whole course" pill (so it also shows for a course
+// with no sources yet, which is when it matters most):
 //
-//     if let course = selectedCourse(state) { StudyFindMaterialsSection(course: course, onFinished: { await study.refresh() }, onResize: model.onResize) }
+//     if let course { StudyFindMaterialsSection(course: course, onFinished: { await study.refresh() }) }
 //
-// `StudyFindMaterialsSection` is the "Find materials" pill plus the card under
-// it. For other layouts the pieces are public too:
-// `StudyFindMaterialsButton(course:)` toggles the card, and
-// `StudyFindMaterialsView(course:onFinished:)` is the card itself (it shows
-// only while its run is open). State refresh: StudyModel's `state` is
-// `private(set)` and its transport private, so `onFinished` should call
-// `StudyModel.refresh()` (internal, re-reads `GET /study/state`); the `state`
-// the add route returns is not applied here.
+// StudyMakeOptions has no `onResize`, so with that line the panel refits on
+// its next resize. Where the overlay model is in reach (NotchStudyView's
+// `content(_:)`, the line after `StudyMakeOptions(...)`), pass it as well:
+// `StudyFindMaterialsSection(course: course, onFinished: { await study.refresh() }, onResize: model.onResize)`.
+//
+// Public API:
+// - `StudyFindMaterialsSection(course:onFinished:onResize:)`: the "Find
+//   materials" pill on its own row plus the card under it.
+// - `StudyFindMaterialsButton(course:onFinished:)`: the pill alone (styled
+//   like "Whole course"); it opens or closes the course's card.
+// - `StudyFindMaterialsView(course:onFinished:onResize:)`: the card alone; it
+//   shows only while that course's run is open.
+// - `onFinished` runs after an Add (and after a stopped Add). StudyModel's
+//   `state` is `private(set)` and its transport private, so pass
+//   `{ await study.refresh() }` (re-reads `GET /study/state`); the `state`
+//   the add route returns is not applied here.
 //
 // Safety, by design: the only thing Wisp does to the browser is open https
 // URLs that pass `StudyFindTarget`'s allow-check (the course's Modules page and
@@ -88,9 +98,6 @@ struct StudyFindTarget: Equatable, Sendable {
         let s = parts.segments
         return s.count >= 3 && s[0] == "courses" && s[1] == canvasID && s[2] == "modules"
     }
-
-    /// Any https URL without user info: where an allowed item may redirect.
-    static func isPlainHTTPS(_ raw: String) -> Bool { parts(raw) != nil }
 
     struct Parts {
         let url: URL
@@ -619,6 +626,13 @@ enum StudyFindText {
         return text
     }
     static let addStopped = "Stopped. Anything already added stays in your sources."
+    static let itemFailed = "Wisp couldn't read this one."
+    /// The backend's own sentence for a failed item, else a gentle generic
+    /// one (Study's code sentences are about the Study model, not these).
+    static func failureLine(_ failure: StudyFindFailure) -> String {
+        let said = failure.message.trimmingCharacters(in: .whitespacesAndNewlines)
+        return said.isEmpty ? itemFailed : String(said.prefix(300))
+    }
 
     static let order = ["slides", "pdf", "notebook", "doc", "file", "article", "page", "discussion", "video", "other"]
     static func header(_ kind: String) -> String {
@@ -876,23 +890,22 @@ final class StudyFindRun: ObservableObject {
             // Re-checked here, whatever the server said.
             guard let url = t.allowedURL(item.url) else { continue }
             step = StudyFindText.readingPage(index + 1, of: visits.count)
-            let before = await StudyFindReader.scan(walk: false, text: false) { _, _ in true }
+            // URLs only, and only of tabs already on this course.
+            let before = await StudyFindReader.scan(walk: false, text: false) { _, url in t.allows(url) }
             guard live(gen) else { return }
             guard await open(url) else { continue }
             guard live(gen) else { return }
             let landed = await land(opened: url.absoluteString, before: before, gen: gen,
                                     until: min(runDeadline, Date().addingTimeInterval(Self.pageWait)))
             guard live(gen) else { return }
-            guard let landed else { continue }
-            if (item.kind == "page" || item.kind == "discussion"), !landed.page.text.isEmpty {
-                texts[item.id] = String(landed.page.text.prefix(StudyFindReader.maxCharacters))
+            // Re-checked before anything read from the landed page is used:
+            // only a page on this course, never where a redirect went off it.
+            guard let landed, t.allows(landed.url) else { continue }
+            if (item.kind == "page" || item.kind == "discussion"), !landed.text.isEmpty {
+                texts[item.id] = String(landed.text.prefix(StudyFindReader.maxCharacters))
             }
-            // Links are kept only from pages on the course itself, never from
-            // where a redirect went.
-            if landed.allowed {
-                deeper += landed.page.links
-                deeperFrames += landed.page.frames
-            }
+            deeper += landed.links
+            deeperFrames += landed.frames
         }
 
         // 4. Classify what those pages link to, then show it all.
@@ -939,50 +952,37 @@ final class StudyFindRun: ObservableObject {
             .map { $0.element.0 }
     }
 
-    private struct Landing {
-        let page: StudyFindPage
-        let allowed: Bool
-    }
-
-    /// The front tab the open produced: a tab whose URL is new since `before`
-    /// (or is the opened URL) on the course, else an https page a redirect
-    /// reached in a tab that changed. Waits for its text to settle.
-    private func land(opened: String, before: [StudyFindPage], gen: Int, until: Date) async -> Landing? {
+    /// The front tab the open produced: a tab on this course whose URL is new
+    /// since `before` (or is the opened URL). Waits for its text to settle.
+    /// Tabs off the course (a redirect elsewhere, the student's other tabs)
+    /// are never walked or read.
+    private func land(opened: String, before: [StudyFindPage], gen: Int, until: Date) async -> StudyFindPage? {
         let t = target
         let started = Date()
         var known: [String: String] = [:]
         for page in before { known[page.slot] = page.url }
         let snapshot = known
         var lastCount: [String: Int] = [:]
-        var fallback: Landing?
+        var latest: StudyFindPage?
         while Date() < until {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             guard live(gen) else { return nil }
-            // Only tabs the open changed are walked; other tabs are never read.
+            // Only tabs the open changed, and only on this course.
             let fresh = await StudyFindReader.scan(walk: true, text: true) { slot, url in
-                (url == opened || snapshot[slot] != url)
-                    && (t.allows(url) || StudyFindTarget.isPlainHTTPS(url))
+                (url == opened || snapshot[slot] != url) && t.allows(url)
             }
             guard live(gen) else { return nil }
             let elapsed = Date().timeIntervalSince(started)
-            if let page = fresh.first(where: { t.allows($0.url) && !$0.text.isEmpty }) {
-                let key = page.slot + " " + page.url
-                let stillRedirecting = page.url.contains("/modules/items/") && elapsed < 8
-                if !stillRedirecting, lastCount[key] == page.text.count || elapsed >= 10 {
-                    return Landing(page: page, allowed: true)
-                }
-                lastCount[key] = page.text.count
-                continue
+            guard let page = fresh.first(where: { t.allows($0.url) && !$0.text.isEmpty }) else { continue }
+            let key = page.slot + " " + page.url
+            let stillRedirecting = page.url.contains("/modules/items/") && elapsed < 8
+            if !stillRedirecting {
+                latest = page
+                if lastCount[key] == page.text.count || elapsed >= 10 { return page }
             }
-            // A redirect off the course: only a tab that changed since the
-            // open, never the course host's own other pages, text only.
-            if elapsed >= 3,
-               let page = fresh.first(where: { !t.allows($0.url) && !$0.text.isEmpty
-                   && StudyFindTarget.parts($0.url)?.host != t.host }) {
-                fallback = Landing(page: page, allowed: false)
-            }
+            lastCount[key] = page.text.count
         }
-        return fallback
+        return latest
     }
 
     private func open(_ url: URL) async -> Bool {
@@ -1091,8 +1091,12 @@ final class StudyFindRun: ObservableObject {
                 r.failures += parsed.failed
                 let failedURLs = Set(parsed.failed.map(\.url))
                 let addedURLs = Set(parsed.added.compactMap(\.url))
+                // The server may canonicalize URLs. When every failure names a
+                // URL Wisp sent, the rest of the batch went in; otherwise only
+                // the URLs it echoed as added are marked.
+                let failuresMatch = failedURLs.isSubset(of: Set(batch.map(\.url)))
                 for item in batch where addedURLs.contains(item.url)
-                    || (addedURLs.isEmpty && !failedURLs.contains(item.url)) {
+                    || (failuresMatch && !failedURLs.contains(item.url)) {
                     if let i = items.firstIndex(where: { $0.id == item.id }) { items[i].known = true }
                     selected.remove(item.id)
                 }
@@ -1276,7 +1280,12 @@ private struct StudyFindCard: View {
     private var reduceMotion: Bool { reduceMotionOverride ?? systemReduceMotion }
 
     /// Rows per kind before "Show all", so the card stays inside the panel's cap.
-    private static let rows = 6
+    private static let rows = 8
+
+    private struct Group: Identifiable {
+        let id: String
+        let rows: [StudyFoundItem]
+    }
 
     var body: some View {
         if run.visible {
@@ -1426,16 +1435,16 @@ private struct StudyFindCard: View {
     }
 
     private var list: some View {
-        let groups = StudyFindText.order.compactMap { kind -> (String, [StudyFoundItem])? in
+        let groups = StudyFindText.order.compactMap { kind -> Group? in
             let rows = run.items.filter { item in
                 (StudyFindText.order.contains(item.kind) ? item.kind : "other") == kind
             }
-            return rows.isEmpty ? nil : (kind, rows)
+            return rows.isEmpty ? nil : Group(id: kind, rows: rows)
         }
         return VStack(alignment: .leading, spacing: 2) {
-            ForEach(groups, id: \.0) { group in
-                let kind = group.0
-                let rows = group.1
+            ForEach(groups) { group in
+                let kind = group.id
+                let rows = group.rows
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text("\(StudyFindText.header(kind)) · \(rows.count)")
                         .font(.wisp(.caption, weight: .medium)).monospacedDigit().foregroundStyle(Theme.textMuted)
@@ -1495,8 +1504,7 @@ private struct StudyFindCard: View {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Image(systemName: "exclamationmark.circle").font(.wisp(size: 9)).foregroundStyle(Theme.warn)
                             .accessibilityHidden(true)
-                        Text(run.title(forFailure: failure) + ": "
-                             + (failure.message.isEmpty ? StudyText.problem(code: failure.code) : failure.message))
+                        Text(run.title(forFailure: failure) + ": " + StudyFindText.failureLine(failure))
                             .font(.wisp(.caption)).foregroundStyle(Theme.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
