@@ -40,7 +40,7 @@ class Item(_Strict):
     url: StrictStr = Field(max_length=4000)
     title: StrictStr = Field(default="", max_length=1000)
     kind: StrictStr = Field(max_length=20)
-    text: StrictStr | None = Field(default=None, max_length=find.TEXT_CAP)
+    text: StrictStr | None = Field(default=None, max_length=find.TEXT_CAP * 4)   # cut to TEXT_CAP in add(): grapheme vs code point counts differ
 
 
 class AddBody(_Strict):

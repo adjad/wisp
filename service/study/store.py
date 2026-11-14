@@ -223,6 +223,9 @@ class StudyStore:
                 self._db.execute("ALTER TABLE sources ADD COLUMN deck_status TEXT NOT NULL DEFAULT 'none'")
             except sqlite3.OperationalError:
                 pass   # another opener added it first
+        # A page read cut short by a restart never finishes: show it as failed, not "reading" forever.
+        if "deck_status" in {r[1] for r in self._db.execute("PRAGMA table_info(sources)")}:
+            self._db.execute("UPDATE sources SET deck_status='failed' WHERE deck_status='reading'")
         # Find materials' labels (a study.db from before them reads null).
         for column, kind in (("week", "INTEGER"), ("topic", "TEXT"), ("summary", "TEXT")):
             if column not in cols:
