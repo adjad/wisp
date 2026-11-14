@@ -312,7 +312,9 @@ final class SettingsLoader: ObservableObject {
                             baseURL: "https://openrouter.ai", apiPrefix: "/api/v1"),
         CloudProviderPreset(id: "openai", label: "OpenAI", provider: "openai-compatible",
                             baseURL: "https://api.openai.com", apiPrefix: "/v1"),
-        CloudProviderPreset(id: "gemini", label: "Google Gemini", provider: "openai-compatible",
+        // The Gemini API's own provider: pinned by the service to Google's origin and
+        // prefix, and its tool steps carry their thought signatures back.
+        CloudProviderPreset(id: "gemini", label: "Gemini API", provider: "gemini",
                             baseURL: "https://generativelanguage.googleapis.com", apiPrefix: "/v1beta/openai"),
         CloudProviderPreset(id: "custom", label: "OpenAI-compatible", provider: "openai-compatible",
                             baseURL: "", apiPrefix: "/v1"),
@@ -756,6 +758,8 @@ final class SettingsLoader: ObservableObject {
         let provider = object["provider"] as? String ?? "openrouter"
         if provider == "openrouter" {
             cloudPreset = "openrouter"
+        } else if provider == "gemini" {
+            cloudPreset = "gemini"
         } else if cloudBaseURL == "https://api.openai.com" {
             cloudPreset = "openai"
         } else if cloudBaseURL == "https://generativelanguage.googleapis.com" {

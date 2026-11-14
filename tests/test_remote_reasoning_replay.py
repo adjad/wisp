@@ -484,7 +484,21 @@ class PayloadChecks(RemoteFixture):
                 other = policy.profile_from_config({**self.profile, "model_id": model})
                 with self.subTest(model=model), self.assertRaises(EndpointConfigurationError):
                     other.validate_payload({**body, "model": model, "reasoning": {"effort": "medium"}})
-        self.assertEqual(policy.REASONING_EFFORT_MODELS, {EFFORT_MODEL: "medium"})
+        self.assertEqual(policy.REASONING_EFFORT_MODELS, {
+            EFFORT_MODEL: "medium",
+            # The Gemini API's bare ids (sent as reasoning_effort, on its origin only).
+            "gemini-3.8-flash": "low", "gemini-4-carbon": "low", "gemini-4-argon": "low"})
+        # Provider-correct shape: a bare Gemini API id gets `reasoning_effort` on the
+        # Gemini wire only; OpenRouter's ids keep their own option, unchanged.
+        for bare in policy.GEMINI_API_MODELS:
+            with self.subTest(model=bare):
+                self.assertEqual(policy.reasoning_fields("gemini", bare), {"reasoning_effort": "low"})
+                self.assertEqual(policy.reasoning_fields("openrouter", bare), {})
+                self.assertEqual(policy.reasoning_fields("openai-compatible", bare), {})
+                self.assertEqual(policy.reasoning_fields("openrouter", "google/" + bare), {})
+                self.assertEqual(policy.reasoning_fields("gemini", "google/" + bare), {})
+        self.assertEqual(policy.reasoning_fields("openrouter", EFFORT_MODEL), {"reasoning": {"effort": "medium"}})
+        self.assertEqual(policy.reasoning_fields("gemini", EFFORT_MODEL), {})
 
 
 class ReasoningOption(ReplayBase):
@@ -531,7 +545,7 @@ class ReasoningOption(ReplayBase):
         self.assertEqual(bodies[0]["max_tokens"], 2000)
 
     def test_other_models_send_no_reasoning_key(self):
-        for model in ["example-model", *[m for m in REPLAY_MODELS if m != EFFORT_MODEL]]:
+        for model in ["example-model", *[m for m in REPLAY_MODELS if m not in policy.REASONING_EFFORT_MODELS]]:
             with self.subTest(model=model):
                 self.use_model(model)
                 streamed = model not in policy.REPLAY_REASONING_MODELS

@@ -25,7 +25,7 @@ from service.config import (narration_mode, no_thinking_kwargs, role_to_model,
                             thinking_after_tool_required, thinking_kwargs,
                             thinks_explicitly)
 from service.inference.omlx_client import (OMLXClient, replay_reasoning_details,
-                                           without_replay_reasoning)
+                                           replay_tool_calls, without_replay_reasoning)
 from service.memory import prompt_blocks
 from service.safety import Tier, audit, decide
 from service.tools import (classify_tool_outcome, get_tool, is_tool_error,
@@ -4960,8 +4960,10 @@ async def run_agent(
                     await emit({"type": "done"})
                     return response
                 call["function"]["arguments"] = json.dumps(args)
+        # The Gemini API's per-call thought signatures ride back the same way, on
+        # copies of the calls in this row only (replay_tool_calls).
         call_row = {"role": "assistant", "content": msg.get("content") or "",
-                    "tool_calls": tool_calls}
+                    "tool_calls": replay_tool_calls(client, msg, tool_calls)}
         # A remote provider that sent reasoning_details with these calls gets them
         # back, unchanged, on this row for the rest of this turn's requests. `msgs`
         # lives only for this turn; the debug export strips it (see _run_step), and
