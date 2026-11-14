@@ -655,6 +655,9 @@ from service.study.api import router as study_router
 app.include_router(study_router)
 from service.study.drive_api import router as study_drive_router
 app.include_router(study_drive_router)
+from service.study import blocks_api as _study_blocks
+if _study_blocks.ENABLED:
+    app.include_router(_study_blocks.router)
 app.include_router(__import__("service.engine.api", fromlist=["router"]).router)
 
 OMLX_CLI = "/Applications/oMLX.app/Contents/MacOS/omlx-cli"
