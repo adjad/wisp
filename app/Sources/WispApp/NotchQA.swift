@@ -611,13 +611,21 @@ enum NotchQADriver {
         // Study (service/study/day_hook.py): two study blocks before what they're
         // for, both deadlines, and the summary behind the Brief's SCHOOL line.
         let night = 23 + 59.0 / 60
+        // Lab 5's block and deadline name the slides that cover it, and the
+        // deadline offers a 15-minute review of them.
+        let listSlides: [[String: Any]] = [["source_id": "qa-deck-6", "deck": "Lecture 6: Lists", "pages": [2, 3, 4, 5, 6]]]
+        var lab5Block = block("study-block:qa:lab5", "Study: Lab 5: Lists", 16.5, 17.25, "study")
+        lab5Block["slides"] = listSlides
+        lab5Block["covers_text"] = "Slides 2–6 of Lecture 6 cover it."
         let studyBlocks = [
             block("study-block:qa:pset6", "Study: Problem set 6", 15.5, 16.25, "study"),
-            block("study-block:qa:lab5", "Study: Lab 5: Lists", 16.5, 17.25, "study"),
+            lab5Block,
         ]
         let studyDeadlines: [[String: Any]] = [
             ["id": "study:qa:pset6", "title": "Problem set 6 · MATH 110", "due_ts": at(17), "source": "study"],
-            ["id": "study:qa:lab5", "title": "Lab 5: Lists · CS 101", "due_ts": at(night), "source": "study"],
+            ["id": "study:qa:lab5", "title": "Lab 5: Lists · CS 101", "due_ts": at(night), "source": "study",
+             "slides": listSlides, "covers_text": "Slides 2–6 of Lecture 6 cover it.",
+             "review": ["minutes": 15, "pages": [2, 3, 4, 5, 6].map { ["source_id": "qa-deck-6", "page": $0] }]],
         ]
         let study: [String: Any] = [
             "due_today": [
@@ -647,6 +655,28 @@ enum NotchQADriver {
                  "due_ts": at(24 * 5 + 12), "all_day": false, "kind": "project", "status": "upcoming"],
             ],
             "upcoming_more": 1,
+            // What Study got ready: a quiz it made, and an assignment's slides
+            // (three decks, so the line says "+1"); then two weak topics.
+            "ready": [
+                ["id": "ready:qa:quiz3", "kind": "quiz", "assignment_id": "qa:quiz3", "course": "CS 101",
+                 "title": "Quiz 3: Loops", "due_ts": at(24 + 10),
+                 "text": "CS 101 quiz tomorrow. I made a 10-question quiz from weeks 5 and 6.", "material_id": "m-quiz",
+                 "slides": [["source_id": "qa-deck-5", "deck": "Week 5: Loops", "pages": [2, 3, 4, 5]],
+                            ["source_id": "qa-deck-w6", "deck": "Week 6: While loops", "pages": [1, 2, 6]]]],
+                ["id": "ready:qa:pa3", "kind": "assignment", "assignment_id": "qa:pa3", "course": "CS 101",
+                 "title": "PA 3", "due_ts": at(24 * 4 + 23),
+                 "text": "PA 3 is due Friday. Lectures 7 and 8 cover it.", "material_id": NSNull(),
+                 "slides": [["source_id": "qa-deck-7", "deck": "Lecture 7: Pointers", "pages": [4, 5, 6, 7, 8, 9]],
+                            ["source_id": "qa-deck-8", "deck": "Lecture 8: Arrays", "pages": [2, 5, 7]],
+                            ["source_id": "qa-deck-9", "deck": "Lecture 9: Strings", "pages": [1]]]],
+            ],
+            "weak": [
+                ["id": "weak:qa:pointers", "course": "CS 101", "topic": "Pointers", "count": 3,
+                 "text": "You missed 3 on pointers; here are those two slides again.",
+                 "slides": [["source_id": "qa-deck-7", "deck": "Lecture 7: Pointers", "pages": [6, 8]]]],
+                ["id": "weak:qa:limits", "course": "MATH 110", "topic": "Limits", "count": 2,
+                 "text": "You missed 2 on limits.", "slides": []],
+            ],
         ]
         var payload: [String: Any] = [
             "day": day, "timezone": zone.identifier, "generated_at": at(13.1), "revision": 3, "provisional": false,
