@@ -322,6 +322,7 @@ final class SettingsLoader: ObservableObject {
     // The backend still honours `everything` set in config by hand; the
     // caption below then says so, and Disconnect returns to local models.
     let cloudRoleOptions = [
+        (id: "everything", label: "Everything"),
         (id: "reasoning", label: "Reasoning"),
         (id: "coding", label: "Coding"),
         (id: "research", label: "Research"),
@@ -2041,7 +2042,7 @@ struct SettingsView: View {
                                     Text(loader.superModelEnabled
                                          ? "Super Model overrides these workload choices while it is on. Public web tools run locally; the cloud model explains their results."
                                          : loader.cloudRoles.contains("everything")
-                                         ? "All of Wisp runs on this model (set in config.yaml): Ask, Brief, summaries, drafts and tools. Your mail, texts and calendar go to the provider. Disconnect to return to local models."
+                                         ? "All of Wisp runs on this model: Ask, Brief, summaries, drafts and tools. Your mail, texts and calendar go to the provider. Disconnect to return to local models."
                                          : "Fast routing, message/email summaries, embeddings, and tool execution stay local.")
                                         .font(.caption2).foregroundStyle(.secondary)
                                 }

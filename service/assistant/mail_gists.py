@@ -845,9 +845,12 @@ def _remote_background_paused() -> bool:
     provider's rate limit that live questions need: only an explicit Analyze
     runs. WISP_REMOTE_BACKGROUND=1 turns the automatic cycle back on."""
     import os
-    from service.inference.remote_policy import remote_only_profile
+    from service.inference.remote_policy import remote_only_profile, remote_parity
     try:
-        return remote_only_profile() is not None and os.environ.get("WISP_REMOTE_BACKGROUND") != "1"
+        # "Everything" on a cloud model (remote_parity) behaves like a local model,
+        # so the automatic cycle runs there too.
+        return (remote_only_profile() is not None and not remote_parity()
+                and os.environ.get("WISP_REMOTE_BACKGROUND") != "1")
     except Exception:  # noqa: BLE001
         return False
 
