@@ -136,24 +136,8 @@ enum QuickSettingsText {
         remoteOnly || (compiledForIntel && engineAvailable != true)
     }
 
-    /// Advanced › Model provider's line: where all of Wisp runs now. `checked` is nil
-    /// while checking and false when the saved connection couldn't be read.
-    static func modelProvider(checked: Bool?, connected: Bool, provider: CloudProvider?, modelID: String) -> String {
-        guard let checked else { return "Checking…" }
-        guard checked else { return "Wisp couldn't check this yet." }
-        guard connected else { return "Not connected" }
-        let model = modelID.isEmpty ? nil : CloudModelName.model(modelID)
-        let name = provider?.label ?? "Another provider"
-        return model.map { "\(name) · \($0)" } ?? name
-    }
-
     static let modelProviderHelp = "Where Wisp's AI runs. Switching needs that provider's key; "
         + "Wisp restarts on it, and Ask and Brief show the new model."
-
-    /// Shown once a switch works, until Ask and Brief catch up.
-    static func modelProviderSwitched(_ provider: CloudProvider?) -> String {
-        "Switched. Wisp restarts on \(provider?.label ?? "the new provider"); Ask and Brief show the new model in a moment."
-    }
 
     /// The notch's Setup row: always there, unlike the menu bar's two-day Change Setup….
     static let setupHelp = "Open setup again to change permissions, Google, About you or open at login. "

@@ -24,11 +24,11 @@ struct NotchSetupView: View {
     }
 
     /// The key-only card's lines. Pure.
-    nonisolated static let keyOnlyWelcome = "In this build Wisp's AI runs on OpenRouter. Connect your OpenRouter key to start."
+    nonisolated static let keyOnlyWelcome = "In this build Wisp's AI runs on a cloud model. Connect an OpenRouter or Gemini API key to start."
     nonisolated static let keyOnlyDetail = "What you ask, and the mail, texts, calendar, notes, screenshots, pictures and audio "
-        + "Wisp reads to answer, are sent to OpenRouter and the model you choose."
-    nonisolated static let keyOnlyLater = "Connect your OpenRouter key so it can answer."
-    nonisolated static let connectTitle = "Connect OpenRouter"
+        + "Wisp reads to answer, are sent to the provider you choose (OpenRouter, or Google for the Gemini API) and its model."
+    nonisolated static let keyOnlyLater = "Connect your cloud key so it can answer."
+    nonisolated static let connectTitle = "Connect your AI key"
 
     /// Connect OpenRouter: the setup window's key card while first-run setup is
     /// unfinished, else Settings › Models › Cloud, which holds the same key.

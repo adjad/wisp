@@ -776,7 +776,10 @@ struct FirstRunSetupChecks {
                                        && $0.line.contains("mail") && $0.line.contains("audio") },
               "On the cloud, the privacy card says what goes to OpenRouter")
         check(cloudCards.count == FirstRunSetupView.helpsYourDay.count, "Only the privacy card changes on the cloud")
-        check(FirstRunSetupView.cloudProvider(host: nil, intel: true) == "OpenRouter"
+        check(FirstRunSetupView.cloudProvider(host: nil, intel: true) == "your cloud provider"
+              && FirstRunSetupView.cloudProvider(host: "openrouter.ai", intel: true) == "OpenRouter"
+              && FirstRunSetupView.cloudProvider(host: "generativelanguage.googleapis.com", intel: true)
+                == "Google (Gemini API)"
               && FirstRunSetupView.cloudProvider(host: "openrouter.ai", intel: false) == "OpenRouter"
               && FirstRunSetupView.cloudProvider(host: "api.example.com", intel: false) == "api.example.com",
               "The cloud provider is named from the build or the remote model's host")
@@ -788,8 +791,8 @@ struct FirstRunSetupChecks {
               "Everything on the cloud covers every role row")
         check(SettingsLoader.cloudModelName("google/gemini-3.8-flash") == "Gemini 3.8 Flash"
               && SettingsLoader.cloudModelName("") == "Cloud model", "Cloud role rows name the cloud model")
-        check(EngineSettingsView.cloudLine(modelName: "Gemini 3.8 Flash") == "Running on OpenRouter · Gemini 3.8 Flash"
-              && EngineSettingsView.cloudLine(modelName: nil) == "Running on OpenRouter",
+        check(EngineSettingsView.cloudLine(modelName: "Gemini 3.8 Flash") == "Running in the cloud · Gemini 3.8 Flash"
+              && EngineSettingsView.cloudLine(modelName: nil) == "Running on your cloud model",
               "Intel's engine line names OpenRouter and the model")
         check(EngineSettingsView.showsCloudOnly(cloudOnly: false, compiledForIntel: true, bundledAvailable: false)
               && EngineSettingsView.showsCloudOnly(cloudOnly: true, compiledForIntel: false, bundledAvailable: nil)
@@ -806,7 +809,8 @@ struct FirstRunSetupChecks {
               && QuickSettingsSection.shown(localEngine: false).count == QuickSettingsSection.allCases.count - 1,
               "Power hides with no local engine, and only then")
         check(!NotchSetupView.keyOnlyWelcome.contains("this Mac") && NotchSetupView.keyOnlyWelcome.contains("OpenRouter")
-              && NotchSetupView.connectTitle == "Connect OpenRouter", "The notch card offers the OpenRouter key")
+              && NotchSetupView.keyOnlyWelcome.contains("Gemini API")
+              && NotchSetupView.connectTitle == "Connect your AI key", "The notch card offers both providers' keys")
         check(ResearchView.privacyLine(cloud: false, model: nil)
               == "Research runs on this Mac. Only search queries and page requests leave it."
               && !ResearchView.privacyLine(cloud: true, model: "Gemini 3.8 Flash").contains("this Mac")

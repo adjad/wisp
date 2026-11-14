@@ -218,10 +218,10 @@ struct EngineSettingsView: View {
         self.cloudModelName = cloudModelName
     }
 
-    /// The engine line when everything runs on OpenRouter. Pure.
+    /// The engine line when everything runs on the cloud model (OpenRouter or the Gemini API). Pure.
     nonisolated static func cloudLine(modelName: String?) -> String {
-        guard let modelName, !modelName.isEmpty else { return "Running on OpenRouter" }
-        return "Running on OpenRouter · \(modelName)"
+        guard let modelName, !modelName.isEmpty else { return "Running on your cloud model" }
+        return "Running in the cloud · \(modelName)"
     }
 
     /// No engine controls: an Intel build whose built-in engine isn't available (an

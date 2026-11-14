@@ -115,8 +115,10 @@ final class MessagesReader {
             // gap shows up in diagnostics instead of as quietly missing messages.
             self.post(lines: (structured + scan.lines).joined(separator: "\n"),
                       diagnostics: ["available": true, "count": scan.lines.count,
-                                    "attempted": scan.attempted, "skipped": scan.skipped])
-            self.deepReadThrottle.recordPost(signature)
+                                    "attempted": scan.attempted, "skipped": scan.skipped]) { [weak self] in
+                // Only a post the service took counts: one sent before it was up is read again.
+                self?.deepReadThrottle.recordPost(signature)
+            }
         }
     }
 
@@ -600,7 +602,8 @@ final class MessagesReader {
         return nil
     }
 
-    private func post(lines: String, diagnostics: [String: Any]) {
+    /// `delivered` runs only when the service accepted the post (HTTP 2xx).
+    private func post(lines: String, diagnostics: [String: Any], delivered: (() -> Void)? = nil) {
         let url = WispClient.baseURL.appendingPathComponent("assistant/sync/messages")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -609,7 +612,10 @@ final class MessagesReader {
                                                                     "diagnostics": diagnostics])
         // A backend that isn't listening yet gets a fresh read soon, not the
         // next 5-minute tick.
-        URLSession.shared.dataTask(with: req) { [weak self] _, _, error in
+        URLSession.shared.dataTask(with: req) { [weak self] _, response, error in
+            if error == nil, let code = (response as? HTTPURLResponse)?.statusCode, (200..<300).contains(code) {
+                delivered?()
+            }
             self?.backendRetry.handle(error: error) { self?.sync() }
         }.resume()
     }

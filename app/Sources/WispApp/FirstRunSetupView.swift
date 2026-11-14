@@ -470,8 +470,8 @@ enum FirstRunBrain: Equatable {
             return "Wisp already answers with the model you set up, so there's nothing to download here."
         }
         if keyOnly {
-            return "In this build Wisp's AI runs on a cloud model through OpenRouter, so there's nothing "
-                + "to download. Connect your OpenRouter key below to start."
+            return "In this build Wisp's AI runs on a cloud model through OpenRouter or the Gemini API, "
+                + "so there's nothing to download. Connect your key below to start."
         }
         return "The AI model runs on this Mac. Your mail, calendar and messages stay here; when you ask "
             + "for something from the web, only the search terms are sent. First Wisp needs to "
@@ -2634,12 +2634,15 @@ struct FirstRunSetupView: View {
     nonisolated static let privacyTitle = "Private by design"
     nonisolated static let cloudPrivacyTitle = "Where your data goes"
 
-    /// Who answers when everything runs on the cloud: OpenRouter on the Intel build,
-    /// else the remote model's host ("openrouter.ai" reads as OpenRouter).
+    /// Who answers when everything runs on the cloud, from the remote model's host:
+    /// "openrouter.ai" reads as OpenRouter, Google's Gemini API host as Google. On the
+    /// Intel build those are the only two; before it reads the host it names neither.
     nonisolated static func cloudProvider(host: String?, intel: Bool) -> String {
         let host = (host ?? "").lowercased()
-        if intel || host == "openrouter.ai" || host.hasSuffix(".openrouter.ai") { return "OpenRouter" }
-        return host.isEmpty ? "your cloud provider" : host
+        if host == "openrouter.ai" || host.hasSuffix(".openrouter.ai") { return "OpenRouter" }
+        if host == "generativelanguage.googleapis.com" { return "Google (Gemini API)" }
+        if intel || host.isEmpty { return "your cloud provider" }
+        return host
     }
 
     /// The privacy card's line when Wisp's AI runs on the cloud: what is sent, and where.

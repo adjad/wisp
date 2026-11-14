@@ -1423,7 +1423,9 @@ final class MailReader {
         }
         let generation = captured.generation
         // Taken before the read: a change during it differs next time and is read then.
+        // The history generation is part of it: a new inventory or source posts again.
         let signature = MailIndexPostThrottle.signature(paths: dbReader.indexFiles())
+            + ["generation|\(generation)"]
         if indexPostThrottle.shouldSkip(signature) { return true }
         guard let (headers, history) = dbReader.readHeadersAndHistory() else { return false }
         // A completed read is complete even for an empty or old
@@ -1437,15 +1439,17 @@ final class MailReader {
         // last posted, so the next walk must not stitch onto it.
         post(headers: headers, available: true, reason: "",
              readSource: "local_index", history: history,
-             historyGeneration: generation)
-        indexPostThrottle.recordPost(signature)
+             historyGeneration: generation) { [weak self] in
+            // Only a history the service took counts: one refused or sent before it was up is read again.
+            self?.indexPostThrottle.recordPost(signature)
+        }
         return true
     }
 
 
     private func post(headers: String, available: Bool, reason: String,
                       readSource: String, history: String? = nil,
-                      historyGeneration: UInt64? = nil) {
+                      historyGeneration: UInt64? = nil, historyDelivered: (() -> Void)? = nil) {
         // The launch header read has reached a terminal state, so the history
         // walk may start (see syncHistory).
         markHeadersCompleted()
@@ -1465,7 +1469,11 @@ final class MailReader {
         req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
         if history != nil {
             if !historyState.replace(generation: historyGeneration, enqueue: {
-                URLSession.shared.dataTask(with: req).resume()
+                // `historyDelivered` only when the service took this history (HTTP 2xx).
+                URLSession.shared.dataTask(with: req) { _, response, error in
+                    if error == nil, let code = (response as? HTTPURLResponse)?.statusCode,
+                       (200..<300).contains(code) { historyDelivered?() }
+                }.resume()
             }) {
                 // Preserve successful header readiness independently when an
                 // identity/source observation superseded the history read.

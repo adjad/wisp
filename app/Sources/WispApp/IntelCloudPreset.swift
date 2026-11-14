@@ -557,3 +557,24 @@ struct IntelKeyCard: View {
         }
     }
 }
+
+
+/// Advanced › Model provider's text. Here, not in QuickSettingsText.swift, because it needs
+/// `CloudProvider` and `CloudModelName`, and that file is also compiled on its own for its checks.
+extension QuickSettingsText {
+    /// Advanced › Model provider's line: where all of Wisp runs now. `checked` is nil
+    /// while checking and false when the saved connection couldn't be read.
+    static func modelProvider(checked: Bool?, connected: Bool, provider: CloudProvider?, modelID: String) -> String {
+        guard let checked else { return "Checking…" }
+        guard checked else { return "Wisp couldn't check this yet." }
+        guard connected else { return "Not connected" }
+        let model = modelID.isEmpty ? nil : CloudModelName.model(modelID)
+        let name = provider?.label ?? "Another provider"
+        return model.map { "\(name) · \($0)" } ?? name
+    }
+
+    /// Shown once a switch works, until Ask and Brief catch up.
+    static func modelProviderSwitched(_ provider: CloudProvider?) -> String {
+        "Switched. Wisp restarts on \(provider?.label ?? "the new provider"); Ask and Brief show the new model in a moment."
+    }
+}

@@ -1851,7 +1851,7 @@ struct SettingsView: View {
                         HStack {
                             // An Intel build with no engine has nothing to download or set
                             // up here: only the cloud key, which Cloud… holds.
-                            Text(intelNoEngine ? "Manage your OpenRouter key and model"
+                            Text(intelNoEngine ? "Manage your cloud key and model"
                                                : "Manage downloaded models and cloud keys")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)

@@ -57,6 +57,10 @@ struct QuickSettingsView: View {
                                         compiledForIntel: IntelCloudPreset.compiledForIntel, engineAvailable: nil)
     }
 
+    /// Advanced › Model provider: the Intel build only, where Wisp runs everything on a
+    /// cloud provider it set up. A remote-only Apple silicon setup keeps its own form in Settings.
+    private var offersProviderSwitch: Bool { noLocalEngine && IntelCloudPreset.compiledForIntel }
+
     /// The sections offered: no Power with no model on this Mac.
     private var sections: [QuickSettingsSection] {
         QuickSettingsSection.shown(localEngine: !noLocalEngine)
@@ -97,8 +101,8 @@ struct QuickSettingsView: View {
             cloudSwitch.cancel()
             chosen.save()
         }
-        .task(id: noLocalEngine) {
-            guard refreshes, noLocalEngine else { return }
+        .task(id: offersProviderSwitch) {
+            guard refreshes, offersProviderSwitch else { return }
             await cloudSwitch.refresh()
         }
         .onAppear { voices = ReadAloudVoice.installedForOpening { voices = $0 } }
@@ -238,7 +242,7 @@ struct QuickSettingsView: View {
                 hairline
                 saveMemoryRow
             case .advanced:
-                if noLocalEngine {
+                if offersProviderSwitch {
                     modelProviderRow
                     hairline
                 }
