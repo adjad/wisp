@@ -7,7 +7,8 @@ deliberately narrow: a wrong add is worse than a missed one.
 IMPORTANT rules:
 - An item qualifies only when EVERY check in `plan_for` holds: a real person, a
   school, or transactional mail (never promos, bulk mail or a critical alert);
-  not withheld or sensitive; not a group chat; an explicit date in the
+  not withheld or sensitive; a text's own sender saved in Contacts (one-to-one or a
+  line in a group chat, any delivery); an explicit date in the
   source's own words, resolved against when the message ARRIVED, never today;
   at least 30 minutes ahead and at most 60 days out; missed (unanswered and
   unread or read over a day ago, or answered with a plain yes); not already on
@@ -16,7 +17,7 @@ IMPORTANT rules:
 - An event with a clock goes to Calendar (the default calendar, the stated
   length or an hour); a deadline goes to Reminders (its stated time, else 9 AM
   that day). Never both for one item.
-- At most 3 writes a cycle and 10 a rolling day. Background cycle only: the
+- At most 3 writes a cycle; no limit per day. Background cycle only: the
   cycle's abort (a user's turn) is checked before every write, and again right
   before dispatch.
 - Every write goes through the verified native paths (attention_calendar's
@@ -34,10 +35,9 @@ IMPORTANT rules:
   calendar_event/reminder).
 - One path per message: an item Caught for you already turned into a reminder
   or event (service/attention) is never added here as well.
-- Mail does not act in this release (MAIL_ACTS is False): a dated email always
-  stays a tap card. The proof it will need is built and tested behind that
-  switch (default_mail_proof): a mail sender's identity comes from an
-  unauthenticated From header, so a qualifying mail item would be added without
+- Mail acts (MAIL_ACTS, the owner's decision of 2026-11-13), only with proof
+  (default_mail_proof): a mail sender's identity comes from an
+  unauthenticated From header, so a qualifying mail item is added without
   a tap only when it was fetched by Wisp's own Google sign-in,
   its sender is read strictly, that exact address is a saved contact's or one
   the user's own Sent mail went to before it arrived, the dated sentence is in
@@ -45,6 +45,10 @@ IMPORTANT rules:
   From domain. Anything missing, stale or unreadable means a tap card. Mail seen
   only through Apple Mail is never added without a tap. Texts do not need this
   (a text's sender is a handle matched to a saved contact).
+- What the first yes named is the action "add": a one-to-one iMessage. Email, a
+  green-bubble text (SMS or RCS) and a line in a group chat are the action
+  "add_more" (acting.ACTIONS): a yes given before they were named does not cover
+  them, and they stay cards to tap until the person says yes to them too.
 - "Arrived after the yes" is judged per sentence: a mail subject by the first
   in-view message that carried it without a Re:/Fwd: prefix (sources._subject_ts),
   a mail body sentence by its own message, or by an EARLIER message in view that
@@ -64,7 +68,6 @@ from zoneinfo import ZoneInfo
 from service.proactive import guard
 
 MAX_PER_CYCLE = 3
-MAX_PER_DAY = 10
 DAY_S = 86400
 MIN_LEAD_S = 30 * 60
 MAX_AHEAD_S = 60 * DAY_S
@@ -78,14 +81,17 @@ MAX_ATTEMPTS = 2
 # whatever the proof says. Texts do not pass through here: a text's sender is a handle
 # matched to a saved contact (_saved_contact).
 #
-# OFF in this release. An independent review found the proof not yet strong enough to act
-# on: a yes given before email was named would silently cover it; Gmail writes no result
-# for mail that did not arrive by SMTP (an IMAP append, an import), so a forged one could
-# stand alone; a pass could rest on SPF alone; and the evidence is keyed by Message-ID,
-# not Gmail's own id. The proof code and its tests stay, exercised with this flipped on.
-# Do not set it True without those fixed and re-reviewed, and without changing acting.DOES
-# and SCOPE in the same commit: every screen reads them.
-MAIL_ACTS = False
+# ON since 2026-11-13, by the owner's decision ("have it act on emails"). An earlier
+# independent review held it off for four reasons. One is closed here: a yes given before
+# email was named no longer covers it (email is its own action, "add_more", with its own yes).
+# Three are still open and were not re-reviewed: Gmail writes no result for mail that did not
+# arrive by SMTP (an IMAP append, an import), so a forged result could stand alone there; a
+# pass can rest on an aligned SPF pass alone; and the evidence is keyed by Message-ID, not
+# Gmail's own id. Each needs a sender the person already knows AND a way into their mailbox
+# or that sender's domain. Setting this False puts every dated email back on a card.
+MAIL_ACTS = True
+# The action (acting.ACTIONS) a plan needs the person's yes to. See _action_of.
+ACTION, ACTION_MORE = "add", "add_more"
 # A body sentence counts as already said in an earlier message when at least this share
 # of its word 3-grams appear in that message (sources.quote_grams).
 QUOTED_SHARE = 0.5
@@ -470,6 +476,60 @@ def _saved_contact(item: dict) -> bool:
     return bool(name) and not _own_name(name)
 
 
+def _group_sender(item: dict, line_ts) -> str:
+    """The saved contact who wrote the group-chat line that arrived at `line_ts`, or "".
+
+    Decided from the handle that very line came from (sources.line_origin), never from the
+    name shown in front of it: a group's other members are whoever was added to it. A line
+    whose sender is not known, is not a phone number or address, is the user's own, or is
+    not saved in Contacts exactly, was written by nobody Wisp may act for."""
+    if item.get("source") != "messages" or not item.get("group"):
+        return ""
+    from service.proactive import sources
+    handle = sources.line_origin(item, line_ts)[2]
+    if not _person_handle(handle) or _own_handle(handle):
+        return ""
+    try:
+        name = str(_contact_name(handle) or "").strip()
+    except Exception:  # noqa: BLE001 — Contacts can't be asked: nobody is known
+        return ""
+    return name if name and not _own_name(name) else ""
+
+
+def _action_of(item: dict, plan: dict) -> str:
+    """Which yes a plan needs. "add" is exactly what the first yes named: a one-to-one
+    iMessage. Everything added since (email, a green-bubble text, a group-chat line, or a
+    text whose delivery is not known) is "add_more", so an older yes never reaches it."""
+    if plan.get("source") == "messages" and not item.get("group") and _text_service(item) == "iMessage":
+        return ACTION
+    return ACTION_MORE
+
+
+def _text_delivery_known(item: dict, plan: dict) -> bool:
+    """A text plan's line joined to a real chat and a delivery Messages named (iMessage, SMS
+    or RCS). A line Wisp could not join to its native record has no known sender."""
+    from service.proactive import sources
+    if item.get("group"):
+        return bool(sources.line_origin(item, plan.get("line_ts"))[0])
+    # One-to-one: every line the plan reads joined to the one chat (_plan_handle, already
+    # required) and each to a delivery Messages named. They need not all be the same one: a
+    # conversation that fell back from iMessage to SMS is still that contact's.
+    lines, services = list(item.get("lines") or []), list(item.get("line_service") or [])
+    return bool(lines) and len(services) == len(lines) and \
+        all(s in sources._SERVICES for s in services[-sources.ORIGIN_LINES:])
+
+
+def _card_worthy(item: dict) -> bool:
+    """While Wisp is NOT acting on email for this person (off, or email not agreed to yet):
+    whether a dated email may be offered as a card to tap. One from a person the user has
+    neither written to in this thread nor shares an organisation with gets none, as before
+    email could act: a dated email from a stranger is what phishing looks like. Once email
+    acts, default_mail_proof decides, and an email that fails it is a card to tap."""
+    if item.get("source") != "mail" or not item.get("person"):
+        return True
+    return bool(item.get("user_wrote") or _same_org(item))
+
+
 def _own_name(name: str) -> bool:
     """The saved contact carries the user's own name: exactly, case and spacing aside.
     Their own number saved under another name is not caught by this."""
@@ -645,8 +705,6 @@ def plan_for(item: dict, result: dict | None, *, now: float, tz: str) -> tuple[d
         return None, "not mail or texts"
     if item.get("critical"):
         return None, "account alert"
-    if item.get("group"):
-        return None, "group chat"
     if triage.withheld(item) or item.get("secret"):
         return None, "withheld"
     if not isinstance(result, dict) or result.get("sensitive") or result.get("junk"):
@@ -664,11 +722,13 @@ def plan_for(item: dict, result: dict | None, *, now: float, tz: str) -> tuple[d
     # nothing is added on its strength (sources.odd_sender).
     if item.get("odd_sender"):
         return None, "sender name carries an address"
-    # A stranger never writes to the user's calendar. A TEXT must be one-to-one with a
-    # handle saved in Contacts; having answered them once is not enough. (Mail has its
-    # own, stronger proof and does not act at all while MAIL_ACTS is False.)
+    # A stranger never writes to the user's calendar. A TEXT's sender must be a handle saved
+    # in Contacts; having answered them once is not enough. One-to-one, that is the chat's own
+    # handle, checked here. In a group it is the sender of the very line the date is in,
+    # checked per sentence below. (Mail has its own, stronger proof: default_mail_proof.)
+    group = source == "messages" and bool(item.get("group"))
     if source == "messages":
-        if not _saved_contact(item):
+        if not group and not _saved_contact(item):
             return None, "not a saved contact: tap to add"
     # MAIL: who the sender is, is not decided here. Having written in the thread, or sharing
     # the user's domain, used to qualify a mail sender; both rest on the From line alone.
@@ -676,8 +736,6 @@ def plan_for(item: dict, result: dict | None, *, now: float, tz: str) -> tuple[d
     # is a card the person taps. While mail does not act at all, a sender the user has
     # neither written to in this thread nor shares an organisation with gets no add-card
     # here either, as before: a dated email from a stranger is what phishing looks like.
-    elif person and not MAIL_ACTS and not (item.get("user_wrote") or _same_org(item)):
-        return None, "unknown sender: tap to add"
     arrival = item.get("received_ts")
     if type(arrival) not in (int, float):
         return None, "no arrival time"
@@ -698,6 +756,12 @@ def plan_for(item: dict, result: dict | None, *, now: float, tz: str) -> tuple[d
         # use only an absolute date (its year read against the item's arrival), and its
         # plan keeps line_ts None: a tap card.
         known = type(line_ts) in (int, float)
+        writer = ""
+        if group:
+            writer = _group_sender(item, line_ts)
+            if not writer:
+                reason = "not a saved contact: tap to add"
+                continue
         got = _resolve(_meal_time(sentence), float(line_ts) if known else float(arrival), tz)
         if not _explicit(got, relative_ok and known):
             continue
@@ -719,14 +783,17 @@ def plan_for(item: dict, result: dict | None, *, now: float, tz: str) -> tuple[d
         if at > now + MAX_AHEAD_S:
             reason = "too far ahead"
             continue
-        title = _title(item, sentence, got.quote, kind, word)
+        # In a group the plan is named for whoever wrote the line, not the last to speak.
+        named = {**item, "who": writer} if writer else item
+        title = _title(named, sentence, got.quote, kind, word)
         if not title or guard.output_has_pii(title) or guard.has_contact_or_link(title):
             reason = "no safe title"
             continue
         quote = guard.clean(sentence, 160)
         plan = {"kind": kind, "title": title, "word": word.lower(), "quote": quote,
                 "fingerprint": fingerprint(item, kind, at), "item_id": item.get("id"), "source": source,
-                "who": item.get("who", ""), "account": item.get("account", ""), "received_ts": float(arrival),
+                "who": f"{writer} in {item.get('title') or 'a group chat'}" if writer else item.get("who", ""),
+                "account": item.get("account", ""), "received_ts": float(arrival),
                 # When the sentence this plan was read from arrived (None: not known).
                 "line_ts": line_ts,
                 "has_clock": bool(got.has_clock), "timezone": tz,
@@ -1219,14 +1286,16 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
     writers = writers or WRITERS
     on = (is_enabled or enabled)()
     evidence: dict = {}                      # default_mail_proof's per-cycle cache
+    mail_agreed = on                         # is email something this person said yes to?
     if allows is None:
         if is_enabled is None:
             from service.proactive import acting
-            allows = lambda arrived: acting.allows(arrived, "add")       # noqa: E731
+            allows = acting.allows
+            mail_agreed = on and acting.enabled(ACTION_MORE)
         else:
             # A caller that replaces the setting must also say which arrivals it covers.
             # Nothing is assumed: without it, everything stays a tap card.
-            allows = lambda _received: False                             # noqa: E731
+            allows = lambda _received, _action=ACTION: False             # noqa: E731
     rows = list(sched.get("calendar") or []) + list(sched.get("reminders") or [])
     rows += list((existing or default_existing)(now) or [])
     decided = store.decisions()
@@ -1253,7 +1322,6 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
                        if isinstance(r, dict) and r.get("kind") not in ("calendar", "reminder", None)
                        and r.get("status") in ("added", "undone", "unknown", "undo_unknown", "dispatching")
                        and r.get("item_id")}
-    today = store.auto_added_since(now - DAY_S)
     from service.proactive.prepare import card_id
     tap, added = [], []
     attempts = 0
@@ -1306,12 +1374,19 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
             continue
         # Only a line that itself arrived after the person's yes is added without a tap:
         # the time of the sentence the date came from, never the conversation's latest line.
-        fresh = on and allows(plan.get("line_ts"))
-        if on and fresh and plan["source"] == "messages" and _text_service(item) != "iMessage":
-            # Only an iMessage's sender handle is one Apple verified. An SMS (or a message whose
-            # delivery is not known) can carry any sender number, a saved contact's included.
+        if plan["source"] == "mail" and not (MAIL_ACTS and mail_agreed) and not _card_worthy(item):
+            note(item, "unknown sender: tap to add")
+            continue
+        # Which yes it needs: a one-to-one iMessage is "add"; email, a green-bubble text and a
+        # group-chat line are "add_more", which an older yes did not name.
+        action = _action_of(item, plan)
+        fresh = on and _allowed(allows, plan.get("line_ts"), action)
+        if on and fresh and plan["source"] == "messages" and not _text_delivery_known(item, plan):
+            # A line Wisp could not join to its own record in Messages: who sent it is not known.
+            # (An SMS's sender number can be forged, a saved contact's included; the owner chose
+            # to act on a saved contact's number all the same, 2026-11-13.)
             offer(plan, survivor)
-            note(item, "not an iMessage: tap to add")
+            note(item, "delivery not known: tap to add")
             continue
         if on and fresh and plan["source"] == "mail":
             # Checked only for a mail plan that would otherwise be written, so the evidence
@@ -1327,10 +1402,10 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
                 offer(plan, survivor)
                 note(item, "mail: tap to add (" + str(why) + ")")
                 continue
-        if not fresh or attempts >= MAX_PER_CYCLE or today + attempts >= MAX_PER_DAY:
+        if not fresh or attempts >= MAX_PER_CYCLE:
             offer(plan, survivor)
             note(item, "tap to add" if not on else "arrived before the yes: tap to add" if not fresh
-                 else "cap reached: tap to add")
+                 else "this pass is full: tap to add")
             continue
         if abort():
             note(item, "a turn started")
@@ -1380,6 +1455,14 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
              if isinstance(r, dict) and r.get("status") == "added" and r.get("item_id")
              and r.get("kind") in ("calendar", "reminder")}
     return {"tap": tap, "added": added, "items": {"autoadd:" + i for i in items} | items}
+
+
+def _allowed(allows, line_ts, action: str) -> bool:
+    """`allows` for this line and action. A test's stand-in may take the time alone."""
+    try:
+        return bool(allows(line_ts, action))
+    except TypeError:
+        return bool(allows(line_ts))
 
 
 def _record(plan: dict, now: float) -> dict:

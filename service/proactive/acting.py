@@ -27,15 +27,15 @@ IMPORTANT rules:
 - Every action is recorded BEFORE its card exists, with what Undo needs, by
   `record()`. A card is built only from the record (`did_card`), never from a
   request. Undo runs the kind's registered undoer on the stored record.
-- One shared daily cap (`MAX_PER_DAY`, a rolling day) across every kind, on top
-  of each kind's own limits. `room()` says how many more may happen now.
+- No limit on how many a day (the owner's decision, 2026-11-13). Each kind keeps its
+  own limits (autoadd.MAX_PER_CYCLE a pass, a follow-up's own two a day).
 - Every action and every undo writes an audit line (`audit`).
 
 FOR A NEW KIND OF ACTION (the interface; see tests/test_acting.py):
     from service.proactive import acting
     if not acting.allows(item["received_ts"], "follow_up"):   # the gate, per message, per action
         ...leave it as a tap card...
-    if acting.room(store, now) <= 0 or acting.still_ok("follow_up") is not None:
+    if acting.still_ok("follow_up") is not None:
         ...stop...                                    # right before the write
     acting.record(store, fingerprint, kind="follow_up", status="added", now=now,
                   title="Reply to Maya", quote="...", who="Maya Chen", source="messages",
@@ -59,11 +59,10 @@ from service.proactive import guard
 
 FILE = "act_for_me.json"               # in Wisp's home; see _path()
 ASKED_FILE = "act_for_me_asked.json"   # "Not now", beside it; see _notes_path()
-MAX_PER_DAY = 10                       # every kind together, a rolling day
 DAY_S = 86400
 SHOWN_S = 3 * DAY_S                    # how long a "Wisp did this" card stays
 KINDS = ("calendar", "reminder", "hold", "follow_up", "draft")
-# Statuses that may have changed something, so they count toward the cap and block a repeat.
+# Statuses that may have changed something, so they count as done today and block a repeat.
 LANDED = ("added", "undone", "unknown", "undo_unknown")
 
 # What Wisp does on its own once the person says yes, in the words every surface shows
@@ -77,8 +76,10 @@ LANDED = ("added", "undone", "unknown", "undo_unknown")
 # it. Never widen what a key means without changing the key.
 ACTIONS: dict[str, str] = {
     "add": ("Adds an event or deadline you missed in a one-to-one iMessage from someone saved in your Contacts to "
-            "Calendar or Reminders. A green-bubble message (SMS or RCS) or an email with a date shows a card and waits "
-            "for your tap."),
+            "Calendar or Reminders."),
+    "add_more": ("Does the same for a green-bubble text (SMS or RCS) or a group-chat message from someone saved in "
+                 "your Contacts, and for an email from someone you know that your mail provider verified (Google "
+                 "accounts you linked in Wisp). Never from an unknown number."),
     "hold": ("Holds a free hour on your Day plan for work due today or in the next three days "
              "(in Wisp only, never on your calendar)."),
     "follow_up": ("Adds a “Reply to <name>” reminder to Reminders when someone you email asked you something by "
@@ -86,17 +87,20 @@ ACTIONS: dict[str, str] = {
 }
 DOES: list[str] = list(ACTIONS.values())
 # Which action each recorded kind of thing (KINDS) belongs to.
+# (An event or reminder from "add_more" is recorded as the same kinds: undoing one needs only "add".)
 ACTION_OF = {"calendar": "add", "reminder": "add", "hold": "hold", "follow_up": "follow_up", "draft": "draft"}
 NEVER = "Wisp never sends, replies, deletes or pays for anything by itself."
-# The first line says exactly what autoadd does: a text must be an iMessage (Apple verifies
-# an iMessage's sender; an SMS sender number can be forged) from a saved contact's own
-# handle (autoadd._saved_contact, strict_contact_name). An email never adds an event or a
-# deadline: autoadd.MAIL_ACTS is False. If that is ever set True, this line and SCOPE must
-# say so in the same commit.
+# The first two lines say exactly what autoadd does. "add" is what the first yes named: a
+# one-to-one iMessage from a saved contact's own handle (autoadd._saved_contact,
+# strict_contact_name). "add_more" is what was added on 2026-11-13 (autoadd._action_of): a
+# green-bubble text (an SMS sender number can be forged; the owner chose to act on a saved
+# contact's all the same), a group-chat line whose own sender is saved (autoadd._group_sender),
+# and an email that passes autoadd.default_mail_proof (autoadd.MAIL_ACTS). It has its own key
+# so that a yes given before it existed does not cover it.
 # What the yes reaches, said the same way everywhere. True for the list above: adds read
 # messages (acting.allows on the line's own arrival); a hold reads the person's own calendar
 # and reminders, where "arrived" has no meaning, so it covers deadlines already there.
-SCOPE = ("Adding from iMessages, and reply reminders from emails, cover only messages that arrive after "
+SCOPE = ("Adding from texts and emails, and reply reminders from emails, cover only messages that arrive after "
          "you say yes, never older ones. "
          "Holding time is for deadlines on your calendar or in Reminders, including ones already there.")
 
@@ -384,7 +388,7 @@ def mark_asked() -> None:
 def state() -> dict[str, Any]:
     waiting = pending()
     on = enabled()
-    return {"enabled": on, "enabled_at": enabled_at(), "asked": asked(), "per_day": MAX_PER_DAY,
+    return {"enabled": on, "enabled_at": enabled_at(), "asked": asked(),
             # What a yes would cover (everything Wisp does on its own now), and, while the gate is
             # on, what the person HAS agreed to and what is new since: Wisp does only the former.
             "does": list(DOES), "never": NEVER, "scope": SCOPE,
@@ -417,11 +421,6 @@ def records(store, *, kind: str | None = None, statuses: tuple[str, ...] | None 
 def done_since(store, since: float, kind: str | None = None) -> int:
     """Actions since `since` that may have changed something (LANDED), of every kind or one."""
     return len(records(store, kind=kind, statuses=LANDED, since=since))
-
-
-def room(store, now: float) -> int:
-    """How many more actions of any kind may happen now under the shared daily cap."""
-    return max(0, MAX_PER_DAY - done_since(store, now - DAY_S))
 
 
 def record(store, fingerprint: str, *, kind: str, status: str, now: float, title: str, quote: str = "",

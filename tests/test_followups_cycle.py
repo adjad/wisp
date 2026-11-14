@@ -315,9 +315,9 @@ def test_a_conversion_that_cant_be_saved_never_fails_the_step_and_still_blocks(n
     write = F.Writer()
     assert asyncio.run(step(store, write=write))["added"] == [] and write.calls == []
     assert store.auto_added()[fp]["status"] == "dispatching"
-    # And two unconverted ones still fill the day's cap for anyone else.
+    # And two unconverted ones still fill the follow-up kind's own two a day for anyone else.
     _dispatching(store, "followup:b", "followup-person:b")
-    assert followups._blocked(store, NOW)[1] == 2 and followups._unsettled(store, NOW) == 2
+    assert followups._blocked(store, NOW)[1] == 2
 
 
 def test_a_dispatch_that_cant_be_recorded_is_never_written(native, store, monkeypatch):

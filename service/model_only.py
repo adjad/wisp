@@ -839,7 +839,7 @@ def wisp_self_hint() -> str:
         from service.proactive import acting
         lines.append(f"- What you do on your own: nothing unless \"Let Wisp act for me\" is on (it is "
                      f"{'on' if acting.enabled() else 'off'} now; the person switches it in Settings › Privacy). "
-                     f"With it on, at most {acting.MAX_PER_DAY} actions a day: " + " ".join(acting.DOES)
+                     "With it on, with no limit per day: " + " ".join(acting.DOES)
                      + " " + acting.NEVER + " You draft replies; the person sends them.")
     except Exception:  # noqa: BLE001 - say less rather than guess
         pass

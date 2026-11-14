@@ -88,7 +88,7 @@ def _act_state() -> dict:
     try:
         from service.proactive.store import store
         state["recent"] = acting.recent(store(), time.time())
-        # What counts toward today's limit (a rolling day), for the Brief's "N of 10 today".
+        # What Wisp did in the last day (a rolling day), for the Brief's "N today".
         state["today"] = acting.done_since(store(), time.time() - acting.DAY_S)
     except Exception:  # noqa: BLE001 — the list is a courtesy; the switch still works without it
         state["recent"] = []

@@ -80,16 +80,17 @@ def test_a_hold_becomes_one_wisp_did_this_card_that_names_the_day_plan(setting, 
     assert autoadd.done_cards(store, NOW + 2 * 3600 + 1) == []            # gone once the held hour has passed
 
 
-def test_one_hold_per_deadline_two_a_cycle_and_the_shared_daily_cap(setting, store):
+def test_one_hold_per_deadline_two_a_cycle_and_no_daily_cap_so_holds_continue_past_ten_other_actions(setting, store):
     acting.set_enabled(True, now=NOW - 60)
     holds = Holds()
     cards = [card(1), card(2), card(3), card(4, method="reminder")]
     assert run(store, cards, holds) == {"card:deadline1", "card:deadline2"}          # MAX_PER_CYCLE
     assert run(store, cards, holds) == {"card:deadline3"}                            # never the first two again
     assert holds.calls == ["card:deadline1", "card:deadline2", "card:deadline3"]     # and never a non-hold card
-    for i in range(acting.MAX_PER_DAY):
+    for i in range(20):                                                              # twice the old shared cap
         acting.record(store, f"other-{i}", kind="reminder", status="added", now=NOW, title="x")
-    assert run(store, [card(9)], holds) == set() and "card:deadline9" not in holds.calls
+    assert acting.done_since(store, NOW - acting.DAY_S) >= 20
+    assert run(store, [card(9)], holds) == {"card:deadline9"} and "card:deadline9" in holds.calls   # still acts
 
 
 def test_off_or_a_turn_stops_it_before_the_hold(setting, store, monkeypatch):
@@ -113,7 +114,7 @@ def test_a_slot_that_went_or_is_already_planned_records_nothing_and_a_failure_is
     for _ in range(4):
         assert run(store, [card(2)], failing) == set()
     assert len(failing.calls) == autohold.MAX_ATTEMPTS and autoadd.done_cards(store, NOW + 1) == []
-    assert acting.room(store, NOW) == acting.MAX_PER_DAY                      # a failed hold used none of the cap
+    assert acting.done_since(store, NOW - acting.DAY_S) == 0                  # a failed hold counts as nothing done
 
 
 class Day:
@@ -304,7 +305,7 @@ def test_a_save_whose_read_back_failed_is_claimed_on_the_retry(setting, store):
     assert run(store, [c], holds) == {"card:deadline1"}
     record = store.auto_added()[autohold.fingerprint(c)]
     assert record["status"] == "added" and record["undo"]["task_id"] == "t-9" and record["attempts"] == 2
-    assert len(autoadd.done_cards(store, NOW + 1)) == 1 and acting.room(store, NOW) == acting.MAX_PER_DAY - 1
+    assert len(autoadd.done_cards(store, NOW + 1)) == 1 and acting.done_since(store, NOW - acting.DAY_S) == 1
 
 
 def test_an_already_after_a_failure_that_saved_nothing_or_another_task_stays_the_persons(setting, store):
@@ -402,7 +403,7 @@ def test_a_hold_that_raised_is_unknown_counted_and_never_retried(setting, store)
     holds = Seq(RuntimeError("database is locked"))
     assert run(store, [c], holds) == set()
     assert store.auto_added()[autohold.fingerprint(c)]["status"] == "unknown"
-    assert acting.room(store, NOW) == acting.MAX_PER_DAY - 1
+    assert acting.done_since(store, NOW - acting.DAY_S) == 1
     assert run(store, [c], holds) == set() and holds.calls == ["card:deadline1"]
     assert autoadd.done_cards(store, NOW + 1) == []
 

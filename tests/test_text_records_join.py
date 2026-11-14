@@ -27,8 +27,11 @@ GROUP = "iMessage;+;chat123456"
 
 # --- the production join in text_records() -------------------------------------------------------
 
-def _native(ts, conversation, service):
-    return {"timestamp": ts, "conversation": conversation, "service": service}
+def _native(ts, conversation, service, sender=None, direction="incoming"):
+    record = {"timestamp": ts, "conversation": conversation, "service": service, "direction": direction}
+    if sender is not None:
+        record["sender"] = sender
+    return record
 
 
 @pytest.fixture
@@ -56,26 +59,46 @@ def test_each_plain_row_takes_the_chat_and_service_of_its_one_native_record(feed
          _native(NOW - 100, CHAT, "iMessage"), _native(NOW - 100, OTHER, "SMS"),  # two at one stamp
          _native(iso, CHAT, "RCS")])                                              # ISO timestamp
     assert out == [
-        (NOW - 300, "Maya", "Maya: hi", CHAT, True, "iMessage"),
-        (NOW - 200, "Sam", "Sam: yo", OTHER, False, "SMS"),
-        (NOW - 100, "Maya", "Maya: tea?", "", True, ""),        # disagreeing records: nothing guessed
-        (NOW - 60, "Maya", "Maya: at 4", CHAT, None, "RCS"),
-        (NOW - 30, "Lee", "Lee: lost", "", True, ""),           # no native record
+        (NOW - 300, "Maya", "Maya: hi", CHAT, True, "iMessage", ""),
+        (NOW - 200, "Sam", "Sam: yo", OTHER, False, "SMS", ""),
+        (NOW - 100, "Maya", "Maya: tea?", "", True, "", ""),    # disagreeing records: nothing guessed
+        (NOW - 60, "Maya", "Maya: at 4", CHAT, None, "RCS", ""),
+        (NOW - 30, "Lee", "Lee: lost", "", True, "", ""),       # no native record
     ]
 
 
 def test_two_native_records_that_agree_still_place_the_row(feed):
     out = feed([(NOW - 10, "chat:1", "Maya", "Maya: hi", True)],
                [_native(NOW - 10, CHAT, "iMessage"), _native(NOW - 10, CHAT, "iMessage")])
-    assert out == [(NOW - 10, "Maya", "Maya: hi", CHAT, True, "iMessage")]
+    assert out == [(NOW - 10, "Maya", "Maya: hi", CHAT, True, "iMessage", "")]
+
+
+def test_an_incoming_native_record_gives_its_sender_handle(feed):
+    out = feed([(NOW - 10, "chat:1", "Maya", "Maya: hi", True)],
+               [_native(NOW - 10, CHAT, "iMessage", sender=HANDLE)])
+    assert out == [(NOW - 10, "Maya", "Maya: hi", CHAT, True, "iMessage", HANDLE)]
+
+
+def test_an_outgoing_native_record_gives_no_sender_handle(feed):
+    out = feed([(NOW - 10, "chat:1", "Maya", "Me: hi", True)],
+               [_native(NOW - 10, CHAT, "iMessage", sender="me@example.com", direction="outgoing")])
+    assert out[0][3] == CHAT and out[0][5] == "iMessage" and out[0][6] == ""
+
+
+def test_two_records_at_one_time_with_different_senders_give_nothing(feed):
+    out = feed([(NOW - 10, "chat:1", "Group", "Ann: hi", True)],
+               [_native(NOW - 10, GROUP, "iMessage", sender=HANDLE),
+                _native(NOW - 10, GROUP, "iMessage", sender="+15551230002")])
+    assert out[0][3] == "" and out[0][5] == "" and out[0][6] == ""
 
 
 def test_a_broken_feed_leaves_every_row_unplaced(feed, monkeypatch):
     from service.tools import imessage_tools as im
     out = feed([(NOW - 10, "chat:1", "Maya", "Maya: hi", True)], [])
-    assert out[0][3:] == ("", True, "")
+    assert out[0][3:] == ("", True, "", "")
     monkeypatch.setattr(im, "structured_messages_snapshot", lambda: (_ for _ in ()).throw(RuntimeError("x")))
-    assert sources.text_records()[0][3] == "" and sources.text_records()[0][5] == ""
+    assert sources.text_records()[0][3] == "" and sources.text_records()[0][5] == "" \
+        and sources.text_records()[0][6] == ""
 
 
 def test_nothing_is_read_before_messages_are_ready(monkeypatch):
@@ -128,8 +151,9 @@ def test_the_feed_keeps_only_the_three_known_services(messages):
 
 # --- text_items per-line facts and text_origin ----------------------------------------------------
 
-def _rec(ago_min, line, chat=CHAT, service="iMessage", who="Maya Chen"):
-    return (NOW - ago_min * 60, who, f"{line}" if line.startswith("Me:") else f"{who}: {line}", chat, True, service)
+def _rec(ago_min, line, chat=CHAT, service="iMessage", who="Maya Chen", sender=""):
+    return (NOW - ago_min * 60, who, f"{line}" if line.startswith("Me:") else f"{who}: {line}", chat, True, service,
+            sender)
 
 
 def _item(records):
@@ -195,6 +219,45 @@ def test_older_five_field_records_have_unknown_per_line_service():
     item = _item([(NOW - 600, "Maya Chen", "Maya Chen: hi", CHAT, True)])
     assert item["line_chat"] == [CHAT] and item["line_service"] == [""]
     assert sources.text_origin(item) == ("", "")
+
+
+def test_text_items_carry_a_parallel_line_sender():
+    item = _item([_rec(30, "a", sender=HANDLE), _rec(20, "Me: ok"), _rec(10, "c", sender=HANDLE)])
+    assert item["lines"] == ["a", "c"] and item["line_sender"] == [HANDLE, HANDLE]
+    assert len(item["line_sender"]) == len(item["lines"])
+
+
+def _group_item():
+    ann, bob = "+15551230001", "+15551230002"
+    return _item([_rec(30, "a", chat=GROUP, who='Group "Book club"', sender=ann),
+                  _rec(20, "b", chat=GROUP, who='Group "Book club"', sender=bob),
+                  _rec(10, "c", chat=GROUP, who='Group "Book club"', sender=ann)]), ann, bob
+
+
+def test_line_origin_names_the_one_line_that_arrived_then():
+    item, ann, bob = _group_item()
+    assert sources.line_origin(item, item["line_ts"][1]) == (GROUP, "iMessage", bob)
+    assert sources.line_origin(item, item["line_ts"][2]) == (GROUP, "iMessage", ann)
+
+
+def test_line_origin_is_empty_for_an_unknown_time():
+    item, _, _ = _group_item()
+    assert sources.line_origin(item, NOW - 99999) == ("", "", "")
+    assert sources.line_origin(item, None) == ("", "", "")
+
+
+def test_line_origin_is_empty_for_two_lines_at_one_time_with_different_senders():
+    item, ann, bob = _group_item()
+    item = dict(item, line_ts=[item["line_ts"][0]] * 2 + [item["line_ts"][2]])
+    assert sources.line_origin(item, item["line_ts"][0]) == ("", "", "")
+    assert sources.line_origin(item, item["line_ts"][2]) == (GROUP, "iMessage", ann)
+
+
+def test_line_origin_is_empty_when_line_sender_is_missing_or_a_different_length():
+    item, _, _ = _group_item()
+    ts = item["line_ts"][1]
+    assert sources.line_origin({k: v for k, v in item.items() if k != "line_sender"}, ts) == ("", "", "")
+    assert sources.line_origin(dict(item, line_sender=item["line_sender"][1:]), ts) == ("", "", "")
 
 
 def test_this_file_is_in_the_simulation_manifest():
