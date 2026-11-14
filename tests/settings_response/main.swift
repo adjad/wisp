@@ -54,6 +54,16 @@ everything["roles"] = ["everything", "reasoning"]
 check(!SettingsResponseValidator.valid(everything, path: "inference/cloud"), "Mixed everything reply accepted")
 everything["roles"] = ["everything", "everything"]
 check(!SettingsResponseValidator.valid(everything, path: "inference/cloud"), "Repeated everything accepted")
+// The Gemini API's own provider is a live cloud reply like OpenRouter's; any other
+// provider name is not.
+var gemini = cloud
+gemini["provider"] = "gemini"
+gemini["provider_label"] = "Gemini API"
+gemini["base_url"] = "https://generativelanguage.googleapis.com"
+gemini["api_prefix"] = "/v1beta/openai"
+check(SettingsResponseValidator.valid(gemini, path: "inference/cloud"), "Gemini API reply rejected")
+gemini["provider"] = "google"
+check(!SettingsResponseValidator.valid(gemini, path: "inference/cloud"), "Unknown provider accepted")
 for key in ["credential_name", "provider", "base_url", "model_id"] {
     malformed = cloud
     malformed[key] = ""

@@ -103,6 +103,9 @@ enum SettingsResponseValidator {
         return saved ? .savedMatchUnconfirmed : .failed
     }
 
+    /// Cloud providers a live cloud reply may name.
+    static let cloudProviders: Set<String> = ["openrouter", "openai-compatible", "gemini"]
+
     static func valid(_ object: [String: Any], path: String) -> Bool {
         func bool(_ key: String) -> Bool { boolean(object[key]) != nil }
         func integer(_ key: String) -> Bool { contextValue(object[key], minimum: 512) != nil }
@@ -180,7 +183,7 @@ enum SettingsResponseValidator {
         guard let name = object["credential_name"] as? String,
               name.range(of: "^[A-Za-z][A-Za-z0-9_-]{0,63}$", options: .regularExpression) != nil,
               let provider = object["provider"] as? String,
-              ["openrouter", "openai-compatible"].contains(provider),
+              cloudProviders.contains(provider),
               let model = object["model_id"] as? String,
               !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let rawURL = object["base_url"] as? String,

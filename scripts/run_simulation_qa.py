@@ -228,6 +228,8 @@ PROFILE_TESTS = {
         "tests/test_inference_endpoints.py",
         "tests/test_inference_providers.py",
         "tests/test_cloud_key_read.py",
+        "tests/test_remote_reasoning_replay.py",
+        "tests/test_gemini_provider.py",
         "tests/test_node_inbox.py",
         "tests/test_assistant_delivery.py",
         "tests/test_calendar_create_interval.py",

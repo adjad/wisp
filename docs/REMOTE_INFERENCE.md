@@ -96,7 +96,32 @@ Settings. It denies writes here exactly as it does with local models.
 - **Bounded payloads.** Every request is checked against the profile before it
   is sent: only `model`, `messages`, `max_tokens`, `stream`, `temperature`,
   `tools` and `tool_choice`; the exact model id; text and tool transcripts
-  only; and the message, tool, output and byte limits. History is never
+  only; and the message, tool, output and byte limits. Two narrow additions:
+  a top-level `reasoning` option, only `{"effort": "medium"}` and only for a
+  model Wisp lists for it (`REASONING_EFFORT_MODELS` in `remote_policy.py`),
+  with `max_tokens` of at least 2049. On the Gemini API's own origin
+  (`https://generativelanguage.googleapis.com`, prefix `/v1beta/openai`) that
+  option is `reasoning_effort`, only `"low"` and only for the Gemini API's bare
+  model ids (`GEMINI_API_MODELS`); `reasoning` is refused there and
+  `reasoning_effort` everywhere else. And
+  `reasoning_details` on an assistant message that carries tool calls, only
+  as a list of objects. On the Gemini API, each tool call may also carry its
+  `extra_content` (`{"google": {"thought_signature": ...}}`), the call's thought
+  signature: only on assistant tool calls, only to that origin, sent back
+  unchanged on the next request of the same turn, and counted against the same
+  `response_bytes` cap. A step that has none gets Google's documented skip
+  value on its first call. Gemini API replies stream; signatures arrive whole on
+  their call. Those details are the provider's own reasoning from
+  the reply that made the calls, sent back unchanged on the next requests of
+  the same turn. They have their own cap, `response_bytes`, outside the
+  transcript budget (`aggregate_bytes`); the whole request body stays under
+  `request_bytes` plus that cap. Past it, the turn stops with a plain message
+  instead of continuing without them. Models that need their reasoning back
+  (`REPLAY_REASONING_MODELS`) are asked for whole replies, not streams, so the
+  details are exactly what the provider sent. They and the Gemini API's
+  signatures are never shown, logged,
+  exported in Debug Mode or stored in history, and they are dropped when the
+  turn ends. History is never
   trimmed silently: an oversized turn fails instead.
 - **No local models.** oMLX is never started or loaded, there is no local
   fallback, and Settings cannot add a local, provider or cloud target.
