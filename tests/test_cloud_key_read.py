@@ -18,6 +18,8 @@ def fresh_state(monkeypatch):
     monkeypatch.setattr(secrets, "_RECENT_FAILURE", {})
     monkeypatch.setattr(secrets, "_READ_LOCK", threading.Lock())
     monkeypatch.setattr(secrets.quarantine, "check", lambda: None)
+    monkeypatch.setattr(secrets, "_RECENT_SUCCESS", {})
+    monkeypatch.setattr(secrets, "_reuse_enabled", lambda: False)
 
 
 def answer(value=b"k" * 32, code=0):
@@ -129,6 +131,90 @@ def test_connect_everything_still_reads_the_key_with_a_saved_profile(monkeypatch
     async def settings():
         return {"enabled": True, "roles": ["everything"]}
     monkeypatch.setattr(main, "get_cloud_inference", settings)
+    probed = []
+
+    async def switch_probe(checked, model_id, key):
+        probed.append((model_id, key))
+    monkeypatch.setattr(main, "_remote_only_switch_probe", switch_probe)
     result = asyncio.run(main.connect_cloud_inference(everything_body()))
     assert result["roles"] == ["everything"]
     assert seen == [True] and len(saved) == 1
+    assert probed and probed[0][1] == "k" * 32    # the new key is tested before it is saved
+
+
+def test_connect_while_all_cloud_saves_nothing_when_the_test_fails(monkeypatch):
+    monkeypatch.setattr(secrets, "resolve_keychain", lambda name, base_url, *, wait=False: "k" * 32)
+    monkeypatch.setattr(main, "remote_only_profile", lambda: object())
+    saved = []
+    import service.config as config
+    monkeypatch.setattr(config, "set_cloud_everything", lambda *a, **k: saved.append(a))
+
+    async def refused(checked, model_id, key):
+        raise main.HTTPException(status_code=400, detail="The provider rejected that key.")
+    monkeypatch.setattr(main, "_remote_only_switch_probe", refused)
+    with pytest.raises(main.HTTPException) as caught:
+        asyncio.run(main.connect_cloud_inference(everything_body()))
+    assert "rejected that key" in caught.value.detail and saved == []
+
+
+def test_intel_reuses_a_recent_key_but_connect_reads_afresh(monkeypatch):
+    monkeypatch.setattr(secrets, "_reuse_enabled", lambda: True)
+    calls, run = answer()
+    monkeypatch.setattr(secrets.subprocess, "run", run)
+    assert secrets.resolve_keychain("cloud-a", URL) == "k" * 32
+    assert secrets.resolve_keychain("cloud-a", URL) == "k" * 32
+    assert len(calls) == 1                      # the second turn skipped `security`
+    assert secrets.resolve_keychain("cloud-a", URL, wait=True) == "k" * 32
+    assert len(calls) == 2                      # Connect always reads Keychain
+    assert secrets.resolve_keychain("cloud-b", URL) == "k" * 32
+    assert len(calls) == 3                      # another account is its own read
+    now = secrets.time.monotonic()
+    monkeypatch.setattr(secrets.time, "monotonic", lambda: now + secrets.SUCCESS_REUSE_S + 1)
+    secrets.resolve_keychain("cloud-a", URL)
+    assert len(calls) == 4                      # and the reuse runs out
+
+
+def test_apple_silicon_never_reuses(monkeypatch):
+    calls, run = answer()
+    monkeypatch.setattr(secrets.subprocess, "run", run)
+    secrets.resolve_keychain("cloud-a", URL)
+    secrets.resolve_keychain("cloud-a", URL)
+    assert len(calls) == 2
+
+
+def test_a_failed_read_forgets_the_reused_key(monkeypatch):
+    monkeypatch.setattr(secrets, "_reuse_enabled", lambda: True)
+    calls, run = answer()
+    monkeypatch.setattr(secrets.subprocess, "run", run)
+    secrets.resolve_keychain("cloud-a", URL)
+    _, deny = answer(value=b"", code=44)
+    monkeypatch.setattr(secrets.subprocess, "run", deny)
+    with pytest.raises(EndpointConfigurationError):
+        secrets.resolve_keychain("cloud-a", URL, wait=True)
+    assert "cloud-a" not in "".join(secrets._RECENT_SUCCESS)
+
+
+def test_saving_or_removing_a_cloud_connection_forgets_reused_keys(monkeypatch):
+    # Review 2 NOTE 4: a key held for reuse is never sent after its connection changes.
+    import service.config as config
+    from service.inference import remote_policy
+    monkeypatch.setattr(secrets, "_reuse_enabled", lambda: True)
+    calls, run = answer()
+    monkeypatch.setattr(secrets.subprocess, "run", run)
+    monkeypatch.setattr(config, "_save_overlay", lambda overlay: None)
+    monkeypatch.setattr(remote_policy, "require_local_models_disabled", lambda *_a: None)
+    endpoint = {"enabled": True, "provider": "openrouter", "base_url": URL, "api_prefix": "/api/v1",
+                "credential_ref": "keychain:cloud-a", "readiness_timeout": 10}
+    actions = [lambda: config.set_cloud_everything(endpoint, "google/gemini-3.8-flash", 32000),
+               lambda: config.set_cloud_provider(endpoint, "google/gemini-3.8-flash", 32000, ["research"])]
+    for everything in (True, False):
+        actions.append(lambda everything=everything: (
+            monkeypatch.setattr(config, "cloud_everything_enabled", lambda: everything),
+            config.disable_cloud_provider()))
+    for action in actions:
+        secrets.resolve_keychain("cloud-a", URL)
+        assert secrets._RECENT_SUCCESS
+        action()
+        assert secrets._RECENT_SUCCESS == {}
+    secrets.resolve_keychain("cloud-a", URL)
+    assert len(calls) == len(actions) + 1       # each read after a change went to Keychain

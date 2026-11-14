@@ -28,7 +28,7 @@ from service.assistant.verified_reminders import expected_date_fields
 import asyncio
 import contextvars
 import dataclasses
-from service.inference.remote_policy import (remote_only_profile,
+from service.inference.remote_policy import (cloud_everything_active, remote_only_profile,
                                              require_generation_role,
                                              require_local_models_disabled)
 import json
@@ -308,7 +308,26 @@ async def _stop_summary_folds() -> None:
     for task in folds:
         task.cancel()
     await asyncio.gather(*folds, return_exceptions=True)
-research_manager = ResearchManager()
+RESEARCH_STORAGE_UNAVAILABLE = "Research couldn't open its storage; restart Wisp."
+
+
+class _ResearchUnavailable:
+    """Stands in for the research manager when its storage could not open: every
+    research endpoint answers 503 and the rest of the service runs."""
+
+    def __getattr__(self, name):
+        raise HTTPException(status_code=503, detail=RESEARCH_STORAGE_UNAVAILABLE)
+
+
+def _open_research():
+    try:
+        return ResearchManager()
+    except Exception as exc:  # noqa: BLE001 — research must never keep the service down
+        print(f"[research] storage unavailable ({type(exc).__name__}: {exc})", flush=True)
+        return _ResearchUnavailable()
+
+
+research_manager = _open_research()
 
 ROLE_SYSTEM = {
     "coding": "You are an expert software engineer. Write correct, idiomatic, "
@@ -388,9 +407,17 @@ async def lifespan(app: FastAPI):
     if profile is not None:
         try:
             await _prepare_remote_inference(client)
-        except Exception:
-            await client.aclose()
-            raise
+        except Exception as exc:
+            from service.inference.remote_policy import launched_remote_only
+            if launched_remote_only():
+                await client.aclose()
+                raise
+            # Opted in from Settings: a cloud model that doesn't answer right now (no
+            # network, a wrong key or address) must not keep the service down, or
+            # Settings could never reach it to fix the connection. Every turn checks
+            # readiness again, so a down server is an error in that answer instead.
+            print(f"[remote] cloud model not reachable at startup ({type(exc).__name__}); "
+                  "starting anyway", flush=True)
     # Keep the resident chat model warm. Every text role resolves to it now
     # (see config/models.yaml), so this is the model essentially every request
     # needs and there is no second chat model for it to contend with. Warm it
@@ -869,7 +896,8 @@ def _direct_generation_budget(target: Target) -> tuple[int, bool]:
 @app.get("/models")
 async def models() -> dict[str, Any]:
     installed = await client.models()
-    if installed:  # don't clobber the saved roster with a transient empty read
+    # A cloud provider's list (hundreds of ids) is not this Mac's roster: never saved.
+    if installed and remote_only_profile() is None:  # nor a transient empty read
         try:
             save_installed_models(installed)
         except ConfigurationOverlayDamaged:
@@ -890,17 +918,108 @@ async def get_cloud_inference() -> dict[str, Any]:
     return settings
 
 
+# POST /inference/warm (the app calls it when the notch opens): under cloud-everything,
+# open a kept-alive connection to the provider before the question is typed, so the
+# first token does not wait on TCP + TLS (and, on the Gemini API, the readiness read).
+# Fire and forget: the answer returns at once, the warm-up runs in a task bounded by
+# _WARM_TIMEOUT_S, at most once per _WARM_INTERVAL_S, and never blocks a turn.
+_WARM_INTERVAL_S = 20.0
+_WARM_TIMEOUT_S = 5.0
+_warm_last: float | None = None
+_warm_task: asyncio.Task | None = None
+
+
+async def _warm_cloud_connection() -> None:
+    from service.inference.remote_policy import remote_default_target
+    warm_client = None
+    try:
+        async with asyncio.timeout(_WARM_TIMEOUT_S):
+            warm_client = OMLXClient(target=remote_default_target("agent"))
+            await warm_client.warm()
+    except Exception:  # noqa: BLE001 — a warm-up that fails changes nothing; the turn connects itself
+        pass
+    finally:
+        if warm_client is not None:
+            try:
+                await warm_client.aclose()      # the shared keep-alive pool stays open
+            except Exception:  # noqa: BLE001
+                pass
+
+
+@app.post("/inference/warm")
+async def warm_cloud_inference() -> dict[str, Any]:
+    global _warm_last, _warm_task
+    from service.inference.remote_policy import cloud_everything_active
+    if not cloud_everything_active():
+        return {"warming": False, "reason": "not_cloud"}
+    now = time.monotonic()
+    if ((_warm_last is not None and now - _warm_last < _WARM_INTERVAL_S)
+            or (_warm_task is not None and not _warm_task.done())):
+        return {"warming": False, "reason": "recent"}
+    _warm_last = now
+    _warm_task = asyncio.create_task(_warm_cloud_connection())
+    return {"warming": True}
+
+
+async def _remote_only_switch_probe(checked, model_id: str, key: str) -> None:
+    """One tiny completion to `checked` with `key`, for a Connect made while Wisp is
+    already all-cloud. Raises the HTTP 400 Connect shows when the key or model fails.
+    The request carries only "Reply with OK." and goes to the checked provider origin."""
+    import httpx
+    from service.inference.attributed_transport import CredentialTransport
+    from service.inference.providers import wire_provider
+    from service.inference.remote_policy import reasoning_fields
+    payload: dict[str, Any] = {"model": model_id, "max_tokens": 256, "stream": False,
+                               "messages": [{"role": "user", "content": "Reply with OK."}]}
+    if wire_provider(checked.provider, checked.base_url) == "gemini":
+        # Gemini 3 and 4 always reason, so keep it short; a model with no reasoning
+        # option (Gemma) gets none. Other wires stay as they were (no reasoning field).
+        payload.update(reasoning_fields("gemini", model_id))
+    transport = CredentialTransport(checked.base_url, key, managed=False)
+    try:
+        async with httpx.AsyncClient(base_url=checked.base_url, transport=transport, trust_env=False,
+                                     follow_redirects=False,
+                                     timeout=httpx.Timeout(45.0, connect=10.0)) as http:
+            response = await http.post(checked.api_prefix.rstrip("/") + "/chat/completions", json=payload)
+            status = response.status_code
+            body = response.json() if status == 200 else None
+    except Exception:  # noqa: BLE001 — never echo a provider error body
+        raise HTTPException(status_code=400,
+                            detail="The provider could not be reached or rejected the credential.") from None
+    if status in (401, 403):
+        raise HTTPException(status_code=400, detail="The provider rejected that key.")
+    if status in (400, 404):
+        raise HTTPException(status_code=400,
+                            detail="The provider connected, but did not return that exact model ID.")
+    if status != 200 or not isinstance(body, dict) or not body.get("choices"):
+        raise HTTPException(status_code=400,
+                            detail="The provider could not be reached or rejected the credential.")
+
+
 async def _cloud_model_answers(probe, model_id: str, available: list[str]) -> bool:
     """Whether the provider serves model_id. Gemini's OpenAI-compatible list
     names models "models/<id>" and can leave some out (Gemma), so an unlisted
     id gets one tiny completion before it is called missing."""
-    if model_id in available or f"models/{model_id}" in available:
+    # OpenRouter's model list is public: being listed proves nothing about the key.
+    # There, one tiny completion always runs, so a wrong key fails at Connect.
+    listed_proves_key = getattr(getattr(probe, "provider", None), "name", None) != "openrouter"
+    if listed_proves_key and (model_id in available or f"models/{model_id}" in available):
         return True
     try:
         response = await probe.chat(model_id, [{"role": "user", "content": "Reply with OK."}], max_tokens=16)
     except Exception:  # noqa: BLE001 — any failure means "not served"
         return False
     return bool((response or {}).get("choices"))
+
+
+def _cloud_window_limit(roles) -> int:
+    """The largest window Connect accepts: the remote profile's own limit (1M+) for
+    "everything", 262144 for single cloud roles as before."""
+    from service.config import CLOUD_EVERYTHING
+    from service.inference.remote_policy import LIMITS
+    if isinstance(roles, list) and CLOUD_EVERYTHING in roles:
+        return LIMITS["context_window"][1]
+    return 262144
 
 
 CLOUD_KEY_UNREADABLE = ("Wisp couldn't read the key you saved. If macOS asked for your login password, "
@@ -920,7 +1039,8 @@ async def connect_cloud_inference(body: dict[str, Any]) -> dict[str, Any]:
     if (provider_name not in {"openrouter", "gemini", "openai-compatible"}
             or not all(isinstance(value, str) for value in (base_url, api_prefix, model_id))
             or not model_id.strip() or isinstance(context_window, bool)
-            or not isinstance(context_window, int) or not 512 <= context_window <= 262144
+            or not isinstance(context_window, int)
+            or not 512 <= context_window <= _cloud_window_limit(roles)
             or not isinstance(credential_name, str)
             or re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", credential_name) is None
             or not isinstance(roles, list) or not all(isinstance(role, str) for role in roles)):
@@ -945,10 +1065,16 @@ async def connect_cloud_inference(body: dict[str, Any]) -> dict[str, Any]:
             # time to answer; after Always Allow the restarted service reads it silently.
             from service.config.provider_credentials import resolve_keychain
             try:
-                await asyncio.to_thread(resolve_keychain, credential_name, checked.base_url, wait=True)
+                switch_key = await asyncio.to_thread(resolve_keychain, credential_name,
+                                                     checked.base_url, wait=True)
             except EndpointConfigurationError:
                 raise HTTPException(status_code=400, detail=CLOUD_KEY_UNREADABLE) from None
-            if remote_only_profile() is None:
+            if remote_only_profile() is not None:
+                # Already all-cloud (switching provider, model or key): the inference
+                # client only serves the saved profile, so the new key and model are
+                # tested with one direct request before anything is saved.
+                await _remote_only_switch_probe(checked, model_id.strip(), switch_key)
+            else:
                 # Test the key and model before moving all of Wisp onto them.
                 probe = OMLXClient(target=Target("connection-test", endpoint_from_config("cloud", endpoint_cfg),
                                                  model_id.strip(), context_window=context_window), timeout=30)
@@ -1006,6 +1132,84 @@ async def disconnect_cloud_inference() -> dict[str, Any]:
         _supersede_local_provider_probe_unlocked()
         disable_cloud_provider()
     return await get_cloud_inference()
+
+
+# "Gemini handles everything" (Settings > Advanced): all of Wisp on the saved Gemini
+# API connection, the remote-only profile plus remote_parity, exactly the Intel
+# build's cloud-everything mode. Off by default; the local model stays installed and
+# answers again as soon as it is turned off. Either way it takes effect when the
+# backend restarts, which the app does at once (restart_required).
+GEMINI_EVERYTHING_NO_KEY = ("Connect a Gemini API key first: Settings > Models > Cloud, "
+                            "provider Gemini API.")
+
+
+def _gemini_everything_state() -> dict[str, Any]:
+    from service.config import (cloud_everything_enabled, cloud_provider_settings,
+                                gemini_everything_connection)
+    connection = gemini_everything_connection()
+    enabled = cloud_everything_enabled() and connection is not None
+    # What this running service answers with: the remote-only profile is read once at
+    # startup (remote_only_profile is cached), so a saved change needs a restart until
+    # the two agree. remote_parity is read live and is not proof of either.
+    running = remote_only_profile() is not None
+    cloud = cloud_provider_settings()
+    return {
+        "available": connection is not None,
+        "enabled": enabled,
+        "active": running,
+        "model_id": connection["model_id"] if connection else "",
+        # With the switch off, a cloud role or Super Model still sends those requests
+        # to the connected provider; the switch's caption says so.
+        "cloud_roles_on": bool(cloud["enabled"] and (
+            [r for r in cloud["roles"] if r != "everything"] or cloud["super_model_enabled"])),
+        "restart_required": enabled != running,
+    }
+
+
+@app.get("/inference/cloud/everything")
+async def get_gemini_everything() -> dict[str, Any]:
+    return _gemini_everything_state()
+
+
+@app.post("/inference/cloud/everything")
+async def set_gemini_everything(body: dict[str, Any]) -> dict[str, Any]:
+    enabled = body.get("enabled") if isinstance(body, dict) else None
+    if not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail="Invalid setting.")
+    from service.config import (disable_gemini_everything, enable_gemini_everything,
+                                gemini_everything_connection)
+    if not enabled:
+        with _local_provider_operation_lock:
+            _supersede_local_provider_probe_unlocked()
+            disable_gemini_everything()
+        return _gemini_everything_state()
+    connection = gemini_everything_connection()
+    if connection is None:
+        raise HTTPException(status_code=400, detail=GEMINI_EVERYTHING_NO_KEY)
+    try:
+        checked = endpoint_from_config("cloud", connection["endpoint"])
+    except EndpointConfigurationError:
+        raise HTTPException(status_code=400, detail=GEMINI_EVERYTHING_NO_KEY) from None
+    # The person is at the switch: read the key now, with time to answer macOS's
+    # question, and test it with one tiny completion before moving Wisp onto it. The
+    # key goes only to the checked Gemini origin and is not kept.
+    from service.config.provider_credentials import resolve_keychain
+    try:
+        key = await asyncio.to_thread(resolve_keychain, connection["credential_name"],
+                                      checked.base_url, wait=True)
+    except EndpointConfigurationError:
+        raise HTTPException(status_code=400, detail=CLOUD_KEY_UNREADABLE) from None
+    await _remote_only_switch_probe(checked, connection["model_id"], key)
+    del key
+    from service.inference.remote_policy import remote_context_window
+    window = remote_context_window(connection["model_id"]) or connection["context_window"]
+    with _local_provider_operation_lock:
+        _supersede_local_provider_probe_unlocked()
+        try:
+            enable_gemini_everything(connection, window)
+        except (EndpointConfigurationError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from None
+    return _gemini_everything_state()
 
 
 @app.get("/inference/local-provider")
@@ -1585,7 +1789,8 @@ async def voice_transcribe(body: dict[str, Any]) -> dict[str, Any]:
     """The words in a short spoken clip from the notch's voice input.
 
     `audio` is a base64 16-bit PCM WAV of at most 30 s. The Ask model hears it on
-    this Mac, or nothing does (service/voice.py). 409 says, for the person, why
+    this Mac, or, in cloud-everything mode with a model that takes audio, the
+    chosen cloud model does; otherwise nothing does (service/voice.py). 409 says, for the person, why
     voice can't run with the current model; 503 means the model stayed busy.
     """
     from service import voice
@@ -2012,9 +2217,21 @@ def _managed_local_agent(client, target=None) -> bool:
 
 
 # A picture turn whose request ends up off this Mac's managed engine (Super
-# Model cloud, a remote or unmanaged endpoint) never carries the reading.
+# Model cloud, a remote or unmanaged endpoint) never carries the reading, except
+# in cloud-everything mode with a model that reads pictures (_cloud_reads_pictures):
+# there the same chosen cloud model made the reading and answers the turn.
 PICTURE_LOCAL_ONLY_NOTICE = ("Pictures are only read on your Mac's local model, so this one wasn't used. "
                              "Nothing was done with it.")
+
+
+def _cloud_reads_pictures(target) -> bool:
+    """The turn runs on the remote-only profile's model, in cloud-everything mode,
+    and that model takes pictures (remote_policy.cloud_media_allowed)."""
+    from service.inference.remote_policy import cloud_media_allowed
+    profile = remote_only_profile()
+    return (profile is not None and cloud_media_allowed("image")
+            and getattr(target, "model", None) == profile.model_id
+            and getattr(getattr(target, "endpoint", None), "name", None) == profile.endpoint_name)
 
 
 def _model_only_turn(get_client) -> bool:
@@ -2052,7 +2269,8 @@ def _model_led_preload(prompt: str) -> list[str]:
     name that is forbidden, blocked or unavailable this turn. Lexical only, so
     it never loads a model or touches the network; any failure means no preload."""
     try:
-        from service.router.model_led import MAX_PRELOAD
+        from service.router.model_led import max_preload
+        MAX_PRELOAD = max_preload()
         from service.model_only import normalize_day_words
         from service.router.router import has_write_intent, mask_quoted
         # "tommorow" never matched get_upcoming's day aliases (2026-10-29).
@@ -2116,7 +2334,8 @@ def _ask_tool_rank(prompt: str, previous: str = "") -> tuple[list[str], list[str
     memory its prefill guard measures every prompt against. Any failure means
     no head start (every tool stays reachable through discovery)."""
     try:
-        from service.model_only import ASK_PRELOAD, ASK_STUBS
+        from service.model_only import ask_preload as _ask_preload_size, ask_stubs
+        ASK_PRELOAD, ASK_STUBS = _ask_preload_size(), ask_stubs()
         from service.router.model_led import READ_CATEGORIES
         from service.router.router import has_write_intent, mask_quoted
         from service.model_only import normalize_day_words
@@ -3058,8 +3277,9 @@ async def agent(body: dict[str, Any]):
                 decision.route_source = skill_turn
                 decision.reason = (f"{decision.reason}; "
                                    f"{'active skill' if active_skill else 'skill'} stays on this Mac")
-            if picture_reading is not None and (super_model_cloud or not target.endpoint.managed):
-                # A picture's reading never leaves this Mac. Say so, before any
+            if picture_reading is not None and (super_model_cloud or (
+                    not target.endpoint.managed and not _cloud_reads_pictures(target))):
+                # A picture's reading goes only to the model that made it. Say so, before any
                 # per-turn transport opens, instead of running the request
                 # without the picture it was about.
                 await emit({"type": "text", "text": PICTURE_LOCAL_ONLY_NOTICE})
@@ -3262,14 +3482,16 @@ async def agent(body: dict[str, Any]):
                     # A bare "yes" ranks nothing lexically ("yes go ahead" led
                     # with world_time and get_stock_price): the offered
                     # creation's real schema leads instead of a name stub.
-                    from service.model_only import ASK_PRELOAD
+                    from service.model_only import ask_preload as _ask_preload_size
+                    ASK_PRELOAD = _ask_preload_size()
                     lead = sorted(offered_creations)
                     ask_preload = [*lead, *(n for n in ask_preload if n not in lead)][:ASK_PRELOAD]
                     ask_stub_rank = [n for n in ask_stub_rank if n not in lead]
                 if ask_quality and draft_bound:
                     # A bare address ranks nothing useful lexically: the send
                     # it answers leads with its real schema.
-                    from service.model_only import ASK_PRELOAD
+                    from service.model_only import ask_preload as _ask_preload_size
+                    ASK_PRELOAD = _ask_preload_size()
                     lead = [draft_awaiting["tool"]]
                     ask_preload = [*lead, *(n for n in ask_preload if n not in lead)][:ASK_PRELOAD]
                     ask_stub_rank = [n for n in ask_stub_rank if n not in lead]
@@ -3280,7 +3502,8 @@ async def agent(body: dict[str, Any]):
                     # "Demo point 4" answering "What should the bullet say?": the
                     # request it completes keeps its tools (it ranked calculate
                     # and mail tools, and the note was never changed).
-                    from service.model_only import ASK_PRELOAD, pending_write_request
+                    from service.model_only import ask_preload as _ask_preload_size, pending_write_request
+                    ASK_PRELOAD = _ask_preload_size()
                     ask_pending_write = pending_write_request(prompt, previous_prompt, last_assistant)
                     if ask_pending_write:
                         lead, more = _ask_tool_rank(ask_pending_write, "")
@@ -3364,7 +3587,8 @@ async def agent(body: dict[str, Any]):
                 final = await run_agent(turn_client, decision.model, messages, agent_emit, approver,
                                         tools=decision.tool_subset,
                                         active_skill=active_skill,
-                                        allow_skill_context=not test_mode and remote_only_profile() is None and not literal_envelope,
+                                        allow_skill_context=(not test_mode and (remote_only_profile() is None or cloud_everything_active())
+                                                             and not literal_envelope),
                                         include_identity_context=not test_mode,
                                         force_first_tool=force_tool,
                                         expect_tool_first=decision.expect_tool_first,
@@ -3373,9 +3597,11 @@ async def agent(body: dict[str, Any]):
                                         style_hint=style_hint or None,
                                         public_web_synthesis=super_model_cloud,
                                         model_led_discovery=model_led_turn,
-                                        # A picture's reading never leaves this Mac.
+                                        # A picture's reading goes only to the model that made it.
                                         picture_reading=(picture_reading if not super_model_cloud
-                                                         and target.endpoint.managed else None),
+                                                         and (target.endpoint.managed
+                                                              or _cloud_reads_pictures(target))
+                                                         else None),
                                         picture_label=picture_label,
                                         model_led_preload=(ask_preload if ask_quality
                                                            else _model_led_preload(prompt)
@@ -3587,7 +3813,15 @@ async def agent(body: dict[str, Any]):
                 # Rolling conversation summaries contain prior user turns and
                 # are a local memory operation even when this turn used cloud
                 # inference. Never reuse the remote turn client here.
-            if (not test_mode and remote_only_profile() is None
+            if (not test_mode and cloud_everything_active()
+                    and not decision._reminder_clarification):
+                # All of Wisp runs on the cloud model, which already sees these
+                # turns: fold them there, with the module-level remote client.
+                remote_model = remote_only_profile().model_id
+                _fold_summary_later(sid, lambda: maybe_summarize(
+                    client, sid, remote_model,
+                    prepare=lambda: _prepare_remote_inference(client)))
+            elif (not test_mode and remote_only_profile() is None
                     and not decision._reminder_clarification):
                 summary_target = role_target("fast")
 

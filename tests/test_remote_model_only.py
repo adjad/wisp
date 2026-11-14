@@ -139,3 +139,29 @@ def test_rate_limited_remote_request_is_retried():
                 return await c.post("/v1/chat/completions", json={"a": 1})
         response = asyncio.run(go())
     assert response.status_code == 200 and len(calls) == 3
+
+
+class SettingsOptInDegrades(RemoteFixture):
+    """A profile turned on from Settings (remote_parity, no WISP_REMOTE_ONLY) that this
+    build refuses leaves the service running without the cloud model, so Settings can
+    still reach it; the launcher's forced mode keeps refusing."""
+
+    def test_settings_opt_in_with_a_stale_profile_runs_without_it(self):
+        from service.config.endpoints import EndpointConfigurationError
+        # The shape an older Intel build wrote: fields this build does not accept.
+        self.cfg["inference"]["remote_only"]["endpoint_name"] = "gx10"
+        self.cfg["remote_parity"] = True
+        with patch.object(policy, "_FORCED_MODE", None):
+            policy.remote_only_profile.cache_clear()
+            self.assertIsNone(policy.remote_only_profile())
+            self.assertFalse(policy.launched_remote_only())
+        policy.remote_only_profile.cache_clear()
+        self.assertTrue(policy.launched_remote_only())
+        with self.assertRaises(EndpointConfigurationError):
+            policy.remote_only_profile()
+
+    def test_settings_opt_in_with_a_valid_profile_still_uses_it(self):
+        self.cfg["remote_parity"] = True
+        with patch.object(policy, "_FORCED_MODE", None):
+            policy.remote_only_profile.cache_clear()
+            self.assertEqual(policy.remote_only_profile().model_id, self.profile["model_id"])

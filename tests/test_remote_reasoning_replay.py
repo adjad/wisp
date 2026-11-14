@@ -223,8 +223,9 @@ class AgentTurns(ReplayBase):
                     self.assertTrue(all(b["stream"] is False for b in self.bodies))   # never streamed
                     self.assert_replayed(expected, parallel)
                     self.assert_no_leak(events, surfaces)
-                    if model == EFFORT_MODEL:
-                        self.assertTrue(all(b.get("reasoning") == {"effort": "medium"}
+                    option = policy.reasoning_option(model)   # OpenRouter Gemini: gate only
+                    if option is not None:
+                        self.assertTrue(all(b.get("reasoning") == option
                                             and b["max_tokens"] >= policy.REASONING_MIN_MAX_TOKENS
                                             for b in self.bodies))
                     else:
@@ -485,18 +486,22 @@ class PayloadChecks(RemoteFixture):
                 with self.subTest(model=model), self.assertRaises(EndpointConfigurationError):
                     other.validate_payload({**body, "model": model, "reasoning": {"effort": "medium"}})
         self.assertEqual(policy.REASONING_EFFORT_MODELS, {
-            EFFORT_MODEL: "medium",
+            EFFORT_MODEL: "medium", "google/gemini-3.8-flash": "low",
+            "google/gemini-4-carbon": "low", "google/gemini-4-argon": "low",
             # The Gemini API's bare ids (sent as reasoning_effort, on its origin only).
             "gemini-3.8-flash": "low", "gemini-4-carbon": "low", "gemini-4-argon": "low"})
         # Provider-correct shape: a bare Gemini API id gets `reasoning_effort` on the
-        # Gemini wire only; OpenRouter's ids keep their own option, unchanged.
+        # Gemini wire only; an OpenRouter id gets `reasoning: {effort}` off it only.
         for bare in policy.GEMINI_API_MODELS:
             with self.subTest(model=bare):
                 self.assertEqual(policy.reasoning_fields("gemini", bare), {"reasoning_effort": "low"})
                 self.assertEqual(policy.reasoning_fields("openrouter", bare), {})
-                self.assertEqual(policy.reasoning_fields("openai-compatible", bare), {})
+                # OpenRouter's Gemini ids reason only under cloud-everything (NOTE 1).
                 self.assertEqual(policy.reasoning_fields("openrouter", "google/" + bare), {})
-                self.assertEqual(policy.reasoning_fields("gemini", "google/" + bare), {})
+                with patch.object(policy, "cloud_everything_active", lambda: True):
+                    self.assertEqual(policy.reasoning_fields("openrouter", "google/" + bare),
+                                     {"reasoning": {"effort": "low"}})
+                    self.assertEqual(policy.reasoning_fields("gemini", "google/" + bare), {})
         self.assertEqual(policy.reasoning_fields("openrouter", EFFORT_MODEL), {"reasoning": {"effort": "medium"}})
         self.assertEqual(policy.reasoning_fields("gemini", EFFORT_MODEL), {})
 

@@ -297,6 +297,20 @@ def test_fresh_mac_needs_oMLX_first():
     assert s["omlx"]["min_macos"] == 26
 
 
+def test_intel_mac_is_told_the_engine_needs_apple_silicon(monkeypatch):
+    monkeypatch.setattr(guide.platform, "machine", lambda: "x86_64")
+    for host in (26, 15):            # never blamed on macOS, old or new
+        monkeypatch.setattr(guide, "host_macos_major", lambda host=host: host)
+        check = _check(_status(installed=(), running=False, is_installed=False), "engine")
+        assert check["state"] == "todo" and check["action"] == "unsupported_macos" and "url" not in check
+        assert "Apple silicon" in check["detail"] and "OpenRouter" in check["detail"]
+        assert "macOS" not in check["detail"]
+    # Apple silicon keeps the old wording.
+    monkeypatch.setattr(guide.platform, "machine", lambda: "arm64")
+    check = _check(_status(installed=(), running=False, is_installed=False), "engine")
+    assert "Apple silicon" not in check["detail"] and "macOS 15" in check["detail"]
+
+
 def test_old_macos_is_not_sent_to_download_omlx(monkeypatch):
     monkeypatch.setattr(guide, "host_macos_major", lambda: 15)
     s = _status(installed=(), running=False, is_installed=False)
@@ -1030,6 +1044,16 @@ def test_status_says_when_a_remote_provider_answers(monkeypatch):
     assert _status()["remote_only"] is False
     monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: object())
     assert _status()["remote_only"] is True
+    assert _status()["remote_model"] is None          # a profile without fields: no name, no error
+    from types import SimpleNamespace
+    profile = SimpleNamespace(model_id="google/gemini-3.8-flash", base_url="https://openrouter.ai")
+    monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: profile)
+    assert _status()["remote_model"] == {"id": "google/gemini-3.8-flash", "host": "openrouter.ai",
+                                         "provider": "OpenRouter"}
+    gemini = SimpleNamespace(model_id="gemini-3.8-flash", base_url="https://generativelanguage.googleapis.com")
+    monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: gemini)
+    assert _status()["remote_model"] == {"id": "gemini-3.8-flash", "host": "generativelanguage.googleapis.com",
+                                         "provider": "Gemini API"}
 
     def invalid():
         from service.config.endpoints import EndpointConfigurationError

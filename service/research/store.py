@@ -122,15 +122,39 @@ _MIGRATIONS: dict[str, list[str]] = {
 }
 
 
+# Opening can fail for a moment while an old backend still holds research.db's
+# -wal/-shm files (seen when ~/.moe was moved). Retried a few times; the file is
+# never deleted.
+_OPEN_ATTEMPTS = 3
+_OPEN_BACKOFF_S = 0.25
+_TRANSIENT_OPEN = ("disk i/o error", "locked", "readonly")
+
+
 class ResearchStore:
     def __init__(self, path: Path = DB_PATH) -> None:
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.path = path
-        self._db = sqlite3.connect(str(path), check_same_thread=False)
-        self._db.row_factory = sqlite3.Row
-        self._db.executescript(_SCHEMA)
-        self._migrate()
-        self._db.commit()
+        for attempt in range(_OPEN_ATTEMPTS):
+            db = None
+            try:
+                db = sqlite3.connect(str(path), check_same_thread=False)
+                db.row_factory = sqlite3.Row
+                self._db = db
+                db.executescript(_SCHEMA)
+                self._migrate()
+                db.commit()
+                break
+            except sqlite3.OperationalError as exc:
+                if db is not None:
+                    db.close()
+                transient = any(word in str(exc).lower() for word in _TRANSIENT_OPEN)
+                if not transient or attempt == _OPEN_ATTEMPTS - 1:
+                    raise
+                time.sleep(_OPEN_BACKOFF_S * (attempt + 1))
+            except BaseException:
+                if db is not None:
+                    db.close()
+                raise
         try:
             os.chmod(path, 0o600)
         except OSError:

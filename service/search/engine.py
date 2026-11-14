@@ -40,6 +40,20 @@ _LONG_DOC_CHUNKS = 120
 # relevant Cyclopes passages sat unused — the overview read as evasive because
 # it had never been shown the evidence. Each source now gets its own reserved
 # allocation.
+# Cloud-everything without meaning-based search (no embeddings off this Mac): a
+# document up to this size is answered whole by the cloud model, every chunk a
+# citable passage, instead of from a few keyword matches.
+CLOUD_WHOLE_DOC_CHARS = 500_000
+
+
+def _whole_document_picks(text: str, chunks) -> list[int] | None:
+    """Every chunk, when the cloud model can read the whole document; else None."""
+    from service.inference.remote_policy import cloud_everything_active
+    if not chunks or len(text) > CLOUD_WHOLE_DOC_CHARS or not cloud_everything_active():
+        return None
+    return list(range(len(chunks)))
+
+
 _GLOBAL_FRONT_CHUNKS = 2
 _GLOBAL_SPREAD_CHUNKS = 5
 _GLOBAL_MATCHED_CHUNKS = 8
@@ -227,6 +241,7 @@ async def search_stream(client: OMLXClient, text: str, raw_query: str, *,
     # ---- T2 semantic -----------------------------------------------------
     long_doc = len(chunks) >= _LONG_DOC_CHUNKS
     sem_ranked: list[int] = []
+    semantic_off = False
     try:
         # Only announce indexing when it's actually about to happen — a doc
         # already in cache (the common case once prewarm has had a moment to
@@ -264,6 +279,7 @@ async def search_stream(client: OMLXClient, text: str, raw_query: str, *,
     except embedder.EmbedUnavailable as e:
         # T2 off today. T0/T1 already delivered; say so rather than pretending.
         yield {"event": "semantic_unavailable", "reason": str(e)[:200]}
+        semantic_off = True
 
     # ---- T3 answer -------------------------------------------------------
     if not (want_answer and pq.mode == "answer"):
@@ -276,7 +292,10 @@ async def search_stream(client: OMLXClient, text: str, raw_query: str, *,
         fused = [i for i in fused if i >= 0]
 
     budget = 10 if long_doc else 5
-    if pq.scope == "global":
+    whole = _whole_document_picks(text, chunks) if semantic_off else None
+    if whole is not None:
+        picks = whole
+    elif pq.scope == "global":
         # Whole-document question: structural evidence ALONGSIDE the matched
         # spans (see _global_picks — the two are separately allocated).
         picks = _global_picks(len(chunks), fused)
@@ -298,9 +317,10 @@ async def search_stream(client: OMLXClient, text: str, raw_query: str, *,
     async def _on_upgrade(model: str) -> None:
         upgrades.append(model)
 
+    extra = {"max_passages": len(picks)} if whole is not None else {}
     task = asyncio.ensure_future(synth.answer(
         client, pq.clean, chunks, picks, long_doc=long_doc, scope=pq.scope,
-        upgrade_model=upgrade, on_progress=_on_upgrade))
+        upgrade_model=upgrade, on_progress=_on_upgrade, **extra))
     # Surface the upgrade notice as soon as the callback fires, without
     # blocking the answer itself.
     notified = False

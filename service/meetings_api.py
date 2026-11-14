@@ -4,7 +4,8 @@ IMPORTANT rules:
 - Every write is the app's own JSON request, never a browser page's: starting a
   meeting makes the Mac listen, so a web page must not be able to do it.
 - Audio arrives as base64 16-bit PCM WAV windows of at most 30 s and is never
-  stored. Replies carry transcript text and notes only.
+  stored. Replies carry transcript text and notes only. GET /meetings says where
+  the audio goes (`audio_destination`: None on a local engine, else the provider).
 """
 from __future__ import annotations
 
@@ -47,13 +48,30 @@ class Empty(BaseModel):
 
 def _refuse(error: Exception) -> HTTPException:
     if isinstance(error, voice.VoiceUnavailable):
-        return HTTPException(409, str(error).replace("Voice", "Meeting notes"))
+        return HTTPException(409, str(error).replace("Voice works", "Meeting notes work")
+                             .replace("Voice needs", "Meeting notes need").replace("Voice", "Meeting notes"))
     return HTTPException(400, str(error))
+
+
+def audio_destination() -> str | None:
+    """Who hears a meeting's audio besides this Mac: the remote-only profile's
+    provider ("OpenRouter", "the Gemini API", or the server's host name), or None on a
+    local engine."""
+    from urllib.parse import urlsplit
+    from service.inference.remote_policy import cloud_media_allowed, remote_only_profile
+    profile = remote_only_profile()
+    if profile is None or not cloud_media_allowed("audio"):
+        return None
+    host = (urlsplit(profile.base_url).hostname or "").lower()
+    from service.inference.providers import wire_provider
+    if wire_provider(getattr(profile, "provider", "openai-compatible"), profile.base_url) == "gemini":
+        return "the Gemini API"
+    return "OpenRouter" if host == "openrouter.ai" or host.endswith(".openrouter.ai") else (host or "your cloud provider")
 
 
 @router.get("/meetings")
 async def list_meetings() -> dict:
-    return {"meetings": await meetings.listing()}
+    return {"meetings": await meetings.listing(), "audio_destination": audio_destination()}
 
 
 @router.get("/meetings/{meeting_id}")
