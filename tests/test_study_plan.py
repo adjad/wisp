@@ -347,6 +347,36 @@ def test_upcoming_across_a_dst_change_week():
     assert [u["id"] for u in s["upcoming"]] == ["in"]
 
 
+def test_deadlines_and_blocks_gain_slides_only_when_asked():
+    rows = [item("a", "Lab 5", at(23, 59))]
+    assert "slides" not in plan.deadlines(rows, day=DAY, timezone=TZ)[0]
+    found = {"a": ([{"source_id": "s", "deck": "Lecture 2", "pages": [3]}], "Slide 3 of Lecture 2 covers it.",
+                   [{"source_id": "s", "page": 3}])}
+    d = plan.deadlines(rows, day=DAY, timezone=TZ, slides=found)[0]
+    assert d["covers_text"] == "Slide 3 of Lecture 2 covers it."
+    assert d["review"] == {"minutes": 15, "pages": [{"source_id": "s", "page": 3}]}
+    other = plan.deadlines([item("b", "Lab 6", at(22))], day=DAY, timezone=TZ, slides=found)[0]
+    assert other["slides"] == [] and other["covers_text"] is None and "review" not in other
+    b = plan.study_blocks(rows, [], now=at(9), timezone=TZ, day=DAY, slides=found)[0]
+    assert b["slides"] == found["a"][0] and "review" not in b
+
+
+def test_weak_items_need_two_misses_and_say_how_many_slides():
+    now = at(9)
+    misses = [{"material_id": "m1", "topic": "Recursion", "source_id": "s", "page": 4, "at": now - 60},
+              {"material_id": "m1", "topic": "recursion", "source_id": "s", "page": 4, "at": now - 30},
+              {"material_id": "m1", "topic": "Loops", "source_id": None, "page": None, "at": now},
+              {"material_id": "m1", "topic": "Loops", "source_id": None, "page": None, "at": now},
+              {"material_id": "m1", "topic": "Sets", "source_id": "s", "page": 1, "at": now},
+              {"material_id": "m1", "topic": "Old", "at": now - 30 * 86400},
+              {"material_id": "m1", "topic": "Old", "at": now - 30 * 86400}]
+    got = plan.weak_items(misses, course_labels={"c1": "CS 101"}, material_courses={"m1": "c1"},
+                          decks={"s": "Week 3"}, now=now)
+    assert [w["text"] for w in got] == ["You missed 2 on Loops. A quick review would help.",
+                                        "You missed 2 on Recursion; here is that slide again."]
+    assert got[1]["slides"] == [{"source_id": "s", "deck": "Week 3", "pages": [4]}] and got[1]["course"] == "CS 101"
+
+
 def test_this_file_is_in_the_simulation_manifest():
     from pathlib import Path
     manifest = (Path(__file__).resolve().parents[1] / "scripts" / "run_simulation_qa.py").read_text()

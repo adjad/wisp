@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, ValidationError
 
 from service.memory_saver_api import native_only
-from service.study import canvas_parse, connector, generate
+from service.study import canvas_parse, connector, generate, ready
 from service.study import sample
 from service.study.store import study_exists, study_store
 
@@ -45,6 +45,7 @@ LONG_IMPORT_POSTS = 2 * MAX_PAGES
 LONG_IMPORT_MODEL_S = 100.0
 LONG_CONCURRENCY = 4
 MAX_SOURCE_IDS = 20
+MAX_SLIDE_REFS = 40
 WHOLE_COURSE_CONTEXT = 100_000   # assignment descriptions of a whole course (long context)
 
 _HTTP = {"missing": 409, "rejected": 502, "busy": 502, "unreachable": 502, "bad_reply": 502}
@@ -94,6 +95,11 @@ class ConnectorBody(_Strict):
     model_id: StrictStr = Field(default="", max_length=200)
 
 
+class SlideRef(_Strict):
+    source_id: StrictStr = Field(max_length=100)
+    page: StrictInt = Field(ge=1, le=5000)
+
+
 class GenerateBody(_Strict):
     kind: Literal["guide", "quiz", "lesson", "flashcards"]
     course_id: StrictStr | None = Field(default=None, max_length=300)
@@ -103,11 +109,17 @@ class GenerateBody(_Strict):
     source_ids: list[Annotated[StrictStr, Field(max_length=100)]] | None = Field(
         default=None, max_length=MAX_SOURCE_IDS)
     whole_course: StrictBool = False
+    pages: list[SlideRef] | None = Field(default=None, max_length=MAX_SLIDE_REFS)
 
 
 class AttemptBody(_Strict):
     correct: StrictInt = Field(ge=0, le=1000)
     total: StrictInt = Field(ge=1, le=1000)
+    missed: list[Annotated[StrictInt, Field(ge=0, le=999)]] | None = Field(default=None, max_length=1000)
+
+
+class SettingsBody(_Strict):
+    auto_prepare: StrictBool
 
 
 class SampleBody(_Strict):
@@ -225,7 +237,19 @@ async def _state() -> dict:
 @router.get("/state")
 @_answer
 async def get_state():
-    return await _state()
+    got = await _state()
+    _kick()
+    return got
+
+
+def _kick() -> None:
+    """Best effort: prepared quizzes (ready.py) start in the background, only with consent."""
+    try:
+        store = _existing_store()
+        if store is not None:
+            ready.kick(store=store)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _recognized(parsed) -> bool:
@@ -418,6 +442,19 @@ def _chosen_sources(store, source_ids: list[str] | None, course_id: str | None) 
     return out
 
 
+def _chosen_slides(store, refs) -> list[dict]:
+    """Full slide rows for the refs asked for; an unknown deck or page is 404."""
+    if not refs:
+        return []
+    wanted = list(dict.fromkeys((r.source_id, r.page) for r in refs))
+    if store is None or not hasattr(store, "pages"):
+        raise Refusal(404, "not_found", NOT_FOUND)
+    rows = generate.resolve_pages(store, [{"source_id": s, "page": p} for s, p in wanted])
+    if len(rows) != len(wanted):
+        raise Refusal(404, "not_found", NOT_FOUND)
+    return rows
+
+
 def _course_context(course: dict | None, assignments: list[dict], long_context: bool) -> str:
     """A whole course: every assignment of it with its description."""
     cap = WHOLE_COURSE_CONTEXT if long_context else CONTEXT_MAX
@@ -451,7 +488,8 @@ async def make_material(request: Request):
     if body.whole_course and not body.course_id:
         raise Refusal(422, "invalid", "Pick a course to study the whole course.")
     sources = _chosen_sources(existing, body.source_ids, course_id if body.whole_course else None)
-    if course is None and assignment is None and topic is None and not sources:
+    slides = _chosen_slides(existing, body.pages)
+    if course is None and assignment is None and topic is None and not sources and not slides:
         raise Refusal(422, "invalid", "Pick a course, an assignment or a topic to study.")
     if assignment is not None:
         assignment = assignment | {"course_name": (course or {}).get("name") or ""}
@@ -460,6 +498,8 @@ async def make_material(request: Request):
     if sources or body.whole_course:
         long_context = bool((await connector.status_async()).get("long_context"))
         extra = {"sources": sources, "long_context": long_context}
+    if slides:
+        extra["pages"] = slides
     context = (_course_context(course, rows, long_context) if body.whole_course
                else _context(assignment, course, rows))
     try:
@@ -517,7 +557,78 @@ async def record_attempt(material_id: str, request: Request):
     best = store.record_attempt(material_id, body.correct, body.total) if store else None
     if best is None:
         raise Refusal(404, "not_found", NOT_FOUND)
+    if body.missed:
+        _record_misses(store, material_id, body.missed)
     return {"best_score": best}
+
+
+def _miss_rows(store, material: dict, missed: list[int]) -> list[dict]:
+    """One row per missed question: its slide (when it names one) and a short topic."""
+    body = material.get("body") or {}
+    if material.get("kind") == "quiz":
+        items = body.get("questions") or []
+    elif material.get("kind") == "lesson":
+        items = [s.get("check") or {} for s in body.get("steps") or [] if isinstance(s, dict)]
+    elif material.get("kind") == "flashcards":
+        items = body.get("cards") or []
+    else:
+        items = []
+    pages: dict[str, dict] = {}
+    rows = []
+    for i in dict.fromkeys(missed):
+        if not 0 <= i < len(items) or not isinstance(items[i], dict):
+            continue
+        slide = items[i].get("slide") if isinstance(items[i].get("slide"), dict) else None
+        sid = slide.get("source_id") if slide else None
+        page = slide.get("page") if slide else None
+        topic = None
+        if isinstance(sid, str) and isinstance(page, int):
+            if sid not in pages:
+                try:
+                    pages[sid] = {r.get("page"): r for r in store.pages(sid) or () if isinstance(r, dict)}
+                except Exception:  # noqa: BLE001
+                    pages[sid] = {}
+            hit = pages[sid].get(page) or {}
+            topics = [t for t in hit.get("topics") or [] if isinstance(t, str) and t.strip()]
+            topic = topics[0].strip() if topics else (hit.get("title") or None)
+        else:
+            sid = page = None
+        rows.append({"question": i, "source_id": sid, "page": page,
+                     "topic": (topic or material.get("title") or "this material")[:120]})
+    return rows
+
+
+def _record_misses(store, material_id: str, missed: list[int]) -> None:
+    """Best effort: a miss that cannot be saved never fails the attempt."""
+    try:
+        material = store.material(material_id)
+        rows = _miss_rows(store, material or {}, missed)
+        if rows and hasattr(store, "record_misses"):
+            store.record_misses(material_id, rows)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@router.get("/settings")
+@_answer
+async def get_settings():
+    store = _existing_store()
+    return {"auto_prepare": ready.consented(store) if store is not None else False}
+
+
+@router.post("/settings", dependencies=[Depends(native_only)])
+@_answer
+async def set_settings(request: Request):
+    body = await _body(request, SettingsBody)
+    store = study_store()
+    store.set_meta(ready.CONSENT, bool(body.auto_prepare))
+    if body.auto_prepare:
+        try:
+            ready.kick(store=store, force=True)
+        except Exception:  # noqa: BLE001
+            pass
+    await _changed()
+    return {"auto_prepare": bool(body.auto_prepare)}
 
 
 @router.post("/sample", dependencies=[Depends(native_only)])
