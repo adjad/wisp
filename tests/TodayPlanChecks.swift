@@ -787,8 +787,62 @@ struct TodayPlanChecks {
                      && studyBlocks[0].slides.first?.pages == [4, 5, 6] && studyBlocks[1].slides.isEmpty
                      && studyBlocks[1].covers_text == nil,
                      "A study block's slides and covers line decode; odd ones never drop the block")
+        // "Add to calendar": a block without the key has no add flow (nil); the
+        // key and its event id decode; an odd value never drops the block.
+        precondition(school.displayBlocks.allSatisfy { $0.added == nil && $0.event_source_id == nil },
+                     "Old blocks: no added key, no add flow")
+        let booked = try edited { plan in
+            plan["blocks"] = (plan["blocks"] as! [[String: Any]])
+                + [["id": "study-block:a1", "title": "Study: Lab 5", "start": 1792980000.0, "end": 1792982700.0,
+                    "kind": "study", "warnings": [] as [String], "added": true, "event_source_id": "ev-1"],
+                   ["id": "study-block:a2", "title": "Study: PA 3", "start": 1792983000.0, "end": 1792985700.0,
+                    "kind": "study", "warnings": [] as [String], "added": false, "event_source_id": NSNull()],
+                   ["id": "study-block:a3", "title": "Study: PA 4", "start": 1792986000.0, "end": 1792987700.0,
+                    "kind": "study", "warnings": [] as [String], "added": "yes", "event_source_id": 4]]
+        }
+        let bookedBlocks = booked.displayBlocks.filter { $0.kind == "study" }
+        precondition(bookedBlocks.map(\.added) == [true, false, nil]
+                     && bookedBlocks.map(\.event_source_id) == ["ev-1", nil, nil]
+                     && bookedBlocks[1].calendarAddFacts == StudyBlockCalendar.Block(
+                        id: "study-block:a2", kind: "study", start: 1792983000.0, added: false, eventSourceID: nil),
+                     "added and event_source_id decode; odd values read as missing")
         // Only the day and zone it is for are required.
         precondition((try? decode(#"{"timezone":"America/Los_Angeles"}"#)) == nil)
+    }
+
+    /// The add and undo requests: method, one-segment path, body, 60 s, and replies.
+    @MainActor
+    static func studyBlockCalendarRequestChecks() async {
+        let zone = TimeZone(identifier: "America/Los_Angeles")!
+        var sent: [URLRequest] = []
+        var reply: (Int, String) = (200, #"{"ok": true, "status": "succeeded", "block_id": "b", "source_id": "ev-7"}"#)
+        let model = TodayModel(now: { instant("2026-11-14T20:00:00Z") }, timeZoneProvider: { zone }, transport: { request in
+            sent.append(request)
+            if reply.0 == 0 { throw URLError(.timedOut) }
+            return (Data(reply.1.utf8), HTTPURLResponse(url: request.url!, statusCode: reply.0, httpVersion: nil, headerFields: nil)!)
+        })
+        let added = await model.studyBlockCalendar(.add, blockID: "study-block:canvas:12/3")
+        check(added == .succeeded(sourceID: "ev-7"), "add succeeds with the event id")
+        let add = sent.last!
+        check(add.httpMethod == "POST" && add.timeoutInterval == 60
+              && add.url!.absoluteString == "http://127.0.0.1:1/study/blocks/study-block%3Acanvas%3A12%2F3/add",
+              "add: POST, one path segment, 60 s: \(add.url!.absoluteString)")
+        let body = (try? JSONSerialization.jsonObject(with: add.httpBody ?? Data())) as? [String: String]
+        check(body == ["day": "2026-11-14", "timezone": "America/Los_Angeles"] && body?["day"] == model.day,
+              "add sends the day and zone /assistant/today is read with")
+        check(add.value(forHTTPHeaderField: "Content-Type") == "application/json" && add.value(forHTTPHeaderField: "Origin") == nil,
+              "native JSON request, no Origin")
+        reply = (200, #"{"ok": true, "status": "succeeded"}"#)
+        _ = await model.studyBlockCalendar(.undo, blockID: "study-block:canvas:12/3")
+        let undo = sent.last!
+        check(undo.httpMethod == "POST" && undo.timeoutInterval == 60
+              && undo.url!.path.hasSuffix("/undo") && String(data: undo.httpBody ?? Data(), encoding: .utf8) == "{}",
+              "undo: POST with {}")
+        reply = (404, #"{"detail": "Not Found"}"#)
+        check(await model.studyBlockCalendar(.add, blockID: "study-block:x") == .routeMissing, "an older service: 404")
+        reply = (0, "")
+        check(await model.studyBlockCalendar(.add, blockID: "study-block:x") == .failed(StudyBlockCalendar.fallbackError),
+              "a transport error reads the fallback")
     }
 
     @MainActor
@@ -929,6 +983,7 @@ struct TodayPlanChecks {
         try await refreshLifecycleChecks()
         try await backgroundPaceChecks()
         try await storedBriefRolloverChecks()
+        await studyBlockCalendarRequestChecks()
         let zone = TimeZone(identifier: "America/Los_Angeles")!
         let model = TodayModel(timezone: zone)
         model.clockLocale = WispClock.fixedLocale

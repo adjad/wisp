@@ -722,6 +722,86 @@ func dayChecks(_ check: (Bool, String) -> Void) {
           "a review names its minutes; bad and repeated pages drop")
     let oddReview = try? JSONDecoder().decode(SchoolReview.self, from: Data(#"{"minutes": "soon", "pages": []}"#.utf8))
     check(oddReview?.label == "Review (15 min)" && oddReview?.offered == false, "odd minutes read as 15; no pages, no review")
+    studyBlockCalendarChecks(check)
+}
+
+/// "Add to calendar" on a study block: which rows offer it, the request, and the state machine.
+func studyBlockCalendarChecks(_ check: (Bool, String) -> Void) {
+    typealias C = StudyBlockCalendar
+    let now = 1_000_000.0
+    func block(id: String = "study-block:canvas:12", start: Double = 1_003_600, added: Bool?, source: String? = nil,
+               kind: String = "study") -> C.Block {
+        C.Block(id: id, kind: kind, start: start, added: added, eventSourceID: source)
+    }
+    // The path: the whole id is one segment.
+    check(C.pathSegment("study-block:canvas:12/3") == "study-block%3Acanvas%3A12%2F3",
+          "the id encodes as one segment: \(C.pathSegment("study-block:canvas:12/3"))")
+    check(C.path(.add, blockID: "study-block:canvas:12/3") == "/study/blocks/study-block%3Acanvas%3A12%2F3/add"
+          && C.path(.undo, blockID: "study-block:a b?#%") == "/study/blocks/study-block%3Aa%20b%3F%23%25/undo",
+          "add and undo paths")
+    check(C.body(.add, day: "2026-11-14", timezone: "America/Los_Angeles")
+            == ["day": "2026-11-14", "timezone": "America/Los_Angeles"] && C.body(.undo, day: "x", timezone: "y").isEmpty,
+          "add sends the shown day and zone; undo sends {}")
+    // Which rows offer it.
+    var ledger = C.Ledger()
+    check(ledger.show(block(added: nil), now: now) == .none, "old service (no added key): no action, row as before")
+    check(ledger.show(block(added: false), now: now) == .add(busy: false, error: nil), "added false, later today: offer the add")
+    check(ledger.show(block(start: now - 60, added: false), now: now) == .none
+          && ledger.show(block(start: now, added: false), now: now) == .none, "a block already started offers nothing")
+    check(ledger.show(block(id: "block:x", added: false), now: now) == .none
+          && ledger.show(block(added: false, kind: "task"), now: now) == .none, "only study-block: rows of kind study")
+    check(ledger.show(block(added: true, source: "ev1"), now: now) == .added(undo: true, busy: false, error: nil)
+          && ledger.show(block(added: true), now: now) == .added(undo: false, busy: false, error: nil),
+          "added: Undo only with an event_source_id")
+    // Replies.
+    func data(_ json: String) -> Data { Data(json.utf8) }
+    check(C.outcome(.add, status: 200, data: data(#"{"ok": true, "status": "succeeded", "block_id": "b", "source_id": "ev9"}"#))
+            == .succeeded(sourceID: "ev9"), "ok true succeeds")
+    check(C.outcome(.add, status: 200, data: data(#"{"ok": false, "status": "conflict", "error": "That time is taken now."}"#))
+            == .failed("That time is taken now."), "ok false shows the service's error")
+    check(C.outcome(.add, status: 404, data: data(#"{"detail": "Not Found"}"#)) == .routeMissing
+          && C.outcome(.undo, status: 404, data: Data()) == .routeMissing, "a bare 404 is a missing route")
+    check(C.outcome(.add, status: 404, data: data(#"{"ok": false, "status": "not_found", "error": "That block left your plan."}"#))
+            == .failed("That block left your plan."), "a 404 from the route itself is a failure with its reason")
+    check(C.outcome(.add, status: nil, data: nil) == .failed(C.fallbackError)
+          && C.outcome(.add, status: 500, data: data("oops")) == .failed(C.fallbackError)
+          && C.outcome(.add, status: 200, data: data(#"{"ok": false, "error": "  "}"#)) == .failed(C.fallbackError),
+          "transport error, 5xx and an empty reason read the fixed fallback")
+    let long = String(repeating: "x", count: 300)
+    check(C.errorLine("one\ntwo") == "one two" && C.errorLine(long).count == 160 && C.errorLine(long).hasSuffix("…"),
+          "the error is one line of at most 160 characters")
+    // idle → adding → added → (snapshot) idle → undoing → undone → (snapshot) idle.
+    let id = "study-block:canvas:12"
+    check(ledger.begin(.add, id) && !ledger.begin(.add, id), "one request at a time per block")
+    check(ledger.show(block(added: false), now: now) == .add(busy: true, error: nil), "adding: the action is busy")
+    ledger.finish(.add, id, .succeeded(sourceID: "ev1"))
+    check(ledger.show(block(added: false), now: now) == .added(undo: true, busy: false, error: nil),
+          "added this session shows before the snapshot catches up")
+    ledger.settle(id, snapshotAdded: false)
+    check(ledger.phase(id) == .added(sourceID: "ev1"), "a snapshot that hasn't caught up keeps the add")
+    ledger.settle(id, snapshotAdded: true)
+    check(ledger.phase(id) == .idle, "a snapshot that agrees takes over")
+    check(ledger.begin(.undo, id)
+          && ledger.show(block(added: true, source: "ev1"), now: now) == .added(undo: true, busy: true, error: nil), "undoing: busy")
+    ledger.finish(.undo, id, .failed("Calendar said no."))
+    check(ledger.show(block(added: true, source: "ev1"), now: now) == .added(undo: true, busy: false, error: "Calendar said no."),
+          "a failed undo keeps Undo and shows why")
+    _ = ledger.begin(.undo, id)
+    ledger.finish(.undo, id, .succeeded(sourceID: nil))
+    check(ledger.show(block(added: true, source: "ev1"), now: now) == .add(busy: false, error: nil), "undone: the add is back")
+    ledger.settle(id, snapshotAdded: false)
+    check(ledger.phase(id) == .idle, "the snapshot agrees with the undo")
+    // A failed add keeps the action and shows why, nothing else.
+    _ = ledger.begin(.add, id)
+    ledger.finish(.add, id, .failed(C.fallbackError))
+    check(ledger.show(block(added: false), now: now) == .add(busy: false, error: C.fallbackError), "failed add: Add stays, one error line")
+    // A 404 hides the action for the session and shows no error.
+    _ = ledger.begin(.add, id)
+    ledger.finish(.add, id, .routeMissing)
+    check(ledger.routeMissing && ledger.show(block(added: false), now: now) == .none
+          && ledger.show(block(id: "study-block:other", added: false), now: now) == .none
+          && ledger.show(block(added: true, source: "ev1"), now: now) == .added(undo: false, busy: false, error: nil)
+          && !ledger.begin(.add, "study-block:other"), "after a 404: no action anywhere, no error line")
 }
 
 /// To-dos from the proactive engine on the Day tab: timed ones on the hour

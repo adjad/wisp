@@ -2000,3 +2000,166 @@ extension KeyedDecodingContainer {
 private extension String {
     var capitalizedFirst: String { prefix(1).uppercased() + dropFirst() }
 }
+
+/// "Add to calendar" on a Day study block: what a row offers, the request, and
+/// where each block's add stands. The service rebuilds the block from its own
+/// plan and books it through the verified calendar bridge
+/// (`POST /study/blocks/{id}/add`, `.../undo`); the app never writes Calendar
+/// here. A block whose JSON has no `added` key comes from a service without
+/// that flow and offers nothing, exactly as before.
+enum StudyBlockCalendar {
+    static let idPrefix = "study-block:"
+    static let fallbackError = "Couldn't add that to your calendar."
+    static let undoFallbackError = "Couldn't undo that."
+    static let addedText = "Added to calendar"
+    static let errorCap = 160
+    static let timeout: TimeInterval = 60
+
+    enum Operation: Equatable { case add, undo }
+
+    /// The facts of one study block the row needs.
+    struct Block: Equatable {
+        var id: String
+        var kind: String
+        var start: Double
+        /// Nil: the service has no add flow (the key is missing).
+        var added: Bool?
+        var eventSourceID: String?
+    }
+
+    /// The block id as ONE path segment: everything but unreserved characters
+    /// is percent-encoded, ":" and "/" included.
+    static func pathSegment(_ id: String) -> String {
+        var allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+        allowed.insert(charactersIn: "-._~")
+        return id.addingPercentEncoding(withAllowedCharacters: allowed) ?? id
+    }
+
+    static func path(_ operation: Operation, blockID: String) -> String {
+        "/study/blocks/" + pathSegment(blockID) + (operation == .add ? "/add" : "/undo")
+    }
+
+    /// Add sends the day and zone the Day reads `/assistant/today` with; undo sends `{}`.
+    static func body(_ operation: Operation, day: String, timezone: String) -> [String: String] {
+        operation == .add ? ["day": day, "timezone": timezone] : [:]
+    }
+
+    /// The service's reason on one line, at most 160 characters, or the fallback.
+    static func errorLine(_ text: String?, fallback: String = fallbackError) -> String {
+        let flat = (text ?? "").split(whereSeparator: \.isNewline).joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !flat.isEmpty else { return fallback }
+        return flat.count > errorCap ? String(flat.prefix(errorCap - 1)) + "…" : flat
+    }
+
+    /// `{"ok", "status", "error"?, "block_id"?, "source_id"?}`, read leniently.
+    struct Reply: Decodable {
+        var ok: Bool?
+        var status: String?
+        var error: String?
+        var source_id: String?
+        private enum CodingKeys: String, CodingKey { case ok, status, error, source_id }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            ok = (try? c.decodeIfPresent(Bool.self, forKey: .ok)) ?? nil
+            status = (try? c.decodeIfPresent(String.self, forKey: .status)) ?? nil
+            error = (try? c.decodeIfPresent(String.self, forKey: .error)) ?? nil
+            source_id = (try? c.decodeIfPresent(String.self, forKey: .source_id)) ?? nil
+        }
+    }
+
+    enum Outcome: Equatable {
+        case succeeded(sourceID: String?)
+        case failed(String)
+        /// The route is not there (an older service): hide the action, say nothing.
+        case routeMissing
+    }
+
+    /// What a reply means. `status` nil is a transport error (no reply). A 404
+    /// whose body is not this route's reply is a missing route; a 404 carrying
+    /// `ok` is the route saying it couldn't find the block.
+    static func outcome(_ operation: Operation, status: Int?, data: Data?) -> Outcome {
+        let fallback = operation == .add ? fallbackError : undoFallbackError
+        guard let status else { return .failed(fallback) }
+        let reply = data.flatMap { try? JSONDecoder().decode(Reply.self, from: $0) }
+        if status == 404, reply?.ok == nil { return .routeMissing }
+        if (200..<300).contains(status), reply?.ok == true { return .succeeded(sourceID: reply?.source_id) }
+        return .failed(errorLine(reply?.error, fallback: fallback))
+    }
+
+    enum Phase: Equatable {
+        case idle
+        case adding
+        /// Added this session, until a snapshot says so too.
+        case added(sourceID: String?)
+        case addFailed(String)
+        case undoing
+        /// Undone this session, until a snapshot says so too.
+        case undone
+        case undoFailed(String)
+    }
+
+    /// What the row shows.
+    enum Show: Equatable {
+        case none
+        /// "Add to calendar"; `busy` while the request runs; `error` under the row.
+        case add(busy: Bool, error: String?)
+        /// "Added to calendar", with Undo when it can be undone.
+        case added(undo: Bool, busy: Bool, error: String?)
+    }
+
+    /// Every block's add this session, and whether the routes exist.
+    struct Ledger: Equatable {
+        var phases: [String: Phase] = [:]
+        /// A 404 from an older service hides the action for the session.
+        var routeMissing = false
+
+        func phase(_ id: String) -> Phase { phases[id] ?? .idle }
+
+        func show(_ block: Block, now: Double) -> Show {
+            guard block.kind == "study", block.id.hasPrefix(StudyBlockCalendar.idPrefix),
+                  let added = block.added else { return .none }
+            let canAct = !routeMissing
+            let future = block.start > now
+            switch phase(block.id) {
+            case .adding: return .add(busy: true, error: nil)
+            case .addFailed(let error): return canAct && future ? .add(busy: false, error: error) : .none
+            case .added(let source):
+                return .added(undo: canAct && (source != nil || block.eventSourceID != nil), busy: false, error: nil)
+            case .undoing: return .added(undo: true, busy: true, error: nil)
+            case .undoFailed(let error): return .added(undo: canAct, busy: false, error: error)
+            case .undone: return canAct && future ? .add(busy: false, error: nil) : .none
+            case .idle:
+                if added { return .added(undo: canAct && block.eventSourceID != nil, busy: false, error: nil) }
+                return canAct && future ? .add(busy: false, error: nil) : .none
+            }
+        }
+
+        /// Starts a request; false when one is already running for the block or the route is gone.
+        mutating func begin(_ operation: Operation, _ id: String) -> Bool {
+            guard !routeMissing, phase(id) != .adding, phase(id) != .undoing else { return false }
+            phases[id] = operation == .add ? .adding : .undoing
+            return true
+        }
+
+        mutating func finish(_ operation: Operation, _ id: String, _ outcome: Outcome) {
+            switch (operation, outcome) {
+            case (_, .routeMissing):
+                routeMissing = true
+                phases[id] = .idle
+            case (.add, .succeeded(let source)): phases[id] = .added(sourceID: source)
+            case (.add, .failed(let error)): phases[id] = .addFailed(error)
+            case (.undo, .succeeded): phases[id] = .undone
+            case (.undo, .failed(let error)): phases[id] = .undoFailed(error)
+            }
+        }
+
+        /// A fresh snapshot: once it agrees with what this session did, it is the truth.
+        mutating func settle(_ id: String, snapshotAdded: Bool?) {
+            switch phase(id) {
+            case .added where snapshotAdded == true, .undone where snapshotAdded == false: phases[id] = .idle
+            default: break
+            }
+        }
+    }
+}
