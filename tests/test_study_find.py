@@ -459,3 +459,27 @@ def test_nothing_from_a_page_is_logged(setup, caplog):
         setup.run_worker()
     logged = " ".join(r.getMessage() for r in caplog.records)
     assert "Private" not in logged and "secret-path" not in logged
+
+
+# --- review B1: tool launches and quizzes are never opened ----------------------------------
+
+import pytest as _pytest
+
+
+@_pytest.mark.parametrize("hint,title", [("ExternalTool", "Week 3 homework"), ("Quiz", "Practice"),
+                                         ("", "Gradescope submission"), ("", "Quiz 4"),
+                                         ("external tool", "Attendance")])
+def test_tool_and_quiz_module_items_are_not_browsed(hint, title):
+    from service.study import find as F
+    course = {"id": "canvas:123", "url": "https://school.instructure.com/courses/123"}
+    got = F.classify({"url": "https://school.instructure.com/courses/123/modules/items/77",
+                      "title": title, "type": hint}, course)
+    assert got["via"] == "none" and got["kind"] == "other"
+
+
+def test_a_plain_module_item_is_still_browsed():
+    from service.study import find as F
+    course = {"id": "canvas:123", "url": "https://school.instructure.com/courses/123"}
+    got = F.classify({"url": "https://school.instructure.com/courses/123/modules/items/78",
+                      "title": "Week 3 guided notes", "type": "Page"}, course)
+    assert got["via"] == "browser" and got["kind"] == "page"

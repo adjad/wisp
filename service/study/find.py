@@ -58,6 +58,13 @@ CANVAS_KIND = {"page": "page", "wikipage": "page", "discussion": "discussion", "
                "externalurl": "page", "external url": "page", "externaltool": "page", "external tool": "page"}
 
 
+# Module item types the walker must never open (Canvas's own type labels, lower-cased letters only).
+TOOL_HINTS = frozenset({"externaltool", "external tool", "contextexternaltool", "lti", "quiz", "quizzes",
+                        "new quiz", "newquiz", "assessment", "quizzeslti"})
+_TOOL_TITLE = re.compile(r"\b(?:gradescope|pearson|mcgraw|mylab|mastering|webassign|zybooks|cengage|"
+                         r"turnitin|attendance|respondus|lockdown|proctor|quiz)\b", re.I)
+
+
 # --- classification ---------------------------------------------------------------------
 
 def _host_is(host: str, names: tuple[str, ...]) -> bool:
@@ -177,6 +184,10 @@ def classify(link: dict, course: dict | None = None) -> dict:
         elif re.fullmatch(r"/pages/[^/]+|/assignments/\d+", rest):
             kind = "page"
         elif re.fullmatch(r"/modules/items/\d+", rest):
+            # An item that launches an external tool or a quiz must never be opened: Canvas would
+            # post the student's identity to the tool's site (or start the quiz).
+            if hint in TOOL_HINTS or _TOOL_TITLE.search(title):
+                return none | {"key": url, "url": url}
             kind = "page"     # redirects to the real item, which the app reads
         else:
             return none | {"key": url, "url": url}
