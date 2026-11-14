@@ -18,6 +18,8 @@ enum IntelCloudPreset {
         ("openai/gpt-6-luna", "GPT-6 Luna"),
         ("google/gemini-3.8-flash", "Gemini 3.8 Flash"),
         ("anthropic/claude-sonnet-5.5", "Claude Sonnet 5.5"),
+        ("google/gemini-4-carbon", "Gemini 4 Carbon"),
+        ("google/gemini-4-argon", "Gemini 4 Argon"),
     ]
     /// Mirrors the backend's model-id rule (service/inference/remote_policy.py `_MODEL_ID`).
     static let backendModelIDPattern = "[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}"

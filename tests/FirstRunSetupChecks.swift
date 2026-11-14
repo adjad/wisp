@@ -1435,7 +1435,8 @@ struct FirstRunSetupChecks {
               && IntelCloudPreset.modelID == "anthropic/claude-haiku-5.5",
               "The preset is exactly OpenRouter, /api/v1, 32000 tokens, everything, Claude Haiku 5.5")
         check(IntelCloudPreset.models.map(\.id) == ["anthropic/claude-haiku-5.5", "openai/gpt-6-luna",
-                                                    "google/gemini-3.8-flash", "anthropic/claude-sonnet-5.5"]
+                                                    "google/gemini-3.8-flash", "anthropic/claude-sonnet-5.5",
+                                                    "google/gemini-4-carbon", "google/gemini-4-argon"]
               && IntelCloudPreset.models.first?.id == IntelCloudPreset.modelID
               && IntelCloudPreset.models.first?.label == "Claude Haiku 5.5 (default)",
               "Four models, the default first")
