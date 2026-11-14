@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import logging
 import math
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from service.study import match, plan, ready
 
@@ -35,6 +37,61 @@ def _busy(blocks) -> list[tuple[float, float | None]]:
         if isinstance(start, (int, float)) and math.isfinite(start):
             out.append((float(start), end if isinstance(end, (int, float)) else None))
     return out
+
+
+def _proposed_blocks(result: dict) -> list:
+    workspace = result.get("workspace")
+    proposed = workspace.get("proposed_plan") if isinstance(workspace, dict) else None
+    blocks = proposed.get("blocks") if isinstance(proposed, dict) else None
+    return blocks if isinstance(blocks, list) else []
+
+
+def _item_day(item: dict, zone) -> str | None:
+    if item.get("all_day") and isinstance(item.get("due_date"), str):
+        return item["due_date"]
+    for field in ("due_ts", "start"):
+        value = item.get(field)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+            return datetime.fromtimestamp(value, zone).date().isoformat()
+    return None
+
+
+def _drop_feed_copies(result: dict, rows: list[dict], *, timezone: str) -> None:
+    """The Canvas calendar feed's copy of a school item ("Worksheet 2 [STAT-101-02]" in Calendar or
+    Reminders, due the same day) is left out of the snapshot's other lists, so the item shows once,
+    as the school item (or not at all once handed in). Only a title equal to a school item's after
+    plan.title_key and the same local day matches: an unrelated reminder is never dropped. New
+    lists only, like the rest of this hook."""
+    zone = ZoneInfo(timezone)
+    keys = {(plan.title_key(a.get("title")), _item_day(a, zone)) for a in rows if isinstance(a, dict)}
+    keys = {k for k in keys if k[0] and k[1]}
+    if not keys:
+        return
+
+    def copy(item, field="title") -> bool:
+        # Never a study item, and never the person's own Day task.
+        if (not isinstance(item, dict) or item.get("source") == "study" or item.get("kind") == "study"
+                or item.get("task_id") is not None):
+            return False
+        title = item.get(field)
+        return isinstance(title, str) and (plan.title_key(title), _item_day(item, zone)) in keys
+
+    for name in ("deadlines", "all_day", "blocks"):
+        if isinstance(result.get(name), list):
+            result[name] = [x for x in result[name] if not copy(x)]
+    workspace = result.get("workspace")
+    if not isinstance(workspace, dict):
+        return
+    if isinstance(workspace.get("attention"), list):
+        workspace["attention"] = [x for x in workspace["attention"] if not copy(x)]
+    needs = workspace.get("needs_you")
+    if isinstance(needs, dict) and isinstance(needs.get("items"), list):
+        workspace["needs_you"] = {**needs, "items": [x for x in needs["items"] if not copy(x, "text")]}
+    proposed = workspace.get("proposed_plan")
+    if isinstance(proposed, dict):
+        for name in ("blocks", "all_day"):
+            if isinstance(proposed.get(name), list):
+                workspace["proposed_plan"] = proposed = {**proposed, name: [x for x in proposed[name] if not copy(x)]}
 
 
 MATCH_DAYS = 7
@@ -132,19 +189,41 @@ def attach(result: dict, *, now: float, timezone: str) -> None:
         if not isinstance(day, str):
             return
         slides = {aid: (match.slides(m), covers, match.review_pages(m)) for aid, (m, _, covers) in found.items()}
+        try:
+            _drop_feed_copies(result, rows, timezone=timezone)
+        except Exception:  # noqa: BLE001 - the copies stay; nothing else changes
+            log.debug("study feed copies kept", exc_info=True)
         extra = plan.deadlines(rows, day=day, timezone=timezone, slides=slides)
         if extra:
             result["deadlines"] = sorted([*(result.get("deadlines") or []), *extra],
                                          key=lambda d: (d.get("due_ts") or 0.0, str(d.get("id"))))
         current = result.get("blocks") or []
-        blocks = plan.study_blocks(rows, _busy(current), now=now, timezone=timezone, day=day, slides=slides)
+        booked: dict = {}
+        calendar_on = False
         try:
             from service.study import blocks_api
-            if not blocks_api.ENABLED:
+            calendar_on = bool(blocks_api.ENABLED)
+            if calendar_on and hasattr(store, "meta"):
+                value = store.meta(blocks_api.META, {})
+                booked = value if isinstance(value, dict) else {}
+        except Exception:  # noqa: BLE001
+            log.debug("study calendar records skipped", exc_info=True)
+        mine = [k for k, v in booked.items() if isinstance(v, dict) and v.get("day") == day]
+        # Day draws the workspace's proposed plan (its Suggested and usual-time blocks too), so a
+        # study block must fit around those as well as the plan's own blocks.
+        busy = _busy(current) + _busy(_proposed_blocks(result))
+        blocks = plan.study_blocks(rows, busy, now=now, timezone=timezone, day=day, slides=slides,
+                                   booked=mine)
+        try:
+            if not calendar_on:
                 raise LookupError("study calendar off")
-            booked = store.meta(blocks_api.META, {}) if hasattr(store, "meta") else {}
-            if isinstance(booked, dict) and booked:
+            if booked:
                 blocks, current = blocks_api.mark(blocks, current, day, booked)
+                proposed = _proposed_blocks(result)
+                if proposed:
+                    # The calendar copy of a booked block is shown once, as the study block.
+                    _, kept = blocks_api.mark([], proposed, day, booked)
+                    result["workspace"]["proposed_plan"]["blocks"] = kept
             else:
                 blocks = [{**b, "added": False, "event_source_id": None} for b in blocks]
         except Exception:  # noqa: BLE001 - the plain blocks stand
