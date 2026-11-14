@@ -45,15 +45,22 @@ import SwiftUI
 // items): Canvas would post the student's identity to the tool's site, start
 // the quiz, or launch an assignment's tool as its page opens. Each link is
 // sent to resolve with its Canvas module item type so the server drops tools
-// and quizzes; only items it returns as via "browser" are visited, never one
-// sent as Assignment; and the client refuses any path with a tool, LTI, quiz
-// or `assignments` segment and ignores what such a page holds (assignment
-// instructions already come from Study's own dashboard read). Only tabs new
+// and quizzes; only items it returns as via "browser" are visited, by an
+// allowlist: direct `/pages/…` and `/discussion_topics/…` links, and
+// `/modules/items/<n>` only when its type was read as Page, Discussion or
+// External URL (an unreadable type is refused, and a refused type is never
+// replaced by a plainer label); and the client refuses any path with a tool,
+// LTI, quiz or `assignments` segment and ignores what such a page holds
+// (assignment instructions already come from Study's own dashboard read).
+// Course pages Wisp does open may still load tools embedded in them (a video
+// player, say); the consent card says so. A visit is skipped when the tab
+// snapshot before it didn't finish within its time budget. Only tabs new
 // since Wisp's snapshot (or exactly at the opened URL) are read, so tabs the
 // student already had open never are. Accepted gap: a background tab the
 // student switches to during the wait looks new and may be read, but only if
-// it is on this same course (it is the student's own course page). A page
-// that lands off the course gives only its address to resolve. Nothing is added until the
+// it is on this same course (it is the student's own course page). An
+// External URL item that lands off the course gives only its address to
+// resolve, and only when exactly one new tab appeared since the snapshot. Nothing is added until the
 // student ticks it and presses Add. Under WISP_NOTCH_QA the reader returns
 // nothing and opening is a no-op.
 
@@ -254,16 +261,24 @@ enum StudyFindReader {
         case walk
     }
 
+    /// One scan's pages, and whether every browser window was looked at
+    /// within the time budget.
+    struct Scan: Sendable {
+        let pages: [StudyFindPage]
+        let complete: Bool
+    }
+
     /// The front tab of every browser window, reading no URL or text: the
-    /// snapshot taken just before each open.
-    static func tabs() async -> [StudyFindTab] {
+    /// snapshot taken just before each open. Nil when the browsers didn't all
+    /// answer within the budget, so a tab missed here can't later look new.
+    static func tabs() async -> [StudyFindTab]? {
         #if WISP_NOTCH_QA
         return []
         #else
         guard AXIsProcessTrusted() else { return [] }
         let pids = await browserPIDs()
         guard !pids.isEmpty else { return [] }
-        return await Task.detached(priority: .userInitiated) { () -> [StudyFindTab] in
+        return await Task.detached(priority: .userInitiated) { () -> [StudyFindTab]? in
             StudyFindReader.frontAreas(pids)
         }.value
         #endif
@@ -272,14 +287,14 @@ enum StudyFindReader {
     /// Front tabs as `want` decides from whether the tab is new since
     /// `known` and its URL. Only `.walk` tabs are read past their address.
     static func scan(text: Bool, known: [StudyFindTab],
-                     want: @escaping @Sendable (_ isNew: Bool, _ url: String) -> Want) async -> [StudyFindPage] {
+                     want: @escaping @Sendable (_ isNew: Bool, _ url: String) -> Want) async -> Scan {
         #if WISP_NOTCH_QA
-        return []
+        return Scan(pages: [], complete: true)
         #else
-        guard AXIsProcessTrusted() else { return [] }
+        guard AXIsProcessTrusted() else { return Scan(pages: [], complete: true) }
         let pids = await browserPIDs()
-        guard !pids.isEmpty else { return [] }
-        return await Task.detached(priority: .userInitiated) { () -> [StudyFindPage] in
+        guard !pids.isEmpty else { return Scan(pages: [], complete: true) }
+        return await Task.detached(priority: .userInitiated) { () -> Scan in
             StudyFindReader.scanAll(pids, text: text, known: known, want: want)
         }.value
         #endif
@@ -324,45 +339,57 @@ enum StudyFindReader {
         await MainActor.run { runningBrowserPIDs() }
     }
 
-    /// Each browser window and its front tab's web area. Never call on the main thread.
+    /// Each browser window and its front tab's web area. True when every
+    /// window was looked at within the budget. Never call on the main thread.
+    @discardableResult
     private static func eachFrontArea(_ pids: [pid_t], deadline: UInt64,
-                                      _ body: (_ window: AXUIElement, _ area: AXUIElement) -> Void) {
+                                      _ body: (_ window: AXUIElement, _ area: AXUIElement) -> Void) -> Bool {
+        var complete = true
         for pid in pids {
-            guard now() < deadline else { break }
+            guard now() < deadline else { return false }
             let app = AXUIElementCreateApplication(pid)
             AXUIElementSetMessagingTimeout(app, messagingTimeout)
             // Chromium apps expose an empty tree until this is set (as
             // StudyPageReader and PageReader do). Nothing else is ever written.
             AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
             let windows: [AXUIElement] = elements(app, kAXWindowsAttribute as String)
+            if windows.count > maxWindowsPerApp { complete = false }
             for window in windows.prefix(maxWindowsPerApp) {
-                guard now() < deadline else { break }
+                guard now() < deadline else { return false }
                 AXUIElementSetMessagingTimeout(window, messagingTimeout)
-                guard let area = webArea(in: window, deadline: deadline) else { continue }
+                guard let area = webArea(in: window, deadline: deadline) else {
+                    if now() >= deadline { return false }
+                    continue
+                }
                 body(window, area)
             }
         }
+        return complete && now() < deadline
     }
 
-    /// Never call on the main thread.
-    private static func frontAreas(_ pids: [pid_t]) -> [StudyFindTab] {
+    /// Nil when not every window was looked at. Never call on the main thread.
+    private static func frontAreas(_ pids: [pid_t]) -> [StudyFindTab]? {
         var tabs: [StudyFindTab] = []
-        eachFrontArea(pids, deadline: now() + totalBudgetNanoseconds) { _, area in
+        let complete = eachFrontArea(pids, deadline: now() + totalBudgetNanoseconds) { _, area in
             tabs.append(StudyFindTab(element: area))
         }
-        return tabs
+        return complete ? tabs : nil
     }
 
     /// Never call on the main thread.
     private static func scanAll(_ pids: [pid_t], text: Bool, known: [StudyFindTab],
-                                want: (Bool, String) -> Want) -> [StudyFindPage] {
+                                want: (Bool, String) -> Want) -> Scan {
         let deadline = now() + totalBudgetNanoseconds
         var pages: [StudyFindPage] = []
-        eachFrontArea(pids, deadline: deadline) { window, area in
+        let complete = eachFrontArea(pids, deadline: deadline) { window, area in
             let tab = StudyFindTab(element: area)
             let isNew = !tab.isAmong(known)
             let url = pageURL(area: area, window: window)
-            guard !url.isEmpty else { return }
+            guard !url.isEmpty else {
+                // Still counted as a new tab, with nothing read.
+                if isNew { pages.append(StudyFindPage(tab: tab, isNew: true, url: "", links: [], frames: [], text: "")) }
+                return
+            }
             switch want(isNew, url) {
             case .skip:
                 return
@@ -377,7 +404,7 @@ enum StudyFindReader {
                                            frames: w.frames, text: body))
             }
         }
-        return pages
+        return Scan(pages: pages, complete: complete)
     }
 
     /// The window's first AXWebArea, breadth first: the front tab's page.
@@ -554,12 +581,32 @@ enum StudyFindReader {
 
     /// Module item types that launch a tool or quiz (the server drops them too).
     static func isLaunchType(_ type: String) -> Bool {
-        type == "ExternalTool" || type == "Quiz"
+        let key = typeKey(type)
+        return key == "externaltool" || key == "contextexternaltool" || key == "lti" || key.hasPrefix("quiz")
+            || key == "newquiz" || key == "newquizzes" || key == "assessment"
     }
 
     /// Module item types Wisp never opens: tools, quizzes and assignments.
     static func isNeverOpened(_ type: String) -> Bool {
-        isLaunchType(type) || type == "Assignment"
+        isLaunchType(type) || typeKey(type) == "assignment"
+    }
+
+    /// The only module item types Wisp opens behind `/modules/items/<n>`:
+    /// pages, discussions and external URLs. Unknown, File, Quiz, Assignment,
+    /// ExternalTool and SubHeader are all refused.
+    static func isOpenableModuleType(_ type: String?) -> Bool {
+        guard let type else { return false }
+        return ["page", "wikipage", "discussion", "discussiontopic", "externalurl"].contains(typeKey(type))
+    }
+
+    static func isExternalURLType(_ type: String?) -> Bool {
+        type.map { typeKey($0) == "externalurl" } ?? false
+    }
+
+    /// Lower-case ASCII letters only: "External URL", "external_url" and
+    /// "ExternalUrl" are all "externalurl".
+    static func typeKey(_ type: String) -> String {
+        String(type.lowercased().filter { $0.isASCII && $0.isLetter })
     }
 
     #if !WISP_NOTCH_QA
@@ -769,7 +816,8 @@ enum StudyFindText {
     static let consent = "Wisp will open this course's Modules page in your browser, read the links on it and on up "
         + "to 10 of the course's own pages, and show you what it found. Nothing is added until you choose. "
         + "Linked Google files are read with your Drive sign-in; public articles are fetched without your cookies. "
-        + "Opening an item may count as viewing it in Canvas. Wisp never opens quizzes, assignments or outside tools."
+        + "Opening an item may count as viewing it in Canvas. Course pages may load tools embedded in them, such as "
+        + "video players. Wisp never opens quizzes, assignments or outside tools."
     static let noCanvasLink = "Wisp doesn't have a Canvas link for this course yet. Read your school tabs first."
     static let openingModules = "Opening the Modules page in your browser"
     static let readingModules = "Reading the Modules page"
@@ -1023,8 +1071,14 @@ final class StudyFindRun: ObservableObject {
 
         // 1. Open the Modules page and wait for it: the tab Wisp opened (new
         //    since the snapshot) or one already at exactly that address.
-        let beforeModules = await StudyFindReader.tabs()
+        let snapshot = await StudyFindReader.tabs()
         guard live(gen) else { return }
+        // The browsers didn't all answer in time: no open, since a tab missed
+        // here could later look like Wisp's own.
+        guard let beforeModules = snapshot else {
+            phase = .failed(StudyFindText.couldntRead)
+            return
+        }
         guard await open(modulesURL) else {
             if live(gen) { phase = .failed(StudyFindText.couldntOpen) }
             return
@@ -1039,7 +1093,7 @@ final class StudyFindRun: ObservableObject {
             guard live(gen) else { return }
             let pages = await StudyFindReader.scan(text: false, known: beforeModules) { isNew, url in
                 (isNew || StudyFindTarget.samePage(url, modulesString)) && t.isModules(url) ? .walk : .skip
-            }
+            }.pages
             guard live(gen) else { return }
             guard let now = pages.filter({ !$0.links.isEmpty }).max(by: { $0.links.count < $1.links.count })
             else { continue }
@@ -1059,7 +1113,12 @@ final class StudyFindRun: ObservableObject {
         var sent = Set<String>()
         let first = Self.links(page.links, frames: page.frames, except: &sent)
         for link in first {
-            if let type = link.type { sentTypes[StudyFindTarget.pathKey(link.url)] = type }
+            guard let type = link.type else { continue }
+            let key = StudyFindTarget.pathKey(link.url)
+            // Once refused, always refused: a later, plainer label for the
+            // same item never replaces a tool, quiz or assignment type.
+            if let stored = sentTypes[key], StudyFindReader.isNeverOpened(stored) { continue }
+            sentTypes[key] = type
         }
         step = StudyFindText.sorting(first.count)
         guard let found = await resolve(first, gen: gen, quiet: false) else { return }
@@ -1081,11 +1140,15 @@ final class StudyFindRun: ObservableObject {
             // page, and never a tool, LTI or quiz launch.
             guard let url = t.openableURL(item.url) else { continue }
             step = StudyFindText.readingPage(index + 1, of: visits.count)
-            let before = await StudyFindReader.tabs()
+            let snapshot = await StudyFindReader.tabs()
             guard live(gen) else { return }
+            // Skip this one when the browsers didn't all answer in time.
+            guard let before = snapshot else { continue }
             guard await open(url) else { continue }
             guard live(gen) else { return }
-            let landing = await land(opened: url.absoluteString, before: before, gen: gen,
+            // Only an External URL item may land off the course.
+            let allowsOff = StudyFindReader.isExternalURLType(sentTypes[StudyFindTarget.pathKey(item.url)])
+            let landing = await land(opened: url.absoluteString, before: before, allowsOff: allowsOff, gen: gen,
                                      until: min(runDeadline, Date().addingTimeInterval(Self.pageWait)))
             guard live(gen) else { return }
             switch landing {
@@ -1133,26 +1196,28 @@ final class StudyFindRun: ObservableObject {
         return out
     }
 
-    /// The items worth opening: only what the server returned as via
-    /// "browser" (never anything else, never a module item it didn't return),
-    /// on this course, not a tool, quiz or assignment by path or by the Canvas
-    /// type Wisp sent for it. Specific course pages and discussions first, then module
-    /// item links; never files.
+    /// The items worth opening, an allowlist: only what the server returned
+    /// as via "browser", on this course, and openable by path. Direct
+    /// `/courses/<n>/pages/…` and `/discussion_topics/…` links first; then
+    /// `/modules/items/<n>` only when the Canvas type Wisp sent for it was
+    /// Page, Discussion or External URL (unknown, File, Quiz, Assignment,
+    /// External Tool and SubHeader are all refused). Nothing else is opened.
     private static func visits(_ items: [StudyFoundItem], target: StudyFindTarget,
                                types: [String: String]) -> [StudyFoundItem] {
         func rank(_ item: StudyFoundItem) -> Int? {
             guard item.via == "browser", !item.known, let parts = StudyFindTarget.parts(item.url),
                   target.openableURL(item.url) != nil else { return nil }
-            if let type = types[StudyFindTarget.pathKey(item.url)], StudyFindReader.isNeverOpened(type) {
-                return nil
-            }
+            let type = types[StudyFindTarget.pathKey(item.url)]
+            if let type, StudyFindReader.isNeverOpened(type) { return nil }
             let s = parts.segments
-            let moduleItem = s.count >= 5 && s[2] == "modules" && s[3] == "items"
-            if item.kind == "page" || item.kind == "discussion" {
-                if moduleItem { return 1 }
-                return s.count >= 4 ? 0 : 3
+            if s.count == 5, s[2] == "modules", s[3] == "items" {
+                return StudyFindReader.isOpenableModuleType(type) ? 1 : nil
             }
-            return moduleItem ? 2 : nil
+            if s.count == 4, s[2] == "pages" || s[2] == "discussion_topics",
+               item.kind == "page" || item.kind == "discussion" {
+                return 0
+            }
+            return nil
         }
         return items.compactMap { item in rank(item).map { (item, $0) } }
             .enumerated()
@@ -1171,9 +1236,12 @@ final class StudyFindRun: ObservableObject {
     /// The tab the open produced: one that is new since `before` (Wisp's own
     /// tab) or is exactly at the opened URL. A tab that was already open is
     /// never re-matched, so the student's own tabs are never read. On the
-    /// course it is read once its text settles; off the course only its
-    /// address is taken, once it holds for two polls.
-    private func land(opened: String, before: [StudyFindTab], gen: Int, until: Date) async -> Landing? {
+    /// course it is read once its text settles. Off the course (only when
+    /// `allowsOff`, for an External URL item) only its address is taken, and
+    /// only when a complete scan shows exactly one new tab since the snapshot,
+    /// at the same address for two polls.
+    private func land(opened: String, before: [StudyFindTab], allowsOff: Bool,
+                      gen: Int, until: Date) async -> Landing? {
         let t = target
         let started = Date()
         var lastCount: [String: Int] = [:]
@@ -1183,13 +1251,15 @@ final class StudyFindRun: ObservableObject {
         while Date() < until {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             guard live(gen) else { return nil }
-            let fresh = await StudyFindReader.scan(text: true, known: before) { isNew, url in
+            let scan = await StudyFindReader.scan(text: true, known: before) { isNew, url in
                 guard isNew || StudyFindTarget.samePage(url, opened) else { return .skip }
                 if t.allows(url) { return StudyFindTarget.launchesTool(url) ? .address : .walk }
-                // Off the course: a new tab's address only, never its page.
-                return isNew && StudyFindTarget.parts(url) != nil ? .address : .skip
+                // Off the course: a new tab's address only (so new tabs can be
+                // counted), never its page.
+                return isNew ? .address : .skip
             }
             guard live(gen) else { return nil }
+            let fresh = scan.pages
             let elapsed = Date().timeIntervalSince(started)
             // A tool or quiz launch page on the course: nothing from it is used.
             if fresh.contains(where: { t.allows($0.url) && StudyFindTarget.launchesTool($0.url) }) {
@@ -1205,15 +1275,19 @@ final class StudyFindRun: ObservableObject {
                 lastCount[key] = page.text.count
                 continue
             }
-            if latest == nil, elapsed >= 3,
-               let off = fresh.first(where: { $0.isNew && !t.allows($0.url)
-                   && StudyFindTarget.parts($0.url)?.host != t.host })?.url {
-                if off == offSeen { offPolls += 1 } else { offSeen = off; offPolls = 1 }
-                if offPolls >= 2 { return .off(off) }
+            guard allowsOff, latest == nil, elapsed >= 3, scan.complete else { continue }
+            let newTabs = fresh.filter(\.isNew)
+            guard newTabs.count == 1, let off = newTabs.first?.url, !t.allows(off),
+                  let parts = StudyFindTarget.parts(off), parts.host != t.host
+            else {
+                offSeen = nil
+                offPolls = 0
+                continue
             }
+            if off == offSeen { offPolls += 1 } else { offSeen = off; offPolls = 1 }
+            if offPolls >= 2 { return .off(off) }
         }
         if let latest { return .course(latest) }
-        if let offSeen { return .off(offSeen) }
         return nil
     }
 
