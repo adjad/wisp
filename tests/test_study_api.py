@@ -28,6 +28,7 @@ class Fakes:
         self.parsed: dict[str, SimpleNamespace] = {}
         self.extract_result: SimpleNamespace | Exception | None = None
         self.choices: list[tuple] = []
+        self.extract_extra: list[dict] = []
 
 
 @pytest.fixture
@@ -42,10 +43,12 @@ def fakes(tmp_path, monkeypatch):
         return None
     monkeypatch.setattr(api, "_changed", quiet)
     f.active_model = "google/gemini-3.8-flash"
+    # Off by default, so every older test runs the ordinary (non-Gemini) limits and flow.
+    f.long_context = False
     monkeypatch.setattr(api.connector, "status", lambda: {
         "provider": "openrouter", "model_id": "google/gemini-3.8-flash", "ready": f.ready,
         "source": "study" if f.ready else "none", "active_model_id": f.active_model if f.ready else None,
-        "providers": []})
+        "long_context": f.long_context and f.ready, "providers": []})
 
     def set_choice(provider, model_id):
         if provider not in ("openrouter", "gemini"):
@@ -54,9 +57,9 @@ def fakes(tmp_path, monkeypatch):
         return {"provider": provider, "model_id": model_id, "ready": True, "source": "study", "providers": []}
     monkeypatch.setattr(api.connector, "set_choice", set_choice)
 
-    async def make(kind, *, course, assignment, topic, count, context="", complete=None):
+    async def make(kind, *, course, assignment, topic, count, context="", complete=None, **extra):
         f.made.append({"kind": kind, "course": course, "assignment": assignment, "topic": topic,
-                       "count": count, "context": context})
+                       "count": count, "context": context, "extra": extra})
         if f.make_error:
             raise f.make_error
         return {"title": "Lists practice", "body": QUIZ}
@@ -67,8 +70,9 @@ def fakes(tmp_path, monkeypatch):
     monkeypatch.setattr(api.canvas_parse, "parse_page", parse_page)
     monkeypatch.setattr(api.canvas_parse, "is_school_url", lambda url: "instructure" in url)
 
-    async def extract(url, title, text, *, now, timezone, complete=None):
+    async def extract(url, title, text, *, now, timezone, complete=None, **extra):
         f.extracted.append(url)
+        f.extract_extra.append(extra)
         if isinstance(f.extract_result, Exception):
             raise f.extract_result
         return f.extract_result or SimpleNamespace(kind="other", courses=[], assignments=[])
@@ -104,7 +108,7 @@ def delete(client, url, **kw):
 def test_an_empty_state_has_every_key(client):
     got = client.get("/study/state").json()
     assert got == {"connector": got["connector"], "sample": False, "last_import": None,
-                   "courses": [], "assignments": [], "materials": []}
+                   "courses": [], "assignments": [], "materials": [], "sources": []}
     assert got["connector"]["model_id"] == "google/gemini-3.8-flash"
 
 
@@ -492,6 +496,201 @@ def test_the_import_body_cap_takes_a_full_import_and_refuses_more(fakes):
     assert local_http._LIMITED_PATHS["/study/import"] == local_http.STUDY_IMPORT_BODY_LIMIT
 
 
+# --- long context (a Gemini Study model) ----------------------------------------------
+
+
+def test_without_long_context_the_import_is_unchanged_and_saves_no_page_sources(client, fakes):
+    fakes.extract_result = SimpleNamespace(kind="assignments", courses=[course()], assignments=[])
+    got = client.post("/study/import", json={"pages": _school_pages(6)}).json()
+    assert len(fakes.extracted) == 3 and fakes.extract_extra == [{}] * 3
+    assert [p["recognized"] for p in got["pages"]] == [True] * 3 + [False] * 3
+    assert fakes.store.sources() == [] and got["state"]["sources"] == []
+
+
+def test_long_context_reads_twelve_pages_four_at_a_time_in_request_order(client, fakes, monkeypatch):
+    import asyncio
+    fakes.long_context = True
+    active = {"now": 0, "most": 0}
+
+    async def extract(url, title, text, *, now, timezone, complete=None, **extra):
+        fakes.extracted.append(url)
+        fakes.extract_extra.append(extra)
+        n = int(url.rsplit("p", 1)[1])
+        active["now"] += 1
+        active["most"] = max(active["most"], active["now"])
+        await asyncio.sleep(0.02 * (12 - n) / 12)   # later pages finish first
+        active["now"] -= 1
+        if n == 5:
+            return SimpleNamespace(kind="other", courses=[], assignments=[])
+        return SimpleNamespace(kind="course_grades", courses=[course(f"canvas:{n}", f"Course {n}")],
+                               assignments=[])
+    monkeypatch.setattr(api.generate, "extract_school_data", extract)
+    pages = _school_pages(12)
+    got = client.post("/study/import", json={"pages": pages}).json()
+    assert len(fakes.extracted) == api.LONG_MODEL_PAGES == 12
+    assert active["most"] == api.LONG_CONCURRENCY == 4
+    assert all(e == {"long_context": True} for e in fakes.extract_extra)
+    assert [p["url"] for p in got["pages"]] == [p["url"] for p in pages]
+    assert [p["kind"] for p in got["pages"]] == ["course_grades"] * 5 + ["other"] + ["course_grades"] * 6
+    assert got["courses"] == 11
+    # Every page the model read is a "page" source, tied to its one course; page 5 named none.
+    sources = {s["url"]: s for s in fakes.store.sources()}
+    assert len(sources) == 12 and all(s["kind"] == "page" for s in sources.values())
+    assert sources[pages[0]["url"]]["course_id"] == "canvas:0"
+    assert sources[pages[5]["url"]]["course_id"] is None
+    assert fakes.store.source(sources[pages[3]["url"]]["id"])["text"] == "text"
+    assert len(got["state"]["sources"]) == 12
+    # Importing again replaces each page source rather than adding another.
+    client.post("/study/import", json={"pages": pages})
+    assert {s["id"] for s in fakes.store.sources()} == {s["id"] for s in sources.values()}
+
+
+def test_long_context_keeps_recognised_school_pages_and_skips_other_sites(client, fakes):
+    fakes.long_context = True
+    school, other = "https://school.instructure.com/courses/1/grades", "https://example.org/notes"
+    fakes.parsed[school] = SimpleNamespace(kind="course_grades", courses=[course()], assignments=[])
+    fakes.parsed[other] = SimpleNamespace(kind="course_grades", courses=[course("canvas:2", "Art")],
+                                          assignments=[])
+    client.post("/study/import", json={"pages": [page(school), page(other)]})
+    assert fakes.extracted == []
+    assert [(s["url"], s["course_id"]) for s in fakes.store.sources()] == [(school, "canvas:1")]
+
+
+def test_long_context_import_sends_at_most_twenty_four_paid_posts(client, fakes, monkeypatch):
+    import httpx
+    fakes.long_context = True
+    sent = []
+
+    def handler(request):
+        sent.append(request)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "not json"}}]})
+    transport = httpx.MockTransport(handler)
+
+    async def extract(url, title, text, *, now, timezone, complete=None, **extra):
+        fakes.extracted.append(url)
+        await api.connector.complete_json("s", "u", key_reader=lambda p: "sk-or-test-key", transport=transport)
+    monkeypatch.setattr(api.generate, "extract_school_data", extract)
+    got = client.post("/study/import", json={"pages": _school_pages(12)})
+    assert got.status_code == 200
+    assert len(sent) == api.LONG_IMPORT_POSTS == 24
+    assert fakes.store.sources() == []   # no page was read, none recognised
+
+
+@pytest.mark.parametrize("code", ["rejected", "busy", "missing", "unreachable"])
+def test_long_context_stops_starting_pages_after_a_refusal(client, fakes, monkeypatch, code):
+    import asyncio
+    fakes.long_context = True
+
+    async def refused(url, title, text, *, now, timezone, complete=None, **extra):
+        fakes.extracted.append(url)
+        await asyncio.sleep(0.01)
+        raise api.connector.StudyConnectorError(code)
+    monkeypatch.setattr(api.generate, "extract_school_data", refused)
+    got = client.post("/study/import", json={"pages": _school_pages(12)})
+    assert got.status_code == 200
+    assert len(fakes.extracted) == api.LONG_CONCURRENCY   # the first four were already running
+
+
+def test_long_context_import_deadline(client, fakes, monkeypatch):
+    import asyncio
+    fakes.long_context = True
+    monkeypatch.setattr(api, "LONG_IMPORT_MODEL_S", 0.2)
+
+    async def slow(url, title, text, *, now, timezone, complete=None, **extra):
+        fakes.extracted.append(url)
+        await asyncio.sleep(5)
+    monkeypatch.setattr(api.generate, "extract_school_data", slow)
+    started = time.monotonic()
+    got = client.post("/study/import", json={"pages": _school_pages(12)})
+    assert got.status_code == 200 and time.monotonic() - started < 2
+    assert len(fakes.extracted) == 4 and not any(p["recognized"] for p in got.json()["pages"])
+
+
+def _sources(fakes):
+    a = fakes.store.save_source({"kind": "drive", "url": "https://docs.google.com/document/d/aaa",
+                                 "title": "Notes A", "text": "alpha", "course_id": "canvas:1"})
+    b = fakes.store.save_source({"kind": "drive", "url": "https://docs.google.com/document/d/bbb",
+                                 "title": "Notes B", "text": "beta", "course_id": None})
+    c = fakes.store.save_source({"kind": "page", "url": "https://school.instructure.com/courses/1/pages/x",
+                                 "title": "Week 3", "text": "gamma", "course_id": "canvas:1"})
+    return a, b, c
+
+
+def test_generate_from_chosen_sources(client, fakes):
+    seeded(fakes)
+    a, b, _ = _sources(fakes)
+    got = client.post("/study/generate", json={"kind": "guide", "source_ids": [b["id"], a["id"], b["id"]]})
+    assert got.status_code == 200 and got.json()["course_id"] is None
+    extra = fakes.made[0]["extra"]
+    assert [s["text"] for s in extra["sources"]] == ["beta", "alpha"] and extra["long_context"] is False
+    fakes.long_context = True
+    client.post("/study/generate", json={"kind": "quiz", "course_id": "canvas:1", "source_ids": [a["id"]]})
+    assert fakes.made[1]["extra"]["long_context"] is True
+    assert fakes.made[1]["course"]["id"] == "canvas:1"
+
+
+def test_generate_without_sources_passes_nothing_new(client, fakes):
+    seeded(fakes)
+    _sources(fakes)
+    fakes.long_context = True
+    client.post("/study/generate", json={"kind": "quiz", "course_id": "canvas:1"})
+    client.post("/study/generate", json={"kind": "quiz", "course_id": "canvas:1", "source_ids": []})
+    assert [m["extra"] for m in fakes.made] == [{}, {}]
+
+
+def test_whole_course_uses_every_course_source_and_assignment_description(client, fakes):
+    seeded(fakes)
+    a, b, c = _sources(fakes)
+    fakes.long_context = True
+    got = client.post("/study/generate", json={"kind": "guide", "course_id": "canvas:1", "whole_course": True,
+                                               "source_ids": [b["id"]]})
+    assert got.status_code == 200 and got.json()["course_id"] == "canvas:1"
+    call = fakes.made[0]
+    assert [s["id"] for s in call["extra"]["sources"]] == [b["id"], c["id"], a["id"]]
+    assert call["extra"]["long_context"] is True
+    assert "Write three list functions." in call["context"] and "Quiz 2" in call["context"]
+
+
+def test_whole_course_without_long_context_keeps_the_ordinary_context_cap(client, fakes):
+    seeded(fakes)
+    fakes.store.upsert_assignments([item("canvas:1:9", time.time() + DAY, title="Essay", details="x" * 4000),
+                                    item("canvas:1:10", time.time() + DAY, title="Essay 2", details="y" * 4000)])
+    client.post("/study/generate", json={"kind": "guide", "course_id": "canvas:1", "whole_course": True})
+    call = fakes.made[0]
+    assert call["extra"] == {"sources": [], "long_context": False}
+    assert len(call["context"]) <= api.CONTEXT_MAX
+
+
+@pytest.mark.parametrize("body,status", [
+    ({"kind": "guide", "whole_course": True}, 422),
+    ({"kind": "guide", "whole_course": "yes", "course_id": "canvas:1"}, 422),
+    ({"kind": "guide", "source_ids": ["src_unknown"]}, 404),
+    ({"kind": "guide", "source_ids": [f"src_{i}" for i in range(21)]}, 422),
+    ({"kind": "guide", "source_ids": ["x" * 101]}, 422),
+    ({"kind": "guide", "source_ids": "src_1"}, 422),
+    ({"kind": "guide", "whole_course": True, "course_id": "canvas:9"}, 404),
+])
+def test_generate_source_refusals(client, fakes, body, status):
+    seeded(fakes)
+    got = client.post("/study/generate", json=body)
+    assert got.status_code == status and fakes.made == []
+    assert got.json()["detail"] == ("not_found" if status == 404 else "invalid")
+
+
+def test_deleting_a_source_returns_the_state(client, fakes):
+    a, b, _ = _sources(fakes)
+    assert [s["id"] for s in client.get("/study/state").json()["sources"]][-1] == a["id"]
+    got = delete(client, f"/study/sources/{a['id']}")
+    assert got.status_code == 200 and a["id"] not in {s["id"] for s in got.json()["state"]["sources"]}
+    assert delete(client, f"/study/sources/{a['id']}").status_code == 404
+    with_origin = client.request("DELETE", f"/study/sources/{b['id']}", headers=JSON | {"origin": "https://x"})
+    assert with_origin.status_code == 403 and fakes.store.source(b["id"]) is not None
+
+
+def test_the_drive_routes_can_reuse_the_study_helpers():
+    assert callable(api._answer) and callable(api._state) and issubclass(api.Refusal, Exception)
+
+
 # --- zero footprint -------------------------------------------------------------------
 
 
@@ -512,11 +711,15 @@ def test_reading_study_on_a_fresh_mac_creates_nothing(tmp_path, monkeypatch):
     got = reader.get("/study/state")
     assert got.status_code == 200
     assert got.json() | {"connector": None} == {"connector": None, "sample": False, "last_import": None,
-                                                "courses": [], "assignments": [], "materials": []}
+                                                "courses": [], "assignments": [], "materials": [],
+                                                "sources": []}
+    assert got.json()["connector"]["long_context"] is False
     assert reader.get("/study/materials/m_nope").status_code == 404
     assert delete(reader, "/study/materials/m_nope").status_code == 404
     assert reader.post("/study/materials/m_nope/attempt", json={"correct": 1, "total": 2}).status_code == 404
     assert delete(reader, "/study/data").status_code == 200
+    assert delete(reader, "/study/sources/src_nope").status_code == 404
+    assert reader.post("/study/generate", json={"kind": "quiz", "source_ids": ["src_nope"]}).status_code == 404
     assert reader.post("/study/generate", json={"kind": "quiz", "course_id": "canvas:9"}).status_code == 404
     result = {"day": "2026-11-14", "deadlines": [], "blocks": []}
     day_hook.attach(result, now=time.time(), timezone="UTC")
