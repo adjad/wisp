@@ -617,10 +617,14 @@ enum NotchQADriver {
         var lab5Block = block("study-block:qa:lab5", "Study: Lab 5: Lists", 16.5, 17.25, "study")
         lab5Block["slides"] = listSlides
         lab5Block["covers_text"] = "Slides 2–6 of Lecture 6 cover it."
-        let studyBlocks = [
-            block("study-block:qa:pset6", "Study: Problem set 6", 15.5, 16.25, "study"),
-            lab5Block,
-        ]
+        // "Add to calendar": the service sets `added` on each study block. Lab 5's
+        // is already on the calendar (Undo); Problem set 6 offers the add.
+        lab5Block["added"] = true
+        lab5Block["event_source_id"] = "qa-cal-event-lab5"
+        var pset6Block = block("study-block:qa:pset6", "Study: Problem set 6", 15.5, 16.25, "study")
+        pset6Block["added"] = false
+        pset6Block["event_source_id"] = NSNull()
+        let studyBlocks = [pset6Block, lab5Block]
         let studyDeadlines: [[String: Any]] = [
             ["id": "study:qa:pset6", "title": "Problem set 6 · MATH 110", "due_ts": at(17), "source": "study"],
             ["id": "study:qa:lab5", "title": "Lab 5: Lists · CS 101", "due_ts": at(night), "source": "study",

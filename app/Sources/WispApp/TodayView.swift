@@ -66,6 +66,11 @@ struct TodayBlock: Decodable, Identifiable {
     /// older service and for every other block.
     var slides: [SchoolSlides] = []
     var covers_text: String? = nil
+    /// For a study block: whether the service booked it on the calendar, and
+    /// the event it made. `added` is nil from a service without that flow,
+    /// which then offers no "Add to calendar".
+    var added: Bool? = nil
+    var event_source_id: String? = nil
     // TodayBlock.calendarEvent (CheckInView.swift) turns these into a CheckInEvent;
     // it lives there because scripts/test_today_contract.sh compiles this file alone.
 
@@ -122,7 +127,8 @@ extension TodayDeadline {
 extension TodayBlock {
     private enum CodingKeys: String, CodingKey {
         case id, title, start, end, kind, task_id, warnings, pattern_id, evidence_id, members, source_id, all_day,
-             invitee_count, organizer_is_user, calendar_writable, cancel_blocked, move_blocked, slides, covers_text
+             invitee_count, organizer_is_user, calendar_writable, cancel_blocked, move_blocked, slides, covers_text,
+             added, event_source_id
     }
 
     /// The fields it always had decode as before; a study block's slides and
@@ -148,6 +154,13 @@ extension TodayBlock {
         move_blocked = try c.decodeIfPresent(String.self, forKey: .move_blocked)
         slides = ((try? c.decodeIfPresent(SchoolLossy<SchoolSlides>.self, forKey: .slides)) ?? nil)?.items ?? []
         covers_text = (try? c.decodeIfPresent(String.self, forKey: .covers_text)) ?? nil
+        added = (try? c.decodeIfPresent(Bool.self, forKey: .added)) ?? nil
+        event_source_id = (try? c.decodeIfPresent(String.self, forKey: .event_source_id)) ?? nil
+    }
+
+    /// The facts "Add to calendar" decides by.
+    var calendarAddFacts: StudyBlockCalendar.Block {
+        StudyBlockCalendar.Block(id: id, kind: kind, start: start, added: added, eventSourceID: event_source_id)
     }
 }
 struct TodayUnscheduled: Decodable, Identifiable {
@@ -641,6 +654,32 @@ final class TodayModel: ObservableObject {
                           userInfo: [NSLocalizedDescriptionKey: detail?["detail"] as? String ?? "Could not update your day. Try again."])
         }
         return data
+    }
+
+    /// "Add to calendar" on a study block, or its Undo, through the Day's own
+    /// request path: `POST /study/blocks/{id}/add` with the shown day and zone
+    /// (the values `/assistant/today` is read with), or `.../undo` with `{}`.
+    /// 60 s, since the service may ask the app to create the event meanwhile;
+    /// it awaits without holding the main actor.
+    func studyBlockCalendar(_ operation: StudyBlockCalendar.Operation, blockID: String) async -> StudyBlockCalendar.Outcome {
+        let key = currentKey
+        let path = StudyBlockCalendar.path(operation, blockID: blockID)
+        guard let url = URL(string: path, relativeTo: WispClient.baseURL),
+              let body = try? JSONSerialization.data(withJSONObject: StudyBlockCalendar.body(operation, day: key.day,
+                                                                                               timezone: key.zone)) else {
+            return StudyBlockCalendar.outcome(operation, status: nil, data: nil)
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = StudyBlockCalendar.timeout
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = body
+        do {
+            let (data, response) = try await transport(req)
+            return StudyBlockCalendar.outcome(operation, status: (response as? HTTPURLResponse)?.statusCode ?? 0, data: data)
+        } catch {
+            return StudyBlockCalendar.outcome(operation, status: nil, data: nil)
+        }
     }
 
     func refresh(afterMutation: Bool = false) async {
