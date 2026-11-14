@@ -247,6 +247,17 @@ class _ThoughtSplitter:
         return [("reasoning" if self.inside else "content", rest)] if rest else []
 
 
+def _drop_provider_reasoning(message: dict) -> None:
+    """Remove a remote provider's reasoning from a reply that carries tool calls.
+
+    Every reasoning field goes (structured details, native and OpenAI-style text), so
+    nothing of it can be replayed as history, shown, logged or remembered. Content and
+    tool calls are untouched and still go through the normal checks."""
+    for key in ("reasoning_details", "reasoning"):
+        message.pop(key, None)
+    message["reasoning_content"] = ""
+
+
 def _split_inline_thought(message: dict) -> None:
     content = message.get("content")
     if not isinstance(content, str) or _ThoughtSplitter.OPEN not in content:
@@ -958,14 +969,19 @@ class OMLXClient:
             for choice in data.get("choices") or []:
                 if isinstance(choice.get("message"), dict):
                     message = choice["message"]
-                    if (not self.managed and message.get("reasoning_details")
-                            and message.get("tool_calls")):
-                        raise IncompleteStreamError("Provider reasoning tool replay is not supported")
+                    # A provider's reasoning that comes with tool calls (OpenRouter's
+                    # reasoning_details, often with reasoning text) is dropped, never
+                    # refused: the tool calls and content go on through the same checks,
+                    # and the reasoning is kept nowhere (not replayed, shown or logged).
+                    drop_reasoning = (not self.managed and bool(message.get("reasoning_details"))
+                                      and bool(message.get("tool_calls")))
                     if self.provider.name != "omlx":
                         if message.get("reasoning") and not message.get("reasoning_content"):
                             message["reasoning_content"] = message["reasoning"]
                     if not self.managed:
                         _split_inline_thought(message)
+                    if drop_reasoning:
+                        _drop_provider_reasoning(message)
                     if (not self.managed and choice["message"].get("tool_calls")
                             and choice.get("finish_reason") == "stop"):
                         choice["finish_reason"] = "tool_calls"   # Gemini's OpenAI-compatible API
@@ -1077,8 +1093,12 @@ class OMLXClient:
                         if not self.managed:
                             output_size = self._bounded_remote_value(
                                 output_size, t, output_limit)
-                        reasoning_parts.append(t)
-                        yield {"kind": "reasoning", "text": t}
+                        # Once a remote provider sends structured reasoning, its reasoning
+                        # text is neither shown nor kept: it may end in tool calls, and
+                        # that reasoning is dropped (see the end of this stream).
+                        if not (has_reasoning_details and not self.managed):
+                            reasoning_parts.append(t)
+                            yield {"kind": "reasoning", "text": t}
                     if (t := delta.get("content")):
                         if not self.managed:
                             output_size = self._bounded_remote_value(
@@ -1127,7 +1147,8 @@ class OMLXClient:
             raise IncompleteStreamError("Plain generation did not finish successfully")
         if calls:
             if not self.managed and has_reasoning_details:
-                raise IncompleteStreamError("Provider reasoning tool replay is not supported")
+                # Dropped, not refused: the calls below are checked exactly as without it.
+                reasoning_parts.clear()
             if finish_reason != "tool_calls":
                 raise IncompleteStreamError("Tool generation did not finish successfully")
             seen_ids = set()

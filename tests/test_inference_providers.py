@@ -264,29 +264,60 @@ def test_cloud_length_preserves_answer_and_reasoning(configured, stream, reasoni
 
 @pytest.mark.parametrize("provider", ["openrouter", "omlx"])
 @pytest.mark.parametrize("stream", [False, True])
-def test_reasoning_tool_replay_fails_closed(configured, provider, stream, capsys):
+def test_remote_reasoning_with_tool_calls_is_dropped_not_refused(configured, provider, stream, capsys):
+    """A remote reply with reasoning (structured details and text) plus a tool call: the
+    call goes through its normal checks and comes back; the reasoning is kept nowhere."""
     async def run():
         message = {"reasoning_details": [{"type": "reasoning.encrypted", "data": PRIVATE_MARKER}],
+            "reasoning": PRIVATE_MARKER + " thinking",
             "tool_calls": [{"index": 0, "id": "c1", "type": "function",
-                            "function": {"name": "lookup", "arguments": "{}"}}]}
+                            "function": {"name": "lookup", "arguments": "{\"q\": 1}"}}]}
         def handler(request):
             choice = {"delta" if stream else "message": message, "finish_reason": "tool_calls"}
             if stream:
-                return httpx.Response(200, text="data: " + json.dumps({"choices": [choice]}) + "\n\n")
+                return httpx.Response(200, text="data: " + json.dumps({"choices": [choice]}) + "\n\ndata: [DONE]\n\n")
             return httpx.Response(200, json={"choices": [choice]})
         c = await client(handler, remote_target(configured, provider))
-        emitted = []
         try:
-            with pytest.raises(IncompleteStreamError, match="replay is not supported") as raised:
+            if stream:
+                emitted = [e async for e in c.stream_events("vendor/model", [])]
+                result = emitted[-1]["message"]
+                assert all(e["kind"] != "reasoning" for e in emitted)
+            else:
+                emitted = []
+                result = (await c.chat("vendor/model", []))["choices"][0]["message"]
+            assert [t["function"]["name"] for t in result["tool_calls"]] == ["lookup"]
+            assert json.loads(result["tool_calls"][0]["function"]["arguments"]) == {"q": 1}
+            assert "reasoning_details" not in result and "reasoning" not in result
+            assert not result.get("reasoning_content")
+            captured = capsys.readouterr()
+            surfaces = [json.dumps(result), repr(emitted), captured.out, captured.err]
+            assert all(PRIVATE_MARKER not in value for value in surfaces)
+        finally:
+            await c.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("stream", [True])
+def test_remote_reasoning_with_a_bad_tool_call_still_fails(configured, stream):
+    """Dropping the reasoning skips no check: a malformed streamed call is still refused
+    (chat() leaves argument parsing to its callers, with or without reasoning)."""
+    async def run():
+        message = {"reasoning_details": [{"type": "reasoning.encrypted", "data": "x"}],
+            "tool_calls": [{"index": 0, "id": "c1", "type": "function",
+                            "function": {"name": "lookup", "arguments": "{not json"}}]}
+        def handler(request):
+            choice = {"delta" if stream else "message": message, "finish_reason": "tool_calls"}
+            if stream:
+                return httpx.Response(200, text="data: " + json.dumps({"choices": [choice]}) + "\n\ndata: [DONE]\n\n")
+            return httpx.Response(200, json={"choices": [choice]})
+        c = await client(handler, remote_target(configured, "openrouter"))
+        try:
+            with pytest.raises(IncompleteStreamError, match="Incomplete tool arguments"):
                 if stream:
-                    emitted.extend([e async for e in c.stream_events("vendor/model", [])])
+                    [e async for e in c.stream_events("vendor/model", [])]
                 else:
                     await c.chat("vendor/model", [])
-            message, detail = translate(raised.value, endpoint_name="cloud")
-            captured = capsys.readouterr()
-            surfaces = [str(raised.value), repr(raised.value), message, detail,
-                        repr(emitted), captured.out, captured.err]
-            assert all(PRIVATE_MARKER not in value for value in surfaces)
         finally:
             await c.aclose()
     asyncio.run(run())
