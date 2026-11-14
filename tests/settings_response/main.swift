@@ -45,6 +45,15 @@ check(!SettingsResponseValidator.valid(malformed, path: "inference/cloud"), "Fra
 malformed = cloud
 malformed["roles"] = ["reasoning", "unknown"]
 check(!SettingsResponseValidator.valid(malformed, path: "inference/cloud"), "Unknown role accepted")
+// "Everything" (set in config.yaml, or the Intel key-only setup) answers with exactly
+// ["everything"]; mixing it with a role is never a valid reply.
+var everything = cloud
+everything["roles"] = ["everything"]
+check(SettingsResponseValidator.valid(everything, path: "inference/cloud"), "Everything reply rejected")
+everything["roles"] = ["everything", "reasoning"]
+check(!SettingsResponseValidator.valid(everything, path: "inference/cloud"), "Mixed everything reply accepted")
+everything["roles"] = ["everything", "everything"]
+check(!SettingsResponseValidator.valid(everything, path: "inference/cloud"), "Repeated everything accepted")
 for key in ["credential_name", "provider", "base_url", "model_id"] {
     malformed = cloud
     malformed[key] = ""

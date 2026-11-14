@@ -3,7 +3,7 @@
 **A private assistant that lives in your Mac's notch, keeps track of what needs you, and does the
 busywork. Its AI runs on your Mac, so your mail, texts and calendar never go to a cloud.**
 
-[Download Wisp](https://github.com/adjad/wisp/releases/latest) · [What's new in 0.5.1](docs/releases/0.5.1.md) · Apple silicon, macOS 26.2+
+[Download Wisp](https://github.com/adjad/wisp/releases/latest) · [What's new in 0.5.2](docs/releases/0.5.2.md) · Apple silicon, macOS 26.2+
 
 ## The problem
 
