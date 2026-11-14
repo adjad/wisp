@@ -45,7 +45,7 @@ def classify(url, title="", type=None, course=COURSE):
     (f"https://drive.google.com/open?id={PDF_ID}", "file", "drive"),
     (f"https://colab.research.google.com/drive/{NB_ID}?usp=sharing", "notebook", "drive"),
     (f"{CANVAS}/pages/week-1-overview?module_item_id=9", "page", "browser"),
-    (f"{CANVAS}/assignments/55", "page", "browser"),
+    (f"{CANVAS}/assignments/55", "other", "none"),   # an assignment can launch an external tool on open
     (f"{CANVAS}/discussion_topics/77", "discussion", "browser"),
     (f"{CANVAS}/files/88", "file", "browser"),
     (f"{CANVAS}/modules/items/123", "page", "browser"),
@@ -483,3 +483,11 @@ def test_a_plain_module_item_is_still_browsed():
     got = F.classify({"url": "https://school.instructure.com/courses/123/modules/items/78",
                       "title": "Week 3 guided notes", "type": "Page"}, course)
     assert got["via"] == "browser" and got["kind"] == "page"
+
+
+def test_assignment_typed_module_items_are_not_browsed():
+    from service.study import find as F
+    course = {"id": "canvas:123", "url": "https://school.instructure.com/courses/123"}
+    got = F.classify({"url": "https://school.instructure.com/courses/123/modules/items/79",
+                      "title": "Problem set 2", "type": "Assignment"}, course)
+    assert got["via"] == "none"
