@@ -27,9 +27,9 @@ FAIL = "mx.google.com; dkim=fail header.i=@friend.com; spf=softfail smtp.mailfro
 
 @pytest.fixture(autouse=True)
 def mail_switch_on(monkeypatch):
-    """MAIL_ACTS ships False: no email is added without a tap. The proof behind it is built and is
-    tested here with the switch on, so it is ready and stays honest; the shipped default has its own
-    test at the end of this file."""
+    """MAIL_ACTS ships True since 2026-11-13 (the owner's decision): an email is added without a
+    tap only with the proof tested here. Set here too, so these tests say what they rely on; the
+    shipped value has its own test at the end of this file."""
     monkeypatch.setattr(autoadd, "MAIL_ACTS", True)
 
 
@@ -247,11 +247,40 @@ def test_an_organisation_or_a_roll_up_is_not_a_person(store, world):
         assert wrote == [] and out["added"] == []
 
 
-def test_as_shipped_even_fully_proven_mail_is_a_card(store, world, monkeypatch):
-    monkeypatch.undo()                                   # the real, shipped value of the switch
-    assert autoadd.MAIL_ACTS is False
+def test_as_shipped_mail_acts_and_only_with_proof(store, world, monkeypatch):
     import importlib
-    assert "MAIL_ACTS = False" in Path(importlib.import_module("service.proactive.autoadd").__file__).read_text()
+    source = Path(importlib.import_module("service.proactive.autoadd").__file__).read_text()
+    assert autoadd.MAIL_ACTS is True and "\nMAIL_ACTS = True\n" in source      # the real, shipped value
+    # Nothing known about the sender, nothing fetched: a card, never a write.
+    wrote, out, notes = run(store, item_for(gmail_row()))
+    assert wrote == [] and out["added"] == [] and len(out["tap"]) == 1
+    # Known AND verified by Gmail: added.
+    world["contacts"] = {PRIYA}
+    fetched(world, [PASS])
+    wrote, out, _ = run(store, item_for(gmail_row()))
+    assert wrote == ["calendar"] and len(out["added"]) == 1
+
+
+def test_a_yes_from_before_email_was_named_does_not_cover_it(store, world, tmp_path):
+    import json
+    from service.proactive import acting
+    world["contacts"] = {PRIYA}
+    fetched(world, [PASS])
+    when = NOW - 2 * 3600
+    (tmp_path / acting.FILE).write_text(json.dumps(
+        {"enabled": True, "enabled_at": when, "asked": True, "covers": {"add": when, "hold": when, "follow_up": when}}))
+    assert acting.pending() == ["add_more"]
+    wrote, out, notes = run(store, item_for(gmail_row()))                # fully proven, and still not added
+    assert wrote == [] and out["added"] == [] and store.auto_added() == {}
+    # Not agreed to, and the user has not written in this thread: no card either, exactly as before email could act.
+    assert out["tap"] == [] and notes == ["unknown sender: tap to add"]
+
+
+def test_with_the_switch_off_a_strangers_dated_email_still_gets_no_card(store, world):
+    from service.proactive import acting
+    acting.set_enabled(False)
+    wrote, out, notes = run(store, item_for(gmail_row()))
+    assert wrote == [] and out["tap"] == [] and notes == ["unknown sender: tap to add"]
 
 
 def test_this_file_is_in_the_simulation_manifest():

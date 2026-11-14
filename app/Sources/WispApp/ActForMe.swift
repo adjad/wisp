@@ -20,7 +20,6 @@ struct ActForMe: Equatable {
     let enabled: Bool
     let enabledAt: Double?
     let asked: Bool
-    let perDay: Int
     let does: [String]
     let never: String
     /// What the yes reaches, in the service's words (messages after the yes; deadlines already there).
@@ -31,7 +30,7 @@ struct ActForMe: Equatable {
     let new: [String]
     /// Not empty when something Wisp agreed to do can't work right now (Contacts off or not synced).
     let note: String
-    /// How many things Wisp did in the last day (what counts toward `perDay`).
+    /// How many things Wisp did in the last day.
     let today: Int
     let recent: [Done]
 
@@ -42,7 +41,6 @@ struct ActForMe: Equatable {
         self.enabled = enabled
         enabledAt = json["enabled_at"] as? Double
         asked = json["asked"] as? Bool ?? false
-        perDay = json["per_day"] as? Int ?? 10
         does = (json["does"] as? [String] ?? []).filter { !$0.isEmpty }
         never = json["never"] as? String ?? "Wisp never sends anything by itself."
         scope = json["scope"] as? String ?? "Adding covers only messages that arrive after you say yes."
@@ -66,20 +64,20 @@ struct ActForMe: Equatable {
                  + "\(new.count == 1 ? "one action waits" : "\(new.count) actions wait") "
                  + "for your yes (turn this off and on to review them). ")
               + "Wisp shows each thing it does in the Brief as “Wisp did this”, with an Undo. "
-              + "At most \(perDay) a day. " + never
+              + never
     }
 
     /// The one line the Brief always shows once the question has been answered.
     static let briefOff = "Let Wisp act for me is off"
     static let briefTurnOn = "Turn on"
-    var briefOn: String { "Wisp is acting for you · \(min(today, perDay)) of \(perDay) today" }
+    var briefOn: String { "Wisp is acting for you · \(today) today" }
 
     /// The confirmation for the notch row: compact, and explicit that a yes covers only what
     /// arrives after it. Same facts as `consent`.
     var confirmation: String {
         let list = does.joined(separator: " · ")
         return "Without asking first, Wisp: " + list
-            + ". " + scope + " At most \(perDay) a day, and each one has an Undo. " + never
+            + ". " + scope + " Each one has an Undo. " + never
     }
 
     /// What the person agrees to: the service's list, then the limits, then what never happens.
@@ -90,8 +88,8 @@ struct ActForMe: Equatable {
         let list = !waiting ? bullets(does)
             : (agreed.isEmpty ? "• Nothing yet." : bullets(agreed)) + "\n\nWaiting for your yes:\n" + bullets(new)
         return "Without asking first, Wisp:\n" + list
-            + "\n\n" + scope + " Never from group chats or promotions. "
-            + "At most \(perDay) a day. Each one shows in the Brief as "
+            + "\n\n" + scope + " Never from unknown numbers or promotions. "
+            + "Each one shows in the Brief as "
             + "“Wisp did this” with an Undo. " + never + " You can turn this off at any time."
     }
 }
@@ -276,8 +274,7 @@ struct ActForMeAskCard: View {
                     }
                     .font(.wisp(size: 12)).foregroundStyle(Theme.textPrimary)
                 }
-                Text(state.scope + " At most \(state.perDay) a day, and each one has an Undo. "
-                     + state.never)
+                Text(state.scope + " Each one has an Undo. " + state.never)
                     .font(.wisp(size: 11.5)).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 10) {

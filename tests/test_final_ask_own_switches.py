@@ -157,11 +157,11 @@ def test_requests_and_other_questions_are_not_taken(prompt):
     assert mo.own_question(prompt) == ""
 
 
-def test_acting_answer_while_off_names_the_switch_the_limit_and_never_sends(monkeypatch):
+def test_acting_answer_while_off_names_the_switch_no_daily_limit_and_never_sends(monkeypatch):
     monkeypatch.setattr(acting, "enabled", lambda action=None: False)
     text = wisp_about.acting()
     assert '"Let Wisp act for me" is off' in text and "until you say yes" in text
-    assert f"at most {acting.MAX_PER_DAY} actions a day" in text
+    assert "none per day" in text and "at most" not in text     # the daily cap was removed
     assert acting.NEVER in text and "I draft replies for you to send" in text
     assert acting.SCOPE in text and "Settings › Privacy" in text
     for line in acting.DOES:
@@ -171,13 +171,13 @@ def test_acting_answer_while_off_names_the_switch_the_limit_and_never_sends(monk
 
 def test_acting_answer_while_on_lists_only_agreed_actions_and_todays_count(monkeypatch):
     monkeypatch.setattr(wisp_about, "_acting_state", lambda: {
-        "enabled": True, "per_day": acting.MAX_PER_DAY, "never": acting.NEVER, "scope": acting.SCOPE,
+        "enabled": True, "never": acting.NEVER, "scope": acting.SCOPE,
         "actions": dict(acting.ACTIONS), "covered": ["add", "hold"], "used": 3})
     text = wisp_about.acting()
     assert '"Let Wisp act for me" is on' in text
     assert acting.ACTIONS["add"] in text and acting.ACTIONS["hold"] in text
     assert acting.ACTIONS["follow_up"] not in text and "Not agreed yet" in text
-    assert "3 of today's 10 used" in text and acting.NEVER in text
+    assert "none per day" in text and "3 done in the last day" in text and acting.NEVER in text
 
 
 def test_acting_answer_when_state_cannot_be_read_claims_nothing(monkeypatch):
@@ -198,11 +198,11 @@ def test_replies_leaves_and_whats_new_carry_their_facts(monkeypatch):
     new = wisp_about.whats_new()
     for label in ("Acting for you", "Gemma Wisp", "Demo mode", "Web privacy"):
         assert f"**{label}**" in new
-    assert "Wisp never sends anything by itself" in new and "at most 10 actions a day" in new
+    assert "Wisp never sends anything by itself" in new and "at most" not in new
 
 
 def test_the_self_hint_carries_the_acting_facts_for_other_wordings():
     assert mo.wisp_self_question("How much do you do on your own?")
     hint = mo.wisp_self_hint()
-    assert acting.NEVER in hint and f"at most {acting.MAX_PER_DAY} actions a day" in hint
+    assert acting.NEVER in hint and "with no limit per day" in hint and "at most" not in hint
     assert "cannot change your own permissions" in hint

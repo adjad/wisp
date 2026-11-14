@@ -1074,18 +1074,6 @@ def _blocked(store, now: float) -> tuple[set[str], int, dict]:
     return blocked, acting.done_since(store, now - DAY_S, kind=KIND) + pending, mine
 
 
-def _unsettled(store, now: float) -> int:
-    """This kind's writes in the last day still marked in flight: acting.room doesn't count
-    them (DISPATCHING isn't in acting.LANDED), so the shared cap is checked with them added."""
-    from service.proactive import acting
-    return sum(1 for r in acting.records(store, kind=KIND, statuses=(DISPATCHING,), since=now - DAY_S))
-
-
-def _room(store, now: float) -> int:
-    from service.proactive import acting
-    return acting.room(store, now) - _unsettled(store, now)
-
-
 def _settle_dispatching(store, now: float) -> None:
     """A follow-up still "dispatching" at the start of a step was cut off between its write and
     its outcome (a cycle timeout or a cancellation): the reminder may be in Reminders. It becomes
@@ -1183,7 +1171,7 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
     if since is None:
         return {"added": []}
     blocked, today, recorded = _blocked(store, now)
-    if today >= MAX_PER_DAY or _room(store, now) <= 0:
+    if today >= MAX_PER_DAY:
         return {"added": []}
     # One message gets at most one thing done on its own: an item auto-add already
     # acted on (an event or deadline added, even if undone since) gets no follow-up.
@@ -1238,7 +1226,7 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
         previous = recorded.get(fp) if isinstance(recorded.get(fp), dict) else {}
         if not acting.allows(plan.get("consent_ts", plan["received_ts"]), ACTION):
             continue
-        if acting.still_ok(ACTION) is not None or _room(store, now) <= 0 or abort() \
+        if acting.still_ok(ACTION) is not None or abort() \
                 or _in_quiet(quiet, now, tz):
             break
         tried = int(previous.get("attempts") or 0)

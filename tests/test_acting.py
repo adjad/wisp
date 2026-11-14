@@ -54,7 +54,7 @@ def store(tmp_path):
 
 
 def test_off_until_a_yes_and_the_yes_is_dated(setting):
-    assert acting.state() == {"enabled": False, "enabled_at": None, "asked": False, "per_day": acting.MAX_PER_DAY,
+    assert acting.state() == {"enabled": False, "enabled_at": None, "asked": False,
                               "does": acting.DOES, "never": acting.NEVER, "scope": acting.SCOPE,
                               "agreed": [], "new": []}
     assert "after you say yes" in acting.SCOPE and "already there" in acting.SCOPE
@@ -266,9 +266,9 @@ def _follow_up(store, now=NOW + 10, fp="fp-follow-1"):
 
 def test_an_action_is_recorded_shown_on_one_card_and_undone_by_its_own_undoer(setting, store, monkeypatch):
     acting.set_enabled(True, now=NOW)
-    assert acting.room(store, NOW + 10) == acting.MAX_PER_DAY
+    assert acting.done_since(store, NOW + 10 - acting.DAY_S) == 0
     _follow_up(store)
-    assert acting.room(store, NOW + 20) == acting.MAX_PER_DAY - 1
+    assert acting.done_since(store, NOW + 20 - acting.DAY_S) == 1
     [card] = autoadd.done_cards(store, NOW + 20)
     assert card["action"]["method"] == "undo_add" and card["action"]["record"] == "fp-follow-1"
     assert card["title"] == "Set a reminder to answer Maya" and card["meta"] == "REMINDER"
@@ -287,7 +287,7 @@ def test_an_action_is_recorded_shown_on_one_card_and_undone_by_its_own_undoer(se
     assert store.auto_added()["fp-follow-1"]["status"] == "undone"
     assert autoadd.done_cards(store, NOW + 40) == []
     assert asyncio.run(autoadd.undo(card, store, now=NOW + 50))["status"] == "blocked"   # never twice
-    assert acting.room(store, NOW + 60) == acting.MAX_PER_DAY - 1                         # an undone action still counts
+    assert acting.done_since(store, NOW + 60 - acting.DAY_S) == 1                         # an undone action still counts
 
 
 def test_a_card_comes_only_from_the_record_and_leaves_when_its_time_passes(setting, store):
@@ -301,12 +301,15 @@ def test_a_card_comes_only_from_the_record_and_leaves_when_its_time_passes(setti
         acting.register_undoer("send_email", None)
 
 
-def test_the_daily_cap_is_shared_by_every_kind(setting, store):
-    for i in range(acting.MAX_PER_DAY):
-        _follow_up(store, now=NOW + i, fp=f"fp-{i}")
-    assert acting.room(store, NOW + 100) == 0
-    assert store.auto_added_since(NOW - 1) == acting.MAX_PER_DAY          # auto-add's own cap sees them too
-    assert acting.room(store, NOW + acting.DAY_S + 100) == acting.MAX_PER_DAY
+def test_there_is_no_shared_daily_cap_so_actions_past_ten_still_land_and_count(setting, store):
+    assert not hasattr(acting, "MAX_PER_DAY") and not hasattr(acting, "room")
+    for i in range(20):
+        _follow_up(store, now=NOW + i, fp=f"fp-{i}")                      # twice what the old cap allowed
+    assert acting.done_since(store, NOW + 100 - acting.DAY_S) == 20       # every one landed and counts as done
+    assert store.auto_added_since(NOW - 1) == 20                          # auto-add's own count sees them too
+    _follow_up(store, now=NOW + 101, fp="fp-21")                          # the 21st is not refused by anything here
+    assert acting.done_since(store, NOW + 101 - acting.DAY_S) == 21
+    assert acting.done_since(store, NOW + acting.DAY_S - 1) == 0                      # a day later they no longer count
 
 
 def test_a_module_can_read_its_own_records_and_count(setting, store):
@@ -343,7 +346,7 @@ def test_the_brief_always_shows_the_feature_in_each_of_its_three_states(setting)
     assert "ActForMeAskCard(place: .brief, forced: true" in row[off:on]              # Turn on opens the same question
     assert "model.set(" not in row                                                   # the row itself never says yes
     assert 'static let briefOff = "Let Wisp act for me is off"' in act and 'static let briefTurnOn = "Turn on"' in act
-    assert '"Wisp is acting for you · \\(min(today, perDay)) of \\(perDay) today"' in act
+    assert '"Wisp is acting for you · \\(today) today"' in act and "perDay" not in act
     # The service gives the three states and the count.
     client = _client()
     assert client.get("/assistant/proactive/act").json()["asked"] is False           # never answered
@@ -352,7 +355,7 @@ def test_the_brief_always_shows_the_feature_in_each_of_its_three_states(setting)
     assert state["asked"] is True and state["enabled"] is False                      # "Not now"
     acting.set_enabled(True, now=NOW)
     state = client.get("/assistant/proactive/act").json()
-    assert state["asked"] is True and state["enabled"] is True and state["today"] == 0 and state["per_day"] == 10
+    assert state["asked"] is True and state["enabled"] is True and state["today"] == 0  and "per_day" not in state
 
 
 def test_todays_count_is_what_counts_toward_the_limit(setting, store, monkeypatch):
@@ -395,7 +398,7 @@ def test_the_switch_is_the_apps_own_and_takes_only_a_real_boolean(setting):
         assert client.put(url, json=body).status_code == 422
     assert not setting.exists() and not acting.enabled()
     on = client.put(url, json={"enabled": True}).json()
-    assert on["enabled"] is True and on["enabled_at"] > 1_700_000_000 and on["per_day"] == 10 and on["per_cycle"] == 3
+    assert on["enabled"] is True and on["enabled_at"] > 1_700_000_000 and "per_day" not in on and on["per_cycle"] == 3
     off = client.put(url, json={"enabled": False}).json()
     assert off["enabled"] is False and off["enabled_at"] is None and off["asked"] is True
     assert autoadd._still_ok() == "Acting for you was turned off"
@@ -646,10 +649,10 @@ def test_a_write_cut_off_mid_way_is_settled_for_every_kind_and_listed_as_uncerta
     for fp, kind in (("a-1", "calendar"), ("f-1", "follow_up"), ("h-1", "hold")):
         acting.record(store, fp, kind=kind, status="dispatching", now=NOW - 600, title=f"Thing {fp}", item_id=fp)
     acting.record(store, "ok-1", kind="reminder", status="added", now=NOW - 700, title="Fine", item_id="ok")
-    assert acting.room(store, NOW) == acting.MAX_PER_DAY - 1                # in-flight ones are not counted yet
+    assert acting.done_since(store, NOW - acting.DAY_S) == 1                # in-flight ones are not counted yet
     assert acting.settle(store, NOW) == 3 and acting.settle(store, NOW) == 0
     assert {r["status"] for r in acting.records(store) if r["fingerprint"] != "ok-1"} == {"unknown"}
-    assert acting.room(store, NOW) == acting.MAX_PER_DAY - 4                # now every kind's cap sees them
+    assert acting.done_since(store, NOW - acting.DAY_S) == 4                # now every kind's cap sees them
     acting.record(store, "d-1", kind="draft", status="unknown", now=NOW - 650, title="Thing d-1", item_id="d")
     assert [r["check"] for r in acting.recent(store, NOW) if r["title"] == "Thing d-1"] == ["Calendar and Reminders"]
     store.auto_add_drop("d-1")
@@ -731,12 +734,13 @@ def test_an_action_added_after_the_yes_does_nothing_until_it_is_agreed_to(settin
     _write(setting, enabled=True, enabled_at=NOW, asked=True, covers={"add": NOW, "hold": NOW})
     assert acting.enabled("add") and acting.enabled("hold") and not acting.enabled("follow_up")
     assert acting.allows(NOW + 60, "add") and not acting.allows(NOW + 60, "follow_up")
-    assert acting.pending() == ["follow_up"] and acting.asked() is False
-    assert acting.state()["new"] == [acting.ACTIONS["follow_up"]]
+    assert acting.pending() == ["add_more", "follow_up"] and acting.asked() is False
+    assert not acting.enabled("add_more") and not acting.allows(NOW + 60, "add_more")   # an older yes for "add" is not "add_more"
+    assert acting.state()["new"] == [acting.ACTIONS["add_more"], acting.ACTIONS["follow_up"]]
     assert acting.state()["agreed"] == [acting.ACTIONS["add"], acting.ACTIONS["hold"]]
     # Yes to the new one: it counts from THIS yes; what was agreed keeps its own time.
     acting.set_enabled(True, now=NOW + 500)
-    assert read(setting)["covers"] == {"add": NOW, "hold": NOW, "follow_up": NOW + 500}
+    assert read(setting)["covers"] == {"add": NOW, "hold": NOW, "add_more": NOW + 500, "follow_up": NOW + 500}
     assert read(setting)["enabled_at"] == NOW
     assert acting.allows(NOW + 100, "add") and not acting.allows(NOW + 100, "follow_up")
     assert acting.allows(NOW + 501, "follow_up") and acting.pending() == [] and acting.asked() is True
@@ -746,9 +750,9 @@ def test_putting_a_new_action_aside_keeps_it_off_and_is_not_asked_again(setting)
     _write(setting, enabled=True, enabled_at=NOW, asked=True, covers={"add": NOW, "hold": NOW})
     before = setting.read_text()
     acting.mark_asked()                                                    # "Not now" on the re-ask
-    assert read(notes(setting)) == {"asked": True, "aside": ["follow_up"]} and setting.read_text() == before
+    assert read(notes(setting)) == {"asked": True, "aside": ["add_more", "follow_up"]} and setting.read_text() == before
     assert acting.asked() is True and not acting.enabled("follow_up") and acting.enabled("add")
-    assert acting.state()["new"] == [acting.ACTIONS["follow_up"]]         # still shown as not agreed
+    assert acting.state()["new"] == [acting.ACTIONS["add_more"], acting.ACTIONS["follow_up"]]   # still shown as not agreed
     acting.set_enabled(True, now=NOW + 900)                                # the switch, flipped on again later
     assert acting.enabled("follow_up") and acting.allows(NOW + 901, "follow_up")
 
@@ -772,7 +776,7 @@ def test_not_now_never_touches_the_gates_file_so_no_agreed_time_moves(setting, m
     assert (after.st_ino, after.st_ctime_ns, after.st_mtime_ns) == (info.st_ino, info.st_ctime_ns, info.st_mtime_ns)
     assert setting.read_text() == text
     assert {key: acting.enabled_at(key) for key in ("add", "hold")} == since
-    assert acting.asked() and acting.pending() == ["follow_up"] and not acting.enabled("follow_up")
+    assert acting.asked() and acting.pending() == ["add_more", "follow_up"] and not acting.enabled("follow_up")
     acting.mark_asked()                                                    # and again: still nothing
     assert setting.stat().st_ctime_ns == info.st_ctime_ns
 
@@ -795,7 +799,7 @@ def test_a_yes_to_a_new_action_moves_the_agreed_ones_forward_to_that_write(setti
     _write(setting, enabled=True, enabled_at=old, asked=True, covers={"add": old, "hold": old})
     before = time.time()
     acting.set_enabled(True, now=before + 9000)                            # "Yes, these too"
-    assert read(setting)["covers"] == {"add": old, "hold": old, "follow_up": before + 9000}   # what was said
+    assert read(setting)["covers"] == {"add": old, "hold": old, "add_more": before + 9000, "follow_up": before + 9000}   # what was said
     assert before - 2 <= acting.enabled_at("add") <= time.time() + 2       # what counts: this write
     assert not acting.allows(old + 60, "add") and acting.allows(time.time() + 5, "add")
     assert acting.enabled_at("follow_up") == before + 9000
@@ -876,7 +880,7 @@ def test_an_unknown_action_or_a_malformed_list_covers_nothing(setting):
         _write(setting, enabled=True, enabled_at=NOW, asked=True, covers=covers)
         assert not acting.enabled("add") and not acting.enabled("send_email") and not acting.allows(NOW + 1, "add")
     assert acting.ACTION_OF["calendar"] == acting.ACTION_OF["reminder"] == "add"
-    assert set(acting.ACTION_OF.values()) - {"draft"} == set(acting.ACTIONS)
+    assert set(acting.ACTION_OF.values()) - {"draft"} == set(acting.ACTIONS) - {"add_more"}   # "add_more" is a consent key only: its writes are recorded as calendar/reminder, undone under "add"
 
 
 def test_each_writer_names_its_own_action(setting, store, monkeypatch, tmp_path):

@@ -686,16 +686,16 @@ def test_a_write_blocked_before_dispatch_may_try_again(setting, store):
     assert step(store, [text_item()], now=NOW + 600)["added"]
 
 
-def test_two_a_day_and_the_shared_cap_both_hold(setting, store, tmp_path):
+def test_two_a_day_holds_and_other_kinds_past_ten_do_not_block_a_follow_up(setting, store, tmp_path):
     people = ["Maya", "Sam", "Ravi"]
     recs = sum((records(n) for n in people), [])
     added = [step(store, [text_item(n)], now=NOW + i * 600, recs=recs)["added"] for i, n in enumerate(people)]
     assert [len(a) for a in added] == [1, 1, 0]
     full = ProactiveStore(tmp_path / "full")
-    for i in range(acting.MAX_PER_DAY):
+    for i in range(20):                                   # other kinds past the old shared cap of ten
         acting.record(full, f"fp-{i}", kind="reminder", status="added", now=NOW - 60, title="x")
     write = Writer()
-    assert step(full, [text_item()], write=write)["added"] == [] and write.calls == []
+    assert step(full, [text_item()], write=write)["added"] != [] and write.calls != []   # a follow-up still acts
 
 
 def test_a_waved_away_reply_card_means_no_follow_up(setting, store):

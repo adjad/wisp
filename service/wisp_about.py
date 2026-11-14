@@ -697,7 +697,8 @@ def privacy() -> str:
 # (model_only.own_question). Every line about acting is acting.py's own
 # wording (ACTIONS, NEVER, SCOPE) and its live state, read and never written.
 
-_ACTING_LABELS = {"add": "Texts with a date", "hold": "Deadlines", "follow_up": "Replies you owe"}
+_ACTING_LABELS = {"add": "Texts with a date", "add_more": "Other texts and email", "hold": "Deadlines",
+                  "follow_up": "Replies you owe"}
 _ACT_WHERE = "Settings › Privacy, or the notch's settings (the gear)"
 _DRAFTS = "I draft replies for you to send; a send always shows a card and waits for your OK."
 
@@ -729,7 +730,6 @@ def acting() -> str:
         return ("**I couldn't check whether \"Let Wisp act for me\" is on.**\n\n"
                 "- It is off until you say yes, in " + _ACT_WHERE + ".\n"
                 "- **Never**: Wisp never sends, replies, deletes or pays for anything by itself. " + _DRAFTS)
-    limit = state["per_day"]
     if state["enabled"]:
         out = ["**\"Let Wisp act for me\" is on**, so I do these on my own, each with an Undo:", ""]
         keys = state["covered"]
@@ -743,9 +743,9 @@ def acting() -> str:
         out.append("- **Not agreed yet**: " + _join([_ACTING_LABELS.get(k, k).lower() for k in waiting])
                    + ". I don't do that until you say yes to it.")
     used = state.get("used")
-    cap = f"- **Limit**: at most {limit} actions a day, all kinds together."
+    cap = "- **Limit**: none per day. Each action shows in the Brief with an Undo."
     if state["enabled"] and used is not None:
-        cap += f" {min(used, limit)} of today's {limit} used."
+        cap += f" {used} done in the last day."
     out += [cap,
             "- **Scope**: " + state["scope"],
             "- **Never**: " + state["never"] + " " + _DRAFTS,
@@ -787,12 +787,11 @@ def leaves() -> str:
 def whats_new() -> str:
     state = _acting_state()
     switch = ("on" if state["enabled"] else "off until you say yes") if state else "off until you say yes"
-    limit = state["per_day"] if state else 10
     return "\n".join([
         "**New in Wisp 0.5.0:**", "",
         f"- **Acting for you**: a new switch, \"Let Wisp act for me\" ({switch}). With it on I add a dated "
-        "iMessage from a saved contact to Calendar, hold an hour for a deadline and remind you to reply to "
-        f"email, at most {limit} actions a day, each with an Undo. Wisp never sends anything by itself.",
+        "text from a saved contact, or a dated email from someone you know, to Calendar, hold an hour for a "
+        "deadline and remind you to reply to email, each with an Undo. Wisp never sends anything by itself.",
         "- **Gemma Wisp**: a model tuned on Wisp's own tools is the default for new installs.",
         "- **Demo mode**: a switch in the menu-bar icon's menu that keeps the model loaded and warm for the "
         "fastest answers.",

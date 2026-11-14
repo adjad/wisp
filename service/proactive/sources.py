@@ -762,12 +762,13 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
 
 
 def text_records() -> list[tuple]:
-    """(ts, conversation, "Sender: text", chat guid, unread, service) for every
-    cached message, oldest first. The chat guid and the delivery service
-    ("iMessage", "SMS", "RCS") come from the native record with the same
-    timestamp (the V3 feed). Two native records at one timestamp that disagree
-    give "" for both: nothing is guessed. unread is None when the cache has no
-    read state.
+    """(ts, conversation, "Sender: text", chat guid, unread, service, sender handle)
+    for every cached message, oldest first. The chat guid, the delivery service
+    ("iMessage", "SMS", "RCS") and the sender's own handle (the number or address
+    an incoming message came from; "" for the user's own) come from the native
+    record with the same timestamp (the V3 feed). Two native records at one
+    timestamp that disagree give "" for all three: nothing is guessed. unread is
+    None when the cache has no read state.
 
     The join is by timestamp only because the two rows share no other key: a
     plain V2 row names its conversation by SQLite row id ("chat:12",
@@ -777,7 +778,7 @@ def text_records() -> list[tuple]:
     from service.tools import imessage_tools as im
     if im.messages_sync_state() != "ready":
         return []
-    native: dict[float, set[tuple[str, str]]] = {}
+    native: dict[float, set[tuple[str, str, str]]] = {}
     try:
         for record in im.structured_messages_snapshot().get("records") or []:
             stamp = record.get("timestamp")
@@ -785,14 +786,16 @@ def text_records() -> list[tuple]:
                 stamp = datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
             if _finite(stamp) and isinstance(record.get("conversation"), str):
                 service = record.get("service") if isinstance(record.get("service"), str) else ""
-                native.setdefault(round(float(stamp), 3), set()).add((record["conversation"], service))
+                sender = record.get("sender") if record.get("direction") == "incoming" \
+                    and isinstance(record.get("sender"), str) else ""
+                native.setdefault(round(float(stamp), 3), set()).add((record["conversation"], service, sender))
     except Exception:  # noqa: BLE001 — no native ids: no text replies, everything else stands
         native = {}
     out = []
     for ts, _identity, context, text, unread in im._parse_records():
         found = native.get(round(float(ts), 3)) or set()
-        guid, service = next(iter(found)) if len(found) == 1 else ("", "")
-        out.append((float(ts), context, text, guid, unread, service))
+        guid, service, sender = next(iter(found)) if len(found) == 1 else ("", "", "")
+        out.append((float(ts), context, text, guid, unread, service, sender))
     return sorted(out, key=lambda r: r[0])
 
 
@@ -836,6 +839,29 @@ def text_origin(item: dict, count: int = ORIGIN_LINES) -> tuple[str, str]:
         return "", ""
     handle = chat_handle({chats[0]})
     return (handle, services[0]) if handle else ("", "")
+
+
+def line_origin(item: dict, line_ts, count: int = ORIGIN_LINES) -> tuple[str, str, str]:
+    """(chat guid, service, sender handle) of the ONE quoted line that arrived at
+    `line_ts`, among the last `count` lines; ("", "", "") when that time is not
+    known, no line has it, the lists do not line up, or two lines with that time
+    disagree. For a group chat, where each line has its own sender."""
+    lines = list(item.get("lines") or [])
+    stamps = list(item.get("line_ts") or [])
+    chats = list(item.get("line_chat") or [])
+    services = list(item.get("line_service") or [])
+    senders = list(item.get("line_sender") or [])
+    if type(line_ts) not in (int, float) or count <= 0 or not lines \
+            or not (len(lines) == len(stamps) == len(chats) == len(services) == len(senders)):
+        return "", "", ""
+    found = {(chats[i], services[i], senders[i]) for i in range(max(0, len(lines) - count), len(lines))
+             if stamps[i] == line_ts}
+    if len(found) != 1:
+        return "", "", ""
+    chat, service, sender = next(iter(found))
+    if not all(isinstance(v, str) and v for v in (chat, service, sender)) or service not in _SERVICES:
+        return "", "", ""
+    return chat, service, sender.strip()
 
 
 _LITERAL_LABEL = re.compile(r"^[+\d(][\d() .+-]{2,}$|^\S+@\S+$")
@@ -894,7 +920,7 @@ def text_items(records: list[tuple], *, now: float, own: str | None = None,
     conversations: dict[str, list[tuple[float, str, str]]] = {}
     chats: dict[str, set[str]] = {}
     services: dict[str, set[str]] = {}       # every in-window line's delivery service ("" = not known)
-    origins: dict[str, list[tuple[str, str]]] = {}  # (chat guid, service) per in-window row, parallel
+    origins: dict[str, list[tuple[str, str, str]]] = {}  # (chat guid, service, sender handle) per in-window row
     ever_sent: set[str] = set()
     raw_texts: dict[str, list[tuple[float, str, str]]] = {}
     unread_at: dict[tuple[str, float], bool | None] = {}
@@ -911,8 +937,9 @@ def text_items(records: list[tuple], *, now: float, own: str | None = None,
                 chats.setdefault(context, set()).add(guid)
             service = str(record[5]) if len(record) > 5 and record[5] else ""
             services.setdefault(context, set()).add(service)
+            sender = str(record[6]) if len(record) > 6 and isinstance(record[6], str) else ""
             origins.setdefault(context, []).append((guid if isinstance(guid, str) else "",
-                                                    service if service in _SERVICES else ""))
+                                                    service if service in _SERVICES else "", sender))
     items = []
     for context, rows in conversations.items():
         # A sender who is only a number or a short code that the user never
@@ -944,14 +971,17 @@ def text_items(records: list[tuple], *, now: float, own: str | None = None,
         # line_chat / line_service: the chat GUID and delivery service of each quoted line
         # ("" = not known), also one per entry of `lines`. Deciders read these through
         # text_origin(), never the whole-conversation `handle` / `service` below.
-        quotes, line_ts, line_chat, line_service = [], [], [], []
-        for (stamp, _, line), (chat, service) in zip(incoming, incoming_origins):
+        # line_sender: the handle each quoted line itself came from ("" = not known). In a group
+        # chat this is the only thing that says WHO wrote a line: the name in front of it is a label.
+        quotes, line_ts, line_chat, line_service, line_sender = [], [], [], [], []
+        for (stamp, _, line), (chat, service, sender_handle) in zip(incoming, incoming_origins):
             sender, _, body = line.partition(":")
             if body.strip():
                 quotes.append(clean(body, 300))
                 line_ts.append(float(stamp))
                 line_chat.append(chat)
                 line_service.append(service)
+                line_sender.append(sender_handle)
         # The incoming lines since the user's own last line: what a reply card is
         # about. An earlier ask the user already answered must not headline it.
         # Empty when the user hasn't written in this window: then every line is
@@ -965,7 +995,7 @@ def text_items(records: list[tuple], *, now: float, own: str | None = None,
         who = label if not group else (f"{speaker} in {label}" if speaker else label)
         items.append(dict(id="messages:" + _digest(context), source="messages", account=own, raw_account="",
                           who=who, title=label, text=text, lines=quotes, line_ts=line_ts,
-                          line_chat=line_chat, line_service=line_service, pending=pending,
+                          line_chat=line_chat, line_service=line_service, line_sender=line_sender, pending=pending,
                           received_ts=last_in[0],
                           replied=replied, group=group, person=True, unread=unread_at.get((context, last_in[0])),
                           user_wrote=any(r[2].partition(":")[0].strip() == "Me" for r in rows),

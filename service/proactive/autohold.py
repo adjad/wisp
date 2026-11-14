@@ -26,7 +26,7 @@ IMPORTANT rules:
   never retried. A save that landed though its read-back failed is claimed on the
   retry only when the "already" task is the very task that failed save made (its id
   is stored); any other matching block is the person's own and is left alone.
-- At most MAX_PER_CYCLE a cycle, inside the shared daily cap (acting.room).
+- At most MAX_PER_CYCLE a cycle; no limit per day.
   The gate and a starting turn are checked again right before each hold.
 - Never outside the person's day: a slot any minute of which is in their quiet
   hours, or outside their working hours (service/user_hours.py), is not held; it
@@ -282,7 +282,7 @@ def step(cards: list[dict], *, now: float, tz: str, store, abort, hold=None, hou
             continue
         if not (hours or inside_hours)(action.get("slot") or {}, tz):
             continue                                  # outside their day: it stays a card to tap
-        if attempts >= MAX_PER_CYCLE or acting.room(store, now) <= 0:
+        if attempts >= MAX_PER_CYCLE:
             break
         if abort() or acting.still_ok("hold") is not None:
             break
