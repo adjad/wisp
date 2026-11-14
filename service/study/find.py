@@ -146,6 +146,56 @@ def _canvas(course: dict | None) -> tuple[str | None, str | None]:
     return origin, number
 
 
+def with_address(course: dict, assignments: list[dict], courses: list[dict]) -> dict:
+    """``course`` with a "url" when it has none: the Canvas course page its own stored
+    assignments link to, only when they all agree on one host and course number, and only on a
+    host the Canvas reader accepts (canvas_parse: *.instructure.com or a "canvas" label, the
+    rule those assignment urls were stored under) or one another stored course lives on.
+    The urls are the tabs the student read into Study, never links found inside a page."""
+    if not isinstance(course, dict) or str(course.get("url") or "").startswith("https://"):
+        return course
+    hosts = set()
+    for other in courses or ():
+        try:
+            if other.get("id") != course.get("id") and str(other.get("url") or "").startswith("https://"):
+                hosts.add((urlsplit(other["url"]).hostname or "").lower())
+        except ValueError:
+            continue
+    seen = set()
+    for a in assignments or ():
+        if not isinstance(a, dict) or a.get("course_id") != course.get("id"):
+            continue
+        url = a.get("url")
+        if not isinstance(url, str) or not url.startswith("https://"):
+            continue
+        try:
+            parts = urlsplit(url)
+        except ValueError:
+            return course
+        match = _CANVAS_COURSE.match(parts.path)
+        host = (parts.hostname or "").lower()
+        if match is None or not host or parts.port not in (None, 443) or "@" in parts.netloc:
+            continue
+        seen.add((host, match.group(1)))
+    if len(seen) != 1:
+        return course
+    host, number = seen.pop()
+    from service.study.canvas_parse import _is_canvas_host
+    if not (_is_canvas_host(host) and host != "instructure.com" or host in hosts):
+        return course
+    return {**course, "url": f"https://{host}/courses/{number}"}
+
+
+def _reason(hint: str, title: str) -> str:
+    """Why a same-course module item is never opened, for the "Can't open" list."""
+    text = f"{hint} {title}".lower()
+    if "quiz" in text or "assessment" in text:
+        return "quiz"
+    if hint == "assignment":
+        return "assignment"
+    return "tool" if hint else "unknown"
+
+
 def classify(link: dict, course: dict | None = None) -> dict:
     """{"key", "kind", "via", "url" (canonical), "file_id"} for one found link on ``course``'s
     pages. "key" is the dedupe key: "drive:<id>" for a Google file (one key across every url
@@ -181,20 +231,24 @@ def classify(link: dict, course: dict | None = None) -> dict:
         if match is None or course_no is None or match.group(1) != course_no:
             return none | {"key": url, "url": url}                 # another course, or the account's pages
         rest = match.group(2) or ""
+        refused = none | {"key": url, "url": url}
         if re.fullmatch(r"/files/\d+(?:/preview)?", rest):
             kind = "file"
         elif re.fullmatch(r"/discussion_topics/\d+", rest):
             kind = "discussion"
-        elif re.fullmatch(r"/pages/[^/]+", rest):
-            kind = "page"
+        elif re.fullmatch(r"/pages/[^/]+", rest) or rest == "/assignments/syllabus":
+            kind = "page"     # the Syllabus is a plain page, unlike an assignment
         elif re.fullmatch(r"/modules/items/\d+", rest):
             # An item that launches an external tool or a quiz must never be opened: Canvas would
             # post the student's identity to the tool's site (or start the quiz).
             if hint not in SAFE_ITEM_HINTS or _TOOL_TITLE.search(title):
-                return none | {"key": url, "url": url}
+                return refused | {"reason": _reason(hint, title)}
             kind = "page"     # redirects to the real item, which the app reads
         else:
-            return none | {"key": url, "url": url}
+            segment = rest.split("/")[1] if rest.count("/") >= 1 else ""
+            reason = {"assignments": "assignment", "quizzes": "quiz", "external_tools": "tool",
+                      "lti": "tool"}.get(segment)
+            return refused | ({"reason": reason} if reason and re.fullmatch(r"/[a-z_]+/\d+", rest) else {})
         return {"key": url, "kind": kind, "via": "browser", "file_id": None, "url": url}
     if _host_is(host, _VIDEO_HOSTS):
         return {"key": url, "kind": "video", "via": "none", "file_id": None, "url": url}
@@ -231,6 +285,7 @@ def known_keys(sources: list[dict]) -> dict[str, str]:
 MAX_FOUND = 400              # links one resolve may send
 MAX_IMPORTABLE = 60          # drive and web items (and title-only videos) one resolve returns
 MAX_BROWSER = 100            # Canvas pages the app will read in the browser
+MAX_REFUSED = 40             # course items listed as "Can't open" (tool, quiz, assignment)
 _JUNK_TITLE = re.compile(r"^(?:skip to .*|home|modules|next|previous|back|menu|log ?in|log ?out|sign ?in|"
                          r"sign ?out|help|account|dashboard|calendar|inbox|courses|grades|people|syllabus|"
                          r"settings|more|share|print|download)$", re.I)
@@ -243,13 +298,23 @@ def resolve(links: list[dict], *, course: dict | None, sources: list[dict]) -> l
     known = known_keys(sources)
     seen: set[str] = set()
     items = []
-    importable = browser = 0
+    importable = browser = refused = 0
     for link in links[:MAX_FOUND]:
         got = classify(link, course)
-        if got["key"] in seen or got["kind"] == "other":
+        if got["key"] in seen:
+            continue
+        if got["kind"] == "other":
+            # A course item Wisp will never open is listed, not opened, so the card can say so.
+            if got.get("reason") and refused < MAX_REFUSED:
+                refused += 1
+                seen.add(got["key"])
+                title = " ".join(str(link.get("title") or "").split())[:300]
+                items.append({"id": item_id(got["key"]), "kind": "other", "title": title or got["url"],
+                              "url": got["url"], "via": "none", "known": False, "reason": got["reason"]})
             continue
         title = " ".join(str(link.get("title") or "").split())[:300]
-        if title and _JUNK_TITLE.match(title) and got["via"] != "drive":
+        # A same-course page named like navigation ("Syllabus", "Home") is still that course's page.
+        if title and _JUNK_TITLE.match(title) and got["via"] not in ("drive", "browser"):
             continue
         if got["via"] == "browser":
             if browser >= MAX_BROWSER:

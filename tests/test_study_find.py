@@ -518,3 +518,84 @@ def test_find_bodies_have_their_own_limits_that_fit_a_full_batch():
     # 60 pages of 150k three-byte characters, as JSON, fit the add limit.
     assert 60 * find.TEXT_CAP * 3 + 60 * 6000 < local_http.STUDY_FIND_ADD_BODY_LIMIT
     assert find.MAX_FOUND * 6000 < local_http.STUDY_FIND_RESOLVE_BODY_LIMIT
+
+
+HOST = "https://school.instructure.com"
+NAMED = {"id": "canvas:3f9a0c1bde22", "name": "Biology 101", "url": None}
+
+
+def _asg(n, course="canvas:3f9a0c1bde22", url=None):
+    return {"id": f"a{n}", "course_id": course, "url": url or f"{HOST}/courses/4242/assignments/{n}"}
+
+
+def test_a_url_less_course_takes_its_address_from_its_own_assignments():
+    got = find.with_address(NAMED, [_asg(1), _asg(2)], [NAMED])
+    assert got["url"] == f"{HOST}/courses/4242"
+    # ...and a real Modules page body then yields browser items for it
+    links = [{"url": f"{HOST}/courses/4242/modules/items/{i}", "title": f"Week {i} notes", "type": "Page"}
+             for i in range(5)]
+    links += [{"url": f"{HOST}/courses/4242/pages/syllabus", "title": "Syllabus", "type": None},
+              {"url": f"{HOST}/courses/4242/discussion_topics/9", "title": "Intro", "type": None},
+              {"url": f"{HOST}/courses/4242/files/77", "title": "Slides.pdf", "type": None},
+              {"url": f"{HOST}/courses/4242/modules/items/99", "title": "Quiz 1", "type": "Quiz"},
+              {"url": "https://library.example.edu/", "title": "Library", "type": None}]
+    items = {i["url"]: i for i in find.resolve(links, course=got, sources=[])}
+    assert all(items[f"{HOST}/courses/4242/modules/items/{i}"]["via"] == "browser" for i in range(5))
+    assert items[f"{HOST}/courses/4242/pages/syllabus"]["kind"] == "page"
+    assert items[f"{HOST}/courses/4242/discussion_topics/9"]["kind"] == "discussion"
+    assert items[f"{HOST}/courses/4242/files/77"]["kind"] == "file"
+    quiz = items[f"{HOST}/courses/4242/modules/items/99"]
+    assert (quiz["via"], quiz["kind"], quiz["reason"]) == ("none", "other", "quiz")
+    # without the address, none of them is a browser item (the first live walk)
+    assert not [i for i in find.resolve(links, course=NAMED, sources=[]) if i["via"] == "browser"]
+    assert "reason" not in items[f"{HOST}/courses/4242/pages/syllabus"]
+
+
+@pytest.mark.parametrize("assignments, courses", [
+    ([_asg(1), _asg(2, url=f"{HOST}/courses/5555/assignments/2")], []),           # disagree
+    ([_asg(1, url="https://school.example.edu/courses/4242/assignments/1")], []),  # not a Canvas host
+    ([_asg(1, url="http://school.instructure.com/courses/4242/assignments/1")], []),  # not https
+    ([_asg(1, course="canvas:other")], []),                                        # another course's
+    ([], []),
+])
+def test_no_address_is_guessed_when_the_assignments_do_not_settle_it(assignments, courses):
+    assert find.with_address(NAMED, assignments, courses) is NAMED
+
+
+def test_a_school_host_counts_when_another_course_already_lives_there():
+    other = {"id": "canvas:77", "name": "Chem", "url": "https://canvas.school.edu/courses/77"}
+    got = find.with_address(NAMED, [_asg(1, url="https://canvas.school.edu/courses/4242/assignments/1")],
+                            [NAMED, other])
+    assert got["url"] == "https://canvas.school.edu/courses/4242"
+
+
+def test_the_course_syllabus_is_a_page_but_an_assignment_is_not():
+    c = {"id": "canvas:4242", "url": f"{HOST}/courses/4242"}
+    assert find.classify({"url": f"{HOST}/courses/4242/assignments/syllabus", "title": "Syllabus"}, c)["kind"] == "page"
+    assert find.classify({"url": f"{HOST}/courses/4242/assignments/12", "title": "PS 1"}, c)["via"] == "none"
+    got = find.resolve([{"url": f"{HOST}/courses/4242/assignments/syllabus", "title": "Syllabus"}], course=c, sources=[])
+    assert [i["via"] for i in got] == ["browser"]
+
+
+def test_a_custom_canvas_host_from_the_courses_own_assignments():
+    url = "https://canvas.school.edu/courses/4242/assignments/1"
+    got = find.with_address(NAMED, [_asg(1, url=url), _asg(2, url=url.replace("/1", "/2"))], [NAMED])
+    assert got["url"] == "https://canvas.school.edu/courses/4242"
+    items = find.resolve([{"url": "https://canvas.school.edu/courses/4242/modules/items/5", "title": "Notes",
+                           "type": "Page"}], course=got, sources=[])
+    assert [i["via"] for i in items] == ["browser"]
+
+
+@pytest.mark.parametrize("path, reason", [("/assignments/12", "assignment"), ("/quizzes/3", "quiz"),
+                                          ("/external_tools/8", "tool")])
+def test_refused_course_links_are_listed_with_a_reason(path, reason):
+    c = {"id": "canvas:4242", "url": f"{HOST}/courses/4242"}
+    items = find.resolve([{"url": f"{HOST}/courses/4242{path}", "title": "Thing"}], course=c, sources=[])
+    assert [(i["via"], i["kind"], i["reason"]) for i in items] == [("none", "other", reason)]
+
+
+def test_module_item_reasons():
+    c = {"id": "canvas:4242", "url": f"{HOST}/courses/4242"}
+    links = [{"url": f"{HOST}/courses/4242/modules/items/{n}", "title": t, "type": h}
+             for n, (t, h) in enumerate([("Lab", "ExternalTool"), ("HW 2", "Assignment"), ("Notes", None)])]
+    assert [i["reason"] for i in find.resolve(links, course=c, sources=[])] == ["tool", "assignment", "unknown"]
