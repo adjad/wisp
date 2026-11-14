@@ -387,7 +387,8 @@ struct NotchBriefView: View {
                             schoolGlance(line, rows: school, width: width)
                             // What Study got ready, under the School line.
                             if !studyCards.isEmpty {
-                                StudyBriefCardsView(cards: studyCards, model: model, leading: width + Self.labelGap)
+                                StudyBriefCardsView(cards: studyCards, model: model, leading: width + Self.labelGap,
+                                                    showsMore: school.moreLine == nil)
                                     .textSelection(.disabled)
                             }
                         }

@@ -397,7 +397,8 @@ struct ProactiveBriefSection: View {
                 if !school.isEmpty || !studyCards.isEmpty {
                     if !school.isEmpty { schoolRow }
                     if !studyCards.isEmpty {
-                        StudyBriefCardsView(cards: studyCards, model: model)
+                        StudyBriefCardsView(cards: studyCards, model: model,
+                                            showsMore: school.isEmpty || schoolRows.moreLine == nil)
                             .padding(.top, school.isEmpty ? 8 : 0).padding(.bottom, 8)
                     }
                     Rectangle().fill(Theme.hairline).frame(height: 1)
@@ -429,7 +430,8 @@ struct ProactiveBriefSection: View {
                     if !school.isEmpty || !studyCards.isEmpty {
                         VStack(alignment: .leading, spacing: 0) {
                             if !school.isEmpty { schoolRow }
-                            if !studyCards.isEmpty { StudyBriefCardsView(cards: studyCards, model: model) }
+                            if !studyCards.isEmpty { StudyBriefCardsView(cards: studyCards, model: model,
+                                                showsMore: school.isEmpty || schoolRows.moreLine == nil) }
                         }
                     }
                     attention(shown)
@@ -1635,11 +1637,14 @@ struct StudyBriefCardsView: View {
     let model: OverlayModel
     /// Lines the cards up under the school line's text.
     var leading: CGFloat = 24
+    /// False when the school rows above already end in "+N more in Study", so
+    /// the same line doesn't show twice in a row.
+    var showsMore = true
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             ForEach(cards.cards) { card in row(card) }
-            if let more = cards.moreLine {
+            if showsMore, let more = cards.moreLine {
                 Text(more).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
             }
         }
@@ -1651,18 +1656,16 @@ struct StudyBriefCardsView: View {
 
     private func row(_ card: StudyBriefCard) -> some View {
         let slides = SchoolSlidesText.line(card.slides, pagesText: StudyText.slidePages)
+        // One line: Study's sentence, then the slides muted after it; the tail
+        // truncates and the whole line is in the tooltip.
+        let line = Text(card.text).font(.wisp(size: 12.5)).foregroundColor(Theme.textPrimary)
+            + Text(slides.map { "  " + $0 } ?? "").font(.wisp(size: 11)).foregroundColor(Theme.textMuted)
         return HStack(alignment: .center, spacing: 8) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(card.text).font(.wisp(size: 12.5)).foregroundStyle(Theme.textPrimary)
-                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
-                if let slides {
-                    Text(slides).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
-                        .lineLimit(1).truncationMode(.tail)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(card.text + (slides.map { ". Slides: " + $0 } ?? ""))
+            line
+                .lineLimit(1).truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .help(card.text + (slides.map { "\n" + $0 } ?? ""))
+                .accessibilityLabel(card.text + (slides.map { ". Slides: " + $0 } ?? ""))
             if let action = card.action, let title = card.actionTitle {
                 NotchChrome.action(title, help: action.help, spoken: title + ": " + card.text) {
                     SchoolActions.run(action, model: model)
