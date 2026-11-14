@@ -401,6 +401,71 @@ def test_kind_mapping():
     assert cp._kind("Lab 1") == "assignment"
 
 
+GRADES_ROWS = """Name
+Due
+Score
+Out of
+Lab 4: Loops
+Nov 7 by 11:59pm
+18
+/ 20
+Total: 90% (A-)
+"""
+
+
+@pytest.mark.parametrize("url, title", [
+    ("https://canvas.example.edu/courses/12345/grades", "Grades for Jordan Example: Statistics"),
+    ("https://canvas.example.edu/courses/12345/assignments", "Assignments: Statistics"),
+    ("https://canvas.example.edu/courses/12345/assignments", "Course Assignments: Statistics"),
+    ("https://canvas.example.edu/courses/12345", "Statistics"),
+    ("https://canvas.example.edu/courses/12345", "Modules: Statistics"),
+    ("https://canvas.example.edu/courses/12345", "Course Modules: Statistics"),
+    ("https://canvas.example.edu/courses/12345/grades", "Grades: Statistics"),
+])
+def test_each_title_form_names_the_course(url, title):
+    text = ASSIGNMENTS if url.endswith("/assignments") else (
+        GRADES_ROWS if url.endswith("/grades") else "Coming Up\nLab 6\nNov 21 at 11:59pm")
+    page = cp.parse_page(url, title, text, now=NOW, timezone=TZ)
+    assert page.kind != "other"
+    assert [c["name"] for c in page.courses] == ["Statistics"]
+    assert page.courses[0]["id"] == "canvas:12345" and page.courses[0]["merge_key"] == "statistics"
+
+
+def test_a_bare_title_names_only_a_course_home_page():
+    # An assignment's own page with a To Do sidebar: its title is the assignment, not the course.
+    page = cp.parse_page("https://canvas.example.edu/courses/12345/assignments/9", "Lab 6: Dictionaries",
+                         "To Do\nLab 6\nNov 21 at 11:59pm", now=NOW, timezone=TZ)
+    assert all(c["name"] == "" for c in page.courses)
+    for title in ("Dashboard", "Grades", "Grades for Jordan Example", "Assignments"):
+        assert cp._course_from_title(title, plain=True) is None
+
+
+def test_the_text_names_the_course_when_the_title_does_not():
+    # The grades page's "Course" picker (the breadcrumb's bare code is passed over).
+    page = cp.parse_page("https://canvas.example.edu/courses/12345/grades", "", COURSE_GRADES,
+                         now=NOW, timezone=TZ)
+    assert page.courses[0]["name"] == "CS 101: Introduction to Programming"
+    # The breadcrumb: the line before the page's own crumb.
+    crumbs = ("Account Dashboard Courses Calendar Inbox History Help\nStatistics\nAssignments\n"
+              "Home\nAnnouncements\nAssignments\nGrades\n" + ASSIGNMENTS)
+    page = cp.parse_page("https://canvas.example.edu/courses/12345/assignments", "", crumbs, now=NOW, timezone=TZ)
+    assert page.courses[0]["name"] == "Statistics"
+    # The course menu is not a breadcrumb: a school's own tool sits before "Grades" there.
+    menu = "Home\nAnnouncements\nLecture Videos\nGrades\nPeople\n" + GRADES_ROWS
+    page = cp.parse_page("https://canvas.example.edu/courses/12345/grades", "", menu, now=NOW, timezone=TZ)
+    assert page.courses[0]["name"] == ""
+
+
+def test_a_course_page_with_no_title_and_no_heading_has_an_empty_name():
+    for url, text in (("https://canvas.example.edu/courses/12345/grades", GRADES_ROWS),
+                      ("https://canvas.example.edu/courses/12345/assignments", ASSIGNMENTS)):
+        page = cp.parse_page(url, "", text, now=NOW, timezone=TZ)
+        assert len(page.courses) == 1
+        course = page.courses[0]
+        assert course["id"] == "canvas:12345" and course["name"] == "" and course["merge_key"] == ""
+        assert course["url"] == "https://canvas.example.edu/courses/12345"
+
+
 def test_this_file_is_in_the_simulation_manifest():
     from pathlib import Path
     manifest = (Path(__file__).resolve().parents[1] / "scripts" / "run_simulation_qa.py").read_text()

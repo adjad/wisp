@@ -555,6 +555,108 @@ def test_remove_school_data_clears_pages_misses_and_labels(store):
     assert store.search_pages("hi") == []
 
 
+# --- a nameless course page meets the Dashboard's named row ---------------------------
+
+def named(cid="canvas:3d18b2ea89fa", name="Statistics", **values):
+    """The Dashboard / all-grades row: name-hash id, no url."""
+    return {"id": cid, "name": name, "code": None, "grade": None, "score": 92.5, "url": None,
+            "source": "canvas", "sample": False} | values
+
+
+def nameless(cid="canvas:12345", **values):
+    """A course page that showed no course name: numeric id and url, empty name."""
+    return {"id": cid, "name": "", "code": None, "grade": None, "score": 92.5,
+            "url": f"https://canvas.example.edu/courses/{cid.split(':')[1]}", "source": "canvas",
+            "sample": False, "merge_key": ""} | values
+
+
+def dash_hw(course_id="canvas:3d18b2ea89fa"):
+    return item("canvas:dddddddddddd", course_id=course_id, title="HW2", url=None, points=None, details="")
+
+
+def page_hw(course_id="canvas:12345"):
+    return item("canvas:12345:eeeeeeeeeeee", course_id=course_id, title="HW2",
+                url="https://canvas.example.edu/courses/12345/assignments")
+
+
+def test_a_nameless_course_page_merges_into_the_one_named_row_with_its_score(store):
+    store.import_rows([named(), named("canvas:b0a8b035702d", "Introduction to Programming", score=80.0)],
+                      [dash_hw()])
+    mid = store.save_material({"kind": "quiz", "title": "Q", "course_id": "canvas:3d18b2ea89fa",
+                               "body": quiz_body()})["id"]
+    sid = store.save_source({"kind": "page", "url": "https://canvas.example.edu/", "title": "Dashboard",
+                             "text": "x", "course_id": "canvas:3d18b2ea89fa"})["id"]
+    store.import_rows([nameless()], [page_hw()])
+    rows = {c["id"]: c for c in store.courses()}
+    assert set(rows) == {"canvas:12345", "canvas:b0a8b035702d"}
+    c = rows["canvas:12345"]
+    assert c["name"] == "Statistics" and c["merge_key"] == "statistics"
+    assert c["url"] == "https://canvas.example.edu/courses/12345" and c["score"] == 92.5
+    items = store.assignments()
+    assert len(items) == 1 and items[0]["course_id"] == "canvas:12345"
+    assert store.material(mid)["course_id"] == "canvas:12345"
+    assert store.source(sid)["course_id"] == "canvas:12345"
+    # A later Dashboard read finds the row by its name: no split.
+    store.import_rows([named(score=93.0)], [dash_hw()])
+    assert {c["id"] for c in store.courses()} == {"canvas:12345", "canvas:b0a8b035702d"}
+    c = {c["id"]: c for c in store.courses()}["canvas:12345"]
+    assert c["score"] == 93.0 and c["url"].endswith("/courses/12345") and c["name"] == "Statistics"
+    assert [a["course_id"] for a in store.assignments()] == ["canvas:12345"]
+    # And a later nameless read of the course page keeps the name.
+    store.import_rows([nameless(score=93.0)], [page_hw()])
+    assert {c["id"]: c for c in store.courses()}["canvas:12345"]["name"] == "Statistics"
+
+
+def test_the_course_page_first_then_the_dashboard_also_merges(store):
+    store.import_rows([nameless()], [page_hw()])
+    store.import_rows([named()], [dash_hw()])
+    (c,) = store.courses()
+    assert c["id"] == "canvas:12345" and c["name"] == "Statistics" and c["url"].endswith("/courses/12345")
+    assert [a["course_id"] for a in store.assignments()] == ["canvas:12345"]
+
+
+@pytest.mark.parametrize("rows", [
+    [named(), named("canvas:b0a8b035702d", "Introduction to Programming")],   # two share the score
+    [named(score=91.0)],                                                       # scores differ
+    [named(url="https://canvas.example.edu/courses/999")],                      # already has an address
+    [named(sample=True)],                                                      # a sample row
+    [named(score=None)],                                                       # no grade to match on
+    [named(code="CS 101")],                                                    # codes disagree
+    [named(grade="A-")],                                                       # letters disagree
+])
+def test_no_merge_without_one_clear_match(store, rows):
+    store.upsert_courses(rows)
+    store.import_rows([nameless(code="STAT 101", grade="A")], [])
+    assert "canvas:12345" in {c["id"] for c in store.courses()}
+    assert {c["id"]: c for c in store.courses()}["canvas:12345"]["name"] == ""
+    assert len(store.courses()) == len(rows) + 1
+
+
+def test_two_nameless_rows_with_one_score_merge_neither(store):
+    store.import_rows([named(), nameless(), nameless("canvas:12346")], [])
+    assert len(store.courses()) == 3
+
+
+def test_opening_the_store_heals_an_already_split_store_once(tmp_path):
+    path = tmp_path / "study" / "study.db"
+    old = StudyStore(path)
+    # The split as an earlier build left it: plain upserts, no import-time merge.
+    old.upsert_courses([named(), named("canvas:b0a8b035702d", "Introduction to Programming", score=80.0),
+                        nameless()])
+    old.upsert_assignments([dash_hw(), page_hw()])
+    old._db.close()
+    healed = StudyStore(path)
+    rows = {c["id"]: c for c in healed.courses()}
+    assert set(rows) == {"canvas:12345", "canvas:b0a8b035702d"}
+    assert rows["canvas:12345"]["name"] == "Statistics" and rows["canvas:12345"]["url"].endswith("/12345")
+    items = healed.assignments()
+    assert len(items) == 1 and items[0]["course_id"] == "canvas:12345", "the twin assignment folded in"
+    before = (healed.courses(), healed.assignments())
+    healed._db.close()
+    again = StudyStore(path)
+    assert (again.courses(), again.assignments()) == before
+
+
 def test_this_file_is_in_the_simulation_manifest():
     from pathlib import Path
     manifest = (Path(__file__).resolve().parents[1] / "scripts" / "run_simulation_qa.py").read_text()
