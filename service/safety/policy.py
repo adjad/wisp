@@ -3874,6 +3874,8 @@ def _fs_change(category: str, tool: str | None, args: dict) -> str:
                 f"with “{_card_text(args.get('title'))}”")
     if tool == "delete_knowledge":
         return f"deleting saved knowledge item {_card_text(args.get('record_id'), 64)}"
+    if tool == "study_make":
+        return f"making {_card_text(args.get('kind'), 20)} from your slides with the Study model"
     if tool == "move_path":
         return f"moving {_card_text(args.get('source'))} to {_card_text(args.get('destination'))}"
     verb = "deleting" if category == "fs_delete" else "writing"
