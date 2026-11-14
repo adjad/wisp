@@ -5,7 +5,7 @@ import SwiftUI
 
 // Study's "Find materials" (Phase 1): for one course, Wisp opens the course's
 // Canvas Modules page in the student's own signed-in browser, reads its links
-// through Accessibility, visits up to 10 of the course's own item pages one
+// through Accessibility, visits up to 100 of the course's own item pages one
 // level deep, asks the backend to classify what it found
 // (`POST /study/find/resolve`), shows the results grouped by kind with
 // checkboxes, and on Add imports the ticked ones (`POST /study/find/add`).
@@ -37,7 +37,7 @@ import SwiftUI
 //
 // Safety, by design: the only thing Wisp does to the browser is open https
 // URLs that pass `StudyFindTarget.openableURL` (the course's Modules page and
-// at most 10 of the course's own pages) through `NSWorkspace.open` without
+// at most 100 of the course's own pages) through `NSWorkspace.open` without
 // activating it. No AppleScript, Apple Events, JavaScript, key or mouse events,
 // and no Accessibility actions; the only Accessibility write is
 // `AXManualAccessibility = true`, exactly as StudyPageReader does for Chromium.
@@ -844,13 +844,15 @@ struct StudyFindAddResult: Equatable, Sendable {
 enum StudyFindText {
     static let button = "Find materials"
     static let help = "Opens this course's Modules page in your browser and finds its slides, docs and readings"
-    static let consentKey = "study.findMaterials.consented"
+    static let consentKey = "study.findMaterials.consented.v2"  // v2: up to 100 pages
     static let consent = "Wisp will open this course's Modules page in your browser, read the links on it and on up "
-        + "to 10 of the course's own pages, and show you what it found. Nothing is added until you choose. "
+        + "to 100 of the course's own pages, and show you what it found. Each page opens as a tab you close yourself. "
+        + "Nothing is added until you choose. "
         + "Linked Google files are read with your Drive sign-in; public articles are fetched without your cookies. "
         + "Opening an item may count as viewing it in Canvas. Course pages may load tools embedded in them, such as "
         + "video players. Wisp never opens quizzes, assignments or outside tools."
     static let noCanvasLink = "Wisp doesn't have a Canvas link for this course yet. Read your school tabs first."
+    static let needsAddress = "Find materials: open this course in Canvas and press Read again so Wisp knows its address."
     static let openingModules = "Opening the Modules page in your browser"
     static let readingModules = "Reading the Modules page"
     static func sorting(_ n: Int) -> String { "Sorting \(n) \(n == 1 ? "link" : "links")" }
@@ -865,7 +867,7 @@ enum StudyFindText {
     static let nothingFound = "Wisp didn't find any course materials on the Modules page."
     static let stoppedEarly = "Stopped. This is what Wisp found so far."
     static let stopped = "Stopped. Nothing was added."
-    static let timeCap = "Wisp stopped looking after 5 minutes. This is what it found."
+    static let timeCap = "Wisp stopped looking after 20 minutes. This is what it found."
     static let added = "Added"
     static let cantAdd = "Can't add yet"
     static let couldntReadItem = "Couldn't read"
@@ -967,8 +969,9 @@ final class StudyFindRun: ObservableObject {
     /// `StudyFindTarget.pathKey` of each link sent → its Canvas module item type.
     private var sentTypes: [String: String] = [:]
 
-    static let maxVisits = 10
-    static let runSeconds: TimeInterval = 300
+    /// The owner asked for up to 100 opened pages (was 10). A run stops after 20 minutes.
+    static let maxVisits = 100
+    static let runSeconds: TimeInterval = 1200
     static let modulesWait: TimeInterval = 25
     static let pageWait: TimeInterval = 20
     static let maxAddBatch = 60
@@ -1157,7 +1160,7 @@ final class StudyFindRun: ObservableObject {
         guard live(gen) else { return }
         merge(found)
 
-        // 3. One level deep: up to 10 of the course's own pages, only from
+        // 3. One level deep: up to 100 of the course's own pages, only from
         //    what this resolve returned as via "browser".
         let visits = Self.visits(found, target: t, types: sentTypes)
         var deeper: [StudyFindLink] = []
@@ -1540,6 +1543,12 @@ struct StudyFindMaterialsSection: View {
             StudyFindMaterialsHost(run: StudyFindRun.shared(for: target), course: course,
                                    canvasLinks: canvasLinks, onFinished: onFinished, onResize: onResize)
                 .id(course.id)
+        } else if !course.sample {
+            // No Canvas address yet: say how to get one, instead of showing nothing.
+            Label(StudyFindText.needsAddress, systemImage: "doc.text.magnifyingglass")
+                .font(.wisp(.caption)).foregroundStyle(Theme.textMuted)
+                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                .accessibilityLabel(StudyFindText.needsAddress)
         }
     }
 }
