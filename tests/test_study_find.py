@@ -110,7 +110,7 @@ def test_without_a_course_number_nothing_is_a_browser_kind():
 
 def test_resolve_caps_dedupes_drops_junk_and_marks_known():
     links = [{"url": f"https://news.example.org/a{i}", "title": f"Article {i}"} for i in range(80)]
-    links += [{"url": f"{CANVAS}/pages/p{i}", "title": f"Page {i}"} for i in range(30)]
+    links += [{"url": f"{CANVAS}/pages/p{i}", "title": f"Page {i}"} for i in range(120)]
     links += [{"url": f"{CANVAS}/modules", "title": "Modules"}, {"url": "javascript:void(0)", "title": "Menu"},
               {"url": "https://news.example.org/help", "title": "Help"},
               {"url": "https://news.example.org/a0#again", "title": "Article 0 again"}]
