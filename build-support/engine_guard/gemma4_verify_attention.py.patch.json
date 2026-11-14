@@ -1,0 +1,12 @@
+{
+  "path": "omlx/patches/gemma4_verify_attention.py",
+  "input_sha256": "ad4a99baa3c5230ed54cc161feac51144494c04c3910717a68354a1f34dc5ae9",
+  "output_sha256": "7ce009e36887984fe143072a5105d744cef969fb92931ef4f2cd2353ced728ee",
+  "edits": [
+    {
+      "old": "            output = gemma4_verify_kernel.fused_verify_sdpa(\n                queries, cache.keys, cache.values, big_k.shape[2], self.scale\n            )\n",
+      "new": "            # Modified by Wisp: a dispatch this GPU refuses (threadgroup\n            # limit), or any other failure building the fused route, costs\n            # this call the kernel, never the reply. The cache update above\n            # is the stock one, so the stock attention reads the same keys.\n            try:\n                output = gemma4_verify_kernel.fused_verify_sdpa(\n                    queries, cache.keys, cache.values, big_k.shape[2], self.scale\n                )\n            except Exception as exc:\n                gemma4_verify_kernel.note_stock_fallback(exc)\n                output = sdpa(\n                    queries, big_k, big_v, cache=cache, scale=self.scale, mask=mask\n                )\n",
+      "count": 1
+    }
+  ]
+}

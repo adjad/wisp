@@ -608,6 +608,9 @@ ADDITIONAL_FULL_TESTS = {
     # No engine/model/native launch, real provider or host memory probes.
     "tests/test_engine_guard_proof.py",
     "tests/test_engine_guard_overlay.py",
+    # Threadgroup guard and MTP fallback against a fake MLX with a 448-thread
+    # cap; the real-kernel test skips without the pinned oMLX and a Metal device.
+    "tests/test_engine_kernel_guard.py",
     # Background GPU power tier: settings in tmp_path, idle state and clients stubbed.
     "tests/test_power_tier.py",
     # Save memory: a fake client and clock, settings in tmp_path; one read-only

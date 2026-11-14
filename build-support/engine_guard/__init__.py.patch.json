@@ -1,0 +1,12 @@
+{
+  "path": "omlx/__init__.py",
+  "input_sha256": "9466d901862868132d26cfc5525c2c35ef1e6befb806e2257713bcaa45344847",
+  "output_sha256": "1464bf6e820f078865b5fe525e9416d941c483a592a536f61e5de765d71d6428",
+  "edits": [
+    {
+      "old": "if sys.platform == \"darwin\":\n    os.environ.setdefault(\"AGX_RELAX_CDM_CTXSTORE_TIMEOUT\", \"1\")\n",
+      "new": "if sys.platform == \"darwin\":\n    os.environ.setdefault(\"AGX_RELAX_CDM_CTXSTORE_TIMEOUT\", \"1\")\n\n# Modified by Wisp: every custom Metal kernel checks its threadgroup sizes at\n# the call, from the moment MLX loads (see omlx/wisp_kernel_guard.py).\ntry:\n    from omlx import wisp_kernel_guard as _wisp_kernel_guard\n\n    _wisp_kernel_guard.install_when_ready()\nexcept Exception:  # the guard must never keep the engine from starting\n    pass\n",
+      "count": 1
+    }
+  ]
+}

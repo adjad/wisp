@@ -138,6 +138,50 @@ jobs:
           include-hidden-files: true
           retention-days: 7
 
+  # The engine's custom Metal kernels on a real (virtualized) Apple GPU. The
+  # macos-15 runners above cannot import the engine's MLX (it needs macOS 26.2),
+  # so this job has its own runner. It executes the pinned, signature-checked
+  # oMLX's Python against a temporary copy of its `omlx` package with the Wisp
+  # overlay applied; it loads no model, holds no secret and uploads only a
+  # report. It reports the runner GPU's real threadgroup limits, then repeats
+  # the checks as if every pipeline allowed 448 threads (what an M1 Pro
+  # reported). Not part of "Verified macOS artifact": a runner image without a
+  # Metal device makes the script skip (exit 3), which is reported, not failed.
+  engine-gpu:
+    name: Engine Metal threadgroup check (PR)
+    if: github.event_name == 'pull_request'
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      # The pinned oMLX release only; size and SHA-256 are rechecked on every use.
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: .wisp-build/engine-cache/*.dmg
+          key: wisp-engine-source-${{ hashFiles('build-support/engine-source.json') }}
+      - name: Check Metal threadgroup handling on this runner's GPU
+        run: |
+          sw_vers
+          status=0
+          python3 -B scripts/engine_kernel_cap_check.py --fetch --json engine-gpu-report.json || status=$?
+          if [ "$status" = 3 ]; then
+            echo "::warning::This runner exposes no usable Metal device; the engine threadgroup check did not run."
+            exit 0
+          fi
+          exit "$status"
+      - name: Upload engine GPU report
+        continue-on-error: true
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wisp-engine-gpu-${{ github.event.pull_request.head.sha || github.sha }}
+          path: engine-gpu-report.json
+          if-no-files-found: warn
+          retention-days: 7
+
   simulation-qa:
     name: Simulation QA (PR)
     if: github.event_name == 'pull_request'

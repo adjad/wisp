@@ -33,6 +33,7 @@ struct NotchPermissionsView: View {
     /// The row has news about the person's last click, not just the usual next step.
     private func hasReport(_ item: Item) -> Bool {
         access.waiting.contains(item) || access.resetItems.contains(item) || access.unanswered[item] == true
+            || (access.notReached.contains(item) && access.state(item) == .notAsked)
     }
 
     var body: some View {
@@ -209,6 +210,7 @@ struct NotchPermissionsView: View {
     private func next(_ item: Item) -> String {
         NotchPermissionPage.next(item, access.state(item), waiting: access.waiting.contains(item),
                                  reset: access.resetItems.contains(item), unanswered: access.unanswered[item] == true,
+                                 notReached: access.notReached.contains(item),
                                  contactsWait: contactsWait(item))
     }
 
