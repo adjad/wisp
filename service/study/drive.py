@@ -15,12 +15,15 @@ IMPORTANT rules:
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from datetime import datetime
 
 import httpx
 
 from service import gmail_source
+
+log = logging.getLogger(__name__)
 
 DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 ORIGIN = "https://www.googleapis.com"
@@ -47,8 +50,14 @@ except ImportError:          # an older store without sources
 NOT_CONNECTED = "Connect Google in Settings ▸ Google to add your Docs and Slides."
 NO_DRIVE = "Reconnect Google in Settings ▸ Google and allow Drive to add your Docs and Slides."
 EXPIRED = "Google sign-in expired. Reconnect in Settings ▸ Google."
-UNREACHABLE = "Wisp couldn't reach Google Drive. Try again in a moment."
-DRIVE_OFF = "Turn on the Google Drive API for Wisp's Google project, then try again."
+UNREACHABLE = "Wisp couldn't reach Google Drive. Check your connection and try again."
+TIMED_OUT = "Google Drive took too long to answer. Try again in a moment."
+DRIVE_OFF = ("Google Drive isn't turned on for Wisp's Google project yet. Turn on the Google Drive API "
+             "in Google Cloud, then try again.")
+REFUSED = "Google Drive refused that request. Check that your Google account can open the file, then try again."
+RATE_LIMITED = "Google Drive is busy right now. Try again in a minute."
+GOOGLE_DOWN = "Google Drive is having trouble right now. Try again in a few minutes."
+ODD_REPLY = "Google Drive sent an answer Wisp couldn't use. Try again in a moment."
 NOT_FOUND = "Wisp couldn't find that file in your Google Drive."
 TOO_LARGE = "That file is too large for Google to export as text."
 BAD_ID = "That isn't a Google Docs, Slides or PDF file."
@@ -108,38 +117,79 @@ def _drive_account() -> str:
 
 # --- requests ---------------------------------------------------------------------
 
-def _reasons(response: httpx.Response) -> set[str]:
+_REASON = re.compile(r"[a-z0-9_.]{1,60}")
+_DRIVE_OFF_TEXT = ("has not been used in project", "is disabled")
+
+
+def _error(response: httpx.Response) -> dict:
     try:
         body = response.json()
     except ValueError:
-        return set()
+        return {}
     error = body.get("error") if isinstance(body, dict) else None
-    error = error if isinstance(error, dict) else {}
-    return {str(item.get("reason", "")).lower()
-            for key in ("errors", "details") for item in (error.get(key) or [])
-            if isinstance(item, dict)}
+    return error if isinstance(error, dict) else {}
+
+
+def _reasons(response: httpx.Response) -> set[str]:
+    """Google's reason codes, lower-cased; anything that is not a plain code is dropped,
+    so a reason can be logged without carrying text from the body."""
+    error = _error(response)
+    reasons = {str(item.get("reason", "")).lower()
+               for key in ("errors", "details") for item in (error.get(key) or [])
+               if isinstance(item, dict)}
+    return {r for r in reasons if _REASON.fullmatch(r)}
+
+
+def _says_drive_off(response: httpx.Response) -> bool:
+    """Google's message for an API not enabled in the OAuth client's project. Only searched,
+    never logged or passed on."""
+    error = _error(response)
+    message = error.get("message")
+    texts = [message] if isinstance(message, str) else []
+    texts += [item.get("message") for item in (error.get("errors") or [])
+              if isinstance(item, dict) and isinstance(item.get("message"), str)]
+    return any(marker in text.lower() for text in texts for marker in _DRIVE_OFF_TEXT)
+
+
+def _logged(error: "DriveError", status, reasons=()) -> "DriveError":
+    """One log line per Drive failure: the HTTP status (or the failure kind) and Google's
+    reason codes only. Never a body, token, file id or file name."""
+    log.warning("Study Drive call failed: status=%s reasons=%s -> %s", status,
+                ",".join(sorted(reasons)[:5]) or "-", error.code)
+    return error
 
 
 def _failure(response: httpx.Response) -> DriveError:
     """One non-200 Drive answer as a refusal. Only the status and Google's reason codes
-    are read; the body is never logged or passed on."""
+    are read (and Google's message, searched for the Drive-off wording); the body is never
+    logged or passed on."""
     code = response.status_code
     reasons = _reasons(response)
+    return _logged(_refusal_for(code, reasons, response), code, reasons)
+
+
+def _refusal_for(code: int, reasons: set[str], response: httpx.Response) -> DriveError:
     if "exportsizelimitexceeded" in reasons:
         return DriveError(413, "too_large", TOO_LARGE)
     if code == 401:
         return _missing(EXPIRED)
     if code == 403:
+        if reasons & {"accessnotconfigured", "service_disabled"} or _says_drive_off(response):
+            return DriveError(409, "drive_off", DRIVE_OFF)
         if reasons & {"insufficientpermissions", "access_token_scope_insufficient", "insufficientscopes"}:
             return _missing(NO_DRIVE)
-        if reasons & {"accessnotconfigured", "service_disabled"}:
-            return DriveError(502, "google_error", DRIVE_OFF)
         if reasons & {"cannotexportfile", "filenotexportable"}:
             return DriveError(422, "invalid", BAD_ID)
-        return DriveError(502, "google_error", UNREACHABLE)
+        if reasons & {"ratelimitexceeded", "userratelimitexceeded", "quotaexceeded"}:
+            return DriveError(502, "google_error", RATE_LIMITED)
+        return DriveError(502, "google_error", REFUSED)
     if code == 404:
         return DriveError(404, "not_found", NOT_FOUND)
-    return DriveError(502, "google_error", UNREACHABLE)
+    if code == 429:
+        return DriveError(502, "google_error", RATE_LIMITED)
+    if code >= 500:
+        return DriveError(502, "google_error", GOOGLE_DOWN)
+    return DriveError(502, "google_error", ODD_REPLY)
 
 
 async def _token(http: httpx.AsyncClient) -> str:
@@ -147,8 +197,8 @@ async def _token(http: httpx.AsyncClient) -> str:
         return await gmail_source.access_token(http)
     except gmail_source.GmailError as exc:
         if "expired" in str(exc).lower() or "missing" in str(exc).lower():
-            raise _missing(EXPIRED) from None
-        raise DriveError(502, "google_error", UNREACHABLE) from None
+            raise _logged(_missing(EXPIRED), "token") from None
+        raise _logged(DriveError(502, "google_error", UNREACHABLE), "token") from None
 
 
 def _url(path: str = "") -> str:
@@ -175,9 +225,11 @@ async def _bounded(work, total_s: float = TOTAL_S):
     except DriveError:
         raise
     except gmail_source.GmailError:
-        raise _missing(NOT_CONNECTED) from None
-    except (TimeoutError, httpx.HTTPError):
-        raise DriveError(502, "google_error", UNREACHABLE) from None
+        raise _logged(_missing(NOT_CONNECTED), "account") from None
+    except (TimeoutError, asyncio.TimeoutError, httpx.TimeoutException):
+        raise _logged(DriveError(502, "google_error", TIMED_OUT), "timeout") from None
+    except httpx.HTTPError:
+        raise _logged(DriveError(502, "google_error", UNREACHABLE), "unreachable") from None
 
 
 async def _get_json(http: httpx.AsyncClient, path: str, params: list[tuple[str, str]]) -> dict:
@@ -188,9 +240,9 @@ async def _get_json(http: httpx.AsyncClient, path: str, params: list[tuple[str, 
     try:
         body = response.json()
     except ValueError:
-        raise DriveError(502, "google_error", UNREACHABLE) from None
+        raise _logged(DriveError(502, "google_error", ODD_REPLY), "bad_json") from None
     if not isinstance(body, dict):
-        raise DriveError(502, "google_error", UNREACHABLE)
+        raise _logged(DriveError(502, "google_error", ODD_REPLY), "bad_json")
     return body
 
 
