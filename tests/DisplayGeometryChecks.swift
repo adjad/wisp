@@ -36,7 +36,7 @@ struct DisplayGeometryChecks {
         check(l.style == style, "\(name): style")
         // The bar is centred on its display and touches the top of its anchor area.
         check(abs(l.barFrame.midX - l.usableFrame.midX) <= 1, "\(name): bar centred")
-        check(l.barFrame.maxY <= l.usableFrame.maxY + 0.5, "\(name): bar inside the display")
+        check(l.barFrame.maxY <= (style == .floating ? l.usableFrame.maxY : d.frame.maxY) + 0.5, "\(name): bar inside the display")
         check(d.frame.contains(l.barFrame), "\(name): bar on screen")
         // The hover zone is easier to hit than the bar. On a notch it is wider than the
         // bar, covers the top of the notch and the screen's top edge, and leaves out the
@@ -59,7 +59,7 @@ struct DisplayGeometryChecks {
             check(d.frame.contains(f), "\(name): expanded \(h) on screen")
             check(abs(f.midX - l.usableFrame.midX) <= 1, "\(name): expanded centred")
             check(f.width == l.expandedWidth && l.expandedWidth <= 640, "\(name): width")
-            if style == .notch {
+            if style != .floating {
                 check(abs(f.maxY - d.frame.maxY) < 0.5, "\(name): panel hangs from the top edge")
             } else {
                 check(f.maxY < d.visibleFrame.maxY, "\(name): floating card sits below the menu bar")
@@ -114,11 +114,14 @@ struct DisplayGeometryChecks {
                        ("M1 Air menu bar hidden", notchless(1440, 900, menuBar: 0))] {
             checkLayout(n, d, style: .menuBar)
             let l = SurfaceLayout.make(for: d)
-            check(l.notchSize == .zero && l.contentTopInset == 16, "\(n): no notch inset")
-            check(l.barFrame.maxY <= d.frame.maxY - 24, "\(n): the undrawn seed sits under the menu bar")
-            check(l.maskedCorners.contains(.layerMaxXMaxYCorner), "\(n): card rounds all four corners")
+            let strip = d.frame.maxY - l.usableFrame.maxY
+            check(l.notchSize == .zero && l.contentTopInset == strip + 8 && strip >= 24, "\(n): content clears the menu-bar strip")
+            check(l.barFrame.maxY == d.frame.maxY, "\(n): the undrawn seed hangs from the top edge")
+            let open = l.expandedFrame(contentHeight: 300)
+            check(open.maxY == d.frame.maxY && abs(open.midX - d.frame.midX) <= 1, "\(n): panel flush at the top edge, centred")
+            check(!l.maskedCorners.contains(.layerMaxXMaxYCorner) && !l.maskedCorners.isEmpty, "\(n): flat top like a notch")
             check(l.hoverDwell > HoverIntent.dwell, "\(n): a longer dwell, since menus share the edge")
-            check(l.windowLevel == .floating, "\(n): not above the menu bar")
+            check(l.windowLevel == .statusBar && !l.barIsVisible, "\(n): above the menu bar, nothing drawn at rest so clicks pass through")
         }
         check(SurfaceLayout.make(for: notched(1512, 982)).hoverDwell == HoverIntent.dwell, "Notch keeps its dwell")
 
@@ -141,6 +144,17 @@ struct DisplayGeometryChecks {
         let oddLayout = SurfaceLayout.make(for: odd)
         check(oddLayout.style == .notch, "Odd notch stays a notch")
         check(oddLayout.notchSize == CGSize(width: SurfaceLayout.referenceNotch.width, height: 34), "Odd notch width falls back")
+
+        // 2020 13-inch MacBook Pro (Intel, no notch): 1440x900 frame, 24 pt menu bar.
+        let pro13 = SurfaceLayout.make(for: notchless(1440, 900))
+        check(pro13.style == .menuBar && pro13.usableFrame.maxY == 876, "13in Pro 2020: menu-bar style")
+        let pro13Open = pro13.expandedFrame(contentHeight: 300)
+        check(pro13Open.maxY == 900 && pro13Open.midX == 720, "13in Pro 2020: open panel flush at the top, centred")
+        check(pro13.contentTopInset == 32, "13in Pro 2020: content starts below the 24 pt strip")
+        // A notch keeps its geometry: bar and panel flush, content under the housing.
+        let keep = SurfaceLayout.make(for: notched(1512, 982))
+        check(keep.windowLevel == .statusBar && keep.contentTopInset == 40 && keep.expandedFrame(contentHeight: 300).maxY == 982,
+              "Notch geometry unchanged")
 
         // The debug override puts any style on any display (how the menu-bar style is
         // tried on a notched MacBook).
@@ -448,9 +462,11 @@ struct DisplayGeometryChecks {
         }
         check(SurfaceLayout.make(for: notched(1512, 982)).tabScrollCap(headerHeight: 30) == 872, "14in cap is 872 pt")
         check(SurfaceLayout.make(for: notched(1352, 878)).tabScrollCap(headerHeight: 30) == 768, "14in larger-text cap is 768 pt")
-        // Cards hang under the menu bar and a gap.
+        // A notchless built-in display's panel hangs from the top edge (its content
+        // starts under the menu bar's strip); a monitor's card hangs under the bar and a gap.
         let air = SurfaceLayout.make(for: notchless(1440, 900))
-        check(air.maxPanelHeight == 900 - 24 - SurfaceLayout.floatingGap - SurfaceLayout.screenMargin, "Menu-bar card room")
+        check(air.maxPanelHeight == 900 - SurfaceLayout.screenMargin, "Menu-bar card room")
+        check(air.contentTopInset == 24 + 8, "Menu-bar content clears the bar")
         let screen = SurfaceLayout.make(for: monitor(1920, 1080))
         check(screen.maxPanelHeight == 1080 - 24 - SurfaceLayout.floatingGap - SurfaceLayout.screenMargin, "Monitor card room")
         // A tiny display still gets a usable scroll rather than none.

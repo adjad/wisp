@@ -13,7 +13,8 @@ import SwiftUI
 //               is drawn at rest: a drawn notch there would cover app menus and
 //               window titles. The menu-bar icon is the visible anchor and
 //               carries the bar's status; pushing the pointer to the top-centre
-//               edge opens the same panel as a card just under the menu bar.
+//               edge opens the same panel, hanging from the top edge over the
+//               menu bar's centre like a notch's.
 //   .floating — external monitors. Same hover-to-open behaviour and the same
 //               panel, but no notch is drawn: a detached capsule sits just
 //               under the menu bar and opens into a fully rounded card.
@@ -168,12 +169,27 @@ struct SurfaceLayout: Equatable {
         }
     }
     var panelCornerRadius: CGFloat { style == .notch ? 28 : 24 }
-    /// SwiftUI content sits below the camera housing on a notch; a card just
-    /// needs ordinary padding.
-    var contentTopInset: CGFloat { style == .notch ? notchSize.height + 8 : 16 }
-    var windowLevel: NSWindow.Level { style == .notch ? .statusBar : .floating }
+    /// Whether the open panel hangs from the screen's top edge (flat top): on a
+    /// notch, and on a built-in display without one, where it covers the menu
+    /// bar's empty centre. A monitor's card floats under the menu bar instead.
+    private var hangsFromTopEdge: Bool { style == .notch || style == .menuBar }
+    /// SwiftUI content sits below the camera housing on a notch, and below the
+    /// menu bar's strip on a notchless built-in display; a card just needs
+    /// ordinary padding.
+    var contentTopInset: CGFloat {
+        switch style {
+        case .notch: return notchSize.height + 8
+        case .menuBar: return max(screenFrame.maxY - usableFrame.maxY, 0) + 8
+        case .floating: return 16
+        }
+    }
+    /// Level of the strip the panel hangs over; it must sit above the menu bar's
+    /// own window to be seen there. The collapsed window on .menuBar draws
+    /// nothing and ignores the mouse, so the bar's clicks outside the open
+    /// panel are never blocked.
+    var windowLevel: NSWindow.Level { hangsFromTopEdge ? .statusBar : .floating }
     var maskedCorners: CACornerMask {
-        style == .notch ? [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+        hangsFromTopEdge ? [.layerMinXMinYCorner, .layerMaxXMinYCorner]
                         : [.layerMinXMinYCorner, .layerMaxXMinYCorner,
                            .layerMinXMaxYCorner, .layerMaxXMaxYCorner]
     }
@@ -206,17 +222,17 @@ struct SurfaceLayout: Equatable {
     }
 
     func shape(radius: CGFloat) -> UnevenRoundedRectangle {
-        let top: CGFloat = style == .notch ? 0 : radius
+        let top: CGFloat = hangsFromTopEdge ? 0 : radius
         return UnevenRoundedRectangle(topLeadingRadius: top, bottomLeadingRadius: radius,
                                       bottomTrailingRadius: radius, topTrailingRadius: top)
     }
     var panelShape: UnevenRoundedRectangle { shape(radius: panelCornerRadius) }
     var barShape: UnevenRoundedRectangle { shape(radius: barCornerRadius) }
 
-    /// Top of the expanded panel: the screen edge on a notch, just under the menu
-    /// bar otherwise.
+    /// Top of the expanded panel: the screen edge on a notch or a notchless
+    /// built-in display, just under the menu bar on a monitor.
     private var panelTop: CGFloat {
-        style == .notch ? screenFrame.maxY : usableFrame.maxY - Self.floatingGap
+        hangsFromTopEdge ? screenFrame.maxY : usableFrame.maxY - Self.floatingGap
     }
 
     /// The tallest the expanded panel gets: from its top to a margin above the
@@ -300,14 +316,15 @@ struct SurfaceLayout: Equatable {
                                  expandedWidth: centrable(width, in: frame.width, .down), barFrame: bar,
                                  hoverZone: notchZone(around: bar, top: frame.maxY))
         case .menuBar:
-            // Under the menu bar, even while it is auto-hidden (visibleFrame then
-            // reaches the top edge, and a card there would sit on the menu bar when
-            // it slides back in).
+            // `usable` is the area under the menu bar, even while it is auto-hidden
+            // (visibleFrame then reaches the top edge); its top is how deep the
+            // panel's menu-bar strip reaches. The panel and the seed it grows out
+            // of hang from the screen's top edge, like a notch's.
             var usable = metrics.visibleFrame
             usable.size.height = min(usable.height, frame.maxY - metrics.menuBarHeight - usable.minY)
             let seed = edgeSeed
             let bar = CGRect(x: (usable.midX - seed.width / 2).rounded(),
-                             y: (usable.maxY - floatingGap - seed.height).rounded(),
+                             y: frame.maxY - seed.height,
                              width: seed.width, height: seed.height)
             return SurfaceLayout(style: .menuBar, screenFrame: frame, usableFrame: usable, notchSize: .zero,
                                  expandedWidth: width, barFrame: bar,
