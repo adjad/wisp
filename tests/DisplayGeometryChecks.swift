@@ -43,8 +43,10 @@ struct DisplayGeometryChecks {
         // notch's bottom strip; on a monitor it is the bar plus a margin.
         check(l.hoverZone.width > l.barFrame.width, "\(name): zone is wider than the bar")
         check(l.hoverZone.minX < l.barFrame.minX && l.hoverZone.maxX > l.barFrame.maxX, "\(name): zone reaches past both sides")
-        check(l.barIsVisible && !l.statusInMenuBar,
-              "\(name): every style draws its bar on the desktop and keeps its status on it")
+        // The notchless pill is too thin for the count or the "!", so its status
+        // goes to the menu-bar icon (CollapsedPresentation.decide); the others keep it.
+        check(l.barIsVisible && l.statusInMenuBar == (style == .menuBar),
+              "\(name): every style draws its bar on the desktop; only the notchless pill hands its status to the menu-bar icon")
         if style == .notch || style == .menuBar {
             hoverZoneChecks(name, l, d)
         } else {
@@ -210,14 +212,16 @@ struct DisplayGeometryChecks {
         let bar = P(mode: .bar, statusInMenuBar: false), hitbox = P(mode: .hitbox, statusInMenuBar: true)
         check(P.decide(style: .notch, displayHasNotch: true, frontmostFullScreen: false) == bar, "Desktop notch: the drawn bar")
         check(P.decide(style: .notch, displayHasNotch: true, frontmostFullScreen: true) == hitbox, "Full-screen notch: hitbox")
-        check(P.decide(style: .menuBar, displayHasNotch: false, frontmostFullScreen: false) == bar, "Notchless: the drawn pill")
+        check(P.decide(style: .menuBar, displayHasNotch: false, frontmostFullScreen: false)
+              == P(mode: .bar, statusInMenuBar: true), "Notchless: the drawn pill, its status on the icon")
         check(P.decide(style: .menuBar, displayHasNotch: false, frontmostFullScreen: true) == hitbox, "Notchless in full screen: hitbox")
         check(P.decide(style: .floating, displayHasNotch: false, frontmostFullScreen: false) == bar, "Monitor: capsule")
         check(P.decide(style: .floating, displayHasNotch: false, frontmostFullScreen: true) == bar, "Monitor in full screen: unchanged")
         // The debug override's forced notch on a notchless display keeps its bar.
         check(P.decide(style: .notch, displayHasNotch: false, frontmostFullScreen: true) == bar, "Forced notch without a notch: unchanged")
         // A notched MacBook forced to another style follows that style.
-        check(P.decide(style: .menuBar, displayHasNotch: true, frontmostFullScreen: false) == bar, "Forced menu bar on a notch: the pill")
+        check(P.decide(style: .menuBar, displayHasNotch: true, frontmostFullScreen: false)
+              == P(mode: .bar, statusInMenuBar: true), "Forced menu bar on a notch: the pill, its status on the icon")
         check(P.decide(style: .menuBar, displayHasNotch: true, frontmostFullScreen: true) == hitbox, "Forced menu bar on a notch")
         check(P.decide(style: .floating, displayHasNotch: true, frontmostFullScreen: true) == bar, "Forced floating on a notch")
         // Only a real notch is watched at all.
