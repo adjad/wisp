@@ -109,3 +109,17 @@ class GeminiVoice(GeminiPictureTurn):
             with self.assertRaisesRegex(voice.VoiceUnavailable, "only with a model on this Mac"):
                 run(voice.transcribe(b64(wav())))
         self.assertEqual(self.bodies, [])
+
+
+class GeminiInlineCap(GeminiPictureTurn):
+    def test_a_request_past_geminis_inline_cap_is_refused_before_sending(self):
+        # Inside every other cap (each picture under 5 MiB, all media under 16 MiB, text
+        # under the transcript budget) but past the 19 MiB Gemini inline request.
+        big = image_url(b"\x89PNG\r\n\x1a\n" + b"\0" * int(3.9 * 1024 * 1024))
+        messages = [{"role": "user", "content": [{"type": "text", "text": "look"},
+                                                 {"type": "image_url", "image_url": {"url": big}}]}
+                    for _ in range(3)]
+        messages.append({"role": "user", "content": "x" * int(3.8 * 1024 * 1024)})
+        with self.assertRaisesRegex(EndpointConfigurationError, "too large to send to Gemini"):
+            policy.remote_only_profile().validate_payload(
+                {"model": "gemini-3.8-flash", "stream": False, "max_tokens": 100, "messages": messages})

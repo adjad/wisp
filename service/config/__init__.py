@@ -1252,7 +1252,9 @@ def disable_gemini_everything() -> None:
     Model setting saved when it was turned on is restored. The Gemini connection
     itself (and any cloud roles) stays as it was."""
     saved = models_config().get("gemini_everything")
-    prior = saved.get("prior_super_model") if isinstance(saved, dict) else None
+    # Only a switch that is on has a Super Model setting of its own to give back.
+    prior = (saved.get("prior_super_model")
+             if isinstance(saved, dict) and saved.get("switch") is True else None)
     update = {"remote_parity": False, "inference": {"remote_only": {"enabled": False}},
               "gemini_everything": {"switch": False, "prior_super_model": {}}}
     if isinstance(prior, dict) and prior:
@@ -1266,10 +1268,12 @@ def disable_cloud_provider() -> None:
     from service.config.provider_credentials import forget_reused_keys
     forget_reused_keys()                      # a removed connection's key is not sent again
     if cloud_everything_enabled():
-        # Back to local models at the next backend restart.
+        # Back to local models at the next backend restart. The Gemini switch (if it
+        # turned this on) is off with it, and keeps no Super Model setting to restore.
         _save_overlay({"remote_parity": False, "inference": {
             "remote_only": {"enabled": False}, "endpoints": {"cloud": {"enabled": False}},
-            "super_model": {"enabled": False}}})
+            "super_model": {"enabled": False}},
+            "gemini_everything": {"switch": False, "prior_super_model": {}}})
         return
     current = models_config().get("inference", {}).get("bindings", {})
     bindings = {}

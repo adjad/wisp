@@ -1144,15 +1144,25 @@ GEMINI_EVERYTHING_NO_KEY = ("Connect a Gemini API key first: Settings > Models >
 
 
 def _gemini_everything_state() -> dict[str, Any]:
-    from service.config import cloud_everything_enabled, gemini_everything_connection
+    from service.config import (cloud_everything_enabled, cloud_provider_settings,
+                                gemini_everything_connection)
     connection = gemini_everything_connection()
     enabled = cloud_everything_enabled() and connection is not None
+    # What this running service answers with: the remote-only profile is read once at
+    # startup (remote_only_profile is cached), so a saved change needs a restart until
+    # the two agree. remote_parity is read live and is not proof of either.
+    running = remote_only_profile() is not None
+    cloud = cloud_provider_settings()
     return {
         "available": connection is not None,
         "enabled": enabled,
-        "active": cloud_everything_active(),
+        "active": running,
         "model_id": connection["model_id"] if connection else "",
-        "restart_required": enabled != cloud_everything_active(),
+        # With the switch off, a cloud role or Super Model still sends those requests
+        # to the connected provider; the switch's caption says so.
+        "cloud_roles_on": bool(cloud["enabled"] and (
+            [r for r in cloud["roles"] if r != "everything"] or cloud["super_model_enabled"])),
+        "restart_required": enabled != running,
     }
 
 
@@ -1172,8 +1182,7 @@ async def set_gemini_everything(body: dict[str, Any]) -> dict[str, Any]:
         with _local_provider_operation_lock:
             _supersede_local_provider_probe_unlocked()
             disable_gemini_everything()
-        state = _gemini_everything_state()
-        return {**state, "restart_required": state["active"]}
+        return _gemini_everything_state()
     connection = gemini_everything_connection()
     if connection is None:
         raise HTTPException(status_code=400, detail=GEMINI_EVERYTHING_NO_KEY)

@@ -259,6 +259,9 @@ final class SettingsLoader: ObservableObject {
     @Published var geminiEverythingEnabled = false
     @Published var geminiEverythingBusy = false
     @Published var geminiEverythingProblem: String?
+    /// A cloud role or Super Model is on: those requests use the cloud provider even
+    /// while the switch is off, so the Off caption must not say everything stays here.
+    @Published var geminiCloudRolesOn = false
     @Published var behaviorEnabled: Bool? = nil
     @Published var behaviorChanging = false
     @Published var behaviorStatus: String?
@@ -1044,6 +1047,7 @@ final class SettingsLoader: ObservableObject {
               let object = try? await request("GET", path: "inference/cloud/everything") else { return }
         geminiEverythingAvailable = object["available"] as? Bool == true
         geminiEverythingEnabled = object["enabled"] as? Bool == true
+        geminiCloudRolesOn = object["cloud_roles_on"] as? Bool == true
     }
 
     /// Saves the switch, then restarts Wisp's service so every part of Wisp moves to
@@ -1059,6 +1063,7 @@ final class SettingsLoader: ObservableObject {
                                            body: ["enabled": on], timeout: 200)
             geminiEverythingAvailable = object["available"] as? Bool == true
             geminiEverythingEnabled = object["enabled"] as? Bool == true
+            geminiCloudRolesOn = object["cloud_roles_on"] as? Bool == true
             if object["restart_required"] as? Bool == true {
                 NotificationCenter.default.post(name: .wispRestartBackend, object: nil)
             }
@@ -1639,8 +1644,9 @@ struct SettingsView: View {
         + "your questions, your voice recordings and meeting audio, and the mail, messages, "
         + "calendar, reminders, notes, files, pictures and screen captures it uses for them, "
         + "plus what it reads in the background for the Brief and Day. Google's terms for your "
-        + "API key apply. Turn it off to keep everything on this Mac again; the local model "
-        + "stays installed. Read-aloud stays on this Mac."
+        + "API key apply. Turn it off to go back to the on-device model, which stays installed "
+        + "(cloud roles or Super Model you set in Models › Cloud keep using the cloud). "
+        + "Read-aloud stays on this Mac."
 
     @ViewBuilder private var geminiEverythingRow: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -1661,6 +1667,9 @@ struct SettingsView: View {
                            + "background work run on Gemini through your API key, and your data "
                            + "goes to Google to do it. "
                            + "Turn off to go back to the private on-device model."
+                         : loader.geminiCloudRolesOn
+                         ? "Off. Ask, Brief and Day run on the on-device model; the cloud roles "
+                           + "or Super Model you chose in Models › Cloud still use your cloud provider."
                          : loader.geminiEverythingAvailable
                          ? "Off. Everything runs on the on-device model and stays on this Mac."
                          : "Off. Connect a Gemini API key in Models › Cloud first.")

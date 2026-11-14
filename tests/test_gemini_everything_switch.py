@@ -20,6 +20,7 @@ GEMINI_ENDPOINT = {"enabled": True, "provider": "gemini",
                    "base_url": "https://generativelanguage.googleapis.com",
                    "api_prefix": "/v1beta/openai", "credential_ref": "keychain:cloud-test",
                    "readiness_timeout": 10}
+RUNNING = {"profile": None}
 OPENROUTER_ENDPOINT = {**GEMINI_ENDPOINT, "provider": "openrouter",
                        "base_url": "https://openrouter.ai", "api_prefix": "/api/v1"}
 
@@ -52,7 +53,9 @@ def store(monkeypatch):
 
     monkeypatch.setattr("service.config.provider_credentials.resolve_keychain", resolve)
     monkeypatch.setattr(main, "_remote_only_switch_probe", probe)
-    monkeypatch.setattr(main, "cloud_everything_active", lambda: False)
+    # What the running service answers with: the startup profile, not the saved config.
+    RUNNING["profile"] = None
+    monkeypatch.setattr(main, "remote_only_profile", lambda: RUNNING["profile"])
     return cfg, reads, probes
 
 
@@ -95,12 +98,32 @@ def test_turning_off_removes_everything_it_added_and_keeps_the_connection(store)
     assert config.cloud_provider_settings()["roles"] == ["research"]
 
 
-def test_turning_off_asks_for_a_restart_only_while_the_cloud_mode_runs(store, monkeypatch):
+def test_turning_off_asks_for_a_restart_while_the_service_still_runs_the_profile(store):
     post(True)
-    monkeypatch.setattr(main, "cloud_everything_active", lambda: True)
-    assert post(False)["restart_required"] is True
-    monkeypatch.setattr(main, "cloud_everything_active", lambda: False)
-    assert post(False)["restart_required"] is False
+    # The service restarted onto the profile; remote_parity alone is not what it runs.
+    RUNNING["profile"] = object()
+    state = post(False)
+    assert state["enabled"] is False and state["active"] is True
+    assert state["restart_required"] is True                 # the app restarts at once
+    RUNNING["profile"] = None                          # after that restart
+    state = asyncio.run(main.get_gemini_everything())
+    assert state["restart_required"] is False and state["active"] is False
+
+
+def test_cloud_roles_are_reported_so_off_never_claims_everything_stays_here(store):
+    cfg, _reads, _probes = store
+    assert asyncio.run(main.get_gemini_everything())["cloud_roles_on"] is True
+    cfg["inference"]["bindings"] = {}
+    cfg["inference"]["super_model"]["enabled"] = False
+    assert asyncio.run(main.get_gemini_everything())["cloud_roles_on"] is False
+
+
+def test_disconnecting_while_on_leaves_no_super_model_to_restore(store):
+    cfg, _reads, _probes = store
+    post(True)
+    config.disable_cloud_provider()                          # the key is disconnected
+    post(False)                                              # a later off from the API
+    assert cfg["inference"]["super_model"]["enabled"] is False
 
 
 @pytest.mark.parametrize("endpoint", [None, OPENROUTER_ENDPOINT,
