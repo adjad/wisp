@@ -14,6 +14,7 @@ from service.config import provider_credentials as secrets
 from service.errors import translate
 from service.inference.omlx_client import (
     OMLXClient, IncompleteStreamError, SanitizedHTTPStatusError,
+    replay_reasoning_details, without_replay_reasoning,
 )
 
 
@@ -264,9 +265,12 @@ def test_cloud_length_preserves_answer_and_reasoning(configured, stream, reasoni
 
 @pytest.mark.parametrize("provider", ["openrouter", "omlx"])
 @pytest.mark.parametrize("stream", [False, True])
-def test_remote_reasoning_with_tool_calls_is_dropped_not_refused(configured, provider, stream, capsys):
+def test_remote_reasoning_with_tool_calls_is_held_for_replay_not_shown(configured, provider, stream, capsys):
     """A remote reply with reasoning (structured details and text) plus a tool call: the
-    call goes through its normal checks and comes back; the reasoning is kept nowhere."""
+    call goes through its normal checks and comes back. The text is kept nowhere; the
+    details are held, exactly as received, only under the private replay key (they are
+    sent back on the turn's next request; see test_remote_reasoning_replay.py), which
+    prints as a placeholder and cannot be JSON-encoded."""
     async def run():
         message = {"reasoning_details": [{"type": "reasoning.encrypted", "data": PRIVATE_MARKER}],
             "reasoning": PRIVATE_MARKER + " thinking",
@@ -290,8 +294,12 @@ def test_remote_reasoning_with_tool_calls_is_dropped_not_refused(configured, pro
             assert json.loads(result["tool_calls"][0]["function"]["arguments"]) == {"q": 1}
             assert "reasoning_details" not in result and "reasoning" not in result
             assert not result.get("reasoning_content")
+            assert replay_reasoning_details(c, result) == message["reasoning_details"]
+            with pytest.raises(TypeError):
+                json.dumps(result)
             captured = capsys.readouterr()
-            surfaces = [json.dumps(result), repr(emitted), captured.out, captured.err]
+            surfaces = [json.dumps(without_replay_reasoning(result)), repr(result), str(result),
+                        repr(emitted), captured.out, captured.err]
             assert all(PRIVATE_MARKER not in value for value in surfaces)
         finally:
             await c.aclose()
@@ -300,7 +308,7 @@ def test_remote_reasoning_with_tool_calls_is_dropped_not_refused(configured, pro
 
 @pytest.mark.parametrize("stream", [True])
 def test_remote_reasoning_with_a_bad_tool_call_still_fails(configured, stream):
-    """Dropping the reasoning skips no check: a malformed streamed call is still refused
+    """Holding the reasoning skips no check: a malformed streamed call is still refused
     (chat() leaves argument parsing to its callers, with or without reasoning)."""
     async def run():
         message = {"reasoning_details": [{"type": "reasoning.encrypted", "data": "x"}],

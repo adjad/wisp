@@ -24,7 +24,8 @@ from service.user_text import user_facing_failure as _user_facing_failure
 from service.config import (narration_mode, no_thinking_kwargs, role_to_model,
                             thinking_after_tool_required, thinking_kwargs,
                             thinks_explicitly)
-from service.inference.omlx_client import OMLXClient
+from service.inference.omlx_client import (OMLXClient, replay_reasoning_details,
+                                           without_replay_reasoning)
 from service.memory import prompt_blocks
 from service.safety import Tier, audit, decide
 from service.tools import (classify_tool_outcome, get_tool, is_tool_error,
@@ -1059,8 +1060,10 @@ async def _run_step(client, model, msgs, schemas, choice, max_tokens, emit,
     # is off (the common case): the client sends whether it's on in the
     # `/agent` request body, and it's threaded down to here.
     if debug:
+        # A remote provider's replayed reasoning is never exported: not the held
+        # copy on the reply, nor the copy on this turn's tool-call rows.
         request: dict = {
-            "messages": msgs, "tools": schemas, "tool_choice": choice,
+            "messages": without_replay_reasoning(msgs), "tools": schemas, "tool_choice": choice,
             "max_tokens": max_tokens,
         }
         # Mirrors what actually went over the wire — absent means "oMLX's own
@@ -1076,7 +1079,7 @@ async def _run_step(client, model, msgs, schemas, choice, max_tokens, emit,
             "type": "raw_model_io",
             "model": model,
             "request": request,
-            "response": final,
+            "response": without_replay_reasoning(final),
         })
     return final, "".join(reasoning_parts).strip(), content_streamed
 
@@ -4957,8 +4960,16 @@ async def run_agent(
                     await emit({"type": "done"})
                     return response
                 call["function"]["arguments"] = json.dumps(args)
-        msgs.append({"role": "assistant", "content": msg.get("content") or "",
-                     "tool_calls": tool_calls})
+        call_row = {"role": "assistant", "content": msg.get("content") or "",
+                    "tool_calls": tool_calls}
+        # A remote provider that sent reasoning_details with these calls gets them
+        # back, unchanged, on this row for the rest of this turn's requests. `msgs`
+        # lives only for this turn; the debug export strips it (see _run_step), and
+        # history, summaries and memory are built from events and stored text,
+        # never from this list.
+        if (replayed := replay_reasoning_details(client, msg)) is not None:
+            call_row["reasoning_details"] = replayed
+        msgs.append(call_row)
 
         # A stub call whose arguments already fit the tool's real schema runs
         # as that call (registry.runnable_stub_call); only the others become

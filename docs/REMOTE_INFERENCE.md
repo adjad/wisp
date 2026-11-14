@@ -96,7 +96,21 @@ Settings. It denies writes here exactly as it does with local models.
 - **Bounded payloads.** Every request is checked against the profile before it
   is sent: only `model`, `messages`, `max_tokens`, `stream`, `temperature`,
   `tools` and `tool_choice`; the exact model id; text and tool transcripts
-  only; and the message, tool, output and byte limits. History is never
+  only; and the message, tool, output and byte limits. Two narrow additions:
+  a top-level `reasoning` option, only `{"effort": "medium"}` and only for a
+  model Wisp lists for it (`REASONING_EFFORT_MODELS` in `remote_policy.py`),
+  with `max_tokens` of at least 2049; and
+  `reasoning_details` on an assistant message that carries tool calls, only
+  as a list of objects. Those details are the provider's own reasoning from
+  the reply that made the calls, sent back unchanged on the next requests of
+  the same turn. They have their own cap, `response_bytes`, outside the
+  transcript budget (`aggregate_bytes`); the whole request body stays under
+  `request_bytes` plus that cap. Past it, the turn stops with a plain message
+  instead of continuing without them. Models that need their reasoning back
+  (`REPLAY_REASONING_MODELS`) are asked for whole replies, not streams, so the
+  details are exactly what the provider sent. They are never shown, logged,
+  exported in Debug Mode or stored in history, and they are dropped when the
+  turn ends. History is never
   trimmed silently: an oversized turn fails instead.
 - **No local models.** oMLX is never started or loaded, there is no local
   fallback, and Settings cannot add a local, provider or cloud target.
