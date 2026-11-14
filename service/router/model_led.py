@@ -139,6 +139,7 @@ EFFECT_RECEIPTS = {
     "create_note": ("created the ",), "append_note": ("added it to ",),
     "write_document": ("created ",), "spreadsheet_ops": ("created ",),
     "screen_capture": ("saved ",),
+    "study_make": ("made ",),
 }
 _PERSONAL_COMMUNICATION = re.compile(
     r"^\s*(?:please\s+)?(?:can\s+you\s+|could\s+you\s+)?"
@@ -369,6 +370,7 @@ FAMILIES = {
     "wisp_activity": "Wisp status, capabilities, synchronization and activity",
     "skills": "Installed local skills and their configured tools",
     "connected": "Configured MCP integrations",
+    "study": "Study: lecture slides, flash cards, quizzes and study guides",
     "other": "Other configured tools",
 }
 _MODULE_FAMILIES = {
@@ -387,6 +389,7 @@ _MODULE_FAMILIES = {
     "recent_tools": "wisp_activity", "search_coverage": "wisp_activity",
     "tool_authoring": "skills",
     "proactive_tools": "calendar",
+    "ask_tools": "study",
 }
 _ACTIVITY_TOOLS = frozenset({"daily_brief", "get_recent_activity", "wisp_status",
                            "wisp_capabilities", "sync_sources", "search_coverage"})

@@ -1612,19 +1612,25 @@ struct StudyDaySummary: Decodable, Equatable {
     var upcoming: [Due] = []
     /// How many more the service left out of `upcoming`.
     var upcomingMore = 0
+    /// Work Study got ready for what's coming (a quiz made, the slides that
+    /// cover an assignment); absent from an older service.
+    var ready: [Ready] = []
+    /// Topics recent quizzes missed, with the slides behind them; absent from an older service.
+    var weak: [Weak] = []
 
     private enum CodingKeys: String, CodingKey {
-        case line, sample, upcoming
+        case line, sample, upcoming, ready, weak
         case dueToday = "due_today", dueTomorrowCount = "due_tomorrow_count", dueWeekCount = "due_week_count"
         case missingCount = "missing_count", nextTest = "next_test", upcomingMore = "upcoming_more"
     }
 
     init(dueToday: [Due] = [], dueTomorrowCount: Int = 0, dueWeekCount: Int = 0, missingCount: Int = 0,
          nextTest: Test? = nil, line: String = "", sample: Bool = false,
-         upcoming: [Due] = [], upcomingMore: Int = 0) {
+         upcoming: [Due] = [], upcomingMore: Int = 0, ready: [Ready] = [], weak: [Weak] = []) {
         self.dueToday = dueToday; self.dueTomorrowCount = dueTomorrowCount; self.dueWeekCount = dueWeekCount
         self.missingCount = missingCount; self.nextTest = nextTest; self.line = line; self.sample = sample
         self.upcoming = upcoming; self.upcomingMore = max(0, upcomingMore)
+        self.ready = ready; self.weak = weak
     }
 
     init(from decoder: Decoder) throws {
@@ -1641,6 +1647,10 @@ struct StudyDaySummary: Decodable, Equatable {
         // An older service sends neither: no rows, and the SCHOOL line as before.
         upcoming = (try? c.decodeIfPresent([Due].self, forKey: .upcoming)) ?? []
         upcomingMore = max(0, (try? c.decodeIfPresent(Int.self, forKey: .upcomingMore)) ?? 0)
+        // Newer still: what Study got ready, and the topics to look at again. A row
+        // that doesn't decode is skipped; an older service sends neither.
+        ready = c.schoolValue(.ready, SchoolLossy<Ready>.self)?.items ?? []
+        weak = c.schoolValue(.weak, SchoolLossy<Weak>.self)?.items ?? []
     }
 
     /// The Brief's SCHOOL line, or nil when there is nothing to say.
@@ -1690,6 +1700,260 @@ struct StudyDaySummary: Decodable, Equatable {
         let shown = Array(items.prefix(max(0, limit)))
         return StudyUpcomingRows(items: shown, more: items.count - shown.count + max(0, extra))
     }
+
+    /// Something Study got ready for an upcoming quiz, exam, lecture or
+    /// assignment (`study.ready`): the line to show, the quiz it made (if
+    /// any) and the slides that cover it.
+    struct Ready: Decodable, Equatable, Identifiable {
+        var id = ""
+        /// "quiz", "exam", "lecture" or "assignment"; any other kind is kept as sent.
+        var kind = ""
+        var assignmentID = ""
+        var course = ""
+        var title = ""
+        var dueTS: Double? = nil
+        var text = ""
+        var materialID: String? = nil
+        var slides: [SchoolSlides] = []
+
+        private enum CodingKeys: String, CodingKey {
+            case id, kind, course, title, text, slides
+            case assignmentID = "assignment_id", dueTS = "due_ts", materialID = "material_id"
+        }
+
+        init(id: String = "", kind: String = "", assignmentID: String = "", course: String = "", title: String = "",
+             dueTS: Double? = nil, text: String = "", materialID: String? = nil, slides: [SchoolSlides] = []) {
+            self.id = id; self.kind = kind; self.assignmentID = assignmentID; self.course = course; self.title = title
+            self.dueTS = dueTS; self.text = text; self.materialID = materialID; self.slides = slides
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = c.schoolID(.id) ?? ""
+            kind = c.schoolValue(.kind, String.self) ?? ""
+            assignmentID = c.schoolID(.assignmentID) ?? ""
+            course = c.schoolValue(.course, String.self) ?? ""
+            title = c.schoolValue(.title, String.self) ?? ""
+            dueTS = c.schoolValue(.dueTS, Double.self)
+            text = c.schoolValue(.text, String.self) ?? ""
+            materialID = c.schoolID(.materialID).flatMap { $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0 }
+            slides = c.schoolValue(.slides, SchoolLossy<SchoolSlides>.self)?.items ?? []
+        }
+    }
+
+    /// A topic recent quizzes missed (`study.weak`), and its slides.
+    struct Weak: Decodable, Equatable, Identifiable {
+        var id = ""
+        var course = ""
+        var topic = ""
+        var count = 0
+        var text = ""
+        var slides: [SchoolSlides] = []
+
+        private enum CodingKeys: String, CodingKey { case id, course, topic, count, text, slides }
+
+        init(id: String = "", course: String = "", topic: String = "", count: Int = 0, text: String = "",
+             slides: [SchoolSlides] = []) {
+            self.id = id; self.course = course; self.topic = topic; self.count = count; self.text = text; self.slides = slides
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = c.schoolID(.id) ?? ""
+            course = c.schoolValue(.course, String.self) ?? ""
+            topic = c.schoolValue(.topic, String.self) ?? ""
+            count = max(0, c.schoolValue(.count, Int.self) ?? 0)
+            text = c.schoolValue(.text, String.self) ?? ""
+            slides = c.schoolValue(.slides, SchoolLossy<SchoolSlides>.self)?.items ?? []
+        }
+    }
+
+    /// The Brief shows this many ready items, then this many weak topics, before "+N more in Study".
+    static let briefReadyLimit = 2
+    static let briefWeakLimit = 1
+
+    /// The Brief's study cards (today only): up to two ready items, then one
+    /// weak topic, and how many more are only in Study. An item with no line
+    /// to show is left out.
+    var briefCards: StudyBriefCards {
+        let readyCards = ready.compactMap(StudyBriefCard.init(ready:))
+        let weakCards = weak.compactMap(StudyBriefCard.init(weak:))
+        let shownReady = Array(readyCards.prefix(Self.briefReadyLimit))
+        let shownWeak = Array(weakCards.prefix(Self.briefWeakLimit))
+        return StudyBriefCards(cards: shownReady + shownWeak,
+                               more: readyCards.count - shownReady.count + weakCards.count - shownWeak.count)
+    }
+}
+
+/// Slides of one deck a Study item points at (`{"source_id","deck","pages"}`).
+/// The Day and Brief's own wire shape: this file is compiled without Study.swift
+/// (scripts/test_today_contract.sh), so the views turn it into StudySlideRef.
+struct SchoolSlides: Decodable, Equatable, Hashable {
+    var sourceID = ""
+    var deck = ""
+    /// 1-based page numbers, in order, without repeats.
+    var pages: [Int] = []
+
+    private enum CodingKeys: String, CodingKey { case sourceID = "source_id", deck, pages }
+
+    init(sourceID: String = "", deck: String = "", pages: [Int] = []) {
+        self.sourceID = sourceID; self.deck = deck; self.pages = pages
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sourceID = c.schoolID(.sourceID) ?? ""
+        deck = (c.schoolValue(.deck, String.self) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        var seen = Set<Int>()
+        pages = (c.schoolValue(.pages, SchoolLossy<Int>.self)?.items ?? []).filter { $0 > 0 && seen.insert($0).inserted }
+    }
+}
+
+/// One slide (`{"source_id","page"}`), as a review or a make-from-pages request names it.
+struct SchoolPage: Decodable, Equatable, Hashable {
+    var sourceID: String
+    var page: Int
+
+    private enum CodingKeys: String, CodingKey { case sourceID = "source_id", page }
+
+    init(sourceID: String, page: Int) { self.sourceID = sourceID; self.page = page }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        guard let id = c.schoolID(.sourceID), !id.isEmpty, let page = c.schoolValue(.page, Int.self), page > 0 else {
+            throw DecodingError.dataCorruptedError(forKey: .page, in: c, debugDescription: "not a slide")
+        }
+        sourceID = id; self.page = page
+    }
+}
+
+/// A school deadline's "Review (15 min)" (`deadline.review`): how long, and which slides.
+struct SchoolReview: Decodable, Equatable {
+    var minutes = 15
+    var pages: [SchoolPage] = []
+
+    private enum CodingKeys: String, CodingKey { case minutes, pages }
+
+    init(minutes: Int = 15, pages: [SchoolPage] = []) { self.minutes = minutes; self.pages = pages }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let given = c.schoolValue(.minutes, Int.self) ?? 15
+        minutes = given > 0 && given <= 240 ? given : 15
+        var seen = Set<SchoolPage>()
+        pages = Array((c.schoolValue(.pages, SchoolLossy<SchoolPage>.self)?.items ?? [])
+            .filter { seen.insert($0).inserted }.prefix(SchoolSlidesText.pageCap))
+    }
+
+    /// "Review (15 min)".
+    var label: String { "Review (\(minutes) min)" }
+    /// Only a review with slides to make cards from is offered.
+    var offered: Bool { !pages.isEmpty }
+}
+
+/// The words and page lists for slides on Brief cards and Day rows.
+enum SchoolSlidesText {
+    /// /study/generate takes at most this many pages.
+    static let pageCap = 40
+    /// A card or row names this many decks before "+N".
+    static let deckLimit = 2
+
+    /// Every page of every deck, in order, once each, at most `pageCap`.
+    static func pages(_ slides: [SchoolSlides]) -> [SchoolPage] {
+        var seen = Set<SchoolPage>()
+        var out: [SchoolPage] = []
+        for set in slides where !set.sourceID.isEmpty {
+            for page in set.pages where page > 0 {
+                let ref = SchoolPage(sourceID: set.sourceID, page: page)
+                if seen.insert(ref).inserted { out.append(ref) }
+                if out.count == pageCap { return out }
+            }
+        }
+        return out
+    }
+
+    /// "Lecture 7 · pp. 4–9, Lecture 8 · p. 2 +1": two decks, each with its
+    /// pages (`pagesText` is StudyText.slidePages), then how many more decks.
+    /// Nil with no slides.
+    static func line(_ slides: [SchoolSlides], pagesText: ([Int]) -> String) -> String? {
+        let decks = slides.filter { !$0.sourceID.isEmpty || !$0.deck.isEmpty }
+        guard !decks.isEmpty else { return nil }
+        let named = decks.prefix(deckLimit).map { set -> String in
+            let name = set.deck.isEmpty ? "Slides" : set.deck
+            return set.pages.isEmpty ? name : name + " · " + pagesText(set.pages)
+        }
+        let more = decks.count - named.count
+        return named.joined(separator: ", ") + (more > 0 ? " +\(more)" : "")
+    }
+
+    /// A school deadline's or study block's "Lectures 7 and 8 cover it.", or nil.
+    static func covers(_ text: String?) -> String? {
+        let t = (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? nil : t
+    }
+}
+
+/// One study card in the Brief: Study's line, the slides it is about, and one action.
+struct StudyBriefCard: Equatable, Identifiable {
+    enum Action: Equatable {
+        /// Open the material Study already made.
+        case open(materialID: String)
+        /// Make flash cards from these slides (at most 40), titled `title`.
+        case review(pages: [SchoolPage], title: String)
+    }
+
+    let id: String
+    let text: String
+    let slides: [SchoolSlides]
+    let action: Action?
+
+    /// Flash cards a "Review slides" or "Review (15 min)" makes.
+    static let reviewCount = 8
+
+    /// "Open quiz" or "Review slides"; nil with nothing to do.
+    var actionTitle: String? {
+        switch action {
+        case .open: return "Open quiz"
+        case .review: return "Review slides"
+        case nil: return nil
+        }
+    }
+
+    init(id: String, text: String, slides: [SchoolSlides] = [], action: Action? = nil) {
+        self.id = id; self.text = text; self.slides = slides; self.action = action
+    }
+
+    /// A ready item: Open quiz when Study made one, else Review slides when it
+    /// names slides. Nil when it has no line to show.
+    init?(ready: StudyDaySummary.Ready) {
+        let text = ready.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        let pages = SchoolSlidesText.pages(ready.slides)
+        let title = ready.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let action: Action? = ready.materialID.map { .open(materialID: $0) }
+            ?? (pages.isEmpty ? nil : .review(pages: pages, title: title.isEmpty ? "Review" : title))
+        self.init(id: "ready:" + (ready.id.isEmpty ? text : ready.id), text: text, slides: ready.slides, action: action)
+    }
+
+    /// A weak topic: Review slides when it names slides. Nil when it has no line to show.
+    init?(weak: StudyDaySummary.Weak) {
+        let text = weak.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        let pages = SchoolSlidesText.pages(weak.slides)
+        let topic = weak.topic.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.init(id: "weak:" + (weak.id.isEmpty ? text : weak.id), text: text, slides: weak.slides,
+                  action: pages.isEmpty ? nil : .review(pages: pages, title: topic.isEmpty ? "Review" : topic))
+    }
+}
+
+/// The Brief's study cards and how many more are only in Study.
+struct StudyBriefCards: Equatable {
+    var cards: [StudyBriefCard] = []
+    var more = 0
+
+    var isEmpty: Bool { cards.isEmpty }
+    /// "+2 more in Study", or nil.
+    var moreLine: String? { more > 0 ? "+\(more) more in Study" : nil }
 }
 
 /// School work a Brief or Day row lists, and how many more are only in Study.
@@ -1700,6 +1964,37 @@ struct StudyUpcomingRows: Equatable {
     var isEmpty: Bool { items.isEmpty && more == 0 }
     /// "+3 more in Study", or nil.
     var moreLine: String? { more > 0 ? "+\(more) more in Study" : nil }
+}
+
+// This file is compiled on its own by the pure checks, without
+// ProactiveModels.swift's LossyList and lenient, so the school fields carry
+// their own tolerant reading.
+
+/// An array that keeps the rows that decode and skips the rest.
+struct SchoolLossy<T: Decodable>: Decodable {
+    var items: [T] = []
+    private struct Skip: Decodable { init(from decoder: Decoder) throws {} }
+    init(from decoder: Decoder) throws {
+        var c = try decoder.unkeyedContainer()
+        while !c.isAtEnd {
+            if let item = try? c.decode(T.self) { items.append(item) }
+            else if (try? c.decode(Skip.self)) == nil { break }
+        }
+    }
+}
+
+extension KeyedDecodingContainer {
+    /// The value, or nil when it is missing, null or the wrong type.
+    fileprivate func schoolValue<T: Decodable>(_ key: Key, _ type: T.Type) -> T? {
+        (try? decodeIfPresent(type, forKey: key)) ?? nil
+    }
+
+    /// A string, or a whole number written as one; nil otherwise.
+    fileprivate func schoolID(_ key: Key) -> String? {
+        if let s = schoolValue(key, String.self) { return s }
+        if let i = schoolValue(key, Int.self) { return String(i) }
+        return nil
+    }
 }
 
 private extension String {

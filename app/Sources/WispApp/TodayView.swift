@@ -61,6 +61,11 @@ struct TodayBlock: Decodable, Identifiable {
     let calendar_writable: Bool?
     let cancel_blocked: String?
     let move_blocked: String?
+    /// For a study block (service/study/day_hook.py): the slides that cover
+    /// what it is for, and "Lectures 7 and 8 cover it."; empty and nil from an
+    /// older service and for every other block.
+    var slides: [SchoolSlides] = []
+    var covers_text: String? = nil
     // TodayBlock.calendarEvent (CheckInView.swift) turns these into a CheckInEvent;
     // it lives there because scripts/test_today_contract.sh compiles this file alone.
 
@@ -87,6 +92,63 @@ struct TodayDeadline: Decodable, Identifiable {
     let source: String
     let all_day: Bool?
     let due_date: String?
+    /// For a school deadline (source "study"): the slides that cover it, its
+    /// "Lectures 7 and 8 cover it.", and a short review of those slides. All
+    /// absent from an older service, which then shows the deadline as before.
+    var slides: [SchoolSlides] = []
+    var covers_text: String? = nil
+    var review: SchoolReview? = nil
+}
+
+extension TodayDeadline {
+    private enum CodingKeys: String, CodingKey { case id, title, due_ts, source, all_day, due_date, slides, covers_text, review }
+
+    /// The fields it always had decode as before; the school ones are lenient,
+    /// so an odd one never drops the deadline.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        due_ts = try c.decode(Double.self, forKey: .due_ts)
+        source = try c.decode(String.self, forKey: .source)
+        all_day = try c.decodeIfPresent(Bool.self, forKey: .all_day)
+        due_date = try c.decodeIfPresent(String.self, forKey: .due_date)
+        slides = ((try? c.decodeIfPresent(SchoolLossy<SchoolSlides>.self, forKey: .slides)) ?? nil)?.items ?? []
+        covers_text = (try? c.decodeIfPresent(String.self, forKey: .covers_text)) ?? nil
+        review = (try? c.decodeIfPresent(SchoolReview.self, forKey: .review)) ?? nil
+    }
+}
+
+extension TodayBlock {
+    private enum CodingKeys: String, CodingKey {
+        case id, title, start, end, kind, task_id, warnings, pattern_id, evidence_id, members, source_id, all_day,
+             invitee_count, organizer_is_user, calendar_writable, cancel_blocked, move_blocked, slides, covers_text
+    }
+
+    /// The fields it always had decode as before; a study block's slides and
+    /// covers line are lenient, so an odd one never drops the block.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        start = try c.decode(Double.self, forKey: .start)
+        end = try c.decodeIfPresent(Double.self, forKey: .end)
+        kind = try c.decode(String.self, forKey: .kind)
+        task_id = try c.decodeIfPresent(String.self, forKey: .task_id)
+        warnings = try c.decode([String].self, forKey: .warnings)
+        pattern_id = try c.decodeIfPresent(String.self, forKey: .pattern_id)
+        evidence_id = try c.decodeIfPresent(String.self, forKey: .evidence_id)
+        members = try c.decodeIfPresent([TodayBlockMember].self, forKey: .members)
+        source_id = try c.decodeIfPresent(String.self, forKey: .source_id)
+        all_day = try c.decodeIfPresent(Bool.self, forKey: .all_day)
+        invitee_count = try c.decodeIfPresent(Int.self, forKey: .invitee_count)
+        organizer_is_user = try c.decodeIfPresent(Bool.self, forKey: .organizer_is_user)
+        calendar_writable = try c.decodeIfPresent(Bool.self, forKey: .calendar_writable)
+        cancel_blocked = try c.decodeIfPresent(String.self, forKey: .cancel_blocked)
+        move_blocked = try c.decodeIfPresent(String.self, forKey: .move_blocked)
+        slides = ((try? c.decodeIfPresent(SchoolLossy<SchoolSlides>.self, forKey: .slides)) ?? nil)?.items ?? []
+        covers_text = (try? c.decodeIfPresent(String.self, forKey: .covers_text)) ?? nil
+    }
 }
 struct TodayUnscheduled: Decodable, Identifiable {
     let task_id: String
