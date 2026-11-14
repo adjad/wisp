@@ -323,6 +323,12 @@ final class BackendManager {
                 credentialState.quarantine()
             }
             _ = enforceCredentialState()
+            // Any other error here is `proc.run()` failing: the service's own program
+            // could not be launched. Say so instead of leaving a long "Starting Wisp…".
+            if !(error is BackendCredentials.Failure) {
+                let ns = error as NSError
+                startBlocked(Self.launchFailedReason(domain: ns.domain, code: ns.code))
+            }
         }
     }
 
@@ -383,6 +389,14 @@ final class BackendManager {
         + "Retry; if it keeps failing, quit and reopen Wisp."
     nonisolated static let missingFilesReason = "Some of Wisp's own files are missing, so it can't start. "
         + "Download Wisp again and replace this copy."
+    /// The service's own program could not be launched (missing, not executable, the
+    /// wrong architecture, or blocked by macOS). Only the error's domain and code are
+    /// named: never its description, which can carry a path from this Mac.
+    nonisolated static func launchFailedReason(domain: String, code: Int) -> String {
+        "Wisp couldn't launch its own service (macOS error \(domain) \(code)). "
+            + "If you just downloaded Wisp, move it to Applications and open it again; "
+            + "otherwise download Wisp again and replace this copy."
+    }
 
     /// The child to keep: nil for one that has exited.
     nonisolated static func liveChild(_ process: Process?) -> Process? {

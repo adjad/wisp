@@ -514,6 +514,10 @@ enum BackendRecoveryChecks {
             precondition(!reason.isEmpty && !reason.contains("/") && !reason.contains(NSHomeDirectory()),
                          "a blocked start's reason carries no path: \(reason)")
         }
-        print("BackendRecovery: \(6 + fixed.count) blocked-start checks passed")
+        let launch = BackendManager.launchFailedReason(domain: NSPOSIXErrorDomain, code: 13)
+        precondition(launch.contains("NSPOSIXErrorDomain 13") && !launch.contains("/")
+                     && !launch.contains(NSHomeDirectory()), "a launch failure names only the error's domain and code")
+        precondition(!fixed.contains(launch), "a launch failure has its own reason")
+        print("BackendRecovery: \(6 + fixed.count + 2) blocked-start checks passed")
     }
 }
