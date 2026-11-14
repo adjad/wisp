@@ -138,6 +138,15 @@ def attach(result: dict, *, now: float, timezone: str) -> None:
                                          key=lambda d: (d.get("due_ts") or 0.0, str(d.get("id"))))
         current = result.get("blocks") or []
         blocks = plan.study_blocks(rows, _busy(current), now=now, timezone=timezone, day=day, slides=slides)
+        try:
+            from service.study import blocks_api
+            booked = store.meta(blocks_api.META, {}) if hasattr(store, "meta") else {}
+            if isinstance(booked, dict) and booked:
+                blocks, current = blocks_api.mark(blocks, current, day, booked)
+            else:
+                blocks = [{**b, "added": False, "event_source_id": None} for b in blocks]
+        except Exception:  # noqa: BLE001 - the plain blocks stand
+            log.debug("study calendar marks skipped", exc_info=True)
         if blocks:
             result["blocks"] = sorted([*current, *blocks], key=lambda b: (b["start"], str(b["id"])))
     except Exception:  # noqa: BLE001 - Study never breaks the Day snapshot

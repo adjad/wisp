@@ -535,3 +535,13 @@ JSON keys are snake_case; Swift properties are camelCase through explicit
 - Swift: `tests/StudyChecks.swift` (`func studyChecks(_ check: (Bool, String) -> Void)`), compiled
   with `tests/NotchTabChecks.swift`.
 - `WISP_NOTCH_QA` scenes: `study`, `study-quiz`, `study-cards`, `study-guide`, `study-lesson`, `study-setup`, `brief-study`, `brief-legacy-study`, `day-study`.
+
+## Study blocks to Calendar
+
+A study block on Day has an "Add to calendar" button. `POST /study/blocks/{block_id}/add` (native only, body
+`{"day", "timezone"}`) rebuilds today's Day snapshot and books only a block that is shown right now (so its time is
+still free), through the verified Calendar bridge (`attention_calendar.create_calendar`). The tap is the approval for
+exactly that event. `POST /study/blocks/{block_id}/undo` cancels exactly that event by its own identifier. Bookings are
+kept in study.db meta `calendar_blocks`; Day shows a booked block at its booked time with `"added": true` and
+`"event_source_id"`, and hides the calendar copy of it. A source whose slides couldn't be read carries `deck_error`,
+a plain-language reason.
