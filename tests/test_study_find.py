@@ -509,3 +509,12 @@ def test_module_items_of_a_safe_type_are_browsed(hint):
     got = F.classify({"url": "https://school.instructure.com/courses/123/modules/items/81",
                       "title": "Week 4 notes", "type": hint}, course)
     assert got["via"] == "browser" and got["kind"] == "page"
+
+
+def test_find_bodies_have_their_own_limits_that_fit_a_full_batch():
+    from service import local_http
+    assert local_http._LIMITED_PATHS["/study/find/add"] == local_http.STUDY_FIND_ADD_BODY_LIMIT
+    assert local_http._LIMITED_PATHS["/study/find/resolve"] == local_http.STUDY_FIND_RESOLVE_BODY_LIMIT
+    # 60 pages of 150k three-byte characters, as JSON, fit the add limit.
+    assert 60 * find.TEXT_CAP * 3 + 60 * 6000 < local_http.STUDY_FIND_ADD_BODY_LIMIT
+    assert find.MAX_FOUND * 6000 < local_http.STUDY_FIND_RESOLVE_BODY_LIMIT
