@@ -1416,5 +1416,36 @@ struct FirstRunSetupChecks {
         check(EngineSettingsView.externalChoiceTitle(offered: true) == "My installed oMLX"
               && EngineSettingsView.externalChoiceTitle(offered: false).contains("not found"),
               "Greyed out, the item says why")
+
+        // Intel key-only setup: only an Intel build whose status says there is no engine.
+        check(IntelCloudPreset.offersKeyOnlySetup(compiledForIntel: true, engineAvailable: false),
+              "Intel with no engine offers the one key field")
+        check(!IntelCloudPreset.offersKeyOnlySetup(compiledForIntel: false, engineAvailable: false),
+              "An arm64 build never offers it")
+        check(!IntelCloudPreset.offersKeyOnlySetup(compiledForIntel: true, engineAvailable: true),
+              "Intel with an engine never offers it")
+        check(!IntelCloudPreset.offersKeyOnlySetup(compiledForIntel: true, engineAvailable: nil),
+              "Intel with the engine unknown never offers it")
+        check(!IntelCloudPreset.offersKeyOnlySetup(compiledForIntel: false, engineAvailable: nil)
+              && !IntelCloudPreset.offersKeyOnlySetup(compiledForIntel: false, engineAvailable: true),
+              "arm64 with any engine answer never offers it")
+        check(IntelCloudPreset.provider == "openrouter" && IntelCloudPreset.baseURL == "https://openrouter.ai"
+              && IntelCloudPreset.apiPrefix == "/api/v1" && IntelCloudPreset.contextWindow == 32_000
+              && IntelCloudPreset.roles == ["everything"]
+              && IntelCloudPreset.modelID == "anthropic/claude-haiku-5.5",
+              "The preset is exactly OpenRouter, /api/v1, 32000 tokens, everything, Claude Haiku 5.5")
+        check(IntelCloudPreset.models.map(\.id) == ["anthropic/claude-haiku-5.5", "openai/gpt-6-luna",
+                                                    "google/gemini-3.8-flash", "anthropic/claude-sonnet-5.5"]
+              && IntelCloudPreset.models.first?.id == IntelCloudPreset.modelID
+              && IntelCloudPreset.models.first?.label == "Claude Haiku 5.5 (default)",
+              "Four models, the default first")
+        for model in IntelCloudPreset.models {
+            check(model.id.range(of: "^\(IntelCloudPreset.backendModelIDPattern)$", options: .regularExpression) != nil,
+                  "\(model.id) passes the backend's model-id rule")
+        }
+        let credentialName = CloudConnection.newCredentialName()
+        check(credentialName.range(of: "^cloud-[0-9a-f]{32}$", options: .regularExpression) != nil
+              && credentialName.range(of: "^[A-Za-z][A-Za-z0-9_-]{0,63}$", options: .regularExpression) != nil,
+              "The key's Keychain name is the Cloud form's and passes the backend's rule")
     }
 }

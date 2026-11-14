@@ -2116,8 +2116,12 @@ struct FirstRunSetupView: View {
                 }
             }
         case .unavailable(let reason):
-            OnboardingCard(icon: "exclamationmark.triangle", title: "Wisp can't set this up on its own", detail: reason) {
-                Button("Open detailed setup") { openDetailedSetup() }.buttonStyle(FirstRunButtonStyle(primary: true))
+            if IntelCloudPreset.offersKeyOnlySetup(status: setup.status) {
+                IntelKeyCard(setup: setup)
+            } else {
+                OnboardingCard(icon: "exclamationmark.triangle", title: "Wisp can't set this up on its own", detail: reason) {
+                    Button("Open detailed setup") { openDetailedSetup() }.buttonStyle(FirstRunButtonStyle(primary: true))
+                }
             }
         case .needsDownload(let model, let label, let size):
             OnboardingCard(icon: "arrow.down.circle", title: label + (size.map { String(format: " · %.1f GB", $0) } ?? ""),

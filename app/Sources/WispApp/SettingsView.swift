@@ -9,7 +9,7 @@ extension Notification.Name {
     static let wispExportDebugLog = Notification.Name("WispExportDebugLog")
 }
 
-private enum CloudCredentialError: LocalizedError {
+enum CloudCredentialError: LocalizedError {
     case invalidKey
     case storage
 
@@ -21,10 +21,30 @@ private enum CloudCredentialError: LocalizedError {
     }
 }
 
+/// What the Cloud form and the Intel first run share: the Keychain account name
+/// for a new key and the POST /inference/cloud body.
+enum CloudConnection {
+    static func newCredentialName() -> String {
+        "cloud-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+    }
+
+    static func requestBody(provider: String, baseURL: String, apiPrefix: String, modelID: String,
+                            contextWindow: Int, roles: [String], superModelEnabled: Bool,
+                            credentialName: String) -> [String: Any] {
+        [
+            "provider": provider, "base_url": baseURL,
+            "api_prefix": apiPrefix, "model_id": modelID,
+            "context_window": contextWindow, "roles": roles,
+            "super_model_enabled": superModelEnabled,
+            "credential_name": credentialName,
+        ]
+    }
+}
+
 /// Provider keys never enter YAML, URL requests to Wisp, logs, or debug exports.
 /// The account name binds each key to its normalized HTTPS origin, matching the
 /// backend's provider_credentials.keychain_account contract.
-private enum CloudCredentialStore {
+enum CloudCredentialStore {
     #if WISP_SETTINGS_QA
     static let service = "com.wisp.settings-qa.inference"
     #else
@@ -304,6 +324,7 @@ final class SettingsLoader: ObservableObject {
         }
         return localProviderStatus
     }
+    private var intelPresetApplied = false
     private var savedCloudBaseURL = ""
     private var savedCloudCredentialName = "cloud"
 
@@ -785,6 +806,29 @@ final class SettingsLoader: ObservableObject {
             cloudStateUnknown = true
             cloudStatus += ". Keychain cleanup is pending; cloud changes are paused until Refresh models succeeds"
         }
+        if !cloudConnected { await preselectIntelPreset() }
+    }
+
+    /// On the Intel build (no local engine) with nothing configured, the form opens
+    /// on the same values the first run uses, so only the key needs typing.
+    private func preselectIntelPreset() async {
+        guard IntelCloudPreset.compiledForIntel, !intelPresetApplied, !cloudConnected,
+              cloudRoles.isEmpty, cloudAPIKey.isEmpty else { return }
+        var request = URLRequest(url: WispClient.baseURL.appendingPathComponent("setup/status"))
+        request.timeoutInterval = 10
+        guard let (data, _) = try? await URLSession.shared.data(for: request),
+              let status = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              IntelCloudPreset.offersKeyOnlySetup(
+                compiledForIntel: IntelCloudPreset.compiledForIntel,
+                engineAvailable: (status["bundled_engine"] as? [String: Any])?["available"] as? Bool),
+              !cloudConnected, !intelPresetApplied else { return }
+        intelPresetApplied = true
+        cloudPreset = "openrouter"
+        cloudBaseURL = IntelCloudPreset.baseURL
+        cloudAPIPrefix = IntelCloudPreset.apiPrefix
+        cloudModelID = IntelCloudPreset.modelID
+        cloudContextWindow = IntelCloudPreset.contextWindow
+        cloudRoles = Set(IntelCloudPreset.roles)
     }
 
     func connectCloud() {
@@ -804,7 +848,7 @@ final class SettingsLoader: ObservableObject {
         let previousCredentialName = savedCloudCredentialName
         let requestedCredentialName = requestedKey.isEmpty
             ? previousCredentialName
-            : "cloud-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+            : CloudConnection.newCredentialName()
         let pendingConnect = PendingCloudCredential(
             mode: "connect", staged: !requestedKey.isEmpty,
             name: requestedCredentialName, baseURL: requestedBase,
@@ -835,13 +879,12 @@ final class SettingsLoader: ObservableObject {
                                                   baseURL: requestedBase)
                     stagedCredential = true
                 }
-                let body: [String: Any] = [
-                    "provider": requestedPreset.provider, "base_url": requestedBase,
-                    "api_prefix": requestedPrefix, "model_id": requestedModel,
-                    "context_window": requestedContext, "roles": requestedRoles,
-                    "super_model_enabled": requestedSuperModel,
-                    "credential_name": requestedCredentialName,
-                ]
+                let body = CloudConnection.requestBody(
+                    provider: requestedPreset.provider, baseURL: requestedBase,
+                    apiPrefix: requestedPrefix, modelID: requestedModel,
+                    contextWindow: requestedContext, roles: requestedRoles,
+                    superModelEnabled: requestedSuperModel,
+                    credentialName: requestedCredentialName)
                 var object: [String: Any]?
                 var requestError: Error?
                 var recoveredStatus: String?
