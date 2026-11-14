@@ -705,7 +705,10 @@ def _remember_auth(account: str, gmail_id: str, meta: dict) -> None:
             _auth[key] = None          # two messages, one Message-ID: neither has evidence
             return
     _auth[key] = {"gmail_id": gmail_id, "sender_address": meta.get("sender_address") or "",
-                  "auth_results": list(meta.get("auth_results") or [])}
+                  "auth_results": list(meta.get("auth_results") or []),
+                  # Gmail's internalDate: an Apple Mail copy borrows this verdict only when it
+                  # arrived at about the same time (mail_sender_proof._gmail_verdict).
+                  "ts": meta.get("ts")}
 
 
 def _forget_auth(account: str) -> None:

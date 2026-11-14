@@ -885,6 +885,16 @@ def _still_ok(action: str = "add") -> str | None:
     return None
 
 
+def _plan_still_ok(plan: dict, action: str = "add", *, also_action: bool = True) -> str | None:
+    """_still_ok for `action` and for every action the plan itself needs (plan["acts"], set by
+    step: an Apple Mail email needs "add_apple_mail" AND "add_more"), right before dispatch: a
+    yes taken back between the plan and the write stops it."""
+    for name in ([action] if also_action else []) + [a for a in (plan.get("acts") or []) if a != action]:
+        if (problem := _still_ok(name)) is not None:
+            return problem
+    return None
+
+
 async def create_event(plan: dict) -> dict:
     """The verified EventKit create: attention_calendar.create_calendar, for
     exactly this plan. The person's yes to "Let Wisp act for me" is the standing approval
@@ -898,7 +908,7 @@ async def create_event(plan: dict) -> dict:
                "start_ts": plan["start_ts"], "duration_min": plan["duration_min"], "all_day": False,
                "automatic": False}
     result = await create_calendar(capture, approval=approve_capture(capture),
-                                   source_current=lambda: _still_ok() is None)
+                                   source_current=lambda: _plan_still_ok(plan) is None)
     return result if isinstance(result, dict) else {"ok": False, "status": "unknown", "error": "unreadable"}
 
 
@@ -914,7 +924,9 @@ async def create_reminder(plan: dict, *, action: str = "add") -> dict:
     dispatch asks whether THAT action is still agreed to (follow-ups pass their own)."""
     if not _app_connected_now():
         return {"ok": False, "status": "blocked", "error": "The Wisp app isn't connected"}
-    check = _reminder_problem if action == "add" else (lambda: _reminder_problem(action))
+    def check():
+        return (_reminder_problem() if action == "add" else _reminder_problem(action)) \
+            or _plan_still_ok(plan, action, also_action=False)       # `action` is in _reminder_problem
     if problem := check():
         return {"ok": False, "status": "blocked", "error": problem}
     from service.assistant.outbox import request
@@ -1466,6 +1478,8 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
             note(item, "a turn started")
             break
         attempts += 1
+        # Every yes this plan needs, re-checked by the writer right before dispatch.
+        plan["acts"] = [action] + ([ACTION_MORE] if action == ACTION_APPLE_MAIL else [])
         write = writers["calendar" if plan["kind"] == "calendar" else "reminder"]
         # Recorded BEFORE the write: if this cycle is cancelled or times out while Calendar or
         # Reminders is answering, the next one finds "dispatching", reads it as a write that may

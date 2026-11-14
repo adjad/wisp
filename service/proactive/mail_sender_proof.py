@@ -62,6 +62,10 @@ IMPORTANT rules:
   follows this module's rule, except that a failing Gmail verdict for the same Message-ID and
   sender refuses it too: linking Google does not change what an iCloud or Exchange account's
   mail proves, but Gmail having seen the message fail does.
+  A Gmail pass counts only for the same message: Gmail's arrival time for it within
+  SAME_MESSAGE_S (10 minutes) of the copy's, so a forged mail reusing a verified Message-ID and
+  From borrows nothing. Addresses are compared in Gmail's canonical spelling (`canonical`). A
+  Google config file that exists but can't be read raises: never "nothing is linked".
   As shipped, the reader does not supply `account_addresses` and sources does not forward it, so
   with a Google account linked an Apple Mail item acts only when its Mail account label is a
   non-linked address, or on Gmail's own verdict.
@@ -227,15 +231,53 @@ def _addresses(values) -> set[str]:
     return out
 
 
+_GMAIL_DOMAINS = frozenset({"gmail.com", "googlemail.com"})
+# A Gmail verdict counts for an Apple Mail copy only when the message Gmail fetched under that
+# Message-ID arrived within this long of the copy (Gmail's internalDate vs Mail's date received).
+SAME_MESSAGE_S = 600.0
+
+
+def canonical(address: str) -> str:
+    """One spelling per Gmail mailbox: dots and a +tag dropped from the local part, googlemail.com
+    read as gmail.com. Every other address only casefolded."""
+    text = str(address or "").strip().casefold()
+    local, at, domain = text.rpartition("@")
+    if not at or domain not in _GMAIL_DOMAINS:
+        return text
+    return local.split("+", 1)[0].replace(".", "") + "@gmail.com"
+
+
 def _linked() -> set[str]:
+    """The linked Google accounts. A config file that exists but can't be read or parsed RAISES
+    (the step turns that into a card): it must never read as "no Google account is linked",
+    which would let a linked account's mail skip Gmail's proof."""
+    import json
+    from service import gmail_source
     from service.proactive import sources
+    path = gmail_source.CONFIG_PATH
+    if path.exists():
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("Google sign-in settings are unreadable")
     return {a.casefold() for a in sources.gmail_accounts()}
 
 
-def _gmail_verdict(account: str, message_id: str, address: str):
+def _gmail_verdict(account: str, message_id: str, address: str, arrived: float):
+    """gmail_source's verdict for that message and sender, or None when there is none. A pass
+    counts only for the same message: Gmail's own arrival time for it (stored with the evidence)
+    within SAME_MESSAGE_S of this copy's. A reused Message-ID on a forged mail of another date
+    borrows nothing. A failure counts whatever its time (it can only refuse)."""
+    import math
     from service import gmail_source
     verdict = gmail_source.authenticated_for(account, message_id, address)
-    return verdict if isinstance(verdict, tuple) and len(verdict) == 2 else None
+    if not (isinstance(verdict, tuple) and len(verdict) == 2):
+        return None
+    if verdict[0] is True:
+        entry = gmail_source._auth.get((str(account).casefold(), gmail_source._mid_key(message_id))) or {}
+        ts = entry.get("ts")
+        if type(ts) not in (int, float) or not math.isfinite(ts) or abs(float(ts) - float(arrived)) > SAME_MESSAGE_S:
+            return None
+    return verdict
 
 
 async def apple_mail_proof(item: dict, plan: dict, evidence: dict) -> tuple[bool, str]:
@@ -267,23 +309,26 @@ async def apple_mail_proof(item: dict, plan: dict, evidence: dict) -> tuple[bool
             mine = set()
         evidence["mine"] = mine
     mine = set(evidence["mine"]) | own_account
-    if address in mine:
+    if address in mine or canonical(address) in {canonical(a) for a in mine}:
         return False, "your own message"
     # Mail of a Google account linked in Wisp keeps Gmail's proof, whoever read it.
     proof = ""
     linked = _linked()
     if linked:
-        verdicts = {acct: _gmail_verdict(acct, message_id, address) for acct in sorted(linked)} if message_id \
-            else {}
+        verdicts = {acct: _gmail_verdict(acct, message_id, address, float(arrived)) for acct in sorted(linked)} \
+            if message_id else {}
         # Gmail fetched this very message for some linked account and it did not pass: never.
         if any(v is not None and v[0] is not True for v in verdicts.values()):
             return False, "your mail provider's check failed"
         # Only an account POSITIVELY shown to be another one escapes Gmail's proof: it names
         # addresses, and none of them is linked. Anything else may be a linked account's mail.
-        if not own_account or own_account & linked:
+        # Compared in Gmail's canonical spelling: a.di@gmail.com and adi+x@googlemail.com are adi@gmail.com.
+        by_canon = {canonical(a): a for a in linked}
+        hit = {by_canon[c] for c in (canonical(a) for a in own_account) if c in by_canon}
+        if not own_account or hit:
             if not message_id:
                 return False, "mail of a Google account you linked needs Gmail's proof"
-            named = (own_account & linked) or linked
+            named = hit or linked
             if not any(verdicts.get(acct) and verdicts[acct][0] is True for acct in named):
                 return False, "mail of a Google account you linked needs Gmail's proof"
             proof = GMAIL

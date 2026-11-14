@@ -34,7 +34,7 @@ IC_FAIL = ["dmarc.icloud.com; dmarc=fail header.from=friend.com",
 
 
 @pytest.fixture
-def world(monkeypatch, yes):
+def world(monkeypatch, yes, tmp_path):
     """A yes two hours ago naming every action, and evidence that starts EMPTY: no Sent mail, no
     contacts, nothing Gmail fetched, no Google account linked; the user's own addresses fixed."""
     yes(NOW - 2 * 3600)
@@ -46,6 +46,7 @@ def world(monkeypatch, yes):
     monkeypatch.setattr(mail_known, "read_contact_addresses", lambda: state["contacts"])
     monkeypatch.setattr(gmail_source, "_auth", state["auth"])
     monkeypatch.setattr(sources, "gmail_accounts", lambda: set(state["linked"]))
+    monkeypatch.setattr(gmail_source, "CONFIG_PATH", tmp_path / "gmail.json")     # absent: nothing unreadable
     from service.memory import identity
     monkeypatch.setattr(identity, "user_emails", lambda: list(state["mine"]))
     return state
@@ -69,6 +70,14 @@ def apple_item(*rows, auth=None, addresses=(ICLOUD,), linked=frozenset()):
     if addresses is not None:
         item["account_addresses"] = list(addresses)
     return item
+
+
+def fetched(world, headers, *, ago_h=1.0, **kw):
+    """Gmail fetched and stored a verdict for a message that arrived `ago_h` hours ago (its
+    internalDate, gmail_source._remember_auth); None leaves the time out."""
+    G.fetched(world, headers, **kw)
+    key = (kw.get("account", GMAIL), gmail_source._mid_key(kw.get("mid", "m-1@friend.com")))
+    world["auth"][key]["ts"] = None if ago_h is None else NOW - ago_h * 3600
 
 
 def run(store, *items):
@@ -226,7 +235,7 @@ def test_an_apple_mail_copy_of_a_linked_google_accounts_mail_needs_gmails_proof(
     stays_a_card(store, apple_item(copy, auth=[G.PASS], addresses=(GMAIL,), linked={GMAIL}),
                  "mail of a Google account you linked needs Gmail's proof")
     # Gmail fetched and verified that very message: the copy may act, on Gmail's proof.
-    G.fetched(world, [G.PASS])
+    fetched(world, [G.PASS])
     wrote, _out, _ = run(store, apple_item(copy, addresses=(GMAIL,), linked={GMAIL}))
     assert wrote == ["calendar"] and proofs(store) == ["gmail"]
 
@@ -261,9 +270,114 @@ def test_with_google_linked_an_account_not_shown_to_be_another_one_needs_gmails_
 def test_with_google_linked_gmails_true_verdict_lets_an_unnamed_account_act(store, world):
     world["linked"] = {GMAIL}
     world["contacts"] = {PRIYA}
-    G.fetched(world, [G.PASS])
+    fetched(world, [G.PASS])
     wrote, _out, _ = run(store, apple_item(apple_row(account="Google", to=""), addresses=None, linked={GMAIL}))
     assert wrote == ["calendar"] and proofs(store) == ["gmail"]
+
+
+def test_a_reused_message_id_borrows_no_gmail_verdict(store, world):
+    """A forged mail repeating a verified message's From and Message-ID, with a new subject and
+    date, into an account whose Mail label is not an address: Gmail's verdict was for another
+    message (last week's), so there is none for this one."""
+    world["linked"] = {GMAIL}
+    world["contacts"] = {PRIYA}
+    need = "mail of a Google account you linked needs Gmail's proof"
+    fetched(world, [G.PASS], mid="real-old@friend.com", ago_h=7 * 24)
+    forged = apple_row(account="Google", to="", mid="real-old@friend.com", subject="Dinner", ago_h=0.5)
+    stays_a_card(store, apple_item(forged, addresses=None, linked={GMAIL}), need)
+    stays_a_card(store, apple_item(forged, addresses=(GMAIL,), linked={GMAIL}), need)
+    # Just outside the window, and with no time stored at all: no verdict either.
+    fetched(world, [G.PASS], mid="real-old@friend.com", ago_h=0.5 + (P.SAME_MESSAGE_S + 60) / 3600)
+    stays_a_card(store, apple_item(forged, addresses=None, linked={GMAIL}), need)
+    fetched(world, [G.PASS], mid="real-old@friend.com", ago_h=None)
+    stays_a_card(store, apple_item(forged, addresses=None, linked={GMAIL}), need)
+    # The same message (Gmail's time within minutes of Mail's): it counts.
+    fetched(world, [G.PASS], mid="real-old@friend.com", ago_h=0.5 + 120 / 3600)
+    wrote, _out, _ = run(store, apple_item(forged, addresses=None, linked={GMAIL}))
+    assert wrote == ["calendar"] and proofs(store) == ["gmail"]
+
+
+def test_gmail_source_stores_gmails_own_time_with_the_evidence(monkeypatch):
+    monkeypatch.setattr(gmail_source, "_auth", {})
+    gmail_source._remember_auth(GMAIL, "g-1", {"message_id": "<m@x>", "sender_address": PRIYA,
+                                                "auth_results": [G.PASS], "ts": 1234.5})
+    assert gmail_source._auth[(GMAIL, "m@x")]["ts"] == 1234.5
+
+
+@pytest.mark.parametrize("content", ["{not json", "[1, 2]", "\x00\xff"])
+def test_an_unreadable_google_config_is_never_read_as_nothing_linked(store, world, content):
+    world["contacts"] = {PRIYA}
+    gmail_source.CONFIG_PATH.write_text(content, encoding="utf-8")
+    wrote, out, notes = run(store, apple_item(apple_row()))
+    assert wrote == [] and out["added"] == [] and store.auto_added() == {}
+    assert len(notes) == 1 and notes[0].startswith("mail: tap to add (proof unavailable: "), notes
+    # A readable one is read as before.
+    gmail_source.CONFIG_PATH.write_text("{}", encoding="utf-8")
+    wrote, _out, _ = run(store, apple_item(apple_row()))
+    assert wrote == ["calendar"]
+
+
+def test_gmail_addresses_compare_in_their_canonical_spelling(store, world):
+    adi = "adi@gmail.com"
+    assert {P.canonical(a) for a in ("a.di@gmail.com", "adi+x@gmail.com", "adi@googlemail.com", "A.Di+y@GoogleMail.com",
+                                     adi)} == {adi}
+    assert P.canonical("a.di+x@icloud.com") == "a.di+x@icloud.com"
+    world["linked"] = {adi}
+    world["mine"] = [ME, ICLOUD, adi]
+    world["contacts"] = {PRIYA}
+    for spelled in ("a.di@gmail.com", "adi+x@gmail.com", "adi@googlemail.com"):
+        # Mail names the account in another spelling of the linked address: still that account's mail.
+        stays_a_card(store, apple_item(apple_row(account=spelled, to=""), addresses=None, linked={adi}),
+                     "mail of a Google account you linked needs Gmail's proof")
+        stays_a_card(store, apple_item(apple_row(to=""), addresses=(spelled,), linked={adi}),
+                     "mail of a Google account you linked needs Gmail's proof")
+    # The user's own mailbox in another spelling is still the user's own.
+    world["contacts"] = {PRIYA, "a.di+x@googlemail.com"}
+    stays_a_card(store, apple_item(apple_row(sender="Adi", address="a.di+x@googlemail.com")), "your own message")
+
+
+def test_step_hands_the_writer_every_yes_the_plan_needs(store, world):
+    world["contacts"] = {PRIYA}
+    writers = T.Writers()
+    T.production_step(store, T.survivors(apple_item(apple_row())), writers)
+    assert [(k, p["acts"]) for k, p in writers.calls] == [("calendar", ["add_apple_mail", "add_more"])]
+    writers = T.Writers()
+    T.production_step(T.ProactiveStore(Path(gmail_source.CONFIG_PATH).parent / "p2"),
+                      T.survivors(T.conversation("Maya Chen", (1.0, T.RECITAL))), writers)
+    assert [p["acts"] for _k, p in writers.calls] == [["add"]]
+
+
+@pytest.mark.parametrize("kind", ["calendar", "reminder"])
+@pytest.mark.parametrize("revoked", ["add_apple_mail", "add_more"])
+def test_a_yes_taken_back_between_the_plan_and_the_write_stops_it(world, tmp_path, monkeypatch, kind, revoked):
+    import asyncio
+    from service.assistant import attention_calendar, outbox
+    from service.proactive import executor
+    monkeypatch.setattr(autoadd, "_app_connected_now", lambda: True)
+    monkeypatch.setattr(executor, "_reminder_problem", lambda: None)
+    seen = []
+
+    async def create_calendar(capture, *, approval, source_current):
+        seen.append(source_current())
+        return {"ok": seen[-1], "status": "succeeded" if seen[-1] else "blocked", "source_id": "E-1"}
+
+    async def request(kind_, payload, *, before_dispatch=None, **_):
+        seen.append(before_dispatch() is None)
+        return {"ok": seen[-1], "status": "succeeded" if seen[-1] else "blocked", "source_id": "R-1",
+                "title": payload["title"]}
+    monkeypatch.setattr(attention_calendar, "create_calendar", create_calendar)
+    monkeypatch.setattr(attention_calendar, "approve_capture", lambda capture: "ok")
+    monkeypatch.setattr(outbox, "request", request)
+    plan = {"kind": kind, "title": "Recital", "fingerprint": "fp", "day": "2026-10-31", "timezone": TZ,
+            "start_ts": NOW + 86400, "duration_min": 60, "due_ts": NOW + 86400,
+            "acts": ["add_apple_mail", "add_more"]}
+    write = autoadd.create_event if kind == "calendar" else autoadd.create_reminder
+    assert asyncio.run(write(plan))["ok"] is True and seen == [True]          # every yes still stands
+    _write_yes(tmp_path, [k for k in acting.ACTIONS if k != revoked])          # one taken back meanwhile
+    out = asyncio.run(write(plan))
+    assert out["ok"] is False and out["status"] == "blocked"
+    assert seen in ([True, False], [True])                                    # stopped at or before dispatch
+    assert acting.enabled("add")                                              # "add" alone would have let it through
 
 
 def test_add_apple_mail_without_add_more_is_refused_even_for_a_card_worthy_thread(store, world, tmp_path):
