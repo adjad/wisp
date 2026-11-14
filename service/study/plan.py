@@ -7,6 +7,7 @@ Times are epoch seconds; days are ISO dates in the given IANA timezone.
 from __future__ import annotations
 
 import math
+import re
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -93,6 +94,108 @@ def _day_word(ts: float, today: date, zone: ZoneInfo) -> str:
     return d.strftime("%A")
 
 
+# ---------------------------------------------------------------- one school item, once
+#
+# The store can still hold one assignment twice (two page kinds, a course split it could not merge,
+# a copy with no course). What Brief and Day show collapses such twins by one key: the title
+# (case and spacing folded, a trailing Canvas section code like " [STAT-101-02]" dropped) and the
+# local due day; two timed copies must also share the due time, and two copies that each name a
+# different course stay two items.
+
+_SUFFIX = re.compile(r"\s*\[([^\[\]]{1,40})\]\s*$")
+_SECTION = re.compile(r"[A-Z]{2,10}[ _-]?\d{1,4}[A-Z]?(?:[ ._-][A-Z0-9]{1,8}){0,3}")
+_DONE_RANK = {"graded": 2, "submitted": 1}
+_SAME_TIME = 60
+
+
+def section_code(text: str) -> bool:
+    """Whether a bracketed tail looks like a Canvas course-section code ("STAT-101-02")."""
+    text = (text or "").strip()
+    return bool(_SECTION.fullmatch(text)) and any(c.isdigit() for c in text)
+
+
+def title_key(title) -> str:
+    text = " ".join(str(title or "").split())
+    found = _SUFFIX.search(text)
+    if found and section_code(found.group(1)):
+        text = text[: found.start()]
+    return " ".join(text.split()).casefold()
+
+
+def _course(a: dict, field: str) -> str:
+    return " ".join(str(a.get(field) or "").split()).casefold()
+
+
+def _same_item(a: dict, b: dict) -> bool:
+    if not (a.get("all_day") or b.get("all_day")) and abs(_due(a) - _due(b)) > _SAME_TIME:
+        return False
+    if a.get("course_id") and a.get("course_id") == b.get("course_id"):
+        return True
+    for field in ("course_name", "course_code"):
+        x, y = _course(a, field), _course(b, field)
+        if x and y and x != y:
+            return False
+    return True
+
+
+def _richness(a: dict) -> tuple:
+    return (bool(_course(a, "course_name")), bool(_course(a, "course_code") or _course(a, "code")),
+            bool(str(a.get("url") or "").strip()), bool(a.get("course_id")), not a.get("all_day"))
+
+
+def collapse(assignments: list[dict], *, timezone: str) -> list[dict]:
+    """The rows with each school item once (see above). The survivor is the row with a course
+    name, code, address and due time, then the smallest id, so its id is stable across refreshes;
+    it lists the others' ids as ``twins`` and takes the most done status (graded or submitted
+    beats anything open, so handed-in work never comes back through its twin)."""
+    zone = _zone(timezone)
+    groups: list[list[dict]] = []
+    by_key: dict[tuple, list[list[dict]]] = {}
+    for a in assignments:
+        if not isinstance(a, dict):
+            continue
+        key = title_key(a.get("title"))
+        if _due(a) is None or not key:
+            groups.append([a])
+            continue
+        slot = by_key.setdefault((key, _local_day(_due(a), zone)), [])
+        group = next((g for g in slot if all(_same_item(a, b) for b in g)), None)
+        if group is None:
+            group = [a]
+            slot.append(group)
+            groups.append(group)
+        else:
+            group.append(a)
+    out = []
+    for group in groups:
+        if len(group) == 1:
+            out.append(group[0])
+            continue
+        ranked = sorted(group, key=lambda r: str(r.get("id") or ""))
+        best = max(ranked, key=_richness)   # max keeps the smallest id on a tie
+        merged = dict(best)
+        for field in ("course_name", "course_code", "url"):
+            if not str(merged.get(field) or "").strip():
+                merged[field] = next((r.get(field) for r in ranked if str(r.get(field) or "").strip()),
+                                     merged.get(field))
+        done = max(ranked, key=lambda r: _DONE_RANK.get(r.get("status") or "", 0))
+        if done.get("status") in DONE:
+            merged["status"] = done["status"]
+        merged["twins"] = [r.get("id") for r in ranked if r is not best]
+        out.append(merged)
+    return out
+
+
+def _ids(a: dict) -> list:
+    return [a.get("id"), *(a.get("twins") or [])]
+
+
+def _found(table: dict | None, a: dict):
+    if not table:
+        return None
+    return next((table[i] for i in _ids(a) if i in table), None)
+
+
 def _line(today_items, tomorrow_items, near_test, *, now: float, zone: ZoneInfo, today: date) -> str:
     def build(brackets: bool, width: int | None) -> str:
         if today_items:
@@ -129,7 +232,7 @@ def day_summary(assignments: list[dict], *, now: float, timezone: str) -> dict:
     today = _local_day(now, zone)
     tomorrow = today + timedelta(days=1)
     week_end = now + 7 * 86400
-    rows = [a for a in assignments if isinstance(a, dict)]
+    rows = collapse(assignments, timezone=timezone)
     open_items = _sorted([a for a in rows if _open(a)])
     due_today = [a for a in open_items if _local_day(_due(a), zone) == today]
     due_tomorrow = [a for a in open_items if _local_day(_due(a), zone) == tomorrow]
@@ -168,7 +271,7 @@ def deadlines(assignments: list[dict], *, day: str, timezone: str, slides: dict 
     zone = _zone(timezone)
     lo, hi = _bounds(date.fromisoformat(day), zone)
     out = []
-    for a in _sorted([a for a in assignments if isinstance(a, dict) and _open(a)]):
+    for a in _sorted([a for a in collapse(assignments, timezone=timezone) if _open(a)]):
         due = _due(a)
         if not lo <= due < hi:
             continue
@@ -179,7 +282,7 @@ def deadlines(assignments: list[dict], *, day: str, timezone: str, slides: dict 
         if a.get("all_day"):
             item.update(all_day=True, due_date=day)
         if slides is not None:
-            _slide_fields(item, slides.get(a.get("id")), review=True)
+            _slide_fields(item, _found(slides, a), review=True)
         out.append(item)
     return out
 
@@ -200,7 +303,10 @@ def _busy(busy) -> list[tuple[float, float]]:
 
 
 def study_blocks(assignments: list[dict], busy: list[tuple[float, float]], *, now: float, timezone: str,
-                 day: str, slides: dict | None = None) -> list[dict]:
+                 day: str, slides: dict | None = None, booked=None) -> list[dict]:
+    """At most MAX_BLOCKS blocks, one per school item, in free time. ``booked``: the block ids
+    already on the calendar; a block whose twin's id was booked keeps that id, so the booking is
+    still recognised (blocks_api.mark)."""
     zone = _zone(timezone)
     today = _local_day(now, zone)
     if date.fromisoformat(day) != today:
@@ -211,8 +317,9 @@ def study_blocks(assignments: list[dict], busy: list[tuple[float, float]], *, no
     earliest = max(rounded, window_start)
     taken = _busy(busy)
     blocks: list[dict] = []
-    candidates = _sorted([a for a in assignments if isinstance(a, dict) and _open(a)
+    candidates = _sorted([a for a in collapse(assignments, timezone=timezone) if _open(a)
                           and now < _due(a) <= now + 48 * 3600])
+    booked = set(booked or ())
     for a in candidates:
         if len(blocks) >= MAX_BLOCKS:
             break
@@ -226,11 +333,12 @@ def study_blocks(assignments: list[dict], busy: list[tuple[float, float]], *, no
             cursor = max(cursor, end)
         if cursor + BLOCK_SECONDS > limit:
             continue
-        block = {"id": f"study-block:{a.get('id')}", "title": f"Study: {(a.get('title') or '').strip()}",
+        ids = [f"study-block:{i}" for i in _ids(a)]
+        block = {"id": next((i for i in ids if i in booked), ids[0]), "title": f"Study: {(a.get('title') or '').strip()}",
                  "start": cursor, "end": cursor + BLOCK_SECONDS, "kind": "study", "task_id": None,
                  "warnings": []}
         if slides is not None:
-            _slide_fields(block, slides.get(a.get("id")), review=False)
+            _slide_fields(block, _found(slides, a), review=False)
         blocks.append(block)
         taken.append((block["start"], block["end"]))
     return sorted(blocks, key=lambda b: (b["start"], b["id"]))
@@ -249,11 +357,11 @@ def ready_items(assignments: list[dict], found: dict, materials: dict, *, now: f
     today = _local_day(now, zone)
     end = now + READY_DAYS * 86400
     out = []
-    for a in _sorted([a for a in assignments if isinstance(a, dict) and _open(a)]):
+    for a in _sorted([a for a in collapse(assignments, timezone=timezone) if _open(a)]):
         if len(out) >= MAX_READY:
             break
         due = _due(a)
-        hit = found.get(a.get("id"))
+        hit = _found(found, a)
         if not (now <= due <= end) or not hit or not hit[0]:
             continue
         matches, phrase, covers = hit
@@ -265,7 +373,7 @@ def ready_items(assignments: list[dict], found: dict, materials: dict, *, now: f
             head = f"{label} {kind} {when}." if label else f"{title} is {when}."
         else:
             head = f"{title} is due {when}."
-        made = materials.get(a.get("id")) or {}
+        made = _found(materials, a) or {}
         if made.get("material_id") and made.get("prepared"):
             source = made.get("from") or phrase
             tail = (f"I made a {made.get('count') or 10}-question quiz from {source}." if source

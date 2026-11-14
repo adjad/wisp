@@ -377,6 +377,182 @@ def test_weak_items_need_two_misses_and_say_how_many_slides():
     assert got[1]["slides"] == [{"source_id": "s", "deck": "Week 3", "pages": [4]}] and got[1]["course"] == "CS 101"
 
 
+# ---------------------------------------------------------------- one school item, once
+
+def twin(id_, title, due, *, course_id="canvas:1", course_name=None, course_code=None, status="upcoming",
+         all_day=False, url=None):
+    return item(id_, title, due, status=status, course_name=course_name, course_code=course_code,
+                all_day=all_day) | {"course_id": course_id, "url": url}
+
+
+def test_title_key_drops_only_a_section_code():
+    assert plan.title_key("  Worksheet 2 [STAT-101-02] ") == "worksheet 2"
+    assert plan.title_key("Week 3 Reading:  Functions [CS-101-04]") == "week 3 reading: functions"
+    assert plan.title_key("Week 3 Reading: Functions") == "week 3 reading: functions"
+    assert plan.title_key("Call the bank [urgent]") == "call the bank [urgent]"
+    assert plan.title_key("Pick up [2] boxes") == "pick up [2] boxes"
+    assert plan.title_key("Read [Chapter 5]") == "read [chapter 5]"
+
+
+def test_twins_show_once_in_the_line_upcoming_deadlines_and_blocks():
+    """Bugs 1 and 2: one reading stored twice (named course and nameless page) shows once."""
+    now = at(16, 10)
+    rows = [twin("canvas:12345:aa", "Week 3 Reading: Functions", at(23, 59), course_id="canvas:12345"),
+            twin("canvas:0a1b:bb", "Week 3 Reading: Functions", at(23, 59), course_id="canvas:0a1b",
+                 course_name="Introduction to Programming", course_code="CS 101")]
+    s = plan.day_summary(rows, now=now, timezone=TZ)
+    assert s["line"] == "1 due today: Week 3 Reading: Functions (CS 101)"
+    assert [d["id"] for d in s["due_today"]] == ["canvas:0a1b:bb"]
+    assert [u["course_label"] for u in s["upcoming"]] == ["CS 101"]
+    got = plan.deadlines(rows, day=DAY, timezone=TZ)
+    assert [(d["id"], d["title"]) for d in got] == [("study:canvas:0a1b:bb", "Week 3 Reading: Functions · CS 101")]
+    blocks = plan.study_blocks(rows, [], now=now, timezone=TZ, day=DAY)
+    assert [b["id"] for b in blocks] == ["study-block:canvas:0a1b:bb"]
+    # The same in the other order: the survivor (and so the block id) doesn't depend on it.
+    assert [b["id"] for b in plan.study_blocks(rows[::-1], [], now=now, timezone=TZ, day=DAY)] == [blocks[0]["id"]]
+
+
+def test_twins_across_page_kinds_all_day_section_suffix_and_no_course():
+    now = at(9)
+    rows = [twin("a", "Worksheet 2", at(23, 59), course_name="Statistics", course_code="STAT 101"),
+            twin("b", "worksheet  2 [STAT-101-02]", at(0), all_day=True, course_id=None),
+            twin("c", "Worksheet 2", at(23, 59, d=17), course_name="Statistics")]   # another day: its own
+    s = plan.day_summary(rows, now=now, timezone=TZ)
+    assert [d["id"] for d in s["due_today"]] == ["a"] and [u["id"] for u in s["upcoming"]] == ["a", "c"]
+
+
+def test_two_timed_copies_at_different_times_or_different_courses_stay_two():
+    now = at(9)
+    rows = [twin("a", "Quiz 1", at(10), course_name="Statistics"),
+            twin("b", "Quiz 1", at(14), course_name="Statistics"),
+            twin("c", "Quiz 1", at(23, 59), course_id="canvas:2", course_name="Introduction to Programming"),
+            twin("d", "Quiz 1", at(23, 59), course_id="canvas:3", course_name="Statistics")]
+    s = plan.day_summary(rows, now=now, timezone=TZ)
+    assert [d["id"] for d in s["due_today"]] == ["a", "b", "c", "d"]
+    assert plan.day_summary(rows[2:], now=now, timezone=TZ)["line"].startswith("2 due today")
+
+
+def test_a_handed_in_twin_keeps_the_item_done():
+    now = at(9)
+    rows = [twin("a", "Worksheet 2", at(23, 59), course_name="Statistics"),
+            twin("b", "Worksheet 2", at(23, 59), course_id="canvas:9", status="submitted")]
+    s = plan.day_summary(rows, now=now, timezone=TZ)
+    assert s["due_today"] == [] and s["upcoming"] == [] and "due today" not in s["line"]
+    assert plan.deadlines(rows, day=DAY, timezone=TZ) == []
+    assert plan.study_blocks(rows, [], now=now, timezone=TZ, day=DAY) == []
+    graded = [rows[0], rows[1] | {"status": "graded"}, twin("c", "Worksheet 2", at(23, 59), status="submitted")]
+    assert plan.collapse(graded, timezone=TZ)[0]["status"] == "graded"
+
+
+def test_a_booking_under_a_twins_id_is_still_recognised():
+    """Block ids: the survivor's id is stable; a booking made under the other twin's id keeps it."""
+    from service.study import blocks_api
+    now = at(16)
+    rows = [twin("canvas:12345:aa", "Lab 5", at(23, 59), course_id="canvas:12345"),
+            twin("canvas:0a1b:bb", "Lab 5", at(23, 59), course_id="canvas:0a1b", course_name="Statistics")]
+    blocks = plan.study_blocks(rows, [], now=now, timezone=TZ, day=DAY, booked=["study-block:canvas:12345:aa"])
+    assert [b["id"] for b in blocks] == ["study-block:canvas:12345:aa"]
+    booked = {"study-block:canvas:12345:aa": {"source_id": "ev1", "title": "Study: Lab 5", "start": at(18),
+                                              "end": at(18, 45), "day": DAY}}
+    shown, _ = blocks_api.mark(blocks, [], DAY, booked)
+    assert [(b["id"], b["added"], b["start"]) for b in shown] == [("study-block:canvas:12345:aa", True, at(18))]
+    # The booked twin was folded away since: the survivor's fresh block isn't offered again.
+    fresh = plan.study_blocks(rows[1:], [], now=now, timezone=TZ, day=DAY)
+    shown, _ = blocks_api.mark(fresh, [], DAY, booked)
+    assert [(b["id"], b["added"]) for b in shown] == [("study-block:canvas:12345:aa", True)]
+
+
+def test_attach_twins_with_unmatched_scores_show_once(tmp_path, monkeypatch):
+    """The store can't merge a nameless course page whose score differs from the Dashboard's
+    (36385890 needs the scores to match), so the plan's own collapse is what shows it once."""
+    store_mod = pytest.importorskip("service.study.store")
+    db = tmp_path / "study" / "study.db"
+    store = store_mod.StudyStore(db)
+    row = {"kind": "assignment", "all_day": False, "points": None, "score": None, "status": "upcoming",
+           "details": "", "url": None, "source": "canvas", "sample": False}
+    store.import_rows([{"id": "canvas:0a1b2c3d4e5f", "name": "Introduction to Programming", "code": "CS 101",
+                        "score": 92.0, "merge_key": "introduction to programming"}],
+                      [row | {"id": "canvas:dddddddddddd", "course_id": "canvas:0a1b2c3d4e5f",
+                              "title": "Week 3 Reading: Functions", "due_ts": at(23, 59)}])
+    store.import_rows([{"id": "canvas:12345", "name": "", "score": 91.5,
+                        "url": "https://canvas.example.edu/courses/12345"}],
+                      [row | {"id": "canvas:12345:eeeeeeeeeeee", "course_id": "canvas:12345",
+                              "title": "Week 3 Reading: Functions", "due_ts": at(23, 59)}])
+    assert len(store.courses()) == 2 and len(store.assignments()) == 2     # still split in the store
+    monkeypatch.setattr(day_hook, "store_path", lambda: db)
+    monkeypatch.setattr(day_hook, "study_store", lambda: store)
+    result = snapshot(at(16, 10))
+    day_hook.attach(result, now=at(16, 10), timezone=TZ)
+    assert result["study"]["line"] == "1 due today: Week 3 Reading: Functions (CS 101)"
+    assert [d["id"] for d in result["deadlines"] if d["source"] == "study"] == ["study:canvas:dddddddddddd"]
+    assert [b["id"] for b in result["blocks"] if b["kind"] == "study"] == ["study-block:canvas:dddddddddddd"]
+
+
+def workspace_snapshot():
+    result = snapshot(at(9))
+    feed = {"id": "cal:feed", "title": "Worksheet 2 [STAT-101-02]", "start": at(23, 59), "end": at(23, 59),
+            "kind": "calendar", "task_id": None, "warnings": []}
+    result["blocks"] = [*result["blocks"], feed]
+    result["all_day"] = [{"id": "cal:allday", "title": "Week 3 Reading: Functions [CS-101-04]", "start": at(0),
+                          "end": at(0, d=17), "kind": "calendar", "task_id": None, "warnings": []}]
+    result["deadlines"] = [*result["deadlines"],
+                           {"id": "rem:feed", "title": "Worksheet 2 [STAT-101-02]", "due_ts": at(23, 59),
+                            "source": "reminders"},
+                           {"id": "rem:other", "title": "Worksheet 2 [STAT-101-02]", "due_ts": at(23, 59, d=18),
+                            "source": "reminders"},
+                           {"id": "rem:mine", "title": "Worksheet 2 notes [urgent]", "due_ts": at(23, 59),
+                            "source": "reminders"}]
+    suggestion = {"id": "sug:1", "title": "Read: newsletter", "start": at(10, 30), "end": at(11, 30),
+                  "kind": "suggestion", "task_id": None, "warnings": []}
+    result["workspace"] = {
+        "attention": [{"id": "rem:feed", "title": "Worksheet 2 [STAT-101-02]", "source": "reminders",
+                       "due_ts": at(23, 59)},
+                      {"id": "rem:rent", "title": "Pay rent", "source": "reminders", "due_ts": at(12)}],
+        "needs_you": {"items": [{"id": "rem:feed", "kind": "due", "text": "Worksheet 2 [STAT-101-02]",
+                                 "due_ts": at(23, 59), "all_day": False}], "more": 0},
+        "proposed_plan": {"blocks": [result["blocks"][0], suggestion, feed], "unscheduled": [], "warnings": []}}
+    return result
+
+
+def test_attach_drops_calendar_feed_copies_of_school_items(tmp_path, monkeypatch):
+    """Bug 3: Canvas's calendar feed adds "[SECTION-CODE]"; its copy shows once, as the school item."""
+    db = tmp_path / "study.db"
+    db.write_bytes(b"")
+    monkeypatch.setattr(day_hook, "store_path", lambda: db)
+    rows = [twin("canvas:1:ws2", "Worksheet 2", at(23, 59)),
+            twin("canvas:2:w3", "Week 3 Reading: Functions", at(23, 59), course_id="canvas:2")]
+    courses = [{"id": "canvas:1", "name": "Statistics", "code": "STAT 101"},
+               {"id": "canvas:2", "name": "Introduction to Programming", "code": "CS 101"}]
+    monkeypatch.setattr(day_hook, "study_store", lambda: FakeStore(courses, rows))
+    result = workspace_snapshot()
+    planner_deadlines, planner_blocks = result["deadlines"], result["blocks"]
+    day_hook.attach(result, now=at(9), timezone=TZ)
+    assert [d["id"] for d in result["deadlines"]] == [
+        "rem:1", "rem:mine", "study:canvas:1:ws2", "study:canvas:2:w3", "rem:other"]
+    assert result["all_day"] == []
+    assert "cal:feed" not in [b["id"] for b in result["blocks"]]
+    assert [a["id"] for a in result["workspace"]["attention"]] == ["rem:rent"]
+    assert result["workspace"]["needs_you"]["items"] == []
+    assert [b["id"] for b in result["workspace"]["proposed_plan"]["blocks"]] == ["cal:1", "sug:1"]
+    assert len(planner_deadlines) == 4 and len(planner_blocks) == 2       # the planner's lists stay as built
+
+
+def test_attach_keeps_a_study_block_clear_of_suggested_blocks(tmp_path, monkeypatch):
+    """Bug 4: Day draws the workspace's proposed plan, so its Suggested block is busy time too."""
+    db = tmp_path / "study.db"
+    db.write_bytes(b"")
+    monkeypatch.setattr(day_hook, "store_path", lambda: db)
+    rows = [twin("canvas:1:lab", "Lab 5", at(23, 59))]
+    monkeypatch.setattr(day_hook, "study_store", lambda: FakeStore([], rows))
+    result = workspace_snapshot()
+    day_hook.attach(result, now=at(9), timezone=TZ)
+    study = [b for b in result["blocks"] if b["kind"] == "study"]
+    assert [(b["start"], b["end"]) for b in study] == [(at(11, 30), at(12, 15))]
+    shown = [b for b in [*result["workspace"]["proposed_plan"]["blocks"], *study]]
+    spans = sorted((b["start"], b["end"]) for b in shown if b["end"] > b["start"])
+    assert all(a[1] <= b[0] for a, b in zip(spans, spans[1:]))
+
+
 def test_this_file_is_in_the_simulation_manifest():
     from pathlib import Path
     manifest = (Path(__file__).resolve().parents[1] / "scripts" / "run_simulation_qa.py").read_text()
