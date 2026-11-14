@@ -71,7 +71,10 @@ struct StudyMakeOptions: View {
                 Spacer(minLength: 0)
             }
         }
-        if let course { StudyFindMaterialsSection(course: course, onFinished: { await study.refresh() }) }
+        if let course {
+            StudyFindMaterialsSection(course: course, canvasLinks: StudyFindTarget.canvasLinks(for: course, in: state),
+                                      onFinished: { await study.refresh() })
+        }
     }
 
     private func makeWhole(_ course: StudyCourse) {
