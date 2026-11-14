@@ -42,9 +42,18 @@ IMPORTANT rules:
   its sender is read strictly, that exact address is a saved contact's or one
   the user's own Sent mail went to before it arrived, the dated sentence is in
   that very message, and Gmail itself reports the mail as authenticated for the
-  From domain. Anything missing, stale or unreadable means a tap card. Mail seen
-  only through Apple Mail is never added without a tap. Texts do not need this
-  (a text's sender is a handle matched to a saved contact).
+  From domain. Anything missing, stale or unreadable means a tap card. Texts do
+  not need this (a text's sender is a handle matched to a saved contact).
+- Mail read through Apple Mail acts too (the owner's decision of 2026-11-13, "do
+  act on email when not connected to gmail"), by mail_sender_proof.apple_mail_proof:
+  the same sender, person, date and known-correspondent checks, then the
+  receiving server's Authentication-Results when the reader supplies them (a
+  failing one refuses; a passing one is recorded "verified"; none at all is
+  recorded "unverified" and acts on the known-sender rule alone). Without
+  server-side sender proof, a forged From line that imitates a known address
+  could make Wisp add something. The owner chose this on 2026-11-13. It is its
+  own action, "add_apple_mail", and needs "add_more" too. Mail of a Google
+  account linked in Wisp keeps Gmail's proof, whichever reader saw it.
 - What the first yes named is the action "add": a one-to-one iMessage. Email, a
   green-bubble text (SMS or RCS) and a line in a group chat are the action
   "add_more" (acting.ACTIONS): a yes given before they were named does not cover
@@ -92,6 +101,10 @@ MAX_ATTEMPTS = 2
 MAIL_ACTS = True
 # The action (acting.ACTIONS) a plan needs the person's yes to. See _action_of.
 ACTION, ACTION_MORE = "add", "add_more"
+# An email read through Apple Mail (not fetched by Wisp's own Google sign-in): its own key,
+# because it widens what email covers (acting.ACTIONS: never widen a key's meaning). It is
+# acted on only with BOTH this yes and ACTION_MORE's (step).
+ACTION_APPLE_MAIL = "add_apple_mail"
 # A body sentence counts as already said in an earlier message when at least this share
 # of its word 3-grams appear in that message (sources.quote_grams).
 QUOTED_SHARE = 0.5
@@ -502,6 +515,8 @@ def _action_of(item: dict, plan: dict) -> str:
     text whose delivery is not known) is "add_more", so an older yes never reaches it."""
     if plan.get("source") == "messages" and not item.get("group") and _text_service(item) == "iMessage":
         return ACTION
+    if plan.get("source") == "mail" and item.get("google_fetched") is not True:
+        return ACTION_APPLE_MAIL
     return ACTION_MORE
 
 
@@ -1225,9 +1240,10 @@ async def default_mail_proof(item: dict, plan: dict, evidence: dict) -> tuple[bo
 
     1. Fetched by Wisp's own Google sign-in. The row's account is the linked Gmail
        address itself, so its sender and Message-ID were parsed by gmail_source from
-       Gmail's own data. Mail that reaches Wisp only through Apple Mail is not acted
-       on: nothing yet confirms what Mail reports as a sender's address, and there is
-       no authentication result for it.
+       Gmail's own data. Mail that reaches Wisp only through Apple Mail goes to
+       mail_sender_proof.apple_mail_proof instead (the same checks 2 to 5, then the
+       receiving server's result when the reader has it; the owner's decision of
+       2026-11-13). Checks 2 to 6 below are the Google-fetched path, unchanged.
     2. A sender read strictly (service/mail_sender.py): not odd, one real address.
     3. A real person writing to the user, not an organisation or a roll-up.
     4. The dated sentence is from the very message whose proof is checked: its own
@@ -1247,7 +1263,10 @@ async def default_mail_proof(item: dict, plan: dict, evidence: dict) -> tuple[bo
     account, raw_account = str(item.get("account") or ""), str(item.get("raw_account") or "").strip().casefold()
     # Said by sources from the row itself (the linked address is both its account and its
     # account id, and it is not a Mail.app copy), never inferred here from how names look.
-    if item.get("google_fetched") is not True or "@" not in raw_account:
+    if item.get("google_fetched") is not True:
+        from service.proactive import mail_sender_proof
+        return await mail_sender_proof.apple_mail_proof(item, plan, evidence)
+    if "@" not in raw_account:
         return False, "not from a Google account you linked"
     ref = item.get("ref") or {}
     address, message_id = str(ref.get("to") or "").strip().casefold(), str(ref.get("message_id") or "").strip()
@@ -1276,6 +1295,7 @@ async def default_mail_proof(item: dict, plan: dict, evidence: dict) -> tuple[bo
     verdict = gmail_source.authenticated_for(raw_account, message_id, address)
     if not (isinstance(verdict, tuple) and len(verdict) == 2 and verdict[0] is True):
         return False, "not verified by your mail provider" if verdict is None else str(verdict[1])
+    plan["sender_proof"] = "gmail"
     return True, ""
 
 
@@ -1410,6 +1430,9 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
         # group-chat line are "add_more", which an older yes did not name.
         action = _action_of(item, plan)
         fresh = on and _allowed(allows, plan.get("line_ts"), action)
+        if action == ACTION_APPLE_MAIL:
+            # Apple Mail email widens email (ACTION_MORE): it needs that yes as well as its own.
+            fresh = fresh and _allowed(allows, plan.get("line_ts"), ACTION_MORE)
         if on and fresh and plan["source"] == "messages" and not _text_delivery_known(item, plan):
             # A line Wisp could not join to its own record in Messages: who sent it is not known.
             # (An SMS's sender number can be forged, a saved contact's included; the owner chose
@@ -1458,7 +1481,8 @@ async def step(survivors: list[dict], sched: dict, *, now: float, tz: str, store
         _audit("proactive_auto_add", tool="add_calendar_event" if plan["kind"] == "calendar" else "add_reminder",
                source="proactive_auto_add", status=status, ok=verified,
                args={"fingerprint": fp, "title_sha256": hashlib.sha256(plan["title"].encode()).hexdigest()[:16],
-                     "when_ts": plan.get("start_ts") or plan.get("due_ts")})
+                     "when_ts": plan.get("start_ts") or plan.get("due_ts"),
+                     **({"sender_proof": plan["sender_proof"]} if plan.get("sender_proof") else {})})
         if status == "blocked":
             # Nothing was dispatched (the app away, view-only, the policy, a
             # turn): a later cycle may try again; the attempt cap still binds.
@@ -1507,7 +1531,10 @@ def _allowed(allows, line_ts, action: str) -> bool:
 
 def _record(plan: dict, now: float) -> dict:
     keep = ("kind", "title", "quote", "item_id", "source", "who", "account", "received_ts", "timezone",
-            "start_ts", "duration_min", "day", "due_ts", "fingerprint", "item_fingerprint")
+            "start_ts", "duration_min", "day", "due_ts", "fingerprint", "item_fingerprint",
+            # How a mail sender was proven: "gmail", "verified" (the receiving server's result
+            # passed) or "unverified" (Apple Mail, no server result: the known-sender rule alone).
+            "sender_proof")
     return {**{k: plan[k] for k in keep if k in plan}, "at": now}
 
 

@@ -339,7 +339,10 @@ _CALENDAR_OK = "Before anything is sent, or your calendar changes, I show it to 
 _AUTO_ADD = ("Because you let me act for you, I may add a time-sensitive event or deadline from an iMessage with a "
              "saved contact to your Calendar or Reminders on my own, add a reminder to reply when someone you email "
              "asked you something by email over a day ago, in a Google account you linked, and hold a free hour on my own Day plan (never on your calendar) "
-             "for work due soon, then tell you, with Undo. For a date in an email I show a card and wait for your tap.")
+             "for work due soon, then tell you, with Undo. A date in an email I add on my own only if you said yes to "
+             "email and it is from someone you know, in Apple Mail too, where without your mail server's proof a "
+             "forged From line that imitates a known address could make me add something; otherwise I show a card "
+             "and wait for your tap.")
 _ROUTINE = {
     "held": ("For your first few days I only suggest reminders from your routine. After that I may "
              "add a reminder or a Tentative hold in Wisp's own schedule on my own and tell you, with Undo."),
@@ -697,8 +700,8 @@ def privacy() -> str:
 # (model_only.own_question). Every line about acting is acting.py's own
 # wording (ACTIONS, NEVER, SCOPE) and its live state, read and never written.
 
-_ACTING_LABELS = {"add": "Texts with a date", "add_more": "Other texts and email", "hold": "Deadlines",
-                  "follow_up": "Replies you owe"}
+_ACTING_LABELS = {"add": "Texts with a date", "add_more": "Other texts and email",
+                  "add_apple_mail": "Email in Apple Mail", "hold": "Deadlines", "follow_up": "Replies you owe"}
 _ACT_WHERE = "Settings › Privacy, or the notch's settings (the gear)"
 _DRAFTS = "I draft replies for you to send; a send always shows a card and waits for your OK."
 

@@ -80,6 +80,9 @@ ACTIONS: dict[str, str] = {
     "add_more": ("Does the same for a green-bubble text (SMS or RCS) or a group-chat message from someone saved in "
                  "your Contacts, and for an email from someone you know that your mail provider verified (Google "
                  "accounts you linked in Wisp). Never from an unknown number."),
+    "add_apple_mail": ("Does the same for an email in Apple Mail from someone you know, even with no Google account "
+                       "linked, but without your mail server's proof a forged From line that imitates a known "
+                       "address could make Wisp add something."),
     "hold": ("Holds a free hour on your Day plan for work due today or in the next three days "
              "(in Wisp only, never on your calendar)."),
     "follow_up": ("Adds a “Reply to <name>” reminder to Reminders when someone you email asked you something by "
@@ -87,7 +90,8 @@ ACTIONS: dict[str, str] = {
 }
 DOES: list[str] = list(ACTIONS.values())
 # Which action each recorded kind of thing (KINDS) belongs to.
-# (An event or reminder from "add_more" is recorded as the same kinds: undoing one needs only "add".)
+# (An event or reminder from "add_more" or "add_apple_mail" is recorded as the same kinds: undoing
+# one needs only "add".)
 ACTION_OF = {"calendar": "add", "reminder": "add", "hold": "hold", "follow_up": "follow_up", "draft": "draft"}
 NEVER = "Wisp never sends, replies, deletes or pays for anything by itself."
 # The first two lines say exactly what autoadd does. "add" is what the first yes named: a
@@ -96,7 +100,12 @@ NEVER = "Wisp never sends, replies, deletes or pays for anything by itself."
 # green-bubble text (an SMS sender number can be forged; the owner chose to act on a saved
 # contact's all the same), a group-chat line whose own sender is saved (autoadd._group_sender),
 # and an email that passes autoadd.default_mail_proof (autoadd.MAIL_ACTS). It has its own key
-# so that a yes given before it existed does not cover it.
+# so that a yes given before it existed does not cover it. "add_apple_mail" (also 2026-11-13,
+# "do act on email when not connected to gmail") is an email read through Apple Mail
+# (service/proactive/mail_sender_proof.py): a known sender, and the receiving server's
+# Authentication-Results when the reader has them. Without server-side sender proof, a forged
+# From line that imitates a known address could make Wisp add something. The owner chose this
+# on 2026-11-13. It widens email, so it is its own key, and autoadd needs "add_more" with it.
 # What the yes reaches, said the same way everywhere. True for the list above: adds read
 # messages (acting.allows on the line's own arrival); a hold reads the person's own calendar
 # and reminders, where "arrived" has no meaning, so it covers deadlines already there.

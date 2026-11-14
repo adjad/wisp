@@ -214,15 +214,22 @@ def test_a_relative_date_with_no_known_time_is_never_used(store, yes):
 # --- MAIL_ACTS: mail stays a tap card in this release ---------------------------------------------
 
 def test_without_proof_or_with_the_switch_off_a_mail_writes_nothing_but_a_text_still_does(store, yes, monkeypatch):
+    from service.proactive import mail_known
+
+    async def read_sent(now=None):
+        return [], True
+    monkeypatch.setattr(mail_known, "read_sent", read_sent)            # nobody the user knows, read fresh
+    monkeypatch.setattr(mail_known, "read_contact_addresses", lambda: set())
+    monkeypatch.setattr(sources, "gmail_accounts", lambda: set())
     yes(NOW - 2 * H)
     item = thread(row(1, "Recital", INVITE))
     # As shipped since 2026-11-13 the switch is on, and with no proof (this row came through
-    # Apple Mail) an email is still a card, never a write.
+    # Apple Mail, from nobody the user knows) an email is still a card, never a write.
     assert autoadd.MAIL_ACTS is True
     writers, out, notes = run(store, item)
     assert writers.calls == [] and out["added"] == [] and store.auto_added() == {}
     assert [c["action"]["method"] for c in out["tap"]] == ["calendar_event"]
-    assert notes == ["mail: tap to add (not from a Google account you linked)"]
+    assert notes == ["mail: tap to add (not someone you have written to or saved)"]
     # The fail-closed switch: off, and even granted proof adds nothing.
 
     async def proven(item, plan, evidence):

@@ -509,6 +509,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_mail_history_regex.py",
     # Mail acts only with proof: injected Sent rows, Contacts and fetched authentication results.
     "tests/test_autoadd_mail_proof.py",
+    # Apple Mail email: known sender, the receiving server's result when present, both yeses.
+    "tests/test_autoadd_apple_mail_proof.py",
     "tests/test_capture_mail_stays_a_card.py",
     "tests/test_mail_auth.py",
     "tests/test_mail_known.py",

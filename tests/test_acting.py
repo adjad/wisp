@@ -734,13 +734,15 @@ def test_an_action_added_after_the_yes_does_nothing_until_it_is_agreed_to(settin
     _write(setting, enabled=True, enabled_at=NOW, asked=True, covers={"add": NOW, "hold": NOW})
     assert acting.enabled("add") and acting.enabled("hold") and not acting.enabled("follow_up")
     assert acting.allows(NOW + 60, "add") and not acting.allows(NOW + 60, "follow_up")
-    assert acting.pending() == ["add_more", "follow_up"] and acting.asked() is False
+    assert acting.pending() == ["add_more", "add_apple_mail", "follow_up"] and acting.asked() is False
     assert not acting.enabled("add_more") and not acting.allows(NOW + 60, "add_more")   # an older yes for "add" is not "add_more"
-    assert acting.state()["new"] == [acting.ACTIONS["add_more"], acting.ACTIONS["follow_up"]]
+    assert acting.state()["new"] == [acting.ACTIONS["add_more"], acting.ACTIONS["add_apple_mail"],
+                                     acting.ACTIONS["follow_up"]]
     assert acting.state()["agreed"] == [acting.ACTIONS["add"], acting.ACTIONS["hold"]]
     # Yes to the new one: it counts from THIS yes; what was agreed keeps its own time.
     acting.set_enabled(True, now=NOW + 500)
-    assert read(setting)["covers"] == {"add": NOW, "hold": NOW, "add_more": NOW + 500, "follow_up": NOW + 500}
+    assert read(setting)["covers"] == {"add": NOW, "hold": NOW, "add_more": NOW + 500, "add_apple_mail": NOW + 500,
+                                       "follow_up": NOW + 500}
     assert read(setting)["enabled_at"] == NOW
     assert acting.allows(NOW + 100, "add") and not acting.allows(NOW + 100, "follow_up")
     assert acting.allows(NOW + 501, "follow_up") and acting.pending() == [] and acting.asked() is True
@@ -750,9 +752,11 @@ def test_putting_a_new_action_aside_keeps_it_off_and_is_not_asked_again(setting)
     _write(setting, enabled=True, enabled_at=NOW, asked=True, covers={"add": NOW, "hold": NOW})
     before = setting.read_text()
     acting.mark_asked()                                                    # "Not now" on the re-ask
-    assert read(notes(setting)) == {"asked": True, "aside": ["add_more", "follow_up"]} and setting.read_text() == before
+    assert read(notes(setting)) == {"asked": True, "aside": ["add_apple_mail", "add_more", "follow_up"]} \
+        and setting.read_text() == before
     assert acting.asked() is True and not acting.enabled("follow_up") and acting.enabled("add")
-    assert acting.state()["new"] == [acting.ACTIONS["add_more"], acting.ACTIONS["follow_up"]]   # still shown as not agreed
+    assert acting.state()["new"] == [acting.ACTIONS["add_more"], acting.ACTIONS["add_apple_mail"],
+                                     acting.ACTIONS["follow_up"]]                                # still shown as not agreed
     acting.set_enabled(True, now=NOW + 900)                                # the switch, flipped on again later
     assert acting.enabled("follow_up") and acting.allows(NOW + 901, "follow_up")
 
@@ -776,7 +780,8 @@ def test_not_now_never_touches_the_gates_file_so_no_agreed_time_moves(setting, m
     assert (after.st_ino, after.st_ctime_ns, after.st_mtime_ns) == (info.st_ino, info.st_ctime_ns, info.st_mtime_ns)
     assert setting.read_text() == text
     assert {key: acting.enabled_at(key) for key in ("add", "hold")} == since
-    assert acting.asked() and acting.pending() == ["add_more", "follow_up"] and not acting.enabled("follow_up")
+    assert acting.asked() and acting.pending() == ["add_more", "add_apple_mail", "follow_up"] \
+        and not acting.enabled("follow_up")
     acting.mark_asked()                                                    # and again: still nothing
     assert setting.stat().st_ctime_ns == info.st_ctime_ns
 
@@ -799,7 +804,8 @@ def test_a_yes_to_a_new_action_moves_the_agreed_ones_forward_to_that_write(setti
     _write(setting, enabled=True, enabled_at=old, asked=True, covers={"add": old, "hold": old})
     before = time.time()
     acting.set_enabled(True, now=before + 9000)                            # "Yes, these too"
-    assert read(setting)["covers"] == {"add": old, "hold": old, "add_more": before + 9000, "follow_up": before + 9000}   # what was said
+    assert read(setting)["covers"] == {"add": old, "hold": old, "add_more": before + 9000,               # what was said
+                                       "add_apple_mail": before + 9000, "follow_up": before + 9000}
     assert before - 2 <= acting.enabled_at("add") <= time.time() + 2       # what counts: this write
     assert not acting.allows(old + 60, "add") and acting.allows(time.time() + 5, "add")
     assert acting.enabled_at("follow_up") == before + 9000
@@ -880,7 +886,9 @@ def test_an_unknown_action_or_a_malformed_list_covers_nothing(setting):
         _write(setting, enabled=True, enabled_at=NOW, asked=True, covers=covers)
         assert not acting.enabled("add") and not acting.enabled("send_email") and not acting.allows(NOW + 1, "add")
     assert acting.ACTION_OF["calendar"] == acting.ACTION_OF["reminder"] == "add"
-    assert set(acting.ACTION_OF.values()) - {"draft"} == set(acting.ACTIONS) - {"add_more"}   # "add_more" is a consent key only: its writes are recorded as calendar/reminder, undone under "add"
+    # "add_more" and "add_apple_mail" are consent keys only: their writes are recorded as calendar/reminder,
+    # undone under "add".
+    assert set(acting.ACTION_OF.values()) - {"draft"} == set(acting.ACTIONS) - {"add_more", "add_apple_mail"}
 
 
 def test_each_writer_names_its_own_action(setting, store, monkeypatch, tmp_path):

@@ -806,6 +806,13 @@ def test_an_address_in_the_name_can_no_longer_pass_for_the_users_own_organisatio
 
 
 def test_an_email_without_proof_is_never_added_without_a_tap(store, monkeypatch):
+    from service.proactive import mail_known
+
+    async def read_sent(now=None):
+        return [], True
+    monkeypatch.setattr(mail_known, "read_sent", read_sent)            # nobody the user knows, read fresh
+    monkeypatch.setattr(mail_known, "read_contact_addresses", lambda: set())
+    monkeypatch.setattr(sources, "gmail_accounts", lambda: set())
     item = mail("Ed Park", "ed@ucsc.edu", "CSE 20 homework", "Hi all, HW4 due Friday Oct 30 11:59 PM. Good luck!")
 
     def run_once():
@@ -820,8 +827,8 @@ def test_an_email_without_proof_is_never_added_without_a_tap(store, monkeypatch)
     writers, out, notes = run_once()
     assert [k for k, _ in writers.calls] == ["calendar"]                 # the text is added; the email is not
     assert [c["action"]["method"] for c in out["tap"]] == ["reminder"]   # the email stays a card to tap
-    # This row came through Apple Mail: nothing proves who sent it.
-    assert "mail: tap to add (not from a Google account you linked)" in notes
+    # This row came through Apple Mail, from nobody the user knows (mail_sender_proof).
+    assert "mail: tap to add (not someone you have written to or saved)" in notes
     monkeypatch.setattr(autoadd, "MAIL_ACTS", False)                     # the fail-closed switch still works
     writers, out, notes = run_once()
     assert [k for k, _ in writers.calls] == ["calendar"] and "mail: tap to add (mail does not act)" in notes
@@ -1307,7 +1314,7 @@ def _only_the_first_yes(tmp_path, when):
 def test_a_yes_from_before_green_bubbles_were_named_does_not_cover_them(store, yes, tmp_path):
     from service.proactive import acting
     _only_the_first_yes(tmp_path, NOW - 2 * 3600)
-    assert acting.pending() == ["add_more"]
+    assert acting.pending() == ["add_more", "add_apple_mail"]
     sms = _texts("Maya Chen", [DATED], ["SMS;-;" + SAVED], services=("SMS",))
     writers = Writers()
     out, notes = production_step(store, survivors(sms), writers)
