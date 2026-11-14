@@ -138,8 +138,44 @@ struct StudyFindTarget: Equatable, Sendable {
     func allowedURL(_ raw: String) -> URL? {
         guard let parts = Self.parts(raw), parts.host == host else { return nil }
         let s = parts.segments
-        guard s.count >= 3, s[0] == "courses", s[1] == canvasID else { return nil }
+        guard s.count >= 2, s[0] == "courses", s[1] == canvasID else { return nil }
         return parts.url
+    }
+
+    /// The course's own navigation sections Wisp reads, besides Modules: Canvas's
+    /// list pages, read-only. Opening a list never opens an item on it.
+    static let sections: [(name: String, path: [String])] = [
+        ("Home", []), ("Announcements", ["announcements"]), ("Syllabus", ["assignments", "syllabus"]),
+        ("Assignments", ["assignments"]), ("Pages", ["pages"]), ("Discussions", ["discussion_topics"]),
+        ("Files", ["files"]), ("Grades", ["grades"]),
+    ]
+    private static let sectionPaths: Set<[String]> = Set(sections.map(\.path) + [["modules"], ["wiki"]])
+
+    /// Each section's address on this course.
+    var sectionURLs: [(name: String, url: URL)] {
+        Self.sections.compactMap { section in
+            var c = URLComponents()
+            c.scheme = "https"
+            c.host = host
+            c.path = "/" + (["courses", canvasID] + section.path).joined(separator: "/")
+            guard let url = c.url, isNavSection(url.absoluteString) else { return nil }
+            return (section.name, url)
+        }
+    }
+
+    /// Exactly one of the course's section list pages (Home, Announcements,
+    /// Syllabus, the Assignments list, Pages, Discussions, Files, Grades, Modules).
+    func isNavSection(_ raw: String) -> Bool {
+        guard let parts = Self.parts(raw), parts.host == host else { return false }
+        let s = parts.segments
+        guard s.count >= 2, s[0] == "courses", s[1] == canvasID else { return false }
+        return Self.sectionPaths.contains(Array(s.dropFirst(2)))
+    }
+
+    /// A page on the course that launches a tool, LTI, quiz or assignment item.
+    /// A section list page (the Assignments list, the Syllabus) is not one.
+    func isLaunchPage(_ raw: String) -> Bool {
+        Self.launchesTool(raw) && !isNavSection(raw)
     }
 
     func allows(_ raw: String) -> Bool { allowedURL(raw) != nil }
@@ -270,6 +306,8 @@ struct StudyFindPage: Sendable {
     /// AXURLs of web areas nested in the page (iframes, e.g. embedded Slides).
     let frames: [String]
     let text: String
+    /// The read stopped at its element or time budget, so the page may hold more.
+    var truncated = false
 }
 
 // MARK: - Accessibility reader
@@ -347,6 +385,9 @@ enum StudyFindReader {
     // Budgets, as StudyPageReader.
     private static let messagingTimeout: Float = 0.25
     private static let totalBudgetNanoseconds: UInt64 = 6_000_000_000
+    /// The walked tab's own read budget, on top of finding the tabs: a long
+    /// Canvas page (side menus first, then the module list) needs more than 6 s.
+    private static let walkBudgetNanoseconds: UInt64 = 15_000_000_000
     private static let maxElements = 25_000
     private static let maxDepth = 80
     private static let maxSearchElements = 600
@@ -374,11 +415,11 @@ enum StudyFindReader {
     /// Each browser window and its front tab's web area. True when every
     /// window was looked at within the budget. Never call on the main thread.
     @discardableResult
-    private static func eachFrontArea(_ pids: [pid_t], deadline: UInt64,
+    private static func eachFrontArea(_ pids: [pid_t], deadline: () -> UInt64,
                                       _ body: (_ window: AXUIElement, _ area: AXUIElement) -> Void) -> Bool {
         var complete = true
         for pid in pids {
-            guard now() < deadline else { return false }
+            guard now() < deadline() else { return false }
             let app = AXUIElementCreateApplication(pid)
             AXUIElementSetMessagingTimeout(app, messagingTimeout)
             // Chromium apps expose an empty tree until this is set (as
@@ -387,22 +428,23 @@ enum StudyFindReader {
             let windows: [AXUIElement] = elements(app, kAXWindowsAttribute as String)
             if windows.count > maxWindowsPerApp { complete = false }
             for window in windows.prefix(maxWindowsPerApp) {
-                guard now() < deadline else { return false }
+                guard now() < deadline() else { return false }
                 AXUIElementSetMessagingTimeout(window, messagingTimeout)
-                guard let area = webArea(in: window, deadline: deadline) else {
-                    if now() >= deadline { return false }
+                guard let area = webArea(in: window, deadline: deadline()) else {
+                    if now() >= deadline() { return false }
                     continue
                 }
                 body(window, area)
             }
         }
-        return complete && now() < deadline
+        return complete && now() < deadline()
     }
 
     /// Nil when not every window was looked at. Never call on the main thread.
     private static func frontAreas(_ pids: [pid_t]) -> [StudyFindTab]? {
         var tabs: [StudyFindTab] = []
-        let complete = eachFrontArea(pids, deadline: now() + totalBudgetNanoseconds) { _, area in
+        let deadline = now() + totalBudgetNanoseconds
+        let complete = eachFrontArea(pids, deadline: { deadline }) { _, area in
             tabs.append(StudyFindTab(element: area))
         }
         return complete ? tabs : nil
@@ -411,9 +453,9 @@ enum StudyFindReader {
     /// Never call on the main thread.
     private static func scanAll(_ pids: [pid_t], text: Bool, known: [StudyFindTab],
                                 want: (Bool, String) -> Want) -> Scan {
-        let deadline = now() + totalBudgetNanoseconds
+        let clock = Clock(deadline: now() + totalBudgetNanoseconds)
         var pages: [StudyFindPage] = []
-        let complete = eachFrontArea(pids, deadline: deadline) { window, area in
+        let complete = eachFrontArea(pids, deadline: { clock.deadline }) { window, area in
             let tab = StudyFindTab(element: area)
             let isNew = !tab.isAmong(known)
             let url = pageURL(area: area, window: window)
@@ -428,15 +470,23 @@ enum StudyFindReader {
             case .address:
                 pages.append(StudyFindPage(tab: tab, isNew: isNew, url: url, links: [], frames: [], text: ""))
             case .walk:
-                var w = Walk(deadline: deadline, base: URL(string: url), wantText: text)
+                // Its own budget; the time it takes is added back for the other windows.
+                let started = now()
+                var w = Walk(deadline: started + walkBudgetNanoseconds, base: URL(string: url), wantText: text)
                 harvest(area, into: &w, depth: 0, root: true)
+                clock.deadline += now() - started
                 var body = w.lines.joined(separator: "\n")
                 if body.count > maxCharacters { body = String(body.prefix(maxCharacters)) }
                 pages.append(StudyFindPage(tab: tab, isNew: isNew, url: url, links: w.links,
-                                           frames: w.frames, text: body))
+                                           frames: w.frames, text: body, truncated: w.truncated))
             }
         }
         return Scan(pages: pages, complete: complete)
+    }
+
+    private final class Clock {
+        var deadline: UInt64
+        init(deadline: UInt64) { self.deadline = deadline }
     }
 
     /// The window's first AXWebArea, breadth first: the front tab's page.
@@ -483,6 +533,8 @@ enum StudyFindReader {
         /// A module row's type label seen just before its link.
         var pendingType: String?
         var pendingAt = 0
+        /// Stopped at the element or time budget.
+        var truncated = false
         let deadline: UInt64
         let base: URL?
         let wantText: Bool
@@ -492,7 +544,11 @@ enum StudyFindReader {
     /// their URL; static text the page text (when wanted). Password and text
     /// fields are never read.
     private static func harvest(_ element: AXUIElement, into w: inout Walk, depth: Int, root: Bool) {
-        guard depth < maxDepth, w.visited < maxElements, now() < w.deadline else { return }
+        guard w.visited < maxElements, now() < w.deadline else {
+            w.truncated = true
+            return
+        }
+        guard depth < maxDepth else { return }
         w.visited += 1
         AXUIElementSetMessagingTimeout(element, messagingTimeout)
         let role = stringValue(element, kAXRoleAttribute as String) ?? ""
@@ -843,9 +899,10 @@ struct StudyFindAddResult: Equatable, Sendable {
 
 enum StudyFindText {
     static let button = "Find materials"
-    static let help = "Opens this course's Modules page in your browser and finds its slides, docs and readings"
-    static let consentKey = "study.findMaterials.consented.v2"  // v2: up to 100 pages
-    static let consent = "Wisp will open this course's Modules page in your browser, read the links on it and on up "
+    static let help = "Opens this course's Canvas pages in your browser and finds its slides, docs and readings"
+    static let consentKey = "study.findMaterials.consented.v3"  // v3: the course's sections too
+    static let consent = "Wisp will open this course's Modules page and its sections (Home, Announcements, Syllabus, "
+        + "Assignments, Pages, Discussions, Files, Grades) in your browser, read the links on them and on up "
         + "to 100 of the course's own pages, and show you what it found. Each page opens as a tab you close yourself. "
         + "Nothing is added until you choose. "
         + "Linked Google files are read with your Drive sign-in; public articles are fetched without your cookies. "
@@ -857,6 +914,26 @@ enum StudyFindText {
     static let readingModules = "Reading the Modules page"
     static func sorting(_ n: Int) -> String { "Sorting \(n) \(n == 1 ? "link" : "links")" }
     static func readingPage(_ i: Int, of n: Int) -> String { "Reading course page \(i) of \(n)" }
+    static func readingSection(_ name: String, _ i: Int, of n: Int) -> String { "Reading \(name) (\(i) of \(n))" }
+    /// One line of counts on the found card, so a run can be judged without seeing
+    /// the page. Counts only: no titles or addresses.
+    static func summary(_ c: StudyFindCounts) -> String {
+        var parts: [String] = []
+        if let links = c.modulesLinks {
+            parts.append("Modules: \(links) \(links == 1 ? "link" : "links"), \(c.moduleItems) module "
+                + (c.moduleItems == 1 ? "item" : "items"))
+        } else {
+            parts.append("Modules: not read")
+        }
+        parts.append("Sections: \(c.sectionsRead) of \(c.sections) read, \(c.sectionLinks) "
+            + (c.sectionLinks == 1 ? "link" : "links"))
+        parts.append("Kept \(c.kept) of \(c.sent)")
+        if c.pagesPlanned > 0 { parts.append("Opened \(c.pagesRead) of \(c.pagesPlanned) pages") }
+        if c.truncated > 0 {
+            parts.append("\(c.truncated) \(c.truncated == 1 ? "page" : "pages") too large to read in full")
+        }
+        return parts.joined(separator: " · ")
+    }
     static let sortingMore = "Sorting what the course pages link to"
     static let couldntOpen = "Wisp couldn't open the Modules page in your browser. Try again."
     static let couldntRead = "Wisp couldn't read the Modules page. Make sure you're signed in to Canvas in your "
@@ -864,7 +941,7 @@ enum StudyFindText {
     static func tabs(_ n: Int) -> String {
         "Wisp opened \(n) \(n == 1 ? "tab" : "tabs") in your browser — you can close \(n == 1 ? "it" : "them")."
     }
-    static let nothingFound = "Wisp didn't find any course materials on the Modules page."
+    static let nothingFound = "Wisp didn't find any course materials on this course's Canvas pages."
     static let stoppedEarly = "Stopped. This is what Wisp found so far."
     static let stopped = "Stopped. Nothing was added."
     static let timeCap = "Wisp reached its time limit for one run. This is what it found."
@@ -934,6 +1011,20 @@ enum StudyFindText {
 
 // MARK: - The run
 
+/// What one run read, for the found card's summary line.
+struct StudyFindCounts: Equatable, Sendable {
+    var modulesLinks: Int?
+    var moduleItems = 0
+    var sections = 0
+    var sectionsRead = 0
+    var sectionLinks = 0
+    var sent = 0
+    var kept = 0
+    var pagesPlanned = 0
+    var pagesRead = 0
+    var truncated = 0
+}
+
 /// One course's Find materials run. Kept per course across view rebuilds (the
 /// notch can close and reopen mid-run), so the walk carries on and the card
 /// shows where it is when it comes back.
@@ -957,6 +1048,7 @@ final class StudyFindRun: ObservableObject {
     @Published var selected: Set<String> = []
     @Published private(set) var note: String?
     @Published private(set) var result: StudyFindAddResult?
+    @Published private(set) var counts: StudyFindCounts?
 
     let target: StudyFindTarget
     private let transport: Transport
@@ -975,7 +1067,7 @@ final class StudyFindRun: ObservableObject {
     static let maxVisits = 100
     static let runSeconds: TimeInterval = 300 + TimeInterval(maxVisits) * 9
     static let openPause: UInt64 = 1_500_000_000
-    static let modulesWait: TimeInterval = 25
+    static let modulesWait: TimeInterval = 60
     static let pageWait: TimeInterval = 20
     static let maxAddBatch = 60
     static let resolveTimeout: TimeInterval = 30
@@ -1043,6 +1135,7 @@ final class StudyFindRun: ObservableObject {
         selected = []
         note = nil
         result = nil
+        counts = nil
         tabsOpened = 0
     }
 
@@ -1087,6 +1180,7 @@ final class StudyFindRun: ObservableObject {
         note = nil
         result = nil
         tabsOpened = 0
+        counts = nil
         titlesByURL = [:]
         sentTypes = [:]
         phase = .working
@@ -1123,33 +1217,90 @@ final class StudyFindRun: ObservableObject {
         }
         guard live(gen) else { return }
         step = StudyFindText.readingModules
+        var c = StudyFindCounts()
+        let openedAt = Date()
         var page: StudyFindPage?
-        var latest: StudyFindPage?
+        var best: StudyFindPage?
+        var previousCount: Int?
         let modulesDeadline = min(runDeadline, Date().addingTimeInterval(Self.modulesWait))
         while Date() < modulesDeadline {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             guard live(gen) else { return }
             let pages = await StudyFindReader.scan(text: false, known: beforeModules) { isNew, url in
-                (isNew || StudyFindTarget.samePage(url, modulesString)) && t.isModules(url) ? .walk : .skip
+                if (isNew || StudyFindTarget.samePage(url, modulesString)) && t.isModules(url) { return .walk }
+                // Where a new tab went instead (Modules hidden): its address only.
+                return isNew && t.allows(url) ? .address : .skip
             }.pages
             guard live(gen) else { return }
-            guard let now = pages.filter({ !$0.links.isEmpty }).max(by: { $0.links.count < $1.links.count })
-            else { continue }
-            // Read once its link count stops changing across two polls.
-            if let previous = latest, previous.links.count == now.links.count {
+            let elapsed = Date().timeIntervalSince(openedAt)
+            guard let now = pages.filter({ t.isModules($0.url) && !$0.links.isEmpty })
+                .max(by: { $0.links.count < $1.links.count })
+            else {
+                // The course sent its new tab elsewhere: no Modules page to read.
+                if best == nil, elapsed >= 8,
+                   pages.contains(where: { $0.isNew && t.allows($0.url) && !t.isModules($0.url) }) { break }
+                continue
+            }
+            if best.map({ now.links.count >= $0.links.count }) ?? true { best = now }
+            // Read once a complete read's link count is the same across two
+            // polls, at least 3 s after opening. A read cut short never settles.
+            if !now.truncated, previousCount == now.links.count, elapsed >= 3 {
                 page = now
                 break
             }
-            latest = now
+            previousCount = now.truncated ? nil : now.links.count
         }
-        guard let page = page ?? latest else {
+        let modulesPage = page ?? best
+        if let modulesPage {
+            c.modulesLinks = modulesPage.links.count
+            c.moduleItems = modulesPage.links.filter { StudyFindTarget.pathKey($0.url).contains("/modules/items/") }.count
+            if modulesPage.truncated { c.truncated += 1 }
+        }
+        counts = c
+
+        // 2. The course's own sections (Home, Syllabus, the Assignments list…):
+        //    read-only list pages, whose links join the Modules page's.
+        var sectionLinks: [StudyFindLink] = []
+        var sectionFrames: [String] = []
+        let sections = t.sectionURLs
+        c.sections = sections.count
+        for (index, section) in sections.enumerated() {
+            guard live(gen) else { return }
+            if Date() >= runDeadline {
+                note = StudyFindText.timeCap
+                break
+            }
+            // Re-checked here: exactly one of this course's section pages.
+            guard t.allows(section.url.absoluteString), t.isNavSection(section.url.absoluteString) else { continue }
+            step = StudyFindText.readingSection(section.name, index + 1, of: sections.count)
+            try? await Task.sleep(nanoseconds: Self.openPause)
+            guard live(gen) else { return }
+            let snapshot = await StudyFindReader.tabs()
+            guard live(gen) else { return }
+            guard let before = snapshot else { continue }
+            guard await open(section.url) else { continue }
+            guard live(gen) else { return }
+            let landing = await land(opened: section.url.absoluteString, before: before, allowsOff: false, gen: gen,
+                                     until: min(runDeadline, Date().addingTimeInterval(Self.pageWait)))
+            guard live(gen) else { return }
+            guard case .course(let landed)? = landing, t.allows(landed.url), !t.isLaunchPage(landed.url)
+            else { continue }
+            c.sectionsRead += 1
+            c.sectionLinks += landed.links.count
+            if landed.truncated { c.truncated += 1 }
+            sectionLinks += landed.links
+            sectionFrames += landed.frames
+            counts = c
+        }
+        guard modulesPage != nil || c.sectionsRead > 0 else {
             phase = .failed(StudyFindText.couldntRead)
             return
         }
 
-        // 2. Classify its links, with each module item's Canvas type.
+        // 3. Classify their links, with each module item's Canvas type.
         var sent = Set<String>()
-        let first = Self.links(page.links, frames: page.frames, except: &sent)
+        let first = Self.links((modulesPage?.links ?? []) + sectionLinks,
+                               frames: (modulesPage?.frames ?? []) + sectionFrames, except: &sent)
         for link in first {
             guard let type = link.type else { continue }
             let key = StudyFindTarget.pathKey(link.url)
@@ -1162,10 +1313,15 @@ final class StudyFindRun: ObservableObject {
         guard let found = await resolve(first, gen: gen, quiet: false) else { return }
         guard live(gen) else { return }
         merge(found)
+        c.sent = first.count
+        c.kept = found.count
+        counts = c
 
-        // 3. One level deep: up to 100 of the course's own pages, only from
+        // 4. One level deep: up to 100 of the course's own pages, only from
         //    what this resolve returned as via "browser".
         let visits = Self.visits(found, target: t, types: sentTypes)
+        c.pagesPlanned = visits.count
+        counts = c
         var deeper: [StudyFindLink] = []
         var deeperFrames: [String] = []
         for (index, item) in visits.enumerated() {
@@ -1199,7 +1355,10 @@ final class StudyFindRun: ObservableObject {
                 // Re-checked before anything read from the landed page is
                 // used: this course, and not a tool or quiz launch page (its
                 // links and frames are ignored too).
-                guard t.allows(landed.url), !StudyFindTarget.launchesTool(landed.url) else { continue }
+                guard t.allows(landed.url), !t.isLaunchPage(landed.url) else { continue }
+                c.pagesRead += 1
+                if landed.truncated { c.truncated += 1 }
+                counts = c
                 if (item.kind == "page" || item.kind == "discussion"), !landed.text.isEmpty {
                     texts[item.id] = String(landed.text.prefix(StudyFindReader.maxCharacters))
                 }
@@ -1216,12 +1375,17 @@ final class StudyFindRun: ObservableObject {
             }
         }
 
-        // 4. Classify what those pages link to, then show it all. Nothing
+        // 5. Classify what those pages link to, then show it all. Nothing
         //    from this round is opened.
         let second = Self.links(deeper, frames: deeperFrames, except: &sent)
         if !second.isEmpty, live(gen), Date() < runDeadline {
             step = StudyFindText.sortingMore
-            if let more = await resolve(second, gen: gen, quiet: true), live(gen) { merge(more) }
+            if let more = await resolve(second, gen: gen, quiet: true), live(gen) {
+                merge(more)
+                c.sent += second.count
+                c.kept += more.count
+                counts = c
+            }
         }
         guard live(gen) else { return }
         settle()
@@ -1296,7 +1460,7 @@ final class StudyFindRun: ObservableObject {
             guard live(gen) else { return nil }
             let scan = await StudyFindReader.scan(text: true, known: before) { isNew, url in
                 guard isNew || StudyFindTarget.samePage(url, opened) else { return .skip }
-                if t.allows(url) { return StudyFindTarget.launchesTool(url) ? .address : .walk }
+                if t.allows(url) { return t.isLaunchPage(url) ? .address : .walk }
                 // Off the course: a new tab's address only (so new tabs can be
                 // counted), never its page.
                 return isNew ? .address : .skip
@@ -1305,7 +1469,7 @@ final class StudyFindRun: ObservableObject {
             let fresh = scan.pages
             let elapsed = Date().timeIntervalSince(started)
             // A tool or quiz launch page on the course: nothing from it is used.
-            if fresh.contains(where: { t.allows($0.url) && StudyFindTarget.launchesTool($0.url) }) {
+            if fresh.contains(where: { t.allows($0.url) && t.isLaunchPage($0.url) }) {
                 return nil
             }
             if let page = fresh.first(where: { t.allows($0.url) && !$0.text.isEmpty }) {
@@ -1313,7 +1477,7 @@ final class StudyFindRun: ObservableObject {
                 let stillRedirecting = page.url.contains("/modules/items/") && elapsed < 8
                 if !stillRedirecting {
                     latest = page
-                    if lastCount[key] == page.text.count || elapsed >= 10 { return .course(page) }
+                    if (lastCount[key] == page.text.count && !page.truncated) || elapsed >= 10 { return .course(page) }
                 }
                 lastCount[key] = page.text.count
                 continue
@@ -1770,6 +1934,10 @@ private struct StudyFindCard: View {
         VStack(alignment: .leading, spacing: 6) {
             if let note = run.note {
                 Text(note).font(.wisp(.caption)).foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let counts = run.counts {
+                Text(StudyFindText.summary(counts)).font(.wisp(.caption)).foregroundStyle(Theme.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if run.items.isEmpty {
