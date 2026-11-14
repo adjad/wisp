@@ -156,6 +156,7 @@ enum MailDBReaderRegression {
         precondition(MailDBReader(indexPath: root.appendingPathComponent("missing").path)
             .readHistory() == nil, "An unreadable index must fail the history-only read too")
         try closedReadFailureChecks(root: root)
+        readPlanChecks()
 
         // History-only entry point (used while Mail is running) and the
         // account-label trust rule that gates it.
@@ -382,13 +383,79 @@ enum MailDBReaderRegression {
         typealias R = MailDBReader
         let denied = R.closedReadFailure(mailDirectoryExists: true, listErrno: EPERM, hasIndex: false)
         precondition(denied.kind == "full_disk_access"
-                     && denied.reason == "Wisp reads Mail while Mail is open. Open Mail, or give Wisp "
-                        + "Full Disk Access to read it when Mail is closed.")
+                     && denied.reason == "Wisp can't read Apple Mail: open Mail once, or allow Full Disk Access for Wisp "
+                        + "in System Settings > Privacy & Security.")
         let unixDenied = R.closedReadFailure(mailDirectoryExists: true, listErrno: EACCES, hasIndex: false)
         precondition(unixDenied.kind == "" && !unixDenied.reason.contains("Full Disk Access"),
                      "a plain permission error is not a Full Disk Access problem")
         precondition(R.closedReadFailure(mailDirectoryExists: false, listErrno: 0, hasIndex: false).kind
                      == "mail_not_configured")
         precondition(R.closedReadFailure(mailDirectoryExists: true, listErrno: 0, hasIndex: true).kind == "")
+    }
+
+    /// Every combination of Mail open or closed, Full Disk Access, and Automation
+    /// allowed, denied or unknown, with a counting launcher: Mail is opened in one
+    /// case only.
+    static func readPlanChecks() {
+        typealias P = MailReadPlan
+        let fda = (kind: "full_disk_access", reason: P.openMailOrFullDiskAccess)
+        let notConfigured = (kind: "mail_not_configured", reason: "Mail isn't set up on this Mac yet.")
+        let damaged = (kind: "", reason: "Mail's saved index couldn't be read just now.")
+        let states: [MailAutomationState] = [.granted, .denied, .unknown]
+        var launches = 0
+        func plan(open: Bool, _ automation: MailAutomationState, folder: Bool,
+                  failure: (kind: String, reason: String)? = nil) -> P {
+            let chosen = P.decide(mailOpen: open, automation: automation, folderReadable: folder,
+                                  failure: failure ?? (folder ? damaged : fda))
+            _ = P.openIfPlanned(chosen) { launches += 1; return true }
+            return chosen
+        }
+        for automation in states {
+            // Full Disk Access: the index, headers only, never a launch (Mail closed or open
+            // without a usable Automation answer); Mail open and allowed scripts as before.
+            launches = 0
+            precondition(plan(open: false, automation, folder: true) == .localIndex)
+            precondition(launches == 0, "Full Disk Access reads the index without opening Mail")
+            precondition(plan(open: true, automation, folder: true) == (automation == .granted ? .appleScript : .localIndex))
+        }
+        // Mail closed, no Full Disk Access.
+        launches = 0
+        precondition(plan(open: false, .granted, folder: false) == .openHiddenThenAppleScript)
+        precondition(launches == 1, "the one case that opens Mail")
+        launches = 0
+        let denied = plan(open: false, .denied, folder: false)
+        precondition(denied == .cannotRead(kind: "mail_automation", reason: P.automationOff))
+        let unknown = plan(open: false, .unknown, folder: false)
+        precondition(unknown == .cannotRead(kind: "full_disk_access", reason: P.openMailOrFullDiskAccess))
+        precondition(launches == 0, "denied or never-asked Automation never opens Mail")
+        // Mail open, no Full Disk Access.
+        precondition(plan(open: true, .granted, folder: false) == .appleScript)
+        precondition(plan(open: true, .denied, folder: false)
+                     == .cannotRead(kind: "mail_automation", reason: P.automationOff))
+        precondition(plan(open: true, .unknown, folder: false)
+                     == .cannotRead(kind: "mail_automation", reason: P.automationUnasked))
+        precondition(launches == 0)
+        // Reasons that are not about permissions pass through, and no launch for a Mac without Mail.
+        precondition(plan(open: false, .granted, folder: false, failure: notConfigured)
+                     == .cannotRead(kind: "mail_not_configured", reason: notConfigured.reason))
+        precondition(plan(open: false, .unknown, folder: false, failure: damaged)
+                     == .cannotRead(kind: "", reason: damaged.reason))
+        precondition(plan(open: false, .denied, folder: false, failure: damaged)
+                     == .cannotRead(kind: "mail_automation", reason: P.automationOffOnly))
+        precondition(launches == 0)
+        // The switch that opens Mail for Full Disk Access users too: only when Automation is allowed.
+        for automation in states {
+            let chosen = P.decide(mailOpen: false, automation: automation, folderReadable: true,
+                                  failure: damaged, openHiddenWithFullDiskAccess: true)
+            precondition(chosen == (automation == .granted ? .openHiddenThenAppleScript : .localIndex))
+        }
+        precondition(!P.openHiddenWithFullDiskAccess, "off by default")
+        // A launcher that fails reports it; a plan that does not launch never calls it.
+        precondition(!P.openIfPlanned(.openHiddenThenAppleScript) { false })
+        precondition(P.openIfPlanned(.appleScript) { preconditionFailure("must not launch") })
+        precondition(!P.openIfPlanned(.localIndex) { preconditionFailure("must not launch") })
+        // Every sentence is one plain sentence naming the fix.
+        precondition(P.openMailOrFullDiskAccess == "Wisp can't read Apple Mail: open Mail once, or allow Full Disk Access for Wisp in System Settings > Privacy & Security.")
+        print("MailReadPlan: decision table checks passed")
     }
 }

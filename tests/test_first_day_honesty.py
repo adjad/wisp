@@ -485,8 +485,8 @@ def test_google_mail_read_is_narrow_and_strict(monkeypatch, tmp_path):
     now = 1_790_000_000.0
     receipt = dict(headers_verified=True, headers_at=now - 30)
     external = {f"{n}@gmail.com": dict(receipt) for n in names if n != "unsynced"}
-    external["stale@gmail.com"]["headers_at"] = now - 301
-    external["edge@gmail.com"]["headers_at"] = now - 300
+    external["stale@gmail.com"]["headers_at"] = now - 601
+    external["edge@gmail.com"]["headers_at"] = now - 600
     external["unverified@gmail.com"]["headers_verified"] = False
     external["errored@gmail.com"]["headers_error"] = "HTTP 500"
     monkeypatch.setattr(E, "_external_accounts", external)

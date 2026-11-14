@@ -133,7 +133,13 @@ def test_nothing_asks_at_launch():
         text = sources[reader]
         helper = _body(text, "static func automationDecided(")
         assert "AEEventID(typeWildCard), false)" in helper, reader
-        assert "Self.automationDecided(" in text, reader
+        if reader == "MailReader.swift":
+            # Mail's own answer is asked for without prompting, and a scripted read needs a yes.
+            answer = _body(text, "static func automationState(")
+            assert "AEEventID(typeWildCard), false)" in answer, reader
+            assert "Self.automationState(Self.mailBundleID) == .granted" in text, reader
+        else:
+            assert "Self.automationDecided(" in text, reader
 
 
 def test_every_wisp_window_can_be_minimized():
@@ -807,7 +813,7 @@ def test_intel_key_only_setup_is_gated_on_the_signal():
     assert "compiledForIntel && engineAvailable == false" in preset
     assert "#if arch(x86_64)" in preset
     assert "CloudConnection.newCredentialName()" in preset and "CloudConnection.requestBody(" in preset
-    assert 'static let modelID = "anthropic/claude-haiku-5.5"' in preset
+    assert 'static let modelID = "google/gemini-3.8-flash"' in preset
     assert "WISP_REMOTE_ONLY" not in preset
     settings = sources["SettingsView.swift"]
     assert "CloudConnection.newCredentialName()" in settings and "CloudConnection.requestBody(" in settings

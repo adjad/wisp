@@ -581,7 +581,7 @@ final class MailReader {
     // picks it up. Bundle ID, not app name, since Mail's display name can be
     // localized.
     private func isMailRunning() -> Bool {
-        mailAppOpen() && Self.automationDecided("com.apple.mail")
+        mailAppOpen() && Self.automationState(Self.mailBundleID) == .granted
     }
 
     private func mailAppOpen() -> Bool {
@@ -604,6 +604,151 @@ final class MailReader {
         return status != OSStatus(errAEEventWouldRequireUserConsent)
     }
 
+    static let mailBundleID = "com.apple.mail"
+
+    /// macOS's answer about Wisp scripting `bundleID`, asked without prompting, or nil
+    /// when the app is not running (macOS cannot answer for an app that is closed).
+    static func automationState(_ bundleID: String) -> MailAutomationState? {
+        var target = AEAddressDesc()
+        let created = bundleID.withCString { pointer in
+            AECreateDesc(DescType(typeApplicationBundleID), pointer, strlen(pointer), &target)
+        }
+        guard created == noErr else { return nil }
+        defer { AEDisposeDesc(&target) }
+        let status = AEDeterminePermissionToAutomateTarget(&target, AEEventClass(typeWildCard),
+                                                           AEEventID(typeWildCard), false)
+        switch status {
+        case noErr: return .granted
+        case OSStatus(errAEEventNotPermitted): return .denied
+        case OSStatus(errAEEventWouldRequireUserConsent): return .unknown
+        default: return nil
+        }
+    }
+
+    /// The last answer macOS gave while Mail was open, kept so a scan with Mail
+    /// closed knows whether opening it hidden is allowed. No record means unknown:
+    /// Wisp never opens Mail on a guess, and never asks here.
+    enum MailAutomationMemory {
+        private static let key = "wisp.mail.automationState"
+
+        static func recorded(_ defaults: UserDefaults = .standard) -> MailAutomationState {
+            defaults.string(forKey: key).flatMap(MailAutomationState.init(rawValue:)) ?? .unknown
+        }
+
+        static func record(_ state: MailAutomationState, _ defaults: UserDefaults = .standard) {
+            if state == .unknown { defaults.removeObject(forKey: key) } else { defaults.set(state.rawValue, forKey: key) }
+        }
+    }
+
+    /// How this scan reads Mail (MailReadPlan). `indexReadable: false` plans as if
+    /// the on-disk index could not be read, after a read of it just failed.
+    private func readPlan(indexReadable: Bool = true) -> MailReadPlan {
+        let open = mailAppOpen()
+        var automation = MailAutomationMemory.recorded()
+        if open {
+            // Mail answers for itself while it runs; that answer is the one to trust and
+            // keep. No answer (it is quitting or still starting) keeps the old record.
+            if let live = Self.automationState(Self.mailBundleID) {
+                automation = live
+                MailAutomationMemory.record(live)
+            } else {
+                automation = .unknown
+            }
+        }
+        return MailReadPlan.decide(mailOpen: open, automation: automation,
+                                   folderReadable: indexReadable && dbReader.canListMailFolder(),
+                                   failure: dbReader.closedReadFailure())
+    }
+
+    /// Mail is not scriptable: reads what can be read without it, or opens it hidden.
+    /// True when Mail is now open and allowed, so the scan goes on through AppleScript;
+    /// false when this call has posted the scan's result (the index, or why not).
+    private func readClosedMail() -> Bool {
+        var plan = readPlan()
+        if plan == .localIndex {
+            if postFromIndex() { return false }
+            plan = readPlan(indexReadable: false)
+        }
+        switch plan {
+        case .appleScript:
+            return true
+        case .openHiddenThenAppleScript:
+            guard let failure = openMailHidden() else { return true }
+            postDiagnostic(available: false, reason: failure.reason, kind: failure.kind)
+            return false
+        case .localIndex:
+            return false  // unreachable: an unreadable index never plans another index read
+        case .cannotRead(let kind, let reason):
+            postDiagnostic(available: false, reason: reason, kind: kind)
+            return false
+        }
+    }
+
+    /// Bodies come only from Mail itself (the index holds headers). With Mail closed
+    /// they are read after opening it hidden, in the one case the plan allows.
+    private func reopenedForBodies() -> Bool {
+        guard readPlan() == .openHiddenThenAppleScript else { return false }
+        return openMailHidden() == nil
+    }
+
+    /// macOS refusing a script (-1743) is the answer to remember while Mail is closed.
+    private func rememberAutomation(afterFailure code: Int) {
+        if code == -1743 { MailAutomationMemory.record(.denied) }
+    }
+
+    private let launchLock = NSLock()
+    private var mailOpenedByWisp: NSRunningApplication?
+
+    /// Opens Mail in the background the way setup does (FirstRunPermissions.launchHidden):
+    /// no window shown, not brought forward, not in Recents. Waits until Mail can be
+    /// asked about, then returns nil when Wisp may script it, or the reason it may not.
+    /// Mail it opened for an answer that turned out to be no is closed again.
+    private func openMailHidden() -> (kind: String, reason: String)? {
+        launchLock.lock()
+        defer { launchLock.unlock() }
+        if !mailAppOpen() {
+            guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.mailBundleID) else {
+                return (kind: "", reason: MailReadPlan.couldNotOpen)
+            }
+            let config = NSWorkspace.OpenConfiguration()
+            config.activates = false
+            config.hides = true
+            config.addsToRecentItems = false
+            let done = DispatchSemaphore(value: 0)
+            let box = LaunchedApp()
+            NSWorkspace.shared.openApplication(at: url, configuration: config) { app, _ in
+                box.app = app
+                done.signal()
+            }
+            guard done.wait(timeout: .now() + 20) == .success, let app = box.app else {
+                return (kind: "", reason: MailReadPlan.couldNotOpen)
+            }
+            mailOpenedByWisp = app
+        }
+        var state: MailAutomationState?
+        let deadline = Date().addingTimeInterval(20)
+        while state == nil && Date() < deadline {
+            state = Self.automationState(Self.mailBundleID)
+            if state == nil { Thread.sleep(forTimeInterval: 0.5) }
+        }
+        guard let state else { return (kind: "", reason: MailReadPlan.couldNotOpen) }
+        MailAutomationMemory.record(state)
+        if state == .granted { return nil }
+        closeMailIfWispOpenedIt()
+        return state == .denied
+            ? (kind: "mail_automation", reason: MailReadPlan.automationOffOnly)
+            : (kind: "mail_automation", reason: MailReadPlan.automationUnaskedClosed)
+    }
+
+    private final class LaunchedApp: @unchecked Sendable { var app: NSRunningApplication? }
+
+    private func closeMailIfWispOpenedIt() {
+        guard let app = mailOpenedByWisp, !app.isTerminated,
+              FirstRunPermissions.quitsAfterAsking(launchedByWisp: true, isHidden: app.isHidden,
+                                                    isActive: app.isActive) else { return }
+        app.terminate()
+        mailOpenedByWisp = nil
+    }
 
     /// Run a script, returning its string result, or nil (with the error code)
     /// when it failed. Every scan below goes through this so a failure is
@@ -798,44 +943,13 @@ final class MailReader {
                 var identityMayRead = false
                 var identityKnownEmpty = false
                 defer { self.syncIdentity(capture: capture, readAccounts: identityMayRead, knownEmpty: identityKnownEmpty) }
-                // Mail isn't open — rather than launching it just to answer "what's
-                // in the inbox", read straight from its on-disk index instead. No
-                // AppleScript, no auto-launch, and (being a plain indexed SQL scan)
-                // considerably faster than the batched history walk this replaces
-                // for this tick. See MailDBReader.
-                guard self.isMailRunning() else {
-                    let captured = self.historyState.capture()
-                    // A stale index cannot reintroduce disabled-account rows after
-                    // this process observed zero enabled accounts. Unknown later
-                    // metadata preserves that boundary until a known nonempty scan.
-                    if captured.lastKnownEmpty {
-                        self.postEmptyAccounts(readSource: "local_index")
-                        return
-                    }
-                    let generation = captured.generation
-                    if let (headers, history) = self.dbReader.readHeadersAndHistory() {
-                        // A completed read is complete even for an empty or old
-                        // index. File modification time cannot tell us whether a
-                        // provider sync is running (a quiet inbox may not change).
-                        // Report the local-only limitation separately; otherwise
-                        // this read-only path can leave Email "syncing" forever.
-                        // Headers and their readiness diagnostic must be one atomic
-                        // backend update. Separate fire-and-forget requests could
-                        // arrive in either order, letting Daily Summary observe
-                        // "sync complete" while it still held the restored cache.
-                        // This history replaces whatever an AppleScript walk
-                        // last posted, so the next walk must not stitch onto it.
-                        self.post(headers: headers, available: true, reason: "",
-                                  readSource: "local_index", history: history,
-                                  historyGeneration: generation)
-                    } else {
-                        let failure = Permissions.unaskedAutomation(
-                            app: "Mail", appRunning: self.mailAppOpen(),
-                            automationDecided: Self.automationDecided("com.apple.mail"),
-                            failure: self.dbReader.closedReadFailure())
-                        self.postDiagnostic(available: false, reason: failure.reason, kind: failure.kind)
-                    }
-                    return
+                // Mail isn't open, or Wisp may not script it. Rather than launching it
+                // just to answer "what's in the inbox", read its on-disk index (no
+                // AppleScript, headers only), or open it hidden when that is the only
+                // way and Automation is allowed, or say what blocks the read. See
+                // MailReadPlan for the table. False: this scan has already posted.
+                if !self.isMailRunning() {
+                    guard self.readClosedMail() else { return }
                 }
 
                 // nil is the display-only fallback for unavailable enumeration.
@@ -903,6 +1017,7 @@ final class MailReader {
                 // flowing, and claiming otherwise would send the user to a
                 // permission screen that isn't the problem.
                 guard anySucceeded else {
+                    self.rememberAutomation(afterFailure: lastFailureCode)
                     let failure = Self.scriptFailure(code: lastFailureCode)
                     self.postDiagnostic(available: false, reason: failure.reason, kind: failure.kind)
                     return
@@ -1003,7 +1118,9 @@ final class MailReader {
                 var identityMayRead = false
                 var identityKnownEmpty = false
                 defer { self.syncIdentity(capture: capture, readAccounts: identityMayRead, knownEmpty: identityKnownEmpty) }
-                guard self.isMailRunning() else {
+                // Bodies come only from Mail itself; see reopenedForBodies.
+                let opened = self.isMailRunning() || self.reopenedForBodies()
+                guard opened else {
                     self.post(raw: "", coverage: ["accounts": [String](),
                               "failed_accounts": ["Mail unavailable"], "complete": false,
                               "failure_diagnostics": [["stage": "mail_closed", "code": 0]]])
@@ -1291,6 +1408,35 @@ final class MailReader {
                                                    reasonKind: "mail_not_configured")
         }
     }
+
+    /// Posts Mail's saved index as headers and history. False, with nothing posted,
+    /// when the index could not be read.
+    private func postFromIndex() -> Bool {
+        let captured = historyState.capture()
+        // A stale index cannot reintroduce disabled-account rows after
+        // this process observed zero enabled accounts. Unknown later
+        // metadata preserves that boundary until a known nonempty scan.
+        if captured.lastKnownEmpty {
+            postEmptyAccounts(readSource: "local_index")
+            return true
+        }
+        let generation = captured.generation
+        guard let (headers, history) = dbReader.readHeadersAndHistory() else { return false }
+        // A completed read is complete even for an empty or old
+        // index. File modification time cannot tell us whether a
+        // provider sync is running (a quiet inbox may not change).
+        // Headers and their readiness diagnostic must be one atomic
+        // backend update. Separate fire-and-forget requests could
+        // arrive in either order, letting Daily Summary observe
+        // "sync complete" while it still held the restored cache.
+        // This history replaces whatever an AppleScript walk
+        // last posted, so the next walk must not stitch onto it.
+        post(headers: headers, available: true, reason: "",
+             readSource: "local_index", history: history,
+             historyGeneration: generation)
+        return true
+    }
+
 
     private func post(headers: String, available: Bool, reason: String,
                       readSource: String, history: String? = nil,

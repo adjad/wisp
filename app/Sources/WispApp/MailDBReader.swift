@@ -60,6 +60,14 @@ final class MailDBReader {
         return Self.closedReadFailure(mailDirectoryExists: exists, listErrno: listErrno, hasIndex: hasIndex)
     }
 
+    /// Whether macOS lets Wisp list Mail's folder: Full Disk Access is on. A cheap
+    /// probe (one opendir), asked before choosing how to read Mail.
+    func canListMailFolder() -> Bool {
+        guard let dir = opendir(mailDirectory) else { return false }
+        closedir(dir)
+        return true
+    }
+
     /// The rule behind closedReadFailure(), from what the file system said.
     ///
     /// - IMPORTANT: Full Disk Access only when macOS refused the folder (EPERM,
@@ -73,8 +81,7 @@ final class MailDBReader {
         guard mailDirectoryExists else { return notConfigured }
         if listErrno == EPERM {
             return (kind: "full_disk_access",
-                    reason: "Wisp reads Mail while Mail is open. Open Mail, or give Wisp Full Disk Access "
-                        + "to read it when Mail is closed.")
+                    reason: MailReadPlan.openMailOrFullDiskAccess)
         }
         if listErrno != 0 {
             return (kind: "", reason: "Wisp couldn't open Mail's folder. Open Mail, and Wisp will read it from there.")
@@ -545,5 +552,101 @@ enum AccountLabelCache {
 
     static func stored() -> [String: String] {
         UserDefaults.standard.dictionary(forKey: key) as? [String: String] ?? [:]
+    }
+}
+
+
+// MARK: - How Mail is read
+
+/// What macOS says about Wisp scripting Mail (Automation).
+enum MailAutomationState: String, Equatable {
+    /// Allowed, answered live or remembered from the last time Mail was open.
+    case granted
+    /// Turned off for Wisp in System Settings.
+    case denied
+    /// No answer on record: never asked, or Mail has not been open since a reset.
+    case unknown
+}
+
+/// The one way Wisp reads Mail on a scan, decided from three facts. Pure, so every
+/// combination is checked without Mail or a Mac that has it.
+///
+/// - Mail open and Automation allowed: AppleScript (headers, bodies, accounts).
+/// - Mail's folder readable (Full Disk Access): the on-disk index, headers only,
+///   no launch. Senders, subjects, dates and read state; no bodies.
+/// - Folder unreadable, Mail closed, Automation allowed: open Mail hidden (no
+///   window shown, not brought forward), then AppleScript as above.
+/// - Anything else: no read, and the one sentence that says why and what fixes it.
+///
+/// Mail is opened only on `.openHiddenThenAppleScript`, and Wisp never asks for
+/// Automation here (Wisp's setup asks); a denied or unanswered one never opens Mail.
+enum MailReadPlan: Equatable {
+    case appleScript
+    case openHiddenThenAppleScript
+    case localIndex
+    case cannotRead(kind: String, reason: String)
+
+    /// Full Disk Access users get Mail's saved index without opening Mail. Set true
+    /// to open Mail hidden for them too whenever Automation is allowed, which also
+    /// gets bodies and mail newer than the index (Mail only fetches while open).
+    static let openHiddenWithFullDiskAccess = false
+
+    static let openMailOrFullDiskAccess =
+        "Wisp can't read Apple Mail: open Mail once, or allow Full Disk Access for Wisp in "
+        + "System Settings > Privacy & Security."
+    static let automationOff =
+        "Wisp can't read Apple Mail: Automation for Mail is off for Wisp. Turn on Mail for Wisp in "
+        + "System Settings > Privacy & Security > Automation, or allow Full Disk Access there."
+    static let automationOffOnly =
+        "Wisp can't read Apple Mail: Automation for Mail is off for Wisp. Turn on Mail for Wisp in "
+        + "System Settings > Privacy & Security > Automation."
+    static let automationUnasked =
+        "Wisp can't read Apple Mail: Mail is open, but Wisp hasn't been allowed to read it yet. "
+        + "Open Wisp's Settings, choose Permissions… under Privacy, and click Allow next to Mail & Notes."
+    static let automationUnaskedClosed =
+        "Wisp can't read Apple Mail: Wisp hasn't been allowed to read it yet. "
+        + "Open Wisp's Settings, choose Permissions… under Privacy, and click Allow next to Mail & Notes."
+    static let couldNotOpen =
+        "Wisp couldn't open Mail in the background. Open Mail once, and Wisp will read it from there."
+
+    /// - Parameters:
+    ///   - mailOpen: Mail is running (a script would not launch it).
+    ///   - automation: the live answer when Mail is open, else the last one remembered.
+    ///   - folderReadable: Full Disk Access lets Wisp list ~/Library/Mail.
+    ///   - failure: MailDBReader.closedReadFailure(), for reads that fail for other reasons.
+    static func decide(mailOpen: Bool, automation: MailAutomationState, folderReadable: Bool,
+                       failure: (kind: String, reason: String),
+                       openHiddenWithFullDiskAccess: Bool = MailReadPlan.openHiddenWithFullDiskAccess) -> MailReadPlan {
+        if mailOpen && automation == .granted { return .appleScript }
+        if folderReadable {
+            if !mailOpen && automation == .granted && openHiddenWithFullDiskAccess {
+                return .openHiddenThenAppleScript
+            }
+            return .localIndex
+        }
+        // No Full Disk Access from here on.
+        if failure.kind == "mail_not_configured" { return .cannotRead(kind: failure.kind, reason: failure.reason) }
+        if !mailOpen && automation == .granted { return .openHiddenThenAppleScript }
+        let fdaDenied = failure.kind == "full_disk_access"
+        switch automation {
+        case .denied:
+            return .cannotRead(kind: "mail_automation", reason: fdaDenied ? automationOff : automationOffOnly)
+        case .unknown where mailOpen:
+            return .cannotRead(kind: "mail_automation", reason: automationUnasked)
+        case .unknown:
+            // Closed, no answer on record: opening Mail once lets Wisp learn it.
+            return fdaDenied ? .cannotRead(kind: "full_disk_access", reason: openMailOrFullDiskAccess)
+                             : .cannotRead(kind: failure.kind, reason: failure.reason)
+        case .granted:
+            // Mail is open and Automation is allowed: handled above.
+            return .appleScript
+        }
+    }
+
+    /// The only place Mail is launched: the launcher runs on `.openHiddenThenAppleScript`
+    /// and never otherwise. Returns whether Mail is open and ready to script.
+    static func openIfPlanned(_ plan: MailReadPlan, launcher: () -> Bool) -> Bool {
+        guard plan == .openHiddenThenAppleScript else { return plan == .appleScript }
+        return launcher()
     }
 }

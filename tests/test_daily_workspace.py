@@ -778,7 +778,7 @@ def test_actual_email_accessor_gates_header_only_daily_evidence(composed_header_
     store, mail, backing, _ = composed_header_sources
     account = "work@example.test"
     source = backing[account]
-    if condition == "stale": source["headers_at"] = NOW - 301
+    if condition == "stale": source["headers_at"] = NOW - 601
     if condition == "future": source["headers_at"] = NOW + 1
     if condition == "error": source["headers_error"] = "Synthetic disconnected account"
     if condition == "restored": source["headers_verified"] = False
@@ -803,7 +803,7 @@ def test_actual_email_accessor_keeps_fresh_account_separate_from_stale_account(c
     store, mail, backing, header = composed_header_sources
     stale = "stale@example.test"
     backing[stale] = dict(headers=header(stale, stale, "old", "Old assignment due Friday"),
-        headers_at=NOW - 301, headers_verified=True, headers_error="", history=None, raw=None)
+        headers_at=NOW - 601, headers_verified=True, headers_error="", history=None, raw=None)
     monkeypatch.setattr(mail, "_headers", header() + "\n" + backing[stale]["headers"])
     result = collect_evidence(store, state(), DAY, ZONE, now=NOW)["email"]
     assert result["ready"] and [r["title"] for r in result["records"]] == ["Assignment due Friday"]

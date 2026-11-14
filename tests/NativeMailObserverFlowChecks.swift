@@ -153,6 +153,17 @@ final class Reader {
     // A closed-read failure only matters here with Mail closed.
     func mailAppOpen() -> Bool { false }
     static func automationDecided(_ bundleID: String) -> Bool { true }
+    // MailReader.readClosedMail chooses between the index, opening Mail hidden and a
+    // diagnostic (MailReadPlan, checked in MailDBReaderRegression); here Mail is never
+    // opened, so it reads the index and reports the fixture's closed-read failure.
+    func readClosedMail() -> Bool {
+        if postFromIndex() { return false }
+        let failure = dbReader.closedReadFailure()
+        postDiagnostic(available: false, reason: failure.reason, kind: failure.kind)
+        return false
+    }
+    func reopenedForBodies() -> Bool { false }
+    func rememberAutomation(afterFailure code: Int) {}
     func isMailRunning() -> Bool {
         touch("running"); runningChecks += 1
         if which == "closed" { return false }
