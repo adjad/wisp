@@ -4,6 +4,13 @@
   "upstream_tree_sha256": "43bc865f4662bd5d137997edb25229798d56344e89a2c587353d0e2c01669fac",
   "patches": [
     {
+      "path": "omlx/__init__.py",
+      "input_sha256": "9466d901862868132d26cfc5525c2c35ef1e6befb806e2257713bcaa45344847",
+      "output_sha256": "1464bf6e820f078865b5fe525e9416d941c483a592a536f61e5de765d71d6428",
+      "patch": "__init__.py.patch.json",
+      "patch_sha256": "1feba8229d20526f0454d7bd65e60d19010d2f6baed438e422a931ade14378a2"
+    },
+    {
       "path": "omlx/engine/vlm.py",
       "input_sha256": "6fff38f74a2ed3966cf83b3cab6d9db50607734fccf926c8ce717e6b7f1ab4a2",
       "output_sha256": "1a354a6ad3fd20534ea3c2123867dd5ffba12e0ee468cd05e0c61406980a3bb0",
@@ -16,6 +23,27 @@
       "output_sha256": "a9e694b4ffa37af3d98837ed2aff771ea87b20dc2ce87f06244167250ea42e77",
       "patch": "engine_pool.py.patch.json",
       "patch_sha256": "b5fd7714fa962db12d1c3829f96a98d3218cd0a1c10c54dbbe0c26ac20ac0fd8"
+    },
+    {
+      "path": "omlx/patches/gemma4_verify_attention.py",
+      "input_sha256": "ad4a99baa3c5230ed54cc161feac51144494c04c3910717a68354a1f34dc5ae9",
+      "output_sha256": "7ce009e36887984fe143072a5105d744cef969fb92931ef4f2cd2353ced728ee",
+      "patch": "gemma4_verify_attention.py.patch.json",
+      "patch_sha256": "8f384e8e66f3332428d2c64957f98b69dd2f8bb5d5a7b2ef25bf38d44f377ac3"
+    },
+    {
+      "path": "omlx/patches/gemma4_verify_kernel.py",
+      "input_sha256": "b73cd736b5de722ce5352b3a1e9f8566c6d2889e99a32e4e965dd8ad90e87d35",
+      "output_sha256": "1a716960f147f4f7f6cc02f8525977e3aaa6b8b21b6484c1d88b36b4376268f8",
+      "patch": "gemma4_verify_kernel.py.patch.json",
+      "patch_sha256": "ddd55c1beacb17372b75cf25f723428d0812a9c191870b9244965ae46e277fd9"
+    },
+    {
+      "path": "omlx/patches/mlx_lm_mtp/batch_generator.py",
+      "input_sha256": "979d9b64e8f8d2f5b2e602c6860ee70c9a0f83ac512545e03ce5c0251b304269",
+      "output_sha256": "2fe5cf0eb0caf56caaaff1c715e457bea7eff63783f9108bc11b14c7643712f9",
+      "patch": "batch_generator.py.patch.json",
+      "patch_sha256": "90c8a926c1729e87700e4925b415a5e3a1ba131a9ebc3f297fc5c3ae38419610"
     },
     {
       "path": "omlx/process_memory_enforcer.py",
@@ -42,6 +70,11 @@
       "path": "omlx/wisp_encoders.py",
       "source": "encoders.py",
       "sha256": "9522e8307f0b22b3cab61b05c1da6b6c54c8b25419777728df32cd011cfc1588"
+    },
+    {
+      "path": "omlx/wisp_kernel_guard.py",
+      "source": "kernel_guard.py",
+      "sha256": "d2469e2804f0ff22d45ff7dee376591ce4dc0fac5f07171bbbff7e2a64bf045f"
     }
   ]
 }

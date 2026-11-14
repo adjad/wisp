@@ -105,11 +105,50 @@ The normal bundle manifest binds the final signed bytes. The signed source app
 and its upstream lock are never modified by staging.
 Changing the engine input also requires reviewing and updating this overlay;
 an unmatched engine is refused even for a preview. For 0.7.3 the overlay covers
-`engine_pool.py`, `process_memory_enforcer.py`, `server.py` and `engine/vlm.py`. Every edit
+`engine_pool.py`, `process_memory_enforcer.py`, `server.py`, `engine/vlm.py`, and for the
+Metal threadgroup guard `__init__.py`, `patches/gemma4_verify_kernel.py`,
+`patches/gemma4_verify_attention.py` and `patches/mlx_lm_mtp/batch_generator.py`
+(see "Metal threadgroup limits" below). Every edit
 made for 0.7.3rc1 applies unchanged to 0.7.3; only the checksums moved. In 0.7.3rc1 oMLX removed the separate
 DFlash engine, so its patch and the guard's child-engine binding are gone. Engine types
 the guard has no pinned residency convention for (Splash, Decision, and any new one) are
 refused a start rather than admitted unchecked.
+
+### Metal threadgroup limits
+
+Metal caps the threads of one threadgroup per compiled pipeline, and the cap
+depends on the GPU: a kernel that may use 1024 threads on an M5 may use 448 on
+an M1 Pro. MLX does not expose the cap and checks it only when the lazy graph
+is evaluated, so no caller can fall back. With oMLX 0.7.3rc1 (Wisp 0.5.0-dev5
+to 0.5.0-rc2-beta2) the M1 verify kernel `omlx_m1_verify_mma5` asked for 512
+threads where its 5-bit bf16 pipeline allows 448 on M1 and M2, and every reply
+ended ("Thread group size (512) is greater than the maximum allowed threads per
+threadgroup (448)", upstream issue jundot/omlx#4913, fixed in oMLX 0.7.3).
+
+`engine_guard/kernel_guard.py` (installed as `omlx/wisp_kernel_guard.py`) wraps
+`mx.fast.metal_kernel`. The first dispatch of each pipeline at a new size is
+evaluated at the call; a refusal is raised there, with the cap Metal reported,
+so the caller can fall back. The Gemma 4 verify kernel shrinks its row groups
+to that cap and retries, folds its fixed 1024-thread second pass in MLX ops
+where that pass cannot run, and otherwise takes the stock attention. Any error
+inside a Lightning MTP step rebuilds the committed cache and continues the
+reply with plain decoding; a threadgroup error keeps that model off MTP until
+it is reloaded. Memory enforcement errors and failed command buffers are never
+swallowed.
+
+`scripts/engine_kernel_cap_check.py` runs the real kernels on the build host's
+GPU, at its own limits and as if every pipeline allowed 448 threads. It loads
+no model:
+
+```bash
+python3 scripts/engine_kernel_cap_check.py --from-upstream /Applications/oMLX.app/Contents/Resources
+```
+
+On a Mac with a built Wisp, the same check against the installed engine:
+
+```bash
+/Applications/Wisp.app/Contents/Resources/engine/py/bin/python3 scripts/engine_kernel_cap_check.py --engine-root /Applications/Wisp.app/Contents/Resources/engine
+```
 
 The existing authenticated engine status endpoint reports a bounded guard
 snapshot from actual propagation and successful enforcement iterations. Default
