@@ -27,38 +27,52 @@ IMPORTANT rules:
     on. A tap card, as before.
   - Absent (the key missing or None, an empty list, or the trusted result names no dmarc, dkim or
     spf check at all): acted on by the known-sender rule alone, recorded as "unverified".
-- Which Authentication-Results header is trusted. A header can be written by anyone on the path,
-  the sender included; the one that counts is the one the user's own receiving server added, and
-  a server prepends its headers, so it is above everything the sender wrote. So:
+- Which Authentication-Results header is trusted: exactly ONE. A header can be written by anyone
+  on the path, the sender included; the one that counts is the one the user's own receiving
+  server added, and a server prepends its headers, so it is above everything the sender wrote.
   1. The account's mail domains are known (the reader's `account_addresses`, else the Mail
      account label when it is an address, else the user's own addresses from identity): the
-     trusted set is the TOP-MOST run of consecutive headers whose authserv-id is that domain's
-     receiving operator (RECEIVERS, e.g. icloud.com for an iCloud, me.com or mac.com address;
-     iCloud writes one header per check) or a subdomain of it. Any authserv-id of that run seen
-     again anywhere in the message refuses (someone else wrote one), as the Gmail rule does.
-  2. Nothing matches, or no domain is known: the top-most header alone.
+     TOP-MOST header whose authserv-id is that domain's receiving operator (RECEIVERS, e.g.
+     icloud.com for an iCloud, me.com or mac.com address) or a subdomain of it.
+  2. Nothing matches, or no domain is known: the top-most header.
+  The one header is read alone: never together with headers below it. Reading a run of them
+  would let a sender add a header under a unique id beneath the server's (`zz.icloud.com; dkim=
+  pass`) and turn the server's "no aligned pass" into a pass. That id seen again anywhere else in
+  the message refuses (someone else wrote one), as the Gmail rule does.
   Its limits: (a) where the receiving server adds no Authentication-Results at all, the top-most
   header is the sender's own and is read as if it were the server's. (b) An internal hop above
   the border server (a filter, a forwarder) may be what is read. (c) A server whose authserv-id
   is not under the account's domain and not in RECEIVERS (a custom domain hosted elsewhere) falls
-  to rule 2. None of these lets a header ENABLE an add that the known-sender rule would not
-  allow: a pass and an absent result act alike; only a failure changes the outcome, and it only
-  refuses. A forger can therefore at most make a forged mail look "verified" internally, or make
-  a real one a tap card. The one thing the server's genuine top-most failure always does is stop
-  the add, and a sender cannot remove a header the server writes above theirs.
-- Mail of a Google account LINKED in Wisp keeps Gmail's proof, whichever reader saw it. An Apple
-  Mail copy is treated as that account's mail when its account addresses, its Mail account label
-  or its To header name a linked address; then only gmail_source's verdict for the same
-  Message-ID and sender counts, exactly as for the Google-fetched copy. And any linked account
-  whose fetched evidence for this Message-ID and sender FAILS refuses the Apple Mail copy too.
-  Mail of every other account follows this module's rule while a Google account is linked:
-  linking Google does not change what an iCloud or Exchange account's mail proves.
+  to rule 2. (d) A server that writes one header per check (iCloud does) is judged by its top-most
+  one only: when that is a check that proves nothing about the sender (BIMI), the mail counts as
+  "unverified", and a failure in a lower header of the server's is not seen. None of these lets a
+  header ENABLE an add that the known-sender rule would not allow: a pass and an absent result
+  act alike; only a failure changes the outcome, and it only refuses. A forger can therefore at
+  most make a forged mail look "verified" internally, or make a real one a tap card; and a sender
+  cannot remove, or add anything that is read beside, the header the server writes above theirs.
+- While ANY Google account is linked in Wisp, an Apple Mail item fails closed unless its account
+  is POSITIVELY shown to be another one: its `account_addresses`, or its Mail account label when
+  that is an address, name addresses and none of them is linked. Otherwise it may be a linked
+  account's mail (sources.dedupe_copies keeps the Mail.app copy over the Google-fetched one, and
+  Mail's label for a Google account is usually just "Google"), so only Gmail's verdict counts: a
+  non-empty Message-ID, and gmail_source.authenticated_for True for it and this sender under a
+  linked account (the one the account names, when it names one). No Message-ID, no verdict (a
+  restart, outside Gmail's sync window) or a failing one: refused. The To header is never used to
+  clear an item (the sender writes it; a Bcc has none). An item positively of another account
+  follows this module's rule, except that a failing Gmail verdict for the same Message-ID and
+  sender refuses it too: linking Google does not change what an iCloud or Exchange account's
+  mail proves, but Gmail having seen the message fail does.
+  As shipped, the reader does not supply `account_addresses` and sources does not forward it, so
+  with a Google account linked an Apple Mail item acts only when its Mail account label is a
+  non-linked address, or on Gmail's own verdict.
 - APPLE_MAIL_ACTS is the fail-closed switch: False, and no email from Apple Mail is added
   without a tap, whatever else holds. The action is its own key (autoadd.ACTION_APPLE_MAIL),
   so a yes given before this was named does not cover it (acting.ACTIONS).
 
-READER CONTRACT (what the Apple Mail reader must add for header proof; until it does, every
-Apple Mail email is "absent" and acts on the known-sender rule alone):
+READER CONTRACT. Neither field below is supplied yet: the Apple Mail reader does not read them
+and sources.mail_items does not forward them. So as shipped EVERY Apple Mail add is recorded
+"unverified" (the known-sender rule alone), and with a Google account linked see above. What the
+reader must add for header proof:
 - On each inbox cache row, and forwarded by sources.mail_items onto the item from the newest
   incoming message (`last_in`):
   - `auth_results`: list[str]. The value (after the colon) of every `Authentication-Results`
@@ -129,16 +143,13 @@ def trusted(headers, domains: set[str]) -> tuple[list[str] | None, str]:
     ids = [mail_auth._authserv_id(v) for v in values]
     first = next((i for i, a in enumerate(ids) if _matches(a, domains)), None) if domains else None
     if first is None:
+        first = 0
         if ids[0] is None:
             return None, "unparseable"
-        return [values[0]], ""
-    end = first
-    while end < len(ids) and _matches(ids[end], domains):
-        end += 1
-    run = ids[first:end]
-    if any(ids.count(a) > 1 for a in run):
+    # The one header, read alone. An id-less header ("") has nothing to repeat.
+    if ids[first] and ids.count(ids[first]) > 1:
         return None, "more than one result claims to be your mail server's"
-    return values[first:end], ""
+    return [values[first]], ""
 
 
 def _parse(header: str):
@@ -216,14 +227,6 @@ def _addresses(values) -> set[str]:
     return out
 
 
-def _to_addresses(header: str) -> set[str]:
-    try:
-        from service.proactive.sent_check import recipients
-        return {str(a).casefold() for _n, a in recipients(header) if a}
-    except Exception:  # noqa: BLE001 — unreadable: names no linked account
-        return set()
-
-
 def _linked() -> set[str]:
     from service.proactive import sources
     return {a.casefold() for a in sources.gmail_accounts()}
@@ -270,14 +273,18 @@ async def apple_mail_proof(item: dict, plan: dict, evidence: dict) -> tuple[bool
     proof = ""
     linked = _linked()
     if linked:
-        claimed = linked & (own_account | _to_addresses(str(item.get("to_header") or "")))
         verdicts = {acct: _gmail_verdict(acct, message_id, address) for acct in sorted(linked)} if message_id \
             else {}
         # Gmail fetched this very message for some linked account and it did not pass: never.
         if any(v is not None and v[0] is not True for v in verdicts.values()):
             return False, "your mail provider's check failed"
-        if claimed:
-            if not any(verdicts.get(acct) and verdicts[acct][0] is True for acct in claimed):
+        # Only an account POSITIVELY shown to be another one escapes Gmail's proof: it names
+        # addresses, and none of them is linked. Anything else may be a linked account's mail.
+        if not own_account or own_account & linked:
+            if not message_id:
+                return False, "mail of a Google account you linked needs Gmail's proof"
+            named = (own_account & linked) or linked
+            if not any(verdicts.get(acct) and verdicts[acct][0] is True for acct in named):
                 return False, "mail of a Google account you linked needs Gmail's proof"
             proof = GMAIL
     sent_rows, sent_fresh = evidence["sent"]

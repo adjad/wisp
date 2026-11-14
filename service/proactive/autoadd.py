@@ -52,8 +52,11 @@ IMPORTANT rules:
   recorded "unverified" and acts on the known-sender rule alone). Without
   server-side sender proof, a forged From line that imitates a known address
   could make Wisp add something. The owner chose this on 2026-11-13. It is its
-  own action, "add_apple_mail", and needs "add_more" too. Mail of a Google
-  account linked in Wisp keeps Gmail's proof, whichever reader saw it.
+  own action, "add_apple_mail", and needs "add_more" too. While any Google
+  account is linked, an Apple Mail item not positively shown to be of another
+  account needs Gmail's own verdict, so a linked account's mail keeps Gmail's
+  proof whichever reader saw it. As shipped the reader supplies no
+  Authentication-Results, so every Apple Mail add is "unverified".
 - What the first yes named is the action "add": a one-to-one iMessage. Email, a
   green-bubble text (SMS or RCS) and a line in a group chat are the action
   "add_more" (acting.ACTIONS): a yes given before they were named does not cover

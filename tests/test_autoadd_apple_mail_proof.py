@@ -23,11 +23,12 @@ from tests.test_proactive_auto_add import saved_contacts, store, yes  # noqa: F4
 
 NOW, TZ, ME = T.NOW, T.TZ, T.ME
 ICLOUD = "me@icloud.com"                              # the user's iCloud account in Apple Mail
-IC_PASS = ["bimi.icloud.com; bimi=skipped reason=\"insufficient dmarc\"",
-           "dmarc.icloud.com; dmarc=pass header.from=friend.com",
+# The server's own headers, top-most first. Only the top-most one of the server's is ever read.
+IC_PASS = ["dmarc.icloud.com; dmarc=pass header.from=friend.com",
            "dkim-verifier.icloud.com; dkim=pass (2048-bit) header.d=friend.com header.i=@friend.com",
            "spf.icloud.com; spf=pass (spf.icloud.com: domain of friend.com designates 1.2.3.4) "
            "smtp.mailfrom=friend.com"]
+BIMI = "bimi.icloud.com; bimi=skipped reason=\"insufficient dmarc\""
 IC_FAIL = ["dmarc.icloud.com; dmarc=fail header.from=friend.com",
            "spf.icloud.com; spf=fail smtp.mailfrom=bulk-sender.net"]
 
@@ -233,8 +234,55 @@ def test_an_apple_mail_copy_of_a_linked_google_accounts_mail_needs_gmails_proof(
 def test_other_accounts_mail_keeps_the_apple_mail_rule_while_google_is_linked(store, world):
     world["linked"] = {GMAIL}
     world["contacts"] = {PRIYA}
+    # POSITIVELY another account: its own addresses are named, none linked.
     wrote, _out, _ = run(store, apple_item(apple_row()))                   # iCloud mail, no headers
     assert wrote == ["calendar"] and proofs(store) == ["unverified"]
+
+
+def test_with_google_linked_an_account_not_shown_to_be_another_one_needs_gmails_proof(store, world):
+    world["linked"] = {GMAIL}
+    world["contacts"] = {PRIYA}
+    need = "mail of a Google account you linked needs Gmail's proof"
+    # Mail's usual label for a Google account, no account addresses, an empty To (a Bcc), no Gmail
+    # verdict (a restart, outside Gmail's sync window): refused, even from a saved contact.
+    stays_a_card(store, apple_item(apple_row(account="Google", to=""), addresses=None, linked={GMAIL}), need)
+    # The same for any label that is not an address ("iCloud" alone proves nothing).
+    stays_a_card(store, apple_item(apple_row(account="iCloud", to=""), addresses=None, linked={GMAIL}), need)
+    # Its own passing headers do not stand in for Gmail's verdict.
+    stays_a_card(store, apple_item(apple_row(account="Google", to=""), auth=IC_PASS, addresses=None,
+                                   linked={GMAIL}), need)
+    # No Message-ID: Gmail's verdict cannot be had at all.
+    stays_a_card(store, apple_item(apple_row(account="Google", to="", mid=""), addresses=None, linked={GMAIL}), need)
+    # A label that is a non-linked address IS another account: the Apple Mail rule.
+    wrote, _out, _ = run(store, apple_item(apple_row(account=ICLOUD, to=""), addresses=None, linked={GMAIL}))
+    assert wrote == ["calendar"] and proofs(store) == ["unverified"]
+
+
+def test_with_google_linked_gmails_true_verdict_lets_an_unnamed_account_act(store, world):
+    world["linked"] = {GMAIL}
+    world["contacts"] = {PRIYA}
+    G.fetched(world, [G.PASS])
+    wrote, _out, _ = run(store, apple_item(apple_row(account="Google", to=""), addresses=None, linked={GMAIL}))
+    assert wrote == ["calendar"] and proofs(store) == ["gmail"]
+
+
+def test_add_apple_mail_without_add_more_is_refused_even_for_a_card_worthy_thread(store, world, tmp_path):
+    world["contacts"] = {PRIYA}
+    mine = apple_row(sender="Me", address=ICLOUD, subject="Recital", body="Are you performing soon?",
+                     mid="m-0@icloud.com", ago_h=1.5)
+    theirs = apple_row(subject="Re: Recital", mid="m-1@friend.com", ago_h=1.0)
+    item = apple_item(mine, theirs)
+    assert item["user_wrote"] is True and autoadd._card_worthy(item)      # passes the email-not-agreed gate
+    # A hand-made file naming Apple Mail but not "add_more" (no yes ever writes this).
+    _write_yes(tmp_path, ("add", "add_apple_mail", "hold", "follow_up"))
+    assert acting.enabled("add_apple_mail") and not acting.enabled("add_more")
+    wrote, out, notes = run(store, item)
+    assert wrote == [] and out["added"] == [] and store.auto_added() == {}
+    assert notes == ["arrived before the yes: tap to add"] and len(out["tap"]) == 1
+    # With both yeses the same thread is added: the refusal above was the missing "add_more".
+    _write_yes(tmp_path, ("add", "add_more", "add_apple_mail", "hold", "follow_up"))
+    wrote, _out, _ = run(store, item)
+    assert wrote == ["calendar"]
 
 
 def test_gmails_failing_verdict_for_the_same_message_refuses_the_apple_mail_copy(store, world):
@@ -309,12 +357,25 @@ def test_absent_empty_and_checkless_results_are_absent():
     assert verdict(["mx.icloud.com; none"])[0] == P.ABSENT
 
 
-def test_icloud_split_headers_are_read_together():
+def test_only_the_servers_top_most_header_is_read():
     assert verdict(IC_PASS) == (P.PASS, "dmarc pass")
     assert verdict(IC_FAIL) == (P.FAIL, "dmarc fail")
     assert verdict(["dkim-verifier.icloud.com; dkim=pass header.d=friend.com",
-                    "dmarc.icloud.com; dmarc=none header.from=friend.com"]) == (P.PASS, "dkim pass aligned")
+                    "dmarc.icloud.com; dmarc=fail header.from=friend.com"]) == (P.PASS, "dkim pass aligned")
     assert verdict(["spf.icloud.com; spf=pass smtp.mailfrom=bounce.friend.com"]) == (P.PASS, "spf pass aligned")
+    # A check that says nothing about the sender on top (limit (d)): "unverified", never a pass.
+    assert verdict([BIMI] + IC_PASS) == (P.ABSENT, "no sender check in your mail server's result")
+    assert verdict([BIMI] + IC_FAIL)[0] == P.ABSENT
+
+
+def test_a_header_injected_under_the_servers_own_cannot_turn_its_failure_into_a_pass():
+    server = "spf.icloud.com; spf=fail smtp.mailfrom=other.net"
+    for injected in ("zz.icloud.com; dkim=pass header.d=friend.com",
+                     "dkim-verifier.icloud.com; dkim=pass header.d=friend.com",
+                     "dmarc.icloud.com; dmarc=pass header.from=friend.com",
+                     "mail.evil.com; dmarc=pass header.from=friend.com"):
+        assert verdict([server, injected]) == (P.FAIL, "no aligned pass"), injected
+        assert verdict([server, injected], domains=set()) == (P.FAIL, "no aligned pass"), injected
 
 
 def test_folded_lines_mixed_case_and_the_header_name_are_tolerated():
@@ -339,6 +400,7 @@ def test_a_second_result_claiming_the_servers_own_id_refuses():
     forged = "dmarc.icloud.com; dmarc=pass header.from=friend.com"
     assert verdict(IC_FAIL + [forged])[0] == P.FAIL
     assert verdict(IC_PASS + [forged]) == (P.FAIL, "more than one result claims to be your mail server's")
+    assert verdict(IC_PASS + [forged], domains=set()) == (P.FAIL, "more than one result claims to be your mail server's")
 
 
 def test_without_a_known_domain_only_the_top_most_header_counts():
