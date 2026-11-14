@@ -417,6 +417,81 @@ def test_handed_in_work_is_never_reopened_by_a_later_looking_deadline(tmp_path):
     assert next(a for a in store.assignments() if a["id"] == "canvas:1:hw")["status"] == "upcoming"
 
 
+# --- sources ---------------------------------------------------------------------------
+
+SUMMARY_KEYS = {"id", "course_id", "kind", "title", "url", "chars", "created_at"}
+
+
+def drive(url="https://docs.google.com/document/d/abc", **values):
+    return {"kind": "drive", "url": url, "title": "Unit 3 notes", "text": "Mitosis has four phases.",
+            "course_id": "canvas:1"} | values
+
+
+def test_a_source_is_saved_listed_read_and_deleted(store):
+    saved = store.save_source(drive())
+    assert set(saved) == SUMMARY_KEYS and saved["id"].startswith("src_") and len(saved["id"]) == 16
+    assert saved["chars"] == len("Mitosis has four phases.") and saved["kind"] == "drive"
+    assert store.sources() == [saved] and store.sources("canvas:1") == [saved] and store.sources("x") == []
+    full = store.source(saved["id"])
+    assert full == saved | {"text": "Mitosis has four phases."}
+    assert store.delete_source(saved["id"]) is True and store.delete_source(saved["id"]) is False
+    assert store.source(saved["id"]) is None and store.sources() == []
+
+
+def test_the_same_kind_and_url_replaces_text_title_and_course_but_keeps_the_id(store):
+    first = store.save_source(drive())
+    again = store.save_source(drive(title="Unit 3 (new)", text="Five phases now.", course_id=None))
+    assert again["id"] == first["id"] and again["course_id"] is None and again["title"] == "Unit 3 (new)"
+    assert store.source(first["id"])["text"] == "Five phases now." and len(store.sources()) == 1
+    page = store.save_source(drive(kind="page"))   # another kind is another source
+    assert page["id"] != first["id"] and len(store.sources()) == 2
+
+
+def test_sources_are_newest_first_capped_and_checked(store):
+    import time as _time
+    older = store.save_source(drive("https://docs.google.com/document/d/one"))
+    _time.sleep(0.002)
+    newer = store.save_source(drive("https://docs.google.com/document/d/two", text="x" * 500_000))
+    assert [s["id"] for s in store.sources()] == [newer["id"], older["id"]]
+    from service.study.store import SOURCE_CHARS
+    assert newer["chars"] == SOURCE_CHARS == 400_000 and len(store.source(newer["id"])["text"]) == SOURCE_CHARS
+    with pytest.raises(ValueError):
+        store.save_source(drive(kind="email"))
+
+
+def test_clear_drops_sources_and_clear_sample_keeps_them(store):
+    sample.load(store, now=NOW, timezone=ZONE)
+    saved = store.save_source(drive())
+    store.clear_sample()
+    assert [s["id"] for s in store.sources()] == [saved["id"]]
+    store.clear()
+    assert store.sources() == []
+
+
+def test_a_merged_course_carries_its_sources(store):
+    store.import_rows([dash_course()], [])
+    hashed = store.courses()[0]["id"]
+    saved = store.save_source(drive(course_id=hashed))
+    store.import_rows([page_course()], [])
+    assert store.source(saved["id"])["course_id"] == "canvas:12345"
+
+
+def test_an_old_database_gains_the_sources_table(tmp_path):
+    import sqlite3
+    path = tmp_path / "study" / "study.db"
+    path.parent.mkdir()
+    old = StudyStore(path)
+    old.upsert_courses([course()])
+    old._db.execute("DROP TABLE sources")   # as a study.db from before sources
+    old._db.close()
+    db = sqlite3.connect(path)
+    assert "sources" not in {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    db.close()
+    reopened = StudyStore(path)
+    assert [c["id"] for c in reopened.courses()] == ["canvas:1"] and reopened.sources() == []
+    assert reopened.save_source(drive())["kind"] == "drive"
+
+
 def test_this_file_is_in_the_simulation_manifest():
     from pathlib import Path
     manifest = (Path(__file__).resolve().parents[1] / "scripts" / "run_simulation_qa.py").read_text()
