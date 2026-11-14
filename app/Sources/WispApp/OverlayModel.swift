@@ -493,9 +493,21 @@ final class OverlayModel: ObservableObject {
             || voice.isActive || speaker.speaking
             || (tab == .day && !todayTaskTitle.trimmingCharacters(in: .whitespaces).isEmpty)
             || (tab == .brief && ProactiveActions.shared.replyInProgress)
-            || (tab == .study && (StudyModel.shared.editing || StudyModel.shared.busy != nil))
+            || studyHoldsOpen
             || knowYou != nil
             || setupCard == .open || report.isOpen || (tab == .day && todayReport?.isOpen == true)
+    }
+
+    /// The Study tab holds the panel while a field has focus or while the
+    /// person waits on a read or a new material; a load or a save does not.
+    private var studyHoldsOpen: Bool {
+        guard tab == .study else { return false }
+        let study = StudyModel.shared
+        if study.editing { return true }
+        switch study.busy {
+        case .reading?, .making?: return true
+        case .loading?, .saving?, nil: return false
+        }
     }
 
     /// Today's report, owned by the shared TodayModel. While it is open on the

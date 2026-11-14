@@ -524,7 +524,7 @@ struct StudyFlashcardsView: View {
         .onChange(of: run.finished) { _, done in
             guard done, !reported else { return }
             reported = true
-            onFinish(run.knownCount, run.total)
+            onFinish(run.firstPassKnown, run.total)
         }
     }
 
@@ -577,7 +577,7 @@ struct StudyFlashcardsView: View {
     private var finishView: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 14) {
-                StudyScoreRing(correct: run.knownCount, total: run.total)
+                StudyScoreRing(correct: run.firstPassKnown, total: run.total)
                 VStack(alignment: .leading, spacing: 4) {
                     Text("All \(run.total) known")
                         .font(.wisp(.headline, weight: .semibold)).foregroundStyle(Theme.textPrimary)

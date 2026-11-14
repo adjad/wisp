@@ -70,6 +70,32 @@ def _blank(value) -> bool:
     return value is None or (isinstance(value, str) and not value.strip())
 
 
+def _unsaid_status(status) -> bool:
+    return status in (None, "", "upcoming")
+
+
+def _extended(new_due, old_due) -> bool:
+    """The deadline moved later (both known)."""
+    return (isinstance(new_due, (int, float)) and isinstance(old_due, (int, float))
+            and not isinstance(new_due, bool) and not isinstance(old_due, bool) and new_due > old_due)
+
+
+def study_dir() -> Path:
+    """MOE_DIR/study, resolved at call time so WISP_HOME (tests, the sandbox) is honoured.
+    The one source for store, day_hook and connector settings."""
+    from service.paths import moe_dir
+    return moe_dir() / "study"
+
+
+def study_path() -> Path:
+    return study_dir() / "study.db"
+
+
+def study_exists() -> bool:
+    """Whether this Mac ever saved school data. Reading never creates the file."""
+    return study_path().exists()
+
+
 def _richness(row) -> int:
     return (sum(not _blank(row[k]) for k in ("points", "score", "due_ts"))
             + bool((row["details"] or "").strip()) + (row["status"] not in (None, "", "upcoming")))
@@ -78,6 +104,7 @@ def _richness(row) -> int:
 class StudyStore:
     def __init__(self, path: Path):
         path = Path(path)
+        self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
         os.chmod(path.parent, 0o700)
         fresh = not path.exists()
@@ -184,12 +211,20 @@ class StudyStore:
         for other in keep:
             for key in fields:
                 unsaid = _blank(merged.get(key)) or (key == "status" and merged.get(key) == "upcoming")
+                if key == "status" and unsaid and _extended(merged.get("due_ts"), other["due_ts"]):
+                    unsaid = False   # the surviving row's later deadline outranks an old "missing"
                 if unsaid and not _blank(other[key]):
                     merged[key] = other[key]
+        prior_due = merged.get("due_ts")
         for key in fields:
             value = row.get(key)
             # Missing, null or empty text means "this page did not say".
             if _blank(value):
+                continue
+            if (key == "status" and value == "upcoming" and not _unsaid_status(merged.get(key))
+                    and not _extended(row.get("due_ts"), prior_due)):
+                # Parsers fill "upcoming" when a page shows no status, so it never undoes a
+                # stored submitted/graded/missing/late, unless the deadline moved later.
                 continue
             merged[key] = value
         values = [int(bool(merged[k])) if k in _BOOL_FIELDS else merged.get(k) for k in fields]
@@ -246,9 +281,7 @@ class StudyStore:
                     stored = self._db.execute("SELECT 1 FROM assignments WHERE id=?", (aid,)).fetchone()
                     twin = None if stored else self._twin(course_id, a.get("title"), aid)
                     if twin is not None:
-                        if a.get("status") == "upcoming" and twin["status"] not in (None, "", "upcoming"):
-                            a = a | {"status": None}   # a dashboard's default never undoes a grade
-                        a = a | {"id": twin["id"]}
+                        a = a | {"id": twin["id"]}   # _write keeps the twin's grade (see _unsaid_status)
                     self._write("assignments", _ASSIGNMENT_FIELDS, a, _ASSIGNMENT_DEFAULTS, now)
                     assignment_ids.add(a["id"])
                     if course_id:
@@ -473,10 +506,11 @@ _STORE_LOCK = threading.Lock()
 
 
 def study_store() -> StudyStore:
-    """Opened on first use, so importing this module never touches MOE_DIR."""
+    """Opened (and created) on first use, so importing this module never touches MOE_DIR.
+    Only routes that save something call this; readers check study_exists() first."""
     global _STORE
+    path = study_path()
     with _STORE_LOCK:
-        if _STORE is None:
-            from service.paths import MOE_DIR
-            _STORE = StudyStore(Path(MOE_DIR) / "study" / "study.db")
+        if _STORE is None or _STORE.path != path:
+            _STORE = StudyStore(path)
         return _STORE

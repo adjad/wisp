@@ -345,6 +345,62 @@ def test_real_pages_converge_whatever_the_order(tmp_path):
     assert results[0] == results[1] == results[2]
 
 
+# --- a parser's default "upcoming" never undoes real status ---------------------------
+
+
+@pytest.mark.parametrize("stored", ["submitted", "graded", "missing", "late"])
+@pytest.mark.parametrize("path", ["upsert", "import"])
+def test_a_re_import_never_marks_done_work_due_again(store, stored, path):
+    write = (store.upsert_assignments if path == "upsert"
+             else lambda rows: store.import_rows([course()], rows))
+    write([item(status=stored, score=18.0 if stored == "graded" else None)])
+    write([item(status="upcoming")])                     # same id, same deadline, no status shown
+    row = store.assignments()[0]
+    assert row["status"] == stored
+    write([item(status="upcoming", due=NOW)])            # an EARLIER due time is no extension
+    assert store.assignments()[0]["status"] == stored
+
+
+@pytest.mark.parametrize("path", ["upsert", "import"])
+def test_an_extended_deadline_makes_missing_work_upcoming_again(store, path):
+    write = (store.upsert_assignments if path == "upsert"
+             else lambda rows: store.import_rows([course()], rows))
+    write([item(status="missing", due=NOW - 3600)])
+    write([item(status="upcoming", due=NOW + 86400)])
+    row = store.assignments()[0]
+    assert row["status"] == "upcoming" and row["due_ts"] == NOW + 86400
+
+
+def test_real_status_still_replaces_real_status(store):
+    store.upsert_assignments([item(status="missing")])
+    store.upsert_assignments([item(status="graded", score=17.0)])
+    assert store.assignments()[0]["status"] == "graded"
+    store.upsert_assignments([item(aid="canvas:1:6", title="Lab 6")])
+    assert [a["status"] for a in store.assignments() if a["id"] == "canvas:1:6"] == ["upcoming"]
+
+
+def test_a_twin_under_another_id_keeps_its_grade_on_the_merge_path(store):
+    # The course page knew the grade under the numeric id; the Dashboard's name-keyed copy says upcoming.
+    store.import_rows([course()], [item(status="graded", score=19.0)])
+    store.import_rows([course()], [item(aid="canvas:abc123", status="upcoming", score=None)])
+    rows = store.assignments()
+    assert len(rows) == 1 and rows[0]["status"] == "graded" and rows[0]["score"] == 19.0
+
+
+def test_folding_duplicates_keeps_the_later_deadline_over_an_old_missing(store):
+    # Two rows of one course with one title fold into the richer one (the upcoming row with the
+    # later deadline); the old row's "missing" belongs to the old deadline and is not carried over.
+    store.upsert_courses([course()])
+    store.upsert_assignments([item(aid="a-old", status="missing", due=NOW - 3600, details="", points=None),
+                              item(aid="a-new", status="upcoming", due=NOW + 86400)])
+    with store._lock:
+        store._db.execute("BEGIN")
+        store._dedupe_assignments("canvas:1", NOW)
+        store._db.execute("COMMIT")
+    rows = store.assignments()
+    assert len(rows) == 1 and rows[0]["id"] == "a-new" and rows[0]["status"] == "upcoming"
+
+
 def test_this_file_is_in_the_simulation_manifest():
     from pathlib import Path
     manifest = (Path(__file__).resolve().parents[1] / "scripts" / "run_simulation_qa.py").read_text()

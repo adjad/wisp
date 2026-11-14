@@ -74,6 +74,7 @@ func studyChecks(_ check: (Bool, String) -> Void) {
               "materials decode; one of an unknown kind is skipped")
         check(state.hasData && state.course("canvas:12345")?.shortName == "CSE 20"
               && state.courses[1].shortName == "Writing 2", "lookups and short names")
+        check(state.courses.allSatisfy { $0.active }, "a course without \"active\" counts as active")
     }
     let bare = decode(StudyState.self, "{}")
     check(bare == StudyState.empty && bare?.connector.source == "none", "an empty object decodes to the empty state")
@@ -256,6 +257,14 @@ func studyChecks(_ check: (Bool, String) -> Void) {
     check(StudyText.grade(course(grade: nil, score: 113.4)) == "113%", "extra credit above 100% is shown")
     check(StudyText.grade(course(grade: "91.2%", score: 91.2)) == "91%", "a percent grade is said once")
     check(StudyText.grade(course(grade: " ", score: nil)) == nil, "no grade, no chip")
+    check(StudyCourse.short("Writing 2") == "Writing 2"
+          && StudyCourse.short("Calculus for Science, Engineering and Mathematics") == "Calculus for Science,…"
+          && StudyCourse.short("Introductory Microeconomics Workshop") == "Introductory Microeco…",
+          "a course without a code gets a short name: three words, about 22 characters")
+    check(StudyCourse(id: "c", name: "Rhetoric and Inquiry", code: " ", grade: nil, score: nil, url: nil,
+                      dueCount: 0, sample: false).shortName == "Rhetoric and Inquiry", "a blank code falls back to the name")
+    check(decode(StudyCourse.self, #"{"id": "c", "name": "Old course", "active": false}"#)?.active == false,
+          "an inactive course decodes as inactive")
     check(StudyText.points(assignment("a", nil, points: 20, score: 18)) == "18 of 20 pts"
           && StudyText.points(assignment("a", nil, points: 20)) == "20 pts"
           && StudyText.points(assignment("a", nil, points: 10, score: 8.5)) == "8.5 of 10 pts"
@@ -297,10 +306,12 @@ func studyChecks(_ check: (Bool, String) -> Void) {
           "the connector sentence")
     let copy = problems + [StudyText.emptyBody, StudyText.needsAccessibility, StudyText.noSchoolTabs, StudyText.nothingDue,
                            StudyText.noMaterials, StudyText.connectorIntro, StudyText.connectorFallback, StudyText.keyNotSaved,
-                           StudyText.readOnlyNote, StudyText.clearConfirm, StudyText.sampleNote]
+                           StudyText.readOnlyNote, StudyText.clearConfirm, StudyText.sampleNote,
+                           StudyText.removeKeyConfirm, StudyText.keyRemoved]
     check(!copy.contains { $0.contains("!") }, "Study's copy never exclaims")
-    check(StudyText.emptyBody == "Open your school site in Safari, then press Read my school tabs."
-          && StudyText.sampleBadge == "Sample data", "empty state and sample badge")
+    check(StudyText.emptyBody == "Open your school site in your browser, then press Read my school tabs."
+          && StudyText.sampleBadge == "Sample data" && StudyText.sampleButton == "Try with sample data",
+          "empty state, sample button and sample badge")
 
     // MARK: QuizRun
 
@@ -351,6 +362,7 @@ func studyChecks(_ check: (Bool, String) -> Void) {
     cards.mark(known: true)
     check(cards.finished && cards.current == nil && cards.knownCount == 3 && cards.againCount == 1,
           "the deck finishes when every card is known")
+    check(cards.firstPassKnown == 2, "a card missed twice counts once against the first pass")
     check(StudyText.flashResult(cards) == "All 3 cards known. 1 card took another look.", "flash result line")
     cards.mark(known: true)
     cards.flip()
@@ -361,4 +373,5 @@ func studyChecks(_ check: (Bool, String) -> Void) {
     var clean = FlashRun(deck: deck)
     clean.mark(known: true); clean.mark(known: true); clean.mark(known: true)
     check(StudyText.flashResult(clean) == "You knew all 3 cards.", "a clean pass")
+    check(clean.firstPassKnown == 3 && FlashRun(deck: deck).firstPassKnown == 3, "a clean pass knows every card first time")
 }

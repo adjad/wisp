@@ -10,7 +10,17 @@ import Foundation
 /// view does.
 @MainActor
 final class StudyModel: ObservableObject {
+    #if WISP_NOTCH_QA
+    /// Fixture builds never reach a live service or the browser: every call
+    /// fails as cancelled and the reader finds no pages.
+    static let shared = StudyModel(
+        transport: { (_: URLRequest) async throws -> (Data, URLResponse) in
+            throw URLError(.cancelled)
+        },
+        reader: { () async -> [StudyPage] in [] })
+    #else
     static let shared = StudyModel()
+    #endif
 
     typealias Transport = (URLRequest) async throws -> (Data, URLResponse)
 
@@ -31,6 +41,9 @@ final class StudyModel: ObservableObject {
     /// How long an ordinary call may take, and how long writing a material may.
     static let timeout: TimeInterval = 20
     static let makeTimeout: TimeInterval = 120
+    /// Characters of one page's text sent to `/study/import`; the backend
+    /// rejects more than this with a 422.
+    static let maxPageText = 150_000
 
     init(transport: Transport? = nil, reader: (() async -> [StudyPage])? = nil) {
         if let transport = transport {
@@ -99,8 +112,8 @@ final class StudyModel: ObservableObject {
             #endif
         }
         pages = Array(pages.prefix(StudyPageReader.maxPages)).map { page in
-            page.text.count > 200_000
-                ? StudyPage(url: page.url, title: page.title, text: String(page.text.prefix(200_000)))
+            page.text.count > Self.maxPageText
+                ? StudyPage(url: page.url, title: page.title, text: String(page.text.prefix(Self.maxPageText)))
                 : page
         }
         guard !pages.isEmpty else {
@@ -182,9 +195,11 @@ final class StudyModel: ObservableObject {
     }
 
     /// Saves the key (when one is given) to the Keychain first, then the choice
-    /// of provider and model. A nil or empty key keeps the saved one.
-    func saveConnector(provider: String, key: String?, modelID: String) async {
-        guard busy == nil else { return }
+    /// of provider and model. A nil or empty key keeps the saved one. Returns
+    /// whether the key (when one was given) reached the Keychain.
+    @discardableResult
+    func saveConnector(provider: String, key: String?, modelID: String) async -> Bool {
+        guard busy == nil else { return false }
         busy = .saving
         notice = nil
         defer { busy = nil }
@@ -193,13 +208,13 @@ final class StudyModel: ObservableObject {
                 try StudyCredentialStore.save(key, provider: provider)
             } catch {
                 notice = StudyText.keyNotSaved
-                return
+                return false
             }
         }
         let fields: [String: Any] = ["provider": provider, "model_id": modelID]
-        guard let body = try? JSONSerialization.data(withJSONObject: fields) else { return }
+        guard let body = try? JSONSerialization.data(withJSONObject: fields) else { return true }
         let request = makeRequest("POST", "study/connector", body: body)
-        guard let connector = await send(request, as: StudyConnectorState.self) else { return }
+        guard let connector = await send(request, as: StudyConnectorState.self) else { return true }
         if var current = state {
             current.connector = connector
             state = current
@@ -209,6 +224,29 @@ final class StudyModel: ObservableObject {
             showingConnector = false
             notice = StudyText.connectorReady
         }
+        return true
+    }
+
+    /// Removes the provider's Study key from the Keychain, then re-posts the
+    /// current choice so the backend drops its cached "key exists" answer, and
+    /// refreshes.
+    func removeKey(provider: String, modelID: String) async {
+        guard busy == nil else { return }
+        busy = .saving
+        notice = nil
+        defer { busy = nil }
+        StudyCredentialStore.remove(provider: provider)
+        let fields: [String: Any] = ["provider": provider, "model_id": modelID]
+        if let body = try? JSONSerialization.data(withJSONObject: fields) {
+            let request = makeRequest("POST", "study/connector", body: body)
+            if let connector = await send(request, as: StudyConnectorState.self),
+               var current = state {
+                current.connector = connector
+                state = current
+            }
+        }
+        await fetchState()
+        if notice == nil { notice = StudyText.keyRemoved }
     }
 
     func loadSample() async {

@@ -6,6 +6,9 @@ import AppKit
 /// Everything stays in the panel: no sheets, no pop-up menus.
 struct StudyConnectorCard: View {
     @ObservedObject var study: StudyModel
+    /// Refits the panel when the card grows or shrinks (the key field, the
+    /// saving row, the remove confirmation).
+    var onResize: () -> Void = {}
     @State private var providerID = ""
     @State private var modelID = ""
     @State private var key = ""
@@ -13,6 +16,8 @@ struct StudyConnectorCard: View {
     @State private var hasKey = false
     /// A saved key is being replaced: the field shows.
     @State private var replacing = false
+    /// "Remove key" was pressed once and waits for the second, inline yes.
+    @State private var confirmingRemove = false
     @FocusState private var keyFocused: Bool
 
     private var connector: StudyConnectorState? { study.state?.connector }
@@ -50,6 +55,7 @@ struct StudyConnectorCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 8).fill(Theme.raised))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.hairline, lineWidth: 1))
+        .studyReportsHeight(onResize)
         .onAppear(perform: loadChoice)
         .onChange(of: providerID) { _, _ in providerChanged() }
         .onChange(of: keyFocused) { _, focused in study.editing = focused }
@@ -127,6 +133,8 @@ struct StudyConnectorCard: View {
                 Text(hasKey ? StudyText.keyKept : Copy.keyPlace)
                     .font(.wisp(.caption)).foregroundStyle(Theme.textMuted)
             }
+        } else if confirmingRemove {
+            removeConfirm(provider)
         } else {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Image(systemName: "key.fill").font(.wisp(size: 10.5)).foregroundStyle(Theme.textSecondary)
@@ -138,6 +146,31 @@ struct StudyConnectorCard: View {
                     keyFocused = true
                 }
                 .disabled(saving)
+                Button(StudyText.removeKeyButton) { confirmingRemove = true }
+                    .buttonStyle(.plain)
+                    .font(.wisp(.caption)).foregroundStyle(Theme.textMuted)
+                    .frame(minHeight: 24)
+                    .disabled(saving)
+                    .help("Remove the saved \(provider.label) key from this Mac")
+            }
+        }
+    }
+
+    /// The second step of "Remove key", inline like the tab's "Remove school data".
+    private func removeConfirm(_ provider: StudyProvider) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(StudyText.removeKeyConfirm)
+                .font(.wisp(.footnote)).foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Button { removeKey(provider) } label: {
+                    Text(StudyText.removeKeyYes).font(.wisp(.footnote, weight: .medium)).foregroundStyle(Theme.bad)
+                        .frame(minHeight: 24)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(saving)
+                StudyChrome.pill(StudyText.removeKeyNo) { confirmingRemove = false }
             }
         }
     }
@@ -235,6 +268,7 @@ struct StudyConnectorCard: View {
 
     private func providerChanged() {
         replacing = false
+        confirmingRemove = false
         key = ""
         if let provider, !provider.models.contains(where: { $0.id == modelID }) {
             modelID = provider.defaultModel
@@ -255,11 +289,26 @@ struct StudyConnectorCard: View {
         guard canSave, let provider else { return }
         let newKey: String? = trimmedKey.isEmpty ? nil : trimmedKey
         let chosenModel = currentModelID(provider)
-        key = ""
         keyFocused = false
         Task {
-            await study.saveConnector(provider: provider.id, key: newKey, modelID: chosenModel)
+            // The field keeps the key until the Keychain has it, so a failed
+            // save can be retried without pasting again.
+            let saved = await study.saveConnector(provider: provider.id, key: newKey, modelID: chosenModel)
+            if saved {
+                key = ""
+                replacing = false
+            }
+            refreshHasKey()
+        }
+    }
+
+    private func removeKey(_ provider: StudyProvider) {
+        let chosenModel = currentModelID(provider)
+        Task {
+            await study.removeKey(provider: provider.id, modelID: chosenModel)
+            confirmingRemove = false
             replacing = false
+            key = ""
             refreshHasKey()
         }
     }
@@ -267,6 +316,7 @@ struct StudyConnectorCard: View {
     private func close() {
         key = ""
         replacing = false
+        confirmingRemove = false
         keyFocused = false
         study.editing = false
         study.showingConnector = false

@@ -36,6 +36,7 @@ def fakes(tmp_path, monkeypatch):
     store = StudyStore(tmp_path / "study" / "study.db")
     f.store = store
     monkeypatch.setattr(api, "study_store", lambda: store)
+    monkeypatch.setattr(api, "study_exists", lambda: True)
 
     async def quiet():
         return None
@@ -227,7 +228,7 @@ def test_a_failed_extraction_leaves_that_page_unrecognised(client, fakes, failur
 @pytest.mark.parametrize("body", [
     {"pages": []},
     {"pages": [page(f"https://x.instructure.com/{i}") for i in range(13)]},
-    {"pages": [page("https://x.instructure.com/", "x" * 200_001)]},
+    {"pages": [page("https://x.instructure.com/", "x" * 150_001)]},
     {"pages": [{"url": "https://x.instructure.com/"}]},
     {"pages": [page("https://x.instructure.com/")], "extra": 1},
     {"pages": [page("https://x.instructure.com/")], "timezone": "Mars/Olympus"},
@@ -277,7 +278,10 @@ def test_making_material_from_an_assignment(client, fakes):
     assert material["best_score"] is None and material["count"] == 3
     call = fakes.made[0]
     assert call["course"]["id"] == "canvas:1" and call["assignment"]["course_name"].startswith("Beginning")
-    assert call["count"] == 5 and "Write three list functions." in call["context"]
+    # The description travels once, on the assignment (generate.make puts it in the block),
+    # never duplicated into the context.
+    assert call["count"] == 5 and "Write three list functions." not in call["context"]
+    assert call["assignment"]["details"] == "Write three list functions."
     assert "Quiz 2" in call["context"] and "Lab 5: Lists\n" not in call["context"]
     assert client.get("/study/state").json()["materials"][0]["id"] == material["id"]
 
@@ -396,6 +400,132 @@ def test_every_change_is_native_only(client, fakes, method, url):
     as_form = client.request(method, url, content=b"a=1", headers={"content-type": "text/plain"})
     assert as_form.status_code == 415
     assert fakes.made == [] and len(fakes.store.courses()) == 1
+
+
+# --- cost bounds --------------------------------------------------------------------
+
+
+def _school_pages(n):
+    return [page(f"https://school.instructure.com/courses/1/pages/p{i}") for i in range(n)]
+
+
+def test_at_most_three_pages_per_import_go_to_the_model(client, fakes):
+    got = client.post("/study/import", json={"pages": _school_pages(6)}).json()
+    assert len(fakes.extracted) == api.MODEL_PAGES == 3
+    assert [p["recognized"] for p in got["pages"]] == [False] * 6
+
+
+@pytest.mark.parametrize("code", ["rejected", "busy", "missing", "unreachable"])
+def test_a_refused_or_busy_model_reads_no_more_pages(client, fakes, code):
+    fakes.extract_result = api.connector.StudyConnectorError(code)
+    got = client.post("/study/import", json={"pages": _school_pages(3)})
+    assert got.status_code == 200 and len(fakes.extracted) == 1
+    assert [p["recognized"] for p in got.json()["pages"]] == [False] * 3
+
+
+def test_a_bad_reply_on_one_page_still_lets_the_next_be_read(client, fakes):
+    fakes.extract_result = api.connector.StudyConnectorError("bad_reply")
+    client.post("/study/import", json={"pages": _school_pages(3)})
+    assert len(fakes.extracted) == 3
+
+
+def test_the_import_model_deadline_stops_reading(client, fakes, monkeypatch):
+    import asyncio
+    monkeypatch.setattr(api, "IMPORT_MODEL_S", 0.2)
+
+    async def slow(url, title, text, *, now, timezone, complete=None):
+        fakes.extracted.append(url)
+        await asyncio.sleep(5)
+    monkeypatch.setattr(api.generate, "extract_school_data", slow)
+    started = time.monotonic()
+    got = client.post("/study/import", json={"pages": _school_pages(3)})
+    assert got.status_code == 200 and time.monotonic() - started < 2
+    assert len(fakes.extracted) == 1 and not any(p["recognized"] for p in got.json()["pages"])
+
+
+def test_one_import_sends_at_most_six_paid_posts(client, fakes, monkeypatch):
+    import httpx
+    sent = []
+
+    def handler(request):
+        sent.append(request)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "not json"}}]})
+    transport = httpx.MockTransport(handler)
+
+    async def extract(url, title, text, *, now, timezone, complete=None):
+        fakes.extracted.append(url)
+        await api.connector.complete_json("s", "u", key_reader=lambda p: "sk-or-test-key", transport=transport)
+    monkeypatch.setattr(api.generate, "extract_school_data", extract)
+    client.post("/study/import", json={"pages": _school_pages(12)})
+    assert len(fakes.extracted) == 3 and len(sent) == api.IMPORT_POSTS == 6
+
+
+def test_a_generate_past_its_deadline_is_unreachable(client, fakes, monkeypatch):
+    import asyncio
+    monkeypatch.setattr(api, "GENERATE_S", 0.1)
+
+    async def slow(kind, **kw):
+        await asyncio.sleep(5)
+    monkeypatch.setattr(api.generate, "make", slow)
+    started = time.monotonic()
+    got = client.post("/study/generate", json={"kind": "quiz", "topic": "Loops"})
+    assert time.monotonic() - started < 2
+    assert got.status_code == 502 and got.json()["detail"] == "unreachable"
+
+
+def test_the_import_body_cap_takes_a_full_import_and_refuses_more(fakes):
+    import json as _json
+    from service import local_http
+    app = FastAPI()
+    app.include_router(api.router)
+    app.add_middleware(local_http.BodyLimit)
+    big = TestClient(app)
+    text = ("Lab 5 due Fri 11:59pm.\n" * 7000)[:api.PAGE_CHARS]
+    full = {"pages": [{"url": f"https://example.org/{i}", "title": "Canvas", "text": text}
+                      for i in range(api.MAX_PAGES)]}
+    raw = _json.dumps(full).encode()
+    assert len(raw) < local_http.STUDY_IMPORT_BODY_LIMIT
+    assert big.post("/study/import", content=raw, headers=JSON).status_code == 200
+    over = b'{"pages": [' + b" " * local_http.STUDY_IMPORT_BODY_LIMIT + b"]}"
+    refused = big.post("/study/import", content=over, headers=JSON)
+    assert refused.status_code == 413 and "page text" in refused.json()["detail"]
+    assert local_http._LIMITED_PATHS["/study/import"] == local_http.STUDY_IMPORT_BODY_LIMIT
+
+
+# --- zero footprint -------------------------------------------------------------------
+
+
+def test_reading_study_on_a_fresh_mac_creates_nothing(tmp_path, monkeypatch):
+    import subprocess
+    from service.study import connector, day_hook
+    home = tmp_path / "fresh-home"
+    home.mkdir()
+    monkeypatch.setenv("WISP_HOME", str(home))
+    monkeypatch.setattr(connector, "_security",
+                        lambda args: subprocess.CompletedProcess(args, 44, b"", b"not found"))
+    monkeypatch.setattr(connector, "_cloud_target", lambda: None)
+    monkeypatch.setattr(connector, "_cloud_cache", None)
+    connector.forget_key()
+    app = FastAPI()
+    app.include_router(api.router)
+    reader = TestClient(app)
+    got = reader.get("/study/state")
+    assert got.status_code == 200
+    assert got.json() | {"connector": None} == {"connector": None, "sample": False, "last_import": None,
+                                                "courses": [], "assignments": [], "materials": []}
+    assert reader.get("/study/materials/m_nope").status_code == 404
+    assert delete(reader, "/study/materials/m_nope").status_code == 404
+    assert reader.post("/study/materials/m_nope/attempt", json={"correct": 1, "total": 2}).status_code == 404
+    assert delete(reader, "/study/data").status_code == 200
+    assert reader.post("/study/generate", json={"kind": "quiz", "course_id": "canvas:9"}).status_code == 404
+    result = {"day": "2026-11-14", "deadlines": [], "blocks": []}
+    day_hook.attach(result, now=time.time(), timezone="UTC")
+    assert "study" not in result
+    connector.status()
+    assert not (home / "study").exists() and list(home.iterdir()) == []
+    # The first real save is what creates it.
+    connector.set_choice("gemini", "")
+    assert (home / "study" / "settings.json").exists() and not (home / "study" / "study.db").exists()
 
 
 def test_the_router_is_mounted_in_the_app():

@@ -73,15 +73,6 @@ enum StudyPageReader {
         extraBrowsers.contains(bundleID) || ScreenLook.browserBundleIDs.contains(bundleID)
     }
 
-    /// Chromium browsers build their web accessibility tree only once an
-    /// assistive client asks for it.
-    private static func isChromium(_ bundleID: String) -> Bool {
-        bundleID.hasPrefix("com.google.Chrome") || bundleID.hasPrefix("com.microsoft.edgemac")
-            || bundleID.hasPrefix("com.brave.Browser") || bundleID == "company.thebrowser.Browser"
-            || bundleID == "org.chromium.Chromium" || bundleID == "com.vivaldi.Vivaldi"
-            || bundleID.hasPrefix("com.operasoftware.")
-    }
-
     // MARK: Budgets
 
     /// How long one Accessibility call may wait for the browser.
@@ -109,26 +100,10 @@ enum StudyPageReader {
             guard now() < deadline, pages.count < maxPages else { break }
             let app = AXUIElementCreateApplication(browser.pid)
             AXUIElementSetMessagingTimeout(app, messagingTimeout)
-            // Chromium apps expose an empty tree until an assistive client asks
-            // (PageReader does the same). Only accessibility attributes are set,
-            // and AXEnhancedUserInterface is put back the way it was afterwards.
-            AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
-            var restoreEnhanced = false
-            if isChromium(browser.bundleID) {
-                let enhanced = boolValue(app, "AXEnhancedUserInterface") ?? false
-                if !enhanced,
-                   AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString,
-                                                kCFBooleanTrue) == .success {
-                    restoreEnhanced = true
-                    // Give the browser a moment to build the tree.
-                    usleep(250_000)
-                }
-            }
-            defer {
-                if restoreEnhanced {
-                    AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanFalse)
-                }
-            }
+            // Chromium apps expose an empty tree until this is set (PageReader
+            // does the same). Harmless elsewhere; nothing else is ever written.
+            AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString,
+                                         kCFBooleanTrue)
             let windows: [AXUIElement] = elements(app, kAXWindowsAttribute as String)
             for window in windows.prefix(maxWindowsPerApp) {
                 guard now() < deadline, pages.count < maxPages else { break }
@@ -247,13 +222,6 @@ enum StudyPageReader {
         guard let value = copyValue(element, name) else { return nil }
         if let text = value as? String { return text }
         if let attributed = value as? NSAttributedString { return attributed.string }
-        return nil
-    }
-
-    private static func boolValue(_ element: AXUIElement, _ name: String) -> Bool? {
-        guard let value = copyValue(element, name) else { return nil }
-        if let flag = value as? Bool { return flag }
-        if let number = value as? NSNumber { return number.boolValue }
         return nil
     }
 

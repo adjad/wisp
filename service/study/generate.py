@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+import unicodedata
 from datetime import datetime, time as dtime
 from urllib.parse import urljoin, urlsplit
 from zoneinfo import ZoneInfo
@@ -40,7 +41,16 @@ MAX_COURSES = 20
 MAX_ASSIGNMENTS = 60
 
 _OPEN, _CLOSE = "<school_data>", "</school_data>"
-_DELIMITER = re.compile(r"<\s*/?\s*school_data\s*>", re.I)
+# Anything that could read as the block's own tag: any case, attributes, spaces, "_"/"-"/" "
+# between the words, HTML entities, look-alike angle brackets (full-width ones are folded
+# to "<" ">" by NFKC first), and a tag left unclosed.
+_LT = r"(?:<|‹|〈|《|⟨|❮|&lt;?|&#0*60;?|&#x0*3c;?)"
+_GT = r"(?:>|›|〉|》|⟩|❯|&gt;?|&#0*62;?|&#x0*3e;?)"
+_DELIMITER = re.compile(_LT + r"[^<>]{0,80}?school[\W_]{0,8}data(?:[^<>]{0,200}?" + _GT
+                        + r"|[^<>\n]{0,200}?(?=\n|$))", re.I)
+# MAX_POSTS: the most paid requests one material may cost, across make()'s own retry and
+# the connector's (bad JSON / 5xx / timeout / a refused optional field).
+MAX_POSTS = 3
 
 
 # --- strings ----------------------------------------------------------------------
@@ -98,7 +108,13 @@ def _data(text: str, cap: int) -> str:
     """School text made safe for the data block: no delimiters, capped."""
     if not isinstance(text, str):
         return ""
-    text = _DELIMITER.sub(" ", text.replace("\x00", ""))
+    # NFKC folds full-width letters and brackets; format characters (zero-width joiners and
+    # the like) are dropped so they cannot split a tag past the pattern.
+    text = unicodedata.normalize("NFKC", text.replace("\x00", ""))
+    text = "".join(c for c in text if unicodedata.category(c) != "Cf")
+    previous = None
+    while previous != text:          # a tag rebuilt by removing an inner one is removed too
+        previous, text = text, _DELIMITER.sub(" ", text)
     return text[:cap]
 
 
@@ -291,16 +307,20 @@ async def make(kind: str, *, course: dict | None, assignment: dict | None, topic
     system, user = build_prompt(kind, course=course, assignment=assignment, topic=topic,
                                 count=count, context=context or "")
     note = None
-    for attempt in range(2):
-        message = user if note is None else f"{user}\n\n{note}"
-        reply = await complete(system, message, max_tokens=MAX_TOKENS[kind])
-        try:
-            body = validate(kind, reply if isinstance(reply, dict) else {})
-        except ValueError as exc:
-            note = (f"Your last reply could not be used ({str(exc)[:160]}). Reply again with ONLY "
-                    "the JSON object in exactly the shape described, with every required field.")
-            continue
-        return {"title": _title(kind, reply.get("title"), course, assignment, topic), "body": body}
+    with connector.post_budget(MAX_POSTS):
+        for attempt in range(2):
+            if attempt and connector.posts_left() <= 0:
+                break
+            # The note is Wisp's own text (validate's messages name only a kind and a count).
+            message = user if note is None else f"{user}\n\n{note}"
+            reply = await complete(system, message, max_tokens=MAX_TOKENS[kind])
+            try:
+                body = validate(kind, reply if isinstance(reply, dict) else {})
+            except ValueError as exc:
+                note = (f"Your last reply could not be used ({str(exc)[:160]}). Reply again with ONLY "
+                        "the JSON object in exactly the shape described, with every required field.")
+                continue
+            return {"title": _title(kind, reply.get("title"), course, assignment, topic), "body": body}
     raise connector.StudyConnectorError("bad_reply")
 
 
@@ -379,9 +399,14 @@ async def extract_school_data(url: str, title: str, text: str, *, now: float, ti
     except Exception:  # noqa: BLE001
         tz = ZoneInfo("UTC")
     today = datetime.fromtimestamp(now, tz)
-    user = (f"Today is {today:%A %Y-%m-%d %H:%M} ({timezone}).\n"
-            f"Page address: {_data(url, 1000)}\nPage title: {_data(title, 300)}\n\n"
-            f"{_OPEN}\n{_data(text, EXTRACT_CHARS)}\n{_CLOSE}")
+    # Only Wisp's own words and safe scalars sit outside the block; the page's address,
+    # title and text are all page-controlled and go inside it.
+    page = (f"Page address: {_data(url, 1000)}\nPage title: {_data(title, 300)}\n\n"
+            f"Page text:\n{_data(text, EXTRACT_CHARS)}")
+    page = _data(page, len(page))   # parts joined cannot form a tag across their seams
+    user = (f"Today is {today:%A %Y-%m-%d %H:%M} ({tz.key}).\n"
+            "Read the school page in the data block below.\n\n"
+            f"{_OPEN}\n{page}\n{_CLOSE}")
     reply = await complete(_EXTRACT_SYSTEM, user, max_tokens=6000)
     if not isinstance(reply, dict):
         raise connector.StudyConnectorError("bad_reply")

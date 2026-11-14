@@ -10,7 +10,14 @@ serves and what the app decodes.
 
 ## Privacy rules
 
-- School data is stored only in `MOE_DIR/study/study.db` (0600).
+- School data is stored only in `MOE_DIR/study/study.db` (0600). `MOE_DIR` is
+  `service.paths.moe_dir()` read at call time (so `WISP_HOME` is honoured), through
+  `store.study_dir()`, the one source for the store, `day_hook` and the connector's
+  `settings.json`.
+- Zero footprint: reading never creates anything. `GET /study/state`, the Day hook and the
+  connector status on a Mac that never used Study return an empty state and leave no
+  `study/` folder; only a route that saves something (import with a recognised page,
+  sample, generate, connector choice) creates it.
 - Wisp only reads school pages. It never submits, posts, clicks or changes
   anything on a school site, and never types a password.
 - Page text is untrusted data. It is never treated as instructions, and it is
@@ -35,6 +42,33 @@ Both are OpenAI-compatible `POST {origin}{prefix}/chat/completions` with
 `Authorization: Bearer <key>`, `response_format: {"type": "json_object"}` and
 `reasoning_effort: "low"`. Only these two exact origins are ever contacted.
 
+Keychain reads never run on the event loop: `complete_json` reads the key through
+`asyncio.to_thread`, and async routes use `status_async()`. A read that times out or is
+refused (macOS asked and nobody answered, or Deny) is held for 60 s, so a pending prompt is
+never re-triggered per request; meanwhile calls fail `missing` with "Wisp could not read the
+Study key from your Keychain. If macOS asked, choose Always Allow, or save the key again."
+Choosing a connector (`set_choice`, which the app calls after saving a key) drops the hold.
+
+Intel fallback: only when `remote_policy.remote_only_profile()` is set, Study asks
+`remote_default_target("general")` (a role in `generation_roles` on main and on the Intel
+branch; else the profile's first role) and uses it only when its origin and prefix are one of
+the two rows above. Its key comes from the endpoint's own `api_key()`
+(`provider_credentials.resolve_keychain`), in a thread. Any exception means `source: "none"`.
+
+### Cost bounds
+
+| bound | value |
+| --- | --- |
+| POSTs per `complete_json` call | 3: the first, one retry (bad JSON, 5xx, timeout), one 400 retry without `reasoning_effort` / `response_format` |
+| POSTs per `/study/generate` | 3 in all (`generate.MAX_POSTS`), across `make`'s own retry and the connector's |
+| time per `/study/generate` | 100 s, then `unreachable` (502) |
+| pages per import read by the model | 3 (`api.MODEL_PAGES`); the rest are reported `recognized: false` |
+| POSTs per import | 6 (`api.IMPORT_POSTS`) across those pages |
+| model time per import | 75 s; pages left after it are reported `recognized: false` |
+| stop reading pages | after the first `missing`, `rejected`, `busy` or `unreachable` (a `bad_reply` page does not stop the next) |
+
+The app's own request timeout is 120 s, so the server always stops first.
+
 ## Backend (`service/study/`)
 
 | file | owns |
@@ -53,9 +87,12 @@ Both are OpenAI-compatible `POST {origin}{prefix}/chat/completions` with
 ```python
 # store.py
 class StudyStore:
-    def __init__(self, path: Path): ...
+    def __init__(self, path: Path): ...                       # .path
     def upsert_courses(self, courses: list[dict]) -> int      # by id
     def upsert_assignments(self, items: list[dict]) -> int    # by id
+    def import_rows(self, courses: list[dict], assignments: list[dict]) -> tuple[int, int]
+    #   one import: courses converge by merge_key (normalised name, also without a leading course
+    #   code), the numeric Canvas id winning; assignments by (course, normalised title)
     def courses(self) -> list[dict]
     def assignments(self) -> list[dict]                       # every row, due_ts ascending, nulls last
     def save_material(self, material: dict) -> dict           # assigns id + created_at when missing
@@ -64,8 +101,12 @@ class StudyStore:
     def delete_material(self, material_id: str) -> bool
     def record_attempt(self, material_id: str, correct: int, total: int) -> float | None  # best score 0..1
     def meta(self, key: str, default=None); def set_meta(self, key: str, value) -> None
+    def has_sample(self) -> bool
+    def clear_sample(self) -> None                            # only sample rows and their materials
     def clear(self) -> None                                   # everything
-def study_store() -> StudyStore   # lazy singleton at MOE_DIR / "study" / "study.db"
+def study_dir() -> Path; def study_path() -> Path             # MOE_DIR/study, .../study.db
+def study_exists() -> bool                                    # never creates anything
+def study_store() -> StudyStore   # lazy singleton at study_path(); creates the file (savers only)
 
 # canvas_parse.py  (no I/O, no model)
 @dataclass
@@ -85,9 +126,12 @@ def attach(result: dict, *, now: float, timezone: str) -> None   # never raises
 
 # connector.py
 class StudyConnectorError(Exception): code: str; message: str
-#   codes: "missing" (no key), "rejected" (401/403), "busy" (429), "unreachable", "bad_reply"
-def status() -> dict                       # the "connector" object below; never returns the key
+#   codes: "missing" (no key, or the Keychain did not hand it over), "rejected" (401/403),
+#          "busy" (429), "unreachable", "bad_reply"
+def status() -> dict                       # the "connector" object below; never returns the key (blocking)
+async def status_async() -> dict           # status() on a worker thread, for async routes
 def set_choice(provider: str, model_id: str) -> dict
+def post_budget(posts: int)                # context manager: caps POSTs of everything inside
 async def complete_json(system: str, user: str, *, max_tokens: int = 6000, key_reader=None, transport=None) -> dict
 
 # generate.py
@@ -109,7 +153,7 @@ async def extract_school_data(url: str, title: str, text: str, *, now: float, ti
 {"id": "canvas:12345:678", "course_id": "canvas:12345", "title": "Lab 5: Lists",
  "kind": "assignment",            // assignment | quiz | exam | project | discussion | reading
  "due_ts": 1794700740.0,          // epoch seconds, or null
- "all_day": false,
+ "all_day": false,                // true when the page gave only a date: due_ts is 23:59 local
  "points": 20.0, "score": null,   // score in points, or null
  "status": "upcoming",            // upcoming | submitted | graded | missing | late
  "details": "",                   // description text when the page had one (<= 4000 chars)
@@ -119,25 +163,37 @@ async def extract_school_data(url: str, title: str, text: str, *, now: float, ti
 Ids are stable across imports so a re-read updates rows. When a page gives no
 numeric ids, the id is `"<source>:" + sha1(course name | title)[:12]`.
 
+Merging: a field a page does not show (null, missing or blank) never blanks a saved one.
+Parsers fill `status: "upcoming"` when a page shows none, so an incoming `"upcoming"` is
+"no information" whenever the stored status is anything else (submitted, graded, missing,
+late), except when the incoming `due_ts` is later than the stored one (the deadline was
+extended). The same rule holds when duplicate rows are folded into one.
+
 ### HTTP API (`/study`)
 
-All mutating routes are native-only (`application/json`, no `Origin`).
+All mutating routes are native-only (`application/json`, no `Origin`). The guard answers
+FastAPI's shape, not the Study one: 403 `{"detail": "Change this from Wisp's notch."}` with
+an `Origin`, 415 `{"detail": "Content-Type must be application/json."}` otherwise.
 
 `GET /study/state`
 
 ```jsonc
 {
   "connector": {
-    "provider": "openrouter", "model_id": "google/gemini-3.8-flash",
+    "provider": "openrouter", "model_id": "google/gemini-3.8-flash",   // the Study choice
     "ready": true,
     "source": "study",            // study | cloud (Intel fallback) | none
+    "active_model_id": "google/gemini-3.8-flash",   // what a call would use now (the cloud
+                                  //   profile's on the fallback), or null when not ready
     "providers": [{"id": "openrouter", "label": "OpenRouter", "default_model": "google/gemini-3.8-flash",
                    "models": [{"id": "google/gemini-3.8-flash", "label": "Gemini 3.8 Flash"}],
                    "key_url": "https://openrouter.ai/keys", "key_hint": "sk-or-…"}]
   },
   "sample": false,                // true while the built-in sample is loaded
   "last_import": 1794650000.0,    // or null
-  "courses": [{"id", "name", "code", "grade", "score", "url", "due_count": 2, "sample"}],
+  "courses": [{"id", "name", "code", "grade", "score", "url", "due_count": 2, "active": true, "sample"}],
+  //   active: something due this week, or a grade. Sorted: due first, then active, then the rest
+  //   (orientation modules and the like); by name inside each group
   "assignments": [{"id", "course_id", "course_name", "title", "kind", "due_ts", "all_day",
                    "points", "score", "status", "url", "sample"}],
   //   assignments: not yet due, or missing/late within the last 14 days; due_ts ascending, nulls last
@@ -149,23 +205,28 @@ All mutating routes are native-only (`application/json`, no `Origin`).
 
 | route | body | returns |
 | --- | --- | --- |
-| `POST /study/import` | `{"pages": [{"url", "title", "text"}]}` (<= 12 pages, text <= 200k chars each) | `{"courses": n, "assignments": n, "pages": [{"url", "kind", "recognized": bool}], "state": <state>}` |
+| `POST /study/import` | `{"pages": [{"url", "title", "text"}], "timezone"?}` (<= 12 pages, text <= 150k chars each, body <= 3 MB) | `{"courses": n, "assignments": n, "pages": [{"url", "kind", "recognized": bool}], "state": <state>}` |
 | `POST /study/connector` | `{"provider", "model_id"}` | `<state>.connector` |
 | `POST /study/generate` | `{"kind", "course_id"?, "assignment_id"?, "topic"?, "count"?}` | full material |
 | `GET /study/materials/{id}` | | full material |
 | `DELETE /study/materials/{id}` | | `{"deleted": true}` |
 | `POST /study/materials/{id}/attempt` | `{"correct": int, "total": int}` | `{"best_score": 0.8}` |
-| `POST /study/sample` | `{}` | `<state>` with the sample loaded (replaces only sample rows) |
+| `POST /study/sample` | `{"timezone"?}` | `<state>` with the sample loaded (replaces only sample rows) |
 | `DELETE /study/data` | | `<state>` after clearing everything |
 
 Errors are `{"detail": "<code>", "message": "<gentle sentence>"}` with status
 409 for `missing`, 502 for `rejected` / `busy` / `unreachable` / `bad_reply`,
-404 for an unknown id, 422 for a bad body.
+404 `not_found` for an unknown id, 422 `invalid` for a bad body. An import body over
+3 MB is refused by `local_http.BodyLimit` with 413 `{"detail": "<sentence>"}` before it
+is parsed.
 
 Import: each page goes through `canvas_parse.parse_page`. A school page it does
 not recognise (`kind == "other"`) is handed to `generate.extract_school_data`
-when the connector is ready; otherwise it is reported `recognized: false`.
-A real import clears sample rows first.
+when the connector is ready, within the cost bounds above; otherwise it is reported
+`recognized: false`. When any page is recognised, the import clears sample rows
+(`clear_sample`) and saves through `import_rows`. Generate: the assignment's description
+reaches the prompt once (inside the data block); the context adds only the course's other
+work.
 
 ### Material
 
@@ -192,6 +253,12 @@ Bodies:
 {"cards": [{"front": "…", "back": "…"}]}
 ```
 
+Prompts: every school-derived string (course, assignment, details, topic, page address,
+title and text) sits inside the one `<school_data>` block; outside it are only Wisp's own
+instructions, the date and the kind/count. Before it goes in, text is NFKC-folded, format
+characters are dropped and any `school_data`-like tag (any case, attributes, spacing,
+`&lt;` entities, look-alike brackets, or left unclosed) is removed.
+
 Limits enforced by `validate`: guide 2–8 sections; quiz 3–15 questions with 2–5
 choices; lesson 2–8 steps; flashcards 4–30 cards; every string trimmed and
 capped (prompt 600, choice 300, explain 2000).
@@ -213,7 +280,8 @@ capped (prompt 600, choice 300, explain 2000).
 ```
 
 - `deadlines` gains `{"id": "study:<assignment id>", "title": "<title> · <course code or name>",
-  "due_ts", "source": "study"}` for items due on that day (not submitted/graded).
+  "due_ts", "source": "study"}` for items due on that day (not submitted/graded); an all-day
+  item adds `"all_day": true, "due_date": "<day>"`.
 - `blocks` gains at most two `{"id": "study-block:<assignment id>", "title": "Study: <title>",
   "start", "end", "kind": "study", "task_id": null, "warnings": []}` blocks of 45 minutes, placed
   in the first free gaps between now (rounded up to :00/:30) and the due time, inside 08:00–22:00,
@@ -298,4 +366,4 @@ JSON keys are snake_case; Swift properties are camelCase through explicit
   `scripts/run_simulation_qa.py` and ends with the manifest self-check.
 - Swift: `tests/StudyChecks.swift` (`func studyChecks(_ check: (Bool, String) -> Void)`), compiled
   with `tests/NotchTabChecks.swift`.
-- `WISP_NOTCH_QA` scenes: `study`, `study-quiz`, `study-cards`, `study-guide`, `study-lesson`, `study-setup`.
+- `WISP_NOTCH_QA` scenes: `study`, `study-quiz`, `study-cards`, `study-guide`, `study-lesson`, `study-setup`, `brief-study`, `day-study`.

@@ -12,6 +12,9 @@ that connection points at one of the two Study origins.
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import contextvars
 import json
 import logging
 import re
@@ -52,6 +55,11 @@ TIMEOUT_S = 90.0
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 KEY_CACHE_S = 60.0
 EXISTS_CACHE_S = 30.0
+# After a Keychain read that timed out or was refused (macOS asked and nobody answered,
+# or Deny), no new read for this long: a pending prompt is never re-triggered per request.
+KEY_FAILURE_HOLD_S = 60.0
+# errSecItemNotFound: no key saved (a plain "missing", never held).
+_NOT_FOUND = 44
 
 MESSAGES = {
     "missing": "Add a Study key to make study material.",
@@ -60,6 +68,10 @@ MESSAGES = {
     "unreachable": "Couldn't reach the Study model. Check your connection and try again.",
     "bad_reply": "The Study model sent something Wisp couldn't use. Try again.",
 }
+
+
+KEYCHAIN_MESSAGE = ("Wisp could not read the Study key from your Keychain. If macOS asked, "
+                    "choose Always Allow, or save the key again.")
 
 
 class StudyConnectorError(Exception):
@@ -74,9 +86,10 @@ class StudyConnectorError(Exception):
 # --- settings -----------------------------------------------------------------------
 
 def _settings_path() -> Path:
-    # Resolved at call time so a test's (or the sandbox's) WISP_HOME is honoured.
-    from service.paths import moe_dir
-    return moe_dir() / "study" / "settings.json"
+    # Resolved at call time so a test's (or the sandbox's) WISP_HOME is honoured. Reading
+    # it never creates anything; only set_choice writes it.
+    from service.study.store import study_dir
+    return study_dir() / "settings.json"
 
 
 def _valid_model(model_id) -> bool:
@@ -118,16 +131,25 @@ def set_choice(provider: str, model_id: str) -> dict:
 
 _key_cache: dict[str, tuple[str, float]] = {}
 _exists_cache: dict[str, tuple[bool, float]] = {}
+_key_failed: dict[str, float] = {}     # provider -> when a read timed out or was refused
 
 
 def forget_key(provider: str | None = None) -> None:
-    """Drop cached keys and existence checks (all, or one provider's)."""
+    """Drop cached keys, existence checks and held failures (all, or one provider's).
+    Saving a key goes through set_choice, which calls this, so a new key is read at once."""
     if provider is None:
         _key_cache.clear()
         _exists_cache.clear()
+        _key_failed.clear()
     else:
         _key_cache.pop(provider, None)
         _exists_cache.pop(provider, None)
+        _key_failed.pop(provider, None)
+
+
+def _read_held(provider: str) -> bool:
+    failed = _key_failed.get(provider)
+    return failed is not None and time.monotonic() - failed < KEY_FAILURE_HOLD_S
 
 
 def _security(args: list[str]) -> subprocess.CompletedProcess:
@@ -149,16 +171,27 @@ def _clean_key(value) -> str | None:
 
 
 def _keychain_key(provider: str) -> str | None:
+    """The saved Study key, or None. BLOCKING (it may wait on a Keychain prompt for up to
+    10 s): async callers run it through asyncio.to_thread (see _resolve_async). A read that
+    timed out or was refused is held for KEY_FAILURE_HOLD_S."""
     if provider not in PROVIDERS:
         return None
     hit = _key_cache.get(provider)
     if hit and time.monotonic() - hit[1] < KEY_CACHE_S:
         return hit[0]
+    if _read_held(provider):
+        return None
     try:
         result = _security(["find-generic-password", "-s", SERVICE, "-a", provider, "-w"])
+        if result.returncode == _NOT_FOUND:
+            return None
         if result.returncode or result.stderr:
+            _key_failed[provider] = time.monotonic()
             return None
         value = _clean_key(result.stdout.decode("ascii").rstrip("\n"))
+    except subprocess.TimeoutExpired:
+        _key_failed[provider] = time.monotonic()
+        return None
     except (OSError, subprocess.SubprocessError, UnicodeDecodeError, ValueError):
         return None
     if value is None:
@@ -202,9 +235,11 @@ def _cloud_target() -> dict | None:
         return None
     try:
         from service.inference.remote_policy import remote_default_target
-        target = remote_default_target("general")
+        target = remote_default_target(_generation_role(profile))
         ep = target.endpoint
         origin, prefix, model = str(ep.base_url).rstrip("/"), str(ep.api_prefix), str(target.model)
+        # Endpoint.api_key resolves "keychain:<name>" through provider_credentials.resolve_keychain
+        # (its own hold and lock on the Intel branch). It may block: callers run it in a thread.
         key = ep.api_key
     except Exception:  # noqa: BLE001
         try:
@@ -221,6 +256,15 @@ def _cloud_target() -> dict | None:
     if _ORIGIN_PREFIX.get(origin) != prefix or not _valid_model(model):
         return None
     return {"origin": origin, "prefix": prefix, "model": model, "key": key}
+
+
+def _generation_role(profile) -> str:
+    """The remote profile's role for one-shot text generation: "general" (present in
+    RemoteOnlyProfile.generation_roles on main and on the Intel branch), else its first role."""
+    roles = tuple(getattr(profile, "generation_roles", ()) or ())
+    if not roles or "general" in roles:
+        return "general"
+    return str(roles[0])
 
 
 _cloud_cache: tuple[str | None, float] | None = None
@@ -268,6 +312,54 @@ def status() -> dict:
             "source": source, "active_model_id": active, "providers": providers()}
 
 
+async def status_async() -> dict:
+    """status() for async routes: its Keychain existence check and the cloud profile read
+    may block, so they run on a worker thread, never on the event loop."""
+    return await asyncio.to_thread(status)
+
+
+# --- cost bounds ----------------------------------------------------------------------
+
+class PostBudget:
+    """How many more POSTs the current request may send (shared across retries)."""
+
+    def __init__(self, posts: int):
+        self.posts = int(posts)
+
+
+_BUDGET: contextvars.ContextVar[PostBudget | None] = contextvars.ContextVar("study_post_budget", default=None)
+
+
+@contextlib.contextmanager
+def post_budget(posts: int):
+    """Cap the POSTs of everything inside (complete_json's retries included). A budget
+    already in force is kept (the outer, request-wide one wins)."""
+    if _BUDGET.get() is not None:
+        yield _BUDGET.get()
+        return
+    budget = PostBudget(posts)
+    token = _BUDGET.set(budget)
+    try:
+        yield budget
+    finally:
+        _BUDGET.reset(token)
+
+
+def posts_left() -> float:
+    budget = _BUDGET.get()
+    return float("inf") if budget is None else budget.posts
+
+
+def _take_post() -> bool:
+    budget = _BUDGET.get()
+    if budget is None:
+        return True
+    if budget.posts <= 0:
+        return False
+    budget.posts -= 1
+    return True
+
+
 # --- completion ---------------------------------------------------------------------
 
 def _resolve(key_reader: Callable[[str], str] | None) -> tuple[str, str, str, str]:
@@ -285,7 +377,11 @@ def _resolve(key_reader: Callable[[str], str] | None) -> tuple[str, str, str, st
     key = _keychain_key(provider)
     if key is not None:
         return spec["origin"] + spec["prefix"] + "/chat/completions", model_id, key, provider
-    cloud = _cloud_target()
+    unreadable = _read_held(provider)   # saved, but macOS did not hand it over
+    try:
+        cloud = _cloud_target()
+    except Exception:  # noqa: BLE001
+        cloud = None
     if cloud is not None:
         try:
             key = _clean_key(cloud["key"]())
@@ -294,7 +390,7 @@ def _resolve(key_reader: Callable[[str], str] | None) -> tuple[str, str, str, st
         if key is not None:
             cloud_provider = next(p for p, s in PROVIDERS.items() if s["origin"] == cloud["origin"])
             return cloud["origin"] + cloud["prefix"] + "/chat/completions", cloud["model"], key, cloud_provider
-    raise StudyConnectorError("missing")
+    raise StudyConnectorError("missing", KEYCHAIN_MESSAGE if unreadable else None)
 
 
 def _content(data) -> str:
@@ -345,7 +441,9 @@ async def complete_json(system: str, user: str, *, max_tokens: int = 6000,
                         key_reader: Callable[[str], str] | None = None,
                         transport: httpx.AsyncBaseTransport | None = None) -> dict:
     """One non-streaming JSON completion from the Study model; returns the object."""
-    url, model, key, provider = _resolve(key_reader)
+    # Every Keychain read (the Study key, or the cloud profile's) may wait on a macOS prompt:
+    # never on the event loop.
+    url, model, key, provider = await asyncio.to_thread(_resolve, key_reader)
     if url not in ALLOWED_URLS:
         raise StudyConnectorError("unreachable", "Study only talks to its two providers.")
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json",
@@ -363,10 +461,13 @@ async def complete_json(system: str, user: str, *, max_tokens: int = 6000,
     }
     retries = 1          # bad JSON, 5xx or a timeout
     field_retry = 1      # a 400 over reasoning_effort / response_format
+    pending = "unreachable"   # what to report when the request's POST budget runs out
     async with httpx.AsyncClient(trust_env=False, follow_redirects=False,
                                  timeout=TIMEOUT_S, transport=transport) as client:
         while True:
             failure: str | None = None
+            if not _take_post():
+                raise StudyConnectorError(pending)
             try:
                 response = await client.post(url, headers=headers, json=payload)
             except httpx.TimeoutException:
@@ -387,6 +488,7 @@ async def complete_json(system: str, user: str, *, max_tokens: int = 6000,
                         for field in dropped:
                             payload.pop(field, None)
                         log.info("Study provider refused %s; retrying without it", ", ".join(dropped))
+                        pending = "bad_reply"
                         continue
                 if status_code >= 500:
                     failure = "unreachable"
@@ -404,8 +506,9 @@ async def complete_json(system: str, user: str, *, max_tokens: int = 6000,
                     if parsed is not None:
                         return parsed
                     failure = "bad_reply"
-            if retries:
+            if retries and posts_left() > 0:
                 retries -= 1
+                pending = failure
                 log.info("Study model call: %s, retrying once", failure)
                 continue
             raise StudyConnectorError(failure)

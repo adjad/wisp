@@ -690,7 +690,9 @@ struct BriefContent {
         // overdue), then the Day tab's tasks, each once.
         let reminders: [BriefTodo] = needs.filter { ["reminders", "wisp"].contains($0.source) && ($0.due_ts ?? .nan).isFinite }
             .map { BriefTodo(id: $0.id, title: $0.title, due: $0.due_ts, allDay: $0.all_day == true) }
-        let deadlines: [BriefTodo] = plan.deadlines.map { BriefTodo(id: $0.id, title: $0.title, due: $0.due_ts, allDay: $0.all_day == true) }
+        // School deadlines (source "study") have their own SCHOOL line, so
+        // they are not to-dos as well.
+        let deadlines: [BriefTodo] = plan.deadlines.filter { $0.source != "study" }.map { BriefTodo(id: $0.id, title: $0.title, due: $0.due_ts, allDay: $0.all_day == true) }
         let dated = reminders + deadlines
         let active = plan.tasks.filter { $0.status == "active" && $0.day == plan.day }
         let datedTasks = active.filter { ($0.due_ts ?? .nan).isFinite }

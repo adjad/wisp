@@ -18,6 +18,8 @@ struct NotchStudyView: View {
     /// The one due row showing its make buttons.
     @State private var expanded: String?
     @State private var showAllDue = false
+    /// The inactive courses (nothing due, no grade) are showing in the chips row.
+    @State private var showAllCourses = false
     @State private var topic = ""
     @FocusState private var topicFocused: Bool
     @State private var confirmingClear = false
@@ -67,7 +69,7 @@ struct NotchStudyView: View {
         VStack(alignment: .leading, spacing: 12) {
             if let notice = study.notice { noticeRow(notice).transition(.opacity) }
             if let material = study.opened {
-                StudyMaterialPage(study: study, material: material).transition(.opacity)
+                StudyMaterialPage(study: study, material: material, onResize: model.onResize).transition(.opacity)
             } else {
                 home.transition(.opacity)
             }
@@ -120,7 +122,7 @@ struct NotchStudyView: View {
             } else {
                 HStack(spacing: 8) {
                     StudyChrome.pill(StudyText.readButton, icon: "text.viewfinder", primary: true) { read() }
-                    StudyChrome.pill(Copy.sampleButton, icon: "sparkles") {
+                    StudyChrome.pill(StudyText.sampleButton, icon: "sparkles") {
                         Task { await study.loadSample() }
                     }
                 }
@@ -212,16 +214,31 @@ struct NotchStudyView: View {
                 HStack(spacing: 6) {
                     StudyCourseChip(title: Copy.allCourses, grade: nil, chosen: courseID == nil,
                                     help: Copy.allCoursesHelp) { pickCourse(nil) }
-                    ForEach(state.courses) { course in
+                    ForEach(shownCourses(state)) { course in
                         StudyCourseChip(title: course.shortName, grade: StudyText.grade(course),
                                         chosen: courseID == course.id, help: course.name) {
                             pickCourse(course.id)
                         }
                     }
+                    let folded = foldedCount(state)
+                    if folded > 0 {
+                        StudyCourseChip(title: "+\(folded) more", grade: nil, chosen: false,
+                                        help: Copy.moreCoursesHelp) { showAllCourses = true }
+                    }
                 }
                 .padding(.vertical, 1)
             }
         }
+    }
+
+    /// Active courses (and the picked one), then the rest once "+N more" is pressed.
+    private func shownCourses(_ state: StudyState) -> [StudyCourse] {
+        if showAllCourses { return state.courses }
+        return state.courses.filter { $0.active || $0.id == courseID }
+    }
+
+    private func foldedCount(_ state: StudyState) -> Int {
+        state.courses.count - shownCourses(state).count
     }
 
     private func pickCourse(_ id: String?) {
@@ -288,12 +305,21 @@ struct NotchStudyView: View {
                 .padding(.bottom, 2)
                 .accessibilityAddTraits(.isHeader)
             ForEach(group.items) { item in
-                StudyDueRow(item: item, now: now, missing: group.id == "missing",
+                StudyDueRow(item: item, courseLabel: courseLabel(item, state: state), now: now,
+                            missing: group.id == "missing",
                             expanded: expanded == item.id, busy: study.busy != nil,
                             onToggle: { toggle(item) },
                             onMake: { kind in make(kind, assignment: item, state: state) })
             }
         }
+    }
+
+    /// Under "All", the course's short name (as on its chip); under one course,
+    /// the name the assignment came with.
+    private func courseLabel(_ item: StudyAssignment, state: StudyState) -> String {
+        guard courseID == nil else { return item.courseName }
+        if let course = state.course(item.courseID) { return course.shortName }
+        return item.courseName.isEmpty ? item.courseName : StudyCourse.short(item.courseName)
     }
 
     private func toggle(_ item: StudyAssignment) {
@@ -381,7 +407,7 @@ struct NotchStudyView: View {
             }
             if confirmingClear { clearConfirm.transition(.opacity) }
             if study.showingConnector {
-                StudyConnectorCard(study: study).transition(.opacity)
+                StudyConnectorCard(study: study, onResize: model.onResize).transition(.opacity)
             }
         }
     }
@@ -494,11 +520,11 @@ struct NotchStudyView: View {
     private enum Copy {
         static let intro = "Study reads the school pages open in your browser, keeps your courses and what's due on "
             + "this Mac, and turns your real coursework into guides, quizzes, lessons and flash cards."
-        static let sampleButton = "Try with sample data"
         static let loadingSample = "Loading the sample…"
         static let readAgain = "Read again"
         static let allCourses = "All"
         static let allCoursesHelp = "Show every course"
+        static let moreCoursesHelp = "Show courses with nothing due and no grade"
         static let showFewer = "Show fewer"
         static let makeHeader = "Make something"
         static let topicPlaceholder = "Any topic, e.g. photosynthesis"
@@ -508,12 +534,27 @@ struct NotchStudyView: View {
     }
 }
 
+// MARK: - Height
+
+extension View {
+    /// Calls `onChange` whenever this view's height changes, so a Study piece
+    /// that grows inside the notch refits the panel.
+    func studyReportsHeight(_ onChange: @escaping () -> Void) -> some View {
+        background(GeometryReader { geo in
+            Color.clear.onChange(of: geo.size.height) { _, _ in onChange() }
+        })
+    }
+}
+
 // MARK: - Opened material
 
 /// A material full-tab: a back bar, its title and kind, then its player or reader.
 private struct StudyMaterialPage: View {
     @ObservedObject var study: StudyModel
     let material: StudyMaterial
+    /// Refits the panel when the page grows or shrinks (an explanation, the
+    /// review list, the next lesson step, the finished deck).
+    let onResize: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -521,6 +562,7 @@ private struct StudyMaterialPage: View {
             titleBlock
             materialBody.id(material.id)
         }
+        .studyReportsHeight(onResize)
         .onExitCommand { study.close() }
     }
 
@@ -650,6 +692,8 @@ private struct StudyKindButtons: View {
 /// A click opens its make buttons in place.
 private struct StudyDueRow: View {
     let item: StudyAssignment
+    /// The course as this row names it.
+    let courseLabel: String
     let now: Date
     let missing: Bool
     let expanded: Bool
@@ -707,7 +751,7 @@ private struct StudyDueRow: View {
     private var detailLine: some View {
         let due = StudyText.due(item, now: now, calendar: .current)
         return HStack(spacing: 4) {
-            Text(item.courseName).foregroundStyle(Theme.textMuted).lineLimit(1)
+            Text(courseLabel).foregroundStyle(Theme.textMuted).lineLimit(1)
             Text("·").foregroundStyle(Theme.textMuted)
             Text(due).foregroundStyle(dueColor).lineLimit(1)
             if item.status == "late" {

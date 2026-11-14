@@ -231,16 +231,36 @@ struct StudyCourse: Decodable, Equatable, Identifiable {
     let url: String?
     let dueCount: Int
     let sample: Bool
+    /// Has something due or a grade (the backend sorts these first). Courses
+    /// that are not active fold behind "+N more" in the chips row.
+    var active: Bool = true
 
     enum CodingKeys: String, CodingKey {
-        case id, name, code, grade, score, url, sample
+        case id, name, code, grade, score, url, sample, active
         case dueCount = "due_count"
     }
 
-    /// "CSE 20" when there is a code, else the name.
+    /// "CSE 20" when there is a code, else the name cut to its first three
+    /// words and about 22 characters.
     var shortName: String {
         if let code = code, !code.trimmingCharacters(in: .whitespaces).isEmpty { return code }
-        return name
+        return Self.short(name)
+    }
+
+    static let shortNameLimit = 22
+
+    /// The first three words of `name`, at most `shortNameLimit` characters,
+    /// with an ellipsis when anything was cut.
+    static func short(_ name: String) -> String {
+        let words = name.split(whereSeparator: { $0.isWhitespace })
+        guard !words.isEmpty else { return name }
+        var text = words.prefix(3).joined(separator: " ")
+        var cut = words.count > 3
+        if text.count > shortNameLimit {
+            text = String(text.prefix(shortNameLimit - 1)).trimmingCharacters(in: .whitespaces)
+            cut = true
+        }
+        return cut ? text + "…" : text
     }
 }
 
@@ -255,6 +275,7 @@ extension StudyCourse {
         url = c.studyOptionalString(.url)
         dueCount = c.studyInt(.dueCount)
         sample = c.studyBool(.sample)
+        active = c.studyBool(.active, true)
     }
 }
 
@@ -944,6 +965,8 @@ struct FlashRun: Equatable {
     var remaining: Int { queue.count }
     /// Cards that needed another look.
     var againCount: Int { again.count }
+    /// Cards known on the first look: what a finished deck records as its score.
+    var firstPassKnown: Int { max(0, total - againCount) }
 
     mutating func flip() {
         guard !finished else { return }
@@ -977,7 +1000,7 @@ enum StudyText {
     // Buttons and labels
     static let tabTitle = "Study"
     static let readButton = "Read my school tabs"
-    static let sampleButton = "Try sample data"
+    static let sampleButton = "Try with sample data"
     static let sampleBadge = "Sample data"
     static let connectorButton = "Study key"
     static let saveKeyButton = "Save"
@@ -999,7 +1022,7 @@ enum StudyText {
 
     // Empty states and helpers
     static let emptyTitle = "Nothing from school yet"
-    static let emptyBody = "Open your school site in Safari, then press Read my school tabs."
+    static let emptyBody = "Open your school site in your browser, then press Read my school tabs."
     static let sampleNote = "This is sample data. Read your school tabs to see your own."
     static let nothingDue = "Nothing is due soon."
     static let noMaterials = "Nothing made yet. Choose a course or an assignment, then pick what to make."
@@ -1021,6 +1044,11 @@ enum StudyText {
     static let keyPlaceholder = "Paste your key"
     static let keyNotSaved = "Wisp couldn't save that key. Check it has no spaces, then try again."
     static let getKey = "Get a key"
+    static let removeKeyButton = "Remove key"
+    static let removeKeyConfirm = "Remove the saved Study key from this Mac's Keychain?"
+    static let removeKeyYes = "Remove"
+    static let removeKeyNo = "Keep"
+    static let keyRemoved = "Study key removed."
 
     /// The busy row's words.
     static func busy(_ busy: StudyBusy) -> String {

@@ -17,8 +17,8 @@ log = logging.getLogger(__name__)
 
 
 def store_path() -> Path:
-    from service.paths import MOE_DIR
-    return Path(MOE_DIR) / "study" / "study.db"
+    from service.study.store import study_path
+    return study_path()
 
 
 def study_store():

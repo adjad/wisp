@@ -18,9 +18,9 @@ enum StudyCredentialError: LocalizedError {
 /// crosses HTTP, is never logged and never written to a file; the backend reads
 /// it with `/usr/bin/security find-generic-password -s com.wisp.study -a <id> -w`.
 ///
-/// Written the way Settings' CloudCredentialStore writes the cloud key: update
-/// in place, else add, in the file-based login keychain (not the data
-/// protection keychain, which `security` cannot read), never synchronized.
+/// Written to the file-based login keychain (not the data protection keychain,
+/// which `security` cannot read), never synchronized, with an access list that
+/// trusts Wisp and `/usr/bin/security` so the backend's read is prompt-free.
 enum StudyCredentialStore {
     static let service = "com.wisp.study"
     static let providers: Set<String> = ["openrouter", "gemini"]
@@ -85,16 +85,37 @@ enum StudyCredentialStore {
         ]
     }
 
+    /// Replaces any saved key with a new item whose access list trusts Wisp
+    /// itself and `/usr/bin/security` (the backend's reader), the way
+    /// BackendCredentials.add does for the inference key, so the backend's
+    /// read never brings up a Keychain prompt. A plain update would keep an
+    /// older item's narrower access list, so the item is always re-created.
     private static func write(_ data: Data, provider: String) throws {
         let query = query(provider: provider)
-        let attributes: [String: Any] = [kSecValueData as String: data]
-        let updated = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        if updated == errSecSuccess { return }
-        guard updated == errSecItemNotFound else { throw StudyCredentialError.storage }
+        var trusted: [SecTrustedApplication] = []
+        var me: SecTrustedApplication?
+        guard SecTrustedApplicationCreateFromPath(nil, &me) == errSecSuccess, let me else {
+            throw StudyCredentialError.storage
+        }
+        trusted.append(me)
+        var reader: SecTrustedApplication?
+        guard SecTrustedApplicationCreateFromPath("/usr/bin/security", &reader) == errSecSuccess,
+              let reader else { throw StudyCredentialError.storage }
+        trusted.append(reader)
+        var access: SecAccess?
+        guard SecAccessCreate("Wisp Study key (\(provider))" as CFString, trusted as CFArray,
+                              &access) == errSecSuccess, let access else {
+            throw StudyCredentialError.storage
+        }
+        let deleted = SecItemDelete(query as CFDictionary)
+        guard deleted == errSecSuccess || deleted == errSecItemNotFound else {
+            throw StudyCredentialError.storage
+        }
         var item = query
         item[kSecValueData as String] = data
         item[kSecAttrLabel as String] = "Wisp Study key (\(provider))"
         item[kSecAttrSynchronizable as String] = false
+        item[kSecAttrAccess as String] = access
         guard SecItemAdd(item as CFDictionary, nil) == errSecSuccess else {
             throw StudyCredentialError.storage
         }

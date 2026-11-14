@@ -33,7 +33,7 @@ enum NotchQADriver {
         let midnight = calendar.startOfDay(for: Date())
         let now = midnight.addingTimeInterval(10 * 3600 + 32 * 60)
         let dayStart = midnight.timeIntervalSince1970
-        func dayModel(_ proactive: ProactiveFixture) -> TodayModel {
+        func dayModel(_ proactive: ProactiveFixture, study: Bool = false) -> TodayModel {
             TodayModel(now: { now }, timeZoneProvider: { zone }, transport: { request in
                 let components = request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: true) }
                 let ok = { (body: String) in
@@ -50,13 +50,16 @@ enum NotchQADriver {
                 }
                 let body = components?.path == "/assistant/upcoming" ? try fixtureUpcoming(dayStart: dayStart)
                     : try fixturePlan(day: components?.queryItems?.first { $0.name == "day" }?.value ?? "", dayStart: dayStart,
-                                      proactive: proactive)
+                                      proactive: proactive, study: study)
                 return (body, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
             })
         }
         let today = dayModel(.ready)
         let working = dayModel(.working)
         let legacy = dayModel(.none)
+        // The same day with school work from the Study tab: study blocks, school
+        // deadlines and the Brief's SCHOOL line (only the "-study" scenes).
+        let schoolDay = dayModel(.ready, study: true)
         // First-day states: a new user's empty day, the same day with Calendar,
         // Reminders, Mail and Messages unreadable, and the service still starting.
         func variantModel(_ variant: DayVariant) -> TodayModel {
@@ -138,6 +141,8 @@ enum NotchQADriver {
             ("brief-blocked-proactive", .brief, { AnyView(NotchBriefView(model: model, today: blockedProactive, actions: state())) }),
             ("day-blocked", .day, { AnyView(NotchDayView(model: model, today: blocked)) }),
             ("day-starting", .day, { AnyView(NotchDayView(model: startingModel, today: starting)) }),
+            ("brief-study", .brief, { AnyView(NotchBriefView(model: model, today: schoolDay, actions: state())) }),
+            ("day-study", .day, { AnyView(NotchDayView(model: model, today: schoolDay)) }),
         ] + NotchQASetup.scenes() + panelScenes(model: model, today: today, state: state)
             + studyScenes(model: model)
         for scene in scenes {
@@ -514,7 +519,11 @@ enum NotchQADriver {
 
     /// Without `proactive` (the default) this is the Brief from before the
     /// proactive engine, which tests/BriefTimeViewChecks.swift exercises.
-    static func fixturePlan(day: String, dayStart: Double, proactive: ProactiveFixture = .none) throws -> Data {
+    /// With `study` the day also carries the Study tab's blocks, school
+    /// deadlines and SCHOOL summary (the "-study" scenes); without it the plan
+    /// is exactly what it was before Study.
+    static func fixturePlan(day: String, dayStart: Double, proactive: ProactiveFixture = .none,
+                            study withStudy: Bool = false) throws -> Data {
         func at(_ h: Double) -> Double { dayStart + h * 3600 }
         func block(_ id: String, _ title: String, _ start: Double, _ end: Double, _ kind: String,
                    task: String? = nil, pattern: String? = nil, evidence: String? = nil) -> [String: Any] {
@@ -610,15 +619,20 @@ enum NotchQADriver {
             "next_test": ["id": "qa:quiz3", "title": "Quiz 3: Loops", "course_name": "CSE 20", "due_ts": at(24 + 10)],
             "line": "2 due today: Problem set 6 (MATH 19A), Lab 5: Lists (CSE 20)", "sample": false,
         ]
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "day": day, "timezone": zone.identifier, "generated_at": at(13.1), "revision": 3, "provisional": false,
-            "warnings": [], "tasks": [], "blocks": studyBlocks, "deadlines": studyDeadlines, "study": study,
+            "warnings": [], "tasks": [], "blocks": [], "deadlines": [],
             "all_day": [["id": "allday", "title": "PA 2 [CSE-20-04]", "start": at(0), "kind": "calendar", "warnings": []]],
             "unscheduled": [],
             "sources": ["calendar": ["ready": true, "last_sync": at(13), "reason": "Up to date"]],
             "preferences": ["start_minute": 540, "end_minute": 1320, "not_before": NSNull()],
             "workspace": workspace,
         ]
+        if withStudy {
+            payload["blocks"] = studyBlocks
+            payload["deadlines"] = studyDeadlines
+            payload["study"] = study
+        }
         return try JSONSerialization.data(withJSONObject: payload)
     }
 

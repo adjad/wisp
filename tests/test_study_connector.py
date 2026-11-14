@@ -347,6 +347,197 @@ def test_unknown_error_code_becomes_bad_reply():
     assert C.StudyConnectorError("busy").message
 
 
+# --- Keychain reads never block the event loop ------------------------------------------
+
+
+def _ticking(coro_factory):
+    """Run coro_factory() beside a 10 ms ticker; returns (result or exception, ticks)."""
+    async def main():
+        ticks = 0
+        done = asyncio.Event()
+
+        async def ticker():
+            nonlocal ticks
+            while not done.is_set():
+                ticks += 1
+                await asyncio.sleep(0.01)
+        task = asyncio.create_task(ticker())
+        try:
+            try:
+                out = await coro_factory()
+            except Exception as exc:  # noqa: BLE001
+                out = exc
+        finally:
+            done.set()
+            await task
+        return out, ticks
+    return asyncio.run(main())
+
+
+def test_a_slow_keychain_read_runs_off_the_event_loop(monkeypatch):
+    import time as _time
+
+    def slow(args):   # a read waiting on a macOS prompt
+        _time.sleep(0.3)
+        return subprocess.CompletedProcess(args, 0, (KEY + "\n").encode(), b"")
+    monkeypatch.setattr(C, "_security", slow)
+    server = Server(reply('{"ok": 1}'))
+    out, ticks = _ticking(lambda: C.complete_json("s", "u", transport=server.transport))
+    assert out == {"ok": 1} and ticks >= 10   # the loop kept running while the read waited
+    assert server.requests[0].headers["authorization"] == f"Bearer {KEY}"
+
+
+def test_status_async_runs_the_existence_check_off_the_loop(monkeypatch):
+    import time as _time
+
+    def slow(args):
+        _time.sleep(0.3)
+        return subprocess.CompletedProcess(args, 0, b"", b"")
+    monkeypatch.setattr(C, "_security", slow)
+    out, ticks = _ticking(C.status_async)
+    assert out["ready"] is True and out["source"] == "study" and ticks >= 10
+
+
+@pytest.mark.parametrize("failure", ["timeout", "denied"])
+def test_a_failed_read_is_held_and_says_keychain(monkeypatch, failure):
+    calls = []
+
+    def security(args):
+        calls.append(args)
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(args, 10)
+        return subprocess.CompletedProcess(args, 51, b"", b"User interaction is not allowed.")
+    monkeypatch.setattr(C, "_security", security)
+    for _ in range(3):
+        with pytest.raises(C.StudyConnectorError) as err:
+            asyncio.run(C.complete_json("s", "u", transport=Server().transport))
+        assert err.value.code == "missing" and "Keychain" in err.value.message
+        assert "Always Allow" in err.value.message and KEY not in err.value.message
+    assert len(calls) == 1          # the held failure never re-triggers a prompt
+    C.forget_key()                  # saving the key again (set_choice) reads it at once
+    with pytest.raises(C.StudyConnectorError):
+        asyncio.run(C.complete_json("s", "u", transport=Server().transport))
+    assert len(calls) == 2
+
+
+def test_a_hold_expires(monkeypatch):
+    calls = []
+
+    def security(args):
+        calls.append(args)
+        raise subprocess.TimeoutExpired(args, 10)
+    monkeypatch.setattr(C, "_security", security)
+    assert C._keychain_key("openrouter") is None and C._keychain_key("openrouter") is None
+    assert len(calls) == 1
+    C._key_failed["openrouter"] -= C.KEY_FAILURE_HOLD_S + 1
+    assert C._keychain_key("openrouter") is None and len(calls) == 2
+
+
+def test_no_saved_key_is_a_plain_missing_and_never_held(monkeypatch):
+    calls = []
+
+    def security(args):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 44, b"", b"The specified item could not be found.")
+    monkeypatch.setattr(C, "_security", security)
+    for _ in range(2):
+        with pytest.raises(C.StudyConnectorError) as err:
+            asyncio.run(C.complete_json("s", "u", transport=Server().transport))
+        assert err.value.message == C.MESSAGES["missing"]
+    assert len(calls) == 2 and not C._key_failed
+
+
+# --- the POST budget ------------------------------------------------------------------
+
+
+def test_a_post_budget_caps_retries_inside_one_call():
+    async def go(server):
+        with C.post_budget(1):
+            return await C.complete_json("s", "u", key_reader=lambda p: KEY, transport=server.transport)
+    server = Server(httpx.Response(503), reply('{"ok": 1}'))
+    with pytest.raises(C.StudyConnectorError) as err:
+        asyncio.run(go(server))
+    assert err.value.code == "unreachable" and len(server.requests) == 1
+    server = Server(httpx.Response(400, text="response_format unsupported"), reply('{"ok": 1}'))
+    with pytest.raises(C.StudyConnectorError) as err:
+        asyncio.run(go(server))
+    assert err.value.code == "bad_reply" and len(server.requests) == 1
+
+
+def test_without_a_budget_one_call_sends_at_most_three_posts():
+    server = Server(httpx.Response(400, text="Invalid request"), httpx.Response(503), httpx.Response(503))
+    with pytest.raises(C.StudyConnectorError):
+        call(server)
+    assert len(server.requests) == 3
+
+
+# --- the Intel fallback, through the real remote_policy ---------------------------------
+
+
+def _real_profile(base_url, prefix):
+    from service.inference import remote_policy
+    raw = {"base_url": base_url, "api_prefix": prefix, "model_id": "gemini-3.8-flash",
+           "credential_ref": "keychain:cloud", "context_window": 131072, "max_tokens": 8192,
+           "request_bytes": 4 * 1024 * 1024, "messages": 200, "aggregate_bytes": 2 * 1024 * 1024,
+           "tools": 64, "response_bytes": 8 * 1024 * 1024}
+    return remote_policy.profile_from_config(raw)
+
+
+@pytest.mark.parametrize("base_url,prefix", [("https://generativelanguage.googleapis.com", "/v1beta/openai"),
+                                             ("https://openrouter.ai", "/api/v1")])
+def test_cloud_fallback_with_the_real_role_list_and_endpoint(monkeypatch, base_url, prefix):
+    from service.config import provider_credentials
+    from service.inference import remote_policy
+    profile = _real_profile(base_url, prefix)
+    assert "general" in profile.generation_roles
+    # Only the profile and the credential store are faked; remote_default_target,
+    # require_generation_role, endpoint_from_config and Endpoint.api_key are the real ones.
+    monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: profile)
+    seen = []
+
+    def resolve(name, url, **kw):
+        seen.append((name, url))
+        return KEY
+    monkeypatch.setattr(provider_credentials, "resolve_keychain", resolve)
+    target = REAL_CLOUD_TARGET()
+    assert target["origin"] == base_url and target["prefix"] == prefix and target["model"] == "gemini-3.8-flash"
+    assert seen == []                       # finding the target never reads the key
+    assert target["key"]() == KEY and seen == [("cloud", base_url)]
+
+
+def test_cloud_fallback_picks_a_role_the_profile_has(monkeypatch):
+    from dataclasses import replace
+    from service.inference import remote_policy
+    profile = replace(_real_profile("https://openrouter.ai", "/api/v1"), generation_roles=("fast", "agent"))
+    monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: profile)
+    assert C._generation_role(profile) == "fast"
+    assert REAL_CLOUD_TARGET()["origin"] == "https://openrouter.ai"
+
+
+def test_cloud_fallback_key_failure_is_missing_and_status_stays_defensive(monkeypatch):
+    from service.config import provider_credentials
+    from service.inference import remote_policy
+    profile = _real_profile("https://openrouter.ai", "/api/v1")
+    monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: profile)
+    monkeypatch.setattr(C, "_cloud_target", REAL_CLOUD_TARGET)
+
+    def refuse(name, url, **kw):
+        from service.config.endpoints import EndpointConfigurationError
+        raise EndpointConfigurationError("Provider credential unavailable")
+    monkeypatch.setattr(provider_credentials, "resolve_keychain", refuse)
+    with pytest.raises(C.StudyConnectorError) as err:
+        asyncio.run(C.complete_json("s", "u", transport=Server().transport))
+    assert err.value.code == "missing"
+    s = C.status()
+    assert s["source"] == "cloud" and s["active_model_id"] == "gemini-3.8-flash"
+
+    def boom():
+        raise RuntimeError("other branch")
+    monkeypatch.setattr(remote_policy, "remote_only_profile", boom)
+    monkeypatch.setattr(C, "_cloud_cache", None)
+    assert C.status()["source"] == "none"
+
+
 def test_this_file_is_in_the_simulation_manifest():
     from pathlib import Path
     manifest = (Path(__file__).resolve().parents[1] / "scripts" / "run_simulation_qa.py").read_text()
