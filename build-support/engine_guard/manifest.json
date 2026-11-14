@@ -30,6 +30,13 @@
       "output_sha256": "5b12ebe1d1e0334e82d5427044993873f64857020d44c6fd070f07e4c12296e9",
       "patch": "server.py.patch.json",
       "patch_sha256": "4dda1707e68603f577ff408c103991fb993bf2488b0baa2c72a5baed974b1f0a"
+    },
+    {
+      "path": "omlx/patches/mlx_lm_mtp/batch_generator.py",
+      "input_sha256": "979d9b64e8f8d2f5b2e602c6860ee70c9a0f83ac512545e03ce5c0251b304269",
+      "output_sha256": "33b42170ddc082278112cabe3c195acc5a8c977d544c1db0b2b7832fcb44b351",
+      "patch": "batch_generator.py.patch.json",
+      "patch_sha256": "e568c506b8a48d62da816e3edbf6b075307ae6b539c9bcd4f8d7fdf81f2f8684"
     }
   ],
   "additions": [
@@ -42,6 +49,11 @@
       "path": "omlx/wisp_encoders.py",
       "source": "encoders.py",
       "sha256": "9522e8307f0b22b3cab61b05c1da6b6c54c8b25419777728df32cd011cfc1588"
+    },
+    {
+      "path": "omlx/wisp_mtp_guard.py",
+      "source": "mtp_guard.py",
+      "sha256": "ff7078caa745ca9f9d48c0b206e78d43b5ba16378dfd13c50ef92225f2bd9d90"
     }
   ]
 }

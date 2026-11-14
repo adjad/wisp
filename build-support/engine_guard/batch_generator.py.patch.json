@@ -1,0 +1,32 @@
+{
+  "path": "omlx/patches/mlx_lm_mtp/batch_generator.py",
+  "input_sha256": "979d9b64e8f8d2f5b2e602c6860ee70c9a0f83ac512545e03ce5c0251b304269",
+  "output_sha256": "33b42170ddc082278112cabe3c195acc5a8c977d544c1db0b2b7832fcb44b351",
+  "edits": [
+    {
+      "old": "from . import prompt_priming as _prompt_priming\n",
+      "new": "from . import prompt_priming as _prompt_priming\nfrom omlx import wisp_mtp_guard as _wisp_mtp_guard\n",
+      "count": 1
+    },
+    {
+      "old": "logger = logging.getLogger(__name__)\n",
+      "new": "logger = logging.getLogger(__name__)\n_wisp_mtp_guard.install()\n",
+      "count": 1
+    },
+    {
+      "old": "                        with _spec_command_buffers(model):\n                            return _mtp_batch_next(self, batch_state)\n",
+      "new": "                        with _spec_command_buffers(model):\n                            return _wisp_mtp_guard.run(\n                                _mtp_batch_next, _MtpStepFallback, self, batch_state\n                            )\n",
+      "count": 1
+    },
+    {
+      "old": "                            with _spec_command_buffers(model):\n                                return _mtp_next(self, state)\n",
+      "new": "                            with _spec_command_buffers(model):\n                                return _wisp_mtp_guard.run(\n                                    _mtp_next, _MtpStepFallback, self, state\n                                )\n",
+      "count": 1
+    },
+    {
+      "old": "    if not _model_mtp_decode_enabled(gen_batch.model):\n        return False\n",
+      "new": "    if (\n        _wisp_mtp_guard.disabled()\n        and getattr(gen_batch, \"_omlx_mtp_state\", None) is None\n        and getattr(gen_batch, \"_omlx_mtp_batch_state\", None) is None\n    ):\n        # Wisp: an MTP step already failed in this process; start no new one.\n        return False\n    if not _model_mtp_decode_enabled(gen_batch.model):\n        return False\n",
+      "count": 1
+    }
+  ]
+}

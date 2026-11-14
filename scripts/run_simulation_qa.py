@@ -618,6 +618,9 @@ ADDITIONAL_FULL_TESTS = {
     # and fake model (one in-process thread pool), and the service's prewarm on a
     # fake client. No engine, model, GPU or port.
     "tests/test_engine_lazy_encoders.py",
+    # MTP safety net: the engine overlay's guard on a fake mlx whose kernels reject
+    # an over-limit threadgroup at eval; upstream-source cases skip without an oMLX.app.
+    "tests/test_engine_mtp_guard.py",
     "tests/test_encoders_prewarm.py",
     "tests/test_engine_guard_client.py",
     "tests/test_engine_guard_admission.py",
