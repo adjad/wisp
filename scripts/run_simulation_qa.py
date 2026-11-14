@@ -763,6 +763,15 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_user_hours.py",
     "tests/test_hours_offers.py",
     "tests/test_quiet_hold.py",
+    # Study tab (docs/STUDY_TAB.md): a disposable study.db in tmp_path, pure page
+    # parsing and due planning, an in-process TestClient, and injected key readers
+    # and transports for the Study connector; no Keychain, browser, model or network.
+    "tests/test_study_store.py",
+    "tests/test_study_api.py",
+    "tests/test_study_connector.py",
+    "tests/test_study_generate.py",
+    "tests/test_study_canvas_parse.py",
+    "tests/test_study_plan.py",
     # Evening check-in, carry-forward and goal pulse: disposable AssistantStore and
     # state files, in-process TestClient; no model, scheduler, hub or real ~/.moe.
     "tests/test_checkin.py",
@@ -1362,9 +1371,11 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
                 "app/Sources/WispApp/QuickSettingsText.swift",
                 "app/Sources/WispApp/StaleReminders.swift",
                 "app/Sources/WispApp/NeedsYouActions.swift",
+                "app/Sources/WispApp/Study.swift",
                 "tests/NotchTabChecks.swift", "tests/NotchDayChecks.swift",
                 "tests/BriefSummaryChecks.swift", "tests/QuickSettingsChecks.swift",
-                "tests/StaleReminderChecks.swift", "tests/NeedsYouActionChecks.swift", "-o", notch_tab,
+                "tests/StaleReminderChecks.swift", "tests/NeedsYouActionChecks.swift",
+                "tests/StudyChecks.swift", "-o", notch_tab,
             ],
         ),
         ("native/notch-tab-contract", [notch_tab]),

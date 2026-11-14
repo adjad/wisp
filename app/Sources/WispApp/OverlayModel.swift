@@ -168,7 +168,7 @@ final class OverlayModel: ObservableObject {
             // A research plan holds the prompt queue only while it is on screen.
             // Leaving the tab lets a question asked in Ask, or a brief, run.
             if oldValue == .research { releaseResearchDispatch() }
-            // Any way off Ask (⌘1-3, a deep link, a notification) ends the
+            // Any way off Ask (⌘1-5, a deep link, a notification) ends the
             // questionnaire; its answers so far are already saved.
             if tab != .ask { leaveKnowYou(); voice.cancel() }
             closePermissionPage()
@@ -229,7 +229,7 @@ final class OverlayModel: ObservableObject {
 
     /// What fills the panel under its header now. OverlayView animates every
     /// change of it the same way (Theme.Motion), however it was made: a tab
-    /// click, ⌘1 to ⌘3, a deep link, a notification, the gear, Done or Esc.
+    /// click, ⌘1 to ⌘5, a deep link, a notification, the gear, Done or Esc.
     var page: NotchPage {
         NotchPage.shown(tab: tab, settings: showingQuickSettings, permissions: showingPermissions,
                         reset: resetCard != nil, knowYou: knowYou != nil)
@@ -493,6 +493,7 @@ final class OverlayModel: ObservableObject {
             || voice.isActive || speaker.speaking
             || (tab == .day && !todayTaskTitle.trimmingCharacters(in: .whitespaces).isEmpty)
             || (tab == .brief && ProactiveActions.shared.replyInProgress)
+            || (tab == .study && (StudyModel.shared.editing || StudyModel.shared.busy != nil))
             || knowYou != nil
             || setupCard == .open || report.isOpen || (tab == .day && todayReport?.isOpen == true)
     }
@@ -1227,6 +1228,7 @@ final class OverlayModel: ObservableObject {
         case .brief, .day: WispRouter.shared.open(.today(focus: .plan))
         case .research: WispRouter.shared.open(.research)
         case .meet: WispRouter.shared.open(.today(focus: .plan))
+        case .study: WispRouter.shared.open(.today(focus: .plan))
         }
     }
 

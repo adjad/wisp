@@ -342,6 +342,8 @@ struct ProactiveBriefSection: View {
     var coverage: [SourceAccess] = []
     /// Two columns, for the wider panel.
     var wide = false
+    /// School work due today or tomorrow (StudyDaySummary.line); empty hides the row.
+    var school: String = ""
 
     private var unread: [SourceAccess] { proactive.unreadSources(coverage) }
 
@@ -388,6 +390,10 @@ struct ProactiveBriefSection: View {
                 Rectangle().fill(Theme.hairline).frame(height: 1)
                 dayRow
                 Rectangle().fill(Theme.hairline).frame(height: 1)
+                if !school.isEmpty {
+                    schoolRow
+                    Rectangle().fill(Theme.hairline).frame(height: 1)
+                }
                 expandingRow("todos", icon: "checklist", text: shown.todoLine(unread: unread),
                              empty: shown.todos.isEmpty) { todoList(shown) }
                 Rectangle().fill(Theme.hairline).frame(height: 1)
@@ -412,6 +418,7 @@ struct ProactiveBriefSection: View {
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 VStack(alignment: .leading, spacing: 18) {
                     todayList
+                    if !school.isEmpty { schoolRow }
                     attention(shown)
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -925,6 +932,27 @@ struct ProactiveBriefSection: View {
         }
         .buttonStyle(.plain)
         .help("The rest of today, hour by hour (⌘3)")
+    }
+
+    /// "2 due today: Lab 5 (CSE 20), Essay draft", then Study ›.
+    private var schoolRow: some View {
+        Button { model.tab = .study } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 9) {
+                Image(systemName: "graduationcap").font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).frame(width: 15)
+                Text(school).font(.wisp(size: 13)).foregroundStyle(Theme.textPrimary)
+                    .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 2) {
+                    Text("Study")
+                    Image(systemName: "chevron.right").font(.wisp(size: 8, weight: .bold))
+                }
+                .font(.wisp(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary).fixedSize()
+            }
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Your school work (⌘5)")
+        .accessibilityLabel("School: " + school)
     }
 
     /// Two columns: the rest of today, one row an event, the next one lit

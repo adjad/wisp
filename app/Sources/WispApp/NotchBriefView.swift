@@ -144,7 +144,8 @@ struct NotchBriefView: View {
                     ProactiveBriefSection(proactive: proactive, model: model, today: today, actions: actions,
                                           events: restOfToday(plan),
                                           scrollCap: uncapped ? nil : Self.proactiveCap,
-                                          coverage: Self.coverage(plan), wide: wide)
+                                          coverage: Self.coverage(plan), wide: wide,
+                                          school: plan.study?.briefLine ?? "")
                     MailMemorySection(memory: MailMemoryCards.model, onResize: { model.onResize() })
                     HStack(spacing: 12) {
                         askChip(plan)
@@ -743,7 +744,8 @@ struct BriefContent {
                                           textsNeedAccess: textsBlocked,
                                           mailAccess: mailTile?.access, textsAccess: coverage("messages")?.access,
                                           mailOverview: plan.workspace?.mail_overview?.text,
-                                          textsOverview: plan.workspace?.texts_overview?.text, soon: .unknown)
+                                          textsOverview: plan.workspace?.texts_overview?.text, soon: .unknown,
+                                          school: isToday ? plan.study?.briefLine ?? "" : "")
         glance = BriefTiles.glance(rows, mailProse: isToday ? plan.workspace?.mail_summary?.text : nil)
         summary = composed?.keeping ?? []
         intro = composed?.intro ?? []
