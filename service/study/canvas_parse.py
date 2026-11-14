@@ -509,19 +509,72 @@ _GRADES_NOISE = re.compile(r"^(?:click to test a different score|instructor is w
                            r"total|weighted.*|assignments are weighted.*|group|weight)$", re.I)
 
 
-def _course_from_title(title: str) -> str | None:
+# The part of a Canvas page title before ": " that names the page, not the course
+# ("Assignments: Statistics", "Course Modules: Statistics", "Grades for <student>: Statistics").
+_TITLE_HEADS = {"assignments", "grades", "syllabus", "modules", "course modules", "course home", "home",
+                "announcements", "discussions", "discussion topics", "quizzes", "files", "pages", "people",
+                "course syllabus", "course assignments", "course grades"}
+# Titles that name a page and no course.
+_BARE_TITLES = {"dashboard", "canvas", "canvas lms", "to do", "calendar", "inbox", "user dashboard"}
+
+
+def _course_from_title(title: str, *, plain: bool = False) -> str | None:
+    """The course name a Canvas page title carries. ``plain``: the title may be the bare
+    course name (a course's home page is titled just "<Course name>")."""
     t = _WS.sub(" ", title or "").strip()
     for sep in (": ", " - "):
         if sep in t:
             head, tail = t.split(sep, 1)
-            if head.lower().startswith(("grades for", "assignments", "grades", "syllabus", "modules",
-                                        "course home", "home")) and tail.strip():
+            low = head.lower().strip()
+            if (low in _TITLE_HEADS or low.startswith("grades for ")) and tail.strip():
                 return tail.strip()
+    low = t.lower()
+    if plain and t and len(t) <= 200 and not _is_nav(t) and low not in _BARE_TITLES \
+            and not low.startswith("grades for") and low.split(":")[0].strip() not in _TITLE_HEADS:
+        return t
     return None
 
 
+def _code_only(line: str) -> bool:
+    """A bare course code ("CSE-20-01", "STAT 101-02"): a breadcrumb's short name, not a course name."""
+    m = _CODE.match(line or "")
+    return bool(m) and not re.sub(r"[\s\-:.,()]+", "", line[m.end():])
+
+
+def _course_from_text(lines: list[str], crumb: str | None) -> str | None:
+    """The course name a course page's text shows: the grades page's "Course" picker, else the
+    breadcrumb line just before the page's own crumb (``crumb``: "grades", "assignments")."""
+    head = lines[:40]
+    for i, line in enumerate(head):
+        low = line.lower()
+        cand = None
+        if low == "course" and i + 1 < len(head):
+            cand = head[i + 1]
+        elif low.startswith("course:") and len(line) > 7:
+            cand = line[7:].strip()
+        if cand and not _is_nav(cand) and cand.lower() not in _HEADER_CELLS \
+                and cand.lower() not in ("arrange by", "apply") and not _grade(cand)[0]:
+            return cand
+    # The crumb's first appearance. The breadcrumb comes before the course menu, which names
+    # the page again; a lone "Grades" with a menu item after it is the menu itself, where the
+    # line before may be a school's own tool, not the course.
+    seen = [i for i, line in enumerate(lines[:80]) if i and line.lower() == crumb] if crumb else []
+    if seen and seen[0] < len(head):
+        i = seen[0]
+        prev, nxt = lines[i - 1], (lines[i + 1] if i + 1 < len(lines) else "")
+        if ((len(seen) > 1 or not (nxt and _is_nav(nxt))) and not _is_nav(prev) and not _code_only(prev)
+                and not _DATE.search(prev) and not _grade(prev)[0] and len(prev) <= 120):
+            return prev
+    return None
+
+
+def _course_name(title: str, lines: list[str], *, crumb: str | None = None, plain: bool = False) -> str | None:
+    """A course page's course name: its title first, then its text. None when neither says one."""
+    return _course_from_title(title, plain=plain) or _course_from_text(lines, crumb)
+
+
 def _parse_course_grades(lines: list[str], b: _Builder, course_id: str, title: str) -> None:
-    cname = _course_from_title(title)
+    cname = _course_name(title, lines, crumb="grades")
     cid = b.course(cname, canvas_id=course_id)
     # Start after the table header when it is there.
     lows = [line.lower() for line in lines]
@@ -619,7 +672,7 @@ _TYPE_LINE = {"quiz": "quiz", "discussion": "discussion", "discussion topic": "d
 
 
 def _parse_assignments(lines: list[str], b: _Builder, course_id: str, title: str) -> None:
-    cname = _course_from_title(title)
+    cname = _course_name(title, lines, crumb="assignments")
     cid = b.course(cname, canvas_id=course_id)
     items: list[dict] = []
     item: dict | None = None
@@ -684,8 +737,10 @@ _TODO_HEADERS = re.compile(r"^(?:to do|coming up|upcoming|recent feedback|view c
                            r"show all|nothing for now|agenda)$", re.I)
 
 
-def _parse_todo(lines: list[str], b: _Builder, course_id: str | None, title: str) -> None:
-    cname = _course_from_title(title)
+def _parse_todo(lines: list[str], b: _Builder, course_id: str | None, title: str,
+               home: bool = False) -> None:
+    # A course's home page is titled with the bare course name; other pages are not.
+    cname = _course_name(title, lines, plain=home) if course_id else _course_from_title(title)
     default_cid = b.course(cname, canvas_id=course_id) if course_id else None
     for i, line in enumerate(lines):
         if not _DATE.search(line):
@@ -766,7 +821,8 @@ def parse_page(url: str, title: str, text: str, *, now: float, timezone: str) ->
     elif path.startswith("/calendar") or (m and m.group(2) in (None, "", "/home")) or \
             "coming up" in joined or "\nto do\n" in f"\n{joined}\n":
         kind = "calendar"
-        _parse_todo(lines, b, m.group(1) if m else None, title)
+        _parse_todo(lines, b, m.group(1) if m else None, title,
+                    home=bool(m and m.group(2) in (None, "", "/home")))
     if kind == "other":
         return ParsedPage("other", [], [])
     page = b.page(kind)

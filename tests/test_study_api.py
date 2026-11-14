@@ -743,6 +743,16 @@ def test_the_router_is_mounted_in_the_app():
     assert "app.include_router(study_router)" in main
 
 
+def test_a_nameless_course_shows_a_fallback_name_in_the_state_only(client, fakes):
+    fakes.store.upsert_courses([course("canvas:12345", name="", score=None, grade=None,
+                                       url="https://canvas.example.edu/courses/12345")])
+    fakes.store.upsert_assignments([item("lab", time.time() + 3600, course_id="canvas:12345")])
+    got = client.get("/study/state").json()
+    assert [c["name"] for c in got["courses"]] == ["Course 12345"]
+    assert got["assignments"][0]["course_name"] == "Course 12345"
+    assert fakes.store.courses()[0]["name"] == "", "the fallback is never stored"
+
+
 def test_this_file_is_in_the_simulation_manifest():
     from pathlib import Path
     manifest = (Path(__file__).resolve().parents[1] / "scripts" / "run_simulation_qa.py").read_text()
