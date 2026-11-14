@@ -22,8 +22,8 @@ def store(tmp_path):
 
 
 def course(cid="canvas:1", **values):
-    return {"id": cid, "name": "Beginning Programming in Python", "code": "CSE 20", "grade": "A-",
-            "score": 91.2, "url": "https://school.instructure.com/courses/1", "source": "canvas",
+    return {"id": cid, "name": "Introduction to Programming", "code": "CS 101", "grade": "B+",
+            "score": 87.5, "url": "https://school.instructure.com/courses/1", "source": "canvas",
             "sample": False} | values
 
 
@@ -54,8 +54,8 @@ def test_upserting_twice_keeps_one_row_and_updates_it(store):
 
 def test_a_page_that_leaves_a_field_out_never_blanks_it(store):
     store.upsert_courses([course()])
-    store.upsert_courses([{"id": "canvas:1", "name": "Beginning Programming in Python", "grade": None}])
-    assert store.courses()[0]["grade"] == "A-" and store.courses()[0]["code"] == "CSE 20"
+    store.upsert_courses([{"id": "canvas:1", "name": "Introduction to Programming", "grade": None}])
+    assert store.courses()[0]["grade"] == "B+" and store.courses()[0]["code"] == "CS 101"
     store.upsert_assignments([item()])
     store.upsert_assignments([item(details="", score=18.0, status="graded")])
     got = store.assignments()[0]
@@ -194,19 +194,19 @@ def test_an_unknown_timezone_still_loads_the_sample(store):
 
 # --- converging imports (one row per course and per assignment) ----------------------
 
-NAME = "Beginning Programming in Python"
-KEY = "beginning programming in python"
+NAME = "Introduction to Programming"
+KEY = "introduction to programming"
 
 
 def dash_course(**values):
     """The Dashboard / all-grades page: name-hash id, no url."""
-    return {"id": "canvas:9f8e7d6c5b4a", "name": NAME, "code": "CSE 20", "grade": None, "score": None,
+    return {"id": "canvas:9f8e7d6c5b4a", "name": NAME, "code": "CS 101", "grade": None, "score": None,
             "url": None, "source": "canvas", "sample": False, "merge_key": KEY} | values
 
 
 def page_course(**values):
     """A course page: numeric id and its url."""
-    return {"id": "canvas:12345", "name": NAME, "code": "CSE 20", "grade": None, "score": None,
+    return {"id": "canvas:12345", "name": NAME, "code": "CS 101", "grade": None, "score": None,
             "url": "https://school.instructure.com/courses/12345", "source": "canvas", "sample": False,
             "merge_key": KEY} | values
 
@@ -228,13 +228,13 @@ def one_of_each(store):
 
 
 def test_dashboard_then_course_page_converges_on_the_numeric_course(store):
-    store.import_rows([dash_course(grade="A-", score=91.2)], [dash_item()])
+    store.import_rows([dash_course(grade="B+", score=87.5)], [dash_item()])
     mid = store.save_material({"kind": "quiz", "title": "Q", "course_id": "canvas:9f8e7d6c5b4a",
                                "assignment_id": "canvas:aaaaaaaaaaaa", "body": quiz_body()})["id"]
     assert store.import_rows([page_course()], [page_item()]) == (1, 1)
     c, a = one_of_each(store)
     assert c["id"] == "canvas:12345" and c["merge_key"] == KEY
-    assert c["grade"] == "A-" and c["score"] == 91.2 and c["url"].endswith("/courses/12345")
+    assert c["grade"] == "B+" and c["score"] == 87.5 and c["url"].endswith("/courses/12345")
     assert a["id"] == "canvas:aaaaaaaaaaaa", "the id already stored is kept"
     assert a["course_id"] == "canvas:12345" and a["points"] == 20.0 and a["details"] == "Use lists."
     m = store.material(mid)
@@ -267,7 +267,7 @@ def test_two_hash_ids_for_one_name_keep_the_existing_one(store):
     store.import_rows([dash_course(id="web:1a1a1a1a1a1a", code=None)],
                       [dash_item(id="web:2b2b2b2b2b2b", course_id="web:1a1a1a1a1a1a")])
     c, a = one_of_each(store)
-    assert c["id"] == "canvas:9f8e7d6c5b4a" and c["code"] == "CSE 20" and a["course_id"] == c["id"]
+    assert c["id"] == "canvas:9f8e7d6c5b4a" and c["code"] == "CS 101" and a["course_id"] == c["id"]
 
 
 def test_two_numeric_courses_with_one_name_stay_apart(store):
@@ -302,8 +302,8 @@ def test_an_old_database_gains_merge_key(tmp_path):
         CREATE TABLE courses (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', code TEXT, grade TEXT,
             score REAL, url TEXT, source TEXT NOT NULL DEFAULT 'canvas', sample INTEGER NOT NULL DEFAULT 0,
             updated_at REAL NOT NULL);
-        INSERT INTO courses(id, name, grade, updated_at) VALUES ('canvas:9f8e7d6c5b4a', 'Beginning  Programming in
-            Python!', 'A', 1.0);
+        INSERT INTO courses(id, name, grade, updated_at) VALUES ('canvas:9f8e7d6c5b4a', 'Introduction  to
+            Programming!', 'A', 1.0);
     """)
     db.close()
     old = StudyStore(path)
@@ -314,7 +314,7 @@ def test_an_old_database_gains_merge_key(tmp_path):
 
 
 def test_real_pages_converge_whatever_the_order(tmp_path):
-    """canvas_parse's own fixtures: the course page says "CSE 20: Beginning Programming in Python",
+    """canvas_parse's own fixtures: the course page says "CS 101: Introduction to Programming",
     the Dashboard and all-grades pages only the name."""
     from service.study import canvas_parse as cp
     from tests import test_study_canvas_parse as pages
@@ -324,7 +324,7 @@ def test_real_pages_converge_whatever_the_order(tmp_path):
         "grades": cp.parse_page("https://canvas.example.edu/grades", "Grades", pages.ALL_GRADES,
                                 now=pages.NOW, timezone=pages.TZ),
         "course": cp.parse_page("https://canvas.example.edu/courses/12345/grades",
-                                "Grades for Jordan Example: CSE 20: Beginning Programming in Python",
+                                "Grades for Jordan Example: CS 101: Introduction to Programming",
                                 pages.COURSE_GRADES, now=pages.NOW, timezone=pages.TZ),
     }
     results = []
@@ -334,9 +334,9 @@ def test_real_pages_converge_whatever_the_order(tmp_path):
         for _ in range(2):   # re-importing changes nothing
             for name in order:
                 store.import_rows(parsed[name].courses, parsed[name].assignments)
-        python = [c for c in store.courses() if "programming in python" in c["merge_key"]]
+        python = [c for c in store.courses() if "introduction to programming" in c["merge_key"]]
         assert [c["id"] for c in python] == ["canvas:12345"], order
-        assert python[0]["score"] == 91.14 and python[0]["url"].endswith("/courses/12345")
+        assert python[0]["score"] == 87.5 and python[0]["url"].endswith("/courses/12345")
         rows = store.assignments()
         assert not {a["course_id"] for a in rows} - {c["id"] for c in store.courses()}, "no orphans"
         titles = [(a["course_id"], merge_key(a["title"])) for a in rows]

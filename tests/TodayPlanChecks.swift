@@ -740,13 +740,13 @@ struct TodayPlanChecks {
         // show beside the workspace's plan, once; a bad summary is left out.
         precondition(minimal.study == nil && live.study == nil, "No study object, no school line")
         let school = try edited { plan in
-            plan["study"] = ["due_today": [["id": "a1", "title": "Lab 5", "course_name": "CSE 20", "due_ts": 1792990740.0]],
-                             "due_tomorrow_count": 1, "line": "1 due today: Lab 5 (CSE 20)", "sample": false]
+            plan["study"] = ["due_today": [["id": "a1", "title": "Lab 5", "course_name": "CS 101", "due_ts": 1792990740.0]],
+                             "due_tomorrow_count": 1, "line": "1 due today: Lab 5 (CS 101)", "sample": false]
             plan["blocks"] = (plan["blocks"] as! [[String: Any]])
                 + [["id": "study-block:a1", "title": "Study: Lab 5", "start": 1792980000.0, "end": 1792982700.0,
                     "kind": "study", "task_id": NSNull(), "warnings": [] as [String]]]
         }
-        precondition(school.study?.line == "1 due today: Lab 5 (CSE 20)" && school.study?.dueToday.first?.courseName == "CSE 20"
+        precondition(school.study?.line == "1 due today: Lab 5 (CS 101)" && school.study?.dueToday.first?.courseName == "CS 101"
                      && school.study?.dueTomorrowCount == 1, "The study summary decodes")
         precondition(school.displayBlocks.count == 2 && school.displayBlocks.last?.kind == "study",
                      "A study block shows beside the workspace's plan")

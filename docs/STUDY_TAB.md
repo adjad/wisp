@@ -147,8 +147,8 @@ async def extract_school_data(url: str, title: str, text: str, *, now: float, ti
 
 ```jsonc
 // course
-{"id": "canvas:12345", "name": "Beginning Programming in Python", "code": "CSE 20",
- "grade": "A-", "score": 91.2, "url": "https://…/courses/12345", "source": "canvas", "sample": false}
+{"id": "canvas:12345", "name": "Introduction to Programming", "code": "CS 101",
+ "grade": "B+", "score": 87.5, "url": "https://…/courses/12345", "source": "canvas", "sample": false}
 // assignment
 {"id": "canvas:12345:678", "course_id": "canvas:12345", "title": "Lab 5: Lists",
  "kind": "assignment",            // assignment | quiz | exam | project | discussion | reading
@@ -274,10 +274,35 @@ capped (prompt 600, choice 300, explain 2000).
   "due_week_count": 4,
   "missing_count": 0,
   "next_test": {"id", "title", "course_name", "due_ts"},   // next quiz/exam within 7 days, or null
-  "line": "2 due today: Lab 5 (CSE 20), Essay draft",        // "" when nothing is due today or tomorrow
-  "sample": false
+  "line": "2 due today: Lab 5 (CS 101), Essay draft",        // "" when nothing is due today or tomorrow
+  "sample": false,
+  // Open work due from local today 00:00 through the end of local day today+7, soonest
+  // first, at most 8 (today's items are in both due_today and upcoming).
+  "upcoming": [{"id", "title", "course_name", "course_label", "due_ts", "all_day", "kind", "status"}],
+  "upcoming_more": 0                                          // how many the cap of 8 left out
 }
 ```
+
+`course_label` is the course's short code ("CS 101"), or `""` when it has none; the app then
+names the course by `course_name`, truncated. An older service sends neither `upcoming` nor
+`upcoming_more`; the app decodes them as `[]` and `0`.
+
+What the tabs show (display only: school rows never reach a prompt, log, notification,
+widget or export, and never show grades or points):
+
+- **Brief** (today only): one SCHOOL row whose headline is `line` (or "Nothing due today or
+  tomorrow" when `line` is empty but `upcoming` is not), then up to 3 of `upcoming`, one line
+  each (title, course label, short due time such as "Today 11:59 PM", "Tomorrow 10:00 AM",
+  "Mon, Nov 16"), then "+N more in Study" (N = the hidden `upcoming` items plus
+  `upcoming_more`). With only one item in all, the headline names it and no list follows.
+  The whole row opens Study, in the proactive Brief and in the Brief without it.
+- **Day** (today only): school deadlines and study blocks sit in the agenda (below); after
+  the agenda's lower sections a "SCHOOL THIS WEEK" group lists up to 4 of `upcoming` that are
+  not due on the day shown, with "+N more in Study ›" in its heading. Nothing beyond today's
+  items shows nothing. Tapping it opens Study. Another day shows only its own deadlines.
+
+The selection (caps, more-counts, the Day's dedupe) is pure code in `NotchDay.swift`
+(`StudyDaySummary.briefUpcoming`, `dayUpcoming`), checked in `tests/NotchDayChecks.swift`.
 
 - `deadlines` gains `{"id": "study:<assignment id>", "title": "<title> · <course code or name>",
   "due_ts", "source": "study"}` for items due on that day (not submitted/graded); an all-day
@@ -295,7 +320,7 @@ capped (prompt 600, choice 300, explain 2000).
 | `StudyModel.swift` | `@MainActor final class StudyModel: ObservableObject`, injectable transport |
 | `StudyCredentialStore.swift` | Keychain `com.wisp.study` |
 | `StudyPageReader.swift` | reads the front tab of each open browser window through Accessibility |
-| `NotchStudyView.swift` | the tab: courses, due list, make buttons, library |
+| `NotchStudyView.swift` | the tab: courses, due list (one line per assignment, 4 before Show all), make row, library (3 before Show all) |
 | `StudyMaterialViews.swift` | quiz player, flash cards, guide and lesson readers |
 | `StudyConnectorCard.swift` | key card: provider, key field, model |
 
@@ -319,6 +344,7 @@ struct StudyDaySummary: Decodable, Equatable       // the "study" object of /ass
 
 enum StudyDue { static func groups(_ items: [StudyAssignment], now: Date, calendar: Calendar) -> [StudyDueGroup] }
 //   groups: Missing, Today, Tomorrow, This week, Later, No date — empty groups dropped
+//   StudyText.dueShort: the due list's right column ("Today 11:59 PM", "Mon, Nov 16")
 struct QuizRun: Equatable      // init(quiz:); current, chosen, isLast, choose(_:), next(), finished, correct, total, scoreText
 struct FlashRun: Equatable     // init(deck:); current, flipped, flip(), mark(known:), again queue, finished, knownCount, total
 enum StudyText                 // every user-facing string and formatter (due labels, grade chip, counts, empty states)
@@ -353,7 +379,9 @@ enum StudyCredentialStore { static func save(_ key: String, provider: String) th
                             static func remove(provider: String); static func has(provider: String) -> Bool }
 
 // Views
-struct NotchStudyView: View { init(model: OverlayModel, study: StudyModel) }
+struct NotchStudyView: View { init(model: OverlayModel, study: StudyModel, cap: CGFloat? = nil) }
+//   The panel stops at half the screen on Study (SurfaceLayout.studyScreenShare, studyContentCap)
+//   and the tab scrolls inside it; an opened material keeps its back row and title fixed.
 ```
 
 JSON keys are snake_case; Swift properties are camelCase through explicit
@@ -366,4 +394,4 @@ JSON keys are snake_case; Swift properties are camelCase through explicit
   `scripts/run_simulation_qa.py` and ends with the manifest self-check.
 - Swift: `tests/StudyChecks.swift` (`func studyChecks(_ check: (Bool, String) -> Void)`), compiled
   with `tests/NotchTabChecks.swift`.
-- `WISP_NOTCH_QA` scenes: `study`, `study-quiz`, `study-cards`, `study-guide`, `study-lesson`, `study-setup`, `brief-study`, `day-study`.
+- `WISP_NOTCH_QA` scenes: `study`, `study-quiz`, `study-cards`, `study-guide`, `study-lesson`, `study-setup`, `brief-study`, `brief-legacy-study`, `day-study`.

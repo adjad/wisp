@@ -256,6 +256,23 @@ struct SurfaceLayout: Equatable {
         return max(room.rounded(.down), Self.minTabScroll)
     }
 
+    /// The Study tab is lists and reading (a guide can run a thousand points), so
+    /// it stops at half the screen and scrolls: 491 pt on a 982 pt screen.
+    static let studyScreenShare: CGFloat = 0.5
+
+    /// The tallest the panel gets on the Study tab.
+    var maxStudyPanelHeight: CGFloat {
+        min((screenFrame.height * Self.studyScreenShare).rounded(.down), maxPanelHeight)
+    }
+
+    /// What the Study tab gets under the header. An opened material keeps its back
+    /// row and title fixed, so this is those and the scroll together.
+    func studyContentCap(headerHeight: CGFloat) -> CGFloat {
+        let room = maxStudyPanelHeight - contentTopInset - headerHeight.rounded(.up)
+            - Self.tabTopPadding - Self.panelBottomPadding
+        return max(room.rounded(.down), Self.minTabScroll)
+    }
+
     /// Frame of the expanded panel for a given content height: centred on the
     /// anchor, hanging from the top, and never taller than the screen.
     func expandedFrame(contentHeight: CGFloat) -> CGRect {

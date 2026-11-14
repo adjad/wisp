@@ -23,42 +23,42 @@ Skip To Content
 Dashboard
 Today
 November 14
-BEGINNING PROGRAMMING IN PYTHON
-BEGINNING PROGRAMMING IN PYTHON ASSIGNMENT
-Week 7 Reading: Modules
-Week 7 Reading: Modules
+INTRODUCTION TO PROGRAMMING
+INTRODUCTION TO PROGRAMMING ASSIGNMENT
+Week 3 Reading: Functions
+Week 3 Reading: Functions
 10 pts
 DUE: 11:59 PM
 Missing
-Assignment Week 7 Reading: Modules is not marked as done.
+Assignment Week 3 Reading: Functions is not marked as done.
 Tomorrow, November 15
 STATISTICS
 STATISTICS ASSIGNMENT
-Worksheet 5
+Worksheet 2
 Due
 5:00 PM
 
 Monday, November 16
-ACADEMIC LITERACY AND ETHOS: INTERNATIONAL AND GLOBAL PERSPECTIVES ASSIGNMENT
-Upload Slug Story here
+WRITING AND RHETORIC: VOICES AND GLOBAL PERSPECTIVES ASSIGNMENT
+Upload personal essay here
 STATISTICS CALENDAR EVENT
-STAT 5-02 Office Hours with TA Sam
+STAT 101-02 Office Hours with TA Sam
 Zoom Online Meeting
 STATISTICS ANNOUNCEMENT
 Room change for Friday
 STATISTICS ASSIGNMENT
-HW5
+HW2
 20 pts   Due: 11:59 PM
 Submitted
 STATISTICS QUIZ
 Chapter 6 Quiz
-CSE 20 LAB DISCUSSION
+CS 101 LAB DISCUSSION
 Introduce yourself
 Tuesday, November 17
 Show 2 completed items
 My Grades
-Beginning Programming in Python
-91.14%
+Introduction to Programming
+87.5%
 Statistics
 No Grade
 View Grades
@@ -73,20 +73,20 @@ def test_dashboard_planner_list():
     page = cp.parse_page("https://canvas.example.edu/", "Dashboard", DASHBOARD, now=NOW, timezone=TZ)
     assert page.kind == "dashboard"
     items = by_title(page)
-    assert set(items) == {"Week 7 Reading: Modules", "Worksheet 5", "Upload Slug Story here", "HW5",
+    assert set(items) == {"Week 3 Reading: Functions", "Worksheet 2", "Upload personal essay here", "HW2",
                           "Chapter 6 Quiz", "Introduce yourself"}
-    reading = items["Week 7 Reading: Modules"]
+    reading = items["Week 3 Reading: Functions"]
     assert reading["due_ts"] == at(2026, 11, 14, 23, 59) and reading["all_day"] is False
     assert reading["kind"] == "reading" and reading["status"] == "missing" and reading["points"] == 10.0
-    assert items["Worksheet 5"]["due_ts"] == at(2026, 11, 15, 17, 0)
-    assert items["Upload Slug Story here"]["due_ts"] == at(2026, 11, 16, 23, 59)
-    assert items["HW5"]["status"] == "submitted" and items["HW5"]["points"] == 20.0
+    assert items["Worksheet 2"]["due_ts"] == at(2026, 11, 15, 17, 0)
+    assert items["Upload personal essay here"]["due_ts"] == at(2026, 11, 16, 23, 59)
+    assert items["HW2"]["status"] == "submitted" and items["HW2"]["points"] == 20.0
     assert items["Chapter 6 Quiz"]["kind"] == "quiz"
     assert items["Introduce yourself"]["kind"] == "discussion"  # DISCUSSION type label
     names = {c["name"]: c for c in page.courses}
-    assert "Beginning Programming in Python" in names and "Statistics" in names
-    assert "Academic Literacy and Ethos: International and Global Perspectives" in names
-    assert names["Beginning Programming in Python"]["score"] == 91.14
+    assert "Introduction to Programming" in names and "Statistics" in names
+    assert "Writing and Rhetoric: Voices and Global Perspectives" in names
+    assert names["Introduction to Programming"]["score"] == 87.5
     assert names["Statistics"]["score"] is None and names["Statistics"]["grade"] is None
     # No announcement, calendar event or office hours became an assignment.
     assert not any("Office Hours" in t or "Room change" in t for t in items)
@@ -111,7 +111,7 @@ def test_mixed_case_label_for_a_known_course():
 Today
 STATISTICS
 STATISTICS ASSIGNMENT
-HW5
+HW2
 Tomorrow, November 15
 Statistics Quiz
 Chapter 6 Quiz
@@ -119,16 +119,16 @@ Final Quiz Review Notes
 """
     page = cp.parse_page("https://canvas.example.edu/", "Dashboard", text, now=NOW, timezone=TZ)
     items = by_title(page)
-    assert set(items) == {"HW5", "Chapter 6 Quiz"}
+    assert set(items) == {"HW2", "Chapter 6 Quiz"}
     assert items["Chapter 6 Quiz"]["kind"] == "quiz"
     assert items["Chapter 6 Quiz"]["due_ts"] == at(2026, 11, 15, 23, 59)
 
 
 def test_display_name_title_cases_upper_labels():
-    assert cp.display_name("BEGINNING PROGRAMMING IN PYTHON") == "Beginning Programming in Python"
-    assert cp.display_name("CSE 20 INTRO TO DATA STRUCTURES") == "CSE 20 Intro to Data Structures"
-    assert cp.display_name("STAT 5 HW5 REVIEW") == "STAT 5 HW5 Review"
-    assert cp.display_name("UCSC WRITING 2") == "UCSC Writing 2"
+    assert cp.display_name("INTRODUCTION TO PROGRAMMING") == "Introduction to Programming"
+    assert cp.display_name("CS 101 INTRO TO DATA STRUCTURES") == "CS 101 Intro to Data Structures"
+    assert cp.display_name("STAT 101 HW2 REVIEW") == "STAT 101 HW2 Review"
+    assert cp.display_name("UNIV WRITING 2") == "UNIV Writing 2"
     assert cp.display_name("Already Mixed Case of Things") == "Already Mixed Case of Things"
 
 
@@ -166,11 +166,11 @@ Grades
 Courses I'm Taking
 Course
 Grade
-Beginning Programming in Python
-91.14%
+Introduction to Programming
+87.5%
 Statistics
 no grade
-Academic Literacy and Ethos
+Writing and Rhetoric
 A- (90.5%)
 Ocean Sciences
 --
@@ -181,11 +181,11 @@ def test_all_courses_grades():
     page = cp.parse_page("https://canvas.example.edu/grades", "Grades", ALL_GRADES, now=NOW, timezone=TZ)
     assert page.kind == "grades" and page.assignments == []
     names = {c["name"]: c for c in page.courses}
-    assert set(names) == {"Beginning Programming in Python", "Statistics", "Academic Literacy and Ethos",
+    assert set(names) == {"Introduction to Programming", "Statistics", "Writing and Rhetoric",
                           "Ocean Sciences"}
-    assert names["Beginning Programming in Python"]["score"] == 91.14
-    assert names["Academic Literacy and Ethos"]["score"] == 90.5
-    assert names["Academic Literacy and Ethos"]["grade"] == "A-"
+    assert names["Introduction to Programming"]["score"] == 87.5
+    assert names["Writing and Rhetoric"]["score"] == 90.5
+    assert names["Writing and Rhetoric"]["grade"] == "A-"
     assert names["Statistics"]["score"] is None
     # A name-keyed course here matches the Dashboard's id for the same course.
     dash = cp.parse_page("https://canvas.example.edu/", "Dashboard", DASHBOARD, now=NOW, timezone=TZ)
@@ -198,7 +198,7 @@ CSE-20-01
 Grades
 Grades for Jordan Example
 Course
-CSE 20: Beginning Programming in Python
+CS 101: Introduction to Programming
 Arrange By
 Due Date
 Apply
@@ -235,21 +235,21 @@ late
 Labs
 90%
 18.00 / 20.00
-Total: 91.14% (A-)
+Total: 87.5% (B+)
 182.28 / 200.00
 """
 
 
 def test_one_course_grades_table():
     page = cp.parse_page("https://canvas.example.edu/courses/12345/grades",
-                         "Grades for Jordan Example: CSE 20: Beginning Programming in Python",
+                         "Grades for Jordan Example: CS 101: Introduction to Programming",
                          COURSE_GRADES, now=NOW, timezone=TZ)
     assert page.kind == "course_grades"
     assert len(page.courses) == 1
     course = page.courses[0]
-    assert course["id"] == "canvas:12345" and course["code"] == "CSE 20"
-    assert course["name"] == "CSE 20: Beginning Programming in Python"
-    assert course["score"] == 91.14 and course["grade"] == "A-"
+    assert course["id"] == "canvas:12345" and course["code"] == "CS 101"
+    assert course["name"] == "CS 101: Introduction to Programming"
+    assert course["score"] == 87.5 and course["grade"] == "B+"
     assert course["url"] == "https://canvas.example.edu/courses/12345"
     items = by_title(page)
     assert set(items) == {"Lab 4: Loops", "Lab 5: Lists", "Midterm Exam", "Essay: Why Python"}
@@ -265,7 +265,7 @@ def test_one_course_grades_table():
     for a in page.assignments:
         assert a["id"].startswith("canvas:12345:") and a["course_id"] == "canvas:12345"
     # Stable ids across re-reads.
-    again = cp.parse_page("https://canvas.example.edu/courses/12345/grades", "Grades for Jordan Example: CSE 20",
+    again = cp.parse_page("https://canvas.example.edu/courses/12345/grades", "Grades for Jordan Example: CS 101",
                           COURSE_GRADES, now=NOW + 3600, timezone=TZ)
     assert {a["id"] for a in again.assignments} == {a["id"] for a in page.assignments}
 
@@ -337,12 +337,12 @@ Reading Quiz 4
     assert all(a["course_id"] == "canvas:777" for a in page.assignments)
 
     cards = """Dashboard
-Beginning Programming in Python
+Introduction to Programming
 CSE-20-01
 Fall 2026
 To Do
 Turn in Lab 6: Dictionaries
-CSE 20
+CS 101
 20 points • Nov 21 at 11:59pm
 """
     dash = cp.parse_page("https://canvas.example.edu/", "Dashboard", cards, now=NOW, timezone=TZ)
@@ -367,7 +367,7 @@ def test_unrecognised_and_non_school_pages():
 
 @pytest.mark.parametrize("url, ok", [
     ("https://school.instructure.com/courses/1", True),
-    ("https://canvas.ucsc.edu/", True),
+    ("https://canvas.example.edu/", True),
     ("https://canvas.example.org/", True),
     ("https://classroom.google.com/u/0/h", True),
     ("https://district.schoology.com/home", True),
@@ -380,7 +380,7 @@ def test_unrecognised_and_non_school_pages():
     ("https://www.gradescope.com/courses/1", True),
     ("https://www.example.edu/", True),
     ("https://portal.springfield.k12.or.us/", True),
-    ("http://canvas.ucsc.edu/", False),
+    ("http://canvas.example.edu/", False),
     ("https://example.com/", False),
     ("https://instructure.com.evil.net/", False),
     ("https://notedu.com/", False),

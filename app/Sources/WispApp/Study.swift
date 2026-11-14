@@ -240,7 +240,7 @@ struct StudyCourse: Decodable, Equatable, Identifiable {
         case dueCount = "due_count"
     }
 
-    /// "CSE 20" when there is a code, else the name cut to its first three
+    /// "CS 101" when there is a code, else the name cut to its first three
     /// words and about 22 characters.
     var shortName: String {
         if let code = code, !code.trimmingCharacters(in: .whitespaces).isEmpty { return code }
@@ -1117,6 +1117,21 @@ enum StudyText {
         return "Due " + dayText(date, now: now, calendar: calendar, weekday: true)
     }
 
+    /// The due list's right-hand column, where the row already says "due":
+    /// "Today 11:59 PM", "Tomorrow", "Mon, Nov 16", "No date". Missing,
+    /// submitted and graded work read as in `due`.
+    static func dueShort(_ a: StudyAssignment, now: Date, calendar: Calendar) -> String {
+        if a.isMissing(now: now) || (a.isDone && a.isPast(now: now)) { return due(a, now: now, calendar: calendar) }
+        guard let date = a.dueDate else { return "No date" }
+        let today = calendar.startOfDay(for: now)
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: today) ?? today.addingTimeInterval(86_400)
+        let dayAfter = calendar.date(byAdding: .day, value: 2, to: today) ?? today.addingTimeInterval(172_800)
+        let at = a.allDay ? "" : " " + time(date, calendar: calendar)
+        if date < tomorrow { return "Today" + at }
+        if date < dayAfter { return "Tomorrow" + at }
+        return dayText(date, now: now, calendar: calendar, weekday: true)
+    }
+
     /// "91%"; 113.4 gives "113%".
     static func percent(_ value: Double) -> String {
         guard value.isFinite else { return "" }
@@ -1235,5 +1250,34 @@ enum StudyText {
     /// "2 due" for a course row, or nil.
     static func dueCount(_ c: StudyCourse) -> String? {
         c.dueCount > 0 ? "\(c.dueCount) due" : nil
+    }
+}
+
+// MARK: - This week's school work in Brief and Day
+
+extension StudyDaySummary.Due {
+    /// As a Study assignment, so Brief and Day word its due time as the Study
+    /// tab's list does. No points, grade or link: these rows never show them.
+    var assignment: StudyAssignment {
+        StudyAssignment(id: id, courseID: "", courseName: course, title: shownTitle,
+                        kind: kind.isEmpty ? "assignment" : kind, dueTS: dueTS, allDay: allDay,
+                        points: nil, score: nil, status: status.isEmpty ? "upcoming" : status,
+                        url: nil, sample: false)
+    }
+}
+
+extension StudyText {
+    /// A Brief or Day school row, read aloud: "Quiz 3, CS 101, Due tomorrow, 10:00 AM".
+    static func upcomingSpoken(_ item: StudyDaySummary.Due, now: Date, calendar: Calendar) -> String {
+        let a = item.assignment
+        return ([a.title, item.course, due(a, now: now, calendar: calendar)].filter { !$0.isEmpty })
+            .joined(separator: ", ")
+    }
+
+    /// The whole list read aloud, then how many more Study holds.
+    static func upcomingSpoken(_ rows: StudyUpcomingRows, now: Date, calendar: Calendar) -> String {
+        var parts = rows.items.map { upcomingSpoken($0, now: now, calendar: calendar) }
+        if rows.more > 0 { parts.append("\(rows.more) more in Study") }
+        return parts.joined(separator: "; ")
     }
 }

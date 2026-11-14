@@ -126,11 +126,11 @@ def _title_word(word: str, first: bool) -> str:
     if low in _ROMAN:
         return word.upper()
     if any(ch.isdigit() for ch in word):
-        return word  # HW5, 5-02, CSE20
+        return word  # HW2, 2-02, CS101
     if low in _SMALL and not first:
         return word.lower()
     if len(core) <= 4 and low not in _SHORT_WORDS and low not in _SMALL:
-        return word  # CSE, STAT, UCSC
+        return word  # CS, STAT, UNIV
     # Capitalise each hyphen/slash part.
     return re.sub(r"[A-Za-z]+", lambda m: m.group(0)[0].upper() + m.group(0)[1:].lower(), word, count=0)
 
@@ -718,7 +718,7 @@ def _parse_todo(lines: list[str], b: _Builder, course_id: str | None, title: str
         item_title = candidates[-1]
         course_name = cname
         if len(candidates) == 2 and not course_id:
-            # "Turn in Lab 5" / "CSE 20" (title, then course) on a dashboard To Do.
+            # "Turn in Lab 5" / "CS 101" (title, then course) on a dashboard To Do.
             item_title, course_name = candidates[0], candidates[1]
         item_title = re.sub(r"^turn in\s+", "", item_title, flags=re.I)
         if len(item_title) < 2 or len(item_title) > 200:

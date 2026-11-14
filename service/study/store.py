@@ -55,7 +55,7 @@ _CODE_PREFIX = re.compile(r"[a-z]{2,6} ?\d{1,4}[a-z]?(?: \d{1,3})? (?=\S)")
 
 def _name_keys(key, code=None) -> set[str]:
     """A course's merge_key, plus the same key without a leading course code: a course page
-    says "CSE 20: Beginning Programming in Python" where the Dashboard says only the name."""
+    says "CS 101: Introduction to Programming" where the Dashboard says only the name."""
     key = merge_key(key)
     if not key:
         return set()
@@ -261,7 +261,7 @@ class StudyStore:
                     keep = [k for k in keep if k is not None]
                     if cid != canonical:
                         # A name-keyed copy of a course the store already has: its name, code and key
-                        # only fill blanks, so "CSE 20: Beginning Programming" is not renamed back and forth.
+                        # only fill blanks, so "CS 101: Introduction to Programming" is not renamed back and forth.
                         names = {k: c.pop(k, None) for k in ("name", "code", "merge_key")}
                         keep.append({k: names.get(k) for k in _COURSE_FIELDS})
                     self._write("courses", _COURSE_FIELDS, c | {"id": canonical}, _COURSE_DEFAULTS, now,

@@ -281,7 +281,12 @@ struct OverlayView: View {
         case .meet:
             tabScroll { NotchMeetingView(model: MeetingModel.shared) }
         case .study:
-            tabScroll { NotchStudyView(model: model, study: StudyModel.shared) }
+            // Study stops at half the screen and scrolls inside itself, so an
+            // opened material keeps its back row fixed (SurfaceLayout.studyContentCap).
+            NotchStudyView(model: model, study: StudyModel.shared,
+                           cap: layout.studyContentCap(headerHeight: headerHeight))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, SurfaceLayout.tabTopPadding)
         case .research:
             if model.showingResearch {
                 ResearchView(model: researchModel, compact: true,
