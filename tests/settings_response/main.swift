@@ -45,8 +45,8 @@ check(!SettingsResponseValidator.valid(malformed, path: "inference/cloud"), "Fra
 malformed = cloud
 malformed["roles"] = ["reasoning", "unknown"]
 check(!SettingsResponseValidator.valid(malformed, path: "inference/cloud"), "Unknown role accepted")
-// The "Everything" connection (Intel key-only setup, Settings › Cloud › Everything)
-// answers with exactly ["everything"]; mixing it with a role is never a valid reply.
+// "Everything" (set in config.yaml, or the Intel key-only setup) answers with exactly
+// ["everything"]; mixing it with a role is never a valid reply.
 var everything = cloud
 everything["roles"] = ["everything"]
 check(SettingsResponseValidator.valid(everything, path: "inference/cloud"), "Everything reply rejected")

@@ -905,7 +905,12 @@ final class SettingsLoader: ObservableObject {
                 var recoveredStatus: String?
                 var recoveredTestOutcomeUnknown = false
                 do {
-                    object = try await request("POST", path: "inference/cloud", body: body)
+                    // Connect may wait up to 10 s for another Keychain read, 60 s for the
+                    // person to answer macOS's key question (twice if they chose Allow
+                    // rather than Always Allow), then two 30 s model tests. Giving up
+                    // sooner would delete a key the service is about to save.
+                    object = try await request("POST", path: "inference/cloud", body: body,
+                                               timeout: 200)
                     if let response = object,
                        !matchesCloudState(response, provider: requestedPreset.provider,
                                           baseURL: requestedBase, apiPrefix: requestedPrefix,

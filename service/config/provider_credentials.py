@@ -49,7 +49,7 @@ def resolve_keychain(name: str, base_url: str, *, wait: bool = False) -> str:
     account = keychain_account(name, base_url)
     # A silent read (after Always Allow) takes well under a second, so overlapping reads
     # wait their turn briefly; only a read stuck on macOS's question makes them fail.
-    # Connect waits longer, but within the app's own request limit.
+    # Connect waits longer; the app's Connect request allows for this wait, the read and its tests.
     # Called on the event loop itself (a few synchronous callers), it never waits: the
     # whole service would stall behind macOS's question.
     try:
