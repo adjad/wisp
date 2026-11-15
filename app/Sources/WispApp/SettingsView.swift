@@ -1075,12 +1075,30 @@ final class SettingsLoader: ObservableObject {
                 }
                 self.roles = (await client.models()).roles
                 await refreshLocalProvider()
+                // Reload the form so Connect works straight away: the backend may still
+                // be restarting, and on the Intel build the first-run values (provider,
+                // model, Everything) come back instead of an empty "Use cloud model for".
+                intelPresetApplied = false
+                await refreshCloudAfterDisconnect()
             } catch {
                 cloudStatus = error.localizedDescription
                 if PendingCloudCredential.load() != nil { cloudStateUnknown = true }
             }
             cloudSaving = false
             await PendingConfigWrites.shared.end()
+        }
+    }
+
+    /// Retries, one a second, while the backend restarts after Disconnect.
+    nonisolated static let disconnectRefreshAttempts = 15
+
+    /// After Disconnect, read the cloud settings again until the backend answers, so the
+    /// form is never left unconfirmed (Connect greyed out) waiting for Refresh models.
+    private func refreshCloudAfterDisconnect() async {
+        for attempt in 0..<Self.disconnectRefreshAttempts {
+            if attempt > 0 { try? await Task.sleep(nanoseconds: 1_000_000_000) }
+            await refreshCloud()
+            if !cloudStateUnknown { return }
         }
     }
 

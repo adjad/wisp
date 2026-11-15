@@ -229,6 +229,7 @@ PROFILE_TESTS = {
         "tests/test_inference_providers.py",
         "tests/test_cloud_key_read.py",
         "tests/test_keychain_rename_copy.py",
+        "tests/test_settings_disconnect_reload.py",
         "tests/test_remote_reasoning_replay.py",
         "tests/test_gemini_provider_and_ttft.py",
         "tests/test_remote_media.py",
