@@ -33,6 +33,9 @@ def no_real_keychain_for_legacy_names(monkeypatch):
             raise AssertionError("a test tried to write to Keychain through keychain_legacy")
         return subprocess.CompletedProcess(argv, keychain_legacy.NOT_FOUND, b"", b"not found")
     monkeypatch.setattr(keychain_legacy, "LAUNCH", no_old_item)
+    # Backends and scripts a test starts inherit this, so their real launcher refuses
+    # too (it also refuses under PYTEST_CURRENT_TEST, which a test may clear).
+    monkeypatch.setenv("WISP_KEYCHAIN_LEGACY", "off")
 
 
 @pytest.fixture(autouse=True)

@@ -27,6 +27,25 @@ def test_the_real_launcher_refuses_under_pytest(monkeypatch):
         legacy._real_launch(["/usr/bin/security", "find-generic-password", "-s", "x", "-a", "y"])
 
 
+def test_children_a_test_starts_inherit_the_off_switch():
+    import os
+    assert os.environ.get("WISP_KEYCHAIN_LEGACY") == "off"
+
+
+def test_explicit_env_children_and_smokes_carry_the_off_switch():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    assert (root / "tests/test_wisp_reset.py").read_text().count('"WISP_KEYCHAIN_LEGACY": "off"') == 2
+    assert 'WISP_KEYCHAIN_LEGACY="off"' in (root / "build-support/pipeline.py").read_text()
+
+
+def test_clearing_the_pytest_marker_still_refuses(monkeypatch):
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("ran")))
+    with pytest.raises(legacy.RealKeychainRefused):
+        legacy._real_launch(["/usr/bin/security", "help"])
+
+
 def test_the_off_switch_refuses_outside_pytest(monkeypatch):
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     monkeypatch.setenv("WISP_KEYCHAIN_LEGACY", "off")
