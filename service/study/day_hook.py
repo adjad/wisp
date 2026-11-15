@@ -208,6 +208,18 @@ def attach(result: dict, *, now: float, timezone: str) -> None:
                 booked = value if isinstance(value, dict) else {}
         except Exception:  # noqa: BLE001
             log.debug("study calendar records skipped", exc_info=True)
+        status, events = (None, {})
+        if booked:
+            try:
+                from service.study import blocks_api
+                status, events = blocks_api._calendar_state(day, timezone)
+                # A booking deleted in Calendar is forgotten first, so its block is offered again now.
+                for block_id in [k for k, v in booked.items() if isinstance(v, dict) and v.get("day") == day
+                                 and blocks_api.gone(v, status, events, now)]:
+                    blocks_api._forget(block_id, day)
+                    booked = {k: v for k, v in booked.items() if k != block_id}
+            except Exception:  # noqa: BLE001
+                log.debug("study calendar check skipped", exc_info=True)
         mine = [k for k, v in booked.items() if isinstance(v, dict) and v.get("day") == day]
         # Day draws the workspace's proposed plan (its Suggested and usual-time blocks too), so a
         # study block must fit around those as well as the plan's own blocks.

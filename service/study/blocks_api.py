@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Request
@@ -27,6 +28,7 @@ router = APIRouter(prefix="/study", tags=["study"])
 # Off: the routes are not registered and Day blocks carry no "added" key (the app hides the button).
 ENABLED = True
 META = "calendar_blocks"
+GENS = "calendar_block_gens"
 PREFIX = "study-block:"
 GONE = "That study time isn't free any more. Refresh Day and try again."
 NOT_ADDED = "That study block isn't on your calendar."
@@ -91,6 +93,63 @@ async def _delete(record: dict) -> dict:
                                "start_ts": record["start"]})
 
 
+SETTLE_S = 60.0       # a booking younger than this may not have reached Wisp's Calendar copy yet
+CHANGED = "That event was changed in Calendar, so Wisp left it alone. Remove it in Calendar if you want it gone."
+
+
+def _calendar_state(day: str, timezone: str) -> tuple[dict | None, dict]:
+    """(calendar source status, {source_id: (start, end, title)}) for that local day, from Wisp's
+    own synced Calendar copy. Status is None when it can't be read."""
+    try:
+        from service.assistant.store import assistant_store
+        from service.assistant.today import day_bounds
+        lo, hi = day_bounds(day, timezone)
+        events = {}
+        for e in assistant_store.calendar_events_overlapping(lo, hi):
+            if e.get("status", "active") == "active" and e.get("source_id"):
+                events[str(e["source_id"])] = (e.get("when_ts"), e.get("end_ts"), str(e.get("title") or ""))
+        status = (assistant_store.today_snapshot(day, timezone).get("sources") or {}).get("calendar") or {}
+        return status, events
+    except Exception:  # noqa: BLE001 - unknown means "don't conclude anything"
+        return None, {}
+
+
+def gone(record: dict, status: dict | None, events: dict, now: float) -> bool:
+    """True only when Wisp's Calendar copy synced well after the booking and no longer has it."""
+    if not isinstance(status, dict) or not status.get("available") or status.get("syncing"):
+        return False
+    last = status.get("last_sync")
+    at = record.get("at") if isinstance(record.get("at"), (int, float)) else 0.0
+    if not isinstance(last, (int, float)) or last < at + SETTLE_S or now - last > 180:
+        return False
+    return str(record.get("source_id")) not in events
+
+
+def edited(record: dict, events: dict) -> bool:
+    """True when the event Wisp made has a different start, end or title in Calendar now."""
+    found = events.get(str(record.get("source_id")))
+    if found is None:
+        return False
+    start, end, title = found
+    def moved(a, b):
+        return not (isinstance(a, (int, float)) and isinstance(b, (int, float)) and abs(a - b) < 1.0)
+    return moved(start, record.get("start")) or moved(end, record.get("end")) or title.strip() != record.get("title")
+
+
+def _forget(block_id: str, day: str) -> None:
+    """Drop a booking whose event is gone, and move its booking key on, so adding it again books anew."""
+    _save(block_id, None)
+    store = study_store()
+    gens = dict(store.meta(GENS, {}) or {})
+    gens[f"{block_id}|{day}"] = int(gens.get(f"{block_id}|{day}", 0)) + 1
+    store.set_meta(GENS, gens)
+
+
+def _key(block_id: str, day: str) -> str:
+    gen = int((study_store().meta(GENS, {}) or {}).get(f"{block_id}|{day}", 0))
+    return f"capture:study:{block_id}:{day}" + (f":{gen}" if gen else "")
+
+
 @router.post("/blocks/{block_id}/add", dependencies=[Depends(native_only)])
 async def add_block(block_id: str, request: Request):
     try:
@@ -116,7 +175,7 @@ async def add_block(block_id: str, request: Request):
             _audit("study_block_calendar_add", tool="add_calendar_event", block=block_id, ok=False, status="gone")
             return _fail("blocked", GONE)
         start, end = float(block["start"]), float(block["end"])
-        plan = {"capture_key": f"capture:study:{block_id}:{body.day}", "source_id": f"study:{block_id}",
+        plan = {"capture_key": _key(block_id, body.day), "source_id": f"study:{block_id}",
                 "title": str(block.get("title") or "Study").strip()[:200], "day": body.day,
                 "timezone": body.timezone, "start_ts": start, "duration_min": max(1, round((end - start) / 60)),
                 "all_day": False, "automatic": False}
@@ -128,7 +187,7 @@ async def add_block(block_id: str, request: Request):
                          str(result.get("error") or "Calendar didn't confirm the event."))
         source_id = str(result["source_id"]).strip()
         _save(block_id, {"source_id": source_id, "title": plan["title"], "start": start, "end": end,
-                         "day": body.day})
+                         "day": body.day, "timezone": body.timezone, "at": time.time()})
         return {"ok": True, "status": "succeeded", "block_id": block_id, "source_id": source_id}
     except Exception as exc:  # noqa: BLE001 - never a 500 for a tap
         log.info("Study block add failed (%s)", type(exc).__name__)
@@ -149,6 +208,17 @@ async def undo_block(block_id: str):
     try:
         if not str(record.get("source_id") or "").strip():
             return _fail("blocked", NOT_ADDED)
+        status, events = await asyncio.to_thread(_calendar_state, record.get("day") or "",
+                                                 record.get("timezone") or "UTC")
+        if edited(record, events):
+            _audit("study_block_calendar_undo", tool="cancel_calendar_event", block=block_id, ok=False,
+                   status="changed")
+            return _fail("changed", CHANGED)
+        if gone(record, status, events, time.time()):
+            _forget(block_id, record.get("day") or "")
+            _audit("study_block_calendar_undo", tool="cancel_calendar_event", block=block_id, ok=True,
+                   status="gone")
+            return {"ok": True, "status": "gone", "block_id": block_id}
         result = await _delete(record)
         _audit("study_block_calendar_undo", tool="cancel_calendar_event", block=block_id,
                ok=result.get("ok") is True, status=str(result.get("status") or "unknown"))
@@ -165,10 +235,18 @@ async def undo_block(block_id: str):
         _in_flight.discard(block_id)
 
 
-def mark(blocks: list[dict], current: list[dict], day: str, booked: dict) -> tuple[list[dict], list[dict]]:
+def mark(blocks: list[dict], current: list[dict], day: str, booked: dict, *, status: dict | None = None,
+         events: dict | None = None, now: float | None = None, forget=None) -> tuple[list[dict], list[dict]]:
     """Today's study blocks with "added"/"event_source_id", and the Day's other blocks without
-    the calendar copy of a booked one. A booked block stays where it was booked."""
+    the calendar copy of a booked one. A booked block stays where it was booked. A booking whose
+    event was deleted in Calendar (Wisp's copy synced after it and no longer has it) is forgotten."""
     mine = {k: v for k, v in (booked or {}).items() if isinstance(v, dict) and v.get("day") == day}
+    if events is not None:
+        now = time.time() if now is None else now
+        for block_id in [k for k, r in mine.items() if gone(r, status, events, now)]:
+            mine.pop(block_id)
+            if forget:
+                forget(block_id, day)
     # A booking whose id no block carries now (its assignment folded into a twin since) still
     # covers that item: a fresh block with the booked title is not offered a second time.
     fresh = {b.get("id") for b in blocks}
