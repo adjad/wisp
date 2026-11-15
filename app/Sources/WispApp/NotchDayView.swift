@@ -626,8 +626,8 @@ struct NotchDayView: View {
     }
 
     /// Timed Wisp blocks keyed by a loose title, so an all-day assignment that
-    /// already has time held for it ("Week 4 Reading: Functions [CSE-20-04]" and
-    /// the block "Week 4 Reading: Functions for CSE 20") reads as booked.
+    /// already has time held for it ("Week 4 Reading: Functions [CMP-140-04]" and
+    /// the block "Week 4 Reading: Functions for CMP 140") reads as booked.
     private func bookedTimes(_ plan: TodayPlan) -> [String: String] {
         var booked: [String: String] = [:]
         for block in plan.displayBlocks where block.task_id != nil {

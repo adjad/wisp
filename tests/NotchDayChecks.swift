@@ -35,12 +35,12 @@ func dayChecks(_ check: (Bool, String) -> Void) {
         DayNeedInput(id: "n7", title: "Next week's essay", source: "reminders", due: dayEnd + 50 * hour),
     ]
     let caught = [
-        DayCaughtInput(id: "c1", title: "Dinner with Priya?", when: at(19), state: "shadow"),
+        DayCaughtInput(id: "c1", title: "Dinner with Jo?", when: at(19), state: "shadow"),
         DayCaughtInput(id: "c2", title: "Old plan", when: dayStart - 3 * hour, state: "shadow"),
         DayCaughtInput(id: "c3", title: "Lunch", when: at(14), state: "already_on_file"),
         DayCaughtInput(id: "c4", title: "n/a", when: at(17), state: "shadow"),
     ]
-    let timeline = DayTimeline.build(blocks: blocks, allDay: ["PA 2 [CSE-20-04]", "none"], needs: needs, caught: caught,
+    let timeline = DayTimeline.build(blocks: blocks, allDay: ["PA 2 [CMP-140-04]", "none"], needs: needs, caught: caught,
                                      now: now, dayStart: dayStart, dayEnd: dayEnd, workStart: at(9), workEnd: at(18),
                                      isToday: true, clock: clock, dayClock: dayClock)
     let ids = timeline.items.map(\.id)
@@ -83,7 +83,7 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     let midnight = window([DayBlockInput(id: "show", title: "Show", start: at(21.5), end: at(22.5), kind: "calendar")], now: at(23.5))
     check(midnight.from == at(21) && midnight.to == dayEnd && midnight.items.first?.past == true,
           "near midnight: two hours back, ending at midnight: \(clock(midnight.from))–\(clock(midnight.to))")
-    check(timeline.allDay == ["PA 2 [CSE-20-04]"], "the all-day strip drops placeholder words")
+    check(timeline.allDay == ["PA 2 [CMP-140-04]"], "the all-day strip drops placeholder words")
 
     // What lands on it, and how it is drawn.
     check(!ids.contains("block:standup"), "a finished event is left off")
@@ -104,8 +104,8 @@ func dayChecks(_ check: (Bool, String) -> Void) {
           "a plan caught in texts is amber, at the time it gave")
     check(!ids.contains("caught:c2") && !ids.contains("caught:c3") && !ids.contains("caught:c4"),
           "past, already-filed and junk caught plans are left off")
-    let filed = DayTimeline.build(blocks: [], allDay: [], needs: [DayNeedInput(id: "r", title: "Dinner with Priya?", source: "reminders", due: nil)],
-                                  caught: [DayCaughtInput(id: "c1", title: "Dinner with Priya?", when: at(19), state: "created"),
+    let filed = DayTimeline.build(blocks: [], allDay: [], needs: [DayNeedInput(id: "r", title: "Dinner with Jo?", source: "reminders", due: nil)],
+                                  caught: [DayCaughtInput(id: "c1", title: "Dinner with Jo?", when: at(19), state: "created"),
                                            DayCaughtInput(id: "c5", title: "Movie night", when: at(21), state: "created")],
                                   now: now, dayStart: dayStart, dayEnd: dayEnd, workStart: at(9), workEnd: at(18),
                                   isToday: true, clock: clock, dayClock: dayClock)
@@ -239,7 +239,7 @@ func dayChecks(_ check: (Bool, String) -> Void) {
                  DayBlockInput(id: "dinner", title: "Dinner", start: at(18), end: at(19), kind: "calendar")],
         allDay: [], needs: [], caught: [], now: now, dayStart: dayStart, dayEnd: dayEnd, workStart: at(9), workEnd: at(18),
         isToday: true, clock: clock, dayClock: dayClock,
-        todos: [DayTodoInput(id: "call", title: "Call Priya", source: "messages", who: "Priya", due: at(16.25), kind: "call"),
+        todos: [DayTodoInput(id: "call", title: "Call Jo", source: "messages", who: "Jo", due: at(16.25), kind: "call"),
                 DayTodoInput(id: "form", title: "Send the form", source: "mail", who: "", due: at(17), kind: "task")])
     check(rows(withCall.agenda(now: now, isToday: true))
           == ["block:lunch", "free 13:30–16:15", "todo:call", "free 16:45–18:00", "todo:form", "block:dinner"],
@@ -271,7 +271,7 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     for junk in ["nothing", " Nothing. ", "N/A", "", "--", "ok", "None!", "x"] {
         check(DayTimeline.isJunk(junk), "junk: \"\(junk)\"")
     }
-    for real in ["PA 2", "Call mom", "Get DoorDash order", "Dinner with Priya?", "茶", "Test", "Reminder"] {
+    for real in ["PA 2", "Call mom", "Get DoorDash order", "Dinner with Jo?", "茶", "Test", "Reminder"] {
         check(!DayTimeline.isJunk(real), "not junk: \(real)")
     }
 
@@ -382,14 +382,14 @@ func dayChecks(_ check: (Bool, String) -> Void) {
 
     // The Brief's rows: always CAL, MAIL, TEXTS and SOON; a source Wisp can't read is dim.
     let utc = TimeZone(identifier: "UTC")!
-    let light = DayLoad.assess(events: [], allDay: ["PA 2 [CSE-20-04]"], from: now, dayStart: dayStart, isToday: true, zone: utc)
+    let light = DayLoad.assess(events: [], allDay: ["PA 2 [CMP-140-04]"], from: now, dayStart: dayStart, isToday: true, zone: utc)
     func mailOf(_ titles: [String]) -> [BriefNeed] { titles.map { BriefNeed(title: $0) } }
     let lines = DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: []),
-                                       texts: (ready: true, needing: mailOf(["nothing"]) + [BriefNeed(title: "Priya: dinner at 7?", sender: "Priya")]),
+                                       texts: (ready: true, needing: mailOf(["nothing"]) + [BriefNeed(title: "Jo: dinner at 7?", sender: "Jo")]),
                                        soon: .item(title: "UCSC startup club", when: "Wed 6 PM", source: "calendar"))
     check(lines.map(\.tag) == ["CAL", "MAIL", "TEXTS", "SOON"], "four rows in order")
-    check(lines[0].text == "Light day: just PA 2 [CSE-20-04] (all day)" && lines[0].trailing == ""
-          && lines[1].text == "Nothing needs a reply" && lines[2].text == "Priya is waiting on you"
+    check(lines[0].text == "Light day: just PA 2 [CMP-140-04] (all day)" && lines[0].trailing == ""
+          && lines[1].text == "Nothing needs a reply" && lines[2].text == "Jo is waiting on you"
           && lines[3].source == .calendar && lines[3].trailing == "Wed 6 PM", "row contents: \(lines.map(\.text))")
     check(!lines.contains(where: \.muted), "synced sources are never dim")
     let quiet = DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: []), texts: (ready: true, needing: mailOf(["nothing"])),
@@ -420,7 +420,7 @@ func dayChecks(_ check: (Bool, String) -> Void) {
         BriefNeed(title: "Thesis meeting", sender: "Prof. Lee", person: true, received: 200),
         BriefNeed(title: "Tech Week starts today", sender: "UCSC Events", received: 300)]),
         texts: (ready: true, needing: [BriefNeed(title: "Mom: call me", sender: "Mom", received: 50),
-                                       BriefNeed(title: "Priya: dinner?", sender: "Priya", received: 90)]), soon: .nothing)
+                                       BriefNeed(title: "Jo: dinner?", sender: "Jo", received: 90)]), soon: .nothing)
     check(described[1].text == "Prof. Lee · Thesis meeting" && described[1].trailing == "+2 more",
           "MAIL from an older service leads with the newest person's email: \(described[1].text) \(described[1].trailing)")
     // With overviews: the gist and how many need you / are waiting, with nothing trailing.
@@ -435,7 +435,7 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     check(DayTimeline.briefLines(calendar: nil, mail: nil, texts: (ready: false, needing: []), textsNeedAccess: true,
                                  textsOverview: "Quiet", soon: .nothing)[2].text == "Texts need Full Disk Access",
           "Full Disk Access wins over an overview")
-    check(described[2].text == "Priya and Mom are waiting on you" && !described[2].text.contains("dinner"),
+    check(described[2].text == "Jo and Mom are waiting on you" && !described[2].text.contains("dinner"),
           "TEXTS names who is waiting, newest first: \(described[2].text)")
     check(DayTimeline.briefLines(calendar: light, mail: nil, texts: nil, soon: .item(title: "nothing", when: "Fri", source: "reminders"))[3]
           .text == "Nothing in the next week", "a placeholder is never what's coming")
@@ -447,7 +447,7 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     check(DayTimeline.planOrigin(due: now + 3600, now: now) == nil && DayTimeline.planOrigin(due: nil, now: now) == nil,
           "a reminder not yet due, or undated, gives no origin")
     check(DayTimeline.alreadyPlanned("Get doordash order", tasks: [(title: "get  DoorDash order", active: true)])
-          && DayTimeline.alreadyPlanned("Reply to Priya", tasks: [(title: "Review: Reply to Priya", active: true)])
+          && DayTimeline.alreadyPlanned("Reply to Jo", tasks: [(title: "Review: Reply to Jo", active: true)])
           && !DayTimeline.alreadyPlanned("Get doordash order", tasks: [(title: "Get doordash order", active: false)])
           && !DayTimeline.alreadyPlanned("Get doordash order", tasks: [(title: "Call the bank", active: true)]),
           "Plan time isn't offered twice for the same need")
@@ -472,12 +472,12 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     check(DayTimeline.undoFailedNotice(stillShowing: true).contains("Try Undo again")
           && DayTimeline.undoFailedNotice(stillShowing: false).contains("Bring it back"),
           "a failed Undo of an older Remove doesn't promise its gone Undo bar")
-    check(DayTimeline.plannedTitle("Reply to Priya", review: true) == "Review: Reply to Priya"
+    check(DayTimeline.plannedTitle("Reply to Jo", review: true) == "Review: Reply to Jo"
           && DayTimeline.plannedTitle("PA 2", review: false) == "PA 2", "planned titles")
 
     // Unmistakable bulk mail never counts as needing you, and the row says it was left out.
     let inbox = ["You're subscribed: The Download", "Can you review my draft?", "50% off everything",
-                 "Weekly digest: CSE 20", "Lab moved to Thursday", "nothing"]
+                 "Weekly digest: CMP 140", "Lab moved to Thursday", "nothing"]
     check(DayTimeline.mailNeedingYou(inbox) == ["Can you review my draft?", "Lab moved to Thursday"],
           "newsletters, promos and placeholders are left out: \(DayTimeline.mailNeedingYou(inbox))")
     let promos = DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: mailOf(inbox)), texts: nil, soon: .nothing)[1]
@@ -487,7 +487,7 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     check(DayTimeline.briefLines(calendar: light, mail: (ready: true, needing: mailOf(["Can you review my draft?"])), texts: nil,
                                  soon: .nothing)[1].trailing == "", "no promos, no note")
     for personal in ["Last chance to submit your thesis form", "Webinar slides for Thursday", "Tech Week starts today",
-                     "Don't miss the lab meeting", "Re: project offer", "Meeting with Priya", "This week in CSE 20"] {
+                     "Don't miss the lab meeting", "Re: project offer", "Meeting with Jo", "This week in CMP 140"] {
         check(!DayTimeline.isBulkMail(personal), "a subject a person could write still counts: \(personal)")
     }
     check(DayTimeline.isBulkMail("Last chance: 20% off") && DayTimeline.isBulkMail("Our October newsletter")
@@ -875,14 +875,14 @@ func dayTodoChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: Doubl
     let dayEnd = dayStart + 24 * hour
     func at(_ h: Double) -> Double { dayStart + h * hour }
     let blocks = [
-        DayBlockInput(id: "lecture", title: "CSE 101 lecture", start: at(14), end: at(15.25), kind: "calendar"),
+        DayBlockInput(id: "lecture", title: "CMP 140 lecture", start: at(14), end: at(15.25), kind: "calendar"),
         DayBlockInput(id: "club", title: "Startup club", start: at(18), end: at(19), kind: "calendar"),
     ]
     let needs = [DayNeedInput(id: "pa2", title: "PA 2", source: "reminders", due: at(23.5))]
     let todos = [
-        DayTodoInput(id: "priya", title: "Call Priya", source: "messages", who: "Priya", due: at(16.25), kind: "call"),
+        DayTodoInput(id: "jo", title: "Call Jo", source: "messages", who: "Jo", due: at(16.25), kind: "call"),
         DayTodoInput(id: "tj", title: "Go to Trader Joe's", source: "reminders", due: at(17.5), kind: "errand"),
-        DayTodoInput(id: "lecture", title: "CSE 101 lecture", source: "calendar", due: at(14), kind: "event"),
+        DayTodoInput(id: "lecture", title: "CMP 140 lecture", source: "calendar", due: at(14), kind: "event"),
         DayTodoInput(id: "dana", title: "Reply to Dana", source: "mail", who: "Dana Lee", due: nil, dueLabel: "This week"),
         DayTodoInput(id: "mom", title: "Call Mom", source: "messages", who: "Mom", due: at(24), dueLabel: "Tomorrow"),
         DayTodoInput(id: "late", title: "Return the form", source: "mail", due: at(10)),
@@ -898,15 +898,15 @@ func dayTodoChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: Doubl
                                      isToday: true, clock: clock, dayClock: dayClock, todos: todos)
     func item(_ id: String) -> DayItem? { timeline.items.first { $0.id == "todo:" + id } }
 
-    let priya = item("priya")
-    check(priya?.style == .todo && priya?.start == at(16.25) && priya?.end == at(16.75),
-          "a call happens at its time, for half an hour: \(String(describing: priya))")
-    check(priya?.source == "messages" && priya?.todoID == "priya" && priya?.detail == "At 16:15 · Texts · Priya",
-          "the block keeps its source and says when and from whom: \(priya?.detail ?? "")")
+    let jo = item("jo")
+    check(jo?.style == .todo && jo?.start == at(16.25) && jo?.end == at(16.75),
+          "a call happens at its time, for half an hour: \(String(describing: jo))")
+    check(jo?.source == "messages" && jo?.todoID == "jo" && jo?.detail == "At 16:15 · Texts · Jo",
+          "the block keeps its source and says when and from whom: \(jo?.detail ?? "")")
     let tj = item("tj")
     check(tj?.style == .todo && tj?.end == at(17.5) && tj?.start == at(17) && tj?.detail == "Due 17:30 · Reminders",
           "an errand is due by its time, so its block ends there: \(String(describing: tj))")
-    check(item("lecture") == nil && timeline.items.filter { $0.title == "CSE 101 lecture" }.count == 1,
+    check(item("lecture") == nil && timeline.items.filter { $0.title == "CMP 140 lecture" }.count == 1,
           "a calendar to-do is the calendar block, drawn once")
     check(item("dana") == nil && item("mom") == nil, "undated and tomorrow's to-dos stay off today's clock")
     let late = item("late")
@@ -919,8 +919,8 @@ func dayTodoChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: Doubl
     check(DayTimeline.gutter(tj!, clock: clock) == ("17:30", "Due")
           && DayTimeline.agendaDetail(tj!, now: now, isToday: true, clock: clock) == "Reminders",
           "an errand is listed at its due time, with where it came from")
-    check(DayTimeline.gutter(priya!, clock: clock) == ("16:15", "")
-          && DayTimeline.agendaDetail(priya!, now: now, isToday: true, clock: clock) == "Texts · Priya",
+    check(DayTimeline.gutter(jo!, clock: clock) == ("16:15", "")
+          && DayTimeline.agendaDetail(jo!, now: now, isToday: true, clock: clock) == "Texts · Jo",
           "a call is listed at its time, with who it's with")
     check(timeline.to >= at(19), "the lane still reaches the last block")
 
@@ -950,7 +950,7 @@ func dayTodoChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: Doubl
     check(fit[2].symbol == "note.text" && fit[2].detail == "Today", "a date-only to-do today reads Today: \(fit[2].detail)")
     check(fit[4].symbol == "checklist" && fit[4].detail.hasPrefix("Overdue since earlier"),
           "an earlier day's to-do is overdue: \(fit[4].detail)")
-    check(!fit.contains { ["todo:mom", "todo:priya", "todo:lecture", "todo:done", "todo:dup", "todo:junk"].contains($0.id) },
+    check(!fit.contains { ["todo:mom", "todo:jo", "todo:lecture", "todo:done", "todo:dup", "todo:junk"].contains($0.id) },
           "tomorrow's, timed, calendar, done, duplicate and placeholder to-dos aren't still to fit")
     let elsewhere = DayTimeline.stillToFit(todos: todos, unscheduled: [], blocks: [], now: now, dayStart: dayStart,
                                            dayEnd: dayEnd, isToday: false, dayClock: dayClock)
