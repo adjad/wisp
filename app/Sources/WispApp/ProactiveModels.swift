@@ -195,6 +195,16 @@ struct ProactiveState: Decodable, Equatable {
         return parts.joined(separator: " · ")
     }
 
+    /// The Brief's footer: "Wisp read 49 · skipped 3 · found 3"; the whole
+    /// work line is its tooltip. Nil before anything was read.
+    var footLine: String? {
+        guard let stats, stats.read > 0 else { return nil }
+        var parts = ["Wisp read \(stats.read)"]
+        if stats.filtered > 0 { parts.append("skipped \(stats.filtered)") }
+        parts.append("found \(stats.found)")
+        return parts.joined(separator: " · ")
+    }
+
     /// The collapsed to-do row: "4 to-dos · Readings ×2, Worksheet 3". Open
     /// to-dos only; the same title twice is counted once with ×n.
     var todoLine: String {

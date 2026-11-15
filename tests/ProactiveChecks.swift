@@ -197,6 +197,10 @@ struct ProactiveChecks {
               "titles and clocks don't end a sentence")
         check(ProactiveState(summary: "Call Mom. Then rest.").headline == "Call Mom.", "a short word still ends one")
         check(ProactiveState().headline == nil && ProactiveState().workLine == nil, "no lede, summary or stats: nothing")
+        check(top?.footLine == "Wisp read 49 · found 3", "the footer's short read line: \(top?.footLine ?? "")")
+        check(decode(#"{"stats":{"read":12,"found":2,"drafted":0,"filtered":5}}"#)?.footLine == "Wisp read 12 · skipped 5 · found 2",
+              "skipped newsletters in the footer")
+        check(ProactiveState().footLine == nil && decode(#"{"stats":{"read":0}}"#)?.footLine == nil, "nothing read: no footer line")
         check(decode(#"{"stats":{"read":1,"found":1,"drafted":0}}"#)?.workLine == "Wisp read 1 email and texts · found 1 thing",
               "singular, and no drafted part at zero")
         check(decode(#"{"stats":{"read":0}}"#)?.workLine == nil && decode(#"{"stats":"x"}"#)?.stats == nil, "nothing read hides the line")
