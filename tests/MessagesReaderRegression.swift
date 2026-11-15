@@ -586,8 +586,12 @@ enum MessagesReaderRegression {
                      "No region, no guess")
         precondition(Check.sendHandle("+1 650-555-0100", region: "CN") == "+16505550100")
         precondition(Check.sendHandle(" +44 20 7946 0000 ", region: "US") == "+442079460000")
-        precondition(Check.sendHandle("(650) 555-0100", region: "US") == "(650) 555-0100",
-                     "No country code is guessed")
+        precondition(Check.sendHandle("(650) 555-0100", region: "US") == "+16505550100",
+                     "A 10-digit number on a +1 Mac is +1")
+        precondition(Check.sendHandle("(650) 555-0100", region: "GB") == "(650) 555-0100",
+                     "Elsewhere no country code is guessed")
+        precondition(Check.sendHandle("020 7946 0000", region: "US") == "020 7946 0000",
+                     "A number starting with 0 is not a +1 number")
         precondition(Check.sendHandle("Pat@Example.TEST", region: "US") == "pat@example.test")
         precondition(Check.sendHandle("22821", region: "US") == "22821", "A short code is left alone")
         precondition(Check.sendHandle("Mom", region: "US") == "Mom")
