@@ -799,7 +799,8 @@ def test_lecture_recordings_are_kept_as_videos_and_never_opened(title, hint):
 
 
 @pytest.mark.parametrize("title, hint", [("Quiz 3", "Quiz"), ("Gradescope", "ExternalTool"),
-                                         ("Recording studio worksheet", "Assignment"), ("Week 3 notes", "ExternalTool")])
+                                         ("Recording studio worksheet", "Assignment"), ("Week 3 notes", "ExternalTool"),
+                                         ("Zoom meeting recording", "ExternalTool"), ("Recording quiz", "ExternalTool")])
 def test_nothing_else_the_rule_refused_is_loosened(title, hint):
     got = find.classify({"url": f"{HOST}/courses/4242/modules/items/32", "title": title, "type": hint}, C)
     assert got["via"] == "none" and got["kind"] == "other"

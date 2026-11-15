@@ -318,7 +318,8 @@ def _classify(link: dict, course: dict | None = None) -> dict:
             if hint not in SAFE_ITEM_HINTS or _TOOL_TITLE.search(title):
                 # The user's one exception: a lecture recording is kept as a video source by its
                 # title and link. It is never opened (opening it would launch the tool).
-                if _RECORDING.search(title) and _reason(hint, title) in ("tool", "unknown"):
+                if (_RECORDING.search(title) and _reason(hint, title) in ("tool", "unknown")
+                        and important(title) is None):
                     return {"key": url, "kind": "video", "via": "none", "file_id": None, "url": url,
                             "recording": True}
                 return refused | {"reason": _reason(hint, title)}
