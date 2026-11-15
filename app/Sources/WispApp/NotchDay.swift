@@ -381,6 +381,20 @@ enum DayWeek {
         return DayLoadBar(onClock: onClock, due: due, minutes: minutes, segments: segments, now: nowAt)
     }
 
+    /// The full-height row (a count line and a bar on every card) is for a
+    /// week where more than the shown day carries a load: a `weekLoad` for
+    /// the other days. With the shown day's alone, the compact row.
+    static func fullRow(_ cards: [DayWeekCard]) -> Bool {
+        cards.filter { $0.load != nil }.count > 1
+    }
+
+    /// Each card's share of the row: equal in the full row; in the compact row
+    /// the shown day twice as wide, so its count fits beside its date. From
+    /// which day is shown only, never from whether its load has arrived.
+    static func weights(_ cards: [DayWeekCard], full: Bool) -> [Double] {
+        cards.map { full || !$0.isShown ? 1 : 2 }
+    }
+
     /// The card's count: "3", "3 · 2 due", "2 due", "free".
     static func countText(_ load: DayLoadBar) -> String {
         switch (load.onClock, load.due) {
@@ -565,6 +579,25 @@ extension DayTimeline {
         default:
             return agendaDetail(item, now: now, isToday: isToday, clock: clock)
         }
+    }
+
+    /// How many things a list shows before its "Show N more": eight, less one
+    /// for the Next card that stands in for the first, and less one more when
+    /// asked (`oneFewer`: the wide halves out of balance, or the narrow Day
+    /// held to its height from before the card).
+    static func rowsBeforeMore(_ base: Int = 8, hasNext: Bool, oneFewer: Bool) -> Int {
+        max(1, base - (hasNext ? 1 : 0) - (oneFewer ? 1 : 0))
+    }
+
+    /// Whether wide Later today shows one fewer row, from the halves' drawn
+    /// heights: when the left runs more than a third taller than the right.
+    /// Once trimmed it stays trimmed unless the left, with a row's worth
+    /// (`rowAllowance`) added back, would still be within the third, so the
+    /// choice can't flip back and forth on its own result. No right half, no trim.
+    static func trimLater(trimmed: Bool, left: Double, right: Double, rowAllowance: Double) -> Bool {
+        guard right > 0, left > 0 else { return false }
+        let limit = right * 4 / 3
+        return trimmed ? left + rowAllowance > limit : left > limit
     }
 
     /// The Next card's two buttons beside its ⋯ menu, for a Calendar event the

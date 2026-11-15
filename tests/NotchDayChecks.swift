@@ -1188,6 +1188,19 @@ func dayWeekChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: Doubl
           "another day shown: its load; today's date alone: \(DayWeek.spoken(cards[2])) / \(DayWeek.spoken(cards[5]))")
     check(DayWeek.spoken(DayWeek.cards(shown: saturday, today: saturday, calendar: monday, shownLoad: bar(0, 0))[5])
           == "Saturday 14, today, free", "free")
+    // Compact until other days carry a load; the shown day twice as wide there.
+    let compactWeek = DayWeek.cards(shown: saturday, today: saturday, calendar: monday, shownLoad: bar(3, 2))
+    check(!DayWeek.fullRow(compactWeek) && !DayWeek.fullRow(DayWeek.cards(shown: saturday, today: saturday, calendar: monday,
+                                                                          shownLoad: nil)),
+          "one day's load (or none): the compact row")
+    var weekLoad = compactWeek
+    weekLoad[2].load = bar(4, 0)
+    check(DayWeek.fullRow(weekLoad), "a load for another day too: the full row")
+    check(DayWeek.weights(compactWeek, full: false) == [1, 1, 1, 1, 1, 2, 1]
+          && DayWeek.weights(DayWeek.cards(shown: saturday, today: saturday, calendar: monday, shownLoad: nil), full: false)
+              == [1, 1, 1, 1, 1, 2, 1]
+          && DayWeek.weights(weekLoad, full: true) == Array(repeating: 1, count: 7),
+          "compact: the shown day twice as wide, before and after its load; full: equal")
     _ = now
 }
 
@@ -1280,6 +1293,18 @@ func dayNextChecks(_ check: (Bool, String) -> Void, dayStart: Double, clock: (Do
     let long = DayItem(id: "x", title: "Long", detail: "", start: at(9), end: at(13), style: .calendar, begins: at(9), ends: at(13))
     let short = DayItem(id: "y", title: "Short", detail: "", start: at(9), end: at(9.05), style: .calendar, begins: at(9), ends: at(9.05))
     check(DayTimeline.durationFraction(long) == 1 && DayTimeline.durationFraction(short) == 0.12, "capped, and never invisible")
+
+    // Rows before Show more, and the halves' balance.
+    check(DayTimeline.rowsBeforeMore(hasNext: false, oneFewer: false) == 8 && DayTimeline.rowsBeforeMore(hasNext: true, oneFewer: false) == 7
+          && DayTimeline.rowsBeforeMore(hasNext: true, oneFewer: true) == 6 && DayTimeline.rowsBeforeMore(1, hasNext: true, oneFewer: true) == 1,
+          "eight, less the Next card, less one when asked, never none")
+    check(DayTimeline.trimLater(trimmed: false, left: 1400, right: 1000, rowAllowance: 44)
+          && !DayTimeline.trimLater(trimmed: false, left: 1300, right: 1000, rowAllowance: 44),
+          "trim when the left is more than a third taller")
+    check(DayTimeline.trimLater(trimmed: true, left: 1310, right: 1000, rowAllowance: 44)
+          && !DayTimeline.trimLater(trimmed: true, left: 1280, right: 1000, rowAllowance: 44),
+          "trimmed stays trimmed unless a row back would still be within the third")
+    check(!DayTimeline.trimLater(trimmed: false, left: 1400, right: 0, rowAllowance: 44), "no right half, no trim")
 
     // The card's buttons: only for a described Calendar event; Move only where the menu has it.
     check(DayTimeline.nextButtons(isDescribedEvent: true, menuOffersMove: true, cancelActive: false) == [.open, .move]

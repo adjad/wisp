@@ -53,6 +53,11 @@ struct NotchDayView: View {
     @State private var showWholeAgenda = false
     /// What ended in the last two hours, opened from its one-line summary.
     @State private var showEarlier = false
+    /// Wide Later today shows one fewer row while the left half runs more than
+    /// a third taller than the right (DayTimeline.trimLater), decided once per
+    /// plan and layout so it never flips on its own result.
+    @State private var laterTrim: (key: String, trimmed: Bool)?
+    private var laterTrimmed: Bool { halves && laterTrim?.trimmed == true }
     /// The last Remove, while its Undo bar shows: the ids it sent, so Undo brings
     /// a grouped review back as one action.
     @State private var lastRemoved: (ids: [String], notice: String)?
@@ -111,8 +116,14 @@ struct NotchDayView: View {
             // normal panel the halves stack with the same spacing as one column.
             DayHalves(sideBySide: halves, gap: Self.halfGap, stackGap: 10) {
                 VStack(alignment: .leading, spacing: 10) { leadHalf }
+                    .background(GeometryReader { geo in
+                        Color.clear.preference(key: DayHalfHeights.self, value: ["left": geo.size.height])
+                    })
                 Rectangle().fill(Theme.hairline).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 10) { restHalf }
+                    .background(GeometryReader { geo in
+                        Color.clear.preference(key: DayHalfHeights.self, value: ["right": geo.size.height])
+                    })
             }
             if plan != nil && (addingTask || !model.todayTaskTitle.isEmpty) { addTaskRow.transition(.opacity) }
             ReportDraftCard(draft: today.report, title: "Report a problem with this plan",
@@ -133,6 +144,7 @@ struct NotchDayView: View {
             Task { await checkIn.load(day: today.day, timezone: today.timezone.identifier); model.onResize() }
         }
         .onChange(of: plan?.generated_at) { _, _ in planChanged() }
+        .onPreferenceChange(DayHalfHeights.self) { heights in balanceHalves(heights) }
         // A cancel the service answered: the plan is read again, so a cancelled
         // block goes and a refused one shows the fresh facts the service now has.
         .onChange(of: checkIn.cancelling) { before, now in
@@ -211,6 +223,20 @@ struct NotchDayView: View {
         if blocks.contains(where: { studyAdds.ledger.phases[$0.id] != nil }) {
             studyAdds.ledger.settle(blocks, generatedAt: plan.generated_at)
         }
+    }
+
+    /// Decides, once per plan, text size and wide layout, whether Later today
+    /// shows one fewer row to bring the halves closer (never in one column, nor
+    /// while the whole list is open).
+    private func balanceHalves(_ heights: [String: CGFloat]) {
+        let left: CGFloat = heights["left"] ?? 0, right: CGFloat = heights["right"] ?? 0
+        guard halves, !showWholeAgenda, today.isShowingCurrentDay, left > 0 else { return }
+        let key: String = "\(plan?.generated_at ?? 0)|\(Theme.textScale)|\(today.day)|\(staleReminders.asks.count)"
+        guard laterTrim?.key != key else { return }
+        let trimmed: Bool = DayTimeline.trimLater(trimmed: laterTrim?.trimmed ?? false, left: Double(left), right: Double(right),
+                                                  rowAllowance: Double(44 * Theme.textScale))
+        laterTrim = (key, trimmed)
+        if trimmed { model.onResize() }
     }
 
     /// The exact occurrence when Calendar still has it; else Calendar itself.
@@ -360,9 +386,10 @@ struct NotchDayView: View {
                                               dayStart: today.dayInterval.start.timeIntervalSince1970,
                                               calendarRead: calendarRead)
         return HStack(alignment: .center, spacing: 12) {
+            // Three lines at most: beside the chip at larger text sizes two cut it.
             Text(blurb)
                 .font(.wisp(size: 13.5)).foregroundStyle(Theme.textPrimary)
-                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                .lineLimit(3).fixedSize(horizontal: false, vertical: true)
                 .padding(.leading, 10)
                 .overlay(alignment: .leading) { Rectangle().fill(Theme.chipStroke).frame(width: 2) }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -429,84 +456,10 @@ struct NotchDayView: View {
                              calendar: calendar, shownLoad: load)
     }
 
-    /// Seven equal cards across the whole width. Only the shown day can carry
-    /// a load; the rest show their date (Wisp reads one day at a time).
+    /// The week row: compact while only the shown day has a load (Wisp
+    /// reads one day at a time), full height once other days carry one.
     private func weekRow(load: DayLoadBar?) -> some View {
-        let cards: [DayWeekCard] = weekCards(load: load)
-        return EqualColumns(spacing: 6) {
-            ForEach(cards) { weekCard($0) }
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("This week")
-    }
-
-    private func weekCard(_ card: DayWeekCard) -> some View {
-        let filled: Bool = card.isShown
-        let ink: Color = filled ? Theme.surface : Theme.textPrimary
-        let muted: Color = filled ? Theme.surface.opacity(0.62) : Theme.textMuted
-        let stroke: Color = card.isToday && !filled ? Theme.textSecondary : Theme.chipStroke
-        return Button { showDay(card) } label: {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Text(card.weekday).font(.wisp(size: 9.5, weight: .medium, design: .monospaced)).foregroundStyle(muted)
-                    Text("\(card.number)").font(.wisp(size: 15, weight: .semibold)).monospacedDigit().foregroundStyle(ink)
-                }
-                .lineLimit(1).fixedSize()
-                weekCount(card.load, ink: muted)
-                weekBar(card.load, filled: filled, isToday: card.isToday)
-            }
-            .padding(.horizontal, 9).padding(.vertical, 7)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 10).fill(filled ? Theme.textPrimary : Theme.chipFill))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(stroke, lineWidth: 1))
-            .contentShape(RoundedRectangle(cornerRadius: 10))
-        }
-        // No pressed look: the white card must not flash.
-        .buttonStyle(StudyRowButtonStyle())
-        .help(card.isShown ? "The day shown" : card.isToday ? "Back to today" : "Show this day")
-        .accessibilityLabel(DayWeek.spoken(card))
-        .accessibilityHint(card.isShown ? "" : "Shows this day")
-        .accessibilityAddTraits(card.isShown ? .isSelected : [])
-    }
-
-    /// "3 · 2 due"; with less room "3"; a day without a load keeps the line empty.
-    private func weekCount(_ load: DayLoadBar?, ink: Color) -> some View {
-        let full: String = load.map(DayWeek.countText) ?? " "
-        let short: String = load.map(DayWeek.shortCountText) ?? " "
-        return ViewThatFits(in: .horizontal) {
-            Text(full)
-            Text(short)
-            Text(" ")
-        }
-        .font(.wisp(size: 10.5)).monospacedDigit().foregroundStyle(ink).lineLimit(1)
-        .accessibilityHidden(true)
-    }
-
-    /// The day's held stretches on a thin bar, with now as a red tick on today.
-    /// A day without a load draws nothing, never a guessed bar.
-    private func weekBar(_ load: DayLoadBar?, filled: Bool, isToday: Bool) -> some View {
-        let track: Color = filled ? Theme.surface.opacity(0.1) : Theme.chipFill
-        let mark: Color = filled ? Theme.surface : Theme.textPrimary
-        return GeometryReader { geo in
-            if let load {
-                let width: CGFloat = geo.size.width
-                ZStack(alignment: .leading) {
-                    Capsule().fill(track).frame(height: 4)
-                    ForEach(Array(load.segments.enumerated()), id: \.offset) { _, segment in
-                        Capsule().fill(mark.opacity(segment.past ? 0.35 : 1))
-                            .frame(width: max(3, CGFloat(segment.to - segment.from) * width), height: 4)
-                            .offset(x: CGFloat(segment.from) * width)
-                    }
-                    if let now = load.now, isToday {
-                        Rectangle().fill(DayInk.now).frame(width: 2, height: 9)
-                            .offset(x: min(width - 2, max(0, CGFloat(now) * width - 1)))
-                    }
-                }
-                .frame(height: 9)
-            }
-        }
-        .frame(height: 9)
-        .accessibilityHidden(true)
+        DayWeekRow(cards: weekCards(load: load), pick: showDay)
     }
 
     /// A week card's tap: the existing day selection (the planner's), then a read.
@@ -865,12 +818,12 @@ struct NotchDayView: View {
         let label: String = DayTimeline.nextLabel(item, now: now)
         let free: String? = DayTimeline.nowFreeLine(timeline.items, now: now, clock: today.clock, calendarRead: calendarRead)
         let spoken: String = DayTimeline.spokenNextLabel(item, now: now) + ": " + spokenRow(item)
-        return VStack(alignment: .leading, spacing: 6) {
+        return VStack(alignment: .leading, spacing: 4) {
             nextHeader(label, free: free)
             nextTitleRow(item)
             nextDetail(item)
         }
-        .padding(.horizontal, 14).padding(.vertical, 12)
+        .padding(.horizontal, 14).padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 14).fill(Theme.chipFill))
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.chipStroke, lineWidth: 1))
@@ -979,8 +932,9 @@ struct NotchDayView: View {
         let live: [DayItem] = agenda.earlier.filter { !$0.isOver(cancelActive: cancelActive($0)) }
         let later = DayTimeline.laterRows(agenda, excluding: next)
         let timed: [DayItem] = live + later.timed
-        // The Next card stands in for the first row, so it counts toward the eight.
-        let limit: Int = next == nil ? Self.agendaRows : Self.agendaRows - 1
+        // The Next card stands in for the first row, so it counts toward the
+        // eight; one fewer while the left half runs far below the right.
+        let limit: Int = DayTimeline.rowsBeforeMore(Self.agendaRows, hasNext: next != nil, oneFewer: laterTrimmed)
         let hidden: [DayItem] = Array(timed.dropFirst(limit)) + later.due
         let rows: [DayItem] = showWholeAgenda ? timed + later.due : Array(timed.prefix(limit))
         if !timed.isEmpty || !later.due.isEmpty || !over.isEmpty {
@@ -1064,18 +1018,20 @@ struct NotchDayView: View {
         .accessibilityLabel(spokenRow(item))
     }
 
-    /// How long it runs, against two hours, in its kind's ink; a dot for what
-    /// is due by a time and holds no stretch.
+    /// How long it runs, against two hours, in its kind's ink; nothing for
+    /// what is due by a time and holds no stretch.
     private func laterBar(_ item: DayItem) -> some View {
         let width: CGFloat = Self.laterBarWidth
         let fraction: Double? = DayTimeline.durationFraction(item)
         let ink: Color = DayInk.fill(item.style)
         return ZStack(alignment: .leading) {
-            Capsule().fill(Theme.chipFill).frame(width: width, height: 4)
+            // What holds no stretch of time (due by a time, overdue) has no bar;
+            // the column stays so the titles line up.
             if let fraction {
+                Capsule().fill(Theme.chipFill).frame(width: width, height: 4)
                 Capsule().fill(ink).frame(width: max(4, width * CGFloat(fraction)), height: 4)
             } else {
-                Circle().fill(ink).frame(width: 5, height: 5)
+                Color.clear.frame(width: width, height: 4)
             }
         }
         .frame(width: width)
@@ -1149,8 +1105,10 @@ struct NotchDayView: View {
         // A cancel still in its Undo window keeps an ended event live, on its own row.
         let over = agenda.earlier.filter { $0.isOver(cancelActive: cancelActive($0)) }
         let live = agenda.earlier.filter { !$0.isOver(cancelActive: cancelActive($0)) }
-        // The Next card stands in for the first row, so it counts toward the eight.
-        let limit: Int = next == nil ? Self.agendaRows : Self.agendaRows - 1
+        // The Next card stands in for the first row, and one more row waits
+        // behind Show more, so the one-column Day is no taller with the card
+        // and the week row than it was without them.
+        let limit: Int = DayTimeline.rowsBeforeMore(Self.agendaRows, hasNext: next != nil, oneFewer: next != nil)
         let ahead = showWholeAgenda ? agenda.ahead : agenda.firstRows(holding: limit)
         // An empty day has nothing to list; the blurb above already says so.
         if !agenda.earlier.isEmpty || !agenda.ahead.isEmpty {
@@ -1160,7 +1118,8 @@ struct NotchDayView: View {
                     if showEarlier { ForEach(over) { agendaRow($0).transition(.opacity) } }
                 }
                 ForEach(live) { agendaRow($0) }
-                if isToday { nowRow(now) }
+                // The Next card already says where now is; the line is for a day without one.
+                if isToday && next == nil { nowRow(now) }
                 ForEach(ahead) { row in
                     switch row {
                     case .item(let item): agendaRow(item)
@@ -1918,26 +1877,167 @@ struct DayHalves: Layout {
 /// apart, each as tall as the tallest, so cards, numbers and bars line up.
 struct EqualColumns: Layout {
     var spacing: CGFloat = 6
+    /// Each column's share of the width (equal when empty or mismatched).
+    var weights: [Double] = []
 
-    private func columnWidth(_ width: CGFloat, count: Int) -> CGFloat {
-        guard count > 0 else { return 0 }
-        return max(0, (width - spacing * CGFloat(count - 1)) / CGFloat(count))
+    private func widths(_ width: CGFloat, count: Int) -> [CGFloat] {
+        guard count > 0 else { return [] }
+        let shares: [Double] = weights.count == count ? weights : Array(repeating: 1, count: count)
+        let total: Double = max(0.0001, shares.reduce(0, +))
+        let room: CGFloat = max(0, width - spacing * CGFloat(count - 1))
+        return shares.map { room * CGFloat($0 / total) }
     }
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let width: CGFloat = proposal.width ?? 0
-        let column = ProposedViewSize(width: columnWidth(width, count: subviews.count), height: nil)
-        let height: CGFloat = subviews.map { $0.sizeThatFits(column).height }.max() ?? 0
-        return CGSize(width: width, height: height)
+        let columns: [CGFloat] = widths(width, count: subviews.count)
+        let heights: [CGFloat] = zip(subviews, columns).map { $0.sizeThatFits(ProposedViewSize(width: $1, height: nil)).height }
+        return CGSize(width: width, height: heights.max() ?? 0)
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let columnW: CGFloat = columnWidth(bounds.width, count: subviews.count)
-        let size = ProposedViewSize(width: columnW, height: bounds.height)
-        for (index, subview) in subviews.enumerated() {
-            let x: CGFloat = bounds.minX + CGFloat(index) * (columnW + spacing)
-            subview.place(at: CGPoint(x: x, y: bounds.minY), anchor: .topLeading, proposal: size)
+        let columns: [CGFloat] = widths(bounds.width, count: subviews.count)
+        var x: CGFloat = bounds.minX
+        for (subview, columnW) in zip(subviews, columns) {
+            subview.place(at: CGPoint(x: x, y: bounds.minY), anchor: .topLeading,
+                          proposal: ProposedViewSize(width: columnW, height: bounds.height))
+            x += columnW + spacing
         }
+    }
+}
+
+/// The Day's week row. Compact (one line a card, the shown day twice as wide
+/// with its count and a thin bar along its foot) while only the shown day has
+/// a load; full height (weekday and date, a count line, a bar) once other
+/// days carry one. Each form is as tall with its loads as without them, so
+/// the row never moves the panel when the plan arrives.
+struct DayWeekRow: View {
+    let cards: [DayWeekCard]
+    var pick: (DayWeekCard) -> Void = { _ in }
+
+    var body: some View {
+        let full: Bool = DayWeek.fullRow(cards)
+        return EqualColumns(spacing: 6, weights: DayWeek.weights(cards, full: full)) {
+            ForEach(cards) { card in
+                DayWeekCardView(card: card, compact: !full) { pick(card) }
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("This week")
+    }
+}
+
+struct DayWeekCardView: View {
+    let card: DayWeekCard
+    let compact: Bool
+    let action: () -> Void
+
+    private var filled: Bool { card.isShown }
+    private var ink: Color { filled ? Theme.surface : Theme.textPrimary }
+    private var muted: Color { filled ? Theme.surface.opacity(0.62) : Theme.textMuted }
+
+    var body: some View {
+        let stroke: Color = card.isToday && !filled ? Theme.textSecondary : Theme.chipStroke
+        Button(action: action) {
+            face
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: compact ? 8 : 10).fill(filled ? Theme.textPrimary : Theme.chipFill))
+                .overlay(RoundedRectangle(cornerRadius: compact ? 8 : 10).stroke(stroke, lineWidth: 1))
+                .contentShape(RoundedRectangle(cornerRadius: compact ? 8 : 10))
+        }
+        // No pressed look: the white card must not flash.
+        .buttonStyle(StudyRowButtonStyle())
+        .help(card.isShown ? "The day shown" : card.isToday ? "Back to today" : "Show this day")
+        .accessibilityLabel(DayWeek.spoken(card))
+        .accessibilityHint(card.isShown ? "" : "Shows this day")
+        .accessibilityAddTraits(card.isShown ? .isSelected : [])
+    }
+
+    @ViewBuilder private var face: some View {
+        if compact {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                date
+                Spacer(minLength: 4)
+                count
+            }
+            .padding(.horizontal, 8).padding(.top, 5).padding(.bottom, 7)
+            // The bar runs along the card's foot, inside its padding: no height of its own.
+            .overlay(alignment: .bottom) {
+                bar(height: 2.5, tick: 5).padding(.horizontal, 8).padding(.bottom, 2)
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 4) {
+                date
+                count
+                bar(height: 4, tick: 9).frame(height: 9)
+            }
+            .padding(.horizontal, 9).padding(.vertical, 7)
+        }
+    }
+
+    /// Weekday and date; where both don't fit (larger text, a narrow card),
+    /// the date alone, never cut.
+    private var date: some View {
+        let number = Text("\(card.number)").font(.wisp(size: compact ? 13.5 : 15, weight: .semibold)).monospacedDigit()
+            .foregroundColor(ink)
+        return ViewThatFits(in: .horizontal) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(card.weekday).font(.wisp(size: 9.5, weight: .medium, design: .monospaced)).foregroundStyle(muted)
+                number
+            }
+            .lineLimit(1).fixedSize()
+            number.lineLimit(1).fixedSize()
+        }
+        .layoutPriority(1)
+    }
+
+    /// "3 · 2 due"; with less room "3"; then nothing, never a cut date. A day
+    /// without a load keeps the line (full form) or the room (compact) empty.
+    private var count: some View {
+        let full: String = card.load.map(DayWeek.countText) ?? " "
+        let short: String = card.load.map(DayWeek.shortCountText) ?? " "
+        return ViewThatFits(in: .horizontal) {
+            Text(full)
+            Text(short)
+            Text(" ")
+        }
+        .font(.wisp(size: 10.5)).monospacedDigit().foregroundStyle(muted).lineLimit(1)
+        .accessibilityHidden(true)
+    }
+
+    /// The day's held stretches on a thin bar, with now as a red tick on today.
+    /// A day without a load draws nothing, never a guessed bar.
+    private func bar(height: CGFloat, tick: CGFloat) -> some View {
+        let track: Color = filled ? Theme.surface.opacity(0.1) : Theme.chipFill
+        let mark: Color = filled ? Theme.surface : Theme.textPrimary
+        return GeometryReader { geo in
+            if let load = card.load {
+                let width: CGFloat = geo.size.width
+                ZStack(alignment: .leading) {
+                    Capsule().fill(track).frame(height: height)
+                    ForEach(Array(load.segments.enumerated()), id: \.offset) { _, segment in
+                        Capsule().fill(mark.opacity(segment.past ? 0.35 : 1))
+                            .frame(width: max(3, CGFloat(segment.to - segment.from) * width), height: height)
+                            .offset(x: CGFloat(segment.from) * width)
+                    }
+                    if let now = load.now, card.isToday {
+                        Rectangle().fill(DayInk.now).frame(width: 2, height: tick)
+                            .offset(x: min(width - 2, max(0, CGFloat(now) * width - 1)))
+                    }
+                }
+                .frame(height: tick)
+            }
+        }
+        .frame(height: tick)
+        .accessibilityHidden(true)
+    }
+}
+
+/// The Day halves' drawn heights, for balancing Later today.
+struct DayHalfHeights: PreferenceKey {
+    static let defaultValue: [String: CGFloat] = [:]
+    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
+        value.merge(nextValue()) { $1 }
     }
 }
 
