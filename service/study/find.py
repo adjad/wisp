@@ -187,6 +187,10 @@ def with_address(course: dict, assignments: list[dict], courses: list[dict]) -> 
     return {**course, "url": f"https://{host}/courses/{number}"}
 
 
+_RECORDING = re.compile(r"(?<![a-z])(?:recordings?|recorded (?:lecture|class|session)s?|lecture captures?|"
+                        r"lecture videos?|class videos?)(?![a-z])", re.I)
+
+
 def _reason(hint: str, title: str) -> str:
     """Why a same-course module item is never opened, for the "Can't open" list."""
     text = f"{hint} {title}".lower()
@@ -312,6 +316,11 @@ def _classify(link: dict, course: dict | None = None) -> dict:
             # An item that launches an external tool or a quiz must never be opened: Canvas would
             # post the student's identity to the tool's site (or start the quiz).
             if hint not in SAFE_ITEM_HINTS or _TOOL_TITLE.search(title):
+                # The user's one exception: a lecture recording is kept as a video source by its
+                # title and link. It is never opened (opening it would launch the tool).
+                if _RECORDING.search(title) and _reason(hint, title) in ("tool", "unknown"):
+                    return {"key": url, "kind": "video", "via": "none", "file_id": None, "url": url,
+                            "recording": True}
                 return refused | {"reason": _reason(hint, title)}
             kind = "page"     # redirects to the real item, which the app reads
         else:
@@ -397,7 +406,8 @@ def resolve(links: list[dict], *, course: dict | None, sources: list[dict]) -> l
             importable += 1
         seen.add(got["key"])
         items.append({"id": item_id(got["key"]), "kind": got["kind"], "title": title or got["url"],
-                      "url": got["url"], "via": got["via"], "known": got["key"] in known})
+                      "url": got["url"], "via": got["via"], "known": got["key"] in known}
+                     | ({"recording": True} if got.get("recording") else {}))
     return items
 
 
@@ -409,6 +419,8 @@ class _Failed(Exception):
         self.code, self.message = code, message
 
 
+NOT_SHARED = ("Couldn't read: this file isn't shared with the Google account Wisp is signed in to "
+              "(or it was deleted). Ask for access, or sign in with your school account in Settings.")
 MISMATCH = "That link isn't what the app said it was. Find materials again, then add it."
 TEXT_NOT_ALLOWED = "Only Canvas pages read in your browser can be sent with their text."
 
@@ -458,6 +470,8 @@ async def _one(item: dict, got: dict, can_read: bool, deadline: float) -> tuple[
         try:
             fields, read = await asyncio.wait_for(_drive_item(got, kind, title, can_read), min(ITEM_S, left))
         except drive.DriveError as exc:
+            if exc.code == "not_found":       # Drive answers 404 for a file not shared with you
+                raise _Failed("not_shared", NOT_SHARED) from None
             raise _Failed(exc.code, exc.message) from None
         return fields, read
     if got["via"] == "web":

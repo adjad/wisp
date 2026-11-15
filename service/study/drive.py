@@ -60,6 +60,7 @@ RATE_LIMITED = "Google Drive is busy right now. Try again in a minute."
 GOOGLE_DOWN = "Google Drive is having trouble right now. Try again in a few minutes."
 ODD_REPLY = "Google Drive sent an answer Wisp couldn't use. Try again in a moment."
 NOT_FOUND = "Wisp couldn't find that file in your Google Drive."
+NO_DOWNLOAD = "Couldn't read: the file's owner turned off downloading, so Wisp can't read it."
 TOO_LARGE = "That file is too large for Google to export as text."
 BAD_ID = "That isn't a Google Docs, Slides or PDF file."
 PDF_NEEDS_GEMINI = "Reading a PDF needs the Gemini API as the Study connector. Choose it in Study settings."
@@ -179,6 +180,8 @@ def _refusal_for(code: int, reasons: set[str], response: httpx.Response) -> Driv
             return DriveError(409, "drive_off", DRIVE_OFF)
         if reasons & {"insufficientpermissions", "access_token_scope_insufficient", "insufficientscopes"}:
             return _missing(NO_DRIVE)
+        if reasons & {"cannotdownloadfile", "cannotcopyfile"}:
+            return DriveError(403, "no_download", NO_DOWNLOAD)
         if reasons & {"cannotexportfile", "filenotexportable"}:
             return DriveError(422, "invalid", BAD_ID)
         if reasons & {"ratelimitexceeded", "userratelimitexceeded", "quotaexceeded"}:
