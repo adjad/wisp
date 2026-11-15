@@ -35,6 +35,7 @@ def env(tmp_path, monkeypatch):
 
     monkeypatch.setattr(blocks_api, "_create", create)
     monkeypatch.setattr(blocks_api, "_delete", delete)
+    monkeypatch.setattr(blocks_api, "_calendar_state", lambda day, tz: (None, {}))   # never the real store
     app = FastAPI()
     app.include_router(blocks_api.router)
     return TestClient(app, headers=JSON), store, calls
@@ -140,3 +141,96 @@ def test_add_and_undo_are_audited(env, monkeypatch):
     client.post(f"/study/blocks/{BID}/add", json={"day": DAY, "timezone": TZ})
     client.post(f"/study/blocks/{BID}/undo", json={})
     assert seen == [("study_block_calendar_add", True), ("study_block_calendar_undo", True)]
+
+
+# --- edited and deleted in Calendar -------------------------------------------------------
+
+def _rec(**kw):
+    return {"source_id": "EVT-1", "title": BLOCK["title"], "start": BLOCK["start"], "end": BLOCK["end"],
+            "day": DAY, "timezone": TZ, "at": 1000.0, **kw}
+
+
+FRESH = {"available": True, "syncing": False, "last_sync": 2000.0}
+
+
+def test_gone_only_after_a_fresh_sync_well_after_the_booking():
+    assert blocks_api.gone(_rec(), FRESH, {}, now=2010.0) is True
+    assert blocks_api.gone(_rec(), FRESH, {"EVT-1": (1, 2, "x")}, now=2010.0) is False
+    assert blocks_api.gone(_rec(at=1990.0), FRESH, {}, now=2010.0) is False          # not settled yet
+    assert blocks_api.gone(_rec(), {**FRESH, "syncing": True}, {}, now=2010.0) is False
+    assert blocks_api.gone(_rec(), FRESH, {}, now=2500.0) is False                    # sync too old
+    assert blocks_api.gone(_rec(), None, {}, now=2010.0) is False                     # unknown
+
+
+def test_a_moved_event_with_a_new_identifier_is_not_gone():
+    same = {"EVT-9": (BLOCK["start"], BLOCK["end"], BLOCK["title"])}
+    assert blocks_api.gone(_rec(), FRESH, same, now=2010.0) is False
+    other = {"EVT-9": (BLOCK["start"] + 600, BLOCK["end"] + 600, BLOCK["title"])}
+    assert blocks_api.gone(_rec(), FRESH, other, now=2010.0) is True
+
+
+def test_a_booking_without_its_timezone_is_never_judged_gone():
+    rec = _rec()
+    rec.pop("timezone")
+    assert blocks_api.gone(rec, FRESH, {}, now=2010.0) is False
+
+
+def test_edited_notices_a_changed_end_start_or_title():
+    same = {"EVT-1": (BLOCK["start"], BLOCK["end"], BLOCK["title"])}
+    assert blocks_api.edited(_rec(), same) is False
+    assert blocks_api.edited(_rec(), {"EVT-1": (BLOCK["start"], BLOCK["end"] + 900, BLOCK["title"])}) is True
+    assert blocks_api.edited(_rec(), {"EVT-1": (BLOCK["start"] + 600, BLOCK["end"], BLOCK["title"])}) is True
+    assert blocks_api.edited(_rec(), {"EVT-1": (BLOCK["start"], BLOCK["end"], "Renamed")}) is True
+    assert blocks_api.edited(_rec(), {}) is False
+
+
+def _booked(env, monkeypatch, status, events):
+    client, store, calls = env
+    client.post(f"/study/blocks/{BID}/add", json={"day": DAY, "timezone": TZ})
+    record = dict(store.meta(blocks_api.META)[BID], at=1000.0)
+    store.set_meta(blocks_api.META, {BID: record})
+    monkeypatch.setattr(blocks_api, "_calendar_state", lambda day, tz: (status, events))
+    monkeypatch.setattr(blocks_api.time, "time", lambda: 2010.0)
+    return client, store, calls
+
+
+def test_undo_refuses_an_event_edited_in_calendar(env, monkeypatch):
+    client, store, calls = _booked(env, monkeypatch, FRESH,
+                                   {"EVT-1": (BLOCK["start"], BLOCK["end"] + 900, BLOCK["title"])})
+    got = client.post(f"/study/blocks/{BID}/undo", json={}).json()
+    assert got == {"ok": False, "status": "changed", "error": blocks_api.CHANGED}
+    assert not calls["delete"] and BID in store.meta(blocks_api.META)
+
+
+def test_undo_of_an_event_deleted_in_calendar_just_forgets_it(env, monkeypatch):
+    client, store, calls = _booked(env, monkeypatch, FRESH, {})
+    got = client.post(f"/study/blocks/{BID}/undo", json={}).json()
+    assert got == {"ok": True, "status": "gone", "block_id": BID}
+    assert not calls["delete"] and BID not in store.meta(blocks_api.META, {})
+
+
+def test_after_a_deletion_adding_again_books_with_a_new_key(env, monkeypatch):
+    client, store, calls = _booked(env, monkeypatch, FRESH, {})
+    client.post(f"/study/blocks/{BID}/undo", json={})
+    client.post(f"/study/blocks/{BID}/add", json={"day": DAY, "timezone": TZ})
+    keys = [p["capture_key"] for p in calls["create"]]
+    assert keys == [f"capture:study:{BID}:{DAY}", f"capture:study:{BID}:{DAY}:1"]
+
+
+def test_unchanged_event_still_undoes_through_the_bridge(env, monkeypatch):
+    client, store, calls = _booked(env, monkeypatch, FRESH, {"EVT-1": (BLOCK["start"], BLOCK["end"], BLOCK["title"])})
+    assert client.post(f"/study/blocks/{BID}/undo", json={}).json()["status"] == "succeeded" and calls["delete"]
+
+
+def test_day_stops_showing_a_block_deleted_in_calendar():
+    forgot = []
+    booked = {BID: _rec()}
+    blocks, _ = blocks_api.mark([dict(BLOCK)], [], DAY, booked, status=FRESH, events={}, now=2010.0,
+                                forget=lambda b, d: forgot.append((b, d)))
+    assert [b["added"] for b in blocks] == [False] and forgot == [(BID, DAY)]
+    blocks, _ = blocks_api.mark([dict(BLOCK)], [], DAY, booked, status=FRESH,
+                                events={"EVT-1": (BLOCK["start"], BLOCK["end"], BLOCK["title"])}, now=2010.0)
+    assert [b["added"] for b in blocks] == [True]
+    # a stale or unknown Calendar copy concludes nothing
+    blocks, _ = blocks_api.mark([dict(BLOCK)], [], DAY, booked, status=None, events={}, now=2010.0)
+    assert [b["added"] for b in blocks] == [True]
