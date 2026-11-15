@@ -839,17 +839,21 @@ class SessionStore:
                 raise
 
     def finish_model_effect(self, sid: str, claim: dict, *, verified: bool,
-                            not_sent: bool = False, not_done: bool = False) -> bool:
+                            not_sent: bool = False, not_done: bool = False,
+                            not_delivered: bool = False) -> bool:
         """Settle only the exact owner/revision; a crash leaves its claim consumed.
 
         not_sent is host proof that the attempt stopped before any dispatch
         (registry._NotSentResult), and not_done that another effect refused
         before any write (registry._NotDoneResult). Both are terminal, so they
-        block nothing, and recorded apart from a completed action. Anything
+        block nothing, and recorded apart from a completed action. not_delivered
+        is the app's proof that Messages marked the text failed
+        (registry._NotDeliveredResult): its outcome is known too. Anything
         unproven stays "uncertain".
         """
-        status = "completed" if verified or not_sent or not_done else "uncertain"
-        state_status = ("not_sent" if not_sent else "not_done" if not_done else status
+        status = "completed" if verified or not_sent or not_done or not_delivered else "uncertain"
+        state_status = ("not_sent" if not_sent else "not_done" if not_done
+                        else "not_delivered" if not_delivered else status
                         ) if not verified else status
         with self._lock:
             try:

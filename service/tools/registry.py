@@ -105,6 +105,31 @@ class _NotSentResult(_NotDoneResult):
         return self._needs_recipient
 
 
+class _NotDeliveredResult(str):
+    """Host proof that Messages itself recorded this text as failed: its own row
+    carries an error (Not Delivered). The outcome is known, so it settles as
+    terminal and does not hold later actions in the chat the way an unknown
+    outcome does (2026-11-15: one Not Delivered text locked every later send).
+
+    Minted only in service/tools/action_tools.py send_message, from the app's
+    read-back of Messages' store. Lost when serialized, sliced or coerced to
+    str, and never rebuilt from text. Nothing is retried because of it.
+    """
+    __slots__ = ()
+
+    def __copy__(self):
+        return self
+
+    def __deepcopy__(self, memo):
+        return self
+
+
+def not_delivered_receipt(tool, result) -> bool:
+    """`result` is send_message's own proof that Messages marked the text failed."""
+    return (type(result) is _NotDeliveredResult and getattr(tool, "name", "") == "send_message"
+            and getattr(getattr(tool, "func", None), "__module__", "") == "service.tools.action_tools")
+
+
 class _SavedResult(str):
     """Host proof that save_email_attachment wrote its file.
 
@@ -757,7 +782,8 @@ async def run_tool(tool: Tool, args: dict, *, private_shell_read_only: bool = Fa
 
     def normalize_result(res):
         # Preserve the existing display-only/public-source separation first.
-        if (type(res) in {_OutboundUnknownResult, _NotSentResult, _NotDoneResult, _SavedResult}
+        if (type(res) in {_OutboundUnknownResult, _NotSentResult, _NotDoneResult, _SavedResult,
+                          _NotDeliveredResult}
                 or _valid_message_draft(res, tool.name)
                 or isinstance(res, (DisplayOnlyToolResult, PublicSearchToolResult))):
             return res

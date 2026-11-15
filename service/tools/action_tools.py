@@ -368,13 +368,23 @@ def _own_address_guard(to: str, tool: str, confirmed_self_send: bool = False,
         return None
     # The person's own words this turn named themselves ("email myself …"):
     # that is the confirmation, and the card that follows is still the approval.
-    from service.tools.self_send import named_self
+    from service.tools.self_send import named_self, turn_text
     if named_self():
         return None
     try:
         from service.memory.identity import user_emails
         own = {e.strip().lower() for e in (user_emails() or []) if e}
     except Exception:  # noqa: BLE001 — no identity yet is not a failure
+        return None
+    # The person typed this very address in their own message this turn ("send
+    # an email to <their address> with my schedule"): that is them naming the
+    # recipient, not the model borrowing the attribution address. Only the
+    # person's own words count (turn_text is never model text), and the
+    # approval card that follows is still the approval. VERIFIED FAILURE
+    # 2026-11-15: that request was refused before any card.
+    typed_here = {m.lower() for m in re.findall(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", turn_text() or "")}
+    targets = {r.strip().lower() for r in _split_recipients(to) if r.strip()} or {addr}
+    if typed_here and targets & own and (targets & own) <= typed_here:
         return None
     if addr not in own:
         # Several recipients ("a@x.com, me@y.com"): any one of them that is
@@ -1692,7 +1702,8 @@ async def send_message(to: str, text: str, confirmed_self_send: bool = False,
         # RCS). Messages' own "Send as Text Message" on the failed bubble is
         # the next step; nothing here resends it.
         by_imessage = not by_sms and res.get("delivery_service") == "iMessage"
-        return (f"The text to {display} was not delivered: {NOT_DELIVERED_TEXT}"
+        from service.tools.registry import _NotDeliveredResult
+        return _NotDeliveredResult(f"The text to {display} was not delivered: {NOT_DELIVERED_TEXT}"
                 + (f" {TEXT_FORWARDING_HINT}" if by_sms else "")
                 + (" Messages couldn't reach them by iMessage. In Messages, Control-click the "
                    "failed message and choose Send as Text Message." if by_imessage else "")
