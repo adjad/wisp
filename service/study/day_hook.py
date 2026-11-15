@@ -214,7 +214,9 @@ def attach(result: dict, *, now: float, timezone: str) -> None:
                 from service.study import blocks_api
                 status, events = blocks_api._calendar_state(day, timezone)
                 # A booking deleted in Calendar is forgotten first, so its block is offered again now.
+                # Only bookings made in this Day's timezone are judged: the copy was read with its bounds.
                 for block_id in [k for k, v in booked.items() if isinstance(v, dict) and v.get("day") == day
+                                 and v.get("timezone") == timezone
                                  and blocks_api.gone(v, status, events, now)]:
                     blocks_api._forget(block_id, day)
                     booked = {k: v for k, v in booked.items() if k != block_id}

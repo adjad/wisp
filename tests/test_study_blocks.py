@@ -162,6 +162,19 @@ def test_gone_only_after_a_fresh_sync_well_after_the_booking():
     assert blocks_api.gone(_rec(), None, {}, now=2010.0) is False                     # unknown
 
 
+def test_a_moved_event_with_a_new_identifier_is_not_gone():
+    same = {"EVT-9": (BLOCK["start"], BLOCK["end"], BLOCK["title"])}
+    assert blocks_api.gone(_rec(), FRESH, same, now=2010.0) is False
+    other = {"EVT-9": (BLOCK["start"] + 600, BLOCK["end"] + 600, BLOCK["title"])}
+    assert blocks_api.gone(_rec(), FRESH, other, now=2010.0) is True
+
+
+def test_a_booking_without_its_timezone_is_never_judged_gone():
+    rec = _rec()
+    rec.pop("timezone")
+    assert blocks_api.gone(rec, FRESH, {}, now=2010.0) is False
+
+
 def test_edited_notices_a_changed_end_start_or_title():
     same = {"EVT-1": (BLOCK["start"], BLOCK["end"], BLOCK["title"])}
     assert blocks_api.edited(_rec(), same) is False

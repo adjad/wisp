@@ -114,15 +114,31 @@ def _calendar_state(day: str, timezone: str) -> tuple[dict | None, dict]:
         return None, {}
 
 
+def _moved(a, b) -> bool:
+    return not (isinstance(a, (int, float)) and isinstance(b, (int, float)) and abs(a - b) < 1.0)
+
+
+def _same(found, record: dict) -> bool:
+    start, end, title = found
+    return not _moved(start, record.get("start")) and not _moved(end, record.get("end")) \
+        and title.strip() == record.get("title")
+
+
 def gone(record: dict, status: dict | None, events: dict, now: float) -> bool:
-    """True only when Wisp's Calendar copy synced well after the booking and no longer has it."""
+    """True only when Wisp's Calendar copy synced well after the booking and has neither that event
+    nor one with its exact title, start and end (Calendar can give a moved event a new identifier).
+    A booking without its own timezone is never judged gone: its day can't be read reliably."""
+    if not record.get("timezone"):
+        return False
     if not isinstance(status, dict) or not status.get("available") or status.get("syncing"):
         return False
     last = status.get("last_sync")
     at = record.get("at") if isinstance(record.get("at"), (int, float)) else 0.0
     if not isinstance(last, (int, float)) or last < at + SETTLE_S or now - last > 180:
         return False
-    return str(record.get("source_id")) not in events
+    if str(record.get("source_id")) in events:
+        return False
+    return not any(_same(found, record) for found in events.values())
 
 
 def edited(record: dict, events: dict) -> bool:
@@ -130,10 +146,7 @@ def edited(record: dict, events: dict) -> bool:
     found = events.get(str(record.get("source_id")))
     if found is None:
         return False
-    start, end, title = found
-    def moved(a, b):
-        return not (isinstance(a, (int, float)) and isinstance(b, (int, float)) and abs(a - b) < 1.0)
-    return moved(start, record.get("start")) or moved(end, record.get("end")) or title.strip() != record.get("title")
+    return not _same(found, record)
 
 
 def _forget(block_id: str, day: str) -> None:
