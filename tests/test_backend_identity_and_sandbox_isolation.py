@@ -144,7 +144,8 @@ def test_the_sandbox_proxy_cannot_be_pointed_at_the_real_backend(monkeypatch):
 def _bash(script, env=None, **kw):
     try:
         return subprocess.run(["/bin/bash", "-c", script], capture_output=True, text=True, timeout=30,
-                              env={"PATH": "/usr/bin:/bin", "HOME": str(kw.pop("home", "/tmp")), **(env or {})}, **kw)
+                              env={"PATH": "/usr/bin:/bin", "HOME": str(kw.pop("home", "/tmp")),
+                                   "WISP_KEYCHAIN_LEGACY": "off", **(env or {})}, **kw)
     except (PermissionError, FileNotFoundError):
         pytest.skip("spawning a shell is forbidden in this sandbox")
 
