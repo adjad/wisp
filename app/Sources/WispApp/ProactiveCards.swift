@@ -362,6 +362,8 @@ struct ProactiveBriefSection: View {
     var schoolRows = StudyUpcomingRows()
     /// What Study got ready and the topics to look at again (StudyDaySummary.briefCards): rows in READY FOR YOU.
     var studyCards = StudyBriefCards()
+    /// Open work due today and tomorrow (StudyDaySummary.dueSoon): READY FOR YOU's first compact rows.
+    var dueSoon: [StudyDaySummary.Due] = []
     /// "Found in your mail": each suggestion is a row in READY FOR YOU.
     @ObservedObject var mailMemory: MailMemoryModel = MailMemoryCards.model
     /// "Let Wisp act for me": the acting-for-you box's state, today's count and its log.
@@ -389,9 +391,10 @@ struct ProactiveBriefSection: View {
         let cards: [String] = liveCards(shown).filter { !$0.wispDidThis }.map(cardTag)
         let study: [String] = studyCards.cards.map(studyTag)
         let found: [String] = foundItems.isEmpty ? [] : [BriefReady.foundTag]
+        let due: [String] = dueSoon.compactMap { BriefReady.dueTag(day: $0.day) }
         let font = NSFont.monospacedSystemFont(ofSize: 9 * Theme.textScale, weight: .semibold)
         let advance: CGFloat = ("M" as NSString).size(withAttributes: [.font: font]).width + 0.3
-        return BriefReady.tagColumn(cards + study + found, charWidth: advance)
+        return BriefReady.tagColumn(due + cards + study + found, charWidth: advance)
     }
 
     private func cardTag(_ card: ProactiveCard) -> String {
@@ -544,7 +547,8 @@ struct ProactiveBriefSection: View {
         var did: [ProactiveCard]
         var study: [StudyBriefCard]
         var found: [MailSuggestion]
-        var count: Int { asks.count + study.count + found.count }
+        var due: [StudyDaySummary.Due] = []
+        var count: Int { asks.count + study.count + found.count + due.count }
     }
 
     /// One compact row under the large card.
@@ -552,9 +556,11 @@ struct ProactiveBriefSection: View {
         case card(ProactiveCard)
         case study(StudyBriefCard)
         case found(MailSuggestion)
+        case due(StudyDaySummary.Due)
 
         var id: String {
             switch self {
+            case .due(let item): return "due:" + item.id
             case .card(let card): return "card:" + card.id
             case .study(let card): return "study:" + card.id
             case .found(let item): return "found:\(item.id)"
@@ -565,7 +571,8 @@ struct ProactiveBriefSection: View {
     private func ready(_ shown: ProactiveState) -> Ready {
         let cards: [ProactiveCard] = liveCards(shown)
         return Ready(asks: cards.filter { !$0.wispDidThis }, did: cards.filter(\.wispDidThis),
-                     study: studyCards.cards, found: foundItems)
+                     study: studyCards.cards, found: foundItems,
+                     due: dueSoon.filter { BriefReady.dueTag(day: $0.day) != nil })
     }
 
     /// "Found in your mail" while the person has it showing ("live"): the first three, as before.
@@ -662,7 +669,8 @@ struct ProactiveBriefSection: View {
         let cards: [ReadyItem] = held.asks.enumerated().filter { $0.offset != hero }.map { ReadyItem.card($0.element) }
         let study: [ReadyItem] = held.study.map { ReadyItem.study($0) }
         let found: [ReadyItem] = held.found.map { ReadyItem.found($0) }
-        return cards + study + found
+        let due: [ReadyItem] = held.due.map { ReadyItem.due($0) }
+        return due + cards + study + found
     }
 
     /// READY FOR YOU · n, what it read and when, the account menu and Analyze now.
@@ -928,6 +936,7 @@ struct ProactiveBriefSection: View {
         case .card(let card): cardRow(card)
         case .study(let card): studyRow(card)
         case .found(let suggestion): foundRow(suggestion)
+        case .due(let item): dueRow(item)
         }
     }
 
@@ -1132,6 +1141,61 @@ struct ProactiveBriefSection: View {
                 NotchChrome.action(title, help: action.help, spoken: title + ": " + card.text) {
                     SchoolActions.run(action, model: model)
                 }
+            }
+        }
+    }
+
+    /// Work due today or tomorrow: the guide made for it (or Make a guide) and
+    /// its page in the browser. A row with neither still shows what is due.
+    private func dueRow(_ item: StudyDaySummary.Due) -> some View {
+        let tag: String = BriefReady.dueTag(day: item.day) ?? ""
+        // The tag says the day; the muted line says the time (none for an all-day item).
+        let when: String = item.allDay ? "" : item.dueTS.map {
+            StudyText.time(Date(timeIntervalSince1970: $0), calendar: schoolCalendar)
+        } ?? ""
+        // The time first, so a long course name is what gets cut.
+        let detail: String = [when, item.course].filter { !$0.isEmpty }.joined(separator: " · ")
+        let spoken: String = [(item.day == "today" ? "Due today: " : "Due tomorrow: ") + item.shownTitle,
+                              item.course, when].filter { !$0.isEmpty }.joined(separator: ", ")
+        return compactRow(tag: tag, title: item.shownTitle, detail: detail,
+                          help: item.shownTitle + "\n" + detail, spoken: spoken) {
+            dueMaterialButton(item)
+            dueLinkButton(item)
+        }
+    }
+
+    /// Study can make a guide unless its state is loaded and says the key isn't ready.
+    private var studyCanMake: Bool { StudyModel.shared.state.map { $0.connector.ready } ?? true }
+
+    @ViewBuilder private func dueMaterialButton(_ item: StudyDaySummary.Due) -> some View {
+        let made: StudyDaySummary.Due.Material? = item.material
+        let choice: BriefReady.DueMaterial = BriefReady.dueMaterial(id: made?.id, kind: made?.kind ?? "",
+                                                                    scope: made?.scope ?? "", canMake: studyCanMake)
+        switch choice {
+        case .open(let id, let label):
+            NotchChrome.action(label, help: "Opens it in Study", spoken: label + " for " + item.shownTitle) {
+                SchoolActions.run(.open(materialID: id), model: model)
+            }
+        case .courseGuide(let id):
+            NotchChrome.action("Course guide", help: BriefReady.courseGuideHelp,
+                               spoken: "Course guide. " + BriefReady.courseGuideHelp) {
+                SchoolActions.run(.open(materialID: id), model: model)
+            }
+        case .makeGuide:
+            NotchChrome.action("Make a guide", help: "Switches to Study and makes a guide for this assignment",
+                               spoken: "Make a guide for " + item.shownTitle) {
+                SchoolActions.makeGuide(assignmentID: item.id, model: model)
+            }
+        case .none:
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder private func dueLinkButton(_ item: StudyDaySummary.Due) -> some View {
+        if let url = item.url, let link = BriefReady.dueLink(urlKind: item.urlKind) {
+            NotchChrome.action(link.label, help: link.help, spoken: link.label.replacingOccurrences(of: " ↗", with: "")
+                               + ": " + item.shownTitle + ". " + link.help) {
+                StudyLinks.open(url)
             }
         }
     }
@@ -1707,7 +1771,8 @@ struct ProactiveBriefSection: View {
                 listHeading(BriefLists.schoolHeading(dueToday: dueToday, total: total),
                             spoken: BriefLists.schoolHeading(dueToday: dueToday, total: total).capitalized,
                             link: "Study", help: "Your school work (⌘5)") { model.tab = .study }
-                ForEach(Array(visible.enumerated()), id: \.offset) { _, item in schoolRow(item) }
+                let linked: Bool = visible.contains { $0.url != nil }
+                ForEach(Array(visible.enumerated()), id: \.offset) { _, item in schoolRow(item, linked: linked) }
             }
             .accessibilityElement(children: .contain)
             .accessibilityLabel("School work")
@@ -1723,7 +1788,20 @@ struct ProactiveBriefSection: View {
 
     /// One piece of school work on one line: its title, the course, and when
     /// it is due at the right. The whole row opens Study, where it is done.
-    private func schoolRow(_ item: StudyDaySummary.Due) -> some View {
+    /// With any row linked, every row keeps the icon's slot, so the due times stay in one column.
+    private func schoolRow(_ item: StudyDaySummary.Due, linked: Bool) -> some View {
+        HStack(alignment: .center, spacing: 2) {
+            schoolRowButton(item)
+            if let url = item.url {
+                glyphButton("arrow.up.right.square", help: "Open \(item.shownTitle) in your browser",
+                            spoken: "Open \(item.shownTitle) in your browser") { StudyLinks.open(url) }
+            } else if linked {
+                Color.clear.frame(width: Theme.iconButtonSize, height: 1).accessibilityHidden(true)
+            }
+        }
+    }
+
+    private func schoolRowButton(_ item: StudyDaySummary.Due) -> some View {
         let calendar = schoolCalendar
         let assignment = item.assignment
         let due: String = StudyText.dueShort(assignment, now: today.now, calendar: calendar)

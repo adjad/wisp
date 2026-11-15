@@ -510,6 +510,7 @@ func briefWordingChecks(_ check: (Bool, String) -> Void) {
     check(BriefReady.studyTag(id: "ready:qa:quiz3", opensMaterial: true) == "QUIZ MADE", "Study made a quiz")
     check(BriefReady.studyTag(id: "ready:qa:pa3", opensMaterial: false) == "SLIDES", "Study found the slides")
     check(BriefReady.studyTag(id: "weak:qa:pointers", opensMaterial: false) == "WEAK SPOT", "a topic to look at again")
+    dueSoonChecks(check)
     check(BriefReady.foundTag == "FOUND", "found in mail")
     check(BriefReady.rowsShown(sideBySide: true) == 3 && BriefReady.rowsShown(sideBySide: false) == 3, "rows before Show all")
     check(BriefReady.source(read: 49, at: "10:24 AM") == "from 49 emails and texts · 10:24 AM", "what it read and when")
@@ -548,4 +549,99 @@ func briefWordingChecks(_ check: (Bool, String) -> Void) {
           "the due word, short")
     check(BriefLists.todosShown(sideBySide: true) == 3 && BriefLists.todosShown(sideBySide: false) == 2
           && BriefLists.schoolShown(sideBySide: true) == 3 && BriefLists.threadsShown == 4, "rows before All n")
+}
+
+
+/// READY FOR YOU's due rows and the school link rule (StudyLinkRule, mirroring
+/// service/study/plan.py `link`). Invented addresses only.
+func dueSoonChecks(_ check: (Bool, String) -> Void) {
+    check(BriefReady.dueTag(day: "today") == "DUE TODAY" && BriefReady.dueTag(day: "tomorrow") == "DUE TMRW"
+          && BriefReady.dueTag(day: "friday") == nil && BriefReady.dueTag(day: "") == nil, "due tags: today, tomorrow, nothing else")
+    check(BriefReady.tagColumn(["DUE TODAY", "DUE TMRW", "SLIDES"], charWidth: 6) == BriefReady.tagColumn(["QUIZ MADE"], charWidth: 6),
+          "DUE TODAY is no wider than QUIZ MADE")
+    // The four cases, and the kinds.
+    check(BriefReady.dueMaterial(id: "m1", kind: "guide", scope: "assignment", canMake: true) == .open(id: "m1", label: "Open guide"),
+          "url + assignment guide: Open guide")
+    check(BriefReady.dueMaterial(id: "m2", kind: "guide", scope: "course", canMake: true) == .courseGuide(id: "m2"),
+          "url + course guide: Course guide")
+    check(BriefReady.dueMaterial(id: nil, kind: "", scope: "", canMake: true) == .makeGuide, "no guide: Make a guide")
+    check(BriefReady.dueMaterial(id: nil, kind: "", scope: "", canMake: false) == .none, "no guide, Study can't make one: no button")
+    check(BriefReady.dueMaterial(id: "m3", kind: "lesson", scope: "assignment", canMake: false) == .open(id: "m3", label: "Open lesson")
+          && BriefReady.dueMaterial(id: "m4", kind: "flashcards", scope: "assignment", canMake: false) == .open(id: "m4", label: "Open cards")
+          && BriefReady.dueMaterial(id: "m5", kind: "quiz", scope: "assignment", canMake: false) == .open(id: "m5", label: "Open quiz"),
+          "lesson, cards, quiz")
+    check(BriefReady.dueMaterial(id: "m6", kind: "flashcards", scope: "course", canMake: true) == .makeGuide
+          && BriefReady.dueMaterial(id: "", kind: "guide", scope: "assignment", canMake: true) == .makeGuide
+          && BriefReady.dueMaterial(id: "m7", kind: "poster", scope: "assignment", canMake: false) == .none,
+          "a course's cards, an empty id or an unknown kind open nothing")
+    check(BriefReady.dueLink(urlKind: "assignment")?.label == "Open ↗"
+          && BriefReady.dueLink(urlKind: "quiz_page")?.label == "Open quiz page ↗"
+          && BriefReady.dueLink(urlKind: "quiz_page")?.help == "Opens the quiz's page. It does not start it."
+          && BriefReady.dueLink(urlKind: nil) == nil && BriefReady.dueLink(urlKind: "attempt") == nil, "link labels by kind")
+
+    // The rule, table-driven: (address, kind or nil when refused).
+    let table: [(String, String?)] = [
+        ("https://canvas.example.edu/courses/12/assignments/34", "assignment"),
+        ("https://canvas.example.edu/courses/12/assignments/34/", "assignment"),
+        ("https://CANVAS.Example.edu/courses/12/assignments/34", "assignment"),
+        ("https://canvas.example.edu/courses/12/assignments/34?module_item_id=56", "assignment"),
+        ("https://canvas.example.edu/courses/12/quizzes/78", "quiz_page"),
+        ("https://canvas.example.edu/courses/12/quizzes/78/", "quiz_page"),
+        ("https://canvas.example.edu/courses/12/quizzes/78/take", nil),
+        ("https://canvas.example.edu/courses/12/quizzes/78/Take/", nil),
+        ("https://canvas.example.edu/courses/12/quizzes/78/take?user_id=1", nil),
+        ("https://canvas.example.edu/courses/12/quizzes/78?preview=1", nil),
+        ("https://canvas.example.edu/courses/12/quizzes/78/history?quiz_submission_id=9", nil),
+        ("https://canvas.example.edu/courses/12/quizzes/78/attempts/2", nil),
+        ("https://canvas.example.edu/courses/12/quizzes/78/start", nil),
+        ("https://canvas.example.edu/courses/12/assignments/34/submissions/new", nil),
+        ("https://canvas.example.edu/courses/12/gradebook/speed_grader?assignment_id=34", nil),
+        ("https://canvas.example.edu/courses/12/external_tools/90", nil),
+        ("https://canvas.example.edu/courses/12/assignments/34?display=lti_launch", nil),
+        ("https://canvas.example.edu/login/oauth2/auth", nil),
+        ("https://canvas.example.edu/logout", nil),
+        ("https://canvas.example.edu/courses/12/assignments/34?token=abc", nil),
+        ("https://canvas.example.edu/courses/12/assignments/34#comments", nil),
+        ("https://canvas.example.edu/courses/12/%2574ake", nil),
+        ("https://canvas.example.edu:8443/courses/12/assignments/34", nil),
+        ("https://student:pw@canvas.example.edu/courses/12/assignments/34", nil),
+        ("https://student@canvas.example.edu/courses/12/assignments/34", nil),
+        ("http://canvas.example.edu/courses/12/assignments/34", nil),
+        ("HTTPS://canvas.example.edu/courses/12/assignments/34", nil),
+        ("javascript:alert(1)", nil),
+        ("https://canvas.xn--exmple-cua.edu/courses/12/assignments/34", nil),
+        ("https://canvas.example.edu/courses/12/assignments/34 x", nil),
+        ("https://canvas.example.edu/courses/12/assignments/34\tx", nil),
+        ("https://canvas.example.edu/courses/12/assignments/caf\u{e9}", nil),
+        ("https://canvas%2eexample.edu/courses/12/assignments/34", nil),
+        ("https://canvas.example.edu\\@evil.example.com/courses/12", nil),
+        ("", nil),
+    ]
+    for (raw, kind) in table {
+        let got: String? = StudyLinkRule.check(raw)?.kind
+        check(got == kind, "link rule: \(raw) gives \(got ?? "refused"), wanted \(kind ?? "refused")")
+    }
+
+    // Decoding: a refused or unknown-kind url is dropped; a row for another day is dropped.
+    let json = #"""
+    {"due_soon": [
+      {"id": "a1", "title": "Homework 5", "day": "today", "url": "https://canvas.example.edu/courses/105/assignments/5005",
+       "url_kind": "assignment", "material": {"id": "m9", "kind": "guide", "scope": "assignment", "title": "HW5 guide"}},
+      {"id": "a2", "title": "Quiz 2", "day": "tomorrow", "url": "https://canvas.example.edu/courses/105/quizzes/22/take",
+       "url_kind": "quiz_page", "material": {"id": "m8", "kind": "guide", "scope": "elsewhere"}},
+      {"id": "a3", "title": "Lab 1", "day": "today", "url": "https://canvas.example.edu/courses/105/assignments/11",
+       "url_kind": "launch_page", "material": null},
+      {"id": "a4", "title": "Old", "day": "monday"}
+    ], "due_soon_more": 2}
+    """#
+    let summary = try? JSONDecoder().decode(StudyDaySummary.self, from: Data(json.utf8))
+    let soon = summary?.dueSoon ?? []
+    check(soon.map(\.id) == ["a1", "a2", "a3"] && summary?.dueSoonMore == 2, "due_soon decodes, another day dropped")
+    check(soon.first?.url == "https://canvas.example.edu/courses/105/assignments/5005" && soon.first?.urlKind == "assignment"
+          && soon.first?.material?.id == "m9", "a good link and its guide")
+    check(soon.count > 2 && soon[1].url == nil && soon[1].urlKind == nil && soon[1].material == nil,
+          "an attempt url and an unknown scope are dropped on the client")
+    check(soon.count > 2 && soon[2].url == nil, "an unknown url kind gives no link")
+    let old = try? JSONDecoder().decode(StudyDaySummary.self, from: Data(#"{"line": "x"}"#.utf8))
+    check(old?.dueSoon == [] && old?.dueSoonMore == 0, "an older service: no due rows")
 }

@@ -1007,6 +1007,52 @@ enum BriefReady {
         return opensMaterial ? "QUIZ MADE" : "SLIDES"
     }
 
+    /// A due-soon row's tag: DUE TODAY or DUE TMRW; nil for any other day.
+    static func dueTag(day: String) -> String? {
+        switch day {
+        case "today": return "DUE TODAY"
+        case "tomorrow": return "DUE TMRW"
+        default: return nil
+        }
+    }
+
+    /// What a due-soon row's first button does with Study's material.
+    enum DueMaterial: Equatable {
+        /// Opens what was made for this assignment: "Open guide", "Open lesson"…
+        case open(id: String, label: String)
+        /// Opens the course's guide, which is not this assignment's.
+        case courseGuide(id: String)
+        /// Nothing made yet: switches to Study and makes a guide for it.
+        case makeGuide
+        case none
+    }
+
+    static let courseGuideHelp = "Guide for this course, not this assignment"
+
+    /// The material button: what was made for this assignment, else the
+    /// course's guide, else Make a guide while Study can make one.
+    static func dueMaterial(id: String?, kind: String, scope: String, canMake: Bool) -> DueMaterial {
+        if let id, !id.isEmpty {
+            if scope == "assignment" {
+                let labels: [String: String] = ["guide": "Open guide", "lesson": "Open lesson",
+                                                "flashcards": "Open cards", "quiz": "Open quiz"]
+                if let label = labels[kind] { return .open(id: id, label: label) }
+            } else if scope == "course" && kind == "guide" {
+                return .courseGuide(id: id)
+            }
+        }
+        return canMake ? .makeGuide : .none
+    }
+
+    /// The link button's words and help for a url kind; nil (no button) for any other kind.
+    static func dueLink(urlKind: String?) -> (label: String, help: String)? {
+        switch urlKind {
+        case "assignment": return ("Open ↗", "Open the assignment in your browser")
+        case "quiz_page": return ("Open quiz page ↗", "Opens the quiz's page. It does not start it.")
+        default: return nil
+        }
+    }
+
     /// READY FOR YOU's rows before "+N more · Show all": three either way, as
     /// side by side a title that doesn't fit takes two lines.
     static func rowsShown(sideBySide: Bool) -> Int { 3 }

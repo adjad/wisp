@@ -2269,6 +2269,25 @@ enum SchoolActions {
         }
     }
 
+    /// The Brief's "Make a guide": switches to Study and starts Study's own
+    /// path for that assignment, as its Guide button does (the key card
+    /// opens instead when the key isn't ready). Without the assignment in
+    /// Study's list, Study just opens.
+    static func makeGuide(assignmentID: String, model: OverlayModel) {
+        model.tab = .study
+        Task {
+            let study = StudyModel.shared
+            if study.state == nil { await study.refresh() }
+            guard let state = study.state,
+                  let assignment = state.assignments.first(where: { $0.id == assignmentID }) else { return }
+            guard state.connector.ready else {
+                study.showingConnector = true
+                return
+            }
+            await study.make(.guide, course: state.course(assignment.courseID), assignment: assignment, topic: nil)
+        }
+    }
+
     static func review(_ pages: [SchoolPage], title: String, model: OverlayModel) {
         let chosen = Self.refs(pages)
         guard !chosen.isEmpty else { return }
