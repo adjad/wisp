@@ -696,3 +696,63 @@ struct AnyKey: CodingKey {
     init?(stringValue: String) { self.stringValue = stringValue }
     init?(intValue: Int) { return nil }
 }
+
+/// One row of the Brief's "On your plate" list: a to-do or school work (R6).
+enum PlateItem: Identifiable, Equatable {
+    case todo(ProactiveTodo)
+    case school(StudyDaySummary.Due)
+
+    var id: String {
+        switch self {
+        case .todo(let todo): return "todo:" + todo.id
+        case .school(let due): return "school:" + (due.id.isEmpty ? due.title : due.id)
+        }
+    }
+
+    var isSchool: Bool {
+        if case .school = self { return true }
+        return false
+    }
+}
+
+extension ProactiveState {
+    /// School work and to-dos as one list, most urgent first (BriefPlate.order).
+    static func plate(todos: [ProactiveTodo], school: [StudyDaySummary.Due], isDone: (ProactiveTodo) -> Bool,
+                      now: Double, dayStart: Double, todayEnd: Double, tomorrowEnd: Double) -> [PlateItem] {
+        var items: [String: PlateItem] = [:]
+        var entries: [BriefPlate.Entry] = []
+        for todo in todos {
+            let item = PlateItem.todo(todo)
+            items[item.id] = item
+            entries.append(BriefPlate.Entry(key: item.id, title: todo.title, due: todo.dueTs,
+                                            overdue: todo.dueLabel.lowercased().contains("overdue"), done: isDone(todo)))
+        }
+        for due in school where items[PlateItem.school(due).id] == nil {
+            let item = PlateItem.school(due)
+            items[item.id] = item
+            entries.append(BriefPlate.Entry(key: item.id, title: due.title, due: due.dueTS, allDay: due.allDay))
+        }
+        let ordered = BriefPlate.order(entries, now: now, dayStart: dayStart, todayEnd: todayEnd, tomorrowEnd: tomorrowEnd)
+        return ordered.compactMap { items[$0.key] }
+    }
+
+    /// Mail and texts without the ones a reply card already holds: a thread
+    /// is the card's when the card sends a drafted reply and names that thread
+    /// (its source ref is the thread's item, or its reply reference is the
+    /// thread's message). Everything else stays.
+    static func threads(_ threads: [ProactiveThread], coveredBy cards: [ProactiveCard]) -> [ProactiveThread] {
+        var refs = Set<String>()
+        var messages = Set<String>()
+        for card in cards where card.action?.sendsDraft == true {
+            for source in card.sources where !source.ref.isEmpty { refs.insert(source.ref) }
+            if let message = card.replyRef["message_id"], !message.isEmpty { messages.insert(message) }
+        }
+        guard !refs.isEmpty || !messages.isEmpty else { return threads }
+        return threads.filter { thread in
+            let item = thread.id.hasPrefix("thread:") ? String(thread.id.dropFirst("thread:".count)) : thread.id
+            if refs.contains(item) || refs.contains(thread.id) { return false }
+            let message = thread.replyRef["message_id"] ?? ""
+            return message.isEmpty || !messages.contains(message)
+        }
+    }
+}

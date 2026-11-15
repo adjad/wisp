@@ -13,6 +13,9 @@ enum MailMemoryCards {
 struct MailMemorySection: View {
     @ObservedObject var memory: MailMemoryModel
     var onResize: () -> Void = {}
+    /// Add, Dismiss and Open under the reminder rather than beside it (the
+    /// proactive Brief's narrower column), so they never squeeze its title.
+    var buttonsBelow = false
 
     var body: some View {
         // A zero-height stack when there's nothing to show, so it still refreshes.
@@ -52,37 +55,50 @@ struct MailMemorySection: View {
 
     private func row(_ item: MailSuggestion) -> some View {
         let busy = memory.answering != nil
-        return VStack(alignment: .leading, spacing: 2) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(item.what).font(.wisp(size: 13)).foregroundStyle(Theme.textPrimary).lineLimit(2)
-                    Text("\(item.dueLabel()) · \(item.detail)").font(.wisp(size: 11))
-                        .foregroundStyle(Theme.textMuted).lineLimit(1)
-                }
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("Suggested reminder: \(item.what), \(item.dueLabel()). \(item.detail)")
-                Spacer(minLength: 8)
-                if memory.answering == item.id {
-                    ProgressView().controlSize(.small).accessibilityLabel("Adding")
-                } else {
-                    NotchChrome.small("Add") { Task { await memory.accept(item); onResize() } }
-                        .disabled(busy)
-                        .help("Add this to Reminders, due \(item.dueLabel())")
-                        .accessibilityLabel("Add \(item.what) to Reminders")
-                    NotchChrome.small("Dismiss") { Task { await memory.dismiss(item); onResize() } }
-                        .disabled(busy)
-                        .help("Don't suggest this again")
-                        .accessibilityLabel("Dismiss \(item.what)")
-                    if let url = item.mailURL {
-                        NotchChrome.small("Open") { NSWorkspace.shared.open(url) }
-                            .help("Open the email in Mail")
-                            .accessibilityLabel("Open the email about \(item.what)")
-                    }
+        return VStack(alignment: .leading, spacing: buttonsBelow ? 5 : 2) {
+            if buttonsBelow {
+                summary(item)
+                HStack(spacing: 8) { buttons(item, busy: busy) }
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    summary(item)
+                    Spacer(minLength: 8)
+                    buttons(item, busy: busy)
                 }
             }
             if let failure = memory.failures[item.id] {
                 Text(failure).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func summary(_ item: MailSuggestion) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(item.what).font(.wisp(size: 13)).foregroundStyle(Theme.textPrimary).lineLimit(2)
+            Text("\(item.dueLabel()) · \(item.detail)").font(.wisp(size: 11))
+                .foregroundStyle(Theme.textMuted).lineLimit(1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Suggested reminder: \(item.what), \(item.dueLabel()). \(item.detail)")
+    }
+
+    @ViewBuilder private func buttons(_ item: MailSuggestion, busy: Bool) -> some View {
+        if memory.answering == item.id {
+            ProgressView().controlSize(.small).accessibilityLabel("Adding")
+        } else {
+            NotchChrome.small("Add") { Task { await memory.accept(item); onResize() } }
+                .disabled(busy)
+                .help("Add this to Reminders, due \(item.dueLabel())")
+                .accessibilityLabel("Add \(item.what) to Reminders")
+            NotchChrome.small("Dismiss") { Task { await memory.dismiss(item); onResize() } }
+                .disabled(busy)
+                .help("Don't suggest this again")
+                .accessibilityLabel("Dismiss \(item.what)")
+            if let url = item.mailURL {
+                NotchChrome.small("Open") { NSWorkspace.shared.open(url) }
+                    .help("Open the email in Mail")
+                    .accessibilityLabel("Open the email about \(item.what)")
             }
         }
     }
