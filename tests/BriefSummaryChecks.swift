@@ -511,10 +511,21 @@ func briefWordingChecks(_ check: (Bool, String) -> Void) {
     check(BriefReady.studyTag(id: "ready:qa:pa3", opensMaterial: false) == "SLIDES", "Study found the slides")
     check(BriefReady.studyTag(id: "weak:qa:pointers", opensMaterial: false) == "WEAK SPOT", "a topic to look at again")
     check(BriefReady.foundTag == "FOUND", "found in mail")
-    check(BriefReady.rowsShown(sideBySide: true) == 4 && BriefReady.rowsShown(sideBySide: false) == 3, "rows before Show all")
+    check(BriefReady.rowsShown(sideBySide: true) == 3 && BriefReady.rowsShown(sideBySide: false) == 3, "rows before Show all")
     check(BriefReady.source(read: 49, at: "10:24 AM") == "from 49 emails and texts · 10:24 AM", "what it read and when")
     check(BriefReady.source(read: 1, at: "") == "from 1 email and texts" && BriefReady.source(read: 0, at: "9 AM") == nil,
           "one email; nothing read, no line")
+    check(BriefReady.sourceShort(read: 49, at: "10:24 AM") == "49 read · 10:24 AM"
+          && BriefReady.sourceShort(read: 3, at: "") == "3 read" && BriefReady.sourceShort(read: 0, at: "9 AM") == nil,
+          "the short read line keeps the time")
+    check(BriefReady.sourceForms(read: 49, at: "10:24 AM", sideBySide: true)
+          == ["from 49 emails and texts · 10:24 AM", "49 read · 10:24 AM"], "side by side: the sentence, then the short form")
+    check(BriefReady.sourceForms(read: 49, at: "10:24 AM", sideBySide: false) == ["from 49 emails and texts · 10:24 AM"],
+          "stacked: the sentence only")
+    check(BriefReady.sourceForms(read: 0, at: "10:24 AM", sideBySide: true).isEmpty, "nothing read: no line")
+    check(BriefReady.tagColumn(["FOUND", "QUIZ MADE"], charWidth: 6) == 66 && BriefReady.tagColumn(["FOUND"], charWidth: 5.5) == 40,
+          "the tag column fits the widest tag shown")
+    check(BriefReady.tagColumn([], charWidth: 6) == 12, "no tags: just the padding")
     check(BriefReady.emptyLine(read: 49, at: "10:24 AM", actingToday: 1)
           == "Nothing needs you yet. Wisp checked 49 emails and texts at 10:24 AM · Acting for you · 1 today",
           "the one line with nothing ready, acting on")
