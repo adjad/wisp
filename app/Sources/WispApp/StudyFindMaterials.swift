@@ -362,7 +362,8 @@ enum StudyFindReader {
 
     /// Front tabs as `want` decides from whether the tab is new since
     /// `known` and its URL. Only `.walk` tabs are read past their address.
-    static func scan(text: Bool, known: [StudyFindTab],
+    /// `stop` ends a read in progress at its next element, so Stop answers at once.
+    static func scan(text: Bool, known: [StudyFindTab], stop: StudyFindStop? = nil,
                      want: @escaping @Sendable (_ isNew: Bool, _ url: String) -> Want) async -> Scan {
         #if WISP_NOTCH_QA
         return Scan(pages: [], complete: true)
@@ -371,7 +372,7 @@ enum StudyFindReader {
         let pids = await browserPIDs()
         guard !pids.isEmpty else { return Scan(pages: [], complete: true) }
         return await Task.detached(priority: .userInitiated) { () -> Scan in
-            StudyFindReader.scanAll(pids, text: text, known: known, want: want)
+            StudyFindReader.scanAll(pids, text: text, known: known, stop: stop, want: want)
         }.value
         #endif
     }
@@ -457,11 +458,11 @@ enum StudyFindReader {
     }
 
     /// Never call on the main thread.
-    private static func scanAll(_ pids: [pid_t], text: Bool, known: [StudyFindTab],
+    private static func scanAll(_ pids: [pid_t], text: Bool, known: [StudyFindTab], stop: StudyFindStop?,
                                 want: (Bool, String) -> Want) -> Scan {
         let clock = Clock(deadline: now() + totalBudgetNanoseconds)
         var pages: [StudyFindPage] = []
-        let complete = eachFrontArea(pids, deadline: { clock.deadline }) { window, area in
+        let complete = eachFrontArea(pids, deadline: { stop?.isSet == true ? 0 : clock.deadline }) { window, area in
             let tab = StudyFindTab(element: area)
             let isNew = !tab.isAmong(known)
             let url = pageURL(area: area, window: window)
@@ -478,7 +479,7 @@ enum StudyFindReader {
             case .walk:
                 // Its own budget; the time it takes is added back for the other windows.
                 let started = now()
-                var w = Walk(deadline: started + walkBudgetNanoseconds, base: URL(string: url), wantText: text)
+                var w = Walk(deadline: started + walkBudgetNanoseconds, base: URL(string: url), wantText: text, stop: stop)
                 harvest(area, into: &w, depth: 0, root: true)
                 clock.deadline += now() - started
                 var body = w.lines.joined(separator: "\n")
@@ -544,13 +545,14 @@ enum StudyFindReader {
         let deadline: UInt64
         let base: URL?
         let wantText: Bool
+        let stop: StudyFindStop?
     }
 
     /// Document order, depth first. Links give URL and title; nested web areas
     /// their URL; static text the page text (when wanted). Password and text
     /// fields are never read.
     private static func harvest(_ element: AXUIElement, into w: inout Walk, depth: Int, root: Bool) {
-        guard w.visited < maxElements, now() < w.deadline else {
+        guard w.visited < maxElements, now() < w.deadline, w.stop?.isSet != true else {
             w.truncated = true
             return
         }
@@ -1140,6 +1142,14 @@ enum StudyFindTabCloser {
     }
 }
 
+/// Set by Stop: a page read in progress ends at its next element.
+final class StudyFindStop: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    func set() { lock.lock(); value = true; lock.unlock() }
+    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+}
+
 /// A thread-safe one-way flag, for the close timer.
 private final class ManagedFlag: @unchecked Sendable {
     private let lock = NSLock()
@@ -1528,6 +1538,8 @@ final class StudyFindRun: ObservableObject {
     private var browserID: String?
     /// The browser has answered once: later calls wait less.
     private var closeAnswered = false
+    /// This run's Stop signal for page reads in progress.
+    private var stopToken = StudyFindStop()
     /// The tab Wisp claimed as its own right after the last open, and its
     /// window's tabs at that moment (hashes only, for the re-check at close).
     private var claim: (gen: Int, tab: StudyFindTabCloser.Tab, window: [StudyFindTabCloser.Tab], opened: String)?
@@ -1641,6 +1653,7 @@ final class StudyFindRun: ObservableObject {
     /// already have added some items, so the state is refreshed.
     func stop() {
         let wasAdding = phase == .adding
+        stopToken.set()
         generation += 1
         task?.cancel()
         task = nil
@@ -1682,6 +1695,7 @@ final class StudyFindRun: ObservableObject {
         closeProblem = nil
         closeAnswered = false
         claim = nil
+        stopToken = StudyFindStop()
         counts = nil
         titlesByURL = [:]
         sentTypes = [:]
@@ -1736,7 +1750,7 @@ final class StudyFindRun: ObservableObject {
         while Date() < modulesDeadline {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             guard live(gen) else { return }
-            let pages = await StudyFindReader.scan(text: false, known: beforeModules) { isNew, url in
+            let pages = await StudyFindReader.scan(text: false, known: beforeModules, stop: stopToken) { isNew, url in
                 if (isNew || StudyFindTarget.samePage(url, modulesString)) && t.isModules(url) { return .walk }
                 // Where a new tab went instead (Modules hidden): its address only.
                 return isNew && t.allows(url) ? .address : .skip
@@ -1984,7 +1998,7 @@ final class StudyFindRun: ObservableObject {
         while Date() < until {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             guard live(gen) else { return nil }
-            let scan = await StudyFindReader.scan(text: true, known: before) { isNew, url in
+            let scan = await StudyFindReader.scan(text: true, known: before, stop: stopToken) { isNew, url in
                 guard isNew || StudyFindTarget.samePage(url, opened) else { return .skip }
                 if t.allows(url) { return t.isLaunchPage(url) ? .address : .walk }
                 // Off the course: a new tab's address only (so new tabs can be
@@ -2663,6 +2677,10 @@ private struct StudyFindCard: View {
                 Image(systemName: "exclamationmark.circle").font(.wisp(size: 10.5)).foregroundStyle(Theme.warn)
                     .accessibilityHidden(true)
                 Text(message).font(.wisp(.footnote)).foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let counts = run.counts {
+                Text(StudyFindText.summary(counts)).font(.wisp(.caption)).foregroundStyle(Theme.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
             }
             tabsLine
