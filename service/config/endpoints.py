@@ -21,6 +21,19 @@ class ProviderCredentialMissing(ProviderCredentialError):
     """A connected cloud provider has no key saved: the person reconnects it."""
 
 
+class ProviderCredentialBusy(ProviderCredentialError):
+    """Another Keychain read is in progress: try again in a moment."""
+
+
+class ProviderCredentialTimedOut(ProviderCredentialError):
+    """macOS asked for Keychain access and nobody answered in time (not a refusal)."""
+
+
+class ProviderCredentialCopyPending(ProviderCredentialError):
+    """The key is saved under the pre-rename name and will be copied on the next use
+    that may ask macOS (not the startup check, not the event loop)."""
+
+
 def is_loopback(url: str) -> bool:
     host = urlsplit(url).hostname or ""
     if host == "localhost":

@@ -31,10 +31,18 @@ NOT_FOUND = 44   # errSecItemNotFound, from `security`
 _SAFE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._~+/=:-]{0,4095}")   # never read as an option
 _ENV = {"PATH": "/usr/bin:/bin", "LC_ALL": "C"}
 _COPYING = contextvars.ContextVar("keychain_legacy_copying", default=True)
+# Called (from the reading thread) just before macOS asks: Ask shows a waiting line.
+WAIT_NOTICE: contextvars.ContextVar = contextvars.ContextVar("keychain_wait_notice", default=None)
+# A person typing the login password into macOS's question needs this long.
+COPY_READ_TIMEOUT_S = 60.0
 
 
 class LegacyUnreadable(Exception):
-    """An old item exists but macOS did not hand it over (refused, timed out, malformed)."""
+    """An old item exists but macOS did not hand it over (refused or malformed)."""
+
+
+class LegacyTimedOut(Exception):
+    """macOS's question went unanswered: not a refusal, so the next use asks again."""
 
 
 @contextlib.contextmanager
@@ -46,6 +54,10 @@ def no_copy():
         yield
     finally:
         _COPYING.reset(token)
+
+
+def copying() -> bool:
+    return _COPYING.get()
 
 
 def legacy_service(kind: str, current: str) -> str | None:
@@ -71,16 +83,27 @@ def legacy_exists(kind: str, current: str, account: str, *, timeout: float = 10)
         return False
 
 
-def copy_forward(kind: str, current: str, account: str, *, timeout: float) -> str | None:
+def copy_forward(kind: str, current: str, account: str,
+                 *, timeout: float = COPY_READ_TIMEOUT_S) -> str | None:
     """The key from the old service, now also saved under `current`, or None when there
-    is no old item (or copying is off here). Raises LegacyUnreadable when an old item
-    exists but cannot be read. A failed write still returns the key for this use."""
+    is no old item. BLOCKING while macOS asks: never call it on the event loop, and
+    check copying() first. Raises LegacyUnreadable when an old item exists but cannot
+    be read, LegacyTimedOut when the question went unanswered. A failed write still
+    returns the key for this use."""
     if not _COPYING.get() or not legacy_exists(kind, current, account):
         return None
     old = legacy_service(kind, current)
+    notice = WAIT_NOTICE.get()
+    if notice is not None:
+        try:
+            notice()
+        except Exception:  # noqa: BLE001 — a status line never stops the read
+            pass
     try:
         read = _run(["find-generic-password", "-s", old, "-a", account, "-w"], timeout=timeout)
         value = read.stdout.decode("ascii").rstrip("\n")
+    except subprocess.TimeoutExpired:
+        raise LegacyTimedOut from None
     except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
         raise LegacyUnreadable from None
     if read.returncode or read.stderr or not _SAFE.fullmatch(value):
