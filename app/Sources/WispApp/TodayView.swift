@@ -258,6 +258,16 @@ struct TodayPlan: Decodable {
     var unreadSources: [String] {
         ["calendar", "reminders", "email", "messages"].filter { access($0).map { !$0.readable } ?? false }
     }
+
+    /// What the Day may say about the calendar, by the Brief's `calendarKnown`
+    /// rule: read once the service says so, or when Calendar events (or a
+    /// real all-day item) are on the plan anyway.
+    var calendarState: DayCalendarState {
+        let eventsShown = displayBlocks.contains {
+            ($0.kind == "calendar" || $0.kind == "manual") && !DayTimeline.isPlaceholderEvent($0.title)
+        } || all_day.contains { !DayTimeline.isPlaceholderEvent($0.title) }
+        return DayCalendarState.of(ready: sources["calendar"]?.ready, eventsShown: eventsShown, access: access("calendar"))
+    }
 }
 
 extension TodayPlan {
@@ -801,6 +811,59 @@ final class TodayModel: ObservableObject {
             self.retryTask = nil
             await self.refresh()
         }
+    }
+
+    // MARK: The Day's week row (GET /assistant/today/week)
+
+    /// The week route's last good reply. The Day reads it only for its own
+    /// week and zone (`weekReply(start:)`).
+    @Published private(set) var weekReply: DayWeekReply?
+    /// What the last finished read was for: one read per week, zone and plan
+    /// revision, a failed one included, so a service without the route (404)
+    /// is asked once, not at every redraw.
+    private var weekReadFor: (start: String, zone: String, revision: Int)?
+    /// The week row's form for this opening of the Day, chosen at its first frame.
+    private var weekFormLatch: (key: String, full: Bool)?
+
+    /// The reply for the week starting `start` in the current zone, or nil.
+    func weekReply(start: String) -> DayWeekReply? {
+        guard let weekReply, weekReply.start == start, weekReply.timezone == timezone.identifier else { return nil }
+        return weekReply
+    }
+
+    /// Whether the week row is full height, fixed for this opening of the Day
+    /// once its first frame asks: `readNow` then (a week already read); the
+    /// same answer after, however the week's read ends, until the Day closes
+    /// or shows another week. Not published: asking never redraws.
+    func weekRowFull(start: String, readNow: Bool) -> Bool {
+        let key = start + "|" + timezone.identifier
+        if let latch = weekFormLatch, latch.key == key { return latch.full }
+        weekFormLatch = (key, readNow)
+        return readNow
+    }
+
+    /// The form already chosen for this week, without choosing one.
+    func weekRowLatched(start: String) -> Bool? {
+        weekFormLatch.flatMap { $0.key == start + "|" + timezone.identifier ? $0.full : nil }
+    }
+
+    /// The Day closed: its next opening chooses the week row's form afresh.
+    func weekRowClosed() { weekFormLatch = nil }
+
+    /// Reads the week once per (week, zone, plan revision). The Day calls it
+    /// after today's plan is on screen, from a task that ends with the Day's
+    /// view, so closing the panel cancels a read in flight. No timer and no
+    /// loop: a new plan revision or another week is the only reason to read
+    /// again. A failure keeps what was read before; a reply for another week,
+    /// zone or day count is no data.
+    func refreshWeek(start: String, days: [String], revision: Int) async {
+        let zone = timezone.identifier
+        if let read = weekReadFor, read.start == start, read.zone == zone, read.revision == revision { return }
+        let data = try? await request(DayWeekReply.query(start: start, timezone: zone))
+        guard !Task.isCancelled, zone == timezone.identifier else { return }
+        weekReadFor = (start, zone, revision)
+        guard let data, let reply = DayWeekReply.decode(data, start: start, timezone: zone, days: days) else { return }
+        if reply != weekReply { weekReply = reply }
     }
 
     /// A failed read keeps the last reply, so SOON never empties on a hiccup.

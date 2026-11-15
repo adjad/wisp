@@ -34,7 +34,7 @@ enum NotchQADriver {
         let now = midnight.addingTimeInterval(10 * 3600 + 32 * 60)
         let dayStart = midnight.timeIntervalSince1970
         func dayModel(_ proactive: ProactiveFixture, study: Bool = false, at clock: Date? = nil,
-                      calendarFacts: Bool = false) -> TodayModel {
+                      calendarFacts: Bool = false, noCalendar: Bool = false, week: Bool = false) -> TodayModel {
             let moment = clock ?? now
             return TodayModel(now: { moment }, timeZoneProvider: { zone }, transport: { request in
                 let components = request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: true) }
@@ -45,6 +45,16 @@ enum NotchQADriver {
                 if request.httpMethod == "POST", components?.path.hasPrefix("/assistant/proactive/") == true {
                     return ok(#"{"ok":true,"detail":"Done"}"#)
                 }
+                if components?.path == DayWeekReply.path {
+                    // The week row's route: a stub week for the "-week" scenes; a
+                    // service without the route (404) for every other scene.
+                    let start = components?.queryItems?.first { $0.name == "start" }?.value ?? ""
+                    guard week, let body = try? fixtureWeek(start: start, today: moment) else {
+                        return (Data(#"{"detail":"Not Found"}"#.utf8),
+                                HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!)
+                    }
+                    return ok(String(decoding: body, as: UTF8.self))
+                }
                 if components?.path == "/assistant/daily_summary/latest" {
                     // No kept summary: the "brief" scenes use the live one, "brief-nosummary" shows the note.
                     return (Data(#"{"detail":"no composed summary for that day"}"#.utf8),
@@ -52,7 +62,8 @@ enum NotchQADriver {
                 }
                 let body = components?.path == "/assistant/upcoming" ? try fixtureUpcoming(dayStart: dayStart)
                     : try fixturePlan(day: components?.queryItems?.first { $0.name == "day" }?.value ?? "", dayStart: dayStart,
-                                      proactive: proactive, study: study, calendarFacts: calendarFacts)
+                                      proactive: proactive, study: study, calendarFacts: calendarFacts,
+                                      noCalendar: noCalendar)
                 return (body, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
             })
         }
@@ -69,6 +80,12 @@ enum NotchQADriver {
         // with nothing left on the clock.
         let c3Day = dayModel(.ready, study: true, calendarFacts: true)
         let c3Late = dayModel(.ready, study: true, at: midnight.addingTimeInterval(21 * 3600 + 45 * 60), calendarFacts: true)
+        // The school day with Calendar access off: reminders, school work and
+        // plans caught in texts, and no word that the calendar is clear.
+        let c3NoCalendar = dayModel(.ready, study: true, noCalendar: true)
+        // The school day with the week read: a busy day, a free day, a day whose
+        // calendar wasn't current, and the rest; the full-height week row.
+        let c3Week = dayModel(.ready, study: true, calendarFacts: true, week: true)
         // First-day states: a new user's empty day, the same day with Calendar,
         // Reminders, Mail and Messages unreadable, and the service still starting.
         func variantModel(_ variant: DayVariant) -> TodayModel {
@@ -176,6 +193,10 @@ enum NotchQADriver {
             ("day-c3-empty-wide", .day, { AnyView(NotchDayView(model: model, today: c3Late, wide: true)) }),
             // Calendar unreadable: no load is known for any day, so all seven show their date alone.
             ("day-c3-noweek", .day, { AnyView(NotchDayView(model: model, today: blocked)) }),
+            ("day-c3-nocalendar", .day, { AnyView(NotchDayView(model: model, today: c3NoCalendar)) }),
+            ("day-c3-nocalendar-wide", .day, { AnyView(NotchDayView(model: model, today: c3NoCalendar, wide: true)) }),
+            ("day-c3-week", .day, { AnyView(NotchDayView(model: model, today: c3Week)) }),
+            ("day-c3-week-wide", .day, { AnyView(NotchDayView(model: model, today: c3Week, wide: true)) }),
             ("brief-legacy-study", .brief, { AnyView(NotchBriefView(model: model, today: schoolLegacy, open: nil)) }),
         ] + NotchQASetup.scenes() + panelScenes(model: model, today: today, state: state)
             + studyScenes(model: model)
@@ -213,10 +234,22 @@ enum NotchQADriver {
             }
             await starting.refresh()
             // The "-study" scenes' days load like the rest (they rendered "Starting Wisp…" before).
-            for school in [schoolDay, schoolLegacy, c3Day, c3Late] {
+            for school in [schoolDay, schoolLegacy, c3Day, c3Late, c3NoCalendar, c3Week] {
                 await school.refresh()
                 await school.refreshUpcoming()
                 await school.refreshStoredBrief()
+            }
+            // The week read before the first frame, so its row opens full height.
+            if let plan = c3Week.currentPlan {
+                var weekCalendar = Calendar(identifier: .gregorian)
+                weekCalendar.timeZone = zone
+                weekCalendar.firstWeekday = Calendar.autoupdatingCurrent.firstWeekday
+                let dates = DayWeek.dates(containing: now, calendar: weekCalendar)
+                await c3Week.refreshWeek(start: DayWeek.start(of: now, calendar: weekCalendar),
+                                         days: DayWeek.keys(dates, calendar: weekCalendar), revision: plan.revision)
+                // The scene windows exist before the read: their rows opened
+                // compact. Shown as the next opening would be, full height.
+                c3Week.weekRowClosed()
             }
             let deadline = Date().addingTimeInterval(5)
             @MainActor func populated() -> Bool {
@@ -230,7 +263,9 @@ enum NotchQADriver {
                 schoolDay.currentPlan?.study?.upcoming.isEmpty == false &&
                 schoolLegacy.currentPlan?.study?.upcoming.isEmpty == false &&
                 c3Day.currentPlan?.displayBlocks.contains { $0.calendarEvent != nil } == true &&
-                c3Late.currentPlan != nil
+                c3Late.currentPlan != nil &&
+                c3NoCalendar.currentPlan?.calendarState == .unread &&
+                c3Week.weekReply?.days.count == 7
             }
             while !populated() && Date() < deadline {
                 try? await Task.sleep(for: .milliseconds(20))
@@ -624,7 +659,8 @@ enum NotchQADriver {
     /// deadlines and SCHOOL summary (the "-study" scenes); without it the plan
     /// is exactly what it was before Study.
     static func fixturePlan(day: String, dayStart: Double, proactive: ProactiveFixture = .none,
-                            study withStudy: Bool = false, calendarFacts: Bool = false) throws -> Data {
+                            study withStudy: Bool = false, calendarFacts: Bool = false,
+                            noCalendar: Bool = false) throws -> Data {
         func at(_ h: Double) -> Double { dayStart + h * 3600 }
         func block(_ id: String, _ title: String, _ start: Double, _ end: Double, _ kind: String,
                    task: String? = nil, pattern: String? = nil, evidence: String? = nil) -> [String: Any] {
@@ -660,6 +696,8 @@ enum NotchQADriver {
                                       "cancel_blocked": "", "move_blocked": ""]) { $1 }
             }
         }
+        // Calendar access off: no Calendar events or all-day items reach the plan.
+        if noCalendar { blocks = blocks.filter { $0["kind"] as? String != "calendar" } }
         var workspace: [String: Any] = [
             "attention": [
                 need("pa2", "reminders", "PA 2", due: 23.98),
@@ -791,12 +829,63 @@ enum NotchQADriver {
             "preferences": ["start_minute": 540, "end_minute": 1320, "not_before": NSNull()],
             "workspace": workspace,
         ]
+        if noCalendar {
+            payload["all_day"] = [[String: Any]]()
+            payload["sources"] = ["calendar": ["ready": false, "last_sync": NSNull(), "state": "unavailable",
+                                               "blocked": "calendar_access",
+                                               "reason": "Calendar access is off for Wisp."]]
+            workspace["attention"] = (workspace["attention"] as? [[String: Any]] ?? []).filter { $0["source"] as? String != "calendar" }
+            payload["workspace"] = workspace
+        }
         if withStudy {
             payload["blocks"] = studyBlocks
             payload["deadlines"] = studyDeadlines
             payload["study"] = study
         }
         return try JSONSerialization.data(withJSONObject: payload)
+    }
+
+    /// The week route's stub (`GET /assistant/today/week`), in its exact
+    /// shape. Today's entry is what the shown day's own plan counts at 10:32
+    /// (six on the clock, four due), so the two agree; then a busy day, a free
+    /// day, a day whose calendar wasn't current, and three ordinary days.
+    static func fixtureWeek(start: String, today: Date) throws -> Data {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        let parts = start.split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 3,
+              let first = calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2], hour: 12)) else {
+            throw URLError(.badURL)
+        }
+        let dates = (0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: first) }
+        let keys = DayWeek.keys(dates, calendar: calendar)
+        let todayKey = DayWeek.keys([today], calendar: calendar)[0]
+        func ready(_ key: String, _ spans: [[Any]], due: Int) -> [String: Any] {
+            let minutes = spans.reduce(0) { $0 + (($1[1] as? Int ?? 0) - ($1[0] as? Int ?? 0)) }
+            return ["day": key, "calendar_ready": true, "on_clock": spans.count, "on_clock_minutes": minutes,
+                    "due": due, "all_day": 0, "spans": spans]
+        }
+        // Today: Hack Day, Hacktoberfest, two study blocks, the club meeting and
+        // the dinner caught in texts (as the shown day counts it), and the plan's suggestion.
+        let todaySpans: [[Any]] = [[705, 840, "calendar"], [720, 780, "calendar"], [930, 975, "study"],
+                                   [990, 1035, "study"], [1080, 1140, "calendar"], [1140, 1200, "caught"],
+                                   [1200, 1290, "suggestion"]]
+        let busy: [[Any]] = [[540, 600, "calendar"], [600, 690, "calendar"], [780, 870, "calendar"],
+                             [900, 1020, "study"], [1080, 1170, "calendar"]]
+        let ordinary: [[Any]] = [[600, 675, "calendar"], [840, 900, "calendar"]]
+        var others = keys.filter { $0 != todayKey }.makeIterator()
+        let busyKey = others.next(), freeKey = others.next(), notReadyKey = others.next()
+        let days: [[String: Any]] = keys.map { key in
+            switch key {
+            case todayKey:
+                return ready(key, todaySpans, due: 4)
+            case busyKey: return ready(key, busy, due: 2)
+            case freeKey: return ready(key, [], due: 0)
+            case notReadyKey: return ["day": key, "calendar_ready": false]
+            default: return ready(key, ordinary, due: 1)
+            }
+        }
+        return try JSONSerialization.data(withJSONObject: ["start": start, "timezone": zone.identifier, "days": days])
     }
 
     static func fixtureUpcoming(dayStart: Double) throws -> Data {
