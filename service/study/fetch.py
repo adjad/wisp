@@ -39,8 +39,11 @@ CONCURRENCY = 6
 MAX_REDIRECTS = 3
 TEXT_CHARS = 400_000
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)"
-ACCEPT = "text/html,application/xhtml+xml;q=0.9,text/plain;q=0.8"
-TYPES = ("text/html", "application/xhtml+xml", "text/plain")
+ACCEPT = "text/html,application/xhtml+xml;q=0.9,text/plain;q=0.8,application/pdf;q=0.7"
+TYPES = ("text/html", "application/xhtml+xml", "text/plain", "application/pdf")
+PDF = "application/pdf"
+PDF_MAX_BYTES = 15 * 1024 * 1024    # a public PDF (notes, a paper, a chapter)
+PDF_TEXT_S = 30.0                     # its text is read in a sandboxed child process
 
 MESSAGES = {
     "bad_url": "Wisp only reads public https links.",
@@ -201,7 +204,9 @@ async def _one_hop(url: str) -> tuple[httpx.Response | None, bytes, str]:
     _QUIET.set(True)      # this task's context only (fetch_article runs in its own task)
     host, url = check_url(url)
     address = await resolve(host)
-    headers = {"Host": host, "User-Agent": USER_AGENT, "Accept": ACCEPT, "Accept-Language": "en"}
+    # identity: a compressed body would be inflated before the size cap counts it.
+    headers = {"Host": host, "User-Agent": USER_AGENT, "Accept": ACCEPT, "Accept-Language": "en",
+               "Accept-Encoding": "identity"}
     async with httpx.AsyncClient(transport=_transport, trust_env=False, follow_redirects=False,
                                  timeout=httpx.Timeout(ITEM_S, connect=10.0)) as client:
         request = client.build_request("GET", _pinned(url, address), headers=headers,
@@ -219,14 +224,15 @@ async def _one_hop(url: str) -> tuple[httpx.Response | None, bytes, str]:
             media = (response.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
             if media not in TYPES:
                 raise FetchError("not_text")
+            cap = PDF_MAX_BYTES if media == PDF else MAX_BYTES
             declared = response.headers.get("content-length")
-            if declared and declared.isdigit() and int(declared) > MAX_BYTES:
+            if declared and declared.isdigit() and int(declared) > cap:
                 raise FetchError("too_large")
             parts: list[bytes] = []
             size = 0
             async for chunk in response.aiter_bytes():
                 size += len(chunk)
-                if size > MAX_BYTES:
+                if size > cap:
                     raise FetchError("too_large")
                 parts.append(chunk)
             return response, b"".join(parts), ""
@@ -248,6 +254,10 @@ async def _fetch(url: str) -> dict:
             url = location
             continue
         media = (response.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+        if media == PDF:
+            if not body.startswith(b"%PDF-"):
+                raise FetchError("not_text")
+            return {"url": url, "title": "", "text": await pdf_text(body), "pdf": True}
         text = _decode(body, response)
         if media == "text/plain":
             title, text = "", text.strip()
@@ -258,6 +268,20 @@ async def _fetch(url: str) -> dict:
             raise FetchError("empty")
         return {"url": url, "title": title, "text": text}
     raise FetchError("too_many_redirects")
+
+
+async def pdf_text(data: bytes) -> str:
+    """A downloaded PDF's text, extracted in service/documents' child process (killed at its
+    deadline or memory limit), never in the service. The text is untrusted data."""
+    from service import documents
+    try:
+        text, _ = await documents.extract_async("download.pdf", data, timeout=PDF_TEXT_S, large=True)
+    except (ValueError, TimeoutError, asyncio.TimeoutError):
+        raise FetchError("empty") from None
+    text = text[:TEXT_CHARS]
+    if not text.strip():
+        raise FetchError("empty")
+    return text
 
 
 def _decode(body: bytes, response: httpx.Response) -> str:
