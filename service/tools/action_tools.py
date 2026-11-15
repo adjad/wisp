@@ -1673,8 +1673,15 @@ async def send_message(to: str, text: str, confirmed_self_send: bool = False,
         return _not_sent(f"(the text to {display} was NOT sent: this Mac can't send SMS texts. "
                          f"{TEXT_FORWARDING_HINT})")
     if delivery == "failed":
+        # Error 22 on an iMessage is Messages failing to reach that handle by
+        # iMessage (seen 2026-11-15 for a person whose conversation runs on
+        # RCS). Messages' own "Send as Text Message" on the failed bubble is
+        # the next step; nothing here resends it.
+        by_imessage = not by_sms and res.get("delivery_service") == "iMessage"
         return (f"The text to {display} was not delivered: Messages shows it as Not Delivered."
                 + (f" {TEXT_FORWARDING_HINT}" if by_sms else "")
+                + (" Messages couldn't reach them by iMessage. In Messages, Control-click the "
+                   "failed message and choose Send as Text Message." if by_imessage else "")
                 + " Check Messages before trying again; do not retry automatically.")
     if delivery == "delivered":
         return f"Message sent to {display}. Messages shows it as delivered."

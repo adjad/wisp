@@ -808,6 +808,9 @@ async def test_a_text_messages_marked_not_delivered_is_never_a_sent_receipt(cont
     result = await action_tools.send_message("+15550109999", "Hi")
     assert result.startswith("The text to +15550109999 was not delivered: Messages shows it as Not Delivered.")
     assert ("Text Message Forwarding" in result) is hint
+    # Not reached by iMessage: the plain reason and Messages' own next step.
+    assert ("couldn't reach them by iMessage" in result) is (not hint)
+    assert ("Send as Text Message" in result) is (not hint)
     # Every reader of a receipt takes it as a failure: the draft-card send and
     # the proactive card go by this prefix, the loop by the classifier.
     assert not result.startswith("Message sent to ")
