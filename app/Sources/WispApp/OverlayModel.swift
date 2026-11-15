@@ -483,8 +483,32 @@ final class OverlayModel: ObservableObject {
     // dialog it opened is up, there is an edit the person hasn't finished
     // (typed input, a message draft being edited, a reply being written in the
     // Brief), the setup card is open, or an answer is being written (the person
-    // is waiting for it, and said so).
-    var holdsOpen: Bool { answerInFlight || holdsOpenBesidesAnswer }
+    // is waiting for it, and said so), or a Study job is running.
+    var holdsOpen: Bool { jobHoldsOpen || holdsOpenBesidesAnswer }
+
+    /// A job the person started is running, on any tab: an Ask turn, a Study
+    /// read of school pages, a material being made, or a Find materials walk
+    /// or add. The automatic close waits for it, up to the job's own limit
+    /// (AppDelegate.holdForAnswer, holdForStudyJob); the person's own close
+    /// never does, and never stops the job.
+    var jobHoldsOpen: Bool { answerInFlight || studyJobRunning() }
+
+    /// Whether a Study job runs. Replaceable so the motion checks can run one
+    /// without the service or a browser.
+    var studyJobRunning: @MainActor () -> Bool = { OverlayModel.studyJobRunningNow() }
+
+    static func studyJobRunningNow() -> Bool {
+        if StudyFindRun.anyRunning { return true }
+        return studyBusyHolds(StudyModel.shared.busy)
+    }
+
+    /// A read or a new material is waited on; a load or a save is not.
+    nonisolated static func studyBusyHolds(_ busy: StudyBusy?) -> Bool {
+        switch busy {
+        case .reading?, .making?: return true
+        case .loading?, .saving?, nil: return false
+        }
+    }
 
     /// Everything in `holdsOpen` but an Ask turn in flight: what the person is
     /// doing, which no time limit lets the notch close over.
@@ -498,16 +522,12 @@ final class OverlayModel: ObservableObject {
             || setupCard == .open || report.isOpen || (tab == .day && todayReport?.isOpen == true)
     }
 
-    /// The Study tab holds the panel while a field has focus or while the
-    /// person waits on a read or a new material; a load or a save does not.
+    /// The Study tab holds the panel while a field has focus or while Find
+    /// materials' found card waits for Add or Done, like any edit in progress.
+    /// A job running holds on every tab (jobHoldsOpen).
     private var studyHoldsOpen: Bool {
         guard tab == .study else { return false }
-        let study = StudyModel.shared
-        if study.editing { return true }
-        switch study.busy {
-        case .reading?, .making?: return true
-        case .loading?, .saving?, nil: return false
-        }
+        return StudyModel.shared.editing || StudyFindRun.anyAwaitingChoice
     }
 
     /// Today's report, owned by the shared TodayModel. While it is open on the

@@ -113,6 +113,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// timeoutInterval for /agent); no answer worth waiting for runs longer.
     private var answerHoldCeiling: TimeInterval = 600
     private var answerEnded: AnyCancellable?
+    /// A close that a Study job held off (a read of school pages, a material being
+    /// made, a Find materials walk or add: OverlayModel.studyJobRunning). Once the
+    /// job ends the panel stays `studyResultShownFor` so its result is seen.
+    private var collapseHeldForStudyJob = false
+    private var studyResultShownFor: TimeInterval = 6
+    /// When the close a Study job holds first came due; the job holds it for at
+    /// most its own limit (studyJobCeiling). Cleared when the job ends.
+    private var studyJobHeldSince: Date?
+    /// Replaces studyJobCeiling in the motion checks.
+    private var studyJobCeilingOverride: TimeInterval?
+    private var studyJobEnded: AnyCancellable?
     // Whether the pointer is over the expanded panel. Replaceable so the motion
     // checks, which host no real panel, can exercise both answers.
     private var pointerInPanel: () -> Bool = { false }
@@ -1483,6 +1494,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // again during the same answer, its hold starts over.
         collapseHeldForAnswer = false
         answerHeldSince = nil
+        collapseHeldForStudyJob = false
+        studyJobHeldSince = nil
         requestPresentation(.bar)
     }
 
@@ -1653,7 +1666,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // message draft being edited) or an answer being written out from
             // under the user.
             // Past the answer's ceiling only the person's own holds remain.
-            if self.holdForAnswer() { return }
+            // Both are asked, so each records its own hold.
+            let answer = self.holdForAnswer()
+            let job = self.holdForStudyJob()
+            if answer || job { return }
             if self.model.holdsOpenBesidesAnswer { return }
             // A menu opened from the panel (the chat switcher) runs outside it,
             // so the pointer leaving the panel is not the person leaving. Hold
@@ -1677,11 +1693,88 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let work = DispatchWorkItem { [weak self] in
             guard let self, !self.model.collapsed, !self.menuTracking else { return }
             if self.holdForAnswer() { return }
+            if self.holdForStudyJob() { return }
             if self.model.holdsOpenBesidesAnswer { return }
             self.collapse()
         }
         pendingCollapse = work
         DispatchQueue.main.asyncAfter(deadline: .now() + answerReadDelay, execute: work)
+    }
+
+    /// The Study job a close was held for has ended: the panel stays a moment so
+    /// its result (or its error) is seen, then the usual rule applies again. A
+    /// found card waiting for Add or Done holds the Study tab like any edit.
+    private func studyJobSettled() {
+        guard collapseHeldForStudyJob else { return }
+        collapseHeldForStudyJob = false
+        studyJobHeldSince = nil
+        guard !model.collapsed, !pointerInPanel(), !collapseHeldForAnswer else { return }
+        pendingCollapse?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, !self.model.collapsed, !self.menuTracking else { return }
+            let answer = self.holdForAnswer()
+            let job = self.holdForStudyJob()
+            if answer || job { return }
+            if self.model.holdsOpenBesidesAnswer { return }
+            self.collapse()
+        }
+        pendingCollapse = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + studyResultShownFor, execute: work)
+    }
+
+    /// Watches for the end of a Study job a close is waiting on: StudyModel's busy
+    /// state and Find materials' phase (StudyFindRun.phaseChanged), read after
+    /// the change is stored.
+    private func watchForStudyJobEnding() {
+        guard studyJobEnded == nil else { return }
+        let busy = StudyModel.shared.$busy.map { _ in () }
+        let walk = NotificationCenter.default.publisher(for: StudyFindRun.phaseChanged).map { _ in () }
+        // Compared with the state when the watch began, not with the first value
+        // seen, which can arrive after a job already ended.
+        var wasRunning = model.studyJobRunning()
+        studyJobEnded = busy.merge(with: walk)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    let running = self.model.studyJobRunning()
+                    guard running != wasRunning else { return }
+                    wasRunning = running
+                    if running { self.studyJobHeldSince = nil } else { self.studyJobSettled() }
+                }
+            }
+    }
+
+    /// A Study job's own limit, so a hung one can't keep the notch over the
+    /// person's work: a walk's run limit plus its last resolve and add; a read
+    /// or a new material, its request deadline plus a minute for reading pages.
+    private var studyJobCeiling: TimeInterval {
+        if let studyJobCeilingOverride { return studyJobCeilingOverride }
+        if StudyFindRun.anyRunning {
+            return StudyFindRun.runSeconds + StudyFindRun.resolveTimeout + StudyFindRun.addTimeout
+        }
+        return StudyModel.makeTimeout + 60
+    }
+
+    /// Holds an automatic close while a Study job runs, on any tab, for at most
+    /// `studyJobCeiling` from when the first close came due. Only prevents the
+    /// close: nothing here activates the app or takes the keyboard, so the
+    /// browser tab a walk reads keeps its focus. True while it holds.
+    private func holdForStudyJob() -> Bool {
+        guard model.studyJobRunning() else { return false }
+        let since = studyJobHeldSince ?? Date()
+        let left = studyJobCeiling - Date().timeIntervalSince(since)
+        guard left > 0 else { return false }
+        if studyJobHeldSince == nil {
+            studyJobHeldSince = since
+            DispatchQueue.main.asyncAfter(deadline: .now() + left) { [weak self] in
+                guard let self, self.collapseHeldForStudyJob, self.studyJobHeldSince == since,
+                      !self.model.collapsed, !self.pointerInPanel() else { return }
+                self.scheduleCollapse()
+            }
+        }
+        collapseHeldForStudyJob = true
+        return true
     }
 
     /// Watches for the end of the answer a close is waiting on. It follows the
@@ -1956,6 +2049,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // expands; entering the open panel cancels a pending collapse; leaving
         // the open panel arms the 2s grace timer so it retreats into the notch.
         watchForAnswerEnding()
+        watchForStudyJobEnding()
         panel?.onMouseEnter = { [weak self] in self?.pointerEnteredPanel() }
         panel?.onMouseExit = { [weak self] in
             guard let self, !self.model.collapsed else { return }
@@ -2960,6 +3054,78 @@ extension AppDelegate {
     /// A reply written in the Brief holds the panel open until it is sent or
     /// closed, and the notch tucking away or a tab change keeps the same reply:
     /// its text, its one draft request and the result of its one send.
+    /// A Study job (a read, a material being made, a Find materials walk) holds the
+    /// automatic close on any tab, up to its own limit; the person's close still
+    /// closes and leaves it running; after it ends the panel stays a moment.
+    static func checkStudyJobHoldsOpen() async {
+        final class Job { var running = false }
+        func opened(tab: NotchTab, _ job: Job) -> AppDelegate {
+            let delegate = AppDelegate()
+            delegate.presentation.request(.chat)
+            let opening = delegate.presentation.next()!
+            delegate.model.collapsed = false
+            delegate.finishPresentation(opening)
+            delegate.model.tab = tab
+            delegate.model.studyJobRunning = { job.running }
+            return delegate
+        }
+        precondition(OverlayModel.studyBusyHolds(.reading) && OverlayModel.studyBusyHolds(.making(.quiz)),
+                     "A read and a new material are jobs the person waits on")
+        precondition(!OverlayModel.studyBusyHolds(.loading) && !OverlayModel.studyBusyHolds(.saving)
+                     && !OverlayModel.studyBusyHolds(nil), "A load or a save is not")
+        let idleJob = Job()
+        let idle = opened(tab: .study, idleJob)
+        precondition(!idle.model.holdsOpen && !idle.model.jobHoldsOpen, "Control: no job, no hold")
+        let job = Job()
+        job.running = true
+        let onStudy = opened(tab: .study, job)
+        let onDay = opened(tab: .day, job)
+        let closing = opened(tab: .ask, job)
+        let settling = opened(tab: .brief, job)
+        let closedInGrace = opened(tab: .study, job)
+        let hungJob = Job()
+        hungJob.running = true
+        let hung = opened(tab: .day, hungJob)
+        hung.studyJobCeilingOverride = 0.3
+        precondition(onDay.model.holdsOpen && onDay.model.jobHoldsOpen && !onDay.model.holdsOpenBesidesAnswer,
+                     "A job holds the panel on any tab, as a job with a limit")
+        for delegate in [idle, onStudy, onDay, closing, settling, closedInGrace, hung] {
+            delegate.scheduleCollapse()  // what the pointer leaving or focus moving away calls
+        }
+        try? await Task.sleep(for: .seconds(autoCollapseDelay + 0.5))
+        precondition(idle.presentation.desired == .bar, "Control: an idle panel auto-collapses")
+        for (delegate, what) in [(onStudy, "on the Study tab"), (onDay, "on another tab"), (hung, "inside its limit")] {
+            precondition(delegate.presentation.desired == .chat && delegate.collapseHeldForStudyJob,
+                         "A Study job holds the automatic close \(what)")
+        }
+        // The person's own close wins at once and leaves the job running.
+        closing.collapse()
+        precondition(closing.presentation.desired == .bar && job.running,
+                     "The close button, Esc and the shortcut close during a job, which keeps running")
+        precondition(!closing.collapseHeldForStudyJob && closing.studyJobHeldSince == nil,
+                     "A close lets the job's hold go, so opening again starts it over")
+        // The job ends: a moment to see the result, then the usual close.
+        for delegate in [settling, closedInGrace] {
+            delegate.studyResultShownFor = 0.4
+            delegate.watchForStudyJobEnding()
+        }
+        job.running = false
+        NotificationCenter.default.post(name: StudyFindRun.phaseChanged, object: nil)
+        try? await Task.sleep(for: .seconds(0.15))
+        precondition(settling.presentation.desired == .chat && !settling.collapseHeldForStudyJob,
+                     "A finished job's result stays up for a moment")
+        closedInGrace.collapse()
+        precondition(closedInGrace.presentation.desired == .bar, "A close during the grace period is honoured")
+        try? await Task.sleep(for: .seconds(0.5))
+        precondition(settling.presentation.desired == .bar, "After the grace period the usual rule closes it")
+        precondition(closedInGrace.presentation.desired == .bar, "The grace timer doesn't reopen a closed panel")
+        // A job that never ends holds only up to its limit.
+        try? await Task.sleep(for: .seconds(autoCollapseDelay))
+        precondition(hung.presentation.desired == .bar && hungJob.running,
+                     "A hung job holds the notch open only up to its own limit")
+        print("PASS: AppDelegate Study jobs hold the automatic close on any tab, with a limit and a grace period")
+    }
+
     static func checkBriefReplyHoldsAndSurvives() async {
         final class Calls {
             var draft = 0
