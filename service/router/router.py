@@ -4943,6 +4943,10 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
     # Whatever the message is supposed to CONTAIN, when it has to be fetched
     # first — see _PAYLOAD_TOOLS for the turn that died with no way to get it.
     subset += _stock_payload_sources(t)
+    # "summarise the class notes on pointers": the student's class notes may be Apple Notes
+    # or the course's own slides, so the slide search is offered beside the notes tools.
+    if _SCHOOL_CLASS_RE.search(t) and "study_slides" not in subset:
+        subset.append("study_slides")
     for matches, payload in _PAYLOAD_TOOLS:
         if matches(t):
             subset += payload
