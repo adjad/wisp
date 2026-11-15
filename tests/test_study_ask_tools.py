@@ -218,3 +218,37 @@ def test_bad_kind_is_refused_by_the_schema_before_running():
     tool = REGISTRY["study_make"]
     assert registry._validate_args(tool, {"kind": "essay"})
     assert registry._validate_args(tool, {"kind": "quiz", "pages": [{"source_id": "s", "page": 2}]}) is None
+
+
+# --- routing: a student's "class" is not a programming class ---------------------------
+
+import asyncio as _asyncio
+
+import pytest as _pytest
+
+
+def _route(text):
+    import service.tools  # noqa: F401  (registers every tool)
+    from service.router.router import route
+    d = _asyncio.run(route(text))
+    return d, sorted(set(d.tool_subset or []) | {n for n, _ in d.direct_calls})
+
+
+@_pytest.mark.parametrize("text", ["what do my class slides say about recursion", "my class slides about loops",
+                                   "show our class lectures on sorting", "what's in the class syllabus"])
+def test_class_slides_questions_reach_the_study_tools(text):
+    decision, offered = _route(text)
+    assert decision.reason != "code-related request" and "study_slides" in offered
+
+
+def test_class_notes_are_not_sent_to_the_coding_route():
+    decision, offered = _route("summarise the class notes on pointers")
+    assert decision.reason != "code-related request" and offered
+
+
+@_pytest.mark.parametrize("text", ["what is a class in Java", "fix the class in my code",
+                                   "explain this class definition: class Foo: pass",
+                                   "why does my class throw a NullPointerException"])
+def test_programming_classes_still_go_to_the_coding_route(text):
+    decision, _ = _route(text)
+    assert decision.reason == "code-related request"
