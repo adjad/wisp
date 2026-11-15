@@ -11,6 +11,8 @@ import asyncio
 import json
 
 import httpx
+import re
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -182,6 +184,11 @@ def setup(google, monkeypatch):     # noqa: F811
     labels = {"calls": [], "reply": None, "error": None}
 
     async def complete_json(system, user, **kw):
+        if kw.get("schema_name") == "link_check":       # the outside-link check: every link safe
+            labels.setdefault("checks", []).append(user)
+            if labels.get("check_reply") is not None:
+                return labels["check_reply"]
+            return {"items": [{"id": i, "safe": True, "reason": ""} for i in re.findall(r"Item (f_[0-9a-f]+):", user)]}
         labels["calls"].append({"system": system, "user": user, **kw})
         if labels["error"]:
             raise labels["error"]
@@ -674,3 +681,108 @@ def test_examples_and_plain_pages_are_not_caught():
 def test_an_external_url_module_item_is_not_opened():
     got = find.classify({"url": f"{HOST}/courses/4242/modules/items/8", "title": "Reading", "type": "ExternalUrl"}, C)
     assert (got["via"], got["reason"]) == ("none", "outside")
+
+
+# --- the outside-link check and PDFs --------------------------------------------------
+
+def _rivers(setup):
+    setup.web[("news.example.org", "/rivers")] = httpx.Response(
+        200, headers={"content-type": "text/html"}, text="<title>Rivers</title><p>Cities grew on rivers.</p>")
+
+
+def test_an_outside_link_the_model_calls_unsafe_is_not_fetched(setup):
+    _rivers(setup)
+    setup.labels["check_reply"] = {"items": [{"id": find.item_id("https://news.example.org/rivers"),
+                                              "safe": False, "reason": "it looks like a sign-in page"}]}
+    body = add(setup, [{"url": "https://news.example.org/rivers", "title": "Rivers", "kind": "article"}]).json()
+    assert body["added"] == []
+    assert body["failed"][0]["code"] == "not_safe" and "sign-in page" in body["failed"][0]["message"]
+
+
+def test_no_answer_from_the_model_means_nothing_is_fetched(setup):
+    _rivers(setup)
+    setup.labels["check_reply"] = {"items": []}
+    body = add(setup, [{"url": "https://news.example.org/rivers", "title": "Rivers", "kind": "article"}]).json()
+    assert body["added"] == [] and body["failed"][0]["message"] == find.NOT_CHECKED
+
+
+def test_a_failing_model_means_nothing_is_fetched(setup, monkeypatch):
+    _rivers(setup)
+
+    async def broken(*a, **kw):
+        raise connector.StudyConnectorError("missing")
+    monkeypatch.setattr(connector, "complete_json", broken)
+    body = add(setup, [{"url": "https://news.example.org/rivers", "title": "Rivers", "kind": "article"}]).json()
+    assert body["added"] == [] and body["failed"][0]["code"] == "not_safe"
+
+
+def test_the_check_sees_host_path_and_title_but_never_the_query(setup):
+    _rivers(setup)
+    add(setup, [{"url": "https://news.example.org/rivers?ref=abc123", "title": "Rivers", "kind": "article"}])
+    prompt = setup.labels["checks"][0]
+    assert "news.example.org/rivers" in prompt and "abc123" not in prompt and "Rivers" in prompt
+
+
+def test_one_time_token_links_are_refused_outright():
+    for url in ("https://news.example.org/a?token=xyz", "https://news.example.org/unsubscribe",
+                "https://news.example.org/x?session=1", "https://news.example.org/x?code=9",
+                "https://news.example.org/x?reset_key=1", "https://news.example.org/x?confirm=yes"):
+        assert find.classify({"url": url, "title": "Read"}, C)["via"] == "none"
+
+
+def test_a_public_pdf_link_is_a_pdf_read_in_the_child_process(setup, monkeypatch):
+    from service import documents
+    setup.web[("news.example.org", "/notes/week3.pdf")] = httpx.Response(
+        200, headers={"content-type": "application/pdf"}, content=b"%PDF-1.7 fake")
+    seen = {}
+
+    async def extract_async(name, data, *, timeout, large=False):
+        seen.update(name=name, data=data, large=large)
+        return "Week 3: rivers and cities.", False
+    monkeypatch.setattr(documents, "extract_async", extract_async)
+    item = find.resolve([{"url": "https://news.example.org/notes/week3.pdf", "title": "Week 3 notes"}],
+                        course=C, sources=[])[0]
+    assert (item["kind"], item["via"]) == ("pdf", "web")
+    body = add(setup, [{"url": item["url"], "title": "Week 3 notes", "kind": "pdf"}]).json()
+    assert body["failed"] == [] and body["added"][0]["kind"] == "pdf"
+    assert setup.store.source(body["added"][0]["id"])["text"] == "Week 3: rivers and cities."
+    assert seen["data"] == b"%PDF-1.7 fake" and seen["large"] is True
+
+
+def test_a_file_that_says_pdf_but_is_not_one_is_refused(setup, monkeypatch):
+    setup.web[("news.example.org", "/fake.pdf")] = httpx.Response(
+        200, headers={"content-type": "application/pdf"}, content=b"<html>hi</html>")
+    body = add(setup, [{"url": "https://news.example.org/fake.pdf", "title": "Notes", "kind": "pdf"}]).json()
+    assert body["added"] == [] and body["failed"][0]["code"] == "not_text"
+
+
+def test_an_untitled_link_never_sends_its_query_to_the_check(setup):
+    _rivers(setup)
+    add(setup, [{"url": "https://news.example.org/rivers?ref=abc123",
+                 "title": "https://news.example.org/rivers?ref=abc123", "kind": "article"}])
+    assert "abc123" not in setup.labels["checks"][0]
+
+
+def test_session_and_code_in_a_title_are_fine():
+    assert find.classify({"url": f"{HOST}/courses/4242/pages/s3", "title": "Session 3 readings"}, C)["via"] == "browser"
+    assert find.classify({"url": "https://news.example.org/code-of-conduct", "title": "Code of conduct"}, C)["via"] == "web"
+
+
+def test_an_older_article_item_for_a_pdf_address_still_adds(setup, monkeypatch):
+    from service import documents
+    setup.web[("news.example.org", "/r.pdf")] = httpx.Response(
+        200, headers={"content-type": "application/pdf"}, content=b"%PDF-1.4 x")
+
+    async def extract_async(name, data, *, timeout, large=False):
+        return "Reading text.", False
+    monkeypatch.setattr(documents, "extract_async", extract_async)
+    body = add(setup, [{"url": "https://news.example.org/r.pdf", "title": "Reading", "kind": "article"}]).json()
+    assert body["failed"] == [] and body["added"][0]["kind"] == "pdf"
+
+
+def test_an_untitled_link_is_saved_without_its_query(setup):
+    setup.web[("news.example.org", "/plain")] = httpx.Response(200, headers={"content-type": "text/plain"},
+                                                               text="Plain text.")
+    url = "https://news.example.org/plain?id=17"
+    body = add(setup, [{"url": url, "title": url, "kind": "article"}]).json()
+    assert body["added"][0]["title"] == "news.example.org/plain"
