@@ -135,9 +135,14 @@ struct OverlayView: View {
         #endif
     }
 
+    /// The panel's side insets: the page lays out at the panel's width less these.
+    static let sideInset: CGFloat = 22
+
     private var expandedPanel: some View {
         let page = model.page
         pageSlide.follow(page)
+        let surfaceWidth: CGFloat = layout.widened(briefIsWide).expandedWidth
+        let pageWidth: CGFloat = max(0, surfaceWidth - 2 * Self.sideInset)
         return VStack(alignment: .leading, spacing: 0) {
             header
                 .background(GeometryReader { geo in
@@ -148,10 +153,17 @@ struct OverlayView: View {
             // (a tab, quick settings, a permission page, a card) crossfades with
             // a short slide while the panel's height follows. The ZStack lets
             // the leaving page and the arriving one overlap rather than stack.
+            // Each page is laid out at the width it arrived at (PinnedWidth): a
+            // page leaving the wide Brief fades at its own width while the panel
+            // narrows over it, never re-laid out at the narrower one, and the
+            // arriving page is at its final width from its first frame. Both
+            // are clipped to the surface.
             ZStack(alignment: .topLeading) {
-                VStack(alignment: .leading, spacing: 0) { pageBody }
-                    .id(page)
-                    .transition(.notchPage(pageSlide))
+                PinnedWidth(width: pageWidth) {
+                    VStack(alignment: .leading, spacing: 0) { pageBody }
+                }
+                .id(page)
+                .transition(.notchPage(pageSlide))
             }
         }
         .background(shortcuts)
@@ -159,14 +171,18 @@ struct OverlayView: View {
         // so its center is behind the camera housing — push the content
         // below it. A floating card just uses ordinary padding.
         .padding(EdgeInsets(top: layout.contentTopInset,
-                            leading: 22, bottom: SurfaceLayout.panelBottomPadding, trailing: 22))
+                            leading: Self.sideInset, bottom: SurfaceLayout.panelBottomPadding,
+                            trailing: Self.sideInset))
         // The panel's surface follows its content's height on the panel's
         // spring, whatever changed it: a page, a card or notice arriving, an
         // answer streaming in, the Brief's columns. The content lays out at
         // once (measured at its own height) and the surface glides to it,
         // clipping what is still below its edge, so nothing inside a page
-        // has to animate for the panel to. Width is never animated: the
-        // Brief re-laid out at every width in between took most of a second.
+        // has to animate for the panel to. The width moves on the same spring
+        // (below), but only the header and the surface follow it: every page
+        // keeps the width it was laid out at (PinnedWidth), so nothing is
+        // re-laid out at the widths in between (the Brief once was, and one
+        // frame took most of a second).
         .fixedSize(horizontal: false, vertical: true)
         .background(GeometryReader { geo in
             Color.clear
@@ -193,7 +209,11 @@ struct OverlayView: View {
         // Must match the width OverlayPanel sizes its window to — both widen
         // SurfaceLayout.expandedWidth from the same state (AppDelegate's layout
         // provider asks NotchBriefView.showsWide), so they cannot disagree.
-        .frame(width: layout.widened(briefIsWide).expandedWidth)
+        .frame(width: surfaceWidth)
+        // A change of width (into or out of the wide Brief, or its toggle)
+        // glides on the panel's spring; Reduce Motion: at once. The window
+        // already covers both widths (OverlayPanel.resizeToFit).
+        .animation(Theme.Motion.panel(reduceMotion: reduceMotion), value: surfaceWidth)
         .background(Theme.surface)
         .clipShape(layout.panelShape)
         .shadow(color: .black.opacity(0.55), radius: 20, y: 10)
@@ -208,6 +228,12 @@ struct OverlayView: View {
         // header's buttons. The window grows ahead of it and shrinks after it
         // (OverlayPanel.resizeToFit). Reduce Motion: an instant swap.
         .animation(Theme.Motion.panel(reduceMotion: reduceMotion), value: page)
+        // The stage: as wide as the panel can get on this display, with the
+        // panel centred in it. The window centres the host and clips it, so a
+        // panel narrowing inside the still-wide window (it shrinks after the
+        // settle) stays centred while its width glides, instead of the host
+        // snapping to the new width on the first frame.
+        .frame(width: max(surfaceWidth, layout.widened(layout.canWiden).expandedWidth))
     }
 
     /// Moves the panel's surface to the content's measured height: on the
@@ -1568,6 +1594,26 @@ private struct NotchPageShift: ViewModifier {
         content
             .offset(x: CGFloat(steps) * Theme.Motion.slideStep)
             .opacity(away ? 0 : 1)
+    }
+}
+
+/// Lays its content out at a fixed width whatever width it is offered, from
+/// the leading edge, and takes the offered width itself. The panel's page sits
+/// in one: a page keeps the width it was laid out at while the panel's width
+/// changes around it (a leaving page keeps its last one), so the panel can
+/// narrow or widen on its spring without re-laying out a page at every width
+/// in between. What is wider than the panel is clipped by the surface.
+struct PinnedWidth: Layout {
+    let width: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let child: CGSize = subviews.first?.sizeThatFits(ProposedViewSize(width: width, height: proposal.height)) ?? .zero
+        return CGSize(width: proposal.width ?? width, height: child.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, anchor: .topLeading,
+                              proposal: ProposedViewSize(width: width, height: bounds.height))
     }
 }
 

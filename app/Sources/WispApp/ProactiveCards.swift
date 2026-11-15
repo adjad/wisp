@@ -362,14 +362,14 @@ struct ProactiveBriefSection: View {
     /// A row's text starts here: the check circle, the source icon and their gaps.
     private static let rowInset: CGFloat = 51
     @State private var hoveredThread: String? = nil
-    /// The zones' measured width; until it is measured, the panel's.
-    @State private var zonesWidth: CGFloat? = nil
-
-    /// Whether the zones sit side by side (BriefZones decides the same way
-    /// from the same width), which sets how many rows the list shows.
+    /// Whether the zones sit side by side: from the width the panel lays the
+    /// Brief out at (its page width, OverlayView), decided in the same update
+    /// as the width changes. A width measured after layout lagged a pass, so
+    /// turning two columns off first drew the stacked zones with five
+    /// two-line rows, then shrank to three.
     private var sideBySide: Bool {
-        let guess: CGFloat = wide ? SurfaceLayout.wideExpandedWidth - 44 : SurfaceLayout.maxExpandedWidth - 44
-        return BriefPlate.sideBySide(width: zonesWidth ?? guess, textScale: Theme.textScale)
+        let panel: CGFloat = DisplayGeometry.shared.layout.widened(wide).expandedWidth
+        return BriefPlate.sideBySide(width: panel - 2 * OverlayView.sideInset, textScale: Theme.textScale)
     }
 
     private var chosen: String? {
@@ -402,17 +402,11 @@ struct ProactiveBriefSection: View {
         VStack(alignment: .leading, spacing: 12) {
             if !unread.isEmpty { accessRows(unread) }
             zonePair(shown)
-                .background(GeometryReader { geo in
-                    Color.clear
-                        .onAppear { zonesWidth = geo.size.width }
-                        .onChange(of: geo.size.width) { _, width in zonesWidth = width }
-                })
         }
     }
 
     private func zonePair(_ shown: ProactiveState) -> some View {
-        BriefZones(sideBySideFrom: BriefPlate.sideBySideWidth * max(Theme.textScale, 1),
-                   gap: Self.zoneGap, stackGap: Self.stackGap) {
+        BriefZones(sideBySide: sideBySide, gap: Self.zoneGap, stackGap: Self.stackGap) {
             needsYouZone(shown)
             Rectangle().fill(Theme.hairline).accessibilityHidden(true)
             plateZone(shown)
@@ -1460,23 +1454,20 @@ struct ProactiveBriefSection: View {
 // MARK: - The Brief's two zones
 
 /// Lays out the Brief's zones (left zone, a hairline, right zone) side by
-/// side from `sideBySideFrom` of width, each half as wide and the hairline
-/// between them as tall as the taller zone; narrower, stacked in that order
-/// with the hairline across. One layout for every width, measured in the
-/// same pass as everything else.
+/// side, each half as wide and the hairline between them as tall as the
+/// taller zone, or stacked in that order with the hairline across. Which one
+/// is BriefPlate.sideBySide's call, made once for the Brief's width.
 struct BriefZones: Layout {
-    let sideBySideFrom: CGFloat
+    let sideBySide: Bool
     var gap: CGFloat = 28
     var stackGap: CGFloat = 18
 
     private func columnWidth(_ width: CGFloat) -> CGFloat { max(0, (width - gap) / 2) }
 
-    private func sideBySide(_ width: CGFloat) -> Bool { width >= sideBySideFrom }
-
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         guard subviews.count == 3 else { return .zero }
-        let width: CGFloat = proposal.width ?? sideBySideFrom
-        if sideBySide(width) {
+        let width: CGFloat = proposal.width ?? 0
+        if sideBySide {
             let column = ProposedViewSize(width: columnWidth(width), height: nil)
             let left = subviews[0].sizeThatFits(column).height
             let right = subviews[2].sizeThatFits(column).height
@@ -1491,7 +1482,7 @@ struct BriefZones: Layout {
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         guard subviews.count == 3 else { return }
         let width = bounds.width
-        if sideBySide(width) {
+        if sideBySide {
             let columnW = columnWidth(width)
             let column = ProposedViewSize(width: columnW, height: nil)
             subviews[0].place(at: bounds.origin, anchor: .topLeading, proposal: column)

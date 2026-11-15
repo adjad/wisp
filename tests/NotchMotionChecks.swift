@@ -50,6 +50,8 @@ struct MotionSample {
     var imageHeight: Double
     var cost: Double = 0   // seconds the capture itself took
     var band = false       // image is only the header band (thin samples)
+    var winW = 0.0         // window frame width, points
+    var surfaceW = -1.0    // width of the drawn surface across the header, points (-1: not read)
 }
 
 @MainActor
@@ -162,6 +164,35 @@ final class MotionRig {
     /// column down the middle is drawn, which is quick enough to sample
     /// every frame.
     func capture(full: Bool = true) -> MotionSample {
+        var sample = captureHeights(full: full)
+        sample.winW = Double(panel.frame.width)
+        sample.surfaceW = Self.surfaceWidth(sample)
+        return sample
+    }
+
+    /// The opaque surface's width along one row 40 pt below the top (inside
+    /// the header, under the top corners), read from the frame's alpha.
+    static func surfaceWidth(_ s: MotionSample) -> Double {
+        guard let image = s.image, image.width > 8, let space = CGColorSpace(name: CGColorSpace.sRGB) else { return -1 }
+        let w = image.width, h = image.height
+        let y = min(h - 1, Int(40 * s.scale))
+        var data = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn: Bool = data.withUnsafeMutableBytes { buffer in
+            guard let ctx = CGContext(data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                      space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        guard drawn else { return -1 }
+        var lo = -1, hi = -1
+        for x in 0..<w where data[(y * w + x) * 4 + 3] > 230 {
+            if lo < 0 { lo = x }
+            hi = x
+        }
+        return lo < 0 ? 0 : Double(hi - lo + 1) / s.scale
+    }
+
+    func captureHeights(full: Bool) -> MotionSample {
         let win = Double(panel.frame.height)
         let bounds = host.bounds
         let h = min(Double(bounds.height), win + 120)
@@ -310,6 +341,16 @@ enum Harness {
             try await run("meet-open-notes") { meet.qaShow(.notes) }
             try await run("meet-close-notes") { meet.qaShow(.earlier) }
             try await run("meet-to-ask") { m.tab = .ask }
+            // The normal-width Brief out to every tab and back: one motion each,
+            // the height on one spring, the arriving page at its size at once.
+            try await run("narrow-brief-to-ask", prepare: { m.tab = .brief }) { m.tab = .ask }
+            try await run("ask-to-narrow-brief") { m.tab = .brief }
+            try await run("narrow-brief-to-day") { m.tab = .day }
+            try await run("day-to-narrow-brief") { m.tab = .brief }
+            try await run("narrow-brief-to-meet") { m.tab = .meet }
+            try await run("meet-to-narrow-brief") { m.tab = .brief }
+            try await run("narrow-brief-to-study") { m.tab = .study }
+            try await run("study-to-narrow-brief") { m.tab = .brief }
             // The Brief in two columns: the panel widens to its wide layout
             // (840 pt where the display allows), and tabs switch out of it.
             let wide = { (on: Bool) in
@@ -320,6 +361,15 @@ enum Harness {
                 try await run("brief-wide-on", prepare: { m.tab = .brief }) { wide(true) }
                 try await run("wide-brief-to-day") { m.tab = .day }
                 try await run("day-to-wide-brief") { m.tab = .brief }
+                // Out of the wide Brief to each narrow tab and back: the panel
+                // narrows (and widens) on the page's spring, the leaving page
+                // keeps the width it was laid out at, the arriving one has its own.
+                try await run("wide-brief-to-ask") { m.tab = .ask }
+                try await run("ask-to-wide-brief") { m.tab = .brief }
+                try await run("wide-brief-to-study") { m.tab = .study }
+                try await run("study-to-wide-brief") { m.tab = .brief }
+                try await run("wide-brief-to-meet") { m.tab = .meet }
+                try await run("meet-to-wide-brief") { m.tab = .brief }
                 try await run("brief-wide-off") { wide(false) }
             } else {
                 report += "SKIP wide Brief: this display has no room for the wide layout\n"
@@ -517,6 +567,7 @@ enum Harness {
             if abs(final.win - final.vis) > 2 { problems.append("(c) window \(f(final.win)) != final content \(f(final.vis))") }
         }
         if total <= 20 { visibleTotal += " (small: snap check skipped)" }
+        let widthLine = widthCheck(before: before, samples: samples, final: final, reduce: reduce, problems: &problems)
 
         // The selected-tab capsule: one solid white shape that moves. Two
         // capsules crossfading show as a wide band of half-bright pixels.
@@ -571,8 +622,10 @@ enum Harness {
         var lines = ["\(name) [\(reduce ? "reduce-motion" : "motion")] change \(f(before.vis)) -> \(f(final.vis)) = \(visibleTotal) pt, max step \(f(maxStep)), \(midFlight) sample(s) mid-flight, first sample \(firstSample) ms, peak \(total > 0 ? Int(fastest / total * 100) : 0)%/frame@30, widest gap \(Int(widestGap * 1000)) ms (\(Int(widestBusy * 1000)) ms not capturing), max overshoot past window \(f(max(maxClip, 0)))"]
         lines.append("  before: win \(f(before.win)) content \(f(before.vis))")
         lines.append(capsuleLine)
+        lines.append(widthLine)
         for s in samples {
-            lines.append(String(format: "  t=%4d ms  capture %3d ms  win %7.1f  content %7.1f%@", Int(s.t * 1000), Int(s.cost * 1000), s.win, s.vis,
+            lines.append(String(format: "  t=%4d ms  capture %3d ms  win %7.1f x %5.1f  surface w %6.1f  content %7.1f%@",
+                                Int(s.t * 1000), Int(s.cost * 1000), s.win, s.winW, s.surfaceW, s.vis,
                                 s.vis > s.win + 1 ? "  CLIPPED" : ""))
         }
         lines.append("  final: win \(f(final.win)) content \(f(final.vis))")
@@ -590,6 +643,32 @@ enum Harness {
         let file = out.appendingPathComponent(reduce ? "\(name)-reduce-motion.png" : "\(name).png")
         try contactSheet(title: "\(name)  \(reduce ? "(reduce motion)" : "(motion)")", frames: picks, to: file)
         return TransitionResult(name: name, ok: problems.isEmpty, lines: lines)
+    }
+
+    /// The panel's width through a change: the window's and the drawn
+    /// surface's. (f) With motion, a width change of more than 20 pt must be
+    /// caught part-way (one move, not a snap); with Reduce Motion, the first
+    /// sample is already at the final width.
+    static func widthCheck(before: MotionSample, samples: [MotionSample], final: MotionSample, reduce: Bool,
+                           problems: inout [String]) -> String {
+        guard before.surfaceW > 0, final.surfaceW > 0 else { return "  width: not read" }
+        let total = abs(final.surfaceW - before.surfaceW)
+        let read = samples.filter { $0.surfaceW > 0 }
+        var mid = 0
+        for s in read where total > 0 {
+            let share = abs(s.surfaceW - before.surfaceW) / total
+            if share > 0.1, share < 0.9 { mid += 1 }
+        }
+        var line = "  width: window \(f(before.winW)) -> \(f(final.winW)), surface \(f(before.surfaceW)) -> \(f(final.surfaceW))"
+        line += ", \(mid) sample(s) mid-flight"
+        if reduce {
+            if let first = read.first, abs(first.surfaceW - final.surfaceW) > 1.5 {
+                problems.append("(f) first sample surface width \(f(first.surfaceW)) is not at final \(f(final.surfaceW))")
+            }
+        } else if total > 20, mid == 0 {
+            problems.append("(f) width snap: no sample caught the surface between 10% and 90% of its \(f(total)) pt width change")
+        }
+        return line
     }
 
     /// A frame as top-down RGBA8 rows, composited over black like the panel.
@@ -712,7 +791,7 @@ enum Harness {
             let col = i % columns, row = i / columns
             let x = pad + CGFloat(col) * (w + pad)
             let top = CGFloat(height) - head - CGFloat(row) * (h + label + pad)
-            ("\(name)   window \(f(s.win))  content \(f(s.vis))" as NSString)
+            ("\(name)   window \(f(s.winW))x\(f(s.win))  surface w \(f(s.surfaceW))  content \(f(s.vis))" as NSString)
                 .draw(at: NSPoint(x: x, y: top - 16), withAttributes: small)
             let imageTop = top - label
             guard let cg = s.image else { continue }
