@@ -33,8 +33,10 @@ enum NotchQADriver {
         let midnight = calendar.startOfDay(for: Date())
         let now = midnight.addingTimeInterval(10 * 3600 + 32 * 60)
         let dayStart = midnight.timeIntervalSince1970
-        func dayModel(_ proactive: ProactiveFixture, study: Bool = false) -> TodayModel {
-            TodayModel(now: { now }, timeZoneProvider: { zone }, transport: { request in
+        func dayModel(_ proactive: ProactiveFixture, study: Bool = false, at clock: Date? = nil,
+                      calendarFacts: Bool = false) -> TodayModel {
+            let moment = clock ?? now
+            return TodayModel(now: { moment }, timeZoneProvider: { zone }, transport: { request in
                 let components = request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: true) }
                 let ok = { (body: String) in
                     (Data(body.utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
@@ -50,7 +52,7 @@ enum NotchQADriver {
                 }
                 let body = components?.path == "/assistant/upcoming" ? try fixtureUpcoming(dayStart: dayStart)
                     : try fixturePlan(day: components?.queryItems?.first { $0.name == "day" }?.value ?? "", dayStart: dayStart,
-                                      proactive: proactive, study: study)
+                                      proactive: proactive, study: study, calendarFacts: calendarFacts)
                 return (body, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
             })
         }
@@ -62,6 +64,11 @@ enum NotchQADriver {
         let schoolDay = dayModel(.ready, study: true)
         // The Brief from before the proactive engine, with the same school work.
         let schoolLegacy = dayModel(.none, study: true)
+        // The Day's week row and Next card (C3): the school day with its Calendar
+        // events described (Open in Calendar, Move…), and the same day at 9:45 PM
+        // with nothing left on the clock.
+        let c3Day = dayModel(.ready, study: true, calendarFacts: true)
+        let c3Late = dayModel(.ready, study: true, at: midnight.addingTimeInterval(21 * 3600 + 45 * 60), calendarFacts: true)
         // First-day states: a new user's empty day, the same day with Calendar,
         // Reminders, Mail and Messages unreadable, and the service still starting.
         func variantModel(_ variant: DayVariant) -> TodayModel {
@@ -163,13 +170,20 @@ enum NotchQADriver {
             ("day-wide", .day, { AnyView(NotchDayView(model: model, today: today, wide: true)) }),
             ("day-wide-study", .day, { AnyView(NotchDayView(model: model, today: schoolDay, wide: true)) }),
             ("day-wide-empty", .day, { AnyView(NotchDayView(model: model, today: blockedProactive, wide: true)) }),
+            ("day-c3-wide", .day, { AnyView(NotchDayView(model: model, today: c3Day, wide: true)) }),
+            ("day-c3", .day, { AnyView(NotchDayView(model: model, today: c3Day)) }),
+            ("day-c3-empty", .day, { AnyView(NotchDayView(model: model, today: c3Late)) }),
+            ("day-c3-empty-wide", .day, { AnyView(NotchDayView(model: model, today: c3Late, wide: true)) }),
+            // Calendar unreadable: no load is known for any day, so all seven show their date alone.
+            ("day-c3-noweek", .day, { AnyView(NotchDayView(model: model, today: blocked)) }),
             ("brief-legacy-study", .brief, { AnyView(NotchBriefView(model: model, today: schoolLegacy, open: nil)) }),
         ] + NotchQASetup.scenes() + panelScenes(model: model, today: today, state: state)
             + studyScenes(model: model)
         for scene in scenes {
             let name = scene.name
             // The Brief's and the Day's two columns render at the wide panel's width.
-            let sceneWidth = name.hasPrefix("brief-wide") || name.hasPrefix("day-wide") ? SurfaceLayout.wideExpandedWidth : width
+            let sceneWidth = name.hasPrefix("brief-wide") || name.hasPrefix("day-wide") || name.hasSuffix("-wide")
+                ? SurfaceLayout.wideExpandedWidth : width
             let window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: sceneWidth, height: 760),
                                   styleMask: [.borderless], backing: .buffered, defer: false)
             let content = VStack(alignment: .leading, spacing: 0) {
@@ -199,7 +213,7 @@ enum NotchQADriver {
             }
             await starting.refresh()
             // The "-study" scenes' days load like the rest (they rendered "Starting Wisp…" before).
-            for school in [schoolDay, schoolLegacy] {
+            for school in [schoolDay, schoolLegacy, c3Day, c3Late] {
                 await school.refresh()
                 await school.refreshUpcoming()
                 await school.refreshStoredBrief()
@@ -214,7 +228,9 @@ enum NotchQADriver {
                 starting.currentPlan == nil && starting.error.isEmpty &&
                 attention.items.count == 1 && stale.asks.count == 2 &&
                 schoolDay.currentPlan?.study?.upcoming.isEmpty == false &&
-                schoolLegacy.currentPlan?.study?.upcoming.isEmpty == false
+                schoolLegacy.currentPlan?.study?.upcoming.isEmpty == false &&
+                c3Day.currentPlan?.displayBlocks.contains { $0.calendarEvent != nil } == true &&
+                c3Late.currentPlan != nil
             }
             while !populated() && Date() < deadline {
                 try? await Task.sleep(for: .milliseconds(20))
@@ -608,7 +624,7 @@ enum NotchQADriver {
     /// deadlines and SCHOOL summary (the "-study" scenes); without it the plan
     /// is exactly what it was before Study.
     static func fixturePlan(day: String, dayStart: Double, proactive: ProactiveFixture = .none,
-                            study withStudy: Bool = false) throws -> Data {
+                            study withStudy: Bool = false, calendarFacts: Bool = false) throws -> Data {
         func at(_ h: Double) -> Double { dayStart + h * 3600 }
         func block(_ id: String, _ title: String, _ start: Double, _ end: Double, _ kind: String,
                    task: String? = nil, pattern: String? = nil, evidence: String? = nil) -> [String: Any] {
@@ -623,7 +639,7 @@ enum NotchQADriver {
              "priority": 1, "reference": source + ":" + id, "suggested_minutes": 25, "needs_review": source != "reminders"]
                 .merging(extra) { $1 }
         }
-        let blocks = proactive == .none ? [
+        var blocks = proactive == .none ? [
             block("lunch", "Lunch with Sam", 11.5, 12.5, "calendar"),
             block("lecture", "CMP 140 lecture", 14, 15.25, "calendar"),
             block("club", "Startup club meeting", 18, 19, "calendar"),
@@ -634,6 +650,16 @@ enum NotchQADriver {
             block("club", "Startup club meeting", 18, 19, "calendar"),
             block("pa2-a", "Work on PA 2", 20, 21.5, "suggestion", evidence: "pa2"),
         ]
+        if calendarFacts {
+            // What the service adds to a synced Calendar event (checkin.annotate_calendar_blocks):
+            // the user's own events on a writable calendar, so the ⋯ menu offers Move.
+            blocks = blocks.map { block in
+                guard block["kind"] as? String == "calendar" else { return block }
+                return block.merging(["source_id": "qa-cal-\(block["id"] ?? "")", "all_day": false, "invitee_count": 0,
+                                      "organizer_is_user": true, "calendar_writable": true,
+                                      "cancel_blocked": "", "move_blocked": ""]) { $1 }
+            }
+        }
         var workspace: [String: Any] = [
             "attention": [
                 need("pa2", "reminders", "PA 2", due: 23.98),

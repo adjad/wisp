@@ -337,6 +337,24 @@ enum Harness {
             let meet = MeetingModel.shared
             try await run("brief-to-meet", prepare: { meet.qaShow(.earlier) }) { m.tab = .meet }
             try await run("meet-to-day") { m.tab = .day }
+            // A week-row card shows another day through the planner's day
+            // selection (its plan replaces today's, the Next card goes), and
+            // today's card brings today back: each one height change on the spring.
+            // Motion only: the other day's plan is read after the tap, so under
+            // Reduce Motion the panel snaps to the loading row and then to the
+            // day, and whether the read lands before the first sample is a race
+            // (it passed one run of two); the spring covers both steps.
+            let day = rig.today
+            if !reduce {
+                try await run("day-pick-other-day") {
+                    day.selectDate(day.now.addingTimeInterval(-86400))
+                    Task { await day.refresh() }
+                }
+                try await run("day-back-to-today") {
+                    day.returnToToday()
+                    Task { await day.refresh() }
+                }
+            }
             try await run("day-to-meet") { m.tab = .meet }
             try await run("meet-open-notes") { meet.qaShow(.notes) }
             try await run("meet-close-notes") { meet.qaShow(.earlier) }

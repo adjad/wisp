@@ -261,6 +261,324 @@ struct DayAgenda: Equatable {
     }
 }
 
+// MARK: - The week row
+
+/// One day card in the Day tab's week row. Only a day whose plan Wisp has
+/// actually read (the day on screen, with Calendar readable) carries a load;
+/// every other day shows its date alone, never an invented bar or count.
+struct DayWeekCard: Equatable, Identifiable {
+    /// "2026-11-11", the key `GET /assistant/today?day=` takes.
+    let day: String
+    let date: Date
+    /// "WED" and "Wednesday".
+    let weekday: String
+    let weekdayName: String
+    let number: Int
+    let isToday: Bool
+    /// The day the tab shows.
+    let isShown: Bool
+    var load: DayLoadBar? = nil
+    var id: String { day }
+}
+
+/// A day's load as its card draws it: how many things are on the clock and
+/// due, and the stretches its timed things hold, as fractions of the bar.
+struct DayLoadBar: Equatable {
+    struct Segment: Equatable {
+        let from: Double
+        let to: Double
+        /// Over before now, on today: drawn dim.
+        let past: Bool
+    }
+
+    let onClock: Int
+    let due: Int
+    /// Minutes the timed things hold, overlaps counted once.
+    let minutes: Int
+    let segments: [Segment]
+    /// Where now falls on the bar, on today while it is inside the bar's span.
+    let now: Double?
+}
+
+enum DayWeek {
+    static let weekdays = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"]
+    static let weekdayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+
+    /// The seven days of the week holding `date`, in `calendar`'s own week
+    /// order (its firstWeekday), each at its midnight in the calendar's zone.
+    static func dates(containing date: Date, calendar: Calendar) -> [Date] {
+        let day = calendar.startOfDay(for: date)
+        let weekday = calendar.component(.weekday, from: day)
+        let back = (weekday - calendar.firstWeekday + 7) % 7
+        guard let first = calendar.date(byAdding: .day, value: -back, to: day) else { return [day] }
+        return (0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: first) }
+    }
+
+    /// The week row for the week holding `shown`: `shownLoad` goes on the shown
+    /// day's card only.
+    static func cards(shown: Date, today: Date, calendar: Calendar, shownLoad: DayLoadBar?) -> [DayWeekCard] {
+        let key: (Date) -> String = { date in
+            let parts = calendar.dateComponents([.year, .month, .day], from: date)
+            return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
+        }
+        let shownKey = key(shown)
+        let todayKey = key(today)
+        return dates(containing: shown, calendar: calendar).map { date in
+            let index = max(0, min(6, calendar.component(.weekday, from: date) - 1))
+            let day = key(date)
+            return DayWeekCard(day: day, date: date, weekday: weekdays[index], weekdayName: weekdayNames[index],
+                               number: calendar.component(.day, from: date), isToday: day == todayKey,
+                               isShown: day == shownKey, load: day == shownKey ? shownLoad : nil)
+        }
+    }
+
+    /// The stretches of the day that real commitments hold: calendar events and
+    /// planned or study blocks, clipped to the day. Suggestions and learned
+    /// "usually busy" windows are not commitments, so they never add load.
+    static func spans(_ blocks: [DayBlockInput], dayStart: Double, dayEnd: Double) -> [(start: Double, end: Double)] {
+        blocks.compactMap { block in
+            guard !["suggestion", "behavior", "behavior_away"].contains(block.kind) else { return nil }
+            let fromCalendar = block.kind == "calendar" || block.kind == "manual"
+            guard fromCalendar ? !DayTimeline.isPlaceholderEvent(block.title) : !DayTimeline.isJunk(block.title) else { return nil }
+            let end = block.end.flatMap { $0 > block.start ? $0 : nil } ?? block.start + 30 * 60
+            let from = max(block.start, dayStart), to = min(end, dayEnd)
+            return to > from ? (from, to) : nil
+        }
+    }
+
+    /// The bar's span: working hours, widened to whole hours around anything
+    /// held outside them, never past the day.
+    static func span(workStart: Double, workEnd: Double, spans: [(start: Double, end: Double)],
+                     dayStart: Double, dayEnd: Double) -> (start: Double, end: Double) {
+        let first = min(workStart, spans.map(\.start).min() ?? workStart)
+        let last = max(workEnd, spans.map(\.end).max() ?? workEnd)
+        let start = max(dayStart, DayTimeline.floorHour(first, dayStart: dayStart))
+        let end = min(dayEnd, DayTimeline.ceilHour(last, dayStart: dayStart))
+        return end > start ? (start, end) : (dayStart, dayEnd)
+    }
+
+    /// The card's load: counts as the summary gives them, and `spans` merged
+    /// and placed on the bar's span. `now` only on today.
+    static func load(onClock: Int, due: Int, spans: [(start: Double, end: Double)],
+                     span: (start: Double, end: Double), now: Double?) -> DayLoadBar {
+        var merged: [(start: Double, end: Double)] = []
+        for s in spans.sorted(by: { ($0.start, $0.end) < ($1.start, $1.end) }) {
+            if let last = merged.last, s.start <= last.end {
+                merged[merged.count - 1].end = max(last.end, s.end)
+            } else {
+                merged.append(s)
+            }
+        }
+        let width = max(1, span.end - span.start)
+        let fraction: (Double) -> Double = { min(1, max(0, ($0 - span.start) / width)) }
+        let segments = merged.compactMap { s -> DayLoadBar.Segment? in
+            let from = fraction(s.start), to = fraction(s.end)
+            guard to > from else { return nil }
+            return DayLoadBar.Segment(from: from, to: to, past: now.map { s.end <= $0 } ?? false)
+        }
+        let minutes = Int((merged.reduce(0) { $0 + ($1.end - $1.start) } / 60).rounded())
+        let nowAt = now.flatMap { $0 >= span.start && $0 <= span.end ? fraction($0) : nil }
+        return DayLoadBar(onClock: onClock, due: due, minutes: minutes, segments: segments, now: nowAt)
+    }
+
+    /// The card's count: "3", "3 · 2 due", "2 due", "free".
+    static func countText(_ load: DayLoadBar) -> String {
+        switch (load.onClock, load.due) {
+        case (0, 0): return "free"
+        case (let n, 0): return "\(n)"
+        case (0, let d): return "\(d) due"
+        case (let n, let d): return "\(n) · \(d) due"
+        }
+    }
+
+    /// The count when the full one doesn't fit: the things on the clock alone.
+    static func shortCountText(_ load: DayLoadBar) -> String {
+        load.onClock > 0 ? "\(load.onClock)" : countText(load)
+    }
+
+    /// The card for VoiceOver: "Wednesday 11, 4 things", "Saturday 14, today,
+    /// 3 things and 2 due", "Sunday 15, free", or the date alone without a load.
+    static func spoken(_ card: DayWeekCard) -> String {
+        var parts = ["\(card.weekdayName) \(card.number)"]
+        if card.isToday { parts.append("today") }
+        if card.isShown && !card.isToday { parts.append("shown") }
+        if let load = card.load {
+            let things = "\(load.onClock) thing\(load.onClock == 1 ? "" : "s")"
+            switch (load.onClock, load.due) {
+            case (0, 0): parts.append("free")
+            case (_, 0): parts.append(things)
+            case (0, let d): parts.append("\(d) due")
+            case (_, let d): parts.append(things + " and \(d) due")
+            }
+        }
+        return parts.joined(separator: ", ")
+    }
+}
+
+// MARK: - Next up and Later today
+
+extension DayTimeline {
+    /// What the Next card shows: the first thing still on the clock, by when it
+    /// begins; at the same time a calendar event before a plan block before a
+    /// caught plan, then the shorter, then by id. Suggestions, usual windows,
+    /// due-by rows and all-day items are never "next".
+    static func nextUp(_ items: [DayItem], now: Double) -> DayItem? {
+        items.filter { !$0.past && isOnTheClock($0) && !$0.allDay && $0.end > now }
+            .min { a, b in
+                let ka = (a.begins ?? a.start, a.style.rawValue, a.ends ?? a.end, a.id)
+                let kb = (b.begins ?? b.start, b.style.rawValue, b.ends ?? b.end, b.id)
+                return ka < kb
+            }
+    }
+
+    /// The Next line when nothing is left on the clock today; never an
+    /// all-clear when Wisp can't read Calendar.
+    static func nothingNextLine(calendarRead: Bool) -> String {
+        calendarRead ? "Nothing else on the clock today." : "Nothing else Wisp can see today: it can't read your calendar."
+    }
+
+    /// Whether the next thing is already on.
+    static func isOnNow(_ item: DayItem, now: Double) -> Bool {
+        (item.begins ?? item.start) <= now && now < (item.ends ?? item.end)
+    }
+
+    /// "NEXT · IN 40 MIN", "NEXT · IN 1 H 5 MIN", "NEXT · STARTING NOW", or for
+    /// one already on "NOW · 25 MIN LEFT".
+    static func nextLabel(_ item: DayItem, now: Double) -> String {
+        if isOnNow(item, now: now) {
+            let left = Int((((item.ends ?? item.end) - now) / 60).rounded(.up))
+            return "NOW · " + length(max(1, left)).uppercased() + " LEFT"
+        }
+        let minutes = Int((((item.begins ?? item.start) - now) / 60).rounded(.up))
+        return minutes <= 0 ? "NEXT · STARTING NOW" : "NEXT · IN " + length(minutes).uppercased()
+    }
+
+    /// The same, for VoiceOver: "Next, in 40 min", "Now, 25 min left".
+    static func spokenNextLabel(_ item: DayItem, now: Double) -> String {
+        let label = nextLabel(item, now: now).lowercased()
+        return label.prefix(1).uppercased() + label.dropFirst().replacingOccurrences(of: " · ", with: ", ")
+    }
+
+    /// "Now 1:20 PM · free until 2:00 PM": nothing holds the time from now
+    /// until the next thing that does, a minute or more away. Nil otherwise,
+    /// and always nil when Wisp can't read Calendar: it can't know you're free.
+    static func nowFreeLine(_ items: [DayItem], now: Double, clock: (Double) -> String,
+                            calendarRead: Bool = true) -> String? {
+        guard calendarRead else { return nil }
+        let holding = items.filter { !$0.past && holdsTime($0) }
+        if holding.contains(where: { ($0.begins ?? $0.start) <= now && now < $0.end }) { return nil }
+        guard let until = holding.map({ $0.begins ?? $0.start }).filter({ $0 > now }).min(), until - now >= 60 else { return nil }
+        return "Now " + clock(now) + " · free until " + clock(until)
+    }
+
+    /// The Next card's time line: "11:45 AM – 2:00 PM · 2 h 15 min", then what
+    /// it is when it isn't a Calendar event ("· Study block", "· Your plan",
+    /// "· Caught in texts"); "From 6:00 PM" for an event the source gave no
+    /// end, "At 7:00 PM" for a to-do or a caught plan.
+    static func nextTimeLine(_ item: DayItem, clock: (Double) -> String) -> String {
+        let begins = item.begins ?? item.start
+        var line: String
+        if let ends = item.ends {
+            line = clock(begins) + " – " + clock(ends) + " · " + length(Int(((ends - begins) / 60).rounded()))
+        } else {
+            line = (item.style == .calendar ? "From " : "At ") + clock(begins)
+        }
+        switch item.style {
+        case .task: line += item.kind == "study" ? " · Study block" : " · Your plan"
+        case .caught: line += " · Caught in texts"
+        case .todo where !sourceName(item.source).isEmpty: line += " · " + sourceName(item.source)
+        default: break
+        }
+        return line
+    }
+
+    /// The Next card's item taken out of the agenda (the card replaces its
+    /// row), with the free stretch that ran up to it: the card says that.
+    static func agenda(_ agenda: DayAgenda, without next: DayItem?) -> DayAgenda {
+        guard let next else { return agenda }
+        let ahead = agenda.ahead.filter { row in
+            switch row {
+            case .item(let item): return item.id != next.id
+            case .free(_, let end): return end != next.start
+            }
+        }
+        return DayAgenda(earlier: agenda.earlier, ahead: ahead)
+    }
+
+    /// Later today: what the agenda still lists after the Next card's item,
+    /// as rows at a time (`timed`, overdue first as the agenda has them) and
+    /// what is due by a time (`due`), each in agenda order.
+    static func laterRows(_ agenda: DayAgenda, excluding next: DayItem?) -> (timed: [DayItem], due: [DayItem]) {
+        let items: [DayItem] = agenda.ahead.compactMap {
+            if case .item(let item) = $0, item.id != next?.id { return item }
+            return nil
+        }
+        return (items.filter { !isDueBy($0) }, items.filter(isDueBy))
+    }
+
+    /// The "Show N more" line under Later today, naming what it hides:
+    /// "Show 2 more · due 11:59 PM: Lab 4 and Problem set 6" when all of it is
+    /// due at one time, else "Show 3 more: Lab 4, Club and 1 more".
+    static func moreLine(_ hidden: [DayItem], clock: (Double) -> String) -> String {
+        guard !hidden.isEmpty else { return "" }
+        let titles = hidden.map(\.title)
+        let named: String
+        switch titles.count {
+        case 1: named = titles[0]
+        case 2: named = titles[0] + " and " + titles[1]
+        default: named = titles[0] + ", " + titles[1] + " and \(titles.count - 2) more"
+        }
+        let times = Set(hidden.map { item -> String in
+            guard isDueBy(item), let due = item.due else { return "" }
+            return item.allDay ? "today" : clock(due)
+        })
+        let lead = "Show \(hidden.count) more"
+        if times.count == 1, let time = times.first, !time.isEmpty { return lead + " · due " + time + ": " + named }
+        return lead + ": " + named
+    }
+
+    /// A Later row's time: its start, "Overdue", its due time, or "All day".
+    static func laterTime(_ item: DayItem, clock: (Double) -> String) -> String {
+        gutter(item, clock: clock).top
+    }
+
+    /// How much of a Later row's duration bar is filled: its length against
+    /// two hours (a longer one fills it), and never less than a sliver. Nil
+    /// for what is due by a time or overdue: those hold no stretch of time.
+    static func durationFraction(_ item: DayItem) -> Double? {
+        guard holdsTime(item) else { return nil }
+        let minutes = ((item.ends ?? item.end) - (item.begins ?? item.start)) / 60
+        return min(1, max(0.12, minutes / 120))
+    }
+
+    /// A Later row's muted detail: how long it runs ("1 h 30 min"), "Suggested ·
+    /// about 45 min", "Usually busy · …", "Needs you", or a to-do's source.
+    static func laterDetail(_ item: DayItem, now: Double, isToday: Bool, clock: (Double) -> String) -> String {
+        switch item.style {
+        case .calendar:
+            guard let ends = item.ends else { return "Calendar" }
+            let begins = item.begins ?? item.start
+            if isToday && begins <= now && now < ends { return length(Int(((ends - now) / 60).rounded(.up))) + " left" }
+            return length(Int(((ends - begins) / 60).rounded()))
+        case .task where item.kind == "study":
+            return length(Int(((item.end - item.start) / 60).rounded()))
+        default:
+            return agendaDetail(item, now: now, isToday: isToday, clock: clock)
+        }
+    }
+
+    /// The Next card's two buttons beside its ⋯ menu, for a Calendar event the
+    /// service described: Open in Calendar, and Move… only where the timeline's
+    /// own menu offers Move. Nothing for any other kind of row, and nothing
+    /// while a cancel of it is in its Undo window or being sent.
+    enum NextButton: Equatable { case open, move }
+
+    static func nextButtons(isDescribedEvent: Bool, menuOffersMove: Bool, cancelActive: Bool) -> [NextButton] {
+        guard isDescribedEvent, !cancelActive else { return [] }
+        return menuOffersMove ? [.open, .move] : [.open]
+    }
+}
+
 struct DayTimeline: Equatable {
     /// Hour-aligned range the lane covers.
     let from: Double
