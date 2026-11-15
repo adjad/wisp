@@ -535,6 +535,53 @@ struct OverlayTransitionChecks {
         print("PASS: a page keeps the width it was laid out at while the panel's width changes")
     }
 
+    /// The Day's halves (DayHalves): stacked, exactly one column with the
+    /// page's spacing (the normal Day keeps its height); side by side, as tall
+    /// as the taller half, with the hairline between; a right half with nothing
+    /// in it gives the left the whole width.
+    @MainActor static func dayHalvesChecks() {
+        func rows(_ n: Int, _ word: String) -> some View {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(0..<n, id: \.self) { i in
+                    Text("\(word) row \(i) with enough words to wrap at a narrow half").fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        func height(_ view: some View, width: CGFloat) -> CGFloat {
+            let hosting = NSHostingView(rootView: view.frame(width: width))
+            hosting.layoutSubtreeIfNeeded()
+            return hosting.fittingSize.height
+        }
+        func halves(_ side: Bool, left: Int, right: Int) -> some View {
+            DayHalves(sideBySide: side, gap: 28, stackGap: 10) {
+                rows(left, "Left")
+                Rectangle().fill(Color.gray)
+                rows(right, "Right")
+            }
+        }
+        let one = height(VStack(alignment: .leading, spacing: 10) {
+            ForEach(0..<6, id: \.self) { i in
+                Text("Left row \(i) with enough words to wrap at a narrow half").fixedSize(horizontal: false, vertical: true)
+            }
+            ForEach(0..<3, id: \.self) { i in
+                Text("Right row \(i) with enough words to wrap at a narrow half").fixedSize(horizontal: false, vertical: true)
+            }
+        }, width: 596)
+        let stacked = height(halves(false, left: 6, right: 3), width: 596)
+        check(abs(stacked - one) < 0.5, "Stacked halves are one column: \(stacked) vs \(one)")
+        let stackedEmpty = height(halves(false, left: 6, right: 0), width: 596)
+        check(abs(stackedEmpty - height(rows(6, "Left"), width: 596)) < 0.5,
+              "An empty right half adds no gap in one column: \(stackedEmpty)")
+        let column = (796.0 - 28) / 2
+        let side = height(halves(true, left: 6, right: 3), width: 796)
+        let leftAlone = height(rows(6, "Left"), width: column)
+        check(abs(side - leftAlone) < 0.5, "Side by side, the halves are as tall as the taller: \(side) vs \(leftAlone)")
+        let fullWidth = height(halves(true, left: 6, right: 0), width: 796)
+        check(abs(fullWidth - height(rows(6, "Left"), width: 796)) < 0.5,
+              "Nothing on the right: the left takes the whole width: \(fullWidth)")
+        print("PASS: the Day's halves stack as one column and sit side by side in the wide panel")
+    }
+
     static func waitUntil(_ condition: () -> Bool) async {
         for _ in 0..<100 {
             if condition() { return }
@@ -945,6 +992,7 @@ struct OverlayTransitionChecks {
         await MainActor.run {
             heartbeatSecondsChecks()
             pinnedPageWidthChecks()
+            dayHalvesChecks()
             coldStartFailureChecks()
             tryAgainChecks()
         }

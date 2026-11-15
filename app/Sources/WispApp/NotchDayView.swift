@@ -78,15 +78,69 @@ struct NotchDayView: View {
                 addRow: addingTask || !model.todayTaskTitle.isEmpty)
     }
 
-    init(model: OverlayModel, today: TodayModel) {
+    /// The wide panel (OverlayView sets it from the shared two-column choice,
+    /// NotchWide): the day in two halves when the panel is wide enough.
+    private let wide: Bool
+    /// Between the halves, the hairline in the middle (as the Brief's zones).
+    private static let halfGap: CGFloat = 28
+
+    init(model: OverlayModel, today: TodayModel, wide: Bool = false) {
         self.model = model
         self.today = today
+        self.wide = wide
+    }
+
+    /// Whether the day sits in two halves: from the width the panel lays the
+    /// page out at, decided in the same update as the width changes, by the
+    /// Brief's rule (BriefPlate.sideBySide) so both tabs split at one width.
+    private var halves: Bool {
+        guard wide else { return false }
+        let panel: CGFloat = DisplayGeometry.shared.layout.widened(true).expandedWidth
+        return BriefPlate.sideBySide(width: panel - 2 * OverlayView.sideInset, textScale: Theme.textScale)
     }
 
     private var plan: TodayPlan? { today.currentPlan }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            // In the wide panel, two halves: the left runs in today's order up to
+            // and including Old reminders, the right holds what follows. In the
+            // normal panel the halves stack with the same spacing as one column.
+            DayHalves(sideBySide: halves, gap: Self.halfGap, stackGap: 10) {
+                VStack(alignment: .leading, spacing: 10) { leadHalf }
+                Rectangle().fill(Theme.hairline).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 10) { restHalf }
+            }
+            if plan != nil && (addingTask || !model.todayTaskTitle.isEmpty) { addTaskRow.transition(.opacity) }
+            ReportDraftCard(draft: today.report, title: "Report a problem with this plan",
+                            detailsLabel: "Include planner details", save: { model.saveReport(today.report) })
+            footer
+        }
+        // Content fades in while the panel's height follows the same spring.
+        .animation(Theme.Motion.panel(reduceMotion: reduceMotion), value: showing)
+        .environment(\.timeZone, today.timezone)
+        .modifier(DayRefreshLoop(model: model, today: today))
+        // A change anywhere (a sync, an answer from another place) refreshes the
+        // stale-reminder questions now instead of at the next minute.
+        .onReceive(NotificationCenter.default.publisher(for: .wispAssistantChanged)) { _ in
+            Task { await DayCards.refresh(force: true); model.onResize() }
+        }
+        .onChange(of: model.checkInDue) { _, due in
+            guard due, today.isShowingCurrentDay else { return }
+            Task { await checkIn.load(day: today.day, timezone: today.timezone.identifier); model.onResize() }
+        }
+        .onChange(of: plan?.generated_at) { _, _ in planChanged() }
+        // A cancel the service answered: the plan is read again, so a cancelled
+        // block goes and a refused one shows the fresh facts the service now has.
+        .onChange(of: checkIn.cancelling) { before, now in
+            guard !before.isSubset(of: now) else { return }
+            Task { await today.refresh(afterMutation: true); model.onResize() }
+        }
+    }
+
+    /// The left half (or the top, in one column): notices, the check-in, the
+    /// day's lede, all-day chips, the agenda and Old reminders.
+    @ViewBuilder private var leadHalf: some View {
             if let notice = model.transientNotice { NotchChrome.notice(notice).transition(.opacity) }
             if !today.error.isEmpty {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -116,46 +170,34 @@ struct NotchDayView: View {
                 GoalPulseSection(model: checkIn)
             }
             if let plan {
-                dayContent(plan)
+                dayLead(plan)
                     .disabled(today.planIsStale)
                     .transition(.opacity)
             } else if today.error.isEmpty {
                 ProcessingRow(label: NotchBriefView.loadingLabel(today: today, starting: model.serviceStarting))
                     .transition(.opacity)
             }
-            ReportDraftCard(draft: today.report, title: "Report a problem with this plan",
-                            detailsLabel: "Include planner details", save: { model.saveReport(today.report) })
-            footer
+    }
+
+    /// The right half (or what follows, in one column): Still to fit, School
+    /// this week. Empty, the left half takes the whole width.
+    @ViewBuilder private var restHalf: some View {
+        if let plan {
+            dayRest(plan)
+                .disabled(today.planIsStale)
+                .transition(.opacity)
         }
-        // Content fades in while the panel's height follows the same spring.
-        .animation(Theme.Motion.panel(reduceMotion: reduceMotion), value: showing)
-        .environment(\.timeZone, today.timezone)
-        .modifier(DayRefreshLoop(model: model, today: today))
-        // A change anywhere (a sync, an answer from another place) refreshes the
-        // stale-reminder questions now instead of at the next minute.
-        .onReceive(NotificationCenter.default.publisher(for: .wispAssistantChanged)) { _ in
-            Task { await DayCards.refresh(force: true); model.onResize() }
-        }
-        .onChange(of: model.checkInDue) { _, due in
-            guard due, today.isShowingCurrentDay else { return }
-            Task { await checkIn.load(day: today.day, timezone: today.timezone.identifier); model.onResize() }
-        }
-        // A fresh plan for the shown day: a timeline cancel whose block changed or
-        // left is dropped before it is sent, and a Move panel for such a block is
-        // closed. No plan (a failed refresh, a day change) proves nothing and
-        // changes nothing.
-        .onChange(of: plan?.generated_at) { _, _ in
-            guard let plan else { return }
-            let events = plan.displayBlocks.compactMap(\.calendarEvent)
-            checkIn.reconcileTimelineCancels(events)
-            if let movingEvent, !events.contains(where: { CheckInModel.sameOccurrence($0, movingEvent) }) { closeMove() }
-        }
-        // A cancel the service answered: the plan is read again, so a cancelled
-        // block goes and a refused one shows the fresh facts the service now has.
-        .onChange(of: checkIn.cancelling) { before, now in
-            guard !before.isSubset(of: now) else { return }
-            Task { await today.refresh(afterMutation: true); model.onResize() }
-        }
+    }
+
+    /// A fresh plan for the shown day: a timeline cancel whose block changed or
+    /// left is dropped before it is sent, and a Move panel for such a block is
+    /// closed. No plan (a failed refresh, a day change) proves nothing and
+    /// changes nothing.
+    private func planChanged() {
+        guard let plan else { return }
+        let events = plan.displayBlocks.compactMap(\.calendarEvent)
+        checkIn.reconcileTimelineCancels(events)
+        if let movingEvent, !events.contains(where: { CheckInModel.sameOccurrence($0, movingEvent) }) { closeMove() }
     }
 
     /// The exact occurrence when Calendar still has it; else Calendar itself.
@@ -276,7 +318,7 @@ struct NotchDayView: View {
         .accessibilityElement(children: .combine)
     }
 
-    @ViewBuilder private func dayContent(_ plan: TodayPlan) -> some View {
+    @ViewBuilder private func dayLead(_ plan: TodayPlan) -> some View {
         let timeline = timeline(plan)
         let unread = unreadAccess(plan)
         ForEach(unread, id: \.source) { accessRow($0) }
@@ -345,11 +387,14 @@ struct NotchDayView: View {
             // A question that arrives after the first frame never animates the panel's height.
             staleSection.transaction { $0.animation = nil }
         }
+    }
+
+    /// What follows Old reminders in today's order.
+    @ViewBuilder private func dayRest(_ plan: TodayPlan) -> some View {
         let fit = stillToFit(plan)
         if !fit.isEmpty { fitSection(fit) }
         let school = schoolThisWeek(plan)
         if !school.isEmpty { schoolSection(school) }
-        if addingTask || !model.todayTaskTitle.isEmpty { addTaskRow.transition(.opacity) }
     }
 
     // MARK: Building the timeline
@@ -466,7 +511,13 @@ struct NotchDayView: View {
             Image(systemName: assignment.symbol).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).frame(width: 15)
             Text(assignment.title).font(.wisp(size: 13)).foregroundStyle(Theme.textPrimary)
                 .lineLimit(1).layoutPriority(1)
-            Text(item.course).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
+            // In a narrow half a squeezed course left a sliver of one glyph: it
+            // shows from a few characters' room, else not at all.
+            ViewThatFits(in: .horizontal) {
+                Text(item.course).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
+                    .frame(minWidth: 36, idealWidth: 36, alignment: .leading)
+                Color.clear.frame(width: 0, height: 0)
+            }
             Spacer(minLength: 8)
             Text(StudyText.dueShort(assignment, now: today.now, calendar: calendar))
                 .font(.wisp(size: 11.5)).monospacedDigit().foregroundStyle(Theme.textSecondary)
@@ -1294,6 +1345,62 @@ struct NotchDayView: View {
                 WispRouter.shared.open(.today(focus: .plan))
             }
         }
+    }
+}
+
+// MARK: - The Day's two halves
+
+/// Lays out the Day's halves (left, a hairline, right). Side by side: each
+/// half as wide and the hairline between them as tall as the taller half; a
+/// right half with nothing in it gives the left the whole width, with no
+/// hairline. Stacked (the normal panel): left, then right `stackGap` below it
+/// when it holds anything, and no hairline, exactly as one column.
+struct DayHalves: Layout {
+    let sideBySide: Bool
+    var gap: CGFloat = 28
+    var stackGap: CGFloat = 10
+
+    private func columnWidth(_ width: CGFloat) -> CGFloat { max(0, (width - gap) / 2) }
+
+    /// Whether the halves sit side by side at this width: asked for, and the
+    /// right half holds something.
+    private func split(_ subviews: Subviews, width: CGFloat) -> Bool {
+        sideBySide && subviews[2].sizeThatFits(ProposedViewSize(width: columnWidth(width), height: nil)).height > 0
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard subviews.count == 3 else { return .zero }
+        let width: CGFloat = proposal.width ?? 0
+        if split(subviews, width: width) {
+            let column = ProposedViewSize(width: columnWidth(width), height: nil)
+            let left: CGFloat = subviews[0].sizeThatFits(column).height
+            let right: CGFloat = subviews[2].sizeThatFits(column).height
+            return CGSize(width: width, height: max(left, right))
+        }
+        let full = ProposedViewSize(width: width, height: nil)
+        let left: CGFloat = subviews[0].sizeThatFits(full).height
+        let right: CGFloat = sideBySide ? 0 : subviews[2].sizeThatFits(full).height
+        return CGSize(width: width, height: left + (right > 0 ? stackGap + right : 0))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard subviews.count == 3 else { return }
+        let width: CGFloat = bounds.width
+        if split(subviews, width: width) {
+            let columnW: CGFloat = columnWidth(width)
+            let column = ProposedViewSize(width: columnW, height: nil)
+            subviews[0].place(at: bounds.origin, anchor: .topLeading, proposal: column)
+            let line = CGPoint(x: bounds.minX + columnW + gap / 2, y: bounds.minY)
+            subviews[1].place(at: line, anchor: .top, proposal: ProposedViewSize(width: 1, height: bounds.height))
+            subviews[2].place(at: CGPoint(x: bounds.maxX - columnW, y: bounds.minY), anchor: .topLeading, proposal: column)
+            return
+        }
+        let full = ProposedViewSize(width: width, height: nil)
+        let left: CGFloat = subviews[0].sizeThatFits(full).height
+        subviews[0].place(at: bounds.origin, anchor: .topLeading, proposal: full)
+        // The hairline only divides halves side by side.
+        subviews[1].place(at: bounds.origin, anchor: .topLeading, proposal: ProposedViewSize(width: 0, height: 0))
+        subviews[2].place(at: CGPoint(x: bounds.minX, y: bounds.minY + left + stackGap), anchor: .topLeading, proposal: full)
     }
 }
 

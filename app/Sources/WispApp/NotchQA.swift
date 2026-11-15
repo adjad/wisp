@@ -148,13 +148,17 @@ enum NotchQADriver {
             ("day-starting", .day, { AnyView(NotchDayView(model: startingModel, today: starting)) }),
             ("brief-study", .brief, { AnyView(NotchBriefView(model: model, today: schoolDay, actions: state())) }),
             ("day-study", .day, { AnyView(NotchDayView(model: model, today: schoolDay)) }),
+            // The Day in the wide panel: two halves, the left up to Old reminders.
+            ("day-wide", .day, { AnyView(NotchDayView(model: model, today: today, wide: true)) }),
+            ("day-wide-study", .day, { AnyView(NotchDayView(model: model, today: schoolDay, wide: true)) }),
+            ("day-wide-empty", .day, { AnyView(NotchDayView(model: model, today: blockedProactive, wide: true)) }),
             ("brief-legacy-study", .brief, { AnyView(NotchBriefView(model: model, today: schoolLegacy, open: nil)) }),
         ] + NotchQASetup.scenes() + panelScenes(model: model, today: today, state: state)
             + studyScenes(model: model)
         for scene in scenes {
             let name = scene.name
-            // The Brief's two columns render at the wide panel's width.
-            let sceneWidth = name.hasPrefix("brief-wide") ? SurfaceLayout.wideExpandedWidth : width
+            // The Brief's and the Day's two columns render at the wide panel's width.
+            let sceneWidth = name.hasPrefix("brief-wide") || name.hasPrefix("day-wide") ? SurfaceLayout.wideExpandedWidth : width
             let window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: sceneWidth, height: 760),
                                   styleMask: [.borderless], backing: .buffered, defer: false)
             let content = VStack(alignment: .leading, spacing: 0) {
