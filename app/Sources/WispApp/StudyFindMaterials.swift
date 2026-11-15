@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import CryptoKit
 import Foundation
 import SwiftUI
 
@@ -38,9 +39,9 @@ import SwiftUI
 // Safety, by design: the only thing Wisp does to the browser is open https
 // URLs that pass `StudyFindTarget.openableURL` (the course's Modules page and
 // at most 100 of the course's own pages) through `NSWorkspace.open` without
-// activating it, and closes the tabs it opened (StudyFindTabCloser: one
-// close-by-exact-address Apple Event per tab, only for a tab read as Wisp's own
-// new tab, and only while it is the single tab at that address). No
+// activating it, and closes the tabs it opened (StudyFindTabCloser: lists the
+// browser's tabs around each open to claim the one new tab, and closes only
+// that tab, only while it is still at the address opened or read). No
 // JavaScript, key or mouse events, and no Accessibility actions; the only
 // Accessibility write is `AXManualAccessibility = true`, exactly as
 // StudyPageReader does for Chromium.
@@ -876,16 +877,24 @@ enum StudyFindGuard {
 
 /// The owner asked for each tab a walk opens to be closed once it has been
 /// read ("make it close it after its done instead of opening like 50 tabs").
-/// The one Apple Events use in Find materials: close a tab, by its exact
-/// address, in the default browser, and only when exactly one tab there has that
-/// address (so a tab of the student's own at the same page is never touched).
-/// Never runs JavaScript, never reads a page, never touches a window, never a
-/// tab by position. macOS asks the student once to let Wisp control the
-/// browser; if they say no, tabs stay open and the card says so.
+/// The one Apple Events use in Find materials, bound to Wisp's own tab:
+/// - right before each open, Wisp lists the default browser's tabs (window id,
+///   tab id, or the tab's position where the browser has no tab ids, and URL);
+/// - right after, it lists them again and claims the ONE tab that is new, only
+///   if exactly one is and it is at the address Wisp opened, still loading, or
+///   on the course; none or several means no claim, and the tab stays open;
+/// - once that tab has been read, Wisp closes the claimed tab, found by window
+///   and tab id (or position), only if its address right now is the one Wisp
+///   opened or the one it read (case-sensitive).
+/// A tab the student had, switched to or navigated is never a candidate.
+/// Never runs JavaScript, never reads a page, never touches a window, never
+/// relaunches a browser. macOS asks the student once to let Wisp control the
+/// browser; if they say no, tabs stay open and the card says so. Stop and
+/// failures close nothing. Leaving a tab open is the safe failure.
 enum StudyFindTabCloser {
     enum Outcome: Equatable, Sendable {
         case closed
-        /// No tab, or more than one, at that address: left alone.
+        /// The claimed tab is gone or now elsewhere: left alone.
         case notOne
         /// The student didn't allow Wisp to control the browser.
         case denied
@@ -896,11 +905,35 @@ enum StudyFindTabCloser {
         case failed
     }
 
+    /// One tab: its window's id, its own id (or position), and its address
+    /// only as a hash, so the student's own tabs (mail, bank…) are never held as
+    /// text. `url` is kept only for a tab `keep` allows (the address Wisp
+    /// opened, a loading tab, or a page on the course). Nothing here is logged,
+    /// shown, or sent to the backend or a model; it lives for one comparison.
+    struct Tab: Equatable, Sendable {
+        let window: String
+        let key: String
+        let digest: String
+        let url: String?
+    }
+
+    static func digest(_ text: String) -> String {
+        SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    enum Listing: Sendable { case tabs([Tab]), denied, timedOut, failed }
+
     /// Browsers whose scripting dictionary has windows › tabs › URL and close.
     static let scriptable: Set<String> = [
         "com.apple.Safari", "com.apple.SafariTechnologyPreview", "com.google.Chrome", "com.google.Chrome.canary",
         "com.microsoft.edgemac", "com.brave.Browser", "company.thebrowser.Browser", "com.vivaldi.Vivaldi",
         "com.kagi.kagimacOS",
+    ]
+
+    /// Of those, the ones whose tabs have an id; the others go by position.
+    static let tabIDs: Set<String> = [
+        "com.google.Chrome", "com.google.Chrome.canary", "com.microsoft.edgemac", "com.brave.Browser",
+        "company.thebrowser.Browser", "com.vivaldi.Vivaldi",
     ]
 
     /// The browser `url` opens in, as NSWorkspace.open would pick it.
@@ -914,19 +947,22 @@ enum StudyFindTabCloser {
         #endif
     }
 
-    /// Closes the one tab at `address`, waiting at most `wait` seconds.
-    static func close(_ address: String, browser: String, wait: TimeInterval) async -> Outcome {
+    /// Every tab of `browser`, or why not. Empty when it isn't running.
+    static func list(browser: String, wait: TimeInterval,
+                     keep: @Sendable (String) -> Bool) async -> Listing {
         #if WISP_NOTCH_QA
-        return .unsupported
+        return .failed
         #else
-        guard scriptable.contains(browser) else { return .unsupported }
-        let running = await MainActor.run {
-            !NSRunningApplication.runningApplications(withBundleIdentifier: browser).isEmpty
-        }
-        guard running else { return .notOne }
-        switch await run(browser: browser, address: address, wait: wait) {
-        case .closed: return .closed
-        case .count: return .notOne
+        guard scriptable.contains(browser) else { return .failed }
+        switch await run(listScript(browser, byID: tabIDs.contains(browser)), arguments: [], wait: wait) {
+        case .text(let out):
+            let tabs = out.split(separator: "\n").compactMap { line -> Tab? in
+                let parts = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false).map(String.init)
+                guard parts.count >= 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
+                let url = parts.count > 2 ? parts[2] : ""
+                return Tab(window: parts[0], key: parts[1], digest: digest(url), url: keep(url) ? url : nil)
+            }
+            return .tabs(tabs)
         case .denied: return .denied
         case .timedOut: return .timedOut
         case .failed: return .failed
@@ -934,44 +970,149 @@ enum StudyFindTabCloser {
         #endif
     }
 
-    private enum Reply { case closed, count(Int), denied, timedOut, failed }
+    static func ordered(_ tabs: [Tab]) -> [Tab] { tabs.sorted { (Int($0.key) ?? 0) < (Int($1.key) ?? 0) } }
 
-    /// The script, with the browser's id from `scriptable` (never page data);
-    /// the address comes in as the last argument, never pasted into the script.
-    /// It does nothing if the browser isn't running (never relaunches it),
-    /// compares case-sensitively, and re-checks the one match just before closing.
-    private static func script(_ browser: String) -> [String] {
+    /// Wisp's own tab: the one tab in `after` that wasn't in `before`, only when
+    /// exactly one is new and nothing else changed in a way that could hide it.
+    static func newTab(before: [Tab], after: [Tab], byID: Bool) -> Tab? {
+        if byID {
+            let known = Set(before.map { $0.window + "\t" + $0.key })
+            let fresh = after.filter { !known.contains($0.window + "\t" + $0.key) }
+            return fresh.count == 1 ? fresh[0] : nil
+        }
+        // By position: one window gained exactly one tab, inserted with every
+        // other tab in every window keeping its address and order, no tab or
+        // window gone; or a new window holds exactly one tab. Anything else
+        // (a closed tab, a navigated tab, a reorder, two new tabs) is ambiguous.
+        let was = Dictionary(grouping: before, by: \.window).mapValues(ordered)
+        let nowByWindow = Dictionary(grouping: after, by: \.window).mapValues(ordered)
+        guard Set(was.keys).isSubset(of: Set(nowByWindow.keys)) else { return nil }
+        var fresh: [Tab] = []
+        for (window, now) in nowByWindow {
+            guard let old = was[window] else {
+                if now.count == 1 { fresh.append(now[0]) } else { return nil }
+                continue
+            }
+            let nowSeq = now.map(\.digest)
+            let oldSeq = old.map(\.digest)
+            if nowSeq == oldSeq { continue }
+            guard now.count == old.count + 1 else { return nil }
+            let i = (0..<old.count).first(where: { nowSeq[$0] != oldSeq[$0] }) ?? old.count
+            guard Array(nowSeq[(i + 1)...]) == Array(oldSeq[i...]) else { return nil }
+            fresh.append(now[i])
+        }
+        return fresh.count == 1 ? fresh[0] : nil
+    }
+
+    /// At close time, from a fresh list: the claimed tab is still there (same
+    /// id; or, by position, its window holds exactly the same other tabs in the
+    /// same order as at the claim), and its address is one of `addresses`.
+    static func stillOurs(_ claimed: Tab, claimWindow: [Tab], now: [Tab], addresses: [String], byID: Bool) -> Bool {
+        let wanted = Set(addresses.map(digest))
+        if byID {
+            guard let tab = now.first(where: { $0.window == claimed.window && $0.key == claimed.key }) else { return false }
+            return wanted.contains(tab.digest)
+        }
+        let window = ordered(now.filter { $0.window == claimed.window })
+        let then = ordered(claimWindow)
+        guard window.count == then.count, let i = then.firstIndex(where: { $0.key == claimed.key }),
+              window[i].key == claimed.key, wanted.contains(window[i].digest) else { return false }
+        for j in window.indices where j != i { guard window[j].digest == then[j].digest else { return false } }
+        return true
+    }
+
+    /// Closes `tab` only if its address right now is one of `addresses`.
+    static func close(_ tab: Tab, addresses: [String], browser: String, wait: TimeInterval) async -> Outcome {
+        #if WISP_NOTCH_QA
+        return .unsupported
+        #else
+        guard scriptable.contains(browser), let first = addresses.first else { return .unsupported }
+        let second = addresses.count > 1 ? addresses[1] : first
+        // The address check is repeated inside the script, right before close.
+        switch await run(closeScript(browser, byID: tabIDs.contains(browser)),
+                         arguments: [tab.window, tab.key, first, second], wait: wait) {
+        case .text(let said): return said == "closed" ? .closed : .notOne
+        case .denied: return .denied
+        case .timedOut: return .timedOut
+        case .failed: return .failed
+        }
+        #endif
+    }
+
+    private enum Reply { case text(String), denied, timedOut, failed }
+
+    /// The scripts carry only the browser's id from `scriptable` (never page
+    /// data); addresses and ids come in as arguments after "--". Both return
+    /// at once if the browser isn't running (never relaunching it).
+    private static func listScript(_ browser: String, byID: Bool) -> [String] {
         [
             "on run argv",
-            "set wanted to item -1 of argv",
-            "if application id \"\(browser)\" is not running then return \"count 0\"",
+            "if application id \"\(browser)\" is not running then return \"\"",
             "tell application id \"\(browser)\"",
-            "set matches to {}",
-            "considering case",
+            "set out to \"\"",
             "repeat with w in windows",
+            "try",
+            "set wid to (id of w) as text",
+            "set i to 0",
             "repeat with t in tabs of w",
-            "if (URL of t) is wanted then set end of matches to contents of t",
+            "set i to i + 1",
+            "set u to \"\"",
+            "try",
+            "set u to (URL of t) as text",
+            "end try",
+            byID ? "set k to (id of t) as text" : "set k to i as text",
+            "set out to out & wid & (character id 9) & k & (character id 9) & u & (character id 10)",
             "end repeat",
+            "end try",
             "end repeat",
-            "if (count of matches) is 1 then",
-            "if (URL of item 1 of matches) is wanted then",
-            "close item 1 of matches",
-            "return \"closed\"",
-            "end if",
-            "return \"count 0\"",
-            "end if",
-            "end considering",
-            "return \"count \" & (count of matches)",
+            "return out",
             "end tell",
             "end run",
         ]
     }
 
-    private static func run(browser: String, address: String, wait: TimeInterval) async -> Reply {
+    private static func closeScript(_ browser: String, byID: Bool) -> [String] {
+        [
+            "on run argv",
+            "set wid to item -4 of argv",
+            "set k to item -3 of argv",
+            "set a1 to item -2 of argv",
+            "set a2 to item -1 of argv",
+            "if application id \"\(browser)\" is not running then return \"gone\"",
+            "tell application id \"\(browser)\"",
+            "considering case",
+            "repeat with w in windows",
+            "if ((id of w) as text) is wid then",
+            "set i to 0",
+            "repeat with t in tabs of w",
+            "set i to i + 1",
+            byID ? "set here to ((id of t) as text)" : "set here to (i as text)",
+            "if here is k then",
+            "set u to \"\"",
+            "try",
+            "set u to (URL of t) as text",
+            "end try",
+            "if u is a1 or u is a2 then",
+            "close t",
+            "return \"closed\"",
+            "end if",
+            "return \"moved\"",
+            "end if",
+            "end repeat",
+            "end if",
+            "end repeat",
+            "end considering",
+            "return \"gone\"",
+            "end tell",
+            "end run",
+        ]
+    }
+
+    private static func run(_ lines: [String], arguments: [String], wait: TimeInterval) async -> Reply {
         await Task.detached(priority: .utility) { () -> Reply in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-            process.arguments = script(browser).flatMap { ["-e", $0] } + ["--", address]
+            process.arguments = lines.flatMap { ["-e", $0] } + ["--"] + arguments
             let out = Pipe()
             let err = Pipe()
             process.standardOutput = out
@@ -986,17 +1127,15 @@ enum StudyFindTabCloser {
                 }
             }
             DispatchQueue.global().asyncAfter(deadline: .now() + wait, execute: timer)
+            let said = out.fileHandleForReading.readDataToEndOfFile()
+            let problem = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
             process.waitUntilExit()
             timer.cancel()
             if timedOut.isSet { return .timedOut }
-            let said = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let problem = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
             if problem.contains("-1743") { return .denied }
             guard process.terminationStatus == 0 else { return .failed }
-            if said == "closed" { return .closed }
-            if said.hasPrefix("count "), let n = Int(said.dropFirst(6)) { return .count(n) }
-            return .failed
+            let text = String(data: said, encoding: .utf8) ?? ""
+            return .text(text.hasSuffix("\n") ? String(text.dropLast()) : text)
         }.value
     }
 }
@@ -1387,8 +1526,11 @@ final class StudyFindRun: ObservableObject {
     @Published private(set) var closeProblem: StudyFindTabCloser.Outcome?
     private(set) var browserName = "your browser"
     private var browserID: String?
-    /// The browser has answered a close once: later closes wait less.
+    /// The browser has answered once: later calls wait less.
     private var closeAnswered = false
+    /// The tab Wisp claimed as its own right after the last open, and its
+    /// window's tabs at that moment (hashes only, for the re-check at close).
+    private var claim: (gen: Int, tab: StudyFindTabCloser.Tab, window: [StudyFindTabCloser.Tab], opened: String)?
     @Published private(set) var items: [StudyFoundItem] = []
     /// Item id → the text Wisp read from that course page.
     @Published private(set) var texts: [String: String] = [:]
@@ -1539,6 +1681,7 @@ final class StudyFindRun: ObservableObject {
         tabsClosed = 0
         closeProblem = nil
         closeAnswered = false
+        claim = nil
         counts = nil
         titlesByURL = [:]
         sentTypes = [:]
@@ -1551,6 +1694,7 @@ final class StudyFindRun: ObservableObject {
         } else {
             browserID = nil
         }
+        if browserID.map({ !StudyFindTabCloser.scriptable.contains($0) }) ?? true { closeProblem = .unsupported }
         task = Task { [weak self] in await self?.walk(gen) }
     }
 
@@ -1617,7 +1761,7 @@ final class StudyFindRun: ObservableObject {
             previousCount = now.truncated ? nil : now.links.count
         }
         let modulesPage = page ?? best
-        await closeLast(landed: modulesPage.flatMap { $0.isNew ? $0.url : nil }, gen: gen)
+        await closeLast(landed: modulesPage?.url, gen: gen)
         guard live(gen) else { return }
         if let modulesPage {
             c.modulesLinks = modulesPage.links.count
@@ -1651,7 +1795,9 @@ final class StudyFindRun: ObservableObject {
             let landing = await land(opened: section.url.absoluteString, before: before, allowsOff: false, gen: gen,
                                      until: min(runDeadline, Date().addingTimeInterval(Self.pageWait)))
             guard live(gen) else { return }
-            if case .course(let read)? = landing, read.isNew { await closeLast(landed: read.url, gen: gen) }
+            if case .course(let read)? = landing { await closeLast(landed: read.url, gen: gen) } else {
+                await closeLast(landed: nil, gen: gen)
+            }
             guard live(gen) else { return }
             guard case .course(let landed)? = landing, t.allows(landed.url), !t.isLaunchPage(landed.url),
                   StudyFindGuard.refusal(title: "", url: landed.url, type: nil) == nil
@@ -1724,9 +1870,9 @@ final class StudyFindRun: ObservableObject {
                                      until: min(runDeadline, Date().addingTimeInterval(Self.pageWait)))
             guard live(gen) else { return }
             switch landing {
-            case .course(let read)?: await closeLast(landed: read.isNew ? read.url : nil, gen: gen)
-            case .off(let address)?: await closeLast(landed: address, gen: gen)   // only ever a new tab's address
-            case nil: break
+            case .course(let read)?: await closeLast(landed: read.url, gen: gen)
+            case .off(let address)?: await closeLast(landed: address, gen: gen)
+            case nil: await closeLast(landed: nil, gen: gen)
             }
             guard live(gen) else { return }
             switch landing {
@@ -1878,34 +2024,76 @@ final class StudyFindRun: ObservableObject {
         return nil
     }
 
+    /// Opens `url`; when tabs can be closed, lists the browser's tabs just
+    /// before and claims the one new tab just after (StudyFindTabCloser).
     private func open(_ url: URL) async -> Bool {
+        let gen = generation
+        claim = nil
+        let browser = closeProblem == nil ? browserID : nil
+        var before: [StudyFindTabCloser.Tab]?
+        let opened = url.absoluteString
+        if let browser { before = await listTabs(browser, gen: gen, opened: opened) }
         let ok = await opener(url)
-        if ok { tabsOpened += 1 }
+        guard ok else { return false }
+        tabsOpened += 1
+        if let browser, let before, gen == generation, closeProblem == nil {
+            for _ in 0..<4 {
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                guard gen == generation, let after = await listTabs(browser, gen: gen, opened: opened) else { break }
+                // Its address is kept only when it is the opened one, loading, or on the course.
+                if let tab = StudyFindTabCloser.newTab(before: before, after: after,
+                                                       byID: StudyFindTabCloser.tabIDs.contains(browser)),
+                   tab.url != nil {
+                    claim = (gen, tab, after.filter { $0.window == tab.window }, opened)
+                    break
+                }
+            }
+        }
         return ok
     }
 
-    /// Closes the tab just read, for run `gen`. `landed` is the address read on
-    /// a tab proven to be Wisp's own (new since the snapshot, by its
-    /// Accessibility identity), or nil. Nil closes nothing: a tab Wisp can't
-    /// prove is its own is left open, and is never closed by the address Wisp
-    /// opened (its tab may have redirected, and the student may have that page
-    /// open themselves). The closer then acts only while exactly one tab has
-    /// `landed`. Leaving a tab open is the safe failure.
-    private func closeLast(landed: String?, gen: Int) async {
-        guard let landed, gen == generation, closeProblem == nil else { return }
-        guard let browser = browserID else {
-            closeProblem = .unsupported
-            return
+    /// The browser's tabs, addresses as hashes except one Wisp may claim.
+    private func listTabs(_ browser: String, gen: Int, opened: String) async -> [StudyFindTabCloser.Tab]? {
+        let t = target
+        let listing = await StudyFindTabCloser.list(browser: browser, wait: closeAnswered ? 8 : 60) { url in
+            url.isEmpty || StudyFindTarget.samePage(url, opened) || t.allows(url)
         }
-        let outcome = await StudyFindTabCloser.close(landed, browser: browser, wait: closeAnswered ? 8 : 60)
+        guard gen == generation else { return nil }
+        switch listing {
+        case .tabs(let tabs):
+            closeAnswered = true
+            return tabs
+        case .denied:
+            closeProblem = .denied
+        case .timedOut:
+            closeProblem = .timedOut
+        case .failed:
+            break
+        }
+        return nil
+    }
+
+    /// Closes the tab Wisp claimed at the last open, now that it has been read
+    /// (or given up on), for run `gen`: only if it is still at the address Wisp
+    /// opened or the one it read (`landed`). No claim, no close.
+    private func closeLast(landed: String?, gen: Int) async {
+        guard let held = claim, held.gen == gen, gen == generation else { return }
+        claim = nil
+        guard closeProblem == nil, let browser = browserID else { return }
+        let addresses = [held.opened, landed ?? held.opened]
+        // Re-listed first: the claimed tab must still be the same tab, at one of
+        // those addresses, with its window otherwise unchanged (by position).
+        guard let now = await listTabs(browser, gen: gen, opened: held.opened), gen == generation,
+              StudyFindTabCloser.stillOurs(held.tab, claimWindow: held.window, now: now, addresses: addresses,
+                                           byID: StudyFindTabCloser.tabIDs.contains(browser))
+        else { return }
+        let outcome = await StudyFindTabCloser.close(held.tab, addresses: addresses,
+                                                     browser: browser, wait: closeAnswered ? 8 : 60)
         guard gen == generation else { return }
         switch outcome {
-        case .closed:
-            tabsClosed += 1
-            closeAnswered = true
-        case .notOne: closeAnswered = true
+        case .closed: tabsClosed += 1
         case .denied, .unsupported, .timedOut: closeProblem = outcome
-        case .failed: break
+        case .notOne, .failed: break
         }
     }
 
