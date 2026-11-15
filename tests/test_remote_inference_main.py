@@ -38,6 +38,7 @@ class MainChecks(RemoteFixture):
     def test_startup_remote_health_without_local_or_background_and_closes(self):
         fake=SimpleNamespace(health=AsyncMock(return_value={'ok':True}),aclose=AsyncMock())
         q=ModuleType('service.config.quarantine');q.check=Mock()
+        q.guard_client=lambda client:client  # service.errors -> omlx_client imports it; same shape as the real wrapper
         async def watch(tasks,close):
             self.assertEqual(len(tasks),1);await asyncio.Event().wait()  # exactly the assistant scheduler
         q.watch=watch
