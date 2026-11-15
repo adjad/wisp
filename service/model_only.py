@@ -697,6 +697,38 @@ def chat_reminder_hint(title: str) -> str:
             "tool that clears many reminders.")
 
 
+# --- "Set a reminder at 9:00 a.m. tomorrow for Mom's birthday" ---------------
+# 2026-11-15: the model read "for Mom's birthday" as "on the birthday's date",
+# looked the birthday up in Contacts, found none and refused, though the person
+# had given both the time and the title. The typed compiler resolves the
+# request; when it is complete (one reminder, an explicit time, a title) the
+# turn creates exactly that and no contact dates are looked up. "Remind me on
+# Mom's birthday" has no time, so it does not qualify and keeps its lookup.
+def typed_reminder(prompt: str, *, now=None) -> dict | None:
+    """add_reminder's arguments for a complete single-reminder request, else None."""
+    from service.tasks.compiler import compile_reminder_create
+    try:
+        plan = compile_reminder_create(prompt, now=now)
+    except Exception:  # noqa: BLE001 — a compiler miss leaves the turn to the model
+        return None
+    if (plan is None or plan.status != "ready" or not plan.subject.value
+            or not plan.temporal.absolute_iso or plan.temporal.reference):
+        return None
+    # Two clock times ("at 9 … and text Dad at 5") are two things to do, or one
+    # unclear alert: the model reads those itself.
+    if len(re.findall(r"\b(?:at|by|@)\s*\d{1,2}(?::\d{2})?\b|\b\d{1,2}(?::\d{2})?\s*[ap]\.?\s?m\b"
+                      r"|\b(?:noon|midnight)\b", plan.original_request, re.I)) > 1:
+        return None
+    return {"title": plan.subject.value, "when_iso": plan.temporal.absolute_iso, "kind": "reminder"}
+
+
+def typed_reminder_hint(args: dict) -> str:
+    return (f"THIS REMINDER: the user gave its time and title. Call add_reminder now with "
+            f"title=\"{args['title'][:120]}\" and when_iso=\"{args['when_iso']}\". The time they "
+            "gave is when it goes off; do not look up a birthday, anniversary or any other date, "
+            "and do not ask for one.")
+
+
 # --- "Reply to Dana's last email and say yes" --------------------------------
 # Same run: only view_emails ran, searching for the instruction's own words
 # ("Reply to Dana"), and the answer was that nothing was found. The sender's

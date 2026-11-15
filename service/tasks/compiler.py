@@ -815,6 +815,11 @@ def compile_email_reply(text: str, *, now: datetime | None = None,
     return plan
 
 
+# What may follow a `for` that starts a time rather than a title.
+_TIME_LEAD = (r"(?:me\b|today\b|tonight\b|tomorrow\b|tmrw\b|noon\b|midnight\b|next\b|this\b|"
+              r"(?:mon|tues?|wed(?:nes)?|thu(?:rs)?|fri|sat(?:ur)?|sun)(?:day)?\b|\d)")
+
+
 def _clean_subject(value: str) -> str:
     value = _TRAILING_TIME.sub("", value.strip().strip('*_'))
     value = _TRAILING_NAMED_DATE.sub("", value)
@@ -842,14 +847,27 @@ def extract_reminder_subject(text: str) -> str:
         # Greedy before `for`: "set an alarm for me tomorrow for the repair"
         # uses the last `for` for the subject; the first only marks ownership.
         r"\bset\s+(?:an?\s+)?alarm\b.*\bfor\s+(?P<subject>.+)$",
+        # "Set a reminder at 9:00 a.m. tomorrow for Mom's birthday", "remind me
+        # tomorrow at 9 about Mom's birthday": with no `to`, what follows
+        # `for`/`about` is the title (2026-11-15: read as "on the birthday's
+        # date", so the model looked the birthday up and refused). A `for`
+        # that only starts a time ("for 9am", "for tomorrow") is skipped.
+        r"\b(?:remind\s+me|(?:add|create|make|schedule|set(?:\s+up)?)\s+(?:me\s+)?"
+        r"(?:(?:an?|the|my)\s+)?reminder(?:\s+for\s+me)?)\b.*?\b(?:for|about|of)\s+"
+        r"(?!" + _TIME_LEAD + r")(?P<subject>.+)$",
     ]
     for pattern in patterns:
         match = re.search(pattern, text, re.I)
         if match:
             if any(left < match.start('subject') < right for left, right in quoted_spans(text)):
                 continue  # A quoted 'to' is not an outer subject introducer.
-            subject = match.group("subject")
-            return _clean_subject(subject)
+            subject = _clean_subject(match.group("subject"))
+            if pattern is patterns[-1]:
+                # A `for`/`about` title is followed by the whole alert ("at 5pm
+                # Friday"): strip every trailing time piece, not just the last.
+                while (cleaner := _clean_subject(subject)) != subject:
+                    subject = cleaner
+            return subject
     return ""
 
 
@@ -931,8 +949,18 @@ def _conflicting_reminder_days(scoped_alerts: str, temporal_text: str, now: date
     return bool(chosen and label_days and next(iter(chosen)).weekday() not in label_days)
 
 
+_DOTTED_MERIDIEM = re.compile(r"(?<=\d)\s*([ap])\.\s?m\.?(?=\W|$)", re.I)
+
+
+def _plain_meridiem(text: str) -> str:
+    """"9:00 a.m." as "9:00 am": the dots otherwise end a clause mid-request
+    (2026-11-15: "Set a reminder at 9:00 a.m. tomorrow for …" became two)."""
+    return _DOTTED_MERIDIEM.sub(lambda m: " " + m.group(1).lower() + "m", text or "")
+
+
 def compile_reminder_create(text: str, *, now: datetime | None = None,
                             turn: int = 0) -> TaskPlan | None:
+    text = _plain_meridiem(text)
     parts = _reminder_parts(text)
     command = parts[0] if parts else text
     if (not parts or CAPABILITY_INVENTORY_RE.search(command if reminder_subject_labelled(parts) else text)
