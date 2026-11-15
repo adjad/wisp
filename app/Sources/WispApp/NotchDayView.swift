@@ -530,12 +530,7 @@ struct NotchDayView: View {
         let busy = row.todoID.map { proactive.todoBusy.contains($0) } ?? false
         return HStack(alignment: .center, spacing: 9) {
             Image(systemName: row.symbol).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).frame(width: 15)
-            Text(row.title).font(.wisp(size: 13)).foregroundStyle(Theme.textPrimary)
-                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
-                .help(row.title)
-            if !row.detail.isEmpty {
-                Text(row.detail).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
-            }
+            fitText(row)
             Spacer(minLength: 6)
             if let todo {
                 if busy {
@@ -557,6 +552,36 @@ struct NotchDayView: View {
             }
         }
         .accessibilityElement(children: .contain)
+    }
+
+    /// A Still to fit row's title and why it is there: side by side when both
+    /// fit whole, else the reason under the title, wrapping between words. The
+    /// reason was one line beside the title and was cut mid-number.
+    @ViewBuilder private func fitText(_ row: DayFitRow) -> some View {
+        if row.detail.isEmpty {
+            fitTitle(row, lines: 2)
+        } else {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: 9) {
+                    fitTitle(row, lines: 1).fixedSize()
+                    fitDetail(row).fixedSize()
+                }
+                VStack(alignment: .leading, spacing: 1) {
+                    fitTitle(row, lines: 2)
+                    fitDetail(row).lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private func fitTitle(_ row: DayFitRow, lines: Int) -> some View {
+        Text(row.title).font(.wisp(size: 13)).foregroundStyle(Theme.textPrimary)
+            .lineLimit(lines).fixedSize(horizontal: false, vertical: true)
+            .help(row.title)
+    }
+
+    private func fitDetail(_ row: DayFitRow) -> some View {
+        Text(row.detail).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
     }
 
     /// The day's first planner warning, in plain words. A source Wisp can't

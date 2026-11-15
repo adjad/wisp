@@ -285,7 +285,7 @@ func dayChecks(_ check: (Bool, String) -> Void) {
           == "This time has passed. Move it or mark it done.", "past pin warning")
     check(DayTimeline.plainWarning("Something new") == "Something new", "an unknown warning passes through")
     check(DayTimeline.plainReason("Needs 90 uninterrupted minutes; largest available gap before the deadline or end of working hours is 40 minutes")
-          == "no long enough gap (the longest free stretch is 40 min)", "unscheduled reason")
+          == "no gap long enough (the longest is 40\u{00A0}min)", "unscheduled reason: short, the number kept with its unit")
 
     // The Day blurb.
     let blurb = DayTimeline.blurb(timeline, needs: needs, isToday: true, endOfDay: dayEnd, clock: clock)
@@ -882,7 +882,7 @@ func dayTodoChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: Doubl
         blocks: blocks, needs: needs, now: now, dayStart: dayStart, dayEnd: dayEnd, isToday: true, dayClock: dayClock)
     check(fit.map(\.id) == ["task:t1", "todo:dana", "todo:dateonly", "todo:eod", "todo:old"],
           "still to fit, in order: \(fit.map(\.id))")
-    check(fit[0].symbol == "clock" && fit[0].todoID == nil && fit[0].detail.hasPrefix("No long enough gap"),
+    check(fit[0].symbol == "clock" && fit[0].todoID == nil && fit[0].detail.hasPrefix("No gap long enough"),
           "a planner task says why it didn't fit: \(fit[0].detail)")
     check(fit[1].symbol == "envelope" && fit[1].detail == "Dana Lee · This week" && fit[1].todoID == "dana",
           "an undated to-do shows its source, who and when: \(fit[1].detail)")
@@ -919,6 +919,28 @@ func dayTodoChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: Doubl
     let settledBlurb = DayTimeline.blurb(settled, needs: [], isToday: true, endOfDay: dayEnd, clock: clock, dayStart: dayStart)
     check(settledBlurb.contains("on the clock") && !settledBlurb.contains("overdue") && !settledBlurb.contains("suggested")
           && settledBlurb.contains("Clear after " + clock(now + 60 + 45 * 60)), "summary after both fixes: \(settledBlurb)")
+
+    // The summary counts what the agenda draws: four things at a time (an event,
+    // a study block, a plan caught in texts, a to-do at its time) and two due by
+    // a time (school work due tonight, a to-do due by then). It once counted
+    // only the event and the block and said "nothing else planned".
+    let schoolDue = DayNeedInput(id: "cs101-hw", title: "CS 101 problem set", source: "study", due: now + 5 * 3600)
+    let counted = DayTimeline.build(
+        blocks: [DayBlockInput(id: "e", title: "Office hours", start: now + 1800, end: now + 3600, kind: "calendar"),
+                 DayBlockInput(id: "study-block:cs101:1", title: "Study: CS 101", start: now + 2 * 3600, end: now + 3 * 3600, kind: "study")],
+        allDay: [], needs: [schoolDue],
+        caught: [DayCaughtInput(id: "c", title: "Dinner with Sam Rivera", when: now + 4 * 3600, state: "shadow")],
+        now: now, dayStart: dayStart, dayEnd: dayEnd, workStart: at(9), workEnd: at(18), isToday: true,
+        clock: clock, dayClock: dayClock,
+        todos: [DayTodoInput(id: "call", title: "Call the lab", source: "mail", due: now + 3 * 3600 + 1800, kind: "call"),
+                DayTodoInput(id: "form", title: "Send the QNT 210 form", source: "mail", due: now + 4 * 3600 + 1800)])
+    check(counted.items.filter(DayTimeline.isOnTheClock).count == 4 && counted.items.filter(DayTimeline.isDueBy).count == 2,
+          "the agenda draws four at a time and two due: \(counted.items.map { ($0.id, $0.style) })")
+    let countedBlurb = DayTimeline.blurb(counted, needs: [], isToday: true, endOfDay: dayEnd, clock: clock, dayStart: dayStart)
+    check(countedBlurb.hasPrefix("Four things on the clock and two due today."), "the summary counts the agenda: \(countedBlurb)")
+    check(DayTimeline.clockAndDue(0, 1, isToday: false) == "one thing due that day, nothing on the clock"
+          && DayTimeline.clockAndDue(1, 3, isToday: true) == "one thing on the clock and three due today",
+          "the count's words")
 
     // Sources and kinds.
     check(DayTimeline.sourceSymbol("mail") == "envelope" && DayTimeline.sourceSymbol("messages") == "message"
