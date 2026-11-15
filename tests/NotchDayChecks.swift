@@ -496,6 +496,7 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     briefSummaryChecks(check, dayStart: dayStart, now: now)
 
     dayTodoChecks(check, dayStart: dayStart, now: now, clock: clock, dayClock: dayClock)
+    dayWeekChecks(check, dayStart: dayStart, now: now)
 
     // How busy the calendar is: one verdict for the CAL line and the lede.
     func event(_ title: String, _ start: Double, _ end: Double?) -> DayLoad.Event {
@@ -1103,4 +1104,88 @@ func firstDayChecks(_ check: (Bool, String) -> Void, dayStart: Double, dayEnd: D
             .contains("Pin") == false, "the all-day warning never asks the notch user to pin")
     check(DayTimeline.afterHoursLine(start: 540, end: 1080) == "It's after your working hours (9 AM–6 PM), so nothing new is placed today.",
           "after-hours line names the hours")
+}
+
+/// The Day's week row (C3): the week's dates in the person's week order, the
+/// shown day's load and count, and nothing invented for any other day.
+func dayWeekChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: Double) {
+    let hour = 3600.0
+    func at(_ h: Double) -> Double { dayStart + h * hour }
+    var utc = Calendar(identifier: .gregorian)
+    utc.timeZone = TimeZone(identifier: "UTC")!
+    // 2026-11-14 is a Saturday.
+    let saturday = utc.date(from: DateComponents(year: 2026, month: 11, day: 14, hour: 13))!
+    var monday = utc
+    monday.firstWeekday = 2
+    let mondayWeek = DayWeek.cards(shown: saturday, today: saturday, calendar: monday, shownLoad: nil)
+    check(mondayWeek.map(\.weekday) == ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
+          && mondayWeek.map(\.number) == [9, 10, 11, 12, 13, 14, 15],
+          "a Monday-first week runs Mon 9 to Sun 15: \(mondayWeek.map(\.weekday)) \(mondayWeek.map(\.number))")
+    check(mondayWeek.map(\.day).first == "2026-11-09" && mondayWeek.map(\.day).last == "2026-11-15",
+          "each card keys its day as the snapshot route takes it")
+    check(mondayWeek.filter(\.isToday).map(\.weekday) == ["SAT"] && mondayWeek.filter(\.isShown).map(\.weekday) == ["SAT"],
+          "today is the one shown")
+    var sunday = utc
+    sunday.firstWeekday = 1
+    let sundayWeek = DayWeek.cards(shown: saturday, today: saturday, calendar: sunday, shownLoad: nil)
+    check(sundayWeek.map(\.weekday) == ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"]
+          && sundayWeek.first?.number == 8 && sundayWeek.last?.number == 14,
+          "a Sunday-first week ends on Saturday 14: \(sundayWeek.map(\.number))")
+    let sundayShown = utc.date(from: DateComponents(year: 2026, month: 11, day: 15, hour: 9))!
+    check(DayWeek.dates(containing: sundayShown, calendar: monday).count == 7
+          && DayWeek.cards(shown: sundayShown, today: saturday, calendar: monday, shownLoad: nil).last?.isShown == true,
+          "a Sunday in a Monday-first week is its last day")
+    let monthEnd = utc.date(from: DateComponents(year: 2026, month: 12, day: 31, hour: 12))!
+    check(DayWeek.cards(shown: monthEnd, today: saturday, calendar: monday, shownLoad: nil).map(\.number) == [28, 29, 30, 31, 1, 2, 3]
+          && DayWeek.cards(shown: monthEnd, today: saturday, calendar: monday, shownLoad: nil).allSatisfy { !$0.isToday },
+          "a week across the year's end; today is in another week")
+
+    // Load: commitments only, clipped to the day, overlaps once.
+    let blocks = [
+        DayBlockInput(id: "a", title: "Lecture", start: at(9), end: at(10.5), kind: "calendar"),
+        DayBlockInput(id: "b", title: "Lab", start: at(10), end: at(11), kind: "calendar"),
+        DayBlockInput(id: "s", title: "Study: Lab 5", start: at(16), end: at(16.75), kind: "study"),
+        DayBlockInput(id: "x", title: "Work on PA 2", start: at(20), end: at(21.5), kind: "suggestion"),
+        DayBlockInput(id: "u", title: "Usually busy", start: at(12), end: at(13), kind: "behavior"),
+        DayBlockInput(id: "n", title: "n/a", start: at(14), end: at(15), kind: "calendar"),
+        DayBlockInput(id: "late", title: "Late show", start: at(23), end: at(25), kind: "calendar"),
+        DayBlockInput(id: "open", title: "Open end", start: at(18), end: nil, kind: "calendar"),
+    ]
+    let spans = DayWeek.spans(blocks, dayStart: dayStart, dayEnd: at(24))
+    check(spans.count == 5 && !spans.contains { $0.start == at(20) || $0.start == at(12) || $0.start == at(14) },
+          "suggestions, usual windows and placeholder events add no load: \(spans.count)")
+    check(spans.contains { $0.start == at(23) && $0.end == at(24) } && spans.contains { $0.start == at(18) && $0.end == at(18.5) },
+          "a late event is clipped at midnight; one without an end holds half an hour")
+    let span = DayWeek.span(workStart: at(9), workEnd: at(17), spans: spans, dayStart: dayStart, dayEnd: at(24))
+    check(span.start == at(9) && span.end == at(24), "the bar spans working hours, widened to what is held: \(span)")
+    let narrowSpan = DayWeek.span(workStart: at(9.5), workEnd: at(17.25), spans: [], dayStart: dayStart, dayEnd: at(24))
+    check(narrowSpan.start == at(9) && narrowSpan.end == at(18), "to whole hours")
+    let load = DayWeek.load(onClock: 3, due: 2, spans: spans, span: span, now: at(12))
+    check(load.minutes == 120 + 45 + 30 + 60, "overlapping events count once: \(load.minutes) min")
+    check(load.segments.count == 4 && load.segments[0].from == 0 && abs(load.segments[0].to - 2.0 / 15) < 1e-9
+          && load.segments[0].past && !load.segments[1].past,
+          "segments merge and sit on the span; what ended before now is past: \(load.segments)")
+    check(load.now.map { abs($0 - 3.0 / 15) < 1e-9 } == true, "now on the bar")
+    check(DayWeek.load(onClock: 1, due: 0, spans: spans, span: span, now: at(7)).now == nil
+          && DayWeek.load(onClock: 1, due: 0, spans: spans, span: span, now: nil).segments.allSatisfy { !$0.past },
+          "no now tick outside the span, nor on another day; nothing past there")
+
+    // Counts and words.
+    func bar(_ n: Int, _ d: Int) -> DayLoadBar { DayLoadBar(onClock: n, due: d, minutes: 0, segments: [], now: nil) }
+    check(DayWeek.countText(bar(3, 2)) == "3 · 2 due" && DayWeek.countText(bar(3, 0)) == "3"
+          && DayWeek.countText(bar(0, 2)) == "2 due" && DayWeek.countText(bar(0, 0)) == "free",
+          "card counts: 3 · 2 due, 3, 2 due, free")
+    check(DayWeek.shortCountText(bar(3, 2)) == "3" && DayWeek.shortCountText(bar(0, 2)) == "2 due",
+          "with less room, the things on the clock alone")
+    var cards = DayWeek.cards(shown: saturday, today: saturday, calendar: monday, shownLoad: bar(3, 2))
+    check(cards.filter { $0.load != nil }.map(\.weekday) == ["SAT"], "only the shown day carries a load")
+    check(DayWeek.spoken(cards[5]) == "Saturday 14, today, 3 things and 2 due", DayWeek.spoken(cards[5]))
+    check(DayWeek.spoken(cards[2]) == "Wednesday 11", "a day Wisp hasn't read is its date alone: \(DayWeek.spoken(cards[2]))")
+    cards = DayWeek.cards(shown: utc.date(byAdding: .day, value: -3, to: saturday)!, today: saturday, calendar: monday,
+                          shownLoad: bar(4, 0))
+    check(DayWeek.spoken(cards[2]) == "Wednesday 11, shown, 4 things" && DayWeek.spoken(cards[5]) == "Saturday 14, today",
+          "another day shown: its load; today's date alone: \(DayWeek.spoken(cards[2])) / \(DayWeek.spoken(cards[5]))")
+    check(DayWeek.spoken(DayWeek.cards(shown: saturday, today: saturday, calendar: monday, shownLoad: bar(0, 0))[5])
+          == "Saturday 14, today, free", "free")
+    _ = now
 }

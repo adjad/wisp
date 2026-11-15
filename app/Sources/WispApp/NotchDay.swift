@@ -261,6 +261,160 @@ struct DayAgenda: Equatable {
     }
 }
 
+// MARK: - The week row
+
+/// One day card in the Day tab's week row. Only a day whose plan Wisp has
+/// actually read (the day on screen, with Calendar readable) carries a load;
+/// every other day shows its date alone, never an invented bar or count.
+struct DayWeekCard: Equatable, Identifiable {
+    /// "2026-11-11", the key `GET /assistant/today?day=` takes.
+    let day: String
+    let date: Date
+    /// "WED" and "Wednesday".
+    let weekday: String
+    let weekdayName: String
+    let number: Int
+    let isToday: Bool
+    /// The day the tab shows.
+    let isShown: Bool
+    var load: DayLoadBar? = nil
+    var id: String { day }
+}
+
+/// A day's load as its card draws it: how many things are on the clock and
+/// due, and the stretches its timed things hold, as fractions of the bar.
+struct DayLoadBar: Equatable {
+    struct Segment: Equatable {
+        let from: Double
+        let to: Double
+        /// Over before now, on today: drawn dim.
+        let past: Bool
+    }
+
+    let onClock: Int
+    let due: Int
+    /// Minutes the timed things hold, overlaps counted once.
+    let minutes: Int
+    let segments: [Segment]
+    /// Where now falls on the bar, on today while it is inside the bar's span.
+    let now: Double?
+}
+
+enum DayWeek {
+    static let weekdays = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"]
+    static let weekdayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+
+    /// The seven days of the week holding `date`, in `calendar`'s own week
+    /// order (its firstWeekday), each at its midnight in the calendar's zone.
+    static func dates(containing date: Date, calendar: Calendar) -> [Date] {
+        let day = calendar.startOfDay(for: date)
+        let weekday = calendar.component(.weekday, from: day)
+        let back = (weekday - calendar.firstWeekday + 7) % 7
+        guard let first = calendar.date(byAdding: .day, value: -back, to: day) else { return [day] }
+        return (0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: first) }
+    }
+
+    /// The week row for the week holding `shown`: `shownLoad` goes on the shown
+    /// day's card only.
+    static func cards(shown: Date, today: Date, calendar: Calendar, shownLoad: DayLoadBar?) -> [DayWeekCard] {
+        let key: (Date) -> String = { date in
+            let parts = calendar.dateComponents([.year, .month, .day], from: date)
+            return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
+        }
+        let shownKey = key(shown)
+        let todayKey = key(today)
+        return dates(containing: shown, calendar: calendar).map { date in
+            let index = max(0, min(6, calendar.component(.weekday, from: date) - 1))
+            let day = key(date)
+            return DayWeekCard(day: day, date: date, weekday: weekdays[index], weekdayName: weekdayNames[index],
+                               number: calendar.component(.day, from: date), isToday: day == todayKey,
+                               isShown: day == shownKey, load: day == shownKey ? shownLoad : nil)
+        }
+    }
+
+    /// The stretches of the day that real commitments hold: calendar events and
+    /// planned or study blocks, clipped to the day. Suggestions and learned
+    /// "usually busy" windows are not commitments, so they never add load.
+    static func spans(_ blocks: [DayBlockInput], dayStart: Double, dayEnd: Double) -> [(start: Double, end: Double)] {
+        blocks.compactMap { block in
+            guard !["suggestion", "behavior", "behavior_away"].contains(block.kind) else { return nil }
+            let fromCalendar = block.kind == "calendar" || block.kind == "manual"
+            guard fromCalendar ? !DayTimeline.isPlaceholderEvent(block.title) : !DayTimeline.isJunk(block.title) else { return nil }
+            let end = block.end.flatMap { $0 > block.start ? $0 : nil } ?? block.start + 30 * 60
+            let from = max(block.start, dayStart), to = min(end, dayEnd)
+            return to > from ? (from, to) : nil
+        }
+    }
+
+    /// The bar's span: working hours, widened to whole hours around anything
+    /// held outside them, never past the day.
+    static func span(workStart: Double, workEnd: Double, spans: [(start: Double, end: Double)],
+                     dayStart: Double, dayEnd: Double) -> (start: Double, end: Double) {
+        let first = min(workStart, spans.map(\.start).min() ?? workStart)
+        let last = max(workEnd, spans.map(\.end).max() ?? workEnd)
+        let start = max(dayStart, DayTimeline.floorHour(first, dayStart: dayStart))
+        let end = min(dayEnd, DayTimeline.ceilHour(last, dayStart: dayStart))
+        return end > start ? (start, end) : (dayStart, dayEnd)
+    }
+
+    /// The card's load: counts as the summary gives them, and `spans` merged
+    /// and placed on the bar's span. `now` only on today.
+    static func load(onClock: Int, due: Int, spans: [(start: Double, end: Double)],
+                     span: (start: Double, end: Double), now: Double?) -> DayLoadBar {
+        var merged: [(start: Double, end: Double)] = []
+        for s in spans.sorted(by: { ($0.start, $0.end) < ($1.start, $1.end) }) {
+            if let last = merged.last, s.start <= last.end {
+                merged[merged.count - 1].end = max(last.end, s.end)
+            } else {
+                merged.append(s)
+            }
+        }
+        let width = max(1, span.end - span.start)
+        let fraction: (Double) -> Double = { min(1, max(0, ($0 - span.start) / width)) }
+        let segments = merged.compactMap { s -> DayLoadBar.Segment? in
+            let from = fraction(s.start), to = fraction(s.end)
+            guard to > from else { return nil }
+            return DayLoadBar.Segment(from: from, to: to, past: now.map { s.end <= $0 } ?? false)
+        }
+        let minutes = Int((merged.reduce(0) { $0 + ($1.end - $1.start) } / 60).rounded())
+        let nowAt = now.flatMap { $0 >= span.start && $0 <= span.end ? fraction($0) : nil }
+        return DayLoadBar(onClock: onClock, due: due, minutes: minutes, segments: segments, now: nowAt)
+    }
+
+    /// The card's count: "3", "3 · 2 due", "2 due", "free".
+    static func countText(_ load: DayLoadBar) -> String {
+        switch (load.onClock, load.due) {
+        case (0, 0): return "free"
+        case (let n, 0): return "\(n)"
+        case (0, let d): return "\(d) due"
+        case (let n, let d): return "\(n) · \(d) due"
+        }
+    }
+
+    /// The count when the full one doesn't fit: the things on the clock alone.
+    static func shortCountText(_ load: DayLoadBar) -> String {
+        load.onClock > 0 ? "\(load.onClock)" : countText(load)
+    }
+
+    /// The card for VoiceOver: "Wednesday 11, 4 things", "Saturday 14, today,
+    /// 3 things and 2 due", "Sunday 15, free", or the date alone without a load.
+    static func spoken(_ card: DayWeekCard) -> String {
+        var parts = ["\(card.weekdayName) \(card.number)"]
+        if card.isToday { parts.append("today") }
+        if card.isShown && !card.isToday { parts.append("shown") }
+        if let load = card.load {
+            let things = "\(load.onClock) thing\(load.onClock == 1 ? "" : "s")"
+            switch (load.onClock, load.due) {
+            case (0, 0): parts.append("free")
+            case (_, 0): parts.append(things)
+            case (0, let d): parts.append("\(d) due")
+            case (_, let d): parts.append(things + " and \(d) due")
+            }
+        }
+        return parts.joined(separator: ", ")
+    }
+}
+
 struct DayTimeline: Equatable {
     /// Hour-aligned range the lane covers.
     let from: Double
