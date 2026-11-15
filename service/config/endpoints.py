@@ -13,6 +13,14 @@ class EndpointConfigurationError(ValueError):
     pass
 
 
+class ProviderCredentialError(EndpointConfigurationError):
+    """A connected cloud provider's key could not be read from Keychain."""
+
+
+class ProviderCredentialMissing(ProviderCredentialError):
+    """A connected cloud provider has no key saved: the person reconnects it."""
+
+
 def is_loopback(url: str) -> bool:
     host = urlsplit(url).hostname or ""
     if host == "localhost":

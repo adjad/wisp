@@ -27,12 +27,44 @@ from service.inference.omlx_client import (
 
 _RetryHook = Callable[[], Awaitable[None]] | None
 
+# Where the cloud key is entered again (SettingsView's Models page, Cloud inference).
+RECONNECT_KEY_MESSAGE = ("Reconnect your cloud AI key: Wisp can't find it in Keychain. Open Settings › Models, "
+                         "paste your key under Cloud inference and choose Test & Save.")
+UNREADABLE_KEY_MESSAGE = ("Wisp couldn't read your cloud AI key from Keychain. If macOS asks, enter "
+                          "your login password and choose Always Allow. If it keeps happening, "
+                          "reconnect your key: Settings › Models, paste it under Cloud inference "
+                          "and choose Test & Save.")
+
+
+def _credential_failure(exc: BaseException):
+    """The provider-key failure behind exc (raised directly, or wrapped by a caller)."""
+    from service.config.endpoints import ProviderCredentialError
+    seen = 0
+    while exc is not None and seen < 8:
+        if isinstance(exc, ProviderCredentialError):
+            return exc
+        exc = exc.__cause__ or (None if exc.__suppress_context__ else exc.__context__)
+        seen += 1
+    return None
+
+
+def credential_message(exc: BaseException) -> str | None:
+    """The reconnect sentence for a provider-key failure, else None."""
+    from service.config.endpoints import ProviderCredentialMissing
+    found = _credential_failure(exc)
+    if found is None:
+        return None
+    return RECONNECT_KEY_MESSAGE if isinstance(found, ProviderCredentialMissing) else UNREADABLE_KEY_MESSAGE
+
 
 def translate(exc: Exception, *, retry_omlx: _RetryHook = None, endpoint_name: str = "local") -> tuple[str, str]:
     """Returns (message shown to the user, raw detail for the debug export)."""
     detail = f"{type(exc).__name__}: {exc}"
     # Endpoint names are internal identifiers; the user sees what the app is.
     endpoint_name = {"local_provider": "local app"}.get(endpoint_name, endpoint_name)
+
+    if (message := credential_message(exc)) is not None:
+        return message, detail
 
     if isinstance(exc, ModelLoadError):
         # Already a plain, specific message. A machine reason code (for example
