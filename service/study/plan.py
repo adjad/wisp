@@ -9,9 +9,10 @@ from __future__ import annotations
 import math
 import re
 from datetime import date, datetime, time, timedelta
+from urllib.parse import parse_qsl, unquote, urlsplit
 from zoneinfo import ZoneInfo
 
-from service.study import match
+from service.study import canvas_parse, match
 
 DONE = {"submitted", "graded"}
 TESTS = {"quiz", "exam"}
@@ -221,13 +222,107 @@ def _line(today_items, tomorrow_items, near_test, *, now: float, zone: ZoneInfo,
     return text[: LINE_LIMIT - 1].rstrip() + "…"
 
 
+# ---------------------------------------------------------------- the link the student may click
+#
+# Brief and Day may show an "Open" button for an assignment's stored address. The student clicks it,
+# so unlike the Find walker's never-open rule (find.important), a quiz's or exam's own landing page is
+# allowed (marked "quiz_page"). Anything that starts, takes, previews, submits or launches something,
+# signs in or out, carries credentials or a one-time key, or is not a plain https school page is
+# refused. The app re-checks the same short list before it opens anything (StudyLinks.swift).
+
+LINK_WORDS = frozenset({"take", "attempt", "attempts", "preview", "start", "history", "speedgrader",
+                        "externaltools", "lti", "launch", "login", "logout", "signin", "signout", "sso",
+                        "saml", "oauth"})
+_QUIZ_SEGMENTS = frozenset({"quizzes", "quiz", "exams", "exam", "assessments"})
+_TOKEN = re.compile(r"[a-z0-9]+")
+
+
+def _words(text: str) -> set[str]:
+    text = text.lower()
+    return set(_TOKEN.findall(text)) | {re.sub(r"[^a-z0-9]", "", text)}
+
+
+def link(url) -> tuple[str | None, str | None]:
+    """(url, url_kind) for an assignment's stored address, or (None, None) when it must not be
+    offered. url_kind is "quiz_page" for a quiz or exam landing page, else "assignment"."""
+    if not isinstance(url, str) or not url.startswith("https://") or len(url) > 2048:
+        return None, None
+    if any(not 0x21 <= ord(c) <= 0x7E or c in "\\#" for c in url):
+        return None, None          # printable ASCII only: no spaces, controls, backslash or fragment
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return None, None
+    host = parts.hostname or ""
+    if (parts.scheme != "https" or not host or parts.username is not None or parts.password is not None
+            or "@" in parts.netloc or "%" in parts.netloc or port is not None or parts.fragment or not host.isascii()
+            or any(label.startswith("xn--") for label in host.split("."))
+            or not canvas_parse.is_school_url(url)):
+        return None, None
+    path, query = unquote(parts.path), unquote(parts.query)
+    if "%" in path or "%" in query:
+        return None, None          # encoded twice: read as refused, never guessed
+    segments = [s.lower() for s in path.split("/") if s]
+    if any(_words(s) & LINK_WORDS for s in segments):
+        return None, None
+    if any(a == "submissions" and b == "new" for a, b in zip(segments, segments[1:])):
+        return None, None
+    if query:
+        from service.study.find import _SECRET_KEY   # the walker's signed / one-time key names
+        pairs = parse_qsl(parts.query, keep_blank_values=True)
+        if any(_words(k) & LINK_WORDS or _words(v) & LINK_WORDS or _SECRET_KEY.search(k.lower())
+               for k, v in pairs):
+            return None, None
+        if _words(query) & LINK_WORDS:
+            return None, None
+    return url, ("quiz_page" if _QUIZ_SEGMENTS & set(segments) else "assignment")
+
+
 def _item(a: dict) -> dict:
+    url, kind = link(a.get("url"))
     return {"id": a.get("id"), "title": a.get("title"), "course_name": a.get("course_name"),
             "due_ts": _due(a), "all_day": bool(a.get("all_day")), "kind": a.get("kind") or "assignment",
-            "status": a.get("status") or "upcoming"}
+            "status": a.get("status") or "upcoming", "url": url, "url_kind": kind}
 
 
-def day_summary(assignments: list[dict], *, now: float, timezone: str) -> dict:
+DUE_SOON_CAP = 4
+_MATERIAL_ORDER = ("guide", "lesson", "flashcards", "quiz")
+
+
+def _newest(materials: list[dict]) -> list[dict]:
+    return sorted(materials, key=lambda m: (-(m.get("created_at") or 0) if isinstance(m.get("created_at"), (int, float))
+                                            else 0, str(m.get("id") or "")))
+
+
+def _material_for(a: dict, materials: list[dict]) -> dict | None:
+    """The newest material made for this assignment (guide, then lesson, cards, quiz), else the
+    newest guide for its course, else None."""
+    ids = {i for i in _ids(a) if i}
+    mine = [m for m in materials if m.get("assignment_id") in ids and m.get("kind") in _MATERIAL_ORDER]
+    for kind in _MATERIAL_ORDER:
+        hit = next((m for m in mine if m.get("kind") == kind), None)
+        if hit:
+            return {"id": hit.get("id"), "kind": kind, "scope": "assignment", "title": hit.get("title") or ""}
+    course = a.get("course_id")
+    if course:
+        hit = next((m for m in materials if m.get("kind") == "guide" and m.get("course_id") == course), None)
+        if hit:
+            return {"id": hit.get("id"), "kind": "guide", "scope": "course", "title": hit.get("title") or ""}
+    return None
+
+
+def _due_soon(items: list[tuple[dict, str]], materials) -> dict:
+    rows = [m for m in (materials or ()) if isinstance(m, dict) and m.get("id")]
+    rows = _newest(rows)
+    out = [{**_item(a), "course_label": _label(a) or "", "day": word, "material": _material_for(a, rows)}
+           for a, word in items[:DUE_SOON_CAP]]
+    return {"due_soon": out, "due_soon_more": max(0, len(items) - DUE_SOON_CAP)}
+
+
+def day_summary(assignments: list[dict], *, now: float, timezone: str, materials: list[dict] | None = None) -> dict:
+    """``materials``: the store's materials (store.materials(), newest first) so ``due_soon`` can
+    name the guide made for each item; no model call and no write."""
     zone = _zone(timezone)
     today = _local_day(now, zone)
     tomorrow = today + timedelta(days=1)
@@ -255,6 +350,8 @@ def day_summary(assignments: list[dict], *, now: float, timezone: str) -> dict:
                       if next_test else None),
         "line": _line(due_today, due_tomorrow, near, now=now, zone=zone, today=today),
         "sample": bool(rows) and all(bool(a.get("sample")) for a in rows),
+        # Open work due today, then tomorrow, by due time: the Brief's Ready rows link to it.
+        **_due_soon([(a, "today") for a in due_today] + [(a, "tomorrow") for a in due_tomorrow], materials),
     }
 
 

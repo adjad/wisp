@@ -38,7 +38,8 @@ def test_summary_due_today_line_and_counts():
     ]
     s = plan.day_summary(rows, now=now, timezone=TZ)
     assert [d["id"] for d in s["due_today"]] == ["b", "a"]
-    assert set(s["due_today"][0]) == {"id", "title", "course_name", "due_ts", "all_day", "kind", "status"}
+    assert set(s["due_today"][0]) == {"id", "title", "course_name", "due_ts", "all_day", "kind", "status",
+                                      "url", "url_kind"}
     assert s["due_tomorrow_count"] == 1
     assert s["due_week_count"] == 4          # a, b, c, f (not submitted, not past)
     assert s["missing_count"] == 1
@@ -298,12 +299,14 @@ def test_upcoming_item_shape_and_labels():
             item("e", "Reflection", at(0, d=20), all_day=True, kind="discussion")]
     ups = {u["id"]: u for u in plan.day_summary(rows, now=now, timezone=TZ)["upcoming"]}
     assert ups["a"] == {"id": "a", "title": "Lab 5", "course_name": "Programming", "course_label": "CS 101",
-                        "due_ts": at(23, 59), "all_day": False, "kind": "assignment", "status": "upcoming"}
+                        "due_ts": at(23, 59), "all_day": False, "kind": "assignment", "status": "upcoming",
+                        "url": None, "url_kind": None}
     assert ups["b"]["course_label"] == "Statistics"
     assert ups["c"]["course_label"] == "" and ups["d"]["course_label"] == ""
     assert ups["e"]["all_day"] is True and ups["e"]["kind"] == "discussion"
-    assert set(ups["a"]) == {"id", "title", "course_name", "course_label", "due_ts", "all_day", "kind", "status"}
-    assert not {"points", "score", "url", "details"} & set(ups["a"])
+    assert set(ups["a"]) == {"id", "title", "course_name", "course_label", "due_ts", "all_day", "kind", "status",
+                             "url", "url_kind"}
+    assert not {"points", "score", "details"} & set(ups["a"])
 
 
 def test_upcoming_cap_and_more():
@@ -558,3 +561,176 @@ def test_this_file_is_in_the_simulation_manifest():
     from pathlib import Path
     manifest = (Path(__file__).resolve().parents[1] / "scripts" / "run_simulation_qa.py").read_text()
     assert '"tests/test_study_plan.py"' in manifest
+
+
+# ---------------------------------------------------------------- the link and due_soon (invented data)
+
+LINK_CASES = [
+    # (stored url, expected url_kind or None when refused)
+    ("https://canvas.example.edu/courses/12/assignments/34", "assignment"),
+    ("https://canvas.example.edu/courses/12/assignments/34/", "assignment"),
+    ("https://CANVAS.Example.edu/courses/12/assignments/34", "assignment"),
+    ("https://canvas.example.edu/courses/12/assignments/34?module_item_id=56", "assignment"),
+    ("https://school.instructure.com/courses/12/assignments/34", "assignment"),
+    ("https://canvas.example.edu/courses/12/quizzes/78", "quiz_page"),
+    ("https://canvas.example.edu/courses/12/quizzes/78/", "quiz_page"),
+    ("https://canvas.example.edu/courses/12/quizzes/78/take", None),
+    ("https://canvas.example.edu/courses/12/quizzes/78/Take/", None),
+    ("https://canvas.example.edu/courses/12/quizzes/78/take?user_id=1", None),
+    ("https://canvas.example.edu/courses/12/quizzes/78?preview=1", None),
+    ("https://canvas.example.edu/courses/12/quizzes/78/history?quiz_submission_id=9", None),
+    ("https://canvas.example.edu/courses/12/quizzes/78/attempts/2", None),
+    ("https://canvas.example.edu/courses/12/quizzes/78/start", None),
+    ("https://canvas.example.edu/courses/12/assignments/34/submissions/new", None),
+    ("https://canvas.example.edu/courses/12/gradebook/speed_grader?assignment_id=34", None),
+    ("https://canvas.example.edu/courses/12/external_tools/90", None),
+    ("https://canvas.example.edu/courses/12/assignments/34?display=lti_launch", None),
+    ("https://canvas.example.edu/login/oauth2/auth", None),
+    ("https://canvas.example.edu/logout", None),
+    ("https://canvas.example.edu/courses/12/assignments/34?token=abc", None),
+    ("https://canvas.example.edu/courses/12/assignments/34#comments", None),
+    ("https://canvas.example.edu/courses/12/%2574ake", None),
+    ("https://canvas.example.edu:8443/courses/12/assignments/34", None),
+    ("https://student:pw@canvas.example.edu/courses/12/assignments/34", None),
+    ("https://student@canvas.example.edu/courses/12/assignments/34", None),
+    ("http://canvas.example.edu/courses/12/assignments/34", None),
+    ("HTTPS://canvas.example.edu/courses/12/assignments/34", None),
+    ("javascript:alert(1)", None),
+    ("https://canvas.xn--exmple-cua.edu/courses/12/assignments/34", None),
+    ("https://shop.example.com/courses/12/assignments/34", None),
+    ("https://canvas.example.edu/courses/12/assignments/34 x", None),
+    ("https://canvas.example.edu/courses/12/assignments/34\tx", None),
+    ("https://canvas.example.edu/courses/12/assignments/caf\u00e9", None),
+    ("https://canvas%2eexample.edu/courses/12/assignments/34", None),
+    ("https://canvas.example.edu\\@evil.example.com/courses/12", None),
+    ("", None),
+    (None, None),
+]
+
+
+@pytest.mark.parametrize("url,kind", LINK_CASES)
+def test_link_rule(url, kind):
+    got = plan.link(url)
+    assert got == ((url, kind) if kind else (None, None))
+
+
+def _due_rows():
+    return [
+        {**item("hw5", "Homework 5", at(23, 59), course_code="STAT 105", course_name="Statistics"),
+         "course_id": "canvas:105", "url": "https://canvas.example.edu/courses/105/assignments/5005"},
+        {**item("q3", "Quiz 3", at(13), kind="quiz", course_code="BIO 20", course_name="Biology"),
+         "course_id": "canvas:20", "url": "https://canvas.example.edu/courses/20/quizzes/3003/take"},
+        {**item("lab", "Lab 2", at(10, d=17), course_code="CHEM 7"), "course_id": "canvas:7",
+         "url": "https://canvas.example.edu/courses/7/quizzes/7007"},
+        {**item("ess", "Essay 1", at(18), course_code="ENG 1"), "course_id": "canvas:1", "url": None},
+        {**item("done", "Homework 4", at(12), status="submitted"), "course_id": "canvas:105",
+         "url": "https://canvas.example.edu/courses/105/assignments/5004"},
+        {**item("far", "Project", at(12, d=19)), "course_id": "canvas:105"},
+    ]
+
+
+def _mats():
+    return [
+        {"id": "m_old", "kind": "guide", "assignment_id": "hw5", "course_id": "canvas:105", "title": "Old",
+         "created_at": 100.0},
+        {"id": "m_quiz", "kind": "quiz", "assignment_id": "hw5", "course_id": "canvas:105", "title": "Q",
+         "created_at": 300.0},
+        {"id": "m_new", "kind": "guide", "assignment_id": "hw5", "course_id": "canvas:105",
+         "title": "Homework 5 guide", "created_at": 200.0},
+        {"id": "m_course", "kind": "guide", "assignment_id": None, "course_id": "canvas:7",
+         "title": "CHEM 7 guide", "created_at": 50.0},
+        {"id": "m_cards", "kind": "flashcards", "assignment_id": None, "course_id": "canvas:1",
+         "title": "Cards", "created_at": 60.0},   # a course's cards are not a course guide
+    ]
+
+
+def test_due_soon_order_links_and_materials():
+    s = plan.day_summary(_due_rows(), now=at(9), timezone=TZ, materials=_mats())
+    soon = s["due_soon"]
+    assert [d["id"] for d in soon] == ["q3", "ess", "hw5", "lab"]    # today by time, then tomorrow
+    assert s["due_soon_more"] == 0
+    by = {d["id"]: d for d in soon}
+    assert set(by["hw5"]) == {"id", "title", "course_name", "course_label", "due_ts", "all_day", "kind",
+                              "status", "day", "url", "url_kind", "material"}
+    # Due today with a url and a guide made for it (the newest guide, preferred over a newer quiz).
+    assert by["hw5"]["day"] == "today" and by["hw5"]["course_label"] == "STAT 105"
+    assert by["hw5"]["url"] == "https://canvas.example.edu/courses/105/assignments/5005"
+    assert by["hw5"]["url_kind"] == "assignment"
+    assert by["hw5"]["material"] == {"id": "m_new", "kind": "guide", "scope": "assignment",
+                                     "title": "Homework 5 guide"}
+    # A quiz attempt url is never offered; the landing page of another quiz is, marked quiz_page.
+    assert by["q3"]["url"] is None and by["q3"]["url_kind"] is None and by["q3"]["material"] is None
+    assert by["lab"]["day"] == "tomorrow" and by["lab"]["url_kind"] == "quiz_page"
+    # Only a course guide: scope "course".
+    assert by["lab"]["material"] == {"id": "m_course", "kind": "guide", "scope": "course",
+                                     "title": "CHEM 7 guide"}
+    # No url, and a course's flashcards are not offered as its guide.
+    assert by["ess"]["url"] is None and by["ess"]["material"] is None
+    # The same rule reaches the existing lists.
+    today = {d["id"]: d for d in s["due_today"]}
+    assert today["hw5"]["url_kind"] == "assignment" and today["q3"]["url"] is None
+    assert {u["id"]: u for u in s["upcoming"]}["lab"]["url_kind"] == "quiz_page"
+
+
+def test_due_soon_material_kind_order_and_none():
+    rows = [{**item("hw5", "Homework 5", at(23, 59)), "course_id": "canvas:105"}]
+    mats = [{"id": "q", "kind": "quiz", "assignment_id": "hw5", "created_at": 9.0},
+            {"id": "c", "kind": "flashcards", "assignment_id": "hw5", "created_at": 8.0},
+            {"id": "l", "kind": "lesson", "assignment_id": "hw5", "created_at": 1.0}]
+    got = plan.day_summary(rows, now=at(9), timezone=TZ, materials=mats)["due_soon"][0]["material"]
+    assert got["id"] == "l" and got["kind"] == "lesson" and got["scope"] == "assignment"
+    assert plan.day_summary(rows, now=at(9), timezone=TZ)["due_soon"][0]["material"] is None
+    other = [{"id": "x", "kind": "guide", "assignment_id": "other", "course_id": "canvas:999", "created_at": 1.0}]
+    assert plan.day_summary(rows, now=at(9), timezone=TZ, materials=other)["due_soon"][0]["material"] is None
+
+
+def test_due_soon_excludes_done_far_and_caps():
+    rows = [item(f"t{i}", f"Worksheet {i}", at(10 + i)) for i in range(4)]
+    rows += [item(f"m{i}", f"Reading {i}", at(10 + i, d=17)) for i in range(2)]
+    rows += [item("sub", "Handed in", at(15), status="submitted"), item("gr", "Graded", at(16), status="graded"),
+             item("later", "Later", at(10, d=18))]
+    s = plan.day_summary(rows, now=at(9), timezone=TZ)
+    assert [d["id"] for d in s["due_soon"]] == ["t0", "t1", "t2", "t3"]
+    assert s["due_soon_more"] == 2
+    assert plan.day_summary([], now=at(9), timezone=TZ)["due_soon"] == []
+
+
+def test_due_soon_from_the_store_with_sample_rows(tmp_path, monkeypatch):
+    store_mod = pytest.importorskip("service.study.store")
+    from service.study import sample
+    db = tmp_path / "study" / "study.db"
+    store = store_mod.StudyStore(db)
+    sample.load(store, now=at(9), timezone=TZ)
+    monkeypatch.setattr(day_hook, "store_path", lambda: db)
+    monkeypatch.setattr(day_hook, "study_store", lambda: store)
+    result = snapshot(at(9))
+    day_hook.attach(result, now=at(9), timezone=TZ)
+    soon = result["study"]["due_soon"]
+    assert isinstance(soon, list) and len(soon) <= plan.DUE_SOON_CAP
+    for d in soon:
+        assert d["day"] in ("today", "tomorrow") and d["url"] is None and d["url_kind"] is None
+        assert d["material"] is None or d["material"]["scope"] in ("assignment", "course")
+
+
+def test_attach_names_the_guide_from_the_real_store(tmp_path, monkeypatch):
+    store_mod = pytest.importorskip("service.study.store")
+    db = tmp_path / "study" / "study.db"
+    store = store_mod.StudyStore(db)
+    store.upsert_courses([{"id": "canvas:105", "name": "Statistics", "code": "STAT 105", "grade": None,
+                           "score": None, "url": None, "source": "canvas", "sample": False}])
+    store.upsert_assignments([{"id": "canvas:105:hw5", "course_id": "canvas:105", "title": "Homework 5",
+                               "kind": "assignment", "due_ts": at(23, 59), "all_day": False, "points": 10.0,
+                               "score": None, "status": "upcoming", "details": "",
+                               "url": "https://canvas.example.edu/courses/105/assignments/5005",
+                               "source": "canvas", "sample": False}])
+    store.save_material({"id": "m_hw5", "kind": "guide", "title": "Homework 5 guide", "course_id": "canvas:105",
+                         "assignment_id": "canvas:105:hw5", "created_at": at(8),
+                         "body": {"sections": [{"heading": "Start", "body": "Read the prompt."}]}})
+    monkeypatch.setattr(day_hook, "store_path", lambda: db)
+    monkeypatch.setattr(day_hook, "study_store", lambda: store)
+    result = snapshot(at(9))
+    day_hook.attach(result, now=at(9), timezone=TZ)
+    (d,) = result["study"]["due_soon"]
+    assert d["id"] == "canvas:105:hw5" and d["day"] == "today"
+    assert d["url"] == "https://canvas.example.edu/courses/105/assignments/5005"
+    assert d["material"] == {"id": "m_hw5", "kind": "guide", "scope": "assignment", "title": "Homework 5 guide"}

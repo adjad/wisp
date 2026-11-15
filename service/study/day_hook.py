@@ -170,7 +170,11 @@ def attach(result: dict, *, now: float, timezone: str) -> None:
             course = courses.get(a.get("course_id")) or {}
             rows.append({**a, "course_name": a.get("course_name") or course.get("name") or "",
                          "course_code": a.get("course_code") or course.get("code") or None})
-        result["study"] = plan.day_summary(rows, now=now, timezone=timezone)
+        try:
+            materials = store.materials()
+        except Exception:  # noqa: BLE001 - no guide named; the summary stands
+            materials = []
+        result["study"] = plan.day_summary(rows, now=now, timezone=timezone, materials=materials)
         found: dict = {}
         try:
             found = _slides_for(store, rows, now)
