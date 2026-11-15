@@ -231,6 +231,7 @@ PROFILE_TESTS = {
         "tests/test_remote_reasoning_replay.py",
         "tests/test_gemini_provider_and_ttft.py",
         "tests/test_remote_media.py",
+        "tests/test_gemini_inline_cap.py",
         "tests/test_cloud_scale_up_core.py",
         "tests/test_cloud_scale_up_documents_meetings.py",
         "tests/test_cloud_scale_up_repairs.py",

@@ -174,6 +174,11 @@ REMOTE_AUDIO_MAX_BYTES = 10 * 1024 * 1024       # decoded, per recording (30 s W
 REMOTE_AUDIO_PER_REQUEST = 1
 REMOTE_AUDIO_FORMATS = frozenset({"wav", "mp3"})
 REMOTE_MEDIA_TOTAL_BYTES = 16 * 1024 * 1024     # encoded, every picture and recording together
+# The Gemini API's own cap on one inline request (prompt, history and every picture
+# or recording together), with a little room under Google's 20 MB.
+GEMINI_INLINE_REQUEST_BYTES = 19 * 1024 * 1024
+GEMINI_REQUEST_TOO_LARGE = ("These pictures and recordings are too large to send to Gemini in one "
+                            "request. Send fewer or smaller ones, or start a new chat.")
 REMOTE_CONTENT_PARTS = 32
 # The least output a picture, recording or document call asks the cloud model for:
 # the default model always reasons first, and its reasoning counts against max_tokens,
@@ -538,6 +543,10 @@ class RemoteOnlyProfile:
         if (len(wire) > self.request_bytes + reasoning_bytes + media_bytes
                 or len(aggregate) > self.aggregate_bytes):
             _refuse("Remote-only transcript/schema byte budget exceeded")
+        if media_bytes and self.wire == "gemini" and len(wire) > GEMINI_INLINE_REQUEST_BYTES:
+            # Google refuses an inline request past about 20 MB; say so here, before
+            # anything is sent, instead of a provider error after the upload.
+            _refuse(GEMINI_REQUEST_TOO_LARGE)
 
 
 def profile_from_config(raw) -> RemoteOnlyProfile:
