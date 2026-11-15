@@ -447,4 +447,75 @@ enum StudyFindTabCloser {
         for j in window.indices where j != i { guard window[j].digest == then[j].digest else { return false } }
         return true
     }
+
+    /// One walk's tab closing. The first refusal, failure or timeout from the
+    /// browser stops closing for the rest of that walk: no further Apple Events
+    /// call is made, so the Automation prompt is never asked twice in one walk.
+    /// A new walk starts with a new gate and may try once again.
+    struct Gate: Equatable, Sendable {
+        private(set) var problem: Outcome?
+        /// The browser has answered once: later calls wait less.
+        private(set) var answered = false
+
+        /// `browser` is the bundle id the walk opens pages in; nil or one
+        /// without tab scripting means closing never starts.
+        init(browser: String?) {
+            problem = browser.map { StudyFindTabCloser.scriptable.contains($0) } == true ? nil : .unsupported
+        }
+
+        /// Whether Wisp may call the browser now.
+        var mayCall: Bool { problem == nil }
+        /// Seconds to wait for the browser: the first call may sit behind the
+        /// Automation prompt.
+        var wait: TimeInterval { answered ? 8 : 60 }
+
+        /// Records a tab listing; returns the tabs only when the browser answered.
+        mutating func record(_ listing: Listing) -> [Tab]? {
+            guard problem == nil else { return nil }
+            switch listing {
+            case .tabs(let tabs):
+                answered = true
+                return tabs
+            case .denied: problem = .denied
+            case .timedOut: problem = .timedOut
+            case .failed: problem = .failed
+            }
+            return nil
+        }
+
+        /// Records a close; true when the tab was closed.
+        mutating func record(_ outcome: Outcome) -> Bool {
+            guard problem == nil else { return false }
+            switch outcome {
+            case .closed:
+                answered = true
+                return true
+            case .notOne: answered = true
+            case .denied, .unsupported, .timedOut, .failed: problem = outcome
+            }
+            return false
+        }
+    }
+
+    /// The found card's line about the tabs this walk opened and closed.
+    static func tabsLine(opened n: Int, closed: Int, problem: Outcome?, browser: String) -> String {
+        let left = n - closed
+        switch problem {
+        case .denied?:
+            return "Wisp couldn't close the tabs it opened: allow Wisp to control \(browser) in System Settings › "
+                + "Privacy & Security › Automation. \(left) \(left == 1 ? "tab is" : "tabs are") still open."
+        case .unsupported?:
+            return "Wisp opened \(n) \(n == 1 ? "tab" : "tabs") in \(browser) and can't close tabs there — you can "
+                + "close \(n == 1 ? "it" : "them")."
+        case .timedOut?:
+            return "Wisp stopped closing tabs: \(browser) didn't answer in time. It closed \(closed) of \(n); you can "
+                + "close the rest."
+        case .failed?:
+            return "Wisp stopped closing tabs: \(browser) didn't let it. It closed \(closed) of \(n); you can "
+                + "close the rest."
+        default:
+            if left <= 0 { return "Wisp opened \(n) \(n == 1 ? "tab" : "tabs") in your browser and closed \(n == 1 ? "it" : "them")." }
+            return "Wisp opened \(n) \(n == 1 ? "tab" : "tabs") and closed \(closed) — you can close the other \(left)."
+        }
+    }
 }
