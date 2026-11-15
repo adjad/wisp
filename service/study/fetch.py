@@ -204,7 +204,9 @@ async def _one_hop(url: str) -> tuple[httpx.Response | None, bytes, str]:
     _QUIET.set(True)      # this task's context only (fetch_article runs in its own task)
     host, url = check_url(url)
     address = await resolve(host)
-    headers = {"Host": host, "User-Agent": USER_AGENT, "Accept": ACCEPT, "Accept-Language": "en"}
+    # identity: a compressed body would be inflated before the size cap counts it.
+    headers = {"Host": host, "User-Agent": USER_AGENT, "Accept": ACCEPT, "Accept-Language": "en",
+               "Accept-Encoding": "identity"}
     async with httpx.AsyncClient(transport=_transport, trust_env=False, follow_redirects=False,
                                  timeout=httpx.Timeout(ITEM_S, connect=10.0)) as client:
         request = client.build_request("GET", _pinned(url, address), headers=headers,

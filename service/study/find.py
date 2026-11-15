@@ -216,12 +216,13 @@ _IMPORTANT = [
                 r"register|registration|subscribe"),
     ("meeting", r"meetings?|zoom|webex|teams|google meet|collaborate|conferences?|live (?:session|class|lecture)|"
                 r"office hours? (?:link|room)|join"),
-    ("account", r"token|sig|signature|auth|apikey|api key|session|unsubscribe|sso|otp|magic link|"
-                r"accounts?|settings|profile|passwords?|log ?in|log ?out|sign ?in|sign ?out|sso|"
+    ("account", r"unsubscribe|magic link|sso|accounts?|settings|profile|passwords?|log ?in|log ?out|sign ?in|sign ?out|sso|"
                 r"permissions|notifications? preferences"),
 ]
 _RUN_TOGETHER = re.compile(r"(?:final|midterm|practice|pop|unit|chapter|weekly)(?:exam|quiz|test)|"
                            r"(?:exam|quiz|test)(?:review|prep|\d)", re.I)
+_SECRET_KEY = re.compile(r"(?:^|[_-])(?:token|sig|signature|auth|apikey|api_key|key|session|sid|otp|code|"
+                         r"nonce|jwt|ticket|reset|verify|confirm|login|magic|hash|secret|password)(?:$|[_-])")
 _IMPORTANT_RE = [(label, re.compile(rf"(?<![a-z0-9])(?:{words})(?![a-z0-9])", re.I)) for label, words in _IMPORTANT]
 
 
@@ -232,6 +233,12 @@ def important(title: str, url: str = "") -> str | None:
         path = (parts.hostname or "") + " " + unquote(parts.path) + " " + unquote(parts.query)
     except ValueError:
         path = url or ""
+    try:
+        keys = [k.lower() for k, _ in parse_qsl(urlsplit(url or "").query, keep_blank_values=True)]
+    except ValueError:
+        keys = []
+    if any(_SECRET_KEY.search(k) for k in keys):
+        return "account"          # a one-time or signed link: opening it can act on its own
     words = f"{title or ''} " + re.sub(r"[/_+.=&?-]", " ", path)
     words = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", words)          # MidtermReview -> Midterm Review
     if _RUN_TOGETHER.search(words):
@@ -409,7 +416,8 @@ TEXT_NOT_ALLOWED = "Only Canvas pages read in your browser can be sent with thei
 def _final_kind(got: dict, asked, sent) -> str:
     """The server's own kind for the url; the app's kind must match it (a Drive PDF and a
     Drive file are one link form), and only browser kinds may carry text."""
-    same = asked == got["kind"] or (got["via"] == "drive" and {asked, got["kind"]} <= {"pdf", "file"})
+    same = (asked == got["kind"] or (got["via"] == "drive" and {asked, got["kind"]} <= {"pdf", "file"})
+            or (got["via"] == "web" and {asked, got["kind"]} <= {"pdf", "article"}))
     if not same or got["kind"] == "other":
         raise _Failed("invalid", MISMATCH)
     if sent is not None and got["via"] != "browser":
@@ -651,7 +659,11 @@ def judge_prompt(course: dict, web: list[tuple[dict, dict]]) -> tuple[str, dict]
         parts = urlsplit(got["url"])
         iid = item_id(got["key"])
         ids[iid] = got["key"]
-        title = generate._data(" ".join(str(item.get("title") or "").split())[:300], 300, max_passes=8)
+        raw_title = " ".join(str(item.get("title") or "").split())[:300]
+        if "://" in raw_title or raw_title.startswith("www."):
+            raw_title = ""                      # an untitled link's title is its url: never send the query
+        raw_title = raw_title.split("?", 1)[0]
+        title = generate._data(raw_title, 300, max_passes=8)
         where = generate._data(f"{parts.hostname or ''}{parts.path}"[:500], 500, max_passes=8)
         lines.append(f"Item {iid}: {title}\n  address: {where}\n  kind: {got['kind']}")
     block = generate._data("\n".join(lines), 1200 * (len(web) + 1), max_passes=8)

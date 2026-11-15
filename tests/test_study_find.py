@@ -725,7 +725,8 @@ def test_the_check_sees_host_path_and_title_but_never_the_query(setup):
 
 def test_one_time_token_links_are_refused_outright():
     for url in ("https://news.example.org/a?token=xyz", "https://news.example.org/unsubscribe",
-                "https://news.example.org/x?session=1"):
+                "https://news.example.org/x?session=1", "https://news.example.org/x?code=9",
+                "https://news.example.org/x?reset_key=1", "https://news.example.org/x?confirm=yes"):
         assert find.classify({"url": url, "title": "Read"}, C)["via"] == "none"
 
 
@@ -753,3 +754,27 @@ def test_a_file_that_says_pdf_but_is_not_one_is_refused(setup, monkeypatch):
         200, headers={"content-type": "application/pdf"}, content=b"<html>hi</html>")
     body = add(setup, [{"url": "https://news.example.org/fake.pdf", "title": "Notes", "kind": "pdf"}]).json()
     assert body["added"] == [] and body["failed"][0]["code"] == "not_text"
+
+
+def test_an_untitled_link_never_sends_its_query_to_the_check(setup):
+    _rivers(setup)
+    add(setup, [{"url": "https://news.example.org/rivers?ref=abc123",
+                 "title": "https://news.example.org/rivers?ref=abc123", "kind": "article"}])
+    assert "abc123" not in setup.labels["checks"][0]
+
+
+def test_session_and_code_in_a_title_are_fine():
+    assert find.classify({"url": f"{HOST}/courses/4242/pages/s3", "title": "Session 3 readings"}, C)["via"] == "browser"
+    assert find.classify({"url": "https://news.example.org/code-of-conduct", "title": "Code of conduct"}, C)["via"] == "web"
+
+
+def test_an_older_article_item_for_a_pdf_address_still_adds(setup, monkeypatch):
+    from service import documents
+    setup.web[("news.example.org", "/r.pdf")] = httpx.Response(
+        200, headers={"content-type": "application/pdf"}, content=b"%PDF-1.4 x")
+
+    async def extract_async(name, data, *, timeout, large=False):
+        return "Reading text.", False
+    monkeypatch.setattr(documents, "extract_async", extract_async)
+    body = add(setup, [{"url": "https://news.example.org/r.pdf", "title": "Reading", "kind": "article"}]).json()
+    assert body["failed"] == [] and body["added"][0]["kind"] == "pdf"
