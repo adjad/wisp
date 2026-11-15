@@ -778,3 +778,11 @@ def test_an_older_article_item_for_a_pdf_address_still_adds(setup, monkeypatch):
     monkeypatch.setattr(documents, "extract_async", extract_async)
     body = add(setup, [{"url": "https://news.example.org/r.pdf", "title": "Reading", "kind": "article"}]).json()
     assert body["failed"] == [] and body["added"][0]["kind"] == "pdf"
+
+
+def test_an_untitled_link_is_saved_without_its_query(setup):
+    setup.web[("news.example.org", "/plain")] = httpx.Response(200, headers={"content-type": "text/plain"},
+                                                               text="Plain text.")
+    url = "https://news.example.org/plain?id=17"
+    body = add(setup, [{"url": url, "title": url, "kind": "article"}]).json()
+    assert body["added"][0]["title"] == "news.example.org/plain"

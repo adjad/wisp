@@ -465,7 +465,11 @@ async def _one(item: dict, got: dict, can_read: bool, deadline: float) -> tuple[
             page = await fetch.fetch_article(got["url"], timeout_s=min(fetch.ITEM_S, left))
         except fetch.FetchError as exc:
             raise _Failed(exc.code, exc.message) from None
-        return {"kind": "pdf" if page.get("pdf") else "article", "title": title or page["title"] or got["url"],
+        if "://" in title or title.startswith("www."):
+            title = ""                 # an untitled link: never keep its query in the saved title
+        parts = urlsplit(got["url"])
+        bare = f"{parts.hostname or ''}{parts.path}"
+        return {"kind": "pdf" if page.get("pdf") else "article", "title": title or page["title"] or bare,
                 "text": page["text"]}, None
     if got["via"] == "browser":
         if not sent:
