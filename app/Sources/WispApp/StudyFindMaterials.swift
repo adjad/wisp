@@ -202,9 +202,9 @@ struct StudyFindTarget: Equatable, Sendable {
     /// when it can't be parsed at all.
     static func launchesTool(_ raw: String) -> Bool {
         guard let c = URLComponents(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)),
-              let decoded = c.percentEncodedPath.removingPercentEncoding
+              let decoded = StudyFindGuard.fullyDecoded(c.percentEncodedPath)
         else { return true }
-        // Decoded first, so "external_tool%73" is "external_tools".
+        // Decoded until stable first, so "external_tool%2573" is "external_tools".
         let path = decoded.lowercased()
         return path.split(separator: "/").contains { segment in
             launchSegments.contains(String(segment)) || segment.hasPrefix("lti")
@@ -687,7 +687,9 @@ enum StudyFindReader {
     /// ExternalTool and SubHeader are all refused.
     static func isOpenableModuleType(_ type: String?) -> Bool {
         guard let type else { return false }
-        return ["page", "wikipage", "discussion", "discussiontopic", "externalurl"].contains(typeKey(type))
+        // External URL items are never opened: only their title and
+        // /modules/items/<n> are known before the open (the server refuses them too).
+        return ["page", "wikipage", "discussion", "discussiontopic"].contains(typeKey(type))
     }
 
     static func isExternalURLType(_ type: String?) -> Bool {
@@ -765,22 +767,23 @@ enum StudyFindGuard {
     private static let wordRules: [(reason: String, words: Set<String>)] = [
         ("sounds like a test or quiz", ["test", "tests", "pretest", "posttest", "quiz", "quizzes", "quizzing", "exam",
                                          "exams", "midterm", "midterms", "final", "finals", "assessment", "assessments",
-                                         "assessing", "examination", "examinations"]),
+                                         "assessing", "examination", "examinations", "pretests", "posttests",
+                                         "placement", "examsoft"]),
         ("survey or evaluation", ["survey", "surveys", "evaluation", "evaluations", "eval", "evals", "questionnaire",
-                                  "poll", "polls", "polling", "feedback"]),
+                                  "questionnaires", "poll", "polls", "polling", "feedback"]),
         ("graded or proctored", ["graded", "grading", "proctor", "proctored", "proctoring", "proctorio", "honorlock",
-                                 "respondus", "lockdown", "examity", "turnitin", "gradescope"]),
+                                 "respondus", "lockdown", "examity", "turnitin", "gradescope", "proctoru"]),
         ("submission or upload", ["submit", "submits", "submission", "submissions", "upload", "uploads", "uploading",
                                   "dropbox"]),
         ("starts something", ["attempt", "attempts", "start", "starts", "begin", "resume", "launch", "take", "retake"]),
         ("timed", ["timed", "timer", "countdown"]),
         ("payment or enrolment", ["pay", "payment", "payments", "purchase", "buy", "checkout", "tuition", "fee", "fees",
-                                  "billing", "invoice", "enroll", "enrol", "enrollment", "enrolment", "enrollments",
-                                  "register", "registration", "subscribe", "subscription"]),
+                                  "billing", "invoice", "enroll", "enrol", "enrolls", "enrols", "enrollment", "enrolment",
+                                  "enrollments", "enrolments", "register", "registration", "subscribe", "subscription"]),
         ("meeting or live session", ["meeting", "meetings", "zoom", "webex", "teams", "meet", "live", "webinar",
-                                     "conference", "conferences", "livestream"]),
+                                     "conference", "conferences", "livestream", "join", "collaborate"]),
         ("account or settings", ["account", "accounts", "settings", "profile", "password", "login", "logout", "signin",
-                                 "signout", "sso", "preferences", "notifications"]),
+                                 "signout", "sso", "preferences", "notifications", "permissions", "passwords"]),
     ]
 
     /// Sites that only host forms, meetings, proctoring, graded homework or payments.
@@ -813,20 +816,57 @@ enum StudyFindGuard {
             return rule.reason
         }
         if host == "docs.google.com", c.path.lowercased().hasPrefix("/forms") { return "survey or evaluation" }
-        let path = (c.percentEncodedPath.removingPercentEncoding ?? c.percentEncodedPath) + " "
-            + (c.percentEncodedQuery.flatMap { $0.removingPercentEncoding } ?? "")
-        return words(in: path)
+        // An address that won't decode cleanly is refused, never read raw.
+        guard let path = fullyDecoded(c.percentEncodedPath),
+              let query = fullyDecoded(c.percentEncodedQuery ?? "") else { return "unknown address" }
+        return words(in: path + " " + query)
     }
 
+    /// Percent-decoded until it stops changing (at most 4 rounds); nil when it
+    /// won't decode or a %XX is still left.
+    static func fullyDecoded(_ text: String) -> String? {
+        var current = text
+        for _ in 0..<4 {
+            guard let next = current.removingPercentEncoding else { return nil }
+            if next == current { break }
+            current = next
+        }
+        if current.range(of: "%[0-9A-Fa-f]{2}", options: .regularExpression) != nil { return nil }
+        return current
+    }
+
+    /// Words run together as stems: "MidtermReview", "finalexam", "quiz3".
+    private static let stems = ["quiz", "midterm", "proctor", "survey", "questionnaire", "pretest", "posttest"]
+
+    private static let phrases: [(phrase: String, reason: String)] = [
+        ("sign in", "account or settings"), ("log in", "account or settings"), ("sign out", "account or settings"),
+        ("log out", "account or settings"), ("check in", "account or settings"),
+        ("turn in", "submission or upload"), ("hand in", "submission or upload"),
+        ("time limit", "timed"), ("for credit", "graded or proctored"), ("points possible", "graded or proctored"),
+        ("mid term", "sounds like a test or quiz"), ("final exam", "sounds like a test or quiz"),
+    ]
+
     private static func words(in text: String) -> String? {
-        let lower = text.lowercased()
-        let tokens = Set(lower.split(whereSeparator: { !($0.isASCII && $0.isLetter) }).map(String.init))
+        // camelCase apart ("MidtermReview" → "Midterm Review"), then every
+        // non-letter is a space: "sign-in", "log_in", "turn/in" are phrases too.
+        var spaced = ""
+        var previous: Character = " "
+        for ch in text {
+            if ch.isUppercase, previous.isLowercase { spaced.append(" ") }
+            spaced.append(ch)
+            previous = ch
+        }
+        let lower = spaced.lowercased()
+        let tokens = lower.split(whereSeparator: { !($0.isASCII && $0.isLetter) }).map(String.init)
         guard !tokens.isEmpty else { return nil }
-        for rule in wordRules where !rule.words.isDisjoint(with: tokens) { return rule.reason }
-        // Joined forms: "sign in", "log in", "turn in", "check in".
-        for phrase in ["sign in", "log in", "turn in", "check in", "office hours live"] where lower.contains(phrase) {
-            return phrase == "office hours live" ? "meeting or live session"
-                : phrase == "turn in" ? "submission or upload" : "account or settings"
+        let set = Set(tokens)
+        for rule in wordRules where !rule.words.isDisjoint(with: set) { return rule.reason }
+        let joined = " " + tokens.joined(separator: " ") + " "
+        for item in phrases where joined.contains(" " + item.phrase + " ") { return item.reason }
+        if lower.range(of: #"\bdue\s+in\s+\d"#, options: .regularExpression) != nil { return "timed" }
+        for token in tokens {
+            if stems.contains(where: { token.contains($0) }) { return "sounds like a test or quiz" }
+            if token.contains("exam"), !token.hasPrefix("exampl") { return "sounds like a test or quiz" }
         }
         return nil
     }
@@ -1072,8 +1112,17 @@ enum StudyFindText {
     /// The row note for an item the server refused.
     static func refused(_ reason: String) -> String {
         switch reason {
+        case "quiz": return "Can't open: test or quiz"
+        case "survey": return "Can't open: survey or evaluation"
+        case "graded": return "Can't open: graded or proctored"
+        case "submission": return "Can't open: submission or upload"
+        case "start": return "Can't open: starts something"
+        case "timed": return "Can't open: timed"
+        case "payment": return "Can't open: payment or enrolment"
+        case "meeting": return "Can't open: meeting or live session"
+        case "account": return "Can't open: account or settings"
+        case "outside": return "Can't open: outside link"
         case "tool": return "Can't open: outside tool"
-        case "quiz": return "Can't open: quiz"
         case "assignment": return "Can't open: assignment"
         default: return "Can't open: unknown type"
         }
@@ -1388,7 +1437,8 @@ final class StudyFindRun: ObservableObject {
             let landing = await land(opened: section.url.absoluteString, before: before, allowsOff: false, gen: gen,
                                      until: min(runDeadline, Date().addingTimeInterval(Self.pageWait)))
             guard live(gen) else { return }
-            guard case .course(let landed)? = landing, t.allows(landed.url), !t.isLaunchPage(landed.url)
+            guard case .course(let landed)? = landing, t.allows(landed.url), !t.isLaunchPage(landed.url),
+                  StudyFindGuard.refusal(title: "", url: landed.url, type: nil) == nil
             else { continue }
             c.sectionsRead += 1
             c.sectionLinks += landed.links.count
@@ -1671,6 +1721,12 @@ final class StudyFindRun: ObservableObject {
         default:
             return StudyFindText.cantAdd
         }
+    }
+
+    /// The list group an item shows under: refused items all go under "Can't open".
+    func group(_ item: StudyFoundItem) -> String {
+        if item.reason != nil || important[item.id] != nil { return "other" }
+        return StudyFindText.order.contains(item.kind) ? item.kind : "other"
     }
 
     func toggle(_ item: StudyFoundItem) {
@@ -2080,9 +2136,7 @@ private struct StudyFindCard: View {
 
     private var list: some View {
         let groups = StudyFindText.order.compactMap { kind -> Group? in
-            let rows = run.items.filter { item in
-                (StudyFindText.order.contains(item.kind) ? item.kind : "other") == kind
-            }
+            let rows = run.items.filter { item in run.group(item) == kind }
             return rows.isEmpty ? nil : Group(id: kind, rows: rows)
         }
         return VStack(alignment: .leading, spacing: 2) {
