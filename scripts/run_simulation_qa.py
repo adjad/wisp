@@ -792,6 +792,7 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_study_match.py",
     "tests/test_study_slides_flow.py",
     "tests/test_study_blocks.py",
+    "tests/test_study_ask_tools.py",
     # Evening check-in, carry-forward and goal pulse: disposable AssistantStore and
     # state files, in-process TestClient; no model, scheduler, hub or real ~/.moe.
     "tests/test_checkin.py",
