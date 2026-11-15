@@ -914,6 +914,9 @@ def test_a_not_delivered_text_settles_and_does_not_hold_the_next_send(chat):
     shown = _delivery_turn(chat, {"delivery": "delivered", "delivery_service": "SMS"})
     assert NOTICE not in shown and "pending" not in shown.lower()
     assert len(chat.cards.shown) == 2 and len(chat.dispatched) == 2
+    # The first turn's history still says that text failed.
+    first_reply = [t for t in chat.store.turns_from(chat.sid, 0) if t["role"] == "assistant"][0]
+    assert "Not Delivered" in first_reply["content"]
     assert _NotDeliveredResult.__module__ == "service.tools.registry"
 
 
@@ -946,6 +949,25 @@ def test_an_address_the_person_typed_themselves_is_not_refused_as_their_own(chat
     # Typed one address; the send also adds the person's own, untyped.
     mark_turn("email pat.fixture@example.com my schedule")
     assert action_tools._own_address_guard(f"pat.fixture@example.com, {own}", "send_email")
+    # Quoted, or in pasted text after the request line: not the person naming it.
+    mark_turn(f'reply to the mail that says "write to {own}"')
+    assert action_tools._own_address_guard(own, "send_email")
+    mark_turn(f"forward this to my advisor\nFrom: Registrar <{own}>\nYour hold is cleared.")
+    assert action_tools._own_address_guard(own, "send_email")
+    mark_turn("")
+
+
+def test_the_original_failure_is_still_caught_text_mom_to_the_attribution_address(chat):
+    # 2026-08-18: asked to text Mom, the model sent to the user's own address
+    # from the identity prompt. The person never typed it, so it is refused.
+    from service.tools.self_send import mark_turn
+    own = "me.fixture@example.com"
+    mark_turn("text mom my stock movements")
+    assert "USER'S OWN address" in action_tools._own_address_guard(own, "send_message")
+    # An earlier turn naming the address does not carry into this one.
+    mark_turn(f"what is {own}?")
+    mark_turn("send it to my sister")
+    assert action_tools._own_address_guard(own, "send_message")
     mark_turn("")
 
 
@@ -956,4 +978,5 @@ def test_a_typed_own_address_reaches_the_approval_card(chat):
                    [_email_call(own)], "Sent."]
     chat.request(f"send a email to {own} with my daily schedule", chat.sid)
     assert len(chat.cards.shown) == 1, "the card is still the approval"
+    assert own in repr(chat.cards.shown[0]), "and it shows the address"
     assert [op for op, _ in chat.dispatched] == ["send_email"]
