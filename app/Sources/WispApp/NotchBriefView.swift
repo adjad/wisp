@@ -152,6 +152,7 @@ struct NotchBriefView: View {
                                           coverage: Self.coverage(plan), wide: wide,
                                           schoolRows: plan.study?.briefPlate ?? StudyUpcomingRows(),
                                           studyCards: plan.study?.briefCards ?? StudyBriefCards(),
+                                          dueSoon: plan.study?.dueSoon ?? [],
                                           mailMemory: mailMemory)
                     HStack(spacing: 12) {
                         askChip(plan)

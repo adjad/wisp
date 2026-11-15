@@ -784,7 +784,8 @@ enum NotchQADriver {
             // no short label, so its row names the course.
             "upcoming": [
                 ["id": "qa:pset6", "title": "Problem set 6", "course_name": "MATH 110", "course_label": "MATH 110",
-                 "due_ts": at(17), "all_day": false, "kind": "assignment", "status": "upcoming"],
+                 "due_ts": at(17), "all_day": false, "kind": "assignment", "status": "upcoming",
+                 "url": "https://canvas.example.edu/courses/110/assignments/6006", "url_kind": "assignment"],
                 ["id": "qa:lab5", "title": "Lab 5: Lists", "course_name": "CS 101", "course_label": "CS 101",
                  "due_ts": at(night), "all_day": false, "kind": "assignment", "status": "upcoming"],
                 ["id": "qa:quiz3", "title": "Quiz 3: Loops", "course_name": "CS 101", "course_label": "CS 101",
@@ -797,6 +798,25 @@ enum NotchQADriver {
                  "due_ts": at(24 * 5 + 12), "all_day": false, "kind": "project", "status": "upcoming"],
             ],
             "upcoming_more": 1,
+            // Due today and tomorrow, first in READY FOR YOU: one with its guide and its page,
+            // one with only the course's guide and no page, one with a page and nothing made yet.
+            "due_soon": [
+                ["id": "qa:pset6", "title": "Problem set 6", "course_name": "MATH 110", "course_label": "MATH 110",
+                 "due_ts": at(17), "all_day": false, "kind": "assignment", "status": "upcoming", "day": "today",
+                 "url": "https://canvas.example.edu/courses/110/assignments/6006", "url_kind": "assignment",
+                 "material": ["id": "m-guide-pset6", "kind": "guide", "scope": "assignment",
+                              "title": "Problem set 6 guide"]],
+                ["id": "qa:lab5", "title": "Lab 5: Lists", "course_name": "CS 101", "course_label": "CS 101",
+                 "due_ts": at(night), "all_day": false, "kind": "assignment", "status": "upcoming", "day": "today",
+                 "url": NSNull(), "url_kind": NSNull(),
+                 "material": ["id": "m-guide-cs101", "kind": "guide", "scope": "course", "title": "CS 101 guide"]],
+                ["id": "qa:reading4", "title": "Reading response 4: Ways of seeing",
+                 "course_name": "Writing and Rhetoric: Voices and Global Perspectives", "course_label": "",
+                 "due_ts": at(24 + night), "all_day": false, "kind": "reading", "status": "upcoming",
+                 "day": "tomorrow", "url": "https://canvas.example.edu/courses/77/assignments/7004",
+                 "url_kind": "assignment", "material": NSNull()],
+            ],
+            "due_soon_more": 0,
             // What Study got ready: a quiz it made, and an assignment's slides
             // (three decks, so the line says "+1"); then two weak topics.
             "ready": [

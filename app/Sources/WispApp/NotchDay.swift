@@ -2098,16 +2098,63 @@ struct StudyDaySummary: Decodable, Equatable {
         var allDay = false
         var kind = ""
         var status = ""
+        /// The assignment's own page, already checked by the service and again
+        /// here (StudyLinkRule); nil when there is none or it must not be offered.
+        var url: String? = nil
+        /// "assignment" or "quiz_page" (a quiz's landing page, never its attempt); nil without a url.
+        var urlKind: String? = nil
+        /// `due_soon` only: "today" or "tomorrow"; empty elsewhere.
+        var day = ""
+        /// `due_soon` only: the guide or other material made for it, or the course's guide.
+        var material: Material? = nil
+
+        /// What Study made that a due-soon row opens: one made for this
+        /// assignment ("assignment"), or the course's newest guide ("course").
+        struct Material: Decodable, Equatable {
+            var id = ""
+            var kind = ""
+            var scope = ""
+            var title = ""
+
+            private enum CodingKeys: String, CodingKey { case id, kind, scope, title }
+
+            init(id: String, kind: String, scope: String, title: String = "") {
+                self.id = id; self.kind = kind; self.scope = scope; self.title = title
+            }
+
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                id = (try? c.decodeIfPresent(String.self, forKey: .id)) ?? ""
+                kind = (try? c.decodeIfPresent(String.self, forKey: .kind)) ?? ""
+                scope = (try? c.decodeIfPresent(String.self, forKey: .scope)) ?? ""
+                title = (try? c.decodeIfPresent(String.self, forKey: .title)) ?? ""
+            }
+
+            /// Only a known scope with an id is something to open.
+            var usable: Bool { !id.isEmpty && (scope == "assignment" || scope == "course") }
+        }
 
         private enum CodingKeys: String, CodingKey {
-            case id, title, kind, status
+            case id, title, kind, status, url, day, material
             case courseName = "course_name", courseLabel = "course_label", dueTS = "due_ts", allDay = "all_day"
+            case urlKind = "url_kind"
         }
 
         init(id: String = "", title: String = "", courseName: String = "", courseLabel: String = "",
-             dueTS: Double? = nil, allDay: Bool = false, kind: String = "", status: String = "") {
+             dueTS: Double? = nil, allDay: Bool = false, kind: String = "", status: String = "",
+             url: String? = nil, urlKind: String? = nil, day: String = "", material: Material? = nil) {
             self.id = id; self.title = title; self.courseName = courseName; self.courseLabel = courseLabel
             self.dueTS = dueTS; self.allDay = allDay; self.kind = kind; self.status = status
+            (self.url, self.urlKind) = Self.link(url, kind: urlKind)
+            self.day = day; self.material = material?.usable == true ? material : nil
+        }
+
+        /// The url and its kind when both pass: a known kind, and the client's own
+        /// check of the address (a stale or tampered payload cannot widen it).
+        static func link(_ url: String?, kind: String?) -> (String?, String?) {
+            guard let url, let kind, kind == "assignment" || kind == "quiz_page",
+                  StudyLinkRule.check(url) != nil else { return (nil, nil) }
+            return (url, kind)
         }
 
         init(from decoder: Decoder) throws {
@@ -2120,6 +2167,11 @@ struct StudyDaySummary: Decodable, Equatable {
             allDay = (try? c.decodeIfPresent(Bool.self, forKey: .allDay)) ?? false
             kind = (try? c.decodeIfPresent(String.self, forKey: .kind)) ?? ""
             status = (try? c.decodeIfPresent(String.self, forKey: .status)) ?? ""
+            (url, urlKind) = Self.link(try? c.decodeIfPresent(String.self, forKey: .url),
+                                       kind: try? c.decodeIfPresent(String.self, forKey: .urlKind))
+            day = (try? c.decodeIfPresent(String.self, forKey: .day)) ?? ""
+            let made = try? c.decodeIfPresent(Material.self, forKey: .material)
+            material = made?.usable == true ? made : nil
         }
 
         /// The course as a one-line row names it: the short label, else the
@@ -2179,20 +2231,28 @@ struct StudyDaySummary: Decodable, Equatable {
     var ready: [Ready] = []
     /// Topics recent quizzes missed, with the slides behind them; absent from an older service.
     var weak: [Weak] = []
+    /// Open work due today, then tomorrow (at most four), each with its link and
+    /// the guide made for it: READY FOR YOU's first rows. Absent from an older service.
+    var dueSoon: [Due] = []
+    var dueSoonMore = 0
 
     private enum CodingKeys: String, CodingKey {
         case line, sample, upcoming, ready, weak
+        case dueSoon = "due_soon", dueSoonMore = "due_soon_more"
         case dueToday = "due_today", dueTomorrowCount = "due_tomorrow_count", dueWeekCount = "due_week_count"
         case missingCount = "missing_count", nextTest = "next_test", upcomingMore = "upcoming_more"
     }
 
     init(dueToday: [Due] = [], dueTomorrowCount: Int = 0, dueWeekCount: Int = 0, missingCount: Int = 0,
          nextTest: Test? = nil, line: String = "", sample: Bool = false,
-         upcoming: [Due] = [], upcomingMore: Int = 0, ready: [Ready] = [], weak: [Weak] = []) {
+         upcoming: [Due] = [], upcomingMore: Int = 0, ready: [Ready] = [], weak: [Weak] = [],
+         dueSoon: [Due] = [], dueSoonMore: Int = 0) {
         self.dueToday = dueToday; self.dueTomorrowCount = dueTomorrowCount; self.dueWeekCount = dueWeekCount
         self.missingCount = missingCount; self.nextTest = nextTest; self.line = line; self.sample = sample
         self.upcoming = upcoming; self.upcomingMore = max(0, upcomingMore)
         self.ready = ready; self.weak = weak
+        self.dueSoon = dueSoon.filter { $0.day == "today" || $0.day == "tomorrow" }
+        self.dueSoonMore = max(0, dueSoonMore)
     }
 
     init(from decoder: Decoder) throws {
@@ -2213,6 +2273,10 @@ struct StudyDaySummary: Decodable, Equatable {
         // that doesn't decode is skipped; an older service sends neither.
         ready = c.schoolValue(.ready, SchoolLossy<Ready>.self)?.items ?? []
         weak = c.schoolValue(.weak, SchoolLossy<Weak>.self)?.items ?? []
+        // Newest: what is due today and tomorrow. A row for another day is dropped.
+        dueSoon = (c.schoolValue(.dueSoon, SchoolLossy<Due>.self)?.items ?? [])
+            .filter { $0.day == "today" || $0.day == "tomorrow" }
+        dueSoonMore = max(0, (try? c.decodeIfPresent(Int.self, forKey: .dueSoonMore)) ?? 0)
     }
 
     /// The Brief's SCHOOL line, or nil when there is nothing to say.
@@ -2760,5 +2824,64 @@ enum StudyBlockCalendar {
                 settle(block.id, snapshotAdded: block.added, generatedAt: generatedAt)
             }
         }
+    }
+}
+
+
+/// The rule an assignment link must pass before the Brief offers it or opens
+/// it, mirroring the service's (service/study/plan.py `link`): the person clicks
+/// it, so a quiz's landing page is allowed, but nothing that starts, takes,
+/// previews, submits or launches something, signs in or out, or carries
+/// credentials, a one-time key or a fragment. Pure; checked in BriefSummaryChecks.
+enum StudyLinkRule {
+    /// A path segment, query name or value made of (or run together from) one of these is refused.
+    static let refusedWords: Set<String> = ["take", "attempt", "attempts", "preview", "start", "history",
+                                            "speedgrader", "externaltools", "lti", "launch", "login", "logout",
+                                            "signin", "signout", "sso", "saml", "oauth"]
+    /// A query name with one of these parts (split at _ and -) is a signed or one-time link.
+    static let secretKeyParts: Set<String> = ["token", "sig", "signature", "auth", "apikey", "key", "session",
+                                              "sid", "otp", "code", "nonce", "jwt", "ticket", "reset", "verify",
+                                              "confirm", "login", "magic", "hash", "secret", "password"]
+    static let quizSegments: Set<String> = ["quizzes", "quiz", "exams", "exam", "assessments"]
+
+    private static func words(_ text: String) -> Set<String> {
+        let lower = text.lowercased()
+        let isWord: (Character) -> Bool = { $0.isASCII && ($0.isLetter || $0.isNumber) }
+        var out = Set(lower.split(whereSeparator: { !isWord($0) }).map(String.init))
+        out.insert(String(lower.filter(isWord)))
+        return out
+    }
+
+    /// The url and "assignment" or "quiz_page", or nil when it must not be opened.
+    static func check(_ raw: String) -> (url: URL, kind: String)? {
+        guard raw.hasPrefix("https://"), raw.count <= 2048 else { return nil }
+        // Printable ASCII only: no spaces, controls, backslash or fragment.
+        for scalar in raw.unicodeScalars {
+            if scalar.value < 0x21 || scalar.value > 0x7e || scalar == "\\" || scalar == "#" { return nil }
+        }
+        guard let parts = URLComponents(string: raw), parts.scheme == "https",
+              let host = parts.host, !host.isEmpty, host.allSatisfy(\.isASCII),
+              parts.user == nil, parts.password == nil, parts.port == nil, parts.fragment == nil,
+              !(parts.percentEncodedHost ?? "").contains("%"),
+              !host.lowercased().split(separator: ".").contains(where: { $0.hasPrefix("xn--") }),
+              let url = parts.url else { return nil }
+        let path: String = parts.path
+        let query: String = parts.query ?? ""
+        if path.contains("%") || query.contains("%") { return nil }     // encoded twice: refused
+        let segments: [String] = path.lowercased().split(separator: "/").map(String.init)
+        if segments.contains(where: { !words($0).isDisjoint(with: refusedWords) }) { return nil }
+        if zip(segments, segments.dropFirst()).contains(where: { $0 == "submissions" && $1 == "new" }) { return nil }
+        if !query.isEmpty {
+            if !words(query).isDisjoint(with: refusedWords) { return nil }
+            for item in parts.queryItems ?? [] {
+                let name = item.name.lowercased()
+                if !words(name).isDisjoint(with: refusedWords) || !words(item.value ?? "").isDisjoint(with: refusedWords) {
+                    return nil
+                }
+                let pieces = Set(name.split(whereSeparator: { $0 == "_" || $0 == "-" }).map(String.init))
+                if !pieces.isDisjoint(with: secretKeyParts) { return nil }
+            }
+        }
+        return (url, quizSegments.isDisjoint(with: segments) ? "assignment" : "quiz_page")
     }
 }
