@@ -34,7 +34,7 @@ enum NotchQADriver {
         let now = midnight.addingTimeInterval(10 * 3600 + 32 * 60)
         let dayStart = midnight.timeIntervalSince1970
         func dayModel(_ proactive: ProactiveFixture, study: Bool = false, at clock: Date? = nil,
-                      calendarFacts: Bool = false) -> TodayModel {
+                      calendarFacts: Bool = false, noCalendar: Bool = false) -> TodayModel {
             let moment = clock ?? now
             return TodayModel(now: { moment }, timeZoneProvider: { zone }, transport: { request in
                 let components = request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: true) }
@@ -52,7 +52,8 @@ enum NotchQADriver {
                 }
                 let body = components?.path == "/assistant/upcoming" ? try fixtureUpcoming(dayStart: dayStart)
                     : try fixturePlan(day: components?.queryItems?.first { $0.name == "day" }?.value ?? "", dayStart: dayStart,
-                                      proactive: proactive, study: study, calendarFacts: calendarFacts)
+                                      proactive: proactive, study: study, calendarFacts: calendarFacts,
+                                      noCalendar: noCalendar)
                 return (body, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
             })
         }
@@ -69,6 +70,9 @@ enum NotchQADriver {
         // with nothing left on the clock.
         let c3Day = dayModel(.ready, study: true, calendarFacts: true)
         let c3Late = dayModel(.ready, study: true, at: midnight.addingTimeInterval(21 * 3600 + 45 * 60), calendarFacts: true)
+        // The school day with Calendar access off: reminders, school work and
+        // plans caught in texts, and no word that the calendar is clear.
+        let c3NoCalendar = dayModel(.ready, study: true, noCalendar: true)
         // First-day states: a new user's empty day, the same day with Calendar,
         // Reminders, Mail and Messages unreadable, and the service still starting.
         func variantModel(_ variant: DayVariant) -> TodayModel {
@@ -165,6 +169,8 @@ enum NotchQADriver {
             ("day-c3-empty-wide", .day, { AnyView(NotchDayView(model: model, today: c3Late, wide: true)) }),
             // Calendar unreadable: no load is known for any day, so all seven show their date alone.
             ("day-c3-noweek", .day, { AnyView(NotchDayView(model: model, today: blocked)) }),
+            ("day-c3-nocalendar", .day, { AnyView(NotchDayView(model: model, today: c3NoCalendar)) }),
+            ("day-c3-nocalendar-wide", .day, { AnyView(NotchDayView(model: model, today: c3NoCalendar, wide: true)) }),
             ("brief-legacy-study", .brief, { AnyView(NotchBriefView(model: model, today: schoolLegacy, open: nil)) }),
         ] + NotchQASetup.scenes() + panelScenes(model: model, today: today, state: state)
             + studyScenes(model: model)
@@ -202,7 +208,7 @@ enum NotchQADriver {
             }
             await starting.refresh()
             // The "-study" scenes' days load like the rest (they rendered "Starting Wisp…" before).
-            for school in [schoolDay, schoolLegacy, c3Day, c3Late] {
+            for school in [schoolDay, schoolLegacy, c3Day, c3Late, c3NoCalendar] {
                 await school.refresh()
                 await school.refreshUpcoming()
                 await school.refreshStoredBrief()
@@ -219,7 +225,8 @@ enum NotchQADriver {
                 schoolDay.currentPlan?.study?.upcoming.isEmpty == false &&
                 schoolLegacy.currentPlan?.study?.upcoming.isEmpty == false &&
                 c3Day.currentPlan?.displayBlocks.contains { $0.calendarEvent != nil } == true &&
-                c3Late.currentPlan != nil
+                c3Late.currentPlan != nil &&
+                c3NoCalendar.currentPlan?.calendarState == .unread
             }
             while !populated() && Date() < deadline {
                 try? await Task.sleep(for: .milliseconds(20))
@@ -567,7 +574,8 @@ enum NotchQADriver {
     /// deadlines and SCHOOL summary (the "-study" scenes); without it the plan
     /// is exactly what it was before Study.
     static func fixturePlan(day: String, dayStart: Double, proactive: ProactiveFixture = .none,
-                            study withStudy: Bool = false, calendarFacts: Bool = false) throws -> Data {
+                            study withStudy: Bool = false, calendarFacts: Bool = false,
+                            noCalendar: Bool = false) throws -> Data {
         func at(_ h: Double) -> Double { dayStart + h * 3600 }
         func block(_ id: String, _ title: String, _ start: Double, _ end: Double, _ kind: String,
                    task: String? = nil, pattern: String? = nil, evidence: String? = nil) -> [String: Any] {
@@ -603,6 +611,8 @@ enum NotchQADriver {
                                       "cancel_blocked": "", "move_blocked": ""]) { $1 }
             }
         }
+        // Calendar access off: no Calendar events or all-day items reach the plan.
+        if noCalendar { blocks = blocks.filter { $0["kind"] as? String != "calendar" } }
         var workspace: [String: Any] = [
             "attention": [
                 need("pa2", "reminders", "PA 2", due: 23.98),
@@ -734,6 +744,14 @@ enum NotchQADriver {
             "preferences": ["start_minute": 540, "end_minute": 1320, "not_before": NSNull()],
             "workspace": workspace,
         ]
+        if noCalendar {
+            payload["all_day"] = [[String: Any]]()
+            payload["sources"] = ["calendar": ["ready": false, "last_sync": NSNull(), "state": "unavailable",
+                                               "blocked": "calendar_access",
+                                               "reason": "Calendar access is off for Wisp."]]
+            workspace["attention"] = (workspace["attention"] as? [[String: Any]] ?? []).filter { $0["source"] as? String != "calendar" }
+            payload["workspace"] = workspace
+        }
         if withStudy {
             payload["blocks"] = studyBlocks
             payload["deadlines"] = studyDeadlines

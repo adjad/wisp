@@ -266,6 +266,45 @@ struct DayAgenda: Equatable {
 /// One day card in the Day tab's week row. Only a day whose plan Wisp has
 /// actually read (the day on screen, with Calendar readable) carries a load;
 /// every other day shows its date alone, never an invented bar or count.
+/// What the Day may say about the calendar, by the Brief's rule
+/// (NotchBriefView's `calendarKnown`): read once the service says Calendar is
+/// ready, or when its events are on the plan anyway. Not read, Day never
+/// calls the day empty, free or clear: still syncing it says it is reading;
+/// not granted, unavailable or unknown (no word from the service) it says it
+/// can't read the calendar.
+enum DayCalendarState: Equatable {
+    case read, reading, unread
+
+    /// - Parameters:
+    ///   - ready: the service's `sources.calendar.ready`, nil when it sent none.
+    ///   - eventsShown: a Calendar event or a real all-day item is on the plan.
+    ///   - access: `TodayPlan.access("calendar")`, nil when unknown.
+    static func of(ready: Bool?, eventsShown: Bool, access: SourceAccess?) -> DayCalendarState {
+        if ready == true || eventsShown { return .read }
+        return access?.state == .syncing ? .reading : .unread
+    }
+
+    var isRead: Bool { self == .read }
+
+    /// The summary's sentence when the calendar isn't read.
+    var summaryLine: String? {
+        switch self {
+        case .read: return nil
+        case .reading: return "Wisp is still reading your calendar, so this may not be your whole day."
+        case .unread: return "Wisp can't read your calendar. Allow it in System Settings › Privacy & Security › Calendars."
+        }
+    }
+
+    /// The Next line's words when the calendar isn't read.
+    var nextLine: String? {
+        switch self {
+        case .read: return nil
+        case .reading: return "Reading your calendar…"
+        case .unread: return "Wisp can't read your calendar."
+        }
+    }
+}
+
 struct DayWeekCard: Equatable, Identifiable {
     /// "2026-11-11", the key `GET /assistant/today?day=` takes.
     let day: String
@@ -445,10 +484,11 @@ extension DayTimeline {
             }
     }
 
-    /// The Next line when nothing is left on the clock today; never an
-    /// all-clear when Wisp can't read Calendar.
-    static func nothingNextLine(calendarRead: Bool) -> String {
-        calendarRead ? "Nothing else on the clock today." : "Nothing else Wisp can see today: it can't read your calendar."
+    /// The Next line when there is no Next card: "Nothing else on the clock
+    /// today." only once Calendar was read; otherwise the calendar line is the
+    /// only thing it says.
+    static func nothingNextLine(_ calendar: DayCalendarState) -> String {
+        calendar.nextLine ?? "Nothing else on the clock today."
     }
 
     /// Whether the next thing is already on.
@@ -508,12 +548,14 @@ extension DayTimeline {
 
     /// The Next card's item taken out of the agenda (the card replaces its
     /// row), with the free stretch that ran up to it: the card says that.
-    static func agenda(_ agenda: DayAgenda, without next: DayItem?) -> DayAgenda {
-        guard let next else { return agenda }
+    /// Without a read calendar (`calendarRead` false) there are no free
+    /// stretches at all: Wisp can't know the time is free.
+    static func agenda(_ agenda: DayAgenda, without next: DayItem?, calendarRead: Bool = true) -> DayAgenda {
+        guard next != nil || !calendarRead else { return agenda }
         let ahead = agenda.ahead.filter { row in
             switch row {
-            case .item(let item): return item.id != next.id
-            case .free(_, let end): return end != next.start
+            case .item(let item): return item.id != next?.id
+            case .free(_, let end): return calendarRead && end != next?.start
             }
         }
         return DayAgenda(earlier: agenda.earlier, ahead: ahead)
@@ -1101,7 +1143,7 @@ struct DayTimeline: Equatable {
     /// The Day tab's blurb, at most two short sentences and a tail: what's up
     /// today and why the day is laid out the way it is.
     static func blurb(_ timeline: DayTimeline, needs: [DayNeedInput], isToday: Bool, endOfDay: Double,
-                      clock: (Double) -> String, dayStart: Double? = nil, calendarRead: Bool = true) -> String {
+                      clock: (Double) -> String, dayStart: Double? = nil, calendar: DayCalendarState = .read) -> String {
         // What's already over doesn't shape the rest of the day.
         let items = timeline.items.filter { !$0.past }
         let start = dayStart ?? endOfDay - 86400
@@ -1122,9 +1164,12 @@ struct DayTimeline: Equatable {
         let events = items.filter(isOnTheClock)
         let due = items.filter(isDueBy).count
         var first: String
-        if !calendarRead && events.isEmpty && dueToday.isEmpty && suggestions.isEmpty {
-            // Not "nothing is planned": Wisp hasn't seen the calendar.
-            first = "Wisp can't see your calendar yet, so this may not be your whole day."
+        if let line = calendar.summaryLine {
+            // Not "nothing is planned", "nothing else" or "clear after": Wisp
+            // hasn't read the calendar. Only what it did read is counted: what's
+            // due, and the overdue backlog.
+            first = line
+            if due > 0 { first += " \(things(due).capitalizedFirst) due \(isToday ? "today" : "that day")." }
             if backlog > 0 { first += " \(count(backlog).capitalizedFirst) overdue reminder\(backlog == 1 ? "" : "s") to look at." }
             return first
         }
