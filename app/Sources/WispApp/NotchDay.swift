@@ -415,6 +415,170 @@ enum DayWeek {
     }
 }
 
+// MARK: - Next up and Later today
+
+extension DayTimeline {
+    /// What the Next card shows: the first thing still on the clock, by when it
+    /// begins; at the same time a calendar event before a plan block before a
+    /// caught plan, then the shorter, then by id. Suggestions, usual windows,
+    /// due-by rows and all-day items are never "next".
+    static func nextUp(_ items: [DayItem], now: Double) -> DayItem? {
+        items.filter { !$0.past && isOnTheClock($0) && !$0.allDay && $0.end > now }
+            .min { a, b in
+                let ka = (a.begins ?? a.start, a.style.rawValue, a.ends ?? a.end, a.id)
+                let kb = (b.begins ?? b.start, b.style.rawValue, b.ends ?? b.end, b.id)
+                return ka < kb
+            }
+    }
+
+    /// The Next line when nothing is left on the clock today; never an
+    /// all-clear when Wisp can't read Calendar.
+    static func nothingNextLine(calendarRead: Bool) -> String {
+        calendarRead ? "Nothing else on the clock today." : "Nothing else Wisp can see today: it can't read your calendar."
+    }
+
+    /// Whether the next thing is already on.
+    static func isOnNow(_ item: DayItem, now: Double) -> Bool {
+        (item.begins ?? item.start) <= now && now < (item.ends ?? item.end)
+    }
+
+    /// "NEXT · IN 40 MIN", "NEXT · IN 1 H 5 MIN", "NEXT · STARTING NOW", or for
+    /// one already on "NOW · 25 MIN LEFT".
+    static func nextLabel(_ item: DayItem, now: Double) -> String {
+        if isOnNow(item, now: now) {
+            let left = Int((((item.ends ?? item.end) - now) / 60).rounded(.up))
+            return "NOW · " + length(max(1, left)).uppercased() + " LEFT"
+        }
+        let minutes = Int((((item.begins ?? item.start) - now) / 60).rounded(.up))
+        return minutes <= 0 ? "NEXT · STARTING NOW" : "NEXT · IN " + length(minutes).uppercased()
+    }
+
+    /// The same, for VoiceOver: "Next, in 40 min", "Now, 25 min left".
+    static func spokenNextLabel(_ item: DayItem, now: Double) -> String {
+        let label = nextLabel(item, now: now).lowercased()
+        return label.prefix(1).uppercased() + label.dropFirst().replacingOccurrences(of: " · ", with: ", ")
+    }
+
+    /// "Now 1:20 PM · free until 2:00 PM": nothing holds the time from now
+    /// until the next thing that does, a minute or more away. Nil otherwise,
+    /// and always nil when Wisp can't read Calendar: it can't know you're free.
+    static func nowFreeLine(_ items: [DayItem], now: Double, clock: (Double) -> String,
+                            calendarRead: Bool = true) -> String? {
+        guard calendarRead else { return nil }
+        let holding = items.filter { !$0.past && holdsTime($0) }
+        if holding.contains(where: { ($0.begins ?? $0.start) <= now && now < $0.end }) { return nil }
+        guard let until = holding.map({ $0.begins ?? $0.start }).filter({ $0 > now }).min(), until - now >= 60 else { return nil }
+        return "Now " + clock(now) + " · free until " + clock(until)
+    }
+
+    /// The Next card's time line: "11:45 AM – 2:00 PM · 2 h 15 min", then what
+    /// it is when it isn't a Calendar event ("· Study block", "· Your plan",
+    /// "· Caught in texts"); "From 6:00 PM" for an event the source gave no
+    /// end, "At 7:00 PM" for a to-do or a caught plan.
+    static func nextTimeLine(_ item: DayItem, clock: (Double) -> String) -> String {
+        let begins = item.begins ?? item.start
+        var line: String
+        if let ends = item.ends {
+            line = clock(begins) + " – " + clock(ends) + " · " + length(Int(((ends - begins) / 60).rounded()))
+        } else {
+            line = (item.style == .calendar ? "From " : "At ") + clock(begins)
+        }
+        switch item.style {
+        case .task: line += item.kind == "study" ? " · Study block" : " · Your plan"
+        case .caught: line += " · Caught in texts"
+        case .todo where !sourceName(item.source).isEmpty: line += " · " + sourceName(item.source)
+        default: break
+        }
+        return line
+    }
+
+    /// The Next card's item taken out of the agenda (the card replaces its
+    /// row), with the free stretch that ran up to it: the card says that.
+    static func agenda(_ agenda: DayAgenda, without next: DayItem?) -> DayAgenda {
+        guard let next else { return agenda }
+        let ahead = agenda.ahead.filter { row in
+            switch row {
+            case .item(let item): return item.id != next.id
+            case .free(_, let end): return end != next.start
+            }
+        }
+        return DayAgenda(earlier: agenda.earlier, ahead: ahead)
+    }
+
+    /// Later today: what the agenda still lists after the Next card's item,
+    /// as rows at a time (`timed`, overdue first as the agenda has them) and
+    /// what is due by a time (`due`), each in agenda order.
+    static func laterRows(_ agenda: DayAgenda, excluding next: DayItem?) -> (timed: [DayItem], due: [DayItem]) {
+        let items: [DayItem] = agenda.ahead.compactMap {
+            if case .item(let item) = $0, item.id != next?.id { return item }
+            return nil
+        }
+        return (items.filter { !isDueBy($0) }, items.filter(isDueBy))
+    }
+
+    /// The "Show N more" line under Later today, naming what it hides:
+    /// "Show 2 more · due 11:59 PM: Lab 4 and Problem set 6" when all of it is
+    /// due at one time, else "Show 3 more: Lab 4, Club and 1 more".
+    static func moreLine(_ hidden: [DayItem], clock: (Double) -> String) -> String {
+        guard !hidden.isEmpty else { return "" }
+        let titles = hidden.map(\.title)
+        let named: String
+        switch titles.count {
+        case 1: named = titles[0]
+        case 2: named = titles[0] + " and " + titles[1]
+        default: named = titles[0] + ", " + titles[1] + " and \(titles.count - 2) more"
+        }
+        let times = Set(hidden.map { item -> String in
+            guard isDueBy(item), let due = item.due else { return "" }
+            return item.allDay ? "today" : clock(due)
+        })
+        let lead = "Show \(hidden.count) more"
+        if times.count == 1, let time = times.first, !time.isEmpty { return lead + " · due " + time + ": " + named }
+        return lead + ": " + named
+    }
+
+    /// A Later row's time: its start, "Overdue", its due time, or "All day".
+    static func laterTime(_ item: DayItem, clock: (Double) -> String) -> String {
+        gutter(item, clock: clock).top
+    }
+
+    /// How much of a Later row's duration bar is filled: its length against
+    /// two hours (a longer one fills it), and never less than a sliver. Nil
+    /// for what is due by a time or overdue: those hold no stretch of time.
+    static func durationFraction(_ item: DayItem) -> Double? {
+        guard holdsTime(item) else { return nil }
+        let minutes = ((item.ends ?? item.end) - (item.begins ?? item.start)) / 60
+        return min(1, max(0.12, minutes / 120))
+    }
+
+    /// A Later row's muted detail: how long it runs ("1 h 30 min"), "Suggested ·
+    /// about 45 min", "Usually busy · …", "Needs you", or a to-do's source.
+    static func laterDetail(_ item: DayItem, now: Double, isToday: Bool, clock: (Double) -> String) -> String {
+        switch item.style {
+        case .calendar:
+            guard let ends = item.ends else { return "Calendar" }
+            let begins = item.begins ?? item.start
+            if isToday && begins <= now && now < ends { return length(Int(((ends - now) / 60).rounded(.up))) + " left" }
+            return length(Int(((ends - begins) / 60).rounded()))
+        case .task where item.kind == "study":
+            return length(Int(((item.end - item.start) / 60).rounded()))
+        default:
+            return agendaDetail(item, now: now, isToday: isToday, clock: clock)
+        }
+    }
+
+    /// The Next card's two buttons beside its ⋯ menu, for a Calendar event the
+    /// service described: Open in Calendar, and Move… only where the timeline's
+    /// own menu offers Move. Nothing for any other kind of row, and nothing
+    /// while a cancel of it is in its Undo window or being sent.
+    enum NextButton: Equatable { case open, move }
+
+    static func nextButtons(isDescribedEvent: Bool, menuOffersMove: Bool, cancelActive: Bool) -> [NextButton] {
+        guard isDescribedEvent, !cancelActive else { return [] }
+        return menuOffersMove ? [.open, .move] : [.open]
+    }
+}
+
 struct DayTimeline: Equatable {
     /// Hour-aligned range the lane covers.
     let from: Double
