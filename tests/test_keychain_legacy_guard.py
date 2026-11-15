@@ -1,0 +1,79 @@
+"""No test can reach the real login Keychain through the pre-rename lookup.
+
+Where the app was renamed, the current Keychain name differs from the old one, and a
+test that fakes only the current read used to send keychain_legacy to the real
+`security` (and copy a real key). Here the names are made to differ on purpose, the
+suites' own way of faking is used, and the only `security` calls allowed are fakes.
+Synthetic only."""
+import subprocess
+
+import pytest
+
+from service.config import keychain_legacy as legacy
+from service.config import provider_credentials as secrets
+from service.config.endpoints import ProviderCredentialMissing
+from service.study import connector as C
+
+
+def test_conftest_replaces_the_launcher_for_every_test():
+    assert legacy.LAUNCH is not legacy._real_launch
+
+
+def test_the_real_launcher_refuses_under_pytest(monkeypatch):
+    def must_not_run(*args, **kwargs):
+        raise AssertionError("a real security process was started")
+    monkeypatch.setattr(subprocess, "run", must_not_run)
+    with pytest.raises(legacy.RealKeychainRefused):
+        legacy._real_launch(["/usr/bin/security", "find-generic-password", "-s", "x", "-a", "y"])
+
+
+def test_the_off_switch_refuses_outside_pytest(monkeypatch):
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("WISP_KEYCHAIN_LEGACY", "off")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("ran")))
+    with pytest.raises(legacy.RealKeychainRefused):
+        legacy._real_launch(["/usr/bin/security", "help"])
+
+
+@pytest.fixture
+def renamed(monkeypatch, tmp_path):
+    """The renamed app's shape: current names differ from the pre-rename ones."""
+    monkeypatch.setenv("WISP_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(C, "SERVICE", "com.renamed.study")
+    monkeypatch.setattr(secrets, "SERVICE", "com.renamed.inference")
+    monkeypatch.setattr(secrets, "_RECENT_FAILURE", {})
+    monkeypatch.setattr(secrets, "_RECENT_MISSING", set())
+    monkeypatch.setattr(secrets, "_RECENT_SUCCESS", {})
+    monkeypatch.setattr(secrets, "_reuse_enabled", lambda: False)
+    monkeypatch.setattr(secrets.quarantine, "check", lambda: None)
+    C.forget_key()
+    monkeypatch.setattr(C, "_cloud_target", lambda: None)
+    calls = []
+    real_default = legacy.LAUNCH            # conftest's fake: no old item
+
+    def recorded(argv, **kwargs):
+        calls.append(list(argv))
+        return real_default(argv, **kwargs)
+    monkeypatch.setattr(legacy, "LAUNCH", recorded)
+    yield calls
+    C.forget_key()
+
+
+def test_a_study_suite_faking_only_its_own_read_never_reaches_keychain(renamed, monkeypatch):
+    # tests/test_study_connector.py's way: only connector._security is faked.
+    monkeypatch.setattr(C, "_security", lambda args: subprocess.CompletedProcess(args, 44, b"", b"not found"))
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("real run")))
+    assert C._key_exists("openrouter") is False
+    assert C._keychain_key("openrouter") is None
+    assert renamed and all(a[:2] == ["/usr/bin/security", "find-generic-password"] for a in renamed)
+    assert not any("-w" in a for a in renamed)          # only "is there one?", answered by the fake
+
+
+def test_a_cloud_suite_faking_only_its_own_read_never_reaches_keychain(renamed, monkeypatch):
+    def current_read_only(argv, **kwargs):
+        assert "com.renamed.inference" in argv, "only the current-name read is faked here"
+        return subprocess.CompletedProcess(argv, 44, b"", b"not found")
+    monkeypatch.setattr(subprocess, "run", current_read_only)
+    with pytest.raises(ProviderCredentialMissing):
+        secrets.resolve_keychain("cloud", "https://example-provider.test")
+    assert renamed and not any("-w" in a or a[1:2] == ["-i"] for a in renamed)
