@@ -177,6 +177,62 @@ def today(day: str, timezone: str, debug: bool = False):
         fail(exc)
 
 
+WEEK_DAYS = 7
+
+
+def week_day(day: str, timezone: str, now: float) -> dict:
+    """One day's counts for the Day tab's week row, from the stored calendar copy and the
+    planner only: no workspace, mail, Messages, Study hook, model call or write. A day
+    that can't be read, or whose calendar isn't current, has no numbers (never guessed)."""
+    from service.assistant.today import day_bounds
+    try:
+        lo, hi = day_bounds(day, timezone)
+        state = assistant_store.today_snapshot(day, timezone)
+        tasks = assistant_store.hide_stale_tasks(state["tasks"], now)
+        plan = build_plan(day, timezone, tasks, state["commitments"], state["preferences"],
+                          state["sources"], now=now)
+    except Exception:  # noqa: BLE001 - an unreadable day shows its date only
+        return {"day": day, "calendar_ready": False}
+    if not plan["sources"]["calendar"]["ready"]:
+        return {"day": day, "calendar_ready": False}
+    spans = []
+    for b in plan["blocks"]:
+        start, end = b.get("start"), b.get("end")
+        if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
+            continue
+        start, end = max(start, lo), min(end, hi)
+        if end > start:
+            spans.append((start, end, str(b.get("kind") or "")))
+    # Minutes on the clock: the union of the timed blocks, so overlaps count once.
+    minutes, cursor = 0.0, lo
+    for start, end, _ in sorted(spans):
+        if end > cursor:
+            minutes += end - max(start, cursor)
+            cursor = end
+    return {"day": day, "calendar_ready": True, "on_clock": len(spans),
+            "on_clock_minutes": int(minutes // 60), "due": len(plan["deadlines"]),
+            "all_day": len(plan["all_day"]),
+            "spans": [[int((s - lo) // 60), int(-(-(e - lo) // 60)), k] for s, e, k in sorted(spans)]}
+
+
+@router.get("/week")
+def week(start: str, timezone: str):
+    """Seven days from `start` for the Day tab's week row. Read-only and cheap: never
+    the full Today snapshot (which can start study prep and re-reads mail and Messages)."""
+    from datetime import date, timedelta
+    from service.assistant.today import day_bounds
+    try:
+        first = date.fromisoformat(start)
+        if first.isoformat() != start:
+            raise ValueError("start must be YYYY-MM-DD")
+        day_bounds(start, timezone)   # checks the timezone
+        days = [(first + timedelta(days=i)).isoformat() for i in range(WEEK_DAYS)]
+    except (ValueError, OverflowError) as exc:
+        fail(ValueError(str(exc)))
+    now = time.time()
+    return {"start": start, "timezone": timezone, "days": [week_day(d, timezone, now) for d in days]}
+
+
 @router.post("/tasks", status_code=201)
 def create_task(body: CreateTask):
     try:
