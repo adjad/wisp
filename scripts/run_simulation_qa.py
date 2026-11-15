@@ -228,6 +228,14 @@ PROFILE_TESTS = {
         "tests/test_inference_endpoints.py",
         "tests/test_inference_providers.py",
         "tests/test_cloud_key_read.py",
+        "tests/test_remote_reasoning_replay.py",
+        "tests/test_gemini_provider_and_ttft.py",
+        "tests/test_remote_media.py",
+        "tests/test_cloud_scale_up_core.py",
+        "tests/test_cloud_scale_up_documents_meetings.py",
+        "tests/test_cloud_scale_up_repairs.py",
+        "tests/test_cloud_probe_openrouter.py",
+        "tests/test_cloud_everything_mail_memory.py",
         "tests/test_node_inbox.py",
         "tests/test_assistant_delivery.py",
         "tests/test_calendar_create_interval.py",
@@ -512,6 +520,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_autoadd_mail_proof.py",
     # Apple Mail email: known sender, the receiving server's result when present, both yeses.
     "tests/test_autoadd_apple_mail_proof.py",
+    # Mail closed: the Brief still reads (freshness window, the on-disk index, the Brief's cause).
+    "tests/test_mail_read_closed.py",
     "tests/test_capture_mail_stays_a_card.py",
     "tests/test_mail_auth.py",
     "tests/test_mail_known.py",
@@ -782,6 +792,7 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_study_match.py",
     "tests/test_study_slides_flow.py",
     "tests/test_study_blocks.py",
+    "tests/test_study_ask_tools.py",
     # Evening check-in, carry-forward and goal pulse: disposable AssistantStore and
     # state files, in-process TestClient; no model, scheduler, hub or real ~/.moe.
     "tests/test_checkin.py",
