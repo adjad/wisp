@@ -382,8 +382,26 @@ struct ProactiveBriefSection: View {
     /// The gap between the zones side by side, and between them stacked.
     private static let zoneGap: CGFloat = 28
     private static let stackGap: CGFloat = 12
-    /// READY FOR YOU's tag column: one width, so the tags line up.
-    private static var tagColumn: CGFloat { 70 * Theme.textScale }
+    /// READY FOR YOU's tag column: as wide as the widest tag its rows show,
+    /// so the tags line up and the titles keep the rest.
+    private var tagColumn: CGFloat {
+        let shown: ProactiveState = proactive.only(chosen)
+        let cards: [String] = liveCards(shown).filter { !$0.wispDidThis }.map(cardTag)
+        let study: [String] = studyCards.cards.map(studyTag)
+        let found: [String] = foundItems.isEmpty ? [] : [BriefReady.foundTag]
+        let font = NSFont.monospacedSystemFont(ofSize: 9 * Theme.textScale, weight: .semibold)
+        let advance: CGFloat = ("M" as NSString).size(withAttributes: [.font: font]).width + 0.3
+        return BriefReady.tagColumn(cards + study + found, charWidth: advance)
+    }
+
+    private func cardTag(_ card: ProactiveCard) -> String {
+        BriefReady.cardTag(method: card.action?.method ?? "", hasDraft: !(card.action?.draft ?? "").isEmpty)
+    }
+
+    private func studyTag(_ card: StudyBriefCard) -> String {
+        if case .open = card.action { return BriefReady.studyTag(id: card.id, opensMaterial: true) }
+        return BriefReady.studyTag(id: card.id, opensMaterial: false)
+    }
     /// A list row's text starts here: the check circle and its gap.
     private static let listInset: CGFloat = 26
     @State private var hoveredThread: String? = nil
@@ -653,10 +671,7 @@ struct ProactiveBriefSection: View {
             Image(systemName: "sparkle").font(.wisp(size: 10, weight: .semibold)).foregroundStyle(Theme.warn)
                 .accessibilityHidden(true)
             zoneTitle("READY FOR YOU", spoken: "Ready for you", count: count, lit: true).fixedSize()
-            if let line = readSource {
-                Text(line).font(.wisp(size: 11.5)).foregroundStyle(Theme.textMuted)
-                    .lineLimit(1).truncationMode(.tail)
-            }
+            readSourceLine
             Spacer(minLength: 4)
             accountMenu
             analyzeControl
@@ -664,11 +679,25 @@ struct ProactiveBriefSection: View {
         .frame(minHeight: Self.controlsHeaderHeight)
     }
 
-    /// "from 49 emails and texts · 10:24 AM", from the engine's own numbers.
-    private var readSource: String? {
-        guard let stats = proactive.stats else { return nil }
-        let at: String = (stats.asOf ?? proactive.asOf).map { today.clock($0) } ?? ""
-        return BriefReady.source(read: stats.read, at: at)
+    /// "from 49 emails and texts · 10:24 AM", from the engine's own numbers;
+    /// side by side, "49 read · 10:24 AM" when the sentence would be cut, so
+    /// the time always shows (BriefReady.sourceForms). The sentence is its tooltip.
+    @ViewBuilder private var readSourceLine: some View {
+        if let stats = proactive.stats {
+            let at: String = (stats.asOf ?? proactive.asOf).map { today.clock($0) } ?? ""
+            let forms: [String] = BriefReady.sourceForms(read: stats.read, at: at, sideBySide: sideBySide)
+            if let full = forms.first {
+                let short: String = forms.count > 1 ? forms[1] : full
+                ViewThatFits(in: .horizontal) {
+                    Text(full).lineLimit(1).fixedSize()
+                    Text(short).lineLimit(1).fixedSize()
+                    Text(short).lineLimit(1).truncationMode(.tail)
+                }
+                .font(.wisp(size: 11.5)).foregroundStyle(Theme.textMuted)
+                .help(full)
+                .accessibilityLabel(full)
+            }
+        }
     }
 
     /// Nothing ready: one line, with Analyze now beside it; "Let Wisp act for
@@ -816,9 +845,10 @@ struct ProactiveBriefSection: View {
         return VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .center, spacing: 8) {
                 readyTag(BriefReady.cardTag(method: card.action?.method ?? "", hasDraft: false))
-                Text(line).font(.wisp(size: 12.5)).foregroundStyle(Theme.textPrimary).lineLimit(1)
+                addedText(card, line: line)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .help(card.why.isEmpty ? card.title : card.why)
+                    .accessibilityElement(children: .ignore)
                     .accessibilityLabel("Wisp added " + line)
                 if let undo = card.action, !isUnconfirmed(state) { compactFire(card, undo, state) }
             }
@@ -832,6 +862,19 @@ struct ProactiveBriefSection: View {
             }
         }
         .accessibilityElement(children: .contain)
+    }
+
+    /// What was added: side by side, the title, then where it came from on a
+    /// muted line under it, so neither is cut for the other; stacked, one line.
+    @ViewBuilder private func addedText(_ card: ProactiveCard, line: String) -> some View {
+        if sideBySide && !card.when.isEmpty {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(card.title).font(.wisp(size: 12.5)).foregroundStyle(Theme.textPrimary).lineLimit(1)
+                Text(card.when).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
+            }
+        } else {
+            Text(line).font(.wisp(size: 12.5)).foregroundStyle(Theme.textPrimary).lineLimit(1)
+        }
     }
 
     /// The log: what Wisp did lately, as the acting row listed it.
@@ -873,7 +916,7 @@ struct ProactiveBriefSection: View {
             readyMore(hidden: items.count - visible.count, canExpand: items.count > limit)
             if let confirmation = mailMemory.confirmation {
                 Text(confirmation).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
-                    .padding(.leading, Self.tagColumn + 10).padding(.top, 2)
+                    .padding(.leading, tagColumn + 10).padding(.top, 2)
             }
         }
         .accessibilityElement(children: .contain)
@@ -909,7 +952,7 @@ struct ProactiveBriefSection: View {
             }
             .font(.wisp(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
             .frame(minHeight: 24)
-            .padding(.leading, Self.tagColumn + 10)
+            .padding(.leading, tagColumn + 10)
             .overlay(alignment: .top) { Rectangle().fill(Theme.hairline).frame(height: 1).accessibilityHidden(true) }
         }
     }
@@ -920,8 +963,8 @@ struct ProactiveBriefSection: View {
                                             spoken: String, @ViewBuilder trailing: () -> Trailing) -> some View {
         // Side by side at Extra large, the buttons go under the words, so a title keeps its room.
         let below: Bool = sideBySide && Theme.textScale >= 1.2
-        return HStack(alignment: below ? .top : .center, spacing: 10) {
-            readyTag(tag).frame(width: Self.tagColumn, alignment: .leading)
+        return HStack(alignment: below ? .top : .center, spacing: 8) {
+            readyTag(tag).frame(width: tagColumn, alignment: .leading)
             if below {
                 VStack(alignment: .leading, spacing: 3) {
                     compactText(title: title, detail: detail)
@@ -943,14 +986,37 @@ struct ProactiveBriefSection: View {
         .accessibilityElement(children: .contain)
     }
 
-    private func compactText(title: String, detail: String) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(title).font(.wisp(size: 13, weight: .semibold)).foregroundStyle(Theme.textPrimary).lineLimit(1)
-            if !detail.isEmpty {
-                Text(detail).font(.wisp(size: 11.5)).foregroundStyle(Theme.textMuted).lineLimit(1)
+    /// The title and one muted line. Side by side, a title that doesn't fit
+    /// on one line takes two, and the muted line gives way to it.
+    @ViewBuilder private func compactText(title: String, detail: String) -> some View {
+        if sideBySide {
+            ViewThatFits(in: .horizontal) {
+                VStack(alignment: .leading, spacing: 1) {
+                    compactTitle(title).fixedSize()
+                    compactDetail(detail)
+                }
+                compactTitle(title, lines: 2).fixedSize(horizontal: false, vertical: true)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            VStack(alignment: .leading, spacing: 1) {
+                compactTitle(title)
+                compactDetail(detail)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func compactTitle(_ title: String, lines: Int = 1) -> some View {
+        Text(title).font(.wisp(size: 13, weight: .semibold)).foregroundStyle(Theme.textPrimary).lineLimit(lines)
+    }
+
+    /// One muted line that never asks for more width than it is given.
+    @ViewBuilder private func compactDetail(_ detail: String) -> some View {
+        if !detail.isEmpty {
+            Text(detail).font(.wisp(size: 11.5)).foregroundStyle(Theme.textMuted).lineLimit(1)
+                .frame(minWidth: 0, idealWidth: 0, maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     /// What Wisp did, in a small outlined tag: DRAFTED, QUIZ MADE, FOUND…
@@ -991,10 +1057,10 @@ struct ProactiveBriefSection: View {
             if case .failed(let reason) = state {
                 Text(reason).font(.wisp(size: 11)).foregroundStyle(Theme.bad)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.leading, Self.tagColumn + 10)
+                    .padding(.leading, tagColumn + 10)
             }
             if let error = actions.cardErrors[card.id] {
-                Text(error).font(.wisp(size: 11)).foregroundStyle(Theme.bad).padding(.leading, Self.tagColumn + 10)
+                Text(error).font(.wisp(size: 11)).foregroundStyle(Theme.bad).padding(.leading, tagColumn + 10)
             }
         }
     }
@@ -1082,7 +1148,7 @@ struct ProactiveBriefSection: View {
             if let failure = mailMemory.failures[item.id] {
                 Text(failure).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.leading, Self.tagColumn + 10)
+                    .padding(.leading, tagColumn + 10)
             }
         }
     }

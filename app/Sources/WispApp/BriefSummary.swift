@@ -1007,14 +1007,37 @@ enum BriefReady {
         return opensMaterial ? "QUIZ MADE" : "SLIDES"
     }
 
-    /// READY FOR YOU's rows before "+N more · Show all".
-    static func rowsShown(sideBySide: Bool) -> Int { sideBySide ? 4 : 3 }
+    /// READY FOR YOU's rows before "+N more · Show all": three either way, as
+    /// side by side a title that doesn't fit takes two lines.
+    static func rowsShown(sideBySide: Bool) -> Int { 3 }
 
     /// "from 49 emails and texts · 10:24 AM"; nil before anything was read.
     static func source(read: Int, at: String) -> String? {
         guard read > 0 else { return nil }
         let from = "from \(read) email\(read == 1 ? "" : "s") and texts"
         return at.isEmpty ? from : from + " · " + at
+    }
+
+    /// "49 read · 10:24 AM": the read line short enough to keep its time.
+    static func sourceShort(read: Int, at: String) -> String? {
+        guard read > 0 else { return nil }
+        return at.isEmpty ? "\(read) read" : "\(read) read · " + at
+    }
+
+    /// The read line's forms, longest first: the sentence, then (side by
+    /// side, where the header is narrow) the short form. The view shows the
+    /// first that fits, so the time is never cut.
+    static func sourceForms(read: Int, at: String, sideBySide: Bool) -> [String] {
+        guard let full = source(read: read, at: at) else { return [] }
+        guard sideBySide, let short = sourceShort(read: read, at: at) else { return [full] }
+        return [full, short]
+    }
+
+    /// The tag column: the widest tag's characters at `charWidth`, plus the
+    /// tag's padding and outline.
+    static func tagColumn(_ tags: [String], charWidth: CGFloat) -> CGFloat {
+        let longest: Int = tags.map(\.count).max() ?? 0
+        return (CGFloat(longest) * charWidth).rounded(.up) + 12
     }
 
     /// The zone's one line with nothing ready: what was checked and when, and
