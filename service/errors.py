@@ -27,12 +27,70 @@ from service.inference.omlx_client import (
 
 _RetryHook = Callable[[], Awaitable[None]] | None
 
+# Where the cloud key is entered again (SettingsView's Models page, Cloud inference).
+RECONNECT_KEY_MESSAGE = ("Reconnect your cloud AI key: Wisp can't find it in Keychain. Open Settings › Models, "
+                         "paste your key under Cloud inference and choose Test & Save.")
+UNREADABLE_KEY_MESSAGE = ("Wisp couldn't read your cloud AI key from Keychain. If macOS asks, enter "
+                          "your login password and choose Always Allow. If it keeps happening, "
+                          "reconnect your key: Settings › Models, paste it under Cloud inference "
+                          "and choose Test & Save.")
+BUSY_KEY_MESSAGE = "Wisp is still reading your cloud AI key from Keychain. Try again in a moment."
+WAITED_KEY_MESSAGE = ("Wisp waited for you to allow Keychain access, but no answer came in time. "
+                      "Ask again, then enter your login password and choose Always Allow when macOS asks.")
+COPY_PENDING_KEY_MESSAGE = ("Wisp still needs to bring your cloud AI key across in Keychain. Ask again, "
+                            "and allow Keychain access when macOS asks.")
+# The status line Ask shows while macOS's question is on screen.
+KEYCHAIN_WAIT_STATUS = "Waiting for you to allow Keychain access…"
+
+
+def _credential_failure(exc: BaseException):
+    """The provider-key failure behind exc (raised directly, or wrapped by a caller)."""
+    from service.config.endpoints import ProviderCredentialError
+    seen = 0
+    while exc is not None and seen < 8:
+        if isinstance(exc, ProviderCredentialError):
+            return exc
+        exc = exc.__cause__ or (None if exc.__suppress_context__ else exc.__context__)
+        seen += 1
+    return None
+
+
+def credential_message(exc: BaseException) -> str | None:
+    """The reconnect sentence for a provider-key failure, else None."""
+    from service.config.endpoints import (ProviderCredentialBusy, ProviderCredentialCopyPending,
+                                          ProviderCredentialMissing, ProviderCredentialTimedOut)
+    found = _credential_failure(exc)
+    if found is None:
+        return None
+    for kind, message in ((ProviderCredentialMissing, RECONNECT_KEY_MESSAGE),
+                          (ProviderCredentialBusy, BUSY_KEY_MESSAGE),
+                          (ProviderCredentialTimedOut, WAITED_KEY_MESSAGE),
+                          (ProviderCredentialCopyPending, COPY_PENDING_KEY_MESSAGE)):
+        if isinstance(found, kind):
+            return message
+    return UNREADABLE_KEY_MESSAGE
+
+
+def startup_credential_hint(exc: BaseException) -> str | None:
+    """The startup log's line for a key problem: only missing or unreadable keys. A key
+    waiting to be copied (or a busy read) is fine and says nothing."""
+    from service.config.endpoints import (ProviderCredentialBusy, ProviderCredentialCopyPending,
+                                          ProviderCredentialTimedOut)
+    found = _credential_failure(exc)
+    if found is None or isinstance(found, (ProviderCredentialBusy, ProviderCredentialCopyPending,
+                                           ProviderCredentialTimedOut)):
+        return None
+    return credential_message(found)
+
 
 def translate(exc: Exception, *, retry_omlx: _RetryHook = None, endpoint_name: str = "local") -> tuple[str, str]:
     """Returns (message shown to the user, raw detail for the debug export)."""
     detail = f"{type(exc).__name__}: {exc}"
     # Endpoint names are internal identifiers; the user sees what the app is.
     endpoint_name = {"local_provider": "local app"}.get(endpoint_name, endpoint_name)
+
+    if (message := credential_message(exc)) is not None:
+        return message, detail
 
     if isinstance(exc, ModelLoadError):
         # Already a plain, specific message. A machine reason code (for example

@@ -405,9 +405,16 @@ async def lifespan(app: FastAPI):
         from service.engine.downloads import warm_checks
         started_tasks.append(asyncio.create_task(asyncio.to_thread(warm_checks)))
     if profile is not None:
+        from service.config.keychain_legacy import no_copy
         try:
-            await _prepare_remote_inference(client)
+            # Nobody is waiting on this check, so a key saved before the app's rename is
+            # not copied here (that asks macOS's question); the first real use copies it.
+            with no_copy():
+                await _prepare_remote_inference(client)
         except Exception as exc:
+            from service.errors import startup_credential_hint
+            if (hint := startup_credential_hint(exc)) is not None:
+                print(f"[remote] {hint}", flush=True)
             from service.inference.remote_policy import launched_remote_only
             if launched_remote_only():
                 await client.aclose()
@@ -2624,6 +2631,17 @@ async def agent(body: dict[str, Any]):
     async def runner_body():
         owned_inference_client = None
         turn_client = None
+        # A key saved before the app's rename is copied on this turn's first cloud call,
+        # and macOS asks first: say so in Ask while the question is on screen. Called
+        # from the reading thread, so it hops back onto this loop.
+        from service.config.keychain_legacy import WAIT_NOTICE
+        from service.errors import KEYCHAIN_WAIT_STATUS
+        turn_loop = asyncio.get_running_loop()
+
+        def keychain_wait_notice():
+            turn_loop.call_soon_threadsafe(lambda: turn_loop.create_task(
+                emit({"type": "status", "text": KEYCHAIN_WAIT_STATUS})))
+        WAIT_NOTICE.set(keychain_wait_notice)
         from service.memory.capture import current_source
         import time as _memory_time
         current_source.set(None if test_mode else {"source_type": "user_request",

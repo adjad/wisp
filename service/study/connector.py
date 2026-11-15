@@ -25,6 +25,8 @@ from typing import Callable
 
 import httpx
 
+from service.config import keychain_legacy
+
 log = logging.getLogger(__name__)
 
 SERVICE = "com.wisp.study"
@@ -70,8 +72,12 @@ MESSAGES = {
 }
 
 
+KEYCHAIN_WAIT_MESSAGE = ("Wisp waited for you to allow Keychain access to your Study key, but no "
+                         "answer came in time. Try again, then enter your login password and choose "
+                         "Always Allow when macOS asks.")
 KEYCHAIN_MESSAGE = ("Wisp could not read the Study key from your Keychain. If macOS asked, "
-                    "choose Always Allow, or save the key again.")
+                    "choose Always Allow. Otherwise reconnect your key: choose Study key in "
+                    "Study, paste the key and save it.")
 
 
 class StudyConnectorError(Exception):
@@ -141,10 +147,12 @@ def forget_key(provider: str | None = None) -> None:
         _key_cache.clear()
         _exists_cache.clear()
         _key_failed.clear()
+        _key_waited.clear()
     else:
         _key_cache.pop(provider, None)
         _exists_cache.pop(provider, None)
         _key_failed.pop(provider, None)
+        _key_waited.pop(provider, None)
 
 
 def _read_held(provider: str) -> bool:
@@ -170,9 +178,22 @@ def _clean_key(value) -> str | None:
     return value
 
 
+def _on_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
+
+
+# Providers whose last read waited on macOS's question with no answer (not a refusal).
+_key_waited: dict[str, float] = {}
+
+
 def _keychain_key(provider: str) -> str | None:
     """The saved Study key, or None. BLOCKING (it may wait on a Keychain prompt for up to
-    10 s): async callers run it through asyncio.to_thread (see _resolve_async). A read that
+    10 s, or a minute while macOS asks to copy a key saved before the app's rename):
+    async callers run it through asyncio.to_thread (see _resolve_async). A read that
     timed out or was refused is held for KEY_FAILURE_HOLD_S."""
     if provider not in PROVIDERS:
         return None
@@ -184,16 +205,25 @@ def _keychain_key(provider: str) -> str | None:
     try:
         result = _security(["find-generic-password", "-s", SERVICE, "-a", provider, "-w"])
         if result.returncode == _NOT_FOUND:
-            return None
-        if result.returncode or result.stderr:
+            # Saved before the app's rename? Copy it across once (macOS asks first, so
+            # never on the event loop; the wait is long enough to type a password).
+            value = None
+            if keychain_legacy.copying() and not _on_loop():
+                value = _clean_key(keychain_legacy.copy_forward("study", SERVICE, provider))
+        elif result.returncode or result.stderr:
             _key_failed[provider] = time.monotonic()
             return None
-        value = _clean_key(result.stdout.decode("ascii").rstrip("\n"))
-    except subprocess.TimeoutExpired:
+        else:
+            value = _clean_key(result.stdout.decode("ascii").rstrip("\n"))
+    except keychain_legacy.LegacyTimedOut:
+        _key_waited[provider] = time.monotonic()   # unanswered, not refused: no hold
+        return None
+    except (subprocess.TimeoutExpired, keychain_legacy.LegacyUnreadable):
         _key_failed[provider] = time.monotonic()
         return None
     except (OSError, subprocess.SubprocessError, UnicodeDecodeError, ValueError):
         return None
+    _key_waited.pop(provider, None)
     if value is None:
         return None
     _key_cache[provider] = (value, time.monotonic())
@@ -216,6 +246,8 @@ def _key_exists(provider: str) -> bool:
             found = _security(["find-generic-password", "-s", SERVICE, "-a", provider]).returncode == 0
         except (OSError, subprocess.SubprocessError):
             found = False
+        # A key saved before the app's rename counts: its first use copies it across.
+        found = found or keychain_legacy.legacy_exists("study", SERVICE, provider)
     _exists_cache[provider] = (found, time.monotonic())
     return found
 
@@ -388,19 +420,24 @@ def _resolve(key_reader: Callable[[str], str] | None) -> tuple[str, str, str, st
     if key is not None:
         return spec["origin"] + spec["prefix"] + "/chat/completions", model_id, key, provider
     unreadable = _read_held(provider)   # saved, but macOS did not hand it over
+    waited = _key_waited.pop(provider, None) is not None
     try:
         cloud = _cloud_target()
     except Exception:  # noqa: BLE001
         cloud = None
+    cloud_problem = None
     if cloud is not None:
         try:
             key = _clean_key(cloud["key"]())
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             key = None
+            from service.errors import credential_message
+            cloud_problem = credential_message(exc)   # never the key's text
         if key is not None:
             cloud_provider = next(p for p, s in PROVIDERS.items() if s["origin"] == cloud["origin"])
             return cloud["origin"] + cloud["prefix"] + "/chat/completions", cloud["model"], key, cloud_provider
-    raise StudyConnectorError("missing", KEYCHAIN_MESSAGE if unreadable else None)
+    raise StudyConnectorError("missing", KEYCHAIN_WAIT_MESSAGE if waited
+                              else KEYCHAIN_MESSAGE if unreadable else cloud_problem)
 
 
 def _content(data) -> str:
