@@ -635,6 +635,18 @@ def _sha_id(source: str, *parts: str) -> str:
     return f"{source}:" + hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:12]
 
 
+def _same_host_url(value, base: str) -> str | None:
+    """``_url``, but only on the host of the page it was read from: a link the model picked out of
+    page text (a classmate's post, say) can never name another host as the course's address."""
+    url = _url(value, base)
+    try:
+        if url and (urlsplit(url).hostname or "").lower() == (urlsplit(base or "").hostname or "").lower():
+            return url
+    except ValueError:
+        pass
+    return None
+
+
 def _url(value, base: str) -> str | None:
     value = _text(value, 1000)
     if not value:
@@ -703,7 +715,7 @@ async def extract_school_data(url: str, title: str, text: str, *, now: float, ti
         name = _text(item.get("name"), 200)
         if not name:
             continue
-        course_url = _url(item.get("url"), url)
+        course_url = _same_host_url(item.get("url"), url)
         match = _CANVAS_COURSE.search(urlsplit(course_url).path) if (course_url and source == "canvas") else None
         cid = f"canvas:{match.group(1)}" if match else _sha_id(source, name)
         score = _number(item.get("score"))
@@ -722,7 +734,7 @@ async def extract_school_data(url: str, title: str, text: str, *, now: float, ti
         if not item_title:
             continue
         course_name = _text(item.get("course_name"), 200)
-        item_url = _url(item.get("url"), url)
+        item_url = _same_host_url(item.get("url"), url)
         match = _CANVAS_ITEM.search(urlsplit(item_url).path) if (item_url and source == "canvas") else None
         if course_name and course_name.casefold() in by_name:
             course_id = by_name[course_name.casefold()]

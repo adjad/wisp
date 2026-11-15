@@ -826,3 +826,21 @@ def test_a_download_disabled_file_says_so():
     import httpx as _h
     err = drive._refusal_for(403, {"cannotdownloadfile"}, _h.Response(403))
     assert err.code == "no_download" and "turned off downloading" in err.message
+
+
+@pytest.mark.parametrize("title", ["Week3Quiz", "HW2Exam", "Lab4Test"])
+def test_a_digit_before_a_quiz_word_is_still_caught(title):
+    assert find.classify({"url": f"{HOST}/courses/4242/pages/p", "title": title}, C)["via"] == "none"
+
+
+@pytest.mark.parametrize("url", ["https://forms.gle/x", "https://docs.example.org/forms/12", "https://kahoot.it/j",
+                                 "https://www.paypal.com/x", "https://us02web.zoom.us/j/1"])
+def test_form_poll_payment_and_meeting_sites_are_refused(url):
+    assert find.classify({"url": url, "title": "Read this"}, C)["via"] == "none"
+
+
+def test_a_later_refused_copy_of_an_item_wins_over_an_innocent_first():
+    url = f"{HOST}/courses/4242/modules/items/40"
+    items = find.resolve([{"url": url, "title": "Week 4 reading", "type": "Page"},
+                          {"url": url, "title": "Take the quiz", "type": "Quiz"}], course=C, sources=[])
+    assert [(i["via"], i.get("reason")) for i in items] == [("none", "quiz")]
