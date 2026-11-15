@@ -96,3 +96,55 @@ def test_a_cloud_suite_faking_only_its_own_read_never_reaches_keychain(renamed, 
     with pytest.raises(ProviderCredentialMissing):
         secrets.resolve_keychain("cloud", "https://example-provider.test")
     assert renamed and not any("-w" in a or a[1:2] == ["-i"] for a in renamed)
+
+
+# --- every child a test or build smoke starts with its own environment ----------------
+
+def _root():
+    from pathlib import Path
+    return Path(__file__).resolve().parents[1]
+
+
+def test_simulation_qa_children_get_the_off_switch(tmp_path):
+    from scripts import run_simulation_qa as simqa
+    assert simqa._child_environment(tmp_path)["WISP_KEYCHAIN_LEGACY"] == "off"
+
+
+def test_build_pipeline_children_get_the_off_switch():
+    import sys
+    sys.path.insert(0, str(_root() / "build-support"))
+    try:
+        import pipeline
+    finally:
+        sys.path.pop(0)
+    assert pipeline.clean_env()["WISP_KEYCHAIN_LEGACY"] == "off"
+
+
+def test_every_explicit_backend_environment_carries_the_off_switch():
+    """A file that starts the service (service.main or uvicorn) and builds the child's
+    environment from scratch must set the switch; inheriting os.environ gets conftest's."""
+    import re
+    root = _root()
+    files = [*root.glob("tests/*.py"), *root.glob("tests/build_pipeline/*.py"),
+             *root.glob("build-support/**/*.py"), *root.glob("build-support/**/*.swift"),
+             *root.glob("tests/*.swift")]
+    starts_service = re.compile(r"service\.main|uvicorn")
+    from_scratch = re.compile(r'env\s*=\s*\{\s*"PATH"|environment\s*=\s*\[|env=\{"PATH"|"HOME": str\(fake_home\)')
+    # Files that match the pattern but start no real service with that environment.
+    not_a_backend = {
+        "tests/test_release_performance.py",   # stubs service.main; its own envs start only `id`
+    }
+    missing = []
+    for path in files:
+        if path.name == "test_keychain_legacy_guard.py" or str(path.relative_to(root)) in not_a_backend:
+            continue
+        text = path.read_text(errors="ignore")
+        if starts_service.search(text) and from_scratch.search(text) and "WISP_KEYCHAIN_LEGACY" not in text:
+            missing.append(str(path.relative_to(root)))
+    assert missing == [], f"service launched with an explicit environment and no off switch: {missing}"
+
+
+def test_the_named_launchers_set_it():
+    root = _root()
+    assert '"WISP_KEYCHAIN_LEGACY": "off"' in (root / "tests/test_backend_identity_and_sandbox_isolation.py").read_text()
+    assert '"WISP_KEYCHAIN_LEGACY": "off"' in (root / "build-support/managed_live_qa/native_main.swift").read_text()

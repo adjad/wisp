@@ -16,8 +16,10 @@ from service.config.endpoints import (ProviderCredentialBusy, ProviderCredential
 from service.study import connector as C
 
 URL = "https://example-provider.test"
-OLD, NEW = "com.wisp.inference", "com.renamed.inference"
-OLD_STUDY, NEW_STUDY = "com.wisp.study", "com.renamed.study"
+# The pre-rename names come from keychain_legacy itself (the only place they are
+# written), so these tests plant the old item under the right name in every tree.
+OLD, NEW = legacy._PRE_RENAME["inference"], "com.renamed.inference"
+OLD_STUDY, NEW_STUDY = legacy._PRE_RENAME["study"], "com.renamed.study"
 KEY = "sk-test-INVENTED-0123456789abcdef"
 
 

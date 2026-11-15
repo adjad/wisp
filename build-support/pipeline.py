@@ -99,7 +99,10 @@ def clean_env() -> dict[str, str]:
                UV_LINK_MODE="copy", UV_KEYRING_PROVIDER="disabled", UV_NO_CONFIG="1",
                CLANG_MODULE_CACHE_PATH=str(STATE / "module-cache"),
                SWIFTPM_MODULECACHE_OVERRIDE=str(STATE / "module-cache"),
-               MACOSX_DEPLOYMENT_TARGET=CONFIG["minimum_macos"], TZ="UTC")
+               MACOSX_DEPLOYMENT_TARGET=CONFIG["minimum_macos"], TZ="UTC",
+               # Every build, smoke and test child: never the host's Keychain through the
+               # pre-rename lookup (service/config/keychain_legacy.py).
+               WISP_KEYCHAIN_LEGACY="off")
     return env
 
 

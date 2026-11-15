@@ -262,7 +262,7 @@ def test_child_process_uses_fake_home_and_strips_host_wisp_overrides(
     assert payload["home"] != str(hostile_home)
     assert Path(payload["wisp_home"]).parent == Path(payload["home"]).parent
     assert Path(payload["wispair_home"]).parent == Path(payload["home"]).parent
-    assert payload["present"] == ["WISP_HOME", "WISP_TEST_PYTHON"]
+    assert payload["present"] == ["WISP_HOME", "WISP_KEYCHAIN_LEGACY", "WISP_TEST_PYTHON"]
     assert payload["optimize"] == 0
     assert payload["optimize_env"] == "0"
     assert payload["startup_env"] == []
