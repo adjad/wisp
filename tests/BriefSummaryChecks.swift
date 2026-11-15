@@ -497,4 +497,44 @@ func briefWordingChecks(_ check: (Bool, String) -> Void) {
     check(BriefPlate.splitCourse("Dinner (with Sam)") == ("Dinner (with Sam)", ""), "an ordinary aside stays")
     check(BriefPlate.splitCourse("Call back (2 PM)") == ("Call back (2 PM)", ""), "a time stays")
     check(BriefPlate.splitCourse("[CS 101]") == ("[CS 101]", ""), "a code alone stays the title")
+    // Option 2: READY FOR YOU's tags say what Wisp did, from what the item really is.
+    check(BriefReady.cardTag(method: "email_reply", hasDraft: true) == "DRAFTED"
+          && BriefReady.cardTag(method: "text_reply", hasDraft: false) == "DRAFTED", "a reply Wisp wrote is DRAFTED")
+    check(BriefReady.cardTag(method: "block_time", hasDraft: false) == "FREE TIME", "a free hour it found")
+    check(BriefReady.cardTag(method: "undo_add", hasDraft: false) == "ADDED" && BriefReady.cardTag(method: "group", hasDraft: false) == "ADDED",
+          "what it added by itself, alone or grouped")
+    check(BriefReady.cardTag(method: "reminder", hasDraft: false) == "SPOTTED"
+          && BriefReady.cardTag(method: "calendar_event", hasDraft: false) == "SPOTTED"
+          && BriefReady.cardTag(method: "", hasDraft: false) == "SPOTTED", "anything else it spotted")
+    check(BriefReady.cardTag(method: "read", hasDraft: true) == "DRAFTED", "a card that carries a draft")
+    check(BriefReady.studyTag(id: "ready:qa:quiz3", opensMaterial: true) == "QUIZ MADE", "Study made a quiz")
+    check(BriefReady.studyTag(id: "ready:qa:pa3", opensMaterial: false) == "SLIDES", "Study found the slides")
+    check(BriefReady.studyTag(id: "weak:qa:pointers", opensMaterial: false) == "WEAK SPOT", "a topic to look at again")
+    check(BriefReady.foundTag == "FOUND", "found in mail")
+    check(BriefReady.rowsShown(sideBySide: true) == 4 && BriefReady.rowsShown(sideBySide: false) == 3, "rows before Show all")
+    check(BriefReady.source(read: 49, at: "10:24 AM") == "from 49 emails and texts · 10:24 AM", "what it read and when")
+    check(BriefReady.source(read: 1, at: "") == "from 1 email and texts" && BriefReady.source(read: 0, at: "9 AM") == nil,
+          "one email; nothing read, no line")
+    check(BriefReady.emptyLine(read: 49, at: "10:24 AM", actingToday: 1)
+          == "Nothing needs you yet. Wisp checked 49 emails and texts at 10:24 AM · Acting for you · 1 today",
+          "the one line with nothing ready, acting on")
+    check(BriefReady.emptyLine(read: 3, at: "", actingToday: nil) == "Nothing needs you yet. Wisp checked 3 emails and texts",
+          "acting off or unknown: not mentioned")
+    check(BriefReady.draftQuote("Hi Dana,\n\nYes, Tuesday works.\n\nBest,\nAlex") == "“Hi Dana, Yes, Tuesday works. Best, Alex”",
+          "a draft as one quoted line")
+    check(BriefReady.draftQuote(" \n ") == nil, "no draft, no quote")
+    // YOUR LISTS' headings and short lists.
+    check(BriefLists.schoolHeading(dueToday: 1, total: 4) == "SCHOOL · 1 DUE TODAY", "school due today")
+    check(BriefLists.schoolHeading(dueToday: 0, total: 4) == "SCHOOL · 4", "nothing due today: how many")
+    check(BriefLists.attentionHeading(replies: 2, total: 6) == "NEEDS ATTENTION · 2 REPLIES"
+          && BriefLists.attentionHeading(replies: 1, total: 6) == "NEEDS ATTENTION · 1 REPLY", "replies owed")
+    check(BriefLists.attentionHeading(replies: 0, total: 3) == "NEEDS ATTENTION · 3", "no reply owed: how many")
+    let day0: Double = 1_700_000_000
+    check(BriefLists.dueToday([day0 + 3600, day0 + 90_000, nil, .infinity], dayStart: day0, dayEnd: day0 + 86_400) == 1,
+          "only today's due times count")
+    check(BriefLists.dueWord("Tomorrow") == "Tmrw" && BriefLists.dueWord("Tomorrow 5 PM") == "Tmrw 5 PM"
+          && BriefLists.dueWord(" 5:30 PM ") == "5:30 PM" && BriefLists.dueWord("Overdue · 1 day") == "Overdue · 1 day",
+          "the due word, short")
+    check(BriefLists.todosShown(sideBySide: true) == 3 && BriefLists.todosShown(sideBySide: false) == 2
+          && BriefLists.schoolShown(sideBySide: true) == 3 && BriefLists.threadsShown == 4, "rows before All n")
 }

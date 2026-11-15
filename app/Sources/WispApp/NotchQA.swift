@@ -110,6 +110,11 @@ enum NotchQADriver {
         today.startBackgroundRefresh(afterRefresh: { await DayCards.refresh() })
         let model = OverlayModel()
         model.qaShow(brief: fixtureBrief)
+        // READY FOR YOU: two things found in mail, and Wisp acting for you with
+        // one thing added today. Neither reads the live service.
+        MailMemoryCards.model = fixtureMailMemory(found: true)
+        let noMail = fixtureMailMemory(found: false)
+        ProactiveBriefSection.qaActing = fixtureActing(now: now)
         let width = SurfaceLayout.maxExpandedWidth
         // Each Brief scene keeps its own card and to-do state.
         func state(_ configure: (ProactiveActions) -> Void = { _ in }) -> ProactiveActions {
@@ -117,6 +122,8 @@ enum NotchQADriver {
             configure(actions)
             return actions
         }
+        // The Brief opens on the drafted reply, as it would after a cycle that wrote one.
+        func briefState() -> ProactiveActions { state { $0.qaReset(hero: "card-ed") } }
         // The reply composer answers from its own canned fixture, never the service.
         BriefReplyHook.composer = { thread, close in
             AnyView(BriefReplyComposer(replyRef: thread.replyRef, account: thread.replyAccount, transport: { request in
@@ -131,11 +138,15 @@ enum NotchQADriver {
             }, onDismiss: close))
         }
         let scenes: [(name: String, tab: NotchTab, view: () -> AnyView)] = [
-            ("brief", .brief, { AnyView(NotchBriefView(model: model, today: today, actions: state())) }),
-            ("brief-wide", .brief, { AnyView(NotchBriefView(model: model, today: today, actions: state(), wide: true)) }),
+            ("brief", .brief, { AnyView(NotchBriefView(model: model, today: today, actions: briefState())) }),
+            ("brief-wide", .brief, { AnyView(NotchBriefView(model: model, today: today, actions: briefState(), wide: true)) }),
             // R6 side by side with school work, and with nothing in either zone.
-            ("brief-wide-study", .brief, { AnyView(NotchBriefView(model: model, today: schoolDay, actions: state(), wide: true)) }),
-            ("brief-wide-empty", .brief, { AnyView(NotchBriefView(model: model, today: blockedProactive, actions: state(), wide: true)) }),
+            ("brief-wide-study", .brief, { AnyView(NotchBriefView(model: model, today: schoolDay, actions: briefState(), wide: true)) }),
+            // Nothing ready: READY FOR YOU is one line, side by side and stacked.
+            ("brief-wide-empty", .brief, { AnyView(NotchBriefView(model: model, today: blockedProactive, actions: state(), wide: true,
+                                                                  mailMemory: noMail)) }),
+            ("brief-empty", .brief, { AnyView(NotchBriefView(model: model, today: blockedProactive, actions: state(),
+                                                             mailMemory: noMail)) }),
             ("brief-todos", .brief, { AnyView(NotchBriefView(model: model, today: today, uncapped: true,
                                                              actions: state { $0.qaReset(openRow: "todos", showAll: true) })) }),
             ("brief-threads", .brief, { AnyView(NotchBriefView(model: model, today: today, uncapped: true,
@@ -153,7 +164,7 @@ enum NotchQADriver {
             ("brief-blocked-proactive", .brief, { AnyView(NotchBriefView(model: model, today: blockedProactive, actions: state())) }),
             ("day-blocked", .day, { AnyView(NotchDayView(model: model, today: blocked)) }),
             ("day-starting", .day, { AnyView(NotchDayView(model: startingModel, today: starting)) }),
-            ("brief-study", .brief, { AnyView(NotchBriefView(model: model, today: schoolDay, actions: state())) }),
+            ("brief-study", .brief, { AnyView(NotchBriefView(model: model, today: schoolDay, actions: briefState())) }),
             ("day-study", .day, { AnyView(NotchDayView(model: model, today: schoolDay)) }),
             // The Day in the wide panel: two halves, the left up to Old reminders.
             ("day-wide", .day, { AnyView(NotchDayView(model: model, today: today, wide: true)) }),
@@ -209,7 +220,7 @@ enum NotchQADriver {
             }
             let deadline = Date().addingTimeInterval(5)
             @MainActor func populated() -> Bool {
-                today.currentPlan?.workspace?.proactive?.cards.count == 3 && today.upcomingReply != nil && today.storedBriefChecked &&
+                today.currentPlan?.workspace?.proactive?.cards.count == 4 && today.upcomingReply != nil && today.storedBriefChecked &&
                 working.currentPlan?.workspace?.proactive?.isWorking == true &&
                 legacy.currentPlan?.workspace != nil && legacy.currentPlan?.workspace?.proactive == nil &&
                 dayOne.currentPlan != nil && blocked.currentPlan?.unreadSources.count == 4 &&
@@ -468,6 +479,36 @@ enum NotchQADriver {
 
     static let judgeAccount = "judge.demo@gmail.com"
 
+    /// "Found in your mail" in its live mode: two invented reminders, or none.
+    /// Due dates are counted from today, as the rows label them.
+    static func fixtureMailMemory(found: Bool) -> MailMemoryModel {
+        let format = DateFormatter()
+        format.locale = Locale(identifier: "en_US_POSIX")
+        format.dateFormat = "yyyy-MM-dd"
+        func day(_ offset: Int) -> String { format.string(from: Date().addingTimeInterval(Double(offset) * 86_400)) }
+        let rows: [[String: Any]] = [
+            ["id": 1, "what": "Housing rent due", "due": day(6), "precision": "day", "quote": "",
+             "from": "Campus Housing", "subject": "Rent reminder", "message_id": "<rent-11@example.edu>",
+             "actions": ["accept", "dismiss"]],
+            ["id": 2, "what": "StreamBox subscription expires", "due": day(9), "precision": "day", "quote": "",
+             "from": "StreamBox", "subject": "Your plan renews soon", "message_id": "<plan-2@example.com>",
+             "actions": ["accept", "dismiss"]],
+        ]
+        return MailMemoryModel(baseURL: URL(string: "http://fixture.invalid")!, transport: { request in
+            let body: [String: Any] = ["mode": "live", "suggestions": found ? rows : []]
+            return (try JSONSerialization.data(withJSONObject: body),
+                    HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        })
+    }
+
+    /// "Let Wisp act for me", on, with one thing added today.
+    static func fixtureActing(now: Date) -> ActForMe? {
+        ActForMe(["enabled": true, "asked": true, "today": 1,
+                  "does": ["Adds an event or deadline you missed in a text from a saved contact to Calendar or Reminders."],
+                  "recent": [["title": "CS 101 lab moved to Tue 2 PM", "who": "Prof. Alvarez",
+                              "at": now.timeIntervalSince1970 - 3 * 3600]]])
+    }
+
     /// A demo day: Hack Day and Hacktoberfest at midday, a QNT 210 worksheet to
     /// block time for, Dana's exam email, "Jo: let's talk tmrw", a recruiter's
     /// coffee chat and a Trader Joe's reminder; three cards, seven to-dos and
@@ -502,12 +543,22 @@ enum NotchQADriver {
              "sources": [["kind": "mail", "ref": "mail:ed-1", "who": "Dana Okafor", "quote": "Exam 1 is Wednesday at 10 in Room 321"]],
              "action": ["method": "reminder", "button": "Set the reminder?", "draft": "", "recipient": "",
                         "event": NSNull(), "envelope": "opaque"]],
+            // What Wisp added by itself today (acting for you), with its Undo.
+            ["id": "card-added", "meta": "Today · Messages", "account": me,
+             "title": "CS 101 lab moved to Tue 2 PM", "when": "from Prof. Alvarez",
+             "body": "Prof. Alvarez texted that the lab moved, so Wisp put it on your calendar.",
+             "why": "A saved contact's text moved an event; you said Wisp may add those.",
+             "sources": [["kind": "messages", "ref": "msg:alvarez-1", "who": "Prof. Alvarez", "quote": "Lab moves to Tuesday at 2"]],
+             "action": ["method": "undo_add", "button": "", "draft": "", "recipient": "",
+                        "event": NSNull(), "envelope": "opaque"]],
         ]
         func todo(_ id: String, _ title: String, _ source: String, who: String = "", quote: String = "",
                   due: Double?, label: String, kind: String = "task", card: String? = nil, account: String = "me") -> [String: Any] {
             ["id": id, "title": title, "source": source, "account": account, "who": who, "quote": quote,
              "due_ts": due.map { at($0) } ?? NSNull(), "due_label": label, "kind": kind, "done": false,
-             "card_id": card ?? NSNull()]
+             "card_id": card ?? NSNull(),
+             // Clear (and Mark done for a dated reminder) behind the Brief's row icons.
+             "fingerprint": "fp-" + id, "can_complete": source == "reminders" && due != nil]
         }
         let todos: [[String: Any]] = [
             todo("todo-read-cse", "Readings", "reminders", who: "CMP 140", due: 17, label: "5 PM"),
@@ -527,7 +578,7 @@ enum NotchQADriver {
                  due: 24 * 3 + 20, label: "Tue"),
             todo("todo-cs-reading", "Chapter 4 reading [CS 101]", "reminders", due: 24 * 3 + 21, label: "Tue"),
         ]
-        let threads: [[String: Any]] = [
+        let threadRows: [[String: Any]] = [
             ["id": "t-ed", "source": "mail", "account": me, "who": "Dana", "title": "Exam 1 timing",
              "summary": "Asks if you can take Exam 1 early on Tuesday morning; the exam itself is Wednesday at 10.",
              "needs_reply": true, "received_ts": at(-14),
@@ -551,6 +602,12 @@ enum NotchQADriver {
              "needs_reply": false, "received_ts": at(8),
              "reply_ref": ["message_id": "<hack-1@gmail.com>", "account": judgeAccount]],
         ]
+        // Each thread's Clear needs its fingerprint, as the service sends it.
+        let threads: [[String: Any]] = threadRows.map { row in
+            var row = row
+            row["fingerprint"] = "fp-" + (row["id"] as? String ?? "")
+            return row
+        }
         return [
             "state": working ? "working" : "ready", "as_of": at(10.4), "progress": ["done": 12, "total": 40],
             "accounts": [me, judgeAccount], "owner": ["id": "me", "label": "Alex"],
