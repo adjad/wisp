@@ -100,9 +100,9 @@ struct ProactiveState: Decodable, Equatable {
         return todoLine
     }
 
-    /// The calendar row's line when nothing else is on today.
-    static func emptyDayLine(calendarUnread: Bool) -> String {
-        calendarUnread ? "Wisp can't see your calendar yet" : "Nothing else on your calendar today"
+    /// The calendar row's line when nothing is left on today (BriefPlate.calendarLine).
+    static func emptyDayLine(calendarUnread: Bool, earlierToday: Int = 0) -> String {
+        BriefPlate.calendarLine(upcoming: [], allDay: [], earlierToday: earlierToday, calendarUnread: calendarUnread)
     }
 
     init(state: String = "ready", asOf: Double? = nil, progress: Progress? = nil, accounts: [String] = [],
@@ -502,9 +502,13 @@ struct ProactiveTodo: Decodable, Equatable, Identifiable {
                     canComplete: canComplete && !done && source == "reminders", route: NeedsYouRow.todoRoute)
     }
 
+    /// Who it is from as a row shows it ("Sam in a group of 3 (…)", not
+    /// "Sam in of 3 (…)"); `who` stays as the service sent it (BriefPlate.who).
+    var shownWho: String { BriefPlate.who(who) }
+
     /// As the Day tab's timeline takes it.
     var dayInput: DayTodoInput {
-        DayTodoInput(id: id, title: title, source: source, who: who, due: dueTs, dueLabel: dueLabel, kind: kind, done: done)
+        DayTodoInput(id: id, title: title, source: source, who: shownWho, due: dueTs, dueLabel: dueLabel, kind: kind, done: done)
     }
 
     /// A calendar event is already on the Day; anything else can be added to it.
@@ -551,6 +555,9 @@ struct ProactiveThread: Decodable, Equatable, Identifiable {
         replyRef = c.lenientRef(.reply_ref)
         fingerprint = c.lenientString(.fingerprint) ?? ""
     }
+
+    /// Who it is from as a row shows it (BriefPlate.who); `who` stays as sent.
+    var shownWho: String { BriefPlate.who(who) }
 
     /// Its trailing ×: Clear only. Nothing is marked read or answered.
     var actionRow: NeedsYouRow {

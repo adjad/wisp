@@ -301,7 +301,15 @@ struct ProactiveChecks {
         check(ownOnly.todoLine(unread: ownOnly.unreadSources(coverage)) == "No to-dos in what Wisp could read"
               && ownOnly.todoLine(unread: []) == "No to-dos", "the to-do row is honest about what was read")
         check(ProactiveState.emptyDayLine(calendarUnread: true) == "Wisp can't see your calendar yet"
-              && ProactiveState.emptyDayLine(calendarUnread: false) == "Nothing else on your calendar today", "the calendar row")
+              && ProactiveState.emptyDayLine(calendarUnread: false) == "Nothing on your calendar today"
+              && ProactiveState.emptyDayLine(calendarUnread: false, earlierToday: 1) == "Nothing left on your calendar today",
+              "the calendar row: never \"else\" with nothing listed above it")
+        // B1: who a row is from, as shown; the service's text is kept for Clear.
+        let groupTodo = ProactiveTodo(id: "g", title: "Pick a time", source: "messages", who: "Lee in of 3 (Dana, Lee, Sam)")
+        check(groupTodo.shownWho == "Lee in a group of 3 (Dana, Lee, Sam)" && groupTodo.who == "Lee in of 3 (Dana, Lee, Sam)"
+              && groupTodo.dayInput.who == groupTodo.shownWho, "a group text's to-do names the group, in the Brief and on Day")
+        let groupThread = ProactiveThread(id: "t", source: "messages", who: "Lee in ")
+        check(groupThread.shownWho == "Lee" && groupThread.actionRow.text.hasPrefix("Lee in"), "a thread's sender without a bare \"in\"")
         let nothingRead = decode(#"{"state":"ready","stats":{"read":0},"accounts":[],"reason":"Wisp hasn't read your mail and texts yet. Tap Analyze now.","unread":["calendar","email"]}"#)
         check(nothingRead?.hasReadNothing == true && nothingRead?.reason.hasPrefix("Wisp hasn't read") == true
               && nothingRead?.unread == ["calendar", "email"], "ready with nothing read is not an all-clear; reason and unread decode")

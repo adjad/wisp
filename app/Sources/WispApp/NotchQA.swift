@@ -130,7 +130,7 @@ enum NotchQADriver {
             ("brief-wide-study", .brief, { AnyView(NotchBriefView(model: model, today: schoolDay, actions: state(), wide: true)) }),
             ("brief-wide-empty", .brief, { AnyView(NotchBriefView(model: model, today: blockedProactive, actions: state(), wide: true)) }),
             ("brief-todos", .brief, { AnyView(NotchBriefView(model: model, today: today, uncapped: true,
-                                                             actions: state { $0.qaReset(openRow: "todos") })) }),
+                                                             actions: state { $0.qaReset(openRow: "todos", showAll: true) })) }),
             ("brief-threads", .brief, { AnyView(NotchBriefView(model: model, today: today, uncapped: true,
                                                                actions: state { $0.qaReset(expanded: ["t-sam"], replying: "t-sam") })) }),
             ("brief-draft", .brief, { AnyView(NotchBriefView(model: model, today: today,
@@ -498,6 +498,14 @@ enum NotchQADriver {
             todo("todo-sam", "Coffee chat with Sam", "mail", who: "Sam Rivera, recruiter",
                  quote: "30-minute coffee chat next week?", due: nil, label: "This week"),
             todo("todo-hack", "Hack Day", "calendar", due: 11.75, label: "11:45 AM", kind: "event"),
+            // Later in the week, so they show only once the list is opened
+            // (brief-todos): a text in an unnamed group as the service labels
+            // it, a quote that repeats its title, a course code in brackets.
+            todo("todo-group", "Pick a time for the study group", "messages", who: "Lee Park in of 3 (Dana, Lee Park, Sam)",
+                 quote: "can everyone do Sunday?", due: 24 * 3 + 19, label: "Tue"),
+            todo("todo-writeup", "Finish the lab writeup", "mail", who: "Dana Okafor", quote: "finish the lab writeup!",
+                 due: 24 * 3 + 20, label: "Tue"),
+            todo("todo-cs-reading", "Chapter 4 reading [CS 101]", "reminders", due: 24 * 3 + 21, label: "Tue"),
         ]
         let threads: [[String: Any]] = [
             ["id": "t-ed", "source": "mail", "account": me, "who": "Dana", "title": "Exam 1 timing",
