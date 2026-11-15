@@ -3131,3 +3131,43 @@ extension AskStarters.Personal {
         }
     }
 }
+
+/// The wide panel, shared by Brief and Day: one choice (the header's toggle,
+/// stored under NotchBriefView.wideKey) that lays both out in two columns, so
+/// with it on, switching between them never changes the panel's width. Ask,
+/// Meet and Study stay the normal width. The window (AppDelegate's layout
+/// provider) and the content (OverlayView) both ask here, so their widths
+/// never disagree.
+enum NotchWide {
+    static var key: String { NotchBriefView.wideKey }
+
+    /// Whether the panel can be wide: Brief (the proactive Brief there to lay
+    /// out: loading, the tiles and other days stay one column) or Day, with
+    /// nothing over it, on a display with room.
+    static func canShow(tab: NotchTab, covered: Bool, engineBrief: Bool, canWiden: Bool) -> Bool {
+        guard !covered, canWiden else { return false }
+        switch tab {
+        case .brief: return engineBrief
+        case .day: return true
+        default: return false
+        }
+    }
+
+    /// The same for the live panel.
+    @MainActor static func canShow(model: OverlayModel, today: TodayModel, canWiden: Bool) -> Bool {
+        canShow(tab: model.tab,
+                covered: model.resetCard != nil || model.knowYou != nil || model.showingQuickSettings,
+                engineBrief: today.isShowingCurrentDay && today.currentPlan?.workspace?.proactive != nil,
+                canWiden: canWiden)
+    }
+
+    /// Wide now: chosen and possible.
+    @MainActor static func shows(model: OverlayModel, today: TodayModel, canWiden: Bool) -> Bool {
+        UserDefaults.standard.bool(forKey: key) && canShow(model: model, today: today, canWiden: canWiden)
+    }
+
+    /// The header toggle's tooltip: the choice covers both tabs.
+    static func toggleHelp(wide: Bool) -> String {
+        wide ? "Show Brief and Day in one column" : "Show Brief and Day in two columns"
+    }
+}

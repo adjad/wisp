@@ -148,13 +148,17 @@ enum NotchQADriver {
             ("day-starting", .day, { AnyView(NotchDayView(model: startingModel, today: starting)) }),
             ("brief-study", .brief, { AnyView(NotchBriefView(model: model, today: schoolDay, actions: state())) }),
             ("day-study", .day, { AnyView(NotchDayView(model: model, today: schoolDay)) }),
+            // The Day in the wide panel: two halves, the left up to Old reminders.
+            ("day-wide", .day, { AnyView(NotchDayView(model: model, today: today, wide: true)) }),
+            ("day-wide-study", .day, { AnyView(NotchDayView(model: model, today: schoolDay, wide: true)) }),
+            ("day-wide-empty", .day, { AnyView(NotchDayView(model: model, today: blockedProactive, wide: true)) }),
             ("brief-legacy-study", .brief, { AnyView(NotchBriefView(model: model, today: schoolLegacy, open: nil)) }),
         ] + NotchQASetup.scenes() + panelScenes(model: model, today: today, state: state)
             + studyScenes(model: model)
         for scene in scenes {
             let name = scene.name
-            // The Brief's two columns render at the wide panel's width.
-            let sceneWidth = name.hasPrefix("brief-wide") ? SurfaceLayout.wideExpandedWidth : width
+            // The Brief's and the Day's two columns render at the wide panel's width.
+            let sceneWidth = name.hasPrefix("brief-wide") || name.hasPrefix("day-wide") ? SurfaceLayout.wideExpandedWidth : width
             let window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: sceneWidth, height: 760),
                                   styleMask: [.borderless], backing: .buffered, defer: false)
             let content = VStack(alignment: .leading, spacing: 0) {
@@ -564,7 +568,7 @@ enum NotchQADriver {
         }
         let blocks = proactive == .none ? [
             block("lunch", "Lunch with Sam", 11.5, 12.5, "calendar"),
-            block("lecture", "CSE 101 lecture", 14, 15.25, "calendar"),
+            block("lecture", "CMP 140 lecture", 14, 15.25, "calendar"),
             block("club", "Startup club meeting", 18, 19, "calendar"),
             block("pa2-a", "Work on PA 2", 20, 21.5, "suggestion", evidence: "pa2"),
         ] : [
@@ -578,9 +582,9 @@ enum NotchQADriver {
                 need("pa2", "reminders", "PA 2", due: 23.98),
                 need("doordash", "reminders", "Get DoorDash order", due: -20),
                 need("junk", "reminders", "nothing", due: 12),
-                need("priya", "messages", "Priya: are we still on for dinner at 7?", due: nil,
-                     extra: ["sender": "Priya", "received_ts": at(12.6)]),
-                need("priya-2", "messages", "Priya: lmk!", due: nil, extra: ["sender": "Priya", "received_ts": at(12.9)]),
+                need("jo", "messages", "Jo: are we still on for dinner at 7?", due: nil,
+                     extra: ["sender": "Jo", "received_ts": at(12.6)]),
+                need("jo-2", "messages", "Jo: lmk!", due: nil, extra: ["sender": "Jo", "received_ts": at(12.9)]),
                 need("mom", "messages", "Mom: call me when you can", due: nil, extra: ["sender": "Mom", "received_ts": at(9.2)]),
                 need("sam", "messages", "Sam: thanks!", due: nil,
                      extra: ["sender": "Sam", "received_ts": at(10), "replied": true]),
@@ -698,7 +702,7 @@ enum NotchQADriver {
         var payload: [String: Any] = [
             "day": day, "timezone": zone.identifier, "generated_at": at(13.1), "revision": 3, "provisional": false,
             "warnings": [], "tasks": [], "blocks": [], "deadlines": [],
-            "all_day": [["id": "allday", "title": "PA 2 [CSE-20-04]", "start": at(0), "kind": "calendar", "warnings": []]],
+            "all_day": [["id": "allday", "title": "PA 2 [CMP-140-04]", "start": at(0), "kind": "calendar", "warnings": []]],
             "unscheduled": [],
             "sources": ["calendar": ["ready": true, "last_sync": at(13), "reason": "Up to date"]],
             "preferences": ["start_minute": 540, "end_minute": 1320, "not_before": NSNull()],
@@ -718,7 +722,7 @@ enum NotchQADriver {
             ["id": "u1", "title": "Work on PA 2", "when_ts": at(14), "source": "calendar", "kind": "event"],
             ["id": "u2", "title": "Essay outline", "when_ts": at(24 * 4 + 18), "source": "reminders", "kind": "reminder"],
             ["id": "u3", "title": "UCSC startup club, E2-506", "when_ts": at(24 * 4 + 18), "source": "calendar", "kind": "event"],
-            ["id": "u4", "title": "CSE 20 midterm", "when_ts": at(24 * 6 + 10), "source": "calendar", "kind": "exam"],
+            ["id": "u4", "title": "CMP 140 midterm", "when_ts": at(24 * 6 + 10), "source": "calendar", "kind": "exam"],
         ]
         return try JSONSerialization.data(withJSONObject: ["commitments": rows])
     }
@@ -727,10 +731,10 @@ enum NotchQADriver {
     Good afternoon — Saturday, October 17. ☀️
 
     **🧭 Keeping in mind**
-    - PA 2 is due tonight, and you said finishing CSE 20 strong matters this quarter.
+    - PA 2 is due tonight, and you said finishing CMP 140 strong matters this quarter.
 
     **📅 Today**
-    - All day – PA 2 [CSE-20-04]
+    - All day – PA 2 [CMP-140-04]
 
     **📧 Inbox — 12 emails · 5 unread**
     **Worth a look**
@@ -738,7 +742,7 @@ enum NotchQADriver {
     - Tech Week: starts today
 
     **💬 Messages**
-    - **Priya** · 2 messages, latest 12:54 PM — Priya: “lmk!”
+    - **Jo** · 2 messages, latest 12:54 PM — Jo: “lmk!”
     - **Mom** · 1 message, latest 9:12 AM — “call me when you can”
     - **Sam** · 2 messages, latest 10:00 AM — Me: “np”
 
@@ -748,7 +752,7 @@ enum NotchQADriver {
     static func fixtureAttention(dayStart: Double) throws -> Data {
         let payload: [String: Any] = [
             "settings": ["mode": "shadow", "daily_cap": 3], "created_today": 0,
-            "recent": [["source_id": "msg-1", "state": "shadow", "title": "Dinner with Priya?",
+            "recent": [["source_id": "msg-1", "state": "shadow", "title": "Dinner with Jo?",
                         "event_ts": dayStart + 19 * 3600, "decided_at": dayStart + 12 * 3600, "when": "7 PM",
                         "quote": "dinner at 7?", "undoable": false]],
         ]

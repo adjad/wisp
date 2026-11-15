@@ -539,9 +539,9 @@ struct DisplayGeometryChecks {
         guard let overlay = try? String(contentsOf: app.appendingPathComponent("OverlayView.swift"), encoding: .utf8),
               let cards = try? String(contentsOf: app.appendingPathComponent("ProactiveCards.swift"), encoding: .utf8)
         else { preconditionFailure("tab scroll: read the overlay's source") }
-        check(overlay.contains("case .brief:\n            tabScroll { NotchBriefView(model: model, today: todayModel, wide: briefIsWide) }"),
+        check(overlay.contains("case .brief:\n            tabScroll { NotchBriefView(model: model, today: todayModel, wide: panelIsWide) }"),
               "Brief sits in the tab scroll")
-        check(overlay.contains("case .day:\n            tabScroll { NotchDayView(model: model, today: todayModel) }"),
+        check(overlay.contains("case .day:\n            tabScroll { NotchDayView(model: model, today: todayModel, wide: panelIsWide) }"),
               "Day sits in the tab scroll")
         check(overlay.contains("case .meet:\n            tabScroll { NotchMeetingView(model: MeetingModel.shared) }"),
               "Meet sits in the tab scroll")
@@ -630,18 +630,31 @@ struct DisplayGeometryChecks {
         check(edge.expandedWidth == 800, "At the edge the panel fills the margins' room")
         check(SurfaceLayout.make(for: monitor(840.5, 700)).widened(true).expandedWidth == 816, "Narrower than 840 rounds down to the room")
         check(SurfaceLayout.make(for: monitor(860, 700)).widened(true).expandedWidth == 836, "A display a little wider than 840 fits within its margins")
-        // Two columns only on the proactive Brief with nothing over it.
-        check(NotchBriefView.canShowWide(tab: .brief, covered: false, engineBrief: true, canWiden: true),
+        // Two columns on the proactive Brief and on Day, with nothing over them:
+        // one shared choice, so wide Brief <-> wide Day keeps the panel's width.
+        check(NotchWide.canShow(tab: .brief, covered: false, engineBrief: true, canWiden: true),
               "the proactive Brief can show two columns")
-        check(!NotchBriefView.canShowWide(tab: .day, covered: false, engineBrief: true, canWiden: true)
-              && !NotchBriefView.canShowWide(tab: .ask, covered: false, engineBrief: true, canWiden: true),
-              "Day and Ask stay one panel wide")
-        check(!NotchBriefView.canShowWide(tab: .brief, covered: true, engineBrief: true, canWiden: true),
-              "Quick settings or a card over the Brief: one column")
-        check(!NotchBriefView.canShowWide(tab: .brief, covered: false, engineBrief: false, canWiden: true),
+        check(NotchWide.canShow(tab: .day, covered: false, engineBrief: true, canWiden: true)
+              && NotchWide.canShow(tab: .day, covered: false, engineBrief: false, canWiden: true),
+              "Day can show two columns, loading or another day included")
+        check(NotchTab.allCases.filter { NotchWide.canShow(tab: $0, covered: false, engineBrief: true, canWiden: true) }
+              == [.brief, .day], "Ask, Research, Meet and Study stay one panel wide")
+        check(!NotchWide.canShow(tab: .brief, covered: true, engineBrief: true, canWiden: true)
+              && !NotchWide.canShow(tab: .day, covered: true, engineBrief: true, canWiden: true),
+              "Quick settings or a card over Brief or Day: one column")
+        check(!NotchWide.canShow(tab: .brief, covered: false, engineBrief: false, canWiden: true),
               "loading, the tiles Brief or another day: one column")
-        check(!NotchBriefView.canShowWide(tab: .brief, covered: false, engineBrief: true, canWiden: false),
+        check(!NotchWide.canShow(tab: .brief, covered: false, engineBrief: true, canWiden: false)
+              && !NotchWide.canShow(tab: .day, covered: false, engineBrief: true, canWiden: false),
               "no room on the display: one column")
+        let roomy = SurfaceLayout.make(for: monitor(1728, 1080))
+        check(roomy.widened(NotchWide.canShow(tab: .brief, covered: false, engineBrief: true, canWiden: roomy.canWiden)).expandedWidth
+              == roomy.widened(NotchWide.canShow(tab: .day, covered: false, engineBrief: true, canWiden: roomy.canWiden)).expandedWidth
+              && roomy.widened(true).expandedWidth > roomy.expandedWidth,
+              "with two columns on, Brief and Day are the same wide width")
+        check(NotchWide.toggleHelp(wide: false) == "Show Brief and Day in two columns"
+              && NotchWide.toggleHelp(wide: true) == "Show Brief and Day in one column",
+              "the toggle's tooltip names both tabs it switches")
         // The window and the content widen from the same state; the search panel never does.
         let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("app/Sources/WispApp")
@@ -649,9 +662,14 @@ struct DisplayGeometryChecks {
               let panel = try? String(contentsOf: app.appendingPathComponent("OverlayPanel.swift"), encoding: .utf8),
               let delegate = try? String(contentsOf: app.appendingPathComponent("AppDelegate.swift"), encoding: .utf8)
         else { preconditionFailure("wide panel: read the overlay's source") }
-        check(overlay.contains(".frame(width: layout.widened(briefIsWide).expandedWidth)"),
-              "the content widens with the Brief's two columns")
-        check(delegate.contains("layout.widened(NotchBriefView.showsWide(model: self.model, today: self.todayModel,"),
+        check(overlay.contains("let surfaceWidth: CGFloat = layout.widened(panelIsWide).expandedWidth")
+              && overlay.contains(".frame(width: surfaceWidth)"),
+              "the content widens with Brief's and Day's two columns")
+        check(overlay.contains("NotchWide.canShow(model: model, today: todayModel, canWiden: layout.canWiden)")
+              && overlay.contains("toggle: (label: \"Two columns\", isOn: wideChosen)")
+              && overlay.contains("if panelCanWiden {"),
+              "the header's toggle shows on Brief and Day, one VoiceOver switch")
+        check(delegate.contains("layout.widened(NotchWide.shows(model: self.model, today: self.todayModel,"),
               "the notch window widens from the same state")
         check(panel.contains("var layoutProvider: () -> SurfaceLayout = { MainActor.assumeIsolated { DisplayGeometry.shared.layout } }"),
               "a panel's default layout (the search panel's) is never widened")
