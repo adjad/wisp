@@ -643,9 +643,9 @@ enum MessageDeliveryCheck {
     }
 
     /// The recipient as Messages names its handles: E.164 for a phone number
-    /// whose country code is known ("+…" already, or 11 digits starting with 1,
-    /// the North American form lookup_contact returns as "1 (NNN) NNN-NNNN"),
-    /// lowercase for an email. Anything else is passed as it was given, never
+    /// whose country code is known ("+…" already; on a +1-region Mac, 11 digits
+    /// starting with 1, the form lookup_contact returns as "1 (NNN) NNN-NNNN",
+    /// or 10 digits), lowercase for an email. Anything else is passed as it was given, never
     /// with a guessed country code.
     ///
     /// The 11-digit form gets its +1 only on a Mac set to a +1 (North American
@@ -658,9 +658,9 @@ enum MessageDeliveryCheck {
         let digits = t.filter(\.isNumber)
         guard digits.count >= 7, t.allSatisfy({ $0.isNumber || " +-().".contains($0) }) else { return t }
         if t.hasPrefix("+") { return "+" + digits }
-        if digits.count == 11 && digits.hasPrefix("1"), let region, nanpRegions.contains(region) {
-            return "+" + digits
-        }
+        guard let region, nanpRegions.contains(region) else { return t }
+        if digits.count == 11 && digits.hasPrefix("1") { return "+" + digits }
+        if digits.count == 10 && !digits.hasPrefix("0") && !digits.hasPrefix("1") { return "+1" + digits }
         return t
     }
 
