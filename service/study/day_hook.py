@@ -144,7 +144,9 @@ def attach(result: dict, *, now: float, timezone: str) -> None:
                 raise LookupError("study calendar off")
             booked = store.meta(blocks_api.META, {}) if hasattr(store, "meta") else {}
             if isinstance(booked, dict) and booked:
-                blocks, current = blocks_api.mark(blocks, current, day, booked)
+                status, events = blocks_api._calendar_state(day, timezone)
+                blocks, current = blocks_api.mark(blocks, current, day, booked, status=status, events=events,
+                                                  forget=blocks_api._forget)
             else:
                 blocks = [{**b, "added": False, "event_source_id": None} for b in blocks]
         except Exception:  # noqa: BLE001 - the plain blocks stand
