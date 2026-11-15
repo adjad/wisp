@@ -23,6 +23,7 @@ struct StudyFindChecks {
         types()
         titles()
         tabClaim()
+        closingGate()
         print("STUDY_FIND_CHECKS_OK")
     }
 
@@ -214,5 +215,66 @@ struct StudyFindChecks {
         check(C.digest("a") != C.digest("b") && C.digest("a").count == 64, "addresses are SHA-256 hashes")
         check(C.scriptable.isSuperset(of: C.tabIDs), "every by-id browser is scriptable")
         check(!C.scriptable.contains("org.mozilla.firefox"), "Firefox has no tab scripting")
+    }
+
+    // MARK: - When closing stops
+
+    /// A walk with Safari: what one call's answer does to every later call.
+    static func walk(_ first: StudyFindTabCloser.Listing) -> StudyFindTabCloser.Gate {
+        var gate = StudyFindTabCloser.Gate(browser: "com.apple.Safari")
+        check(gate.mayCall && gate.wait == 60, "a new walk may call, waiting for the Automation prompt")
+        _ = gate.record(first)
+        return gate
+    }
+
+    static func closingGate() {
+        let browser = "Safari"
+        // (a) The student declines the Automation prompt: closing stops, the
+        // walk goes on, and the card says the tabs are still open and why.
+        var gate = walk(.denied)
+        check(!gate.mayCall && gate.problem == .denied, "a refusal stops closing")
+        check(gate.record(.tabs([tab("1", 1, "a")])) == nil, "nothing is recorded after a refusal")
+        check(!gate.record(.closed) && gate.problem == .denied, "no close counts after a refusal")
+        let declined = C.tabsLine(opened: 5, closed: 0, problem: gate.problem, browser: browser)
+        check(declined.contains("allow Wisp to control Safari") && declined.contains("Automation")
+              && declined.contains("5 tabs are still open"), "the card says why and that the tabs stay open: \(declined)")
+
+        // (b) osascript fails or doesn't answer: the same.
+        for (answer, want) in [(StudyFindTabCloser.Listing.failed, C.Outcome.failed), (.timedOut, .timedOut)] {
+            let g = walk(answer)
+            check(!g.mayCall && g.problem == want, "\(want) stops closing")
+            let line = C.tabsLine(opened: 4, closed: 1, problem: g.problem, browser: browser)
+            check(line.contains("Wisp stopped closing tabs") && line.contains("It closed 1 of 4"), "card for \(want): \(line)")
+        }
+        // …and a refusal, failure or timeout at a close stops it the same way.
+        for outcome in [C.Outcome.denied, .failed, .timedOut, .unsupported] {
+            var g = walk(.tabs([]))
+            check(g.mayCall && g.wait == 8, "after one answer, calls wait less")
+            check(!g.record(outcome) && !g.mayCall && g.problem == outcome, "a close answering \(outcome) stops closing")
+        }
+
+        // (c) After the first problem nothing else changes it: the walk makes no
+        // further call (every call site asks mayCall first), so the prompt is
+        // never retried in the same walk.
+        gate = walk(.timedOut)
+        _ = gate.record(.tabs([]))
+        _ = gate.record(C.Outcome.denied)
+        check(gate.problem == .timedOut && !gate.mayCall, "the first problem stays for the whole walk")
+
+        // A tab that changed hands is left open, but closing goes on.
+        var ok = walk(.tabs([]))
+        check(!ok.record(.notOne) && ok.mayCall, "a tab no longer ours is left alone; closing continues")
+        check(ok.record(.closed) && ok.mayCall, "a closed tab counts")
+
+        // (d) The next walk starts fresh and may try once again.
+        let next = StudyFindTabCloser.Gate(browser: "com.apple.Safari")
+        check(next.mayCall && next.problem == nil && next.wait == 60, "a later walk may ask again")
+
+        // Browsers without tab scripting never start closing.
+        check(StudyFindTabCloser.Gate(browser: "org.mozilla.firefox").problem == .unsupported, "Firefox: no closing")
+        check(StudyFindTabCloser.Gate(browser: nil).problem == .unsupported, "no browser: no closing")
+        check(C.tabsLine(opened: 3, closed: 3, problem: nil, browser: browser).contains("and closed them"), "all closed")
+        check(C.tabsLine(opened: 1, closed: 0, problem: .unsupported, browser: "Firefox").contains("can't close tabs there"),
+              "unsupported card")
     }
 }
