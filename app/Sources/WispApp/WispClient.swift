@@ -664,6 +664,11 @@ final class WispClient {
     // Send the exact text the user reviewed in Wisp's editable draft card.
     // The button press is the confirmation; the backend still resolves the
     // contact and waits for Messages.app to report the real send outcome.
+    /// TEMPORARY (owner, 2026-11-15): what the service answers for a text Messages
+    /// marked Not Delivered (service/tools/action_tools.py QUIET_NOT_DELIVERED).
+    /// Draft cards show it in their neutral style: no failure colour, no tick.
+    static let quietNotDelivered = "Passed to Messages."
+
     func sendMessageDraft(to: String, text: String) async -> (ok: Bool, result: String) {
         var req = URLRequest(url: Self.baseURL.appendingPathComponent("assistant/send_message_draft"))
         req.httpMethod = "POST"
