@@ -3697,6 +3697,14 @@ _PHYSICAL_CODE_RE = re.compile(
     r"\bcode\s+(?:to|for)\s+the\s+(?:door|gate|safe|lock|garage|building|locker)\b|"
     r"\bcode\s+is\s+\d+", re.I)
 
+# A "class" a student attends, not a programming class: "my class slides about
+# recursion". CODE_RE matches the bare word "class ", which sent these to the
+# coding model with no tools, so study_slides was unreachable by its own alias.
+_SCHOOL_CLASS_RE = re.compile(
+    r"\b(?:my|our|your|the|this|that)\s+class(?:es)?\s+"
+    r"(?:slides?|notes?|lectures?|decks?|syllabus|schedule|assignments?|materials?|readings?|pdfs?|handouts?)\b",
+    re.I)
+
 # Writing a note, in the words people actually use. See the use site in
 # _domain_subset for why this is separate from _WRITE_INTENT_RE.
 _NOTE_WRITE_RE = re.compile(
@@ -5726,7 +5734,7 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
         # with NO tools — the user asked to save a PIN and got a chat reply.
         # Checked here rather than by editing CODE_RE, which several other call
         # sites depend on.
-        if not _PHYSICAL_CODE_RE.search(t):
+        if not _PHYSICAL_CODE_RE.search(t) and not _SCHOOL_CLASS_RE.search(t):
             return _mk("coding", reason="code-related request")
     # "why is my mac slow/being slow" and "why are YOU slow" both read as an
     # open-ended reasoning question to REASON_RE below — needs_tools=False, no
