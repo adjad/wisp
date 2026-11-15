@@ -221,6 +221,8 @@ async def _one_hop(url: str) -> tuple[httpx.Response | None, bytes, str]:
                 return response, b"", urljoin(url, location)
             if response.status_code != 200:
                 raise FetchError("http_error")
+            if (response.headers.get("content-encoding") or "identity").strip().lower() not in ("identity", ""):
+                raise FetchError("not_text")       # asked for identity: a compressed reply is refused
             media = (response.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
             if media not in TYPES:
                 raise FetchError("not_text")
@@ -251,6 +253,11 @@ async def _fetch(url: str) -> dict:
         except httpx.HTTPError:
             raise FetchError("unreachable") from None
         if location:
+            # Every hop is checked like the first link: a "safe" page must not hand Wisp on to a
+            # form, meeting, attempt or one-time link.
+            from service.study import find as _find
+            if _find.important("", location):
+                raise FetchError("not_text")
             url = location
             continue
         media = (response.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
