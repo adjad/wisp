@@ -2037,7 +2037,6 @@ private struct StudyFindCard: View {
             .studyReportsHeight(onResize)
             .onAppear { run.setFinished(onFinished) }
             .onChange(of: run.phase) { _, _ in onResize() }
-            .onExitCommand { if !run.running { set { run.close() } } }
         }
     }
 
