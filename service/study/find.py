@@ -19,7 +19,7 @@ import hashlib
 import logging
 import re
 import time
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import unquote, parse_qsl, urlencode, urlsplit, urlunsplit
 
 from service.study import connector, deck, drive, fetch
 
@@ -61,8 +61,9 @@ CANVAS_KIND = {"page": "page", "wikipage": "page", "discussion": "discussion", "
 # Module item types the walker must never open (Canvas's own type labels, lower-cased letters only).
 # Module item types that are safe to open: anything else (an external tool, a quiz, an assignment, a file, or a
 # type the app could not read) is refused, since opening it can launch a tool with the student's identity.
-SAFE_ITEM_HINTS = frozenset({"page", "wikipage", "wiki page", "discussion", "discussiontopic", "discussion topic",
-                             "externalurl", "external url"})
+# An External URL item is not opened: only its title is known before it lands off the course
+# (a plainly named Zoom, form or proctoring link would open), so when in doubt it is refused.
+SAFE_ITEM_HINTS = frozenset({"page", "wikipage", "wiki page", "discussion", "discussiontopic", "discussion topic"})
 TOOL_HINTS = frozenset({"assignment", "externaltool", "external tool", "contextexternaltool", "lti", "quiz", "quizzes",
                         "new quiz", "newquiz", "assessment", "quizzeslti"})
 _TOOL_TITLE = re.compile(r"\b(?:gradescope|pearson|mcgraw|mylab|mastering|webassign|zybooks|cengage|"
@@ -193,10 +194,71 @@ def _reason(hint: str, title: str) -> str:
         return "quiz"
     if hint == "assignment":
         return "assignment"
+    if hint in ("externalurl", "external url"):
+        return "outside"
     return "tool" if hint else "unknown"
 
 
+# The user's rule: never open or fetch anything that is or sounds like a test or quiz, or
+# anything important (graded, proctored, a submission, a start/attempt link, timed, payment or
+# enrolment, a live meeting, account or settings), by its words in the title or the url. When in
+# doubt, refused: such an item is listed as "Can't open" with its reason, never opened.
+_IMPORTANT = [
+    ("quiz", r"tests?|quiz(?:zes)?|exams?|examinations?|mid-?terms?|finals?|assessments?|"
+             r"pre-?tests?|post-?tests?|unit tests?|placement"),
+    ("survey", r"surveys?|polls?|questionnaires?|course evaluations?|evaluations?|evals?|feedback forms?"),
+    ("graded", r"graded|proctor(?:ed|ing|u|io)?|respondus|lockdown|honorlock|examity|examsoft|"
+               r"gradescope|turnitin|for credit|points? possible"),
+    ("submission", r"submissions?|submit|uploads?|turn in|hand in|dropbox"),
+    ("start", r"attempts?|start|begin|resume|take (?:the )?\w+|launch"),
+    ("timed", r"timed|timer|time limit|due in \d+"),
+    ("payment", r"pay(?:ment|ments)?|checkout|purchase|buy|billing|invoice|tuition|enrol(?:l|ls|lment|ment)?s?|"
+                r"register|registration|subscribe"),
+    ("meeting", r"meetings?|zoom|webex|teams|google meet|collaborate|conferences?|live (?:session|class|lecture)|"
+                r"office hours? (?:link|room)|join"),
+    ("account", r"accounts?|settings|profile|passwords?|log ?in|log ?out|sign ?in|sign ?out|sso|"
+                r"permissions|notifications? preferences"),
+]
+_RUN_TOGETHER = re.compile(r"(?:final|midterm|practice|pop|unit|chapter|weekly)(?:exam|quiz|test)|"
+                           r"(?:exam|quiz|test)(?:review|prep|\d)", re.I)
+_IMPORTANT_RE = [(label, re.compile(rf"(?<![a-z0-9])(?:{words})(?![a-z0-9])", re.I)) for label, words in _IMPORTANT]
+
+
+def important(title: str, url: str = "") -> str | None:
+    """The reason a link must never be opened or fetched, from its title or its url's words."""
+    try:
+        parts = urlsplit(url or "")
+        path = (parts.hostname or "") + " " + unquote(parts.path) + " " + unquote(parts.query)
+    except ValueError:
+        path = url or ""
+    words = f"{title or ''} " + re.sub(r"[/_+.=&?-]", " ", path)
+    words = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", words)          # MidtermReview -> Midterm Review
+    if _RUN_TOGETHER.search(words):
+        return "quiz"
+    for label, pattern in _IMPORTANT_RE:
+        if pattern.search(words):
+            return label
+    return None
+
+
 def classify(link: dict, course: dict | None = None) -> dict:
+    """``_classify``, then the user's rule: a readable link (or a refused course item) whose title
+    or url sounds like a test, quiz or anything important becomes "other"/"none" with a reason."""
+    got = _classify(link, course)
+    if got["kind"] == "other" and not got.get("reason"):
+        return got
+    if got["via"] == "none" and got["kind"] != "other":
+        return got          # a title-only video is never opened anyway
+    title = str((link or {}).get("title") or "") if isinstance(link, dict) else ""
+    raw = link.get("url") if isinstance(link, dict) and isinstance(link.get("url"), str) else ""
+    reason = important(title, raw) or important("", got.get("url") or "")
+    if reason is None:
+        return got
+    return {"key": got["key"], "kind": "other", "via": "none", "file_id": None, "url": got["url"],
+            "reason": got.get("reason") or reason}
+
+
+def _classify(link: dict, course: dict | None = None) -> dict:
     """{"key", "kind", "via", "url" (canonical), "file_id"} for one found link on ``course``'s
     pages. "key" is the dedupe key: "drive:<id>" for a Google file (one key across every url
     form), else the canonical url. Browser kinds only for the course's own Canvas origin and
