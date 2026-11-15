@@ -52,7 +52,8 @@ def keychain_account(name: str, base_url: str) -> str:
 def resolve_keychain(name: str, base_url: str, *, wait: bool = False) -> str:
     """The key for name at base_url. `wait` (Connect only) waits for a read already in
     progress and ignores a remembered failure: the person is at the screen to answer."""
-    from .endpoints import ProviderCredentialError
+    from .endpoints import (ProviderCredentialBusy, ProviderCredentialCopyPending,
+                            ProviderCredentialError, ProviderCredentialTimedOut)
     quarantine.check()
     account = keychain_account(name, base_url)
     # A silent read (after Always Allow) takes well under a second, so overlapping reads
@@ -71,7 +72,7 @@ def resolve_keychain(name: str, base_url: str, *, wait: bool = False) -> str:
             return held[1]
     limit = CONNECT_LOCK_WAIT_S if wait else (0 if on_loop else LOCK_WAIT_S)
     if not _READ_LOCK.acquire(timeout=limit):
-        raise ProviderCredentialError("Provider credential unavailable")
+        raise ProviderCredentialBusy("Provider credential unavailable")
     try:
         failed = _RECENT_FAILURE.get(account)
         if not wait and failed is not None and time.monotonic() - failed < FAILURE_HOLD_S:
@@ -88,8 +89,15 @@ def resolve_keychain(name: str, base_url: str, *, wait: bool = False) -> str:
             )
             quarantine.check()
             if result.returncode == keychain_legacy.NOT_FOUND:
-                # Saved before the app's rename? Copy it across once (macOS asks first).
-                value = keychain_legacy.copy_forward("inference", SERVICE, account, timeout=timeout)
+                # Saved before the app's rename? Copy it across once (macOS asks first),
+                # but only off the event loop and outside the startup check. There a key
+                # waiting to be copied is neither missing nor held.
+                if on_loop or not keychain_legacy.copying():
+                    if keychain_legacy.legacy_exists("inference", SERVICE, account):
+                        raise ProviderCredentialCopyPending("Provider credential unavailable")
+                    value = None
+                else:
+                    value = keychain_legacy.copy_forward("inference", SERVICE, account)
                 missing = value is None
                 if missing:
                     raise ValueError
@@ -99,6 +107,11 @@ def resolve_keychain(name: str, base_url: str, *, wait: bool = False) -> str:
                     raise ValueError
             if not value or len(value) > 4096 or any(ord(c) < 33 or ord(c) > 126 for c in value):
                 raise ValueError
+        except ProviderCredentialCopyPending:
+            raise
+        except keychain_legacy.LegacyTimedOut:
+            # Unanswered, not refused: no hold, so the next use asks again.
+            raise ProviderCredentialTimedOut("Provider credential unavailable") from None
         except (OSError, subprocess.SubprocessError, ValueError, keychain_legacy.LegacyUnreadable):
             _RECENT_FAILURE[account] = time.monotonic()
             _RECENT_SUCCESS.pop(account, None)

@@ -34,6 +34,13 @@ UNREADABLE_KEY_MESSAGE = ("Wisp couldn't read your cloud AI key from Keychain. I
                           "your login password and choose Always Allow. If it keeps happening, "
                           "reconnect your key: Settings › Models, paste it under Cloud inference "
                           "and choose Test & Save.")
+BUSY_KEY_MESSAGE = "Wisp is still reading your cloud AI key from Keychain. Try again in a moment."
+WAITED_KEY_MESSAGE = ("Wisp waited for you to allow Keychain access, but no answer came in time. "
+                      "Ask again, then enter your login password and choose Always Allow when macOS asks.")
+COPY_PENDING_KEY_MESSAGE = ("Wisp still needs to bring your cloud AI key across in Keychain. Ask again, "
+                            "and allow Keychain access when macOS asks.")
+# The status line Ask shows while macOS's question is on screen.
+KEYCHAIN_WAIT_STATUS = "Waiting for you to allow Keychain access…"
 
 
 def _credential_failure(exc: BaseException):
@@ -50,11 +57,30 @@ def _credential_failure(exc: BaseException):
 
 def credential_message(exc: BaseException) -> str | None:
     """The reconnect sentence for a provider-key failure, else None."""
-    from service.config.endpoints import ProviderCredentialMissing
+    from service.config.endpoints import (ProviderCredentialBusy, ProviderCredentialCopyPending,
+                                          ProviderCredentialMissing, ProviderCredentialTimedOut)
     found = _credential_failure(exc)
     if found is None:
         return None
-    return RECONNECT_KEY_MESSAGE if isinstance(found, ProviderCredentialMissing) else UNREADABLE_KEY_MESSAGE
+    for kind, message in ((ProviderCredentialMissing, RECONNECT_KEY_MESSAGE),
+                          (ProviderCredentialBusy, BUSY_KEY_MESSAGE),
+                          (ProviderCredentialTimedOut, WAITED_KEY_MESSAGE),
+                          (ProviderCredentialCopyPending, COPY_PENDING_KEY_MESSAGE)):
+        if isinstance(found, kind):
+            return message
+    return UNREADABLE_KEY_MESSAGE
+
+
+def startup_credential_hint(exc: BaseException) -> str | None:
+    """The startup log's line for a key problem: only missing or unreadable keys. A key
+    waiting to be copied (or a busy read) is fine and says nothing."""
+    from service.config.endpoints import (ProviderCredentialBusy, ProviderCredentialCopyPending,
+                                          ProviderCredentialTimedOut)
+    found = _credential_failure(exc)
+    if found is None or isinstance(found, (ProviderCredentialBusy, ProviderCredentialCopyPending,
+                                           ProviderCredentialTimedOut)):
+        return None
+    return credential_message(found)
 
 
 def translate(exc: Exception, *, retry_omlx: _RetryHook = None, endpoint_name: str = "local") -> tuple[str, str]:

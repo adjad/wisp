@@ -1,6 +1,7 @@
 """A key saved under the pre-rename Keychain service is copied across once, on first use,
 and a key that can't be found or read says how to reconnect it. Synthetic only: a fake
 `security` stands in for Keychain, so no real Keychain item is read or written."""
+import asyncio
 import subprocess
 import threading
 
@@ -9,7 +10,9 @@ import pytest
 from service import errors
 from service.config import keychain_legacy as legacy
 from service.config import provider_credentials as secrets
-from service.config.endpoints import ProviderCredentialError, ProviderCredentialMissing
+from service.config.endpoints import (ProviderCredentialBusy, ProviderCredentialCopyPending,
+                                      ProviderCredentialError, ProviderCredentialMissing,
+                                      ProviderCredentialTimedOut)
 from service.study import connector as C
 
 URL = "https://example-provider.test"
@@ -140,13 +143,102 @@ def test_where_the_name_never_changed_nothing_is_copied(monkeypatch):
     assert len(kc.argvs) == 1 and kc.stdins == []
 
 
-def test_the_startup_check_never_copies(monkeypatch):
+def test_the_startup_check_never_copies_and_holds_nothing(monkeypatch):
     kc = use(monkeypatch, FakeKeychain({(OLD, account()): KEY}))
     with legacy.no_copy():
-        with pytest.raises(ProviderCredentialMissing):
+        with pytest.raises(ProviderCredentialCopyPending) as caught:
             secrets.resolve_keychain("cloud", URL)
     assert kc.read_old(OLD) == [] and kc.stdins == []
-    assert secrets.resolve_keychain("cloud", URL, wait=True) == KEY   # first real use
+    assert secrets._RECENT_FAILURE == {} and secrets._RECENT_MISSING == set()
+    assert errors.startup_credential_hint(caught.value) is None      # no "Reconnect" in the log
+    # The first Ask right after launch copies it (no hold, no wait=True needed).
+    assert secrets.resolve_keychain("cloud", URL) == KEY
+
+
+def test_a_startup_check_with_no_key_anywhere_logs_reconnect(monkeypatch):
+    use(monkeypatch, FakeKeychain())
+    with legacy.no_copy():
+        with pytest.raises(ProviderCredentialMissing) as caught:
+            secrets.resolve_keychain("cloud", URL)
+    assert errors.startup_credential_hint(caught.value) == errors.RECONNECT_KEY_MESSAGE
+
+
+def test_on_the_event_loop_the_copy_never_runs(monkeypatch):
+    kc = use(monkeypatch, FakeKeychain({(OLD, account()): KEY}))
+
+    async def on_loop():
+        return secrets.resolve_keychain("cloud", URL)
+    with pytest.raises(ProviderCredentialCopyPending):
+        asyncio.run(on_loop())
+    assert kc.read_old(OLD) == [] and secrets._RECENT_FAILURE == {}
+
+
+def test_the_copy_read_waits_long_enough_to_type_a_password(monkeypatch):
+    kc = FakeKeychain({(OLD, account()): KEY})
+    timeouts = {}
+
+    def run(argv, input=None, timeout=None, **kwargs):
+        if OLD in argv and "-w" in argv:
+            timeouts["read"] = timeout
+        return kc(argv, input=input, **kwargs)
+    monkeypatch.setattr(subprocess, "run", run)
+    assert secrets.resolve_keychain("cloud", URL) == KEY
+    assert timeouts["read"] >= 60
+
+
+def test_an_unanswered_question_is_not_a_refusal(monkeypatch):
+    kc = FakeKeychain({(OLD, account()): KEY})
+    answered = {"now": False}
+
+    def run(argv, input=None, **kwargs):
+        if OLD in argv and "-w" in argv and not answered["now"]:
+            raise subprocess.TimeoutExpired(argv, 60)
+        return kc(argv, input=input, **kwargs)
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(ProviderCredentialTimedOut) as caught:
+        secrets.resolve_keychain("cloud", URL)
+    assert errors.translate(caught.value)[0] == errors.WAITED_KEY_MESSAGE
+    assert secrets._RECENT_FAILURE == {}            # no hold: the next use asks again
+    answered["now"] = True
+    assert secrets.resolve_keychain("cloud", URL) == KEY
+
+
+def test_ask_is_told_while_macos_asks(monkeypatch):
+    kc = FakeKeychain({(OLD, account()): KEY})
+    order = []
+
+    def run(argv, input=None, **kwargs):
+        if OLD in argv and "-w" in argv:
+            order.append("read")
+        return kc(argv, input=input, **kwargs)
+    monkeypatch.setattr(subprocess, "run", run)
+    token = legacy.WAIT_NOTICE.set(lambda: order.append("notice"))
+    try:
+        assert secrets.resolve_keychain("cloud", URL) == KEY
+    finally:
+        legacy.WAIT_NOTICE.reset(token)
+    assert order == ["notice", "read"]
+
+
+def test_each_turn_installs_the_waiting_line():
+    source = open("service/main.py", encoding="utf-8").read()
+    body = source[source.index("    async def runner_body():"):][:2500]
+    assert "WAIT_NOTICE.set(keychain_wait_notice)" in body
+    assert "KEYCHAIN_WAIT_STATUS" in body and "call_soon_threadsafe" in body
+    assert errors.KEYCHAIN_WAIT_STATUS == "Waiting for you to allow Keychain access…"
+
+
+def test_a_busy_read_lock_is_not_the_always_allow_sentence(monkeypatch):
+    use(monkeypatch, FakeKeychain({(NEW, account()): KEY}))
+    monkeypatch.setattr(secrets, "LOCK_WAIT_S", 0.05)
+    secrets._READ_LOCK.acquire()
+    try:
+        with pytest.raises(ProviderCredentialBusy) as caught:
+            secrets.resolve_keychain("cloud", URL)
+    finally:
+        secrets._READ_LOCK.release()
+    message = errors.translate(caught.value)[0]
+    assert message == errors.BUSY_KEY_MESSAGE and "Always Allow" not in message
 
 
 def test_a_failed_write_still_answers_this_use(monkeypatch):
@@ -225,3 +317,30 @@ def test_study_on_a_cloud_connection_with_no_key_says_reconnect(monkeypatch):
     with pytest.raises(C.StudyConnectorError) as caught:
         C._resolve(None)
     assert caught.value.message == errors.RECONNECT_KEY_MESSAGE
+
+
+def test_an_unanswered_study_question_says_so_and_is_not_held(monkeypatch):
+    kc = FakeKeychain({(OLD_STUDY, "openrouter"): KEY})
+    answered = {"now": False}
+
+    def run(argv, input=None, **kwargs):
+        if OLD_STUDY in argv and "-w" in argv and not answered["now"]:
+            raise subprocess.TimeoutExpired(argv, 60)
+        return kc(argv, input=input, **kwargs)
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(C, "choice", lambda: ("openrouter", "model-x"))
+    with pytest.raises(C.StudyConnectorError) as caught:
+        C._resolve(None)
+    assert caught.value.message == C.KEYCHAIN_WAIT_MESSAGE and "Keychain" in C.KEYCHAIN_WAIT_MESSAGE
+    assert not C._read_held("openrouter")
+    answered["now"] = True
+    assert C._keychain_key("openrouter") == KEY
+
+
+def test_study_never_copies_on_the_event_loop(monkeypatch):
+    kc = use(monkeypatch, FakeKeychain({(OLD_STUDY, "openrouter"): KEY}))
+
+    async def on_loop():
+        return C._keychain_key("openrouter")
+    assert asyncio.run(on_loop()) is None
+    assert kc.read_old(OLD_STUDY) == [] and not C._read_held("openrouter")
