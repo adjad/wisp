@@ -405,9 +405,16 @@ async def lifespan(app: FastAPI):
         from service.engine.downloads import warm_checks
         started_tasks.append(asyncio.create_task(asyncio.to_thread(warm_checks)))
     if profile is not None:
+        from service.config.keychain_legacy import no_copy
         try:
-            await _prepare_remote_inference(client)
+            # Nobody is waiting on this check, so a key saved before the app's rename is
+            # not copied here (that asks macOS's question); the first real use copies it.
+            with no_copy():
+                await _prepare_remote_inference(client)
         except Exception as exc:
+            from service.errors import credential_message
+            if (hint := credential_message(exc)) is not None:
+                print(f"[remote] {hint}", flush=True)
             from service.inference.remote_policy import launched_remote_only
             if launched_remote_only():
                 await client.aclose()

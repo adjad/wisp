@@ -25,6 +25,8 @@ from typing import Callable
 
 import httpx
 
+from service.config import keychain_legacy
+
 log = logging.getLogger(__name__)
 
 SERVICE = "com.wisp.study"
@@ -71,7 +73,8 @@ MESSAGES = {
 
 
 KEYCHAIN_MESSAGE = ("Wisp could not read the Study key from your Keychain. If macOS asked, "
-                    "choose Always Allow, or save the key again.")
+                    "choose Always Allow. Otherwise reconnect your key: choose Study key in "
+                    "Study, paste the key and save it.")
 
 
 class StudyConnectorError(Exception):
@@ -184,12 +187,14 @@ def _keychain_key(provider: str) -> str | None:
     try:
         result = _security(["find-generic-password", "-s", SERVICE, "-a", provider, "-w"])
         if result.returncode == _NOT_FOUND:
-            return None
-        if result.returncode or result.stderr:
+            # Saved before the app's rename? Copy it across once (macOS asks first).
+            value = _clean_key(keychain_legacy.copy_forward("study", SERVICE, provider, timeout=10))
+        elif result.returncode or result.stderr:
             _key_failed[provider] = time.monotonic()
             return None
-        value = _clean_key(result.stdout.decode("ascii").rstrip("\n"))
-    except subprocess.TimeoutExpired:
+        else:
+            value = _clean_key(result.stdout.decode("ascii").rstrip("\n"))
+    except (subprocess.TimeoutExpired, keychain_legacy.LegacyUnreadable):
         _key_failed[provider] = time.monotonic()
         return None
     except (OSError, subprocess.SubprocessError, UnicodeDecodeError, ValueError):
@@ -216,6 +221,8 @@ def _key_exists(provider: str) -> bool:
             found = _security(["find-generic-password", "-s", SERVICE, "-a", provider]).returncode == 0
         except (OSError, subprocess.SubprocessError):
             found = False
+        # A key saved before the app's rename counts: its first use copies it across.
+        found = found or keychain_legacy.legacy_exists("study", SERVICE, provider)
     _exists_cache[provider] = (found, time.monotonic())
     return found
 
@@ -392,15 +399,18 @@ def _resolve(key_reader: Callable[[str], str] | None) -> tuple[str, str, str, st
         cloud = _cloud_target()
     except Exception:  # noqa: BLE001
         cloud = None
+    cloud_problem = None
     if cloud is not None:
         try:
             key = _clean_key(cloud["key"]())
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             key = None
+            from service.errors import credential_message
+            cloud_problem = credential_message(exc)   # never the key's text
         if key is not None:
             cloud_provider = next(p for p, s in PROVIDERS.items() if s["origin"] == cloud["origin"])
             return cloud["origin"] + cloud["prefix"] + "/chat/completions", cloud["model"], key, cloud_provider
-    raise StudyConnectorError("missing", KEYCHAIN_MESSAGE if unreadable else None)
+    raise StudyConnectorError("missing", KEYCHAIN_MESSAGE if unreadable else cloud_problem)
 
 
 def _content(data) -> str:
