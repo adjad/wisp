@@ -177,8 +177,8 @@ def test_a_name_with_any_private_address_is_refused(web):
 
 def test_every_redirect_hop_is_checked_again(web):
     server = web({("news.example.org", "/r1"): httpx.Response(302, headers={"location": "https://cdn.example.net/r2"}),
-                  ("cdn.example.net", "/r2"): httpx.Response(301, headers={"location": "/final"}),
-                  ("cdn.example.net", "/final"): html("<p>Arrived.</p>"),
+                  ("cdn.example.net", "/r2"): httpx.Response(301, headers={"location": "/arrived"}),
+                  ("cdn.example.net", "/arrived"): html("<p>Arrived.</p>"),
                   ("news.example.org", "/to-http"): httpx.Response(302, headers={"location": "http://cdn.example.net/x"}),
                   ("news.example.org", "/to-local"): httpx.Response(302, headers={"location": "https://internal.example.org/"}),
                   ("news.example.org", "/to-ip"): httpx.Response(302, headers={"location": "https://169.254.169.254/"}),
@@ -186,7 +186,7 @@ def test_every_redirect_hop_is_checked_again(web):
                  dns={"news.example.org": ["93.184.216.34"], "cdn.example.net": ["93.184.216.35"],
                       "internal.example.org": ["192.168.0.10"]})
     got = get("https://news.example.org/r1")
-    assert got["url"] == "https://cdn.example.net/final" and got["text"] == "Arrived."
+    assert got["url"] == "https://cdn.example.net/arrived" and got["text"] == "Arrived."
     assert [r.headers["host"] for r in server.requests] == ["news.example.org", "cdn.example.net", "cdn.example.net"]
     assert all("cookie" not in r.headers and "referer" not in r.headers for r in server.requests)
     assert code("https://news.example.org/to-http") == "bad_url"
@@ -242,3 +242,18 @@ def test_fetch_many_runs_at_most_six_at_once(web, monkeypatch):
     got = asyncio.run(fetch.fetch_many(urls))
     assert all(g["text"] == "ok" for g in got[:14]) and isinstance(got[14], fetch.FetchError)
     assert live["max"] <= fetch.CONCURRENCY
+
+
+@pytest.mark.parametrize("location", ["https://forms.gle/abc", "https://news.example.org/quiz/3",
+                                      "https://news.example.org/x?token=1", "https://zoom.us/j/1",
+                                      "https://news.example.org/attempt"])
+def test_a_redirect_to_a_never_open_address_is_refused(web, location):
+    server = web({("news.example.org", "/r"): httpx.Response(302, headers={"location": location})})
+    assert code("https://news.example.org/r") == "not_text"
+    assert len(server.requests) == 1          # the next hop is never requested
+
+
+def test_a_compressed_reply_is_refused(web):
+    web({("news.example.org", "/z"): httpx.Response(200, headers={"content-type": "text/html",
+                                                                 "content-encoding": "gzip"}, content=b"x")})
+    assert code("https://news.example.org/z") == "not_text"

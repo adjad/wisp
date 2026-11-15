@@ -210,7 +210,7 @@ def _reason(hint: str, title: str) -> str:
 _IMPORTANT = [
     ("quiz", r"tests?|quiz(?:zes)?|exams?|examinations?|mid-?terms?|finals?|assessments?|"
              r"pre-?tests?|post-?tests?|unit tests?|placement"),
-    ("survey", r"surveys?|polls?|questionnaires?|course evaluations?|evaluations?|evals?|feedback forms?"),
+    ("survey", r"surveys?|polls?|questionnaires?|course evaluations?|evaluations?|evals?|feedback forms?|forms?"),
     ("graded", r"graded|proctor(?:ed|ing|u|io)?|respondus|lockdown|honorlock|examity|examsoft|"
                r"gradescope|turnitin|for credit|points? possible"),
     ("submission", r"submissions?|submit|uploads?|turn in|hand in|dropbox"),
@@ -227,7 +227,17 @@ _RUN_TOGETHER = re.compile(r"(?:final|midterm|practice|pop|unit|chapter|weekly)(
                            r"(?:exam|quiz|test)(?:review|prep|\d)", re.I)
 _SECRET_KEY = re.compile(r"(?:^|[_-])(?:token|sig|signature|auth|apikey|api_key|key|session|sid|otp|code|"
                          r"nonce|jwt|ticket|reset|verify|confirm|login|magic|hash|secret|password)(?:$|[_-])")
-_IMPORTANT_RE = [(label, re.compile(rf"(?<![a-z0-9])(?:{words})(?![a-z0-9])", re.I)) for label, words in _IMPORTANT]
+_IMPORTANT_RE = [(label, re.compile(rf"(?<![a-z])(?:{words})(?![a-z])", re.I)) for label, words in _IMPORTANT]
+# Sites whose links are forms, polls, quizzes, payments or meetings, whatever the page is called.
+_IMPORTANT_HOSTS = (
+    ("survey", ("forms.gle", "forms.office.com", "forms.microsoft.com", "typeform.com", "jotform.com",
+                "qualtrics.com", "surveymonkey.com", "pollev.com", "polleverywhere.com", "menti.com",
+                "mentimeter.com", "slido.com", "calendly.com")),
+    ("quiz", ("kahoot.it", "kahoot.com", "quizizz.com", "quizlet.com", "gimkit.com", "blooket.com")),
+    ("payment", ("paypal.com", "venmo.com", "stripe.com", "square.com", "cash.app")),
+    ("meeting", ("zoom.us", "gotomeeting.com", "webex.com", "teams.microsoft.com", "meet.google.com",
+                 "whereby.com", "bluejeans.com")),
+)
 
 
 def important(title: str, url: str = "") -> str | None:
@@ -243,8 +253,15 @@ def important(title: str, url: str = "") -> str | None:
         keys = []
     if any(_SECRET_KEY.search(k) for k in keys):
         return "account"          # a one-time or signed link: opening it can act on its own
+    try:
+        host = (urlsplit(url or "").hostname or "").lower()
+    except ValueError:
+        host = ""
+    for label, hosts in _IMPORTANT_HOSTS:
+        if host and any(host == h or host.endswith("." + h) for h in hosts):
+            return label
     words = f"{title or ''} " + re.sub(r"[/_+.=&?-]", " ", path)
-    words = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", words)          # MidtermReview -> Midterm Review
+    words = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", words)       # MidtermReview, Week3Quiz -> words
     if _RUN_TOGETHER.search(words):
         return "quiz"
     for label, pattern in _IMPORTANT_RE:
@@ -380,8 +397,12 @@ def resolve(links: list[dict], *, course: dict | None, sources: list[dict]) -> l
     seen: set[str] = set()
     items = []
     importable = browser = refused = 0
-    for link in links[:MAX_FOUND]:
-        got = classify(link, course)
+    links = links[:MAX_FOUND]
+    graded = [(link, classify(link, course)) for link in links]
+    # The same item listed twice (an innocent title, then "Take the quiz"): any refusal wins.
+    refusals = {g["key"]: (link, g) for link, g in graded if g["kind"] == "other" and g.get("reason")}
+    graded = [refusals.get(g["key"], (link, g)) for link, g in graded]
+    for link, got in graded:
         if got["key"] in seen:
             continue
         if got["kind"] == "other":
@@ -482,6 +503,8 @@ async def _one(item: dict, got: dict, can_read: bool, deadline: float) -> tuple[
             raise _Failed(exc.code, exc.message) from None
         if "://" in title or title.startswith("www."):
             title = ""                 # an untitled link: never keep its query in the saved title
+        if re.match(r"^[\w.-]+\.[a-z]{2,}/\S*\?", title, re.I):
+            title = title.split("?", 1)[0]
         parts = urlsplit(got["url"])
         bare = f"{parts.hostname or ''}{parts.path}"
         return {"kind": "pdf" if page.get("pdf") else "article", "title": title or page["title"] or bare,
