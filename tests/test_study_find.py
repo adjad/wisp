@@ -786,3 +786,42 @@ def test_an_untitled_link_is_saved_without_its_query(setup):
     url = "https://news.example.org/plain?id=17"
     body = add(setup, [{"url": url, "title": url, "kind": "article"}]).json()
     assert body["added"][0]["title"] == "news.example.org/plain"
+
+
+@pytest.mark.parametrize("title, hint", [("Lecture 7 Recording", "ExternalTool"), ("Week 3 lecture capture", ""),
+                                         ("Lecture video: loops", "ContextExternalTool"), ("Class recordings", None)])
+def test_lecture_recordings_are_kept_as_videos_and_never_opened(title, hint):
+    got = find.classify({"url": f"{HOST}/courses/4242/modules/items/31", "title": title, "type": hint}, C)
+    assert (got["kind"], got["via"], got.get("recording")) == ("video", "none", True)
+    items = find.resolve([{"url": f"{HOST}/courses/4242/modules/items/31", "title": title, "type": hint}],
+                         course=C, sources=[])
+    assert items[0]["recording"] is True and items[0]["via"] == "none" and "reason" not in items[0]
+
+
+@pytest.mark.parametrize("title, hint", [("Quiz 3", "Quiz"), ("Gradescope", "ExternalTool"),
+                                         ("Recording studio worksheet", "Assignment"), ("Week 3 notes", "ExternalTool")])
+def test_nothing_else_the_rule_refused_is_loosened(title, hint):
+    got = find.classify({"url": f"{HOST}/courses/4242/modules/items/32", "title": title, "type": hint}, C)
+    assert got["via"] == "none" and got["kind"] == "other"
+
+
+def test_a_recording_adds_as_a_title_only_video(setup):
+    url = "https://school.instructure.com/courses/101/modules/items/31"
+    body = add(setup, [{"url": url, "title": "Lecture 7 Recording", "kind": "video"}]).json()
+    assert body["failed"] == [] and body["added"][0]["kind"] == "video"
+    assert setup.store.source(body["added"][0]["id"])["text"] == "Lecture 7 Recording"
+
+
+def test_a_notebook_not_shared_with_you_says_so(setup, monkeypatch):
+    async def notebook(file_id):
+        raise drive.DriveError(404, "not_found", drive.NOT_FOUND)
+    monkeypatch.setattr(drive, "notebook", notebook)
+    body = add(setup, [{"url": f"https://colab.research.google.com/drive/{NB_ID}", "title": "Lab 2",
+                        "kind": "notebook"}]).json()
+    assert body["failed"][0]["code"] == "not_shared" and "isn't shared" in body["failed"][0]["message"]
+
+
+def test_a_download_disabled_file_says_so():
+    import httpx as _h
+    err = drive._refusal_for(403, {"cannotdownloadfile"}, _h.Response(403))
+    assert err.code == "no_download" and "turned off downloading" in err.message
