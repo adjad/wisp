@@ -725,7 +725,7 @@ def test_importing_the_service_with_a_marker_does_nothing(world):
     home, user = world["home"], world["user"]
     _marker(home, phase="first-pass")
     root = Path(__file__).resolve().parents[1]
-    env = {"HOME": str(user), "WISP_HOME": str(home), "PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"}
+    env = {"HOME": str(user), "WISP_HOME": str(home), "PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1", "WISP_KEYCHAIN_LEGACY": "off"}
     done = subprocess.run([sys.executable, "-c", "import service, service.paths, service.wisp_reset"],
                           cwd=root, env=env, capture_output=True, text=True, timeout=120)
     assert done.returncode == 0, done.stderr
@@ -902,7 +902,7 @@ def test_the_backend_refuses_to_start_on_an_unrecorded_pass(world):
     home, user = world["home"], world["user"]
     _marker(home, phase="started", attempts=1, in_progress=True)
     root = Path(__file__).resolve().parents[1]
-    env = {"HOME": str(user), "WISP_HOME": str(home), "PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1",
+    env = {"HOME": str(user), "WISP_HOME": str(home), "PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1", "WISP_KEYCHAIN_LEGACY": "off",
            "WISP_LAUNCH_NONCE": "test-nonce"}
     # Never probe the real service port, and no recorded pass may run: the marker
     # can't be written (as in the chflags probe), so the start is refused untouched.
