@@ -497,6 +497,7 @@ func dayChecks(_ check: (Bool, String) -> Void) {
 
     dayTodoChecks(check, dayStart: dayStart, now: now, clock: clock, dayClock: dayClock)
     dayWeekChecks(check, dayStart: dayStart, now: now)
+    weekRouteChecks(check)
     dayNextChecks(check, dayStart: dayStart, clock: clock)
 
     // How busy the calendar is: one verdict for the CAL line and the lede.
@@ -1369,3 +1370,90 @@ func noCalendarChecks(_ check: (Bool, String) -> Void, build: ([DayBlockInput], 
           && cards.allSatisfy { !DayWeek.spoken($0).contains("free") },
           "no calendar: every card is its date alone, today too")
 }
+
+/// The week route's reply (GET /assistant/today/week), decoded defensively and
+/// reduced to card loads, with invented data only.
+func weekRouteChecks(_ check: (Bool, String) -> Void) {
+    var utc = Calendar(identifier: .gregorian)
+    utc.timeZone = TimeZone(identifier: "UTC")!
+    utc.firstWeekday = 1
+    let wednesday = utc.date(from: DateComponents(year: 2030, month: 3, day: 13, hour: 12))!
+    let dates = DayWeek.dates(containing: wednesday, calendar: utc)
+    let keys = DayWeek.keys(dates, calendar: utc)
+    let start = DayWeek.start(of: wednesday, calendar: utc)
+    check(start == "2030-03-10" && keys.first == start && keys.last == "2030-03-16" && keys.count == 7,
+          "the week starts on the calendar's first weekday: \(start) \(keys)")
+    utc.firstWeekday = 2
+    check(DayWeek.start(of: wednesday, calendar: utc) == "2030-03-11", "a Monday-first calendar starts on Monday")
+    utc.firstWeekday = 1
+    check(DayWeekReply.query(start: start, timezone: "Area/City") == "/assistant/today/week?start=2030-03-10&timezone=Area/City",
+          DayWeekReply.query(start: start, timezone: "Area/City"))
+
+    func ready(_ key: String, _ spans: [[Any]], due: Int) -> [String: Any] {
+        ["day": key, "calendar_ready": true, "on_clock": spans.count, "on_clock_minutes": 60, "due": due,
+         "all_day": 0, "spans": spans]
+    }
+    var days: [[String: Any]] = keys.map { ready($0, [[540, 600, "calendar"]], due: 0) }
+    days[1] = ready(keys[1], [[540, 600, "calendar"], [600, 660, "task"], [780, 900, "study"], [900, 960, "suggestion"]], due: 2)
+    days[2] = ready(keys[2], [], due: 0)
+    days[3] = ["day": keys[3], "calendar_ready": false]
+    days[4] = ready(keys[4], [], due: 3)
+    func data(_ object: [String: Any]) -> Data { try! JSONSerialization.data(withJSONObject: object) }
+    let good: [String: Any] = ["start": start, "timezone": "Area/City", "days": days, "extra": "ignored"]
+    let reply = DayWeekReply.decode(data(good), start: start, timezone: "Area/City", days: keys)
+    check(reply?.days.count == 7 && reply?.days[3].ready == false && reply?.days[1].spans.count == 4,
+          "a whole week decodes; extra keys are ignored")
+    let loads = reply?.loads(workStart: 540, workEnd: 1080) ?? [:]
+    // Suggestions hold nothing: three things, not four; the bar spans working hours.
+    check(loads[keys[1]].map(DayWeek.countText) == "3 · 2 due", "busy: \(loads[keys[1]].map(DayWeek.countText) ?? "nil")")
+    check(loads[keys[1]]?.segments.count == 2 && loads[keys[1]]?.now == nil,
+          "overlapping or touching spans merge; no now line on another day")
+    check(loads[keys[2]].map(DayWeek.countText) == "free", "free only when ready with nothing on the clock or due")
+    check(loads[keys[3]] == nil, "a day whose calendar isn't current: its date alone")
+    check(loads[keys[4]].map(DayWeek.countText) == "3 due", "nothing on the clock but due: not free")
+
+    // Wrong shapes are no data, never a guess.
+    var short = good; short["days"] = Array(days.prefix(6))
+    var shifted = good; shifted["days"] = Array(days.dropFirst()) + [days[0]]
+    var otherWeek = good; otherWeek["start"] = "2030-03-17"
+    var otherZone = good; otherZone["timezone"] = "Elsewhere/Town"
+    for (name, object) in [("six days", short), ("days out of order", shifted), ("another week", otherWeek),
+                           ("another zone", otherZone)] {
+        check(DayWeekReply.decode(data(object), start: start, timezone: "Area/City", days: keys) == nil, "\(name): no data")
+    }
+    check(DayWeekReply.decode(Data("[]".utf8), start: start, timezone: "Area/City", days: keys) == nil
+          && DayWeekReply.decode(Data("not json".utf8), start: start, timezone: "Area/City", days: keys) == nil,
+          "not an object: no data")
+    // A ready day missing a number, with a bool for a count, or a bad span: its date alone.
+    var missing = days; missing[0].removeValue(forKey: "due")
+    var boolean = days; boolean[0]["on_clock"] = true
+    var badSpan = days; badSpan[0]["spans"] = [[600, 540, "calendar"]]
+    var miscount = days; miscount[0]["on_clock"] = 5
+    var stringReady = days; stringReady[0]["calendar_ready"] = "true"
+    for (name, list) in [("missing due", missing), ("a bool count", boolean), ("a backwards span", badSpan),
+                         ("a count the spans don't match", miscount), ("ready as a string", stringReady)] {
+        var object = good; object["days"] = list
+        let day = DayWeekReply.decode(data(object), start: start, timezone: "Area/City", days: keys)?.days[0]
+        check(day?.ready == false, "\(name): that day has its date alone")
+    }
+
+    // Today agrees: the route's today counts as the shown day's own card does
+    // (six on the clock and four due in the Day fixture; the suggestion holds nothing).
+    let todaySpans: [[Any]] = [[705, 840, "calendar"], [720, 780, "calendar"], [930, 975, "study"], [990, 1035, "study"],
+                               [1080, 1140, "calendar"], [1140, 1200, "caught"], [1200, 1290, "suggestion"]]
+    var withToday = days; withToday[0] = ready(keys[0], todaySpans, due: 4)
+    var todayObject = good; todayObject["days"] = withToday
+    let todayLoad = DayWeekReply.decode(data(todayObject), start: start, timezone: "Area/City", days: keys)
+        .flatMap { DayWeekReply.load($0.days[0], workStart: 540, workEnd: 1320) }
+    check(todayLoad?.onClock == 6 && todayLoad?.due == 4, "the fixture's today agrees with the shown day: \(String(describing: todayLoad))")
+
+    // The row's form: from what was read before its first frame, then kept.
+    // Wednesday is the not-ready day and is shown with no load of its own.
+    let cards = DayWeek.cards(shown: wednesday, today: wednesday, calendar: utc, shownLoad: nil, weekLoads: loads)
+    check(cards.filter { $0.load != nil }.count == 6 && cards[3].load == nil, "every ready day's card has its load")
+    check(DayWeek.full(latched: nil, cards: cards) && !DayWeek.full(latched: false, cards: cards)
+          && DayWeek.full(latched: true, cards: []), "a latched form wins over the data that arrived since")
+    let noWeek = DayWeek.cards(shown: wednesday, today: wednesday, calendar: utc, shownLoad: loads[keys[0]])
+    check(!DayWeek.fullRow(noWeek), "without the week (pending, failed, 404): compact")
+}
+

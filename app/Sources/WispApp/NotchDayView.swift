@@ -145,6 +145,10 @@ struct NotchDayView: View {
         }
         .onChange(of: plan?.generated_at) { _, _ in planChanged() }
         .onPreferenceChange(DayHalfHeights.self) { heights in balanceHalves(heights) }
+        // The week row's other days: read once the plan is on screen; the
+        // task ends (and its read with it) when the Day closes.
+        .task(id: weekReadKey) { if !weekReadKey.isEmpty { await readWeek() } }
+        .onDisappear { today.weekRowClosed() }
         // A cancel the service answered: the plan is read again, so a cancelled
         // block goes and a refused one shows the fresh facts the service now has.
         .onChange(of: checkIn.cancelling) { before, now in
@@ -456,19 +460,58 @@ struct NotchDayView: View {
                                                taskID: $0.task_id, evidenceID: $0.evidence_id) }
     }
 
-    /// The week holding the shown day, in the person's calendar week order.
-    private func weekCards(load: DayLoadBar?) -> [DayWeekCard] {
+    /// The person's calendar, for the week's order and its first day.
+    private var weekCalendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = today.timezone
         calendar.firstWeekday = Calendar.autoupdatingCurrent.firstWeekday
-        return DayWeek.cards(shown: today.dayInterval.start.addingTimeInterval(12 * 3600), today: today.now,
-                             calendar: calendar, shownLoad: load)
+        return calendar
     }
 
-    /// The week row: compact while only the shown day has a load (Wisp
-    /// reads one day at a time), full height once other days carry one.
+    private var shownNoon: Date { today.dayInterval.start.addingTimeInterval(12 * 3600) }
+
+    /// The week holding the shown day, in the person's calendar week order:
+    /// the shown day's card from its own plan, the others from the week route
+    /// once it was read, and none of them while Wisp can't read Calendar.
+    private func weekCards(load: DayLoadBar?) -> [DayWeekCard] {
+        let calendar: Calendar = weekCalendar
+        var others: [String: DayLoadBar] = [:]
+        if let plan, plan.calendarState.isRead,
+           let reply = today.weekReply(start: DayWeek.start(of: shownNoon, calendar: calendar)) {
+            others = reply.loads(workStart: plan.preferences.start_minute, workEnd: plan.preferences.end_minute)
+        }
+        return DayWeek.cards(shown: shownNoon, today: today.now, calendar: calendar, shownLoad: load, weekLoads: others)
+    }
+
+    /// The week row: full height when the week was already read as the Day
+    /// opened, else compact, and kept that way while it's open (a week
+    /// arriving meanwhile fills the compact cards), so the panel never jumps.
     private func weekRow(load: DayLoadBar?) -> some View {
-        DayWeekRow(cards: weekCards(load: load), pick: showDay)
+        let cards: [DayWeekCard] = weekCards(load: load)
+        let full: Bool = today.weekRowFull(start: DayWeek.start(of: shownNoon, calendar: weekCalendar),
+                                           readNow: DayWeek.fullRow(cards))
+        return DayWeekRow(cards: cards, full: full, pick: showDay)
+    }
+
+    /// What the week read is for: the shown week, zone and plan revision; empty
+    /// (no read) before the plan is on screen and while Calendar isn't read.
+    private var weekReadKey: String {
+        guard let plan, plan.calendarState.isRead else { return "" }
+        return DayWeek.start(of: shownNoon, calendar: weekCalendar) + "|" + today.timezone.identifier + "|\(plan.revision)"
+    }
+
+    /// One read of the week route, after the plan is on screen; the `.task` it
+    /// runs in ends with the Day's view, which cancels a read in flight.
+    private func readWeek() async {
+        guard let plan, plan.calendarState.isRead else { return }
+        let calendar: Calendar = weekCalendar
+        let days: [String] = DayWeek.keys(DayWeek.dates(containing: shownNoon, calendar: calendar), calendar: calendar)
+        await today.refreshWeek(start: DayWeek.start(of: shownNoon, calendar: calendar), days: days, revision: plan.revision)
+    }
+
+    /// The full week row is taller: one-column Day shows one row fewer before Show more.
+    private var weekRowIsFull: Bool {
+        today.weekRowLatched(start: DayWeek.start(of: shownNoon, calendar: weekCalendar)) ?? false
     }
 
     /// A week card's tap: the existing day selection (the planner's), then a read.
@@ -1121,7 +1164,8 @@ struct NotchDayView: View {
         // The Next card stands in for the first row, and one more row waits
         // behind Show more, so the one-column Day is no taller with the card
         // and the week row than it was without them.
-        let limit: Int = DayTimeline.rowsBeforeMore(Self.agendaRows, hasNext: next != nil, oneFewer: next != nil)
+        let limit: Int = DayTimeline.rowsBeforeMore(Self.agendaRows - (weekRowIsFull ? 1 : 0), hasNext: next != nil,
+                                                    oneFewer: next != nil)
         let ahead = showWholeAgenda ? agenda.ahead : agenda.firstRows(holding: limit)
         // An empty day has nothing to list; the blurb above already says so.
         if !agenda.earlier.isEmpty || !agenda.ahead.isEmpty {
@@ -1926,10 +1970,12 @@ struct EqualColumns: Layout {
 /// the row never moves the panel when the plan arrives.
 struct DayWeekRow: View {
     let cards: [DayWeekCard]
+    /// The form, chosen by the Day before its first frame; by the cards when nil.
+    var full: Bool? = nil
     var pick: (DayWeekCard) -> Void = { _ in }
 
     var body: some View {
-        let full: Bool = DayWeek.fullRow(cards)
+        let full: Bool = DayWeek.full(latched: self.full, cards: cards)
         return EqualColumns(spacing: 6, weights: DayWeek.weights(cards, full: full)) {
             ForEach(cards) { card in
                 DayWeekCardView(card: card, compact: !full) { pick(card) }

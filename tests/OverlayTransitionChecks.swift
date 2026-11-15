@@ -621,6 +621,52 @@ struct OverlayTransitionChecks {
         print("PASS: the week row holds its height in both forms; the compact one is half the full one or less")
     }
 
+    /// The week route answers while the Day is open: the row keeps the compact
+    /// form it opened with (TodayModel's latch), the other days' loads fill it
+    /// in place, and its height doesn't move. The next opening is full height.
+    @MainActor static func weekArrivesWhileOpenChecks() async {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        calendar.firstWeekday = 1
+        let wednesday = calendar.date(from: DateComponents(year: 2030, month: 3, day: 13, hour: 12))!
+        let keys = DayWeek.keys(DayWeek.dates(containing: wednesday, calendar: calendar), calendar: calendar)
+        let start = DayWeek.start(of: wednesday, calendar: calendar)
+        let days: [[String: Any]] = keys.map {
+            ["day": $0, "calendar_ready": true, "on_clock": 1, "on_clock_minutes": 60, "due": 1, "all_day": 0,
+             "spans": [[600, 660, "calendar"]]]
+        }
+        let zone = TimeZone(identifier: "UTC")!
+        let body = try! JSONSerialization.data(withJSONObject: ["start": start, "timezone": zone.identifier, "days": days])
+        let model = TodayModel(timezone: zone, now: { wednesday }, transport: { request in
+            (body, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        })
+        let shown = DayLoadBar(onClock: 2, due: 1, minutes: 90, segments: [.init(from: 0.2, to: 0.4, past: false)], now: 0.1)
+        func row(_ loads: [String: DayLoadBar]) -> (cards: [DayWeekCard], full: Bool) {
+            let cards = DayWeek.cards(shown: wednesday, today: wednesday, calendar: calendar, shownLoad: shown, weekLoads: loads)
+            return (cards, model.weekRowFull(start: start, readNow: DayWeek.fullRow(cards)))
+        }
+        func height(_ parts: (cards: [DayWeekCard], full: Bool)) -> CGFloat {
+            let hosting = NSHostingView(rootView: DayWeekRow(cards: parts.cards, full: parts.full).frame(width: 596)
+                .environment(\.colorScheme, .dark))
+            hosting.frame = NSRect(x: 0, y: 0, width: 596, height: 200)
+            hosting.layoutSubtreeIfNeeded()
+            return hosting.fittingSize.height
+        }
+        let opened = row([:])
+        await model.refreshWeek(start: start, days: keys, revision: 1)
+        let loads = model.weekReply(start: start)?.loads(workStart: 540, workEnd: 1080) ?? [:]
+        let arrived = row(loads)
+        check(loads.count == 7, "The stub week is read: \(loads.count) days, reply \(String(describing: model.weekReply))")
+        check(!opened.full && !arrived.full && arrived.cards.filter { $0.load != nil }.count == 7
+              && abs(height(opened) - height(arrived)) < 0.5,
+              "A week arriving while the Day is open fills the compact row in place: \(height(opened)) vs \(height(arrived))")
+        model.weekRowClosed()
+        let reopened = row(loads)
+        check(reopened.full && height(reopened) > height(arrived),
+              "The next opening, with the week already read, is full height from its first frame")
+        print("PASS: a week read while the Day is open never moves its height; the next opening is full")
+    }
+
     static func waitUntil(_ condition: () -> Bool) async {
         for _ in 0..<100 {
             if condition() { return }
@@ -1036,6 +1082,7 @@ struct OverlayTransitionChecks {
             coldStartFailureChecks()
             tryAgainChecks()
         }
+        await weekArrivesWhileOpenChecks()
         #if WISP_MOTION_APP_DELEGATE_CHECKS
         precondition(URLProtocol.registerClass(MotionFixtureProtocol.self))
         await AppDelegate.checkDismissReopenInput()
