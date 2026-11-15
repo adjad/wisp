@@ -644,6 +644,8 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     check(onlyToday.briefUpcoming.isEmpty && onlyToday.briefHeadline == "1 due today: Lab 5 (CS 101)"
           && onlyToday.dayUpcoming(dayStart: dayStart, dayEnd: dayEnd).isEmpty,
           "one item due today and nothing else: the headline alone, and nothing extra on Day")
+    check(onlyToday.briefPlate.items.map(\.id) == ["lab5"] && onlyToday.briefPlate.more == 0,
+          "the proactive Brief's list has no headline, so the one item due today is a row there")
     let quietWeek = StudyDaySummary(upcoming: [StudyDaySummary.Due(id: "proj", title: "Project", dueTS: at(24 * 4))])
     check(quietWeek.briefHeadline == StudyDaySummary.quietHeadline && quietWeek.briefUpcoming.items.map(\.id) == ["proj"]
           && quietWeek.briefUpcoming.moreLine == nil,

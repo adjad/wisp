@@ -134,9 +134,10 @@ struct NotchBriefView: View {
             }
             if let plan {
                 if today.isShowingCurrentDay, let proactive = plan.workspace?.proactive {
-                    // The proactive engine's Brief, with no opening sentence: the
-                    // day and the to-dos first, then the cards and mail and texts.
-                    // It replaces the tiles and the Top 3.
+                    // The proactive engine's Brief, with no opening sentence: what
+                    // needs you (cards, mail and texts) and what is on your plate
+                    // (calendar, school work, to-dos, found in mail), side by side
+                    // when wide enough. It replaces the tiles and the Top 3.
                     if let contacts = BriefFix.contactsAccess() { accessRow(contacts) }
                     // Back after a long absence: the cards below are from
                     // before, and the refreshed ones replace them on their own.
@@ -145,10 +146,9 @@ struct NotchBriefView: View {
                                           events: restOfToday(plan),
                                           scrollCap: uncapped ? nil : Self.proactiveCap,
                                           coverage: Self.coverage(plan), wide: wide,
-                                          school: plan.study?.briefHeadline ?? "",
-                                          schoolRows: plan.study?.briefUpcoming ?? StudyUpcomingRows(),
-                                          studyCards: plan.study?.briefCards ?? StudyBriefCards())
-                    MailMemorySection(memory: MailMemoryCards.model, onResize: { model.onResize() })
+                                          schoolRows: plan.study?.briefPlate ?? StudyUpcomingRows(),
+                                          studyCards: plan.study?.briefCards ?? StudyBriefCards(),
+                                          mailMemory: MailMemoryCards.model)
                     HStack(spacing: 12) {
                         askChip(plan)
                         Spacer(minLength: 0)

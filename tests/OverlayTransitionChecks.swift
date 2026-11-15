@@ -509,6 +509,32 @@ struct OverlayTransitionChecks {
     }
 
     @MainActor
+    /// Leaving the wide Brief: a page pinned to the width it was laid out at
+    /// keeps that layout however the panel's width changes around it, and
+    /// takes only the width it is offered, so the panel can narrow (or widen)
+    /// on its spring without re-laying the page out or pushing anything aside.
+    static func pinnedPageWidthChecks() {
+        let text = String(repeating: "A page leaving the wide Brief keeps its columns. ", count: 24)
+        func size(page: CGFloat?, panel: CGFloat) -> NSSize {
+            let line = Text(text).fixedSize(horizontal: false, vertical: true)
+            let view: AnyView = page.map { AnyView(PinnedWidth(width: $0) { line }.frame(width: panel)) }
+                ?? AnyView(line.frame(width: panel))
+            let hosting = NSHostingView(rootView: view)
+            hosting.layoutSubtreeIfNeeded()
+            return hosting.fittingSize
+        }
+        let wide = size(page: 796, panel: 840)
+        let leaving = size(page: 796, panel: 640)
+        check(abs(leaving.height - wide.height) < 0.5,
+              "A wide page in a narrower panel keeps its layout (no reflow): \(leaving.height) vs \(wide.height)")
+        check(abs(leaving.width - 640) < 0.5, "The pinned page takes only the panel's width: \(leaving.width)")
+        let arriving = size(page: 596, panel: 640)
+        let plain = size(page: nil, panel: 596)
+        check(abs(arriving.height - plain.height) < 0.5 && arriving.height > wide.height,
+              "The arriving page is laid out at its final width: \(arriving.height) vs \(plain.height)")
+        print("PASS: a page keeps the width it was laid out at while the panel's width changes")
+    }
+
     static func waitUntil(_ condition: () -> Bool) async {
         for _ in 0..<100 {
             if condition() { return }
@@ -918,6 +944,7 @@ struct OverlayTransitionChecks {
         forgetResultChecks()
         await MainActor.run {
             heartbeatSecondsChecks()
+            pinnedPageWidthChecks()
             coldStartFailureChecks()
             tryAgainChecks()
         }
