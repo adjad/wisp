@@ -557,7 +557,7 @@ def test_remove_school_data_clears_pages_misses_and_labels(store):
 
 # --- a nameless course page meets the Dashboard's named row ---------------------------
 
-def named(cid="canvas:3d18b2ea89fa", name="Statistics", **values):
+def named(cid="canvas:7d2e9a4c61f8", name="Statistics", **values):
     """The Dashboard / all-grades row: name-hash id, no url."""
     return {"id": cid, "name": name, "code": None, "grade": None, "score": 92.5, "url": None,
             "source": "canvas", "sample": False} | values
@@ -570,7 +570,7 @@ def nameless(cid="canvas:12345", **values):
             "sample": False, "merge_key": ""} | values
 
 
-def dash_hw(course_id="canvas:3d18b2ea89fa"):
+def dash_hw(course_id="canvas:7d2e9a4c61f8"):
     return item("canvas:dddddddddddd", course_id=course_id, title="HW2", url=None, points=None, details="")
 
 
@@ -580,15 +580,15 @@ def page_hw(course_id="canvas:12345"):
 
 
 def test_a_nameless_course_page_merges_into_the_one_named_row_with_its_score(store):
-    store.import_rows([named(), named("canvas:b0a8b035702d", "Introduction to Programming", score=80.0)],
+    store.import_rows([named(), named("canvas:a1c4e7f20b93", "Introduction to Programming", score=80.0)],
                       [dash_hw()])
-    mid = store.save_material({"kind": "quiz", "title": "Q", "course_id": "canvas:3d18b2ea89fa",
+    mid = store.save_material({"kind": "quiz", "title": "Q", "course_id": "canvas:7d2e9a4c61f8",
                                "body": quiz_body()})["id"]
     sid = store.save_source({"kind": "page", "url": "https://canvas.example.edu/", "title": "Dashboard",
-                             "text": "x", "course_id": "canvas:3d18b2ea89fa"})["id"]
+                             "text": "x", "course_id": "canvas:7d2e9a4c61f8"})["id"]
     store.import_rows([nameless()], [page_hw()])
     rows = {c["id"]: c for c in store.courses()}
-    assert set(rows) == {"canvas:12345", "canvas:b0a8b035702d"}
+    assert set(rows) == {"canvas:12345", "canvas:a1c4e7f20b93"}
     c = rows["canvas:12345"]
     assert c["name"] == "Statistics" and c["merge_key"] == "statistics"
     assert c["url"] == "https://canvas.example.edu/courses/12345" and c["score"] == 92.5
@@ -598,7 +598,7 @@ def test_a_nameless_course_page_merges_into_the_one_named_row_with_its_score(sto
     assert store.source(sid)["course_id"] == "canvas:12345"
     # A later Dashboard read finds the row by its name: no split.
     store.import_rows([named(score=93.0)], [dash_hw()])
-    assert {c["id"] for c in store.courses()} == {"canvas:12345", "canvas:b0a8b035702d"}
+    assert {c["id"] for c in store.courses()} == {"canvas:12345", "canvas:a1c4e7f20b93"}
     c = {c["id"]: c for c in store.courses()}["canvas:12345"]
     assert c["score"] == 93.0 and c["url"].endswith("/courses/12345") and c["name"] == "Statistics"
     assert [a["course_id"] for a in store.assignments()] == ["canvas:12345"]
@@ -616,7 +616,7 @@ def test_the_course_page_first_then_the_dashboard_also_merges(store):
 
 
 @pytest.mark.parametrize("rows", [
-    [named(), named("canvas:b0a8b035702d", "Introduction to Programming")],   # two share the score
+    [named(), named("canvas:a1c4e7f20b93", "Introduction to Programming")],   # two share the score
     [named(score=91.0)],                                                       # scores differ
     [named(url="https://canvas.example.edu/courses/999")],                      # already has an address
     [named(sample=True)],                                                      # a sample row
@@ -641,13 +641,13 @@ def test_opening_the_store_heals_an_already_split_store_once(tmp_path):
     path = tmp_path / "study" / "study.db"
     old = StudyStore(path)
     # The split as an earlier build left it: plain upserts, no import-time merge.
-    old.upsert_courses([named(), named("canvas:b0a8b035702d", "Introduction to Programming", score=80.0),
+    old.upsert_courses([named(), named("canvas:a1c4e7f20b93", "Introduction to Programming", score=80.0),
                         nameless()])
     old.upsert_assignments([dash_hw(), page_hw()])
     old._db.close()
     healed = StudyStore(path)
     rows = {c["id"]: c for c in healed.courses()}
-    assert set(rows) == {"canvas:12345", "canvas:b0a8b035702d"}
+    assert set(rows) == {"canvas:12345", "canvas:a1c4e7f20b93"}
     assert rows["canvas:12345"]["name"] == "Statistics" and rows["canvas:12345"]["url"].endswith("/12345")
     items = healed.assignments()
     assert len(items) == 1 and items[0]["course_id"] == "canvas:12345", "the twin assignment folded in"
@@ -669,7 +669,7 @@ def writ_dash(cid="canvas:5e2a9c41d07b", name=WRIT, **values):
             "source": "canvas", "sample": False} | values
 
 
-def writ_page(cid="canvas:95236", name=WRIT_PAGE, code="WRIT-1-04", **values):
+def writ_page(cid="canvas:40236", name=WRIT_PAGE, code="WRIT-1-04", **values):
     return {"id": cid, "name": name, "code": code, "grade": None, "score": None,
             "url": f"https://canvas.example.edu/courses/{cid.split(':')[1]}", "source": "canvas",
             "sample": False} | values
@@ -686,7 +686,7 @@ def writ_items(course_id, prefix, titles=("Essay 1 Draft",), due=WRIT_DUE):
             for n, title in enumerate(titles)]
 
 
-def writ_page_items(course_id="canvas:95236"):
+def writ_page_items(course_id="canvas:40236"):
     return writ_items(course_id, f"{course_id}:", PAGE_TITLES)
 
 
@@ -696,10 +696,10 @@ def writ_dash_items(course_id="canvas:5e2a9c41d07b", titles=("Essay 1 Draft",)):
 
 def assert_one_writ(store):
     (c,) = store.courses()
-    assert c["id"] == "canvas:95236" and c["url"] == "https://canvas.example.edu/courses/95236"
+    assert c["id"] == "canvas:40236" and c["url"] == "https://canvas.example.edu/courses/40236"
     assert c["name"] == WRIT and c["code"] == "WRIT-1-04" and c["merge_key"] == merge_key(WRIT)
     items = store.assignments()
-    assert len(items) == 6 and {a["course_id"] for a in items} == {"canvas:95236"}
+    assert len(items) == 6 and {a["course_id"] for a in items} == {"canvas:40236"}
     return c
 
 
@@ -734,8 +734,8 @@ def test_the_split_store_heals_at_open_once_with_materials_and_sources_moved(tmp
     healed = StudyStore(path)
     assert_one_writ(healed)
     m = healed.material(mid)
-    assert m["course_id"] == "canvas:95236" and m["assignment_id"] in {a["id"] for a in healed.assignments()}
-    assert healed.source(sid)["course_id"] == "canvas:95236"
+    assert m["course_id"] == "canvas:40236" and m["assignment_id"] in {a["id"] for a in healed.assignments()}
+    assert healed.source(sid)["course_id"] == "canvas:40236"
     before = (healed.courses(), healed.assignments())
     healed._db.close()
     again = StudyStore(path)
@@ -756,7 +756,7 @@ def test_name_forms_that_name_one_course(store, page_name, code):
     store.import_rows([writ_dash()], [])
     store.import_rows([writ_page(name=page_name, code=code)], [])
     (c,) = store.courses()
-    assert c["id"] == "canvas:95236" and c["name"] == WRIT
+    assert c["id"] == "canvas:40236" and c["name"] == WRIT
 
 
 def test_a_bare_number_is_only_a_section_when_the_code_says_so(store):
@@ -767,7 +767,7 @@ def test_a_bare_number_is_only_a_section_when_the_code_says_so(store):
 
 @pytest.mark.parametrize("first,second", [
     # The same title under two subject+number codes.
-    (writ_page("canvas:95236", "WRIT 1 Writing and Rhetoric", "WRIT-1-04"),
+    (writ_page("canvas:40236", "WRIT 1 Writing and Rhetoric", "WRIT-1-04"),
      writ_dash(name="WRIT 2 Writing and Rhetoric", code="WRIT 2")),
     (writ_dash(name="WRIT 1: Writing and Rhetoric"), writ_dash("canvas:6f3b0d52e18c", "WRIT 2: Writing and Rhetoric")),
     # Two coded rows of one course in different sections.
@@ -785,14 +785,14 @@ def test_names_that_stay_two_courses(store, first, second):
 def test_two_course_pages_with_one_clean_name_stay_apart(store):
     store.import_rows([writ_page()], [])
     store.import_rows([writ_page("canvas:95237", name=WRIT, code=None)], [])
-    assert sorted(c["id"] for c in store.courses()) == ["canvas:95236", "canvas:95237"]
+    assert sorted(c["id"] for c in store.courses()) == ["canvas:40236", "canvas:95237"]
 
 
 def test_a_dashboard_row_without_a_code_joins_a_sectioned_course(store):
     store.import_rows([writ_page(name="WRIT 1 Writing and Rhetoric Section 04")], [])
     store.import_rows([writ_dash(name="Writing and Rhetoric")], [])
     (c,) = store.courses()
-    assert c["id"] == "canvas:95236" and c["name"] == "Writing and Rhetoric" and c["code"] == "WRIT-1-04"
+    assert c["id"] == "canvas:40236" and c["name"] == "Writing and Rhetoric" and c["code"] == "WRIT-1-04"
 
 
 def test_course_name_keys():
@@ -821,13 +821,13 @@ def evidence_store(store, dash_titles=("Essay 1 Draft",), **dash):
 def test_all_dated_dashboard_items_in_one_course_page_merge_them(store):
     evidence_store(store, dash_titles=("Essay 1 Draft", "Reading Response 2"))
     (c,) = store.courses()
-    assert c["id"] == "canvas:95236" and c["name"] == OTHER and c["code"] == "WRIT-1-04"
+    assert c["id"] == "canvas:40236" and c["name"] == OTHER and c["code"] == "WRIT-1-04"
     assert len(store.assignments()) == 6
     # A later read of either page does not split or rename it.
     store.import_rows([writ_page()], writ_page_items())
     store.import_rows([writ_dash(name=OTHER)], writ_dash_items(titles=("Essay 1 Draft", "Reading Response 2")))
     (c,) = store.courses()
-    assert c["id"] == "canvas:95236" and c["name"] == OTHER and len(store.assignments()) == 6
+    assert c["id"] == "canvas:40236" and c["name"] == OTHER and len(store.assignments()) == 6
 
 
 def test_only_some_dated_items_matching_is_not_enough(store):
@@ -892,10 +892,10 @@ def test_the_evidence_rule_also_heals_at_open(tmp_path):
     old._db.close()
     healed = StudyStore(path)
     (c,) = healed.courses()
-    assert c["id"] == "canvas:95236" and c["name"] == OTHER
+    assert c["id"] == "canvas:40236" and c["name"] == OTHER
     items = healed.assignments()
-    assert len(items) == 6 and {a["course_id"] for a in items} == {"canvas:95236"}, "twins folded, none orphaned"
-    assert healed.source(sid)["course_id"] == "canvas:95236"
+    assert len(items) == 6 and {a["course_id"] for a in items} == {"canvas:40236"}, "twins folded, none orphaned"
+    assert healed.source(sid)["course_id"] == "canvas:40236"
 
 
 def test_this_file_is_in_the_simulation_manifest():
