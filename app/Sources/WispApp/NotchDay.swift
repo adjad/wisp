@@ -1679,6 +1679,13 @@ struct StudyDaySummary: Decodable, Equatable {
         return Self.rows(upcoming, extra: upcomingMore, limit: Self.briefUpcomingLimit)
     }
 
+    /// The proactive Brief's school rows (R6's "On your plate"): the soonest
+    /// three of this week's work, today's among them, and how many more Study
+    /// holds. With no headline above the list, the one item due today shows too.
+    var briefPlate: StudyUpcomingRows {
+        Self.rows(upcoming, extra: upcomingMore, limit: Self.briefUpcomingLimit)
+    }
+
     /// The Day tab's "School this week" for the day shown: what is due this
     /// week but not on that day (those are its own deadlines, by time or by
     /// `shownIDs`), the soonest four, and how many more Study holds.

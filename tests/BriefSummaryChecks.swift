@@ -345,6 +345,7 @@ func briefTileChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: Dou
     check(BriefDetail.calendar(allDay: ["🎂"], events: [(title: "1:1", start: now, end: nil)], unsynced: false, clock: { _ in "9" })
             .lines.map(\.text) == ["🎂", "1:1"], "calendar details keep letterless titles")
     firstDayChecks(check)
+    briefPlateChecks(check)
 }
 
 /// The first launch day: what Wisp does and when, the summary times when none
@@ -408,4 +409,43 @@ func firstDayChecks(_ check: (Bool, String) -> Void) {
     check(contacts?.headline == "Wisp can't see your contacts yet" && contacts?.fixLink == BriefDetail.contactsAccess
           && contacts?.detail.contains("names, not numbers") == true && contacts?.symbol == "person.crop.circle",
           "Contacts denied: why, and the Contacts setting")
+}
+
+/// R6: the Brief's two zones, and its "On your plate" list in one urgency order.
+func briefPlateChecks(_ check: (Bool, String) -> Void) {
+    let day0: Double = 1_700_000_000, now = day0 + 10 * 3600
+    let end = day0 + 86400, tomorrowEnd = day0 + 2 * 86400
+    func urgency(_ entry: BriefPlate.Entry) -> BriefPlate.Urgency {
+        BriefPlate.urgency(entry, now: now, dayStart: day0, todayEnd: end, tomorrowEnd: tomorrowEnd)
+    }
+    check(urgency(.init(key: "a", title: "A", due: now - 60)) == .overdue, "past its time: overdue")
+    check(urgency(.init(key: "a", title: "A", due: day0, allDay: true)) == .today, "all-day today is today, not overdue")
+    check(urgency(.init(key: "a", title: "A", due: day0 - 86400, allDay: true)) == .overdue, "all-day yesterday is overdue")
+    check(urgency(.init(key: "a", title: "A", due: now + 3600, overdue: true)) == .overdue, "the service's overdue wins")
+    check(urgency(.init(key: "a", title: "A", due: end + 60)) == .tomorrow, "tomorrow")
+    check(urgency(.init(key: "a", title: "A", due: tomorrowEnd + 60)) == .later, "later")
+    check(urgency(.init(key: "a", title: "A", due: nil)) == .undated, "undated")
+    check(urgency(.init(key: "a", title: "A", due: now - 60, done: true)) == .done, "done goes last")
+    let ordered = BriefPlate.order([
+        .init(key: "undated", title: "Zed", due: nil),
+        .init(key: "b-today", title: "Beta", due: now + 7200),
+        .init(key: "a-today", title: "Alpha", due: now + 7200),
+        .init(key: "early", title: "Early", due: now + 600),
+        .init(key: "late", title: "Late", due: now - 3600),
+        .init(key: "done", title: "Done", due: now - 7200, done: true),
+        .init(key: "tom", title: "Tom", due: end + 60),
+    ], now: now, dayStart: day0, todayEnd: end, tomorrowEnd: tomorrowEnd)
+    check(ordered.map(\.key) == ["late", "early", "a-today", "b-today", "tom", "undated", "done"],
+          "overdue, today by time then title, tomorrow, undated, done: \(ordered.map(\.key))")
+    check(BriefPlate.moreParts(hiddenTodos: 3, hiddenSchool: 5) == ["+3 to-dos", "+5 in Study"], "both parts")
+    check(BriefPlate.moreParts(hiddenTodos: 1, hiddenSchool: 0) == ["+1 to-do"], "one to-do, no Study part")
+    check(BriefPlate.moreParts(hiddenTodos: 0, hiddenSchool: 0).isEmpty, "nothing hidden, no line")
+    check(!BriefPlate.sideBySide(width: 596, textScale: 1), "the 640 pt panel (596 pt of content) stacks the zones")
+    check(BriefPlate.sideBySide(width: 796, textScale: 1), "the 840 pt wide panel puts them side by side")
+    check(BriefPlate.sideBySide(width: 796, textScale: 1.3) && !BriefPlate.sideBySide(width: 700, textScale: 1.3),
+          "larger text needs more room before the zones sit side by side")
+    check(BriefPlate.shown(sideBySide: true) == 5 && BriefPlate.shown(sideBySide: false) == 3,
+          "five rows side by side, three stacked, before Show all")
+    check(BriefPlate.heading("NEEDS YOU", count: 4) == "NEEDS YOU · 4" && BriefPlate.heading("NEEDS YOU", count: 0) == "NEEDS YOU",
+          "a zone heading counts only when there is something")
 }

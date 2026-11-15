@@ -307,6 +307,39 @@ struct ProactiveChecks {
               && nothingRead?.unread == ["calendar", "email"], "ready with nothing read is not an all-clear; reason and unread decode")
         check(decode(#"{"state":"ready","stats":{"read":4}}"#)?.hasReadNothing == false, "a cycle that read something")
 
+        // R6: a reply that has a card is not also a mail row.
+        let replyCard = ProactiveCard(id: "c-ed", title: "Reply to Ed", sources: [ProactiveCard.Source(kind: "mail", ref: "ed-1")],
+                                      action: ProactiveCard.Action(method: "email_reply", button: "Send", draft: "Hi"))
+        let edThread = ProactiveThread(id: "thread:ed-1", source: "mail", who: "Ed", needsReply: true)
+        let momThread = ProactiveThread(id: "thread:mom-1", source: "messages", who: "Mom", needsReply: true)
+        check(ProactiveState.threads([edThread, momThread], coveredBy: [replyCard]).map(\.id) == ["thread:mom-1"],
+              "a reply card's thread (by its source ref) leaves the mail rows; the others stay")
+        var byMessage = ProactiveCard(id: "c-ed2", title: "Reply to Ed",
+                                      action: ProactiveCard.Action(method: "email_reply", button: "Send", draft: "Hi"))
+        byMessage.replyRef = ["message_id": "<ed@x>"]
+        let edMail = ProactiveThread(id: "t-ed", source: "mail", who: "Ed", needsReply: true, replyRef: ["message_id": "<ed@x>"])
+        check(ProactiveState.threads([edMail, momThread], coveredBy: [byMessage]).map(\.id) == ["thread:mom-1"],
+              "a reply card's thread (by its message id) leaves the mail rows")
+        let reminderCard = ProactiveCard(id: "c-exam", title: "Remind me", sources: [ProactiveCard.Source(kind: "mail", ref: "ed-1")],
+                                         action: ProactiveCard.Action(method: "reminder", button: "Set"))
+        check(ProactiveState.threads([edThread], coveredBy: [reminderCard]).map(\.id) == ["thread:ed-1"],
+              "a card that isn't a reply keeps its thread")
+        check(ProactiveState.threads([edMail], coveredBy: []).map(\.id) == ["t-ed"], "no cards, every thread")
+
+        // R6: school work and to-dos as one list, most urgent first.
+        let day0: Double = 1_700_000_000, noon = day0 + 12 * 3600
+        let plate = ProactiveState.plate(
+            todos: [ProactiveTodo(id: "later", title: "Later", source: "reminders", dueTs: day0 + 3 * 86400, dueLabel: "Tue"),
+                    ProactiveTodo(id: "late", title: "Late", source: "reminders", dueTs: day0 - 86400, dueLabel: "Overdue · 1 day"),
+                    ProactiveTodo(id: "none", title: "Undated", source: "mail"),
+                    ProactiveTodo(id: "tom", title: "Tomorrow", source: "reminders", dueTs: day0 + 86400 + 3600, dueLabel: "Tomorrow")],
+            school: [StudyDaySummary.Due(id: "lab", title: "Lab 5", dueTS: day0 + 23 * 3600),
+                     StudyDaySummary.Due(id: "quiz", title: "Quiz", dueTS: day0 + 86400 + 600)],
+            isDone: { _ in false }, now: noon, dayStart: day0, todayEnd: day0 + 86400, tomorrowEnd: day0 + 2 * 86400)
+        check(plate.map(\.id) == ["todo:late", "school:lab", "school:quiz", "todo:tom", "todo:later", "todo:none"],
+              "overdue, today, tomorrow (by time), later, undated: \(plate.map(\.id))")
+        check(plate.filter(\.isSchool).count == 2, "school rows keep their kind")
+
         print("Proactive checks: \(count) passed")
     }
 }

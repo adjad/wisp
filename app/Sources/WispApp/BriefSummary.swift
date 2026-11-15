@@ -790,3 +790,83 @@ enum BriefTiles {
         return out
     }
 }
+
+/// The proactive Brief's two zones (R6): what needs you (cards, then mail and
+/// texts) and what is on your plate (school work and to-dos in one list).
+/// Pure, so the order and the wording are checked without SwiftUI.
+enum BriefPlate {
+    /// How soon a row is due, most urgent first; done rows go last.
+    enum Urgency: Int {
+        case overdue, today, tomorrow, later, undated, done
+    }
+
+    /// One row of the list: a to-do or a piece of school work.
+    struct Entry: Equatable {
+        var key: String
+        var title: String
+        var due: Double?
+        var allDay = false
+        /// The service already called it overdue ("Overdue · 1 day").
+        var overdue = false
+        var done = false
+    }
+
+    /// Rows the list shows before "Show all": five side by side, three
+    /// stacked (the normal panel), so the stacked Brief stays short.
+    static let shownSideBySide = 5
+    static let shownStacked = 3
+
+    static func shown(sideBySide: Bool) -> Int { sideBySide ? shownSideBySide : shownStacked }
+    /// The zones sit side by side from this content width (a panel of about
+    /// 640 pt), scaled with the text size; narrower, they stack, left first.
+    static let sideBySideWidth: CGFloat = 600
+
+    static func sideBySide(width: CGFloat, textScale: CGFloat) -> Bool {
+        width >= sideBySideWidth * max(textScale, 1)
+    }
+
+    static func urgency(_ entry: Entry, now: Double, dayStart: Double, todayEnd: Double, tomorrowEnd: Double) -> Urgency {
+        if entry.done { return .done }
+        if entry.overdue { return .overdue }
+        guard let due = entry.due, due.isFinite else { return .undated }
+        // An all-day item is due for its whole day, not from its midnight.
+        let late = entry.allDay ? due < dayStart : due < now
+        if late { return .overdue }
+        if due < todayEnd { return .today }
+        if due < tomorrowEnd { return .tomorrow }
+        return .later
+    }
+
+    /// Overdue, then today, tomorrow, later and undated; ties by due time,
+    /// then title, then the order they came in.
+    static func order(_ entries: [Entry], now: Double, dayStart: Double, todayEnd: Double, tomorrowEnd: Double) -> [Entry] {
+        let ranked: [(offset: Int, entry: Entry, rank: Int)] = entries.enumerated().map { pair in
+            let rank = urgency(pair.element, now: now, dayStart: dayStart, todayEnd: todayEnd, tomorrowEnd: tomorrowEnd)
+            return (offset: pair.offset, entry: pair.element, rank: rank.rawValue)
+        }
+        let sorted = ranked.sorted { a, b in
+            if a.rank != b.rank { return a.rank < b.rank }
+            let x = a.entry.due ?? .infinity
+            let y = b.entry.due ?? .infinity
+            if x != y { return x < y }
+            let byTitle = a.entry.title.localizedStandardCompare(b.entry.title)
+            if byTitle != .orderedSame { return byTitle == .orderedAscending }
+            return a.offset < b.offset
+        }
+        return sorted.map { $0.entry }
+    }
+
+    /// What the list's last line counts: "+3 to-dos", "+5 in Study"; only the
+    /// parts that aren't zero.
+    static func moreParts(hiddenTodos: Int, hiddenSchool: Int) -> [String] {
+        var parts: [String] = []
+        if hiddenTodos > 0 { parts.append("+\(hiddenTodos) to-do" + (hiddenTodos == 1 ? "" : "s")) }
+        if hiddenSchool > 0 { parts.append("+\(hiddenSchool) in Study") }
+        return parts
+    }
+
+    /// The zone heading's count, as its chip shows it.
+    static func heading(_ title: String, count: Int) -> String {
+        count > 0 ? "\(title) · \(count)" : title
+    }
+}
