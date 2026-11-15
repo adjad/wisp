@@ -366,10 +366,12 @@ struct NotchDayView: View {
     @ViewBuilder private var dayHead: some View {
         if let plan {
             let timeline = timeline(plan)
-            let unread = unreadAccess(plan)
+            // Calendar's own row would repeat the summary, which says it when
+            // Wisp can't read the calendar, with the same Allow… beside it.
+            let unread = unreadAccess(plan).filter { $0.source != "calendar" }
             Group {
                 ForEach(unread, id: \.source) { accessRow($0) }
-                summaryRow(plan, timeline: timeline, calendarRead: !unread.contains { $0.source == "calendar" })
+                summaryRow(plan, timeline: timeline, calendar: plan.calendarState)
             }
             .disabled(today.planIsStale)
             .transition(.opacity)
@@ -380,11 +382,14 @@ struct NotchDayView: View {
     }
 
     /// "Three things on the clock and two due today." with ALL DAY chips at its right.
-    private func summaryRow(_ plan: TodayPlan, timeline: DayTimeline, calendarRead: Bool) -> some View {
+    private func summaryRow(_ plan: TodayPlan, timeline: DayTimeline, calendar: DayCalendarState) -> some View {
         let blurb: String = DayTimeline.blurb(timeline, needs: plan.dayNeeds, isToday: today.isShowingCurrentDay,
                                               endOfDay: today.dayInterval.end.timeIntervalSince1970, clock: today.clock,
                                               dayStart: today.dayInterval.start.timeIntervalSince1970,
-                                              calendarRead: calendarRead)
+                                              calendar: calendar)
+        // The existing fix: Wisp's Calendar permission page, as the access row had it.
+        let fix: BriefDetail.Action? = calendar == .unread
+            ? (plan.access("calendar")?.fixLink ?? BriefDetail.calendarsAccess) : nil
         return HStack(alignment: .center, spacing: 12) {
             // Three lines at most: beside the chip at larger text sizes two cut it.
             Text(blurb)
@@ -393,7 +398,11 @@ struct NotchDayView: View {
                 .padding(.leading, 10)
                 .overlay(alignment: .leading) { Rectangle().fill(Theme.chipStroke).frame(width: 2) }
                 .frame(maxWidth: .infinity, alignment: .leading)
-            if !timeline.allDay.isEmpty { allDayChip(timeline.allDay, booked: bookedTimes(plan)) }
+            if let fix, let url = URL(string: fix.url) {
+                NotchChrome.small(Permissions.fixLabel(fix)) { Permissions.openFix(url) }
+            } else if !timeline.allDay.isEmpty {
+                allDayChip(timeline.allDay, booked: bookedTimes(plan))
+            }
         }
     }
 
@@ -428,7 +437,7 @@ struct NotchDayView: View {
     /// ahead, on today) and what its calendar and plan blocks hold. Nil when
     /// Wisp can't read Calendar: the card then shows its date alone.
     private func shownLoad(_ plan: TodayPlan, timeline: DayTimeline) -> DayLoadBar? {
-        guard plan.access("calendar")?.readable != false else { return nil }
+        guard plan.calendarState.isRead else { return nil }
         let bounds = today.dayInterval
         let dayStart: Double = bounds.start.timeIntervalSince1970
         let dayEnd: Double = bounds.end.timeIntervalSince1970
@@ -526,13 +535,16 @@ struct NotchDayView: View {
         // On today, the next thing on the clock leads as its own card; it
         // replaces its row below. In two halves the rest is Later today, one
         // short row each; in one column (and on another day) the agenda as before.
-        let next: DayItem? = nextItem(timeline)
-        let calendarRead: Bool = !unread.contains { $0.source == "calendar" }
-        if today.isShowingCurrentDay { nextSection(next, timeline: timeline, calendarRead: calendarRead) }
+        // Without a read calendar there is no Next card: "next" would claim
+        // nothing on the calendar comes first. The line says why, and every
+        // row Wisp did read stays in the list.
+        let calendar: DayCalendarState = plan.calendarState
+        let next: DayItem? = calendar.isRead ? nextItem(timeline) : nil
+        if today.isShowingCurrentDay { nextSection(next, timeline: timeline, calendar: calendar) }
         if halves && today.isShowingCurrentDay {
             laterSection(timeline, next: next)
         } else {
-            agenda(timeline, skipping: next)
+            agenda(timeline, skipping: next, calendarRead: calendar.isRead)
         }
         if today.isShowingCurrentDay && !staleReminders.asks.isEmpty {
             // A question that arrives after the first frame never animates the panel's height.
@@ -800,13 +812,13 @@ struct NotchDayView: View {
     }
 
     /// The Next card, or one line when nothing is left on the clock today.
-    @ViewBuilder private func nextSection(_ next: DayItem?, timeline: DayTimeline, calendarRead: Bool) -> some View {
+    @ViewBuilder private func nextSection(_ next: DayItem?, timeline: DayTimeline, calendar: DayCalendarState) -> some View {
         if let next {
-            nextCard(next, timeline: timeline, calendarRead: calendarRead)
+            nextCard(next, timeline: timeline, calendarRead: calendar.isRead)
         } else {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("NEXT").font(.wisp(size: 10.5, design: .monospaced)).foregroundStyle(Theme.textMuted)
-                Text(DayTimeline.nothingNextLine(calendarRead: calendarRead)).font(.wisp(size: 13)).foregroundStyle(Theme.textSecondary)
+                Text(DayTimeline.nothingNextLine(calendar)).font(.wisp(size: 13)).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .accessibilityElement(children: .combine)
@@ -1098,10 +1110,11 @@ struct NotchDayView: View {
     /// The day's calendar as a list: one dim line for what just ended, the now
     /// line, then each thing on its own full-width row in time order, with the
     /// free stretches between. A long day shows its first rows and Show more.
-    @ViewBuilder private func agenda(_ timeline: DayTimeline, skipping next: DayItem? = nil) -> some View {
+    @ViewBuilder private func agenda(_ timeline: DayTimeline, skipping next: DayItem? = nil,
+                                     calendarRead: Bool = true) -> some View {
         let now = today.now.timeIntervalSince1970
         let isToday = today.isShowingCurrentDay
-        let agenda = DayTimeline.agenda(timeline.agenda(now: now, isToday: isToday), without: next)
+        let agenda = DayTimeline.agenda(timeline.agenda(now: now, isToday: isToday), without: next, calendarRead: calendarRead)
         // A cancel still in its Undo window keeps an ended event live, on its own row.
         let over = agenda.earlier.filter { $0.isOver(cancelActive: cancelActive($0)) }
         let live = agenda.earlier.filter { !$0.isOver(cancelActive: cancelActive($0)) }

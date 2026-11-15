@@ -258,6 +258,16 @@ struct TodayPlan: Decodable {
     var unreadSources: [String] {
         ["calendar", "reminders", "email", "messages"].filter { access($0).map { !$0.readable } ?? false }
     }
+
+    /// What the Day may say about the calendar, by the Brief's `calendarKnown`
+    /// rule: read once the service says so, or when Calendar events (or a
+    /// real all-day item) are on the plan anyway.
+    var calendarState: DayCalendarState {
+        let eventsShown = displayBlocks.contains {
+            ($0.kind == "calendar" || $0.kind == "manual") && !DayTimeline.isPlaceholderEvent($0.title)
+        } || all_day.contains { !DayTimeline.isPlaceholderEvent($0.title) }
+        return DayCalendarState.of(ready: sources["calendar"]?.ready, eventsShown: eventsShown, access: access("calendar"))
+    }
 }
 
 extension TodayPlan {

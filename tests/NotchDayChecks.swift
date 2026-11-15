@@ -1058,10 +1058,12 @@ func firstDayChecks(_ check: (Bool, String) -> Void, dayStart: Double, dayEnd: D
 
     // An unread calendar: never "Nothing is planned".
     let empty = build([])
-    check(DayTimeline.blurb(empty, needs: [], isToday: true, endOfDay: dayEnd, clock: clock, dayStart: dayStart, calendarRead: false)
-            == "Wisp can't see your calendar yet, so this may not be your whole day.", "an unread calendar is named")
+    let cantRead = "Wisp can't read your calendar. Allow it in System Settings › Privacy & Security › Calendars."
+    check(DayTimeline.blurb(empty, needs: [], isToday: true, endOfDay: dayEnd, clock: clock, dayStart: dayStart, calendar: .unread)
+            == cantRead, "an unread calendar is named")
     check(DayTimeline.blurb(empty, needs: [], isToday: true, endOfDay: dayEnd, clock: clock, dayStart: dayStart)
             == "Nothing is planned for the rest of today.", "a read, empty calendar is an honest all-clear")
+    noCalendarChecks(check, build: { build($0, needs: $1, allDay: $2) }, at: at, now: now, dayStart: dayStart, dayEnd: dayEnd, clock: clock, cantRead: cantRead)
 
     // The lede gives an all-clear only for what was read.
     check(DayTimeline.lede(weekday: "Monday", isToday: true, load: nil, dueToday: [], overdue: [], next: nil,
@@ -1239,8 +1241,8 @@ func dayNextChecks(_ check: (Bool, String) -> Void, dayStart: Double, clock: (Do
           DayTimeline.nowFreeLine(timeline.items, now: now, clock: clock) ?? "nil")
     check(DayTimeline.nowFreeLine(timeline.items, now: at(13.6), clock: clock) == nil, "not free while something holds now")
     check(DayTimeline.nowFreeLine(timeline.items, now: now, clock: clock, calendarRead: false) == nil
-          && DayTimeline.nothingNextLine(calendarRead: false).contains("can't read your calendar")
-          && DayTimeline.nothingNextLine(calendarRead: true) == "Nothing else on the clock today.",
+          && DayTimeline.nothingNextLine(.unread) == "Wisp can't read your calendar."
+          && DayTimeline.nothingNextLine(.read) == "Nothing else on the clock today.",
           "no free time or all-clear claimed while Calendar can't be read")
     let onNow = DayTimeline.nextUp(timeline.items, now: at(14.5))
     check(onNow?.id == "block:review" && onNow.map { DayTimeline.nextLabel($0, now: at(14.5)) } == "NOW · 1 H LEFT",
@@ -1312,4 +1314,58 @@ func dayNextChecks(_ check: (Bool, String) -> Void, dayStart: Double, clock: (Do
           && DayTimeline.nextButtons(isDescribedEvent: false, menuOffersMove: true, cancelActive: false).isEmpty
           && DayTimeline.nextButtons(isDescribedEvent: true, menuOffersMove: true, cancelActive: true).isEmpty,
           "Open and Move only where they work today; none during a cancel")
+}
+
+/// Calendar not granted, unknown or still syncing: the summary, the Next
+/// line, the agenda and the week card say only what Wisp read, never that
+/// the day or the calendar is empty, free or clear.
+func noCalendarChecks(_ check: (Bool, String) -> Void, build: ([DayBlockInput], [DayNeedInput], [String]) -> DayTimeline, at: (Double) -> Double,
+                      now: Double, dayStart: Double, dayEnd: Double, clock: (Double) -> String, cantRead: String) {
+    let denied = SourceAccess(source: "calendar", ready: false, state: "unavailable", blocked: "calendar_access")
+    let syncing = SourceAccess(source: "calendar", ready: false, state: "syncing")
+    // Granted (the service says ready), shown events, not granted, unknown, syncing.
+    check(DayCalendarState.of(ready: true, eventsShown: false, access: SourceAccess(source: "calendar", ready: true)) == .read
+          && DayCalendarState.of(ready: false, eventsShown: true, access: denied) == .read
+          && DayCalendarState.of(ready: false, eventsShown: false, access: denied) == .unread
+          && DayCalendarState.of(ready: nil, eventsShown: false, access: nil) == .unread
+          && DayCalendarState.of(ready: false, eventsShown: false, access: syncing) == .reading,
+          "the Brief's rule: read when ready or its events show; unknown counts as unread")
+    let allClear = ["Nothing is planned", "nothing else", "Nothing else", "Clear after", "free", "nothing on the clock"]
+    func claims(_ text: String) -> [String] { allClear.filter { text.contains($0) } }
+    // Without other items, and with a reminder, school work and a plan caught in texts.
+    let bare = build([], [], [])
+    let needs = [DayNeedInput(id: "r", title: "Readings", source: "reminders", due: at(17)),
+                 DayNeedInput(id: "s", title: "Lab 5 · CS 101", source: "study", due: at(23.9))]
+    let busy = build([DayBlockInput(id: "task:call", title: "Call Sam Rivera", start: at(19), end: at(20), kind: "task", taskID: "call"),
+                      DayBlockInput(id: "pa2-a", title: "Work on PA 2", start: at(20), end: at(21.5), kind: "suggestion")],
+                     needs, [])
+    for (state, line) in [(DayCalendarState.unread, cantRead),
+                          (.reading, "Wisp is still reading your calendar, so this may not be your whole day.")] {
+        let alone = DayTimeline.blurb(bare, needs: [], isToday: true, endOfDay: dayEnd, clock: clock, dayStart: dayStart,
+                                      calendar: state)
+        let others = DayTimeline.blurb(busy, needs: needs, isToday: true, endOfDay: dayEnd, clock: clock, dayStart: dayStart,
+                                       calendar: state)
+        check(alone == line, "\(state) alone: only the calendar line: \(alone)")
+        check(others.hasPrefix(line) && claims(others).isEmpty && !others.contains("on the clock"),
+              "\(state) with other items: the line, then only what was read: \(others)")
+        check(DayTimeline.nothingNextLine(state) == state.nextLine && claims(DayTimeline.nothingNextLine(state)).isEmpty,
+              "\(state): the Next line is the calendar line alone")
+        // The agenda lists every row it read, and no free stretch between them.
+        let rows = DayTimeline.agenda(busy.agenda(now: now, isToday: true), without: nil, calendarRead: false).ahead
+        check(!rows.contains { if case .free = $0 { return true }; return false }
+              && rows.count == busy.agenda(now: now, isToday: true).ahead.filter { if case .item = $0 { return true }; return false }.count,
+              "\(state): no free stretch in the agenda, every item kept")
+    }
+    let read = DayTimeline.blurb(busy, needs: needs, isToday: true, endOfDay: dayEnd, clock: clock, dayStart: dayStart)
+    check(!read.contains("calendar"), "granted: the summary as before: \(read)")
+    let readRows = DayTimeline.agenda(busy.agenda(now: now, isToday: true), without: nil).ahead
+    check(readRows.contains { if case .free = $0 { return true }; return false }, "granted: free stretches stay")
+    // The week card: no load (no count, no bar, never "free") without a read calendar.
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: "UTC")!
+    let cards = DayWeek.cards(shown: Date(timeIntervalSince1970: now), today: Date(timeIntervalSince1970: now),
+                              calendar: calendar, shownLoad: nil)
+    check(cards.allSatisfy { $0.load == nil } && !DayWeek.fullRow(cards)
+          && cards.allSatisfy { !DayWeek.spoken($0).contains("free") },
+          "no calendar: every card is its date alone, today too")
 }
