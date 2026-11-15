@@ -2062,6 +2062,8 @@ enum StudyBlockCalendar {
     static let idPrefix = "study-block:"
     static let fallbackError = "Couldn't add that to your calendar."
     static let undoFallbackError = "Couldn't undo that."
+    /// Undo's "changed" reply without a sentence of its own.
+    static let changedFallback = "The event was changed in Calendar, so Wisp left it there."
     static let addedText = "Added to calendar"
     static let errorCap = 160
     static let timeout: TimeInterval = 60
@@ -2134,8 +2136,14 @@ enum StudyBlockCalendar {
         guard let status else { return .failed(fallback) }
         let reply = data.flatMap { try? JSONDecoder().decode(Reply.self, from: $0) }
         if status == 404, reply?.ok == nil { return .routeMissing }
+        // Undo of an event already deleted in Calendar ("gone"): it is off the
+        // calendar, which is what Undo asked for.
+        if operation == .undo, reply?.ok == true, reply?.status == "gone" { return .succeeded(sourceID: nil) }
         if (200..<300).contains(status), reply?.ok == true { return .succeeded(sourceID: reply?.source_id) }
-        return .failed(errorLine(reply?.error, fallback: fallback))
+        // Undo of an event changed in Calendar ("changed"): the service left it
+        // alone and says so; the row stays added, with Undo (Ledger.show).
+        let changed = operation == .undo && reply?.status == "changed"
+        return .failed(errorLine(reply?.error, fallback: changed ? changedFallback : fallback))
     }
 
     enum Phase: Equatable {
@@ -2162,6 +2170,9 @@ enum StudyBlockCalendar {
     /// Every block's add this session, and whether the routes exist.
     struct Ledger: Equatable {
         var phases: [String: Phase] = [:]
+        /// When each block's last request finished (seconds since 1970): a
+        /// snapshot made after it is the truth, whatever this session did.
+        var finishedAt: [String: Double] = [:]
         /// A 404 from an older service hides the action for the session.
         var routeMissing = false
 
@@ -2193,7 +2204,9 @@ enum StudyBlockCalendar {
             return true
         }
 
-        mutating func finish(_ operation: Operation, _ id: String, _ outcome: Outcome) {
+        mutating func finish(_ operation: Operation, _ id: String, _ outcome: Outcome,
+                             at time: Double = Date().timeIntervalSince1970) {
+            finishedAt[id] = time
             switch (operation, outcome) {
             case (_, .routeMissing):
                 routeMissing = true
@@ -2205,11 +2218,28 @@ enum StudyBlockCalendar {
             }
         }
 
-        /// A fresh snapshot: once it agrees with what this session did, it is the truth.
-        mutating func settle(_ id: String, snapshotAdded: Bool?) {
+        /// A snapshot of the block: once it agrees with what this session did,
+        /// it is the truth. One made after the last request finished
+        /// (`generatedAt`) is the truth even when it disagrees: an event added
+        /// here and then deleted in Calendar comes back `added: false`, so the
+        /// row offers Add again rather than keeping "Added to calendar". An
+        /// error line stays while the snapshot agrees with it.
+        mutating func settle(_ id: String, snapshotAdded: Bool?, generatedAt: Double? = nil) {
+            let fresh: Bool = snapshotAdded != nil
+                && generatedAt.map { made in finishedAt[id].map { made >= $0 } ?? true } == true
             switch phase(id) {
             case .added where snapshotAdded == true, .undone where snapshotAdded == false: phases[id] = .idle
+            case .added where fresh, .undone where fresh: phases[id] = .idle
+            case .addFailed where fresh && snapshotAdded == true: phases[id] = .idle
+            case .undoFailed where fresh && snapshotAdded == false: phases[id] = .idle
             default: break
+            }
+        }
+
+        /// A fresh plan: every block this session acted on, against the plan's facts.
+        mutating func settle(_ blocks: [Block], generatedAt: Double) {
+            for block in blocks where phases[block.id] != nil {
+                settle(block.id, snapshotAdded: block.added, generatedAt: generatedAt)
             }
         }
     }

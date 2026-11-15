@@ -804,6 +804,67 @@ func studyBlockCalendarChecks(_ check: (Bool, String) -> Void) {
           && ledger.show(block(id: "study-block:other", added: false), now: now) == .none
           && ledger.show(block(added: true, source: "ev1"), now: now) == .added(undo: false, busy: false, error: nil)
           && !ledger.begin(.add, "study-block:other"), "after a 404: no action anywhere, no error line")
+    studyBlockUndoReplyChecks(check)
+}
+
+/// Undo's "changed" and "gone" replies, and a newer snapshot over this session's add.
+func studyBlockUndoReplyChecks(_ check: (Bool, String) -> Void) {
+    typealias C = StudyBlockCalendar
+    let now = 1_000_000.0
+    let id = "study-block:qnt210:4"
+    let ours = C.Block(id: id, kind: "study", start: now + 3600, added: true, eventSourceID: "ev2")
+    func data(_ json: String) -> Data { Data(json.utf8) }
+    let sentence = "That event was changed in Calendar after Wisp added it, so it was left alone."
+    let changed = C.outcome(.undo, status: 409, data: data(#"{"ok": false, "status": "changed", "error": "\#(sentence)"}"#))
+    check(changed == .failed(sentence), "undo changed: the service's sentence: \(changed)")
+    check(C.outcome(.undo, status: 200, data: data(#"{"ok": false, "status": "changed"}"#)) == .failed(C.changedFallback),
+          "undo changed with no sentence: a fixed one about Calendar")
+    var ledger = C.Ledger()
+    _ = ledger.begin(.undo, id)
+    ledger.finish(.undo, id, changed, at: now)
+    check(ledger.show(ours, now: now) == .added(undo: true, busy: false, error: sentence),
+          "changed: the row stays Added to calendar, Undo still offered, the sentence under it")
+    ledger.settle([ours], generatedAt: now + 5)
+    check(ledger.show(ours, now: now) == .added(undo: true, busy: false, error: sentence),
+          "a newer snapshot that still has it added keeps the sentence")
+    for status in [200, 404] {
+        let gone = C.outcome(.undo, status: status, data: data(#"{"ok": true, "status": "gone", "block_id": "\#(id)"}"#))
+        check(gone == .succeeded(sourceID: nil), "undo gone (\(status)): a successful undo: \(gone)")
+    }
+    _ = ledger.begin(.undo, id)
+    ledger.finish(.undo, id, .succeeded(sourceID: nil), at: now + 10)
+    check(ledger.show(C.Block(id: id, kind: "study", start: now + 3600, added: false, eventSourceID: nil), now: now)
+            == .add(busy: false, error: nil), "gone: Add to calendar again")
+    // Added this session, then the event deleted in Calendar: the next plan says
+    // added false and wins over this session's "added".
+    var added = C.Ledger()
+    _ = added.begin(.add, id)
+    added.finish(.add, id, .succeeded(sourceID: "ev2"), at: now)
+    let deleted = C.Block(id: id, kind: "study", start: now + 3600, added: false, eventSourceID: nil)
+    added.settle([deleted], generatedAt: now - 30)
+    check(added.show(deleted, now: now) == .added(undo: true, busy: false, error: nil),
+          "a plan made before the add finished keeps this session's add")
+    added.settle([deleted], generatedAt: now + 60)
+    check(added.phase(id) == .idle && added.show(deleted, now: now) == .add(busy: false, error: nil),
+          "a newer plan with added false shows Add to calendar again")
+    // A changed-undo whose event is then deleted in Calendar: the error goes, Add is back.
+    var kept = C.Ledger()
+    _ = kept.begin(.undo, id)
+    kept.finish(.undo, id, changed, at: now)
+    kept.settle([deleted], generatedAt: now + 60)
+    check(kept.show(deleted, now: now) == .add(busy: false, error: nil), "deleted after a changed undo: Add again, no stale sentence")
+    // A failed add that a newer plan says went through after all.
+    var late = C.Ledger()
+    _ = late.begin(.add, id)
+    late.finish(.add, id, .failed(C.fallbackError), at: now)
+    late.settle([ours], generatedAt: now + 60)
+    check(late.show(ours, now: now) == .added(undo: true, busy: false, error: nil), "a newer plan with it added: Added, no error")
+    // Settling never touches blocks this session did not act on, nor one in flight.
+    var busy = C.Ledger()
+    _ = busy.begin(.add, id)
+    busy.settle([deleted, C.Block(id: "study-block:cs101:1", kind: "study", start: now + 60, added: true, eventSourceID: nil)],
+                generatedAt: now + 60)
+    check(busy.phase(id) == .adding && busy.phases["study-block:cs101:1"] == nil, "an add in flight stays in flight")
 }
 
 /// To-dos from the proactive engine on the Day tab: timed ones on the hour

@@ -198,6 +198,12 @@ struct NotchDayView: View {
         let events = plan.displayBlocks.compactMap(\.calendarEvent)
         checkIn.reconcileTimelineCancels(events)
         if let movingEvent, !events.contains(where: { CheckInModel.sameOccurrence($0, movingEvent) }) { closeMove() }
+        // A study block's add or undo from this session gives way to a newer
+        // plan (an event deleted in Calendar comes back `added: false`).
+        let blocks: [StudyBlockCalendar.Block] = plan.displayBlocks.map(\.calendarAddFacts)
+        if blocks.contains(where: { studyAdds.ledger.phases[$0.id] != nil }) {
+            studyAdds.ledger.settle(blocks, generatedAt: plan.generated_at)
+        }
     }
 
     /// The exact occurrence when Calendar still has it; else Calendar itself.
@@ -982,7 +988,8 @@ struct NotchDayView: View {
             model.onResize()
             guard case .succeeded = outcome else { return }
             await today.refresh(afterMutation: true)
-            studyAdds.ledger.settle(id, snapshotAdded: today.currentPlan?.displayBlocks.first { $0.id == id }?.added)
+            studyAdds.ledger.settle(id, snapshotAdded: today.currentPlan?.displayBlocks.first { $0.id == id }?.added,
+                                    generatedAt: today.currentPlan?.generated_at)
             model.onResize()
         }
     }
