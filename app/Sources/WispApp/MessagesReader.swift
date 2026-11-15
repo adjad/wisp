@@ -647,15 +647,28 @@ enum MessageDeliveryCheck {
     /// the North American form lookup_contact returns as "1 (NNN) NNN-NNNN"),
     /// lowercase for an email. Anything else is passed as it was given, never
     /// with a guessed country code.
-    static func sendHandle(_ to: String) -> String {
+    ///
+    /// The 11-digit form gets its +1 only on a Mac set to a +1 (North American
+    /// Numbering Plan) region: elsewhere an 11-digit number starting with 1 can
+    /// be a local mobile (a Chinese 150… number, say), which Messages reads by
+    /// the Mac's region, and a +1 would text someone else.
+    static func sendHandle(_ to: String, region: String? = Locale.current.region?.identifier) -> String {
         let t = to.trimmingCharacters(in: .whitespacesAndNewlines)
         if t.contains("@") { return t.lowercased() }
         let digits = t.filter(\.isNumber)
         guard digits.count >= 7, t.allSatisfy({ $0.isNumber || " +-().".contains($0) }) else { return t }
         if t.hasPrefix("+") { return "+" + digits }
-        if digits.count == 11 && digits.hasPrefix("1") { return "+" + digits }
+        if digits.count == 11 && digits.hasPrefix("1"), let region, nanpRegions.contains(region) {
+            return "+" + digits
+        }
         return t
     }
+
+    /// Regions whose numbers are +1.
+    static let nanpRegions: Set<String> = [
+        "US", "CA", "PR", "VI", "GU", "AS", "MP", "UM", "AG", "AI", "BB", "BM", "BS", "DM", "DO",
+        "GD", "JM", "KN", "KY", "LC", "MS", "SX", "TC", "TT", "VC", "VG",
+    ]
 
     /// The service of the newest message with this person that Messages did
     /// not mark as failed, in either direction ("iMessage", "SMS", "RCS"), or

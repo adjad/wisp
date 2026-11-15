@@ -599,13 +599,20 @@ enum MessagesReaderRegression {
     // The handle a send goes to: E.164 only when the country code is known.
     static func checkSendHandle() {
         typealias Check = MessageDeliveryCheck
-        precondition(Check.sendHandle("1 (650) 555-0100") == "+16505550100", "Contacts' display form gets its plus")
-        precondition(Check.sendHandle("+1 650-555-0100") == "+16505550100")
-        precondition(Check.sendHandle(" +44 20 7946 0000 ") == "+442079460000")
-        precondition(Check.sendHandle("(650) 555-0100") == "(650) 555-0100", "No country code is guessed")
-        precondition(Check.sendHandle("Pat@Example.TEST") == "pat@example.test")
-        precondition(Check.sendHandle("22821") == "22821", "A short code is left alone")
-        precondition(Check.sendHandle("Mom") == "Mom")
+        precondition(Check.sendHandle("1 (650) 555-0100", region: "US") == "+16505550100",
+                     "Contacts' display form gets its plus on a +1 Mac")
+        precondition(Check.sendHandle("1 (650) 555-0100", region: "CA") == "+16505550100")
+        precondition(Check.sendHandle("150 1234 5678", region: "CN") == "150 1234 5678",
+                     "Elsewhere an 11-digit 1… number is left for Messages to read by region")
+        precondition(Check.sendHandle("1 (650) 555-0100", region: nil) == "1 (650) 555-0100",
+                     "No region, no guess")
+        precondition(Check.sendHandle("+1 650-555-0100", region: "CN") == "+16505550100")
+        precondition(Check.sendHandle(" +44 20 7946 0000 ", region: "US") == "+442079460000")
+        precondition(Check.sendHandle("(650) 555-0100", region: "US") == "(650) 555-0100",
+                     "No country code is guessed")
+        precondition(Check.sendHandle("Pat@Example.TEST", region: "US") == "pat@example.test")
+        precondition(Check.sendHandle("22821", region: "US") == "22821", "A short code is left alone")
+        precondition(Check.sendHandle("Mom", region: "US") == "Mom")
     }
 
     // Which service a person's conversation last worked on, from a synthetic store.
