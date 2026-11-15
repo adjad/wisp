@@ -241,9 +241,18 @@ def test_class_slides_questions_reach_the_study_tools(text):
     assert decision.reason != "code-related request" and "study_slides" in offered
 
 
-def test_class_notes_are_not_sent_to_the_coding_route():
-    decision, offered = _route("summarise the class notes on pointers")
-    assert decision.reason != "code-related request" and offered
+@_pytest.mark.parametrize("text", ["summarise the class notes on pointers", "find my class notes about recursion",
+                                   "what do our class notes say about sorting"])
+def test_class_notes_offer_the_notes_and_the_slides(text):
+    decision, offered = _route(text)
+    assert decision.reason != "code-related request" and "study_slides" in offered
+    assert "search_notes" in offered or "study_slides" in offered
+
+
+@_pytest.mark.parametrize("text", ["summarise my notes on the budget", "find my note about the trip"])
+def test_ordinary_notes_lookups_do_not_get_the_slides(text):
+    _, offered = _route(text)
+    assert "study_slides" not in offered
 
 
 @_pytest.mark.parametrize("text", ["what is a class in Java", "fix the class in my code",
