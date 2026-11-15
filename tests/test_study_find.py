@@ -171,7 +171,7 @@ class Drive:
 @pytest.fixture
 def setup(google, monkeypatch):     # noqa: F811
     store = google.store
-    store.upsert_courses([COURSE, {"id": "canvas:202", "name": "CSE 20",
+    store.upsert_courses([COURSE, {"id": "canvas:202", "name": "CS 101",
                                    "url": "https://school.instructure.com/courses/202"}])
     fake = Drive()
     monkeypatch.setattr(drive, "_transport", httpx.MockTransport(fake))

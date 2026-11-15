@@ -39,7 +39,7 @@ Due
 5:00 PM
 
 Monday, November 16
-WRITING AND RHETORIC: VOICES AND GLOBAL PERSPECTIVES ASSIGNMENT
+WRITING AND RHETORIC: VOICES AND PUBLIC ARGUMENT ASSIGNMENT
 Upload personal essay here
 STATISTICS CALENDAR EVENT
 STAT 101-02 Office Hours with TA Sam
@@ -85,7 +85,7 @@ def test_dashboard_planner_list():
     assert items["Introduce yourself"]["kind"] == "discussion"  # DISCUSSION type label
     names = {c["name"]: c for c in page.courses}
     assert "Introduction to Programming" in names and "Statistics" in names
-    assert "Writing and Rhetoric: Voices and Global Perspectives" in names
+    assert "Writing and Rhetoric: Voices and Public Argument" in names
     assert names["Introduction to Programming"]["score"] == 87.5
     assert names["Statistics"]["score"] is None and names["Statistics"]["grade"] is None
     # No announcement, calendar event or office hours became an assignment.
@@ -194,7 +194,7 @@ def test_all_courses_grades():
 
 
 COURSE_GRADES = """Account Dashboard Courses Calendar Inbox History Help
-CSE-20-01
+CS-101-01
 Grades
 Grades for Jordan Example
 Course
@@ -338,7 +338,7 @@ Reading Quiz 4
 
     cards = """Dashboard
 Introduction to Programming
-CSE-20-01
+CS-101-01
 Fall 2026
 To Do
 Turn in Lab 6: Dictionaries
@@ -469,7 +469,7 @@ def test_a_course_page_with_no_title_and_no_heading_has_an_empty_name():
 def test_the_parser_and_the_store_share_one_name_normalisation():
     from service.study import course_names, store
     assert cp._norm is course_names.merge_key is store.merge_key
-    assert cp._norm("WRIT 1 Writing & Rhetoric: Section 09") == "writ 1 writing rhetoric section 09"
+    assert cp._norm("WRIT 1 Writing & Rhetoric: Section 04") == "writ 1 writing rhetoric section 04"
 
 
 def test_this_file_is_in_the_simulation_manifest():

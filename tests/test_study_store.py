@@ -659,8 +659,8 @@ def test_opening_the_store_heals_an_already_split_store_once(tmp_path):
 
 # --- one course under a coded, sectioned course-page name and a plain Dashboard name ----------
 
-WRIT = "Writing and Rhetoric: Voices and Global Perspectives"
-WRIT_PAGE = "WRIT 1 Writing and Rhetoric: Voices & Global Perspectives Section 09"
+WRIT = "Writing and Rhetoric: Voices and Public Argument"
+WRIT_PAGE = "WRIT 1 Writing and Rhetoric: Voices & Public Argument Section 04"
 WRIT_DUE = datetime(2026, 11, 18, 23, 59, tzinfo=ZoneInfo(ZONE)).timestamp()
 
 
@@ -669,7 +669,7 @@ def writ_dash(cid="canvas:5e2a9c41d07b", name=WRIT, **values):
             "source": "canvas", "sample": False} | values
 
 
-def writ_page(cid="canvas:95236", name=WRIT_PAGE, code="WRIT-1-09", **values):
+def writ_page(cid="canvas:95236", name=WRIT_PAGE, code="WRIT-1-04", **values):
     return {"id": cid, "name": name, "code": code, "grade": None, "score": None,
             "url": f"https://canvas.example.edu/courses/{cid.split(':')[1]}", "source": "canvas",
             "sample": False} | values
@@ -697,7 +697,7 @@ def writ_dash_items(course_id="canvas:5e2a9c41d07b", titles=("Essay 1 Draft",)):
 def assert_one_writ(store):
     (c,) = store.courses()
     assert c["id"] == "canvas:95236" and c["url"] == "https://canvas.example.edu/courses/95236"
-    assert c["name"] == WRIT and c["code"] == "WRIT-1-09" and c["merge_key"] == merge_key(WRIT)
+    assert c["name"] == WRIT and c["code"] == "WRIT-1-04" and c["merge_key"] == merge_key(WRIT)
     items = store.assignments()
     assert len(items) == 6 and {a["course_id"] for a in items} == {"canvas:95236"}
     return c
@@ -743,14 +743,14 @@ def test_the_split_store_heals_at_open_once_with_materials_and_sources_moved(tmp
 
 
 @pytest.mark.parametrize("page_name,code", [
-    ("WRIT 1 Writing and Rhetoric: Voices & Global Perspectives", "WRIT 1"),       # & for and
-    ("WRIT 1: Writing and Rhetoric: Voices and Global Perspectives", None),         # code and colon
-    ("WRIT-1 - Writing and Rhetoric: Voices and Global Perspectives", None),        # code and dash
-    ("WRIT 1 Writing and Rhetoric: Voices and Global Perspectives Sec 09", "WRIT-1-09"),
-    ("WRIT 1 Writing and Rhetoric: Voices and Global Perspectives - 09", "WRIT-1-09"),
-    ("WRIT 1 Writing and Rhetoric: Voices and Global Perspectives (09)", "WRIT-1-09"),
-    ("WRIT 1 Writing and Rhetoric: Voices and Global Perspectives 09", "WRIT-1-09"),
-    ("WRIT-1-09 Writing and Rhetoric: Voices and Global Perspectives", None),
+    ("WRIT 1 Writing and Rhetoric: Voices & Public Argument", "WRIT 1"),       # & for and
+    ("WRIT 1: Writing and Rhetoric: Voices and Public Argument", None),         # code and colon
+    ("WRIT-1 - Writing and Rhetoric: Voices and Public Argument", None),        # code and dash
+    ("WRIT 1 Writing and Rhetoric: Voices and Public Argument Sec 04", "WRIT-1-04"),
+    ("WRIT 1 Writing and Rhetoric: Voices and Public Argument - 04", "WRIT-1-04"),
+    ("WRIT 1 Writing and Rhetoric: Voices and Public Argument (04)", "WRIT-1-04"),
+    ("WRIT 1 Writing and Rhetoric: Voices and Public Argument 04", "WRIT-1-04"),
+    ("WRIT-1-04 Writing and Rhetoric: Voices and Public Argument", None),
 ])
 def test_name_forms_that_name_one_course(store, page_name, code):
     store.import_rows([writ_dash()], [])
@@ -761,17 +761,17 @@ def test_name_forms_that_name_one_course(store, page_name, code):
 
 def test_a_bare_number_is_only_a_section_when_the_code_says_so(store):
     store.import_rows([writ_dash(name="Writing Studio")], [])
-    store.import_rows([writ_page(name="WRIT 1 Writing Studio 09", code="WRIT 1")], [])
+    store.import_rows([writ_page(name="WRIT 1 Writing Studio 04", code="WRIT 1")], [])
     assert len(store.courses()) == 2
 
 
 @pytest.mark.parametrize("first,second", [
     # The same title under two subject+number codes.
-    (writ_page("canvas:95236", "WRIT 1 Writing and Rhetoric", "WRIT-1-09"),
+    (writ_page("canvas:95236", "WRIT 1 Writing and Rhetoric", "WRIT-1-04"),
      writ_dash(name="WRIT 2 Writing and Rhetoric", code="WRIT 2")),
     (writ_dash(name="WRIT 1: Writing and Rhetoric"), writ_dash("canvas:6f3b0d52e18c", "WRIT 2: Writing and Rhetoric")),
     # Two coded rows of one course in different sections.
-    (writ_dash(name="WRIT 1 Writing and Rhetoric Section 09", code="WRIT-1-09"),
+    (writ_dash(name="WRIT 1 Writing and Rhetoric Section 04", code="WRIT-1-04"),
      writ_page(name="WRIT 1 Writing and Rhetoric Section 10", code="WRIT-1-10")),
     # What is left after the code is too short to tell courses apart.
     (writ_dash(name="Seminar"), writ_page(name="WRIT 1 Seminar", code="WRIT 1")),
@@ -789,16 +789,16 @@ def test_two_course_pages_with_one_clean_name_stay_apart(store):
 
 
 def test_a_dashboard_row_without_a_code_joins_a_sectioned_course(store):
-    store.import_rows([writ_page(name="WRIT 1 Writing and Rhetoric Section 09")], [])
+    store.import_rows([writ_page(name="WRIT 1 Writing and Rhetoric Section 04")], [])
     store.import_rows([writ_dash(name="Writing and Rhetoric")], [])
     (c,) = store.courses()
-    assert c["id"] == "canvas:95236" and c["name"] == "Writing and Rhetoric" and c["code"] == "WRIT-1-09"
+    assert c["id"] == "canvas:95236" and c["name"] == "Writing and Rhetoric" and c["code"] == "WRIT-1-04"
 
 
 def test_course_name_keys():
     from service.study.course_names import course_key, same_course
-    a = course_key(WRIT_PAGE, "WRIT-1-09")
-    assert a.course == "writ 1" and a.section == "09" and not a.clean
+    a = course_key(WRIT_PAGE, "WRIT-1-04")
+    assert a.course == "writ 1" and a.section == "04" and not a.clean
     assert merge_key(WRIT) in a.keys
     b = course_key(WRIT)
     assert b.clean and same_course(a, b)
@@ -821,7 +821,7 @@ def evidence_store(store, dash_titles=("Essay 1 Draft",), **dash):
 def test_all_dated_dashboard_items_in_one_course_page_merge_them(store):
     evidence_store(store, dash_titles=("Essay 1 Draft", "Reading Response 2"))
     (c,) = store.courses()
-    assert c["id"] == "canvas:95236" and c["name"] == OTHER and c["code"] == "WRIT-1-09"
+    assert c["id"] == "canvas:95236" and c["name"] == OTHER and c["code"] == "WRIT-1-04"
     assert len(store.assignments()) == 6
     # A later read of either page does not split or rename it.
     store.import_rows([writ_page()], writ_page_items())
