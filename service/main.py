@@ -3478,6 +3478,22 @@ async def agent(body: dict[str, Any]):
                                                     email_reply_sender)
                     if that_title := chat_reminder(prompt, previous_prompt, last_assistant or ""):
                         synthesis_guidance.insert(1, chat_reminder_hint(that_title))
+                    from service.model_only import typed_reminder, typed_reminder_hint
+                    if (not unresolved_block and not draft_bound
+                            and "add_reminder" not in decision.forbidden_tools
+                            and (reminder_args := typed_reminder(prompt))):
+                        # The typed compiler resolved one complete reminder: the
+                        # stated time is the alert and the rest the title. The
+                        # host binds both, the tool leads, and no contact-date
+                        # lookup is offered (model_only.typed_reminder).
+                        decision.tool_argument_bindings = {
+                            **(decision.tool_argument_bindings or {}), "add_reminder": reminder_args}
+                        ask_forbidden = ask_forbidden | (frozenset({"contact_dates"}) & frozenset(REGISTRY))
+                        from service.model_only import ask_preload as _ask_preload_size
+                        ask_preload = ["add_reminder", *(n for n in ask_preload if n != "add_reminder")][
+                            :_ask_preload_size()]
+                        ask_stub_rank = [n for n in ask_stub_rank if n != "add_reminder"]
+                        synthesis_guidance.insert(1, typed_reminder_hint(reminder_args))
                     from service.tools.self_send import user_names_self
                     if user_names_self(prompt):
                         from service.model_only import SELF_SEND_HINT
