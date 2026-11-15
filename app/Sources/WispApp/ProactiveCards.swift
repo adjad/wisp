@@ -1,8 +1,9 @@
 import SwiftUI
 import AppKit
 
-// The Brief's proactive half: "Before you ask" cards, the to-do list built from
-// every source, and per-thread summaries, from `workspace.proactive`
+// The Brief's proactive half: READY FOR YOU ("Before you ask" cards, what
+// Study got ready, what was found in mail, what Wisp did for you) and YOUR
+// LISTS (to-dos from every source, school work, per-thread summaries), from `workspace.proactive`
 // (ProactiveModels.swift). Nothing here fires on its own: every card, check-off
 // and Add to Day is one tap, and a card leaves only once the service says its
 // action succeeded.
@@ -83,6 +84,10 @@ final class ProactiveActions: ObservableObject {
     @Published var replying: String? = nil
     @Published var showAllTodos = false
     @Published var showAllThreads = false
+    /// READY FOR YOU lists every prepared thing, not only the first few.
+    @Published var showAllReady = false
+    /// The acting-for-you box's log (what Wisp did lately) is open.
+    @Published var showActingLog = false
     /// The card shown large; nil is the first.
     @Published var heroID: String? = nil
     /// The one of the Brief's rows that is open: "todos" or "threads".
@@ -319,13 +324,16 @@ final class ProactiveActions: ObservableObject {
 
 // MARK: - The Brief's proactive section
 
-/// The proactive Brief in two zones (R6): NEEDS YOU (the "Before you ask"
-/// card and the other cards as pills, then mail and texts, then what Wisp is
-/// doing on its own) and ON YOUR PLATE (the rest of today's calendar, school
-/// work and to-dos in one list by urgency, what Study got ready, and what was
-/// found in mail). Side by side when the Brief is wide enough
-/// (BriefPlate.sideBySide: the wide panel), else stacked, NEEDS YOU first. One
-/// layout, measured on the width it is given; both zones scroll with the tab.
+/// The proactive Brief in two zones: READY FOR YOU, what Wisp got ready before
+/// you asked (the "Before you ask" card large, then one compact row for each
+/// other card, what Study got ready and each thing found in mail, then the
+/// acting-for-you box), set apart on a tinted panel; and YOUR LISTS (the rest
+/// of today's calendar, to-dos, school work due and the mail and texts that
+/// need you). Side by side when the Brief is wide enough
+/// (BriefPlate.sideBySide: the wide panel), else stacked, READY FOR YOU first.
+/// One layout, measured on the width it is given; both zones scroll with the
+/// tab. Every button is one the Brief already had: nothing is sent or added
+/// without a tap.
 struct ProactiveBriefSection: View {
     let proactive: ProactiveState
     @ObservedObject var model: OverlayModel
@@ -350,23 +358,54 @@ struct ProactiveBriefSection: View {
     /// The wider panel. The zones follow the width they are given, so this
     /// only says the panel was widened.
     var wide = false
-    /// This week's school work, one row each in ON YOUR PLATE (StudyDaySummary.briefPlate).
+    /// This week's school work: SCHOOL in YOUR LISTS (StudyDaySummary.briefPlate).
     var schoolRows = StudyUpcomingRows()
-    /// What Study got ready and the topics to look at again (StudyDaySummary.briefCards), under the list.
+    /// What Study got ready and the topics to look at again (StudyDaySummary.briefCards): rows in READY FOR YOU.
     var studyCards = StudyBriefCards()
-    /// "Found in your mail", at the foot of ON YOUR PLATE.
-    var mailMemory: MailMemoryModel? = nil
+    /// "Found in your mail": each suggestion is a row in READY FOR YOU.
+    @ObservedObject var mailMemory: MailMemoryModel = MailMemoryCards.model
+    /// "Let Wisp act for me": the acting-for-you box's state, today's count and its log.
+    @ObservedObject var acting: ActForMeModel = .shared
+
+    #if WISP_NOTCH_QA
+    /// The QA driver's acting state, so a render never reads the live service.
+    static var qaActing: ActForMe? = nil
+    private var actingState: ActForMe? { Self.qaActing ?? acting.state }
+    #else
+    private var actingState: ActForMe? { acting.state }
+    #endif
 
     private var unread: [SourceAccess] { proactive.unreadSources(coverage) }
 
-    /// A heading row with buttons (NEEDS YOU's, ON YOUR PLATE's), one height.
+    /// A heading row with buttons (READY FOR YOU's), one height.
     private static let controlsHeaderHeight: CGFloat = 22
     /// The gap between the zones side by side, and between them stacked.
     private static let zoneGap: CGFloat = 28
     private static let stackGap: CGFloat = 12
-    /// A row's text starts here: the check circle, the source icon and their gaps.
-    private static let rowInset: CGFloat = 51
+    /// READY FOR YOU's tag column: as wide as the widest tag its rows show,
+    /// so the tags line up and the titles keep the rest.
+    private var tagColumn: CGFloat {
+        let shown: ProactiveState = proactive.only(chosen)
+        let cards: [String] = liveCards(shown).filter { !$0.wispDidThis }.map(cardTag)
+        let study: [String] = studyCards.cards.map(studyTag)
+        let found: [String] = foundItems.isEmpty ? [] : [BriefReady.foundTag]
+        let font = NSFont.monospacedSystemFont(ofSize: 9 * Theme.textScale, weight: .semibold)
+        let advance: CGFloat = ("M" as NSString).size(withAttributes: [.font: font]).width + 0.3
+        return BriefReady.tagColumn(cards + study + found, charWidth: advance)
+    }
+
+    private func cardTag(_ card: ProactiveCard) -> String {
+        BriefReady.cardTag(method: card.action?.method ?? "", hasDraft: !(card.action?.draft ?? "").isEmpty)
+    }
+
+    private func studyTag(_ card: StudyBriefCard) -> String {
+        if case .open = card.action { return BriefReady.studyTag(id: card.id, opensMaterial: true) }
+        return BriefReady.studyTag(id: card.id, opensMaterial: false)
+    }
+    /// A list row's text starts here: the check circle and its gap.
+    private static let listInset: CGFloat = 26
     @State private var hoveredThread: String? = nil
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Whether the zones sit side by side: from the width the panel lays the
     /// Brief out at (its page width, OverlayView), decided in the same update
     /// as the width changes. A width measured after layout lagged a pass, so
@@ -376,6 +415,10 @@ struct ProactiveBriefSection: View {
         let panel: CGFloat = DisplayGeometry.shared.layout.widened(wide).expandedWidth
         return BriefPlate.sideBySide(width: panel - 2 * OverlayView.sideInset, textScale: Theme.textScale)
     }
+
+    /// Stacked, YOUR LISTS still splits in two (to-dos and school | mail and
+    /// texts) at the default and Large text sizes; Extra large takes one column.
+    private var listsSplit: Bool { !sideBySide && Theme.textScale < 1.2 }
 
     private var chosen: String? {
         actions.account.flatMap { picked in proactive.accounts.contains(picked) ? picked : nil }
@@ -412,9 +455,9 @@ struct ProactiveBriefSection: View {
 
     private func zonePair(_ shown: ProactiveState) -> some View {
         BriefZones(sideBySide: sideBySide, gap: Self.zoneGap, stackGap: Self.stackGap) {
-            needsYouZone(shown)
+            readyZone(shown)
             Rectangle().fill(Theme.hairline).accessibilityHidden(true)
-            plateZone(shown)
+            listsZone(shown)
         }
     }
 
@@ -491,31 +534,91 @@ struct ProactiveBriefSection: View {
         }
     }
 
-    // MARK: Needs you
+    // MARK: Ready for you
 
-    /// Wisp's cards: what it got ready before you asked, the first one large
-    /// and the rest as pills under it.
-    @ViewBuilder private func beforeYouAsk(_ shown: ProactiveState) -> some View {
-        let cards = liveCards(shown)
-        let index = cards.firstIndex { $0.id == actions.heroID } ?? 0
-        VStack(alignment: .leading, spacing: 8) {
-            if proactive.isWorking || actions.analyzePending() { progressRow }
-            if !actions.analyzeError.isEmpty {
-                Text(actions.analyzeError).font(.wisp(size: 11)).foregroundStyle(Theme.bad)
+    /// What READY FOR YOU holds: the cards that ask (the large one among
+    /// them), the "Wisp did this" cards (each with its Undo, in the acting
+    /// box), what Study got ready and what was found in mail.
+    private struct Ready {
+        var asks: [ProactiveCard]
+        var did: [ProactiveCard]
+        var study: [StudyBriefCard]
+        var found: [MailSuggestion]
+        var count: Int { asks.count + study.count + found.count }
+    }
+
+    /// One compact row under the large card.
+    private enum ReadyItem: Identifiable {
+        case card(ProactiveCard)
+        case study(StudyBriefCard)
+        case found(MailSuggestion)
+
+        var id: String {
+            switch self {
+            case .card(let card): return "card:" + card.id
+            case .study(let card): return "study:" + card.id
+            case .found(let item): return "found:\(item.id)"
             }
-            if !cards.isEmpty {
-                cardView(cards[index], position: index, of: cards)
-                    .id(cards[index].id)
-                    .transition(.opacity)
-                let rest = cards.enumerated().filter { $0.offset != index }.map(\.element)
-                if !rest.isEmpty { otherCards(Array(rest.prefix(3))) }
+        }
+    }
+
+    private func ready(_ shown: ProactiveState) -> Ready {
+        let cards: [ProactiveCard] = liveCards(shown)
+        return Ready(asks: cards.filter { !$0.wispDidThis }, did: cards.filter(\.wispDidThis),
+                     study: studyCards.cards, found: foundItems)
+    }
+
+    /// "Found in your mail" while the person has it showing ("live"): the first three, as before.
+    private var foundItems: [MailSuggestion] {
+        mailMemory.mode == "live" ? Array(mailMemory.suggestions.prefix(3)) : []
+    }
+
+    /// The left zone (first, stacked). Found in your mail refreshes here, as
+    /// its own section did, and says its results to VoiceOver.
+    private func readyZone(_ shown: ProactiveState) -> some View {
+        beforeYouAsk(shown)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .task { await mailMemory.refresh(); model.onResize() }
+            .onReceive(NotificationCenter.default.publisher(for: .wispAssistantChanged)) { _ in
+                Task { await mailMemory.refresh(); model.onResize() }
+            }
+            .onChange(of: mailMemory.confirmation) { _, text in
+                if let text { Self.announce(text) }
+            }
+            .onChange(of: mailMemory.failures) { old, new in
+                for (id, text) in new where old[id] != text { Self.announce(text) }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Ready for you")
+    }
+
+    /// Says a result aloud to VoiceOver, since these lines appear without focus moving.
+    private static func announce(_ text: String) {
+        NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                             userInfo: [.announcement: text, .priority: NSAccessibilityPriorityLevel.high.rawValue])
+    }
+
+    /// READY FOR YOU: the tinted panel, or with nothing ready one line.
+    @ViewBuilder private func beforeYouAsk(_ shown: ProactiveState) -> some View {
+        let held: Ready = ready(shown)
+        let busy: Bool = proactive.isWorking || actions.analyzePending()
+        Group {
+            if held.count == 0 && held.did.isEmpty && !busy && actions.analyzeError.isEmpty {
+                readyEmpty
+            } else {
+                readyPanel(held)
             }
         }
         // The gate's state is loaded HERE, on a view that always exists: every time the Brief
         // shows, and again whenever its cards change (a cycle finished, an Undo), so the
-        // question, the line and today's count are never missing or stale. (A .task on the
+        // question, the box and today's count are never missing or stale. (A .task on the
         // question card itself never ran: that view is empty until the state is loaded.)
+        // The QA driver never reads the live service: qaActing stands in.
+        #if WISP_NOTCH_QA
+        .task(id: shown.cards.map(\.id)) {}
+        #else
         .task(id: shown.cards.map(\.id)) { await ActForMeModel.shared.refresh() }
+        #endif
     }
 
     /// The cards still to show: one the service confirmed fired or dismissed
@@ -528,41 +631,107 @@ struct ProactiveBriefSection: View {
         }
     }
 
-    /// The left zone: its heading with the account menu and Analyze now, the
-    /// cards, mail and texts (a thread a reply card holds shows only as that
-    /// card), then "Let Wisp act for me" (ActForMe.swift) at its foot. With
-    /// nothing in it, one muted line.
-    private func needsYouZone(_ shown: ProactiveState) -> some View {
-        let cards = liveCards(shown)
-        let threads = listedThreads(shown, cards: cards)
-        let waiting = threads.filter(\.needsReply).count
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .center, spacing: 6) {
-                zoneTitle("NEEDS YOU", spoken: "Needs you", count: cards.count + waiting, lit: true)
-                Spacer()
+    /// The panel: the heading, the large card, one row per other ready
+    /// thing, then the acting-for-you box.
+    private func readyPanel(_ held: Ready) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+        let index: Int = held.asks.firstIndex { $0.id == actions.heroID } ?? 0
+        let rest: [ReadyItem] = readyItems(held, hero: held.asks.isEmpty ? nil : index)
+        return VStack(alignment: .leading, spacing: 8) {
+            readyHeader(count: held.count)
+            if proactive.isWorking || actions.analyzePending() { progressRow }
+            if !actions.analyzeError.isEmpty {
+                Text(actions.analyzeError).font(.wisp(size: 11)).foregroundStyle(Theme.bad)
+            }
+            if !held.asks.isEmpty {
+                cardView(held.asks[index], position: index, of: held.asks)
+                    .id(held.asks[index].id)
+                    .transition(.opacity)
+            }
+            if !rest.isEmpty || studyCards.moreLine != nil { otherCards(rest) }
+            actingArea(held.did)
+        }
+        .padding(EdgeInsets(top: 8, leading: 12, bottom: 10, trailing: 12))
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(shape.fill(Theme.warn.opacity(0.045)))
+        .overlay(shape.stroke(Theme.warn.opacity(0.24), lineWidth: 1))
+    }
+
+    /// The rows under the large card: the other cards, Study's, then mail's.
+    private func readyItems(_ held: Ready, hero: Int?) -> [ReadyItem] {
+        let cards: [ReadyItem] = held.asks.enumerated().filter { $0.offset != hero }.map { ReadyItem.card($0.element) }
+        let study: [ReadyItem] = held.study.map { ReadyItem.study($0) }
+        let found: [ReadyItem] = held.found.map { ReadyItem.found($0) }
+        return cards + study + found
+    }
+
+    /// READY FOR YOU · n, what it read and when, the account menu and Analyze now.
+    private func readyHeader(count: Int) -> some View {
+        HStack(alignment: .center, spacing: 7) {
+            Image(systemName: "sparkle").font(.wisp(size: 10, weight: .semibold)).foregroundStyle(Theme.warn)
+                .accessibilityHidden(true)
+            zoneTitle("READY FOR YOU", spoken: "Ready for you", count: count, lit: true).fixedSize()
+            readSourceLine
+            Spacer(minLength: 4)
+            accountMenu
+            analyzeControl
+        }
+        .frame(minHeight: Self.controlsHeaderHeight)
+    }
+
+    /// "from 49 emails and texts · 10:24 AM", from the engine's own numbers;
+    /// side by side, "49 read · 10:24 AM" when the sentence would be cut, so
+    /// the time always shows (BriefReady.sourceForms). The sentence is its tooltip.
+    @ViewBuilder private var readSourceLine: some View {
+        if let stats = proactive.stats {
+            let at: String = (stats.asOf ?? proactive.asOf).map { today.clock($0) } ?? ""
+            let forms: [String] = BriefReady.sourceForms(read: stats.read, at: at, sideBySide: sideBySide)
+            if let full = forms.first {
+                let short: String = forms.count > 1 ? forms[1] : full
+                ViewThatFits(in: .horizontal) {
+                    Text(full).lineLimit(1).fixedSize()
+                    Text(short).lineLimit(1).fixedSize()
+                    Text(short).lineLimit(1).truncationMode(.tail)
+                }
+                .font(.wisp(size: 11.5)).foregroundStyle(Theme.textMuted)
+                .help(full)
+                .accessibilityLabel(full)
+            }
+        }
+    }
+
+    /// Nothing ready: one line, with Analyze now beside it; "Let Wisp act for
+    /// me" under it while it is asking or off, its log while it is on.
+    private var readyEmpty: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "sparkle").font(.wisp(size: 10, weight: .semibold)).foregroundStyle(Theme.warn)
+                    .accessibilityHidden(true)
+                Text(readyEmptyLine).font(.wisp(size: 12.5)).foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if let state = actingState, state.enabled { actingLogButton }
                 accountMenu
                 analyzeControl
             }
-            .frame(height: Self.controlsHeaderHeight)
-            beforeYouAsk(shown)
-            if !threads.isEmpty {
-                attention(threads)
-            } else if cards.isEmpty {
-                Text(needsYouEmptyLine).font(.wisp(size: 12.5)).foregroundStyle(Theme.textMuted)
-                    .fixedSize(horizontal: false, vertical: true)
+            if let state = actingState, state.enabled {
+                if actions.showActingLog { actingLog(state) }
+            } else {
+                ActForMeBriefRow()
             }
-            // "Let Wisp act for me", always in the Brief: the question, or one line.
-            ActForMeBriefRow()
         }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Needs you")
+        .padding(.vertical, 2)
     }
 
-    /// Mail and texts as listed: none just cleared, none a reply card holds.
-    private func listedThreads(_ shown: ProactiveState, cards: [ProactiveCard]) -> [ProactiveThread] {
-        let open = shown.orderedThreads.filter { !itemActions.isHidden($0.actionRow) }
-        return ProactiveState.threads(open, coveredBy: cards)
+    /// The one line: what Wisp checked and when, and what it did today; or,
+    /// while it is reading or couldn't, the reason (never an all-clear for a
+    /// source it couldn't read).
+    private var readyEmptyLine: String {
+        guard unread.isEmpty, !proactive.isUnavailable, !proactive.hasReadNothing,
+              let stats = proactive.stats, stats.read > 0 else { return needsYouEmptyLine }
+        let at: String = (stats.asOf ?? proactive.asOf).map { today.clock($0) } ?? ""
+        let acted: Int? = actingState.flatMap { $0.enabled ? $0.today : nil }
+        return BriefReady.emptyLine(read: stats.read, at: at, actingToday: acted)
     }
 
     /// NEEDS YOU's one line when it holds nothing: Wisp still reading, why it
@@ -577,40 +746,432 @@ struct ProactiveBriefSection: View {
         return "Nothing to get ahead of in what Wisp could read."
     }
 
-    /// The other cards, by title; one tap makes it the one shown. They share a
-    /// row when every title fits whole; otherwise each takes its own line and
-    /// wraps, so a title is never cut.
-    private func otherCards(_ cards: [ProactiveCard]) -> some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 6) {
-                ForEach(cards) { card in otherCard(card).fixedSize() }
-                Spacer(minLength: 0)
+    /// "Let Wisp act for me" at READY FOR YOU's foot: the question until it is
+    /// answered and one line while it is off (ActForMeBriefRow, as before);
+    /// while it is on, the box. What Wisp did shows with its own Undo either way.
+    @ViewBuilder private func actingArea(_ did: [ProactiveCard]) -> some View {
+        if let state = actingState, state.enabled {
+            actingBox(state, did: did)
+        } else {
+            ActForMeBriefRow()
+            if !did.isEmpty { actingAdded(did) }
+        }
+    }
+
+    /// Acting for you: on, today's count and the log, then what Wisp added
+    /// today, each with the Undo its card always had.
+    private func actingBox(_ state: ActForMe, did: [ProactiveCard]) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+        let oneLine: Bool = !sideBySide && did.count == 1 && !did[0].isGroup && Theme.textScale < 1.2
+        return VStack(alignment: .leading, spacing: 6) {
+            if oneLine {
+                // Stacked, one thing added: the state, it and its Undo, and Log share a line.
+                HStack(alignment: .center, spacing: 10) {
+                    actingLabel(state).fixedSize()
+                    addedRow(did[0])
+                    actingLogButton
+                }
+            } else {
+                actingHead(state)
+                if !did.isEmpty { actingAdded(did) }
             }
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(cards) { card in otherCard(card) }
+            if actions.showActingLog { actingLog(state) }
+        }
+        .padding(EdgeInsets(top: 6, leading: 11, bottom: 8, trailing: 8))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(shape.fill(Theme.raised))
+        .overlay(shape.stroke(Theme.chipStroke, lineWidth: 1))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Acting for you")
+    }
+
+    /// "ON  Acting for you · 1 today", then Log. The switch itself stays in
+    /// Settings; here it is only shown.
+    private func actingHead(_ state: ActForMe) -> some View {
+        HStack(alignment: .center, spacing: 7) {
+            actingLabel(state)
+            Spacer(minLength: 4)
+            actingLogButton
+        }
+    }
+
+    private func actingLabel(_ state: ActForMe) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 7) {
+            Text("ON").font(.wisp(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundStyle(Theme.textPrimary)
+                .padding(.horizontal, 5).padding(.vertical, 1)
+                .background(Capsule().fill(Theme.chipOn))
+            Text("Acting for you").font(.wisp(size: 12.5, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+                .lineLimit(1).fixedSize()
+            Text("· \(state.today) today").font(.wisp(size: 12)).foregroundStyle(Theme.textMuted).lineLimit(1)
+        }
+        .help(state.does.joined(separator: "\n"))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(state.briefOn)
+    }
+
+    private var actingLogButton: some View {
+        let open: Bool = actions.showActingLog
+        return Button {
+            actions.showActingLog.toggle()
+            model.onResize()
+        } label: {
+            HStack(spacing: 2) {
+                Text("Log")
+                Image(systemName: open ? "chevron.up" : "chevron.down").font(.wisp(size: 8, weight: .bold))
+            }
+            .font(.wisp(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
+            .frame(minHeight: Theme.iconButtonSize).contentShape(Rectangle())
+        }
+        .buttonStyle(StudyRowButtonStyle())
+        .fixedSize()
+        .help("What Wisp did lately. Each one also has its own Undo while it shows here.")
+        .accessibilityLabel("What Wisp did lately")
+        .accessibilityValue(open ? "Shown" : "Hidden")
+    }
+
+    /// What Wisp added: a grouped card's rows, or one row with its Undo.
+    private func actingAdded(_ did: [ProactiveCard]) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(did) { card in
+                if card.isGroup { groupRows(card) } else { addedRow(card) }
+            }
+        }
+    }
+
+    private func addedRow(_ card: ProactiveCard) -> some View {
+        let state = actions.fires[card.id]
+        let line: String = card.when.isEmpty ? card.title : card.title + " · " + card.when
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .center, spacing: 8) {
+                readyTag(BriefReady.cardTag(method: card.action?.method ?? "", hasDraft: false))
+                addedText(card, line: line)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .help(card.why.isEmpty ? card.title : card.why)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Wisp added " + line)
+                if let undo = card.action, !isUnconfirmed(state) { compactFire(card, undo, state) }
+            }
+            if case .failed(let reason) = state {
+                Text(reason).font(.wisp(size: 11)).foregroundStyle(Theme.bad)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if case .unconfirmed(let note) = state {
+                Text(note).font(.wisp(size: 11)).foregroundStyle(Theme.warn)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("More things Wisp caught")
     }
 
-    private func otherCard(_ card: ProactiveCard) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 12, style: .circular)
-        return Button {
-            withAnimation(.easeOut(duration: 0.15)) { actions.heroID = card.id }
-            model.onResize()
-        } label: {
-            Text(card.chipTitle).font(.wisp(size: 11.5)).foregroundStyle(Theme.textSecondary)
-                .multilineTextAlignment(.leading)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, 10).padding(.vertical, 4)
-                .background(shape.fill(Theme.chipFill))
-                .overlay(shape.stroke(Theme.chipStroke, lineWidth: 1))
-                .contentShape(shape)
+    /// What was added: side by side, the title, then where it came from on a
+    /// muted line under it, so neither is cut for the other; stacked, one line.
+    @ViewBuilder private func addedText(_ card: ProactiveCard, line: String) -> some View {
+        if sideBySide && !card.when.isEmpty {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(card.title).font(.wisp(size: 12.5)).foregroundStyle(Theme.textPrimary).lineLimit(1)
+                Text(card.when).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
+            }
+        } else {
+            Text(line).font(.wisp(size: 12.5)).foregroundStyle(Theme.textPrimary).lineLimit(1)
         }
-        .buttonStyle(.plain)
-        .help(card.title)
-        .accessibilityLabel(card.title)
+    }
+
+    /// The log: what Wisp did lately, as the acting row listed it.
+    @ViewBuilder private func actingLog(_ state: ActForMe) -> some View {
+        if state.recent.isEmpty {
+            Text("Nothing yet. When Wisp does something, it shows here with an Undo.")
+                .font(.wisp(size: 11.5)).foregroundStyle(Theme.textMuted)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(state.recent.prefix(5)) { item in actingLogRow(item) }
+            }
+        }
+    }
+
+    private func actingLogRow(_ item: ActForMe.Done) -> some View {
+        let symbol: String = !item.check.isEmpty ? "questionmark" : item.undone ? "arrow.uturn.backward" : "checkmark"
+        let text: String = !item.check.isEmpty ? "May have added “\(item.title)”: check \(item.check)"
+            : item.title + (item.undone ? " (undone)" : "")
+        return HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: symbol).font(.wisp(size: 8, weight: .bold)).foregroundStyle(Theme.textMuted)
+                .accessibilityHidden(true)
+            Text(text).font(.wisp(size: 11.5)).foregroundStyle(Theme.textSecondary).lineLimit(2)
+            Spacer(minLength: 4)
+            Text(Date(timeIntervalSince1970: item.at), style: .relative)
+                .font(.wisp(size: 10.5)).foregroundStyle(Theme.textMuted).monospacedDigit()
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    /// One compact row per other ready thing: a tag saying what Wisp did, the
+    /// title and one muted line, its own action and its dismiss. The first
+    /// few (BriefReady.rowsShown), then "+N more · Show all".
+    private func otherCards(_ items: [ReadyItem]) -> some View {
+        let limit: Int = BriefReady.rowsShown(sideBySide: sideBySide)
+        let visible: [ReadyItem] = actions.showAllReady ? items : Array(items.prefix(limit))
+        return VStack(alignment: .leading, spacing: 0) {
+            ForEach(visible) { item in readyRow(item) }
+            readyMore(hidden: items.count - visible.count, canExpand: items.count > limit)
+            if let confirmation = mailMemory.confirmation {
+                Text(confirmation).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
+                    .padding(.leading, tagColumn + 10).padding(.top, 2)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("More things Wisp got ready")
+    }
+
+    @ViewBuilder private func readyRow(_ item: ReadyItem) -> some View {
+        switch item {
+        case .card(let card): cardRow(card)
+        case .study(let card): studyRow(card)
+        case .found(let suggestion): foundRow(suggestion)
+        }
+    }
+
+    /// "+2 more · Show all" (or Show fewer), and "+N more in Study", which opens Study.
+    @ViewBuilder private func readyMore(hidden: Int, canExpand: Bool) -> some View {
+        let study: String? = studyCards.moreLine
+        if canExpand || study != nil {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                if canExpand {
+                    Button(actions.showAllReady ? "Show fewer" : "+\(hidden) more · Show all") {
+                        actions.showAllReady.toggle()
+                        model.onResize()
+                    }
+                    .buttonStyle(StudyRowButtonStyle())
+                }
+                if canExpand && study != nil { Text("·") }
+                if let study {
+                    Button(study) { model.tab = .study }
+                        .buttonStyle(StudyRowButtonStyle())
+                        .help("Your school work (⌘5)")
+                }
+            }
+            .font(.wisp(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
+            .frame(minHeight: 24)
+            .padding(.leading, tagColumn + 10)
+            .overlay(alignment: .top) { Rectangle().fill(Theme.hairline).frame(height: 1).accessibilityHidden(true) }
+        }
+    }
+
+    /// A row's frame: the tag in its column, the title and one muted line,
+    /// then what it offers; a hairline above.
+    private func compactRow<Trailing: View>(tag: String, title: String, detail: String, help: String,
+                                            spoken: String, @ViewBuilder trailing: () -> Trailing) -> some View {
+        // Side by side at Extra large, the buttons go under the words, so a title keeps its room.
+        let below: Bool = sideBySide && Theme.textScale >= 1.2
+        return HStack(alignment: below ? .top : .center, spacing: 8) {
+            readyTag(tag).frame(width: tagColumn, alignment: .leading)
+            if below {
+                VStack(alignment: .leading, spacing: 3) {
+                    compactText(title: title, detail: detail)
+                        .help(help)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(spoken)
+                    HStack(spacing: 4) { trailing() }
+                }
+            } else {
+                compactText(title: title, detail: detail)
+                    .help(help)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(spoken)
+                trailing()
+            }
+        }
+        .padding(.vertical, 5)
+        .overlay(alignment: .top) { Rectangle().fill(Theme.hairline).frame(height: 1).accessibilityHidden(true) }
+        .accessibilityElement(children: .contain)
+    }
+
+    /// The title and one muted line. Side by side, a title that doesn't fit
+    /// on one line takes two, and the muted line gives way to it.
+    @ViewBuilder private func compactText(title: String, detail: String) -> some View {
+        if sideBySide {
+            ViewThatFits(in: .horizontal) {
+                VStack(alignment: .leading, spacing: 1) {
+                    compactTitle(title).fixedSize()
+                    compactDetail(detail)
+                }
+                compactTitle(title, lines: 2).fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            VStack(alignment: .leading, spacing: 1) {
+                compactTitle(title)
+                compactDetail(detail)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func compactTitle(_ title: String, lines: Int = 1) -> some View {
+        Text(title).font(.wisp(size: 13, weight: .semibold)).foregroundStyle(Theme.textPrimary).lineLimit(lines)
+    }
+
+    /// One muted line that never asks for more width than it is given.
+    @ViewBuilder private func compactDetail(_ detail: String) -> some View {
+        if !detail.isEmpty {
+            Text(detail).font(.wisp(size: 11.5)).foregroundStyle(Theme.textMuted).lineLimit(1)
+                .frame(minWidth: 0, idealWidth: 0, maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// What Wisp did, in a small outlined tag: DRAFTED, QUIZ MADE, FOUND…
+    private func readyTag(_ tag: String) -> some View {
+        Text(tag).font(.wisp(size: 9, weight: .semibold, design: .monospaced)).tracking(0.3)
+            .foregroundStyle(Theme.textSecondary).lineLimit(1).fixedSize()
+            .padding(.horizontal, 5).padding(.vertical, 2)
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Theme.chipStroke, lineWidth: 1))
+            .accessibilityHidden(true)
+    }
+
+    /// A 24 pt icon button for a row's own action (Open, Dismiss, Add to Day).
+    private func glyphButton(_ symbol: String, help: String, spoken: String,
+                             action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol).font(.wisp(size: 10.5, weight: .semibold)).foregroundStyle(Theme.textMuted)
+                .frame(width: Theme.iconButtonSize, height: Theme.iconButtonSize)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(StudyRowButtonStyle())
+        .help(help)
+        .accessibilityLabel(spoken)
+    }
+
+    /// Another card: its question as the button. A reply opens as the large
+    /// card with its draft showing (Send is inside the draft, as always);
+    /// any other card does what its large card's button does.
+    private func cardRow(_ card: ProactiveCard) -> some View {
+        let tag: String = BriefReady.cardTag(method: card.action?.method ?? "", hasDraft: !(card.action?.draft ?? "").isEmpty)
+        let detail: String = card.body.isEmpty ? card.metaLine.capitalized : card.body
+        let state = actions.fires[card.id]
+        return VStack(alignment: .leading, spacing: 2) {
+            compactRow(tag: tag, title: card.chipTitle, detail: detail,
+                       help: card.why.isEmpty ? card.title : card.why, spoken: card.metaLine + ". " + card.title) {
+                cardRowAction(card)
+                cardDismiss(card)
+            }
+            if case .failed(let reason) = state {
+                Text(reason).font(.wisp(size: 11)).foregroundStyle(Theme.bad)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, tagColumn + 10)
+            }
+            if let error = actions.cardErrors[card.id] {
+                Text(error).font(.wisp(size: 11)).foregroundStyle(Theme.bad).padding(.leading, tagColumn + 10)
+            }
+        }
+    }
+
+    /// A row's own button, small: the same fire as its large card's button.
+    @ViewBuilder private func compactFire(_ card: ProactiveCard, _ step: ProactiveCard.Action,
+                                          _ state: ProactiveActions.Fire?) -> some View {
+        switch state {
+        case .sending:
+            ProgressView().controlSize(.small).accessibilityLabel("Working")
+        case .done(let message):
+            HStack(spacing: 4) {
+                Image(systemName: "checkmark").font(.wisp(size: 9, weight: .bold))
+                Text(message).lineLimit(1)
+            }
+            .font(.wisp(size: 11, weight: .medium)).foregroundStyle(Theme.textSecondary)
+            .fixedSize()
+        default:
+            let undo: Bool = step.method == "undo_add"
+            let label: String = isFailed(state) ? "Try again" : undo ? step.undoLabel : buttonLabel(step)
+            let help: String = undo ? "Removes exactly what Wisp added, and Wisp won't add it again"
+                : (card.why.isEmpty ? card.title : card.why)
+            NotchChrome.action(label, help: help, spoken: undo ? "Undo: remove what Wisp added" : label + " " + card.title) {
+                Task { await actions.fire(card, today: today); model.onResize() }
+            }
+        }
+    }
+
+    @ViewBuilder private func cardRowAction(_ card: ProactiveCard) -> some View {
+        let state = actions.fires[card.id]
+        if let step = card.action, !isUnconfirmed(state) {
+            if step.sendsDraft && state == nil {
+                NotchChrome.action(step.primaryLabel(draftOpen: false),
+                                   help: "Shows the draft first; nothing is sent until you tap Send",
+                                   spoken: step.primaryLabel(draftOpen: false) + " " + card.title) {
+                    withAnimation(Theme.Motion.panel(reduceMotion: reduceMotion)) {
+                        actions.heroID = card.id
+                    }
+                    actions.openDrafts.insert(card.id)
+                    model.onResize()
+                }
+            } else {
+                compactFire(card, step, state)
+            }
+        }
+    }
+
+    @ViewBuilder private func cardDismiss(_ card: ProactiveCard) -> some View {
+        let state = actions.fires[card.id]
+        if actions.dismissing.contains(card.id) {
+            ProgressView().controlSize(.mini).frame(width: Theme.iconButtonSize, height: Theme.iconButtonSize)
+        } else if state != .sending, !isDone(state) {
+            glyphButton("xmark", help: "Dismiss: Wisp won't bring this one back", spoken: "Dismiss " + card.title) {
+                Task { await actions.dismiss(card, today: today) }
+            }
+        }
+    }
+
+    /// What Study got ready or a topic to look at again: Open quiz or Review slides.
+    private func studyRow(_ card: StudyBriefCard) -> some View {
+        let opens: Bool
+        if case .open = card.action { opens = true } else { opens = false }
+        let tag: String = BriefReady.studyTag(id: card.id, opensMaterial: opens)
+        let slides: String = SchoolSlidesText.line(card.slides, pagesText: StudyText.slidePages) ?? ""
+        let help: String = slides.isEmpty ? card.text : card.text + "\n" + slides
+        let spoken: String = slides.isEmpty ? card.text : card.text + ". Slides: " + slides
+        return compactRow(tag: tag, title: card.text, detail: slides, help: help, spoken: spoken) {
+            if let action = card.action, let title = card.actionTitle {
+                NotchChrome.action(title, help: action.help, spoken: title + ": " + card.text) {
+                    SchoolActions.run(action, model: model)
+                }
+            }
+        }
+    }
+
+    /// Found in your mail: Add (to Reminders), Open the email, Dismiss.
+    private func foundRow(_ item: MailSuggestion) -> some View {
+        let detail: String = item.dueLabel() + " · " + item.detail
+        let spoken: String = "Found in your mail: \(item.what), \(item.dueLabel()). \(item.detail)"
+        return VStack(alignment: .leading, spacing: 2) {
+            compactRow(tag: BriefReady.foundTag, title: item.what, detail: detail, help: item.what + "\n" + detail,
+                       spoken: spoken) {
+                foundActions(item)
+            }
+            if let failure = mailMemory.failures[item.id] {
+                Text(failure).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, tagColumn + 10)
+            }
+        }
+    }
+
+    @ViewBuilder private func foundActions(_ item: MailSuggestion) -> some View {
+        let busy: Bool = mailMemory.answering != nil
+        if mailMemory.answering == item.id {
+            ProgressView().controlSize(.small).accessibilityLabel("Adding")
+        } else {
+            NotchChrome.action("Add?", help: "Add this to Reminders, due \(item.dueLabel())",
+                               spoken: "Add \(item.what) to Reminders") {
+                Task { await mailMemory.accept(item); model.onResize() }
+            }
+            .disabled(busy)
+            if let url = item.mailURL {
+                glyphButton("arrow.up.right.square", help: "Open the email in Mail",
+                            spoken: "Open the email about \(item.what)") { NSWorkspace.shared.open(url) }
+            }
+            glyphButton("xmark", help: "Don't suggest this again", spoken: "Dismiss \(item.what)") {
+                Task { await mailMemory.dismiss(item); model.onResize() }
+            }
+            .disabled(busy)
+        }
     }
 
     private var analyzeControl: some View {
@@ -647,45 +1208,24 @@ struct ProactiveBriefSection: View {
         .accessibilityElement(children: .combine)
     }
 
-    // MARK: The hero card
+    // MARK: The large card
 
     private func cardView(_ card: ProactiveCard, position: Int, of cards: [ProactiveCard]) -> some View {
         let fire = actions.fires[card.id]
         let draftOpen = actions.openDrafts.contains(card.id)
         let action = card.action
         let hasDraft = !(action?.draft ?? "").isEmpty
+        let quote: String? = draftOpen || action?.sendsDraft != true ? nil : BriefReady.draftQuote(action?.draft ?? "")
         return VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                if card.wispDidThis {
-                    // Already done by Wisp: a tick and brighter ink set it apart from cards that ask.
-                    Image(systemName: "checkmark.circle.fill").font(.wisp(size: 10.5, weight: .semibold))
-                        .foregroundStyle(Theme.textSecondary).accessibilityHidden(true)
-                }
-                Text(card.metaLine)
-                    .font(.wisp(size: 10, weight: .medium, design: .monospaced)).tracking(0.6)
-                    .foregroundStyle(card.wispDidThis ? Theme.textSecondary : Theme.textMuted).lineLimit(1)
-                    .help(card.why)
-                Spacer(minLength: 4)
-                if card.isGroup {
-                    // A group has no Dismiss: each row has its own Undo, and it leaves with its rows.
-                    EmptyView()
-                } else if actions.dismissing.contains(card.id) {
-                    ProgressView().controlSize(.mini)
-                } else if fire != .sending, !isDone(fire) {
-                    Button { Task { await actions.dismiss(card, today: today) } } label: {
-                        Image(systemName: "xmark").font(.wisp(size: 9, weight: .bold)).foregroundStyle(Theme.textMuted)
-                            .frame(width: 16, height: 16).contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("Dismiss: Wisp won't bring this one back")
-                    .accessibilityLabel("Dismiss")
-                }
-            }
+            cardHead(card, position: position, of: cards, fire: fire)
             Text(card.title)
                 .font(.wisp(size: 15.5, weight: .semibold)).foregroundStyle(Theme.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
             if card.isGroup { groupRows(card) }
-            if !card.body.isEmpty {
+            if let quote {
+                // The reply Wisp drafted, as it would go: the whole of it opens with the button.
+                draftQuote(quote, full: action?.draft ?? "")
+            } else if !card.body.isEmpty {
                 // Two lines keep the card short; More opens the rest in place,
                 // so it isn't reachable only by hovering for the tooltip.
                 ClampedText(text: card.body, onToggle: { model.onResize() })
@@ -708,24 +1248,17 @@ struct ProactiveBriefSection: View {
                         model.onResize()
                     }
                     .disabled(fire == .sending)
+                } else if hasDraft && !isDone(fire) && !isUnconfirmed(fire) {
+                    // A reply's draft opens in its editor; Send stays inside it.
+                    secondary("Edit") {
+                        actions.openDrafts.insert(card.id)
+                        model.onResize()
+                    }
+                    .disabled(fire == .sending)
+                    .help("Open the draft to change it before you send it")
                 }
                 Spacer(minLength: 4)
-                if cards.count > 1 {
-                    Button {
-                        withAnimation(.easeOut(duration: 0.15)) { actions.heroID = cards[(position + 1) % cards.count].id }
-                        model.onResize()
-                    } label: {
-                        HStack(spacing: 3) {
-                            Text("\(position + 1) of \(cards.count)").monospacedDigit()
-                            Image(systemName: "chevron.right").font(.wisp(size: 8.5, weight: .bold))
-                        }
-                        .font(.wisp(size: 11.5, weight: .medium)).foregroundStyle(Theme.textMuted)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("Next card")
-                    .accessibilityLabel("Card \(position + 1) of \(cards.count); next")
-                }
+                if action?.sendsDraft == true && !isDone(fire) { sendsOnTap }
             }
             .padding(.top, 3)
             if case .failed(let reason) = fire {
@@ -745,12 +1278,88 @@ struct ProactiveBriefSection: View {
                 Text(error).font(.wisp(size: 11)).foregroundStyle(Theme.bad)
             }
         }
-        .padding(EdgeInsets(top: 11, leading: 13, bottom: 11, trailing: 11))
+        .padding(EdgeInsets(top: 9, leading: 13, bottom: 10, trailing: 9))
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 12).fill(Theme.cardFill))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.cardStroke, lineWidth: 1))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(card.metaLine). \(card.title)")
+    }
+
+    /// The card's top line: what Wisp did (DRAFTED…), when and where from,
+    /// then "1 of 3 ›" and Dismiss.
+    private func cardHead(_ card: ProactiveCard, position: Int, of cards: [ProactiveCard],
+                          fire: ProactiveActions.Fire?) -> some View {
+        let tag: String = BriefReady.cardTag(method: card.action?.method ?? "", hasDraft: !(card.action?.draft ?? "").isEmpty)
+        return HStack(alignment: .center, spacing: 8) {
+            readyTag(tag)
+            Text(card.metaLine)
+                .font(.wisp(size: 10, weight: .medium, design: .monospaced)).tracking(0.6)
+                .foregroundStyle(card.wispDidThis ? Theme.textSecondary : Theme.textMuted).lineLimit(1)
+                .help(card.why)
+            Spacer(minLength: 4)
+            if cards.count > 1 { pager(position: position, of: cards) }
+            if card.isGroup {
+                // A group has no Dismiss: each row has its own Undo, and it leaves with its rows.
+                EmptyView()
+            } else if actions.dismissing.contains(card.id) {
+                ProgressView().controlSize(.mini)
+            } else if fire != .sending, !isDone(fire) {
+                glyphButton("xmark", help: "Dismiss: Wisp won't bring this one back", spoken: "Dismiss") {
+                    Task { await actions.dismiss(card, today: today) }
+                }
+            }
+        }
+    }
+
+    /// "1 of 3 ›": the next card, large.
+    private func pager(position: Int, of cards: [ProactiveCard]) -> some View {
+        Button {
+            withAnimation(Theme.Motion.panel(reduceMotion: reduceMotion)) {
+                actions.heroID = cards[(position + 1) % cards.count].id
+            }
+            model.onResize()
+        } label: {
+            HStack(spacing: 3) {
+                Text("\(position + 1) of \(cards.count)").monospacedDigit()
+                Image(systemName: "chevron.right").font(.wisp(size: 8.5, weight: .bold))
+            }
+            .font(.wisp(size: 11.5, weight: .medium)).foregroundStyle(Theme.textMuted)
+            .frame(minHeight: Theme.iconButtonSize)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(StudyRowButtonStyle())
+        .help("Next card")
+        .accessibilityLabel("Card \(position + 1) of \(cards.count); next")
+    }
+
+    /// The drafted reply in one quoted line; the whole draft is in its tooltip.
+    private func draftQuote(_ quote: String, full: String) -> some View {
+        HStack(alignment: .top, spacing: 9) {
+            RoundedRectangle(cornerRadius: 1).fill(Theme.chipStroke).frame(width: 2).accessibilityHidden(true)
+            Text(quote).font(.wisp(size: 12.5)).foregroundStyle(Theme.textSecondary).lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .help(full)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Drafted reply: " + quote)
+    }
+
+    /// "🔒 Sends only when you tap", beside a reply's button.
+    private var sendsOnTap: some View {
+        // Never cut: the whole line, else the lock alone (the words are its tooltip and label).
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 4) {
+                Image(systemName: "lock").font(.wisp(size: 9.5, weight: .semibold)).accessibilityHidden(true)
+                Text(BriefReady.sendsOnTap).lineLimit(1)
+            }
+            .fixedSize()
+            Image(systemName: "lock").font(.wisp(size: 9.5, weight: .semibold))
+                .accessibilityLabel(BriefReady.sendsOnTap)
+        }
+        .font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
+        .help("Wisp never sends a reply by itself. The draft shows first, and it goes only when you tap Send.")
     }
 
     /// The rows of a grouped "Wisp did this" card: what was done, the day and time it is for, and
@@ -797,7 +1406,7 @@ struct ProactiveBriefSection: View {
                 .help("Wisp started this and was interrupted before it could confirm. If it is there and you don't want it, remove it there.")
             }
             if more > 0 {
-                Text("and \(more) more, listed under “Wisp is acting for you” below")
+                Text("and \(more) more in the log")
                     .font(.wisp(size: 11.5)).foregroundStyle(Theme.textMuted)
             }
         }
@@ -940,52 +1549,65 @@ struct ProactiveBriefSection: View {
         return min(150, max(64, CGFloat(lines) * 17 + 14))
     }
 
-    // MARK: On your plate
+    // MARK: Your lists
 
-    /// The right zone: its heading with Day ›, the rest of today's calendar,
-    /// school work and to-dos in one list by urgency, what Study got ready,
-    /// then "Found in your mail".
-    private func plateZone(_ shown: ProactiveState) -> some View {
-        let items = plateItems(shown)
-        let open: Int = items.filter { (item: PlateItem) -> Bool in
-            if case .todo(let todo) = item { return !actions.isDone(todo) }
-            return true
-        }.count
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .center, spacing: 6) {
-                zoneTitle("ON YOUR PLATE", spoken: "On your plate", count: open, lit: false)
-                Spacer()
-                dayLink
+    /// The right zone (second, stacked): YOUR LISTS, the calendar line with
+    /// Day ›, then TO-DOS, SCHOOL and NEEDS ATTENTION as short lists.
+    private func listsZone(_ shown: ProactiveState) -> some View {
+        let todos: [ProactiveTodo] = listTodos(shown)
+        let threads: [ProactiveThread] = listedThreads(shown, cards: liveCards(shown))
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 14) {
+                zoneTitle("YOUR LISTS", spoken: "Your lists", count: 0, lit: false).fixedSize()
+                calendarLine(todosEmpty: todos.isEmpty ? shown.todoLine(unread: unread) : nil)
             }
-            .frame(height: Self.controlsHeaderHeight)
-            calendarLine(todosEmpty: items.isEmpty ? shown.todoLine(unread: unread) : nil)
-            if !items.isEmpty { plateList(items) }
-            if !studyCards.isEmpty {
-                StudyBriefCardsView(cards: studyCards, model: model, leading: 0, showsMore: schoolRows.more == 0)
-                    .padding(.top, 2)
-            }
-            if let mailMemory {
-                MailMemorySection(memory: mailMemory, onResize: { model.onResize() }, buttonsBelow: sideBySide)
-                    .padding(.top, 4)
-            }
+            .frame(minHeight: Self.controlsHeaderHeight)
+            listColumns(todos: todos, threads: threads)
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("On your plate")
+        .accessibilityLabel("Your lists")
     }
 
-    /// School work and to-dos as one list (ProactiveState.plate): none just
-    /// cleared or done by the service.
-    private func plateItems(_ shown: ProactiveState) -> [PlateItem] {
+    /// One column; stacked at the default and Large sizes, to-dos and school
+    /// beside mail and texts until a thread is opened.
+    @ViewBuilder private func listColumns(todos: [ProactiveTodo], threads: [ProactiveThread]) -> some View {
+        // An opened thread (its actions, a reply being written) takes the full width.
+        let opened: Bool = threads.contains { actions.expanded.contains($0.id) }
+        if listsSplit && !opened && !threads.isEmpty && !(todos.isEmpty && schoolRows.items.isEmpty) {
+            BriefZones(sideBySide: true, gap: 22, stackGap: 0) {
+                VStack(alignment: .leading, spacing: 12) {
+                    todoList(todos)
+                    schoolList
+                }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                Rectangle().fill(Theme.hairline).accessibilityHidden(true)
+                attention(threads)
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 12) {
+                todoList(todos)
+                schoolList
+                attention(threads)
+            }
+        }
+    }
+
+    /// Open to-dos, most urgent first, none just cleared and none that only
+    /// restates an event the calendar line names (ProactiveState.plate).
+    private func listTodos(_ shown: ProactiveState) -> [ProactiveTodo] {
         let todos = shown.todos.filter { !itemActions.isHidden($0.actionRow) }
         let bounds = today.dayInterval
-        let dayStart = bounds.start.timeIntervalSince1970
-        let todayEnd = bounds.end.timeIntervalSince1970
         let tomorrow = schoolCalendar.date(byAdding: .day, value: 1, to: bounds.end) ?? bounds.end.addingTimeInterval(86_400)
-        return ProactiveState.plate(todos: todos, school: schoolRows.items, isDone: { actions.isDone($0) },
-                                    now: today.now.timeIntervalSince1970, dayStart: dayStart,
-                                    todayEnd: todayEnd, tomorrowEnd: tomorrow.timeIntervalSince1970,
-                                    named: calendarNamed)
+        let items: [PlateItem] = ProactiveState.plate(todos: todos, school: [], isDone: { actions.isDone($0) },
+                                                      now: today.now.timeIntervalSince1970,
+                                                      dayStart: bounds.start.timeIntervalSince1970,
+                                                      todayEnd: bounds.end.timeIntervalSince1970,
+                                                      tomorrowEnd: tomorrow.timeIntervalSince1970, named: calendarNamed)
+        return items.compactMap { item -> ProactiveTodo? in
+            if case .todo(let todo) = item { return todo }
+            return nil
+        }
     }
 
     /// The events the calendar line names (BriefPlate.calendarLine's first
@@ -994,22 +1616,9 @@ struct ProactiveBriefSection: View {
         Array((allDayEvents + events.map(\.title)).prefix(3))
     }
 
-    private var dayLink: some View {
-        Button { model.tab = .day } label: {
-            HStack(spacing: 2) {
-                Text("Day")
-                Image(systemName: "chevron.right").font(.wisp(size: 8, weight: .bold))
-            }
-            .font(.wisp(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help("The rest of today, hour by hour (⌘3)")
-    }
-
-    /// "11:45 AM Hack Day · 12 PM Hacktoberfest", today's all-day events
-    /// first; or that nothing is left on today, or nothing was on it; with no
-    /// to-dos either, that goes on the same line. Opens Day.
+    /// "🕘 11:45 AM Hack Day · 12 PM Hacktoberfest   Day ›", today's all-day
+    /// events first; or that nothing is left on today, or nothing was on it;
+    /// with no to-dos either, that goes on the same line. Opens Day.
     private func calendarLine(todosEmpty: String?) -> some View {
         let calendarUnread = unread.contains { $0.source == "calendar" }
         let upcoming: [String] = events.map { today.clock($0.start) + " " + $0.title }
@@ -1018,11 +1627,16 @@ struct ProactiveBriefSection: View {
         let quiet: Bool = events.isEmpty && allDayEvents.isEmpty
         let line: String = todosEmpty.map { dayLine + " · " + $0 } ?? dayLine
         return Button { model.tab = .day } label: {
-            Text(line).font(.wisp(size: 13))
-                .foregroundStyle(quiet ? Theme.textMuted : Theme.textSecondary)
-                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+            HStack(alignment: .firstTextBaseline, spacing: 9) {
+                Image(systemName: "clock").font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
+                    .frame(width: 17).accessibilityHidden(true)
+                Text(line).font(.wisp(size: 13))
+                    .foregroundStyle(quiet ? Theme.textMuted : Theme.textSecondary)
+                    .lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                linkLabel("Day")
+            }
+            .contentShape(Rectangle())
         }
         .buttonStyle(StudyRowButtonStyle())
         .help("The rest of today, hour by hour (⌘3)")
@@ -1030,53 +1644,73 @@ struct ProactiveBriefSection: View {
         .accessibilityHint("Opens Day")
     }
 
-    /// The first five (two stacked), then "+N to-dos · +M in Study · Show all".
-    private func plateList(_ items: [PlateItem]) -> some View {
-        let limit: Int = BriefPlate.shown(sideBySide: sideBySide)
-        let visible: [PlateItem] = actions.showAllTodos ? items : Array(items.prefix(limit))
-        let hidden = items.dropFirst(visible.count)
-        let hiddenSchool = hidden.filter(\.isSchool).count + schoolRows.more
-        let hiddenTodos = hidden.count - hidden.filter(\.isSchool).count
-        return VStack(alignment: .leading, spacing: 4) {
-            ForEach(visible) { item in plateRow(item) }
-            plateMore(hiddenTodos: hiddenTodos, hiddenSchool: hiddenSchool, canExpand: items.count > limit)
+    /// "Day ›", "Study ›", "All 6 ›".
+    private func linkLabel(_ text: String) -> some View {
+        HStack(spacing: 2) {
+            Text(text)
+            Image(systemName: "chevron.right").font(.wisp(size: 8, weight: .bold))
         }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("School work and to-dos")
+        .font(.wisp(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
+        .lineLimit(1).fixedSize()
     }
 
-    @ViewBuilder private func plateRow(_ item: PlateItem) -> some View {
-        switch item {
-        case .todo(let todo): todoRow(todo)
-        case .school(let due): schoolRow(due)
-        }
-    }
-
-    /// "+3 to-dos · +5 in Study · Show all": the parts that aren't zero; the
-    /// Study part opens Study, Show all opens the list in place.
-    @ViewBuilder private func plateMore(hiddenTodos: Int, hiddenSchool: Int, canExpand: Bool) -> some View {
-        let todosPart: String? = hiddenTodos > 0 ? BriefPlate.moreParts(hiddenTodos: hiddenTodos, hiddenSchool: 0).first : nil
-        let studyPart: String? = hiddenSchool > 0 ? BriefPlate.moreParts(hiddenTodos: 0, hiddenSchool: hiddenSchool).first : nil
-        if todosPart != nil || studyPart != nil || canExpand {
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                if let todosPart { Text(todosPart) }
-                if let studyPart {
-                    if todosPart != nil { Text("·") }
-                    Button(studyPart) { model.tab = .study }
-                        .buttonStyle(.plain)
-                        .help("Your school work (⌘5)")
+    /// A list's heading ("TO-DOS · 6") and its link on the right.
+    private func listHeading(_ title: String, spoken: String, link: String?, help: String,
+                             action: @escaping () -> Void) -> some View {
+        HStack(alignment: .center, spacing: 6) {
+            Text(title).font(.wisp(size: 10, design: .monospaced)).tracking(0.4).foregroundStyle(Theme.textMuted)
+                .lineLimit(1)
+                .accessibilityLabel(spoken)
+                .accessibilityAddTraits(.isHeader)
+            Spacer(minLength: 6)
+            if let link {
+                Button(action: action) {
+                    linkLabel(link).frame(minHeight: Theme.iconButtonSize).contentShape(Rectangle())
                 }
-                if canExpand {
-                    if todosPart != nil || studyPart != nil { Text("·") }
-                    Button(actions.showAllTodos ? "Show fewer" : "Show all") {
-                        actions.showAllTodos.toggle()
-                        model.onResize()
-                    }
-                    .buttonStyle(.plain)
-                }
+                .buttonStyle(StudyRowButtonStyle())
+                .help(help)
             }
-            .font(.wisp(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
-            .padding(.leading, Self.rowInset).padding(.top, 2)
+        }
+    }
+
+    /// TO-DOS · n, the first few (BriefLists.todosShown), All n › for the rest.
+    @ViewBuilder private func todoList(_ todos: [ProactiveTodo]) -> some View {
+        if !todos.isEmpty {
+            let limit: Int = BriefLists.todosShown(sideBySide: sideBySide)
+            let visible: [ProactiveTodo] = actions.showAllTodos ? todos : Array(todos.prefix(limit))
+            let open: Int = todos.filter { !actions.isDone($0) }.count
+            let link: String? = todos.count > limit ? (actions.showAllTodos ? "Fewer" : "All \(todos.count)") : nil
+            VStack(alignment: .leading, spacing: 1) {
+                listHeading(BriefPlate.heading("TO-DOS", count: open), spoken: BriefPlate.heading("To-dos", count: open),
+                            link: link, help: actions.showAllTodos ? "Show the first few" : "Show every to-do") {
+                    actions.showAllTodos.toggle()
+                    model.onResize()
+                }
+                ForEach(visible) { todo in todoRow(todo) }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("To-dos")
+        }
+    }
+
+    /// SCHOOL · n DUE TODAY with Study ›: one line per piece of school work.
+    @ViewBuilder private var schoolList: some View {
+        if !schoolRows.items.isEmpty {
+            let limit: Int = BriefLists.schoolShown(sideBySide: sideBySide)
+            let visible: [StudyDaySummary.Due] = Array(schoolRows.items.prefix(limit))
+            let bounds = today.dayInterval
+            let dueToday: Int = BriefLists.dueToday(schoolRows.items.map(\.dueTS),
+                                                    dayStart: bounds.start.timeIntervalSince1970,
+                                                    dayEnd: bounds.end.timeIntervalSince1970)
+            let total: Int = schoolRows.items.count + schoolRows.more
+            VStack(alignment: .leading, spacing: 1) {
+                listHeading(BriefLists.schoolHeading(dueToday: dueToday, total: total),
+                            spoken: BriefLists.schoolHeading(dueToday: dueToday, total: total).capitalized,
+                            link: "Study", help: "Your school work (⌘5)") { model.tab = .study }
+                ForEach(Array(visible.enumerated()), id: \.offset) { _, item in schoolRow(item) }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("School work")
         }
     }
 
@@ -1087,129 +1721,55 @@ struct ProactiveBriefSection: View {
         return calendar
     }
 
-    /// One piece of school work: its title in full, the course and time under
-    /// it, then when it is due. The whole row opens Study, where it is done.
+    /// One piece of school work on one line: its title, the course, and when
+    /// it is due at the right. The whole row opens Study, where it is done.
     private func schoolRow(_ item: StudyDaySummary.Due) -> some View {
         let calendar = schoolCalendar
         let assignment = item.assignment
-        let due = StudyText.dueShort(assignment, now: today.now, calendar: calendar)
-        let time: String = assignment.allDay ? "" : assignment.dueDate.map { StudyText.time($0, calendar: calendar) } ?? ""
-        let chip: String = time.isEmpty ? due : due.replacingOccurrences(of: " " + time, with: "")
-        let under: String = [item.course, time].filter { !$0.isEmpty }.joined(separator: " · ")
-        let spoken: String = ["School: " + assignment.title, under, "due " + due].filter { !$0.isEmpty }.joined(separator: ", ")
+        let due: String = StudyText.dueShort(assignment, now: today.now, calendar: calendar)
+        let spoken: String = ["School: " + assignment.title, item.course, "due " + due].filter { !$0.isEmpty }.joined(separator: ", ")
         return Button { model.tab = .study } label: {
-            schoolLines(assignment.title, under: under, chip: chip)
-                .padding(.vertical, 3)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(assignment.title).font(.wisp(size: 13.5)).foregroundStyle(Theme.textPrimary)
+                    .lineLimit(1).layoutPriority(1)
+                if !item.course.isEmpty { subText(item.course).lineLimit(1) }
+                Spacer(minLength: 6)
+                Text(due).font(.wisp(size: 10.5, design: .monospaced)).foregroundStyle(Theme.textSecondary)
+                    .lineLimit(1).fixedSize()
+            }
+            .frame(minHeight: 24)
             .contentShape(Rectangle())
         }
         .buttonStyle(StudyRowButtonStyle())
-        .help("Open it in Study (⌘5)")
+        .help(assignment.title + (item.course.isEmpty ? "" : " · " + item.course) + " · " + due + "\nOpen it in Study (⌘5)")
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(spoken)
         .accessibilityHint("Opens Study")
     }
 
-    /// Side by side: the title and course, then when it is due on a second
-    /// line. Stacked (full width), when it is due sits at the right of the title.
-    @ViewBuilder private func schoolLines(_ title: String, under: String, chip: String) -> some View {
-        if sideBySide {
-            VStack(alignment: .leading, spacing: 3) {
-                schoolHead(title, under: under)
-                schoolDue(chip)
-            }
-        } else {
-            HStack(alignment: .top, spacing: 9) {
-                schoolHead(title, under: under)
-                schoolChip(chip).padding(.top, 3)
-            }
-        }
-    }
-
-    private func schoolHead(_ title: String, under: String) -> some View {
-        HStack(alignment: .top, spacing: 9) {
-            // The check column stays empty: school work is checked off in Study.
-            Color.clear.frame(width: 18, height: 18)
-            Image(systemName: "graduationcap").font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
-                .frame(width: 15).padding(.top, 2)
-            schoolText(title, under: under)
-        }
-    }
-
-    private func schoolChip(_ chip: String) -> some View {
-        Text(chip.uppercased()).font(.wisp(size: 10, design: .monospaced)).foregroundStyle(Theme.textSecondary)
-            .lineLimit(1).fixedSize()
-    }
-
-    /// The title, and the course and time beside it when both fit on one
-    /// line, else under it (wrapping rather than cut with room beside it).
-    private func schoolText(_ title: String, under: String) -> some View {
-        let head: Text = Text(title)
-        return Group {
-            if under.isEmpty {
-                schoolTitleText(head)
-            } else {
-                ViewThatFits(in: .horizontal) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        schoolTitleText(head).fixedSize()
-                        subText(under).fixedSize()
-                    }
-                    VStack(alignment: .leading, spacing: 1) {
-                        schoolTitleText(head)
-                        subText(under).lineLimit(2).fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func schoolTitleText(_ title: Text) -> some View {
-        title.font(.wisp(size: 13.5)).foregroundStyle(Theme.textPrimary)
-            .lineLimit(2).fixedSize(horizontal: false, vertical: true)
-    }
-
-    private func schoolDue(_ chip: String) -> some View {
-        HStack(alignment: .center, spacing: 8) {
-            schoolChip(chip)
-            Spacer(minLength: 6)
-            HStack(spacing: 2) {
-                Text("Study")
-                Image(systemName: "chevron.right").font(.wisp(size: 8, weight: .bold))
-            }
-            .font(.wisp(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary).fixedSize()
-        }
-        .padding(.leading, Self.rowInset)
-    }
-
     // MARK: To-do
 
-    /// One to-do: the check, its source and its whole title (two lines when
-    /// it needs them); then on a second line when it is due, Add to Day and
-    /// its ✓ / ×, so they never squeeze the title.
+    /// One to-do on one line: the check, its title, when it is due and who
+    /// it is from (muted), then Add to Day, Mark done and Clear as icons
+    /// that keep their places from row to row.
     private func todoRow(_ todo: ProactiveTodo) -> some View {
         let done = actions.isDone(todo)
         let busy = actions.todoBusy.contains(todo.id)
-        return VStack(alignment: .leading, spacing: 3) {
-            HStack(alignment: .top, spacing: 9) {
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .center, spacing: 8) {
                 checkButton(todo, done: done, busy: busy)
-                Image(systemName: DayTimeline.sourceSymbol(todo.source))
-                    .font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
-                    .frame(width: 15).padding(.top, 2)
-                    .help(DayTimeline.sourceName(todo.source))
-                todoText(todo, done: done)
-                // Stacked (full width): the due time and actions fit beside the title.
-                if !sideBySide { todoActions(todo, done: done, busy: busy, below: false) }
+                todoLine(todo, done: done)
+                todoIcons(todo, done: done, busy: busy)
             }
-            if sideBySide { todoActions(todo, done: done, busy: busy, below: true) }
+            .frame(minHeight: Theme.iconButtonSize)
             if let error = actions.todoErrors[todo.id] {
-                Text(error).font(.wisp(size: 11)).foregroundStyle(Theme.bad).padding(.leading, Self.rowInset)
+                Text(error).font(.wisp(size: 11)).foregroundStyle(Theme.bad).padding(.leading, Self.listInset)
             }
             if let failure = itemActions.failures[todo.id] {
                 Text(failure).font(.wisp(size: 11)).foregroundStyle(Theme.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true).padding(.leading, Self.rowInset)
+                    .fixedSize(horizontal: false, vertical: true).padding(.leading, Self.listInset)
             }
         }
-        .padding(.vertical, 3)
         .accessibilityElement(children: .contain)
     }
 
@@ -1239,36 +1799,26 @@ struct ProactiveBriefSection: View {
     /// The title as the row shows it: without a course code in brackets at its end.
     private func todoTitle(_ todo: ProactiveTodo) -> String { BriefPlate.splitCourse(todo.title).title }
 
-    /// The title; who it is from beside it when both fit on one line, else
-    /// under it, unless that goes on the second line (side by side).
-    private func todoText(_ todo: ProactiveTodo, done: Bool) -> some View {
-        let sub: String = sideBySide || done ? "" : todoSub(todo)
-        let title: Text = Text(todoTitle(todo))
-        return Group {
-            if sub.isEmpty {
-                todoTitleText(title, done: done, help: todo.title)
-            } else {
-                ViewThatFits(in: .horizontal) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        todoTitleText(title, done: done, help: todo.title).fixedSize()
-                        subText(sub).fixedSize()
-                    }
-                    VStack(alignment: .leading, spacing: 1) {
-                        todoTitleText(title, done: done, help: todo.title)
-                        subText(sub).lineLimit(1)
-                    }
-                }
+    /// The title, then the due word ("Tmrw", "Overdue") and who it is from,
+    /// muted; the title keeps its room longest. Everything is in the tooltip.
+    private func todoLine(_ todo: ProactiveTodo, done: Bool) -> some View {
+        let due: String = done ? "" : BriefLists.dueWord(todo.dueLabel)
+        let from: String = done ? "" : todoSub(todo)
+        let overdue: Bool = todo.dueLabel.lowercased().contains("overdue")
+        let help: String = [todo.title, todo.dueLabel, todoSub(todo)].filter { !$0.isEmpty }.joined(separator: "\n")
+        return HStack(alignment: .firstTextBaseline, spacing: 7) {
+            Text(todoTitle(todo)).font(.wisp(size: 13.5))
+                .foregroundStyle(done ? Theme.textMuted : Theme.textPrimary)
+                .strikethrough(done, color: Theme.textMuted)
+                .lineLimit(1).layoutPriority(1)
+            if !due.isEmpty {
+                Text(due).font(.wisp(size: 11.5)).foregroundStyle(overdue ? Theme.warn : Theme.textMuted)
+                    .lineLimit(1).fixedSize()
             }
+            if !from.isEmpty { subText(from).lineLimit(1) }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func todoTitleText(_ title: Text, done: Bool, help: String) -> some View {
-        title.font(.wisp(size: 13.5))
-            .foregroundStyle(done ? Theme.textMuted : Theme.textPrimary)
-            .strikethrough(done, color: Theme.textMuted)
-            .lineLimit(2).fixedSize(horizontal: false, vertical: true)
-            .help(help)
+        .help(help)
     }
 
     /// A row's muted second part: who a to-do is from, a school row's course and time.
@@ -1276,69 +1826,72 @@ struct ProactiveBriefSection: View {
         Text(text).font(.wisp(size: 11)).foregroundColor(Theme.textMuted)
     }
 
-    /// When it is due, then Add to Day and ✓ / ×: the to-do's second line
-    /// (`below`), or at the right of its title.
-    private func todoActions(_ todo: ProactiveTodo, done: Bool, busy: Bool, below: Bool) -> some View {
-        let overdue = todo.dueLabel.lowercased().contains("overdue")
-        return HStack(alignment: .center, spacing: 8) {
-            if !todo.dueLabel.isEmpty && !done {
-                Text(todo.dueLabel.uppercased())
-                    .font(.wisp(size: 10, design: .monospaced))
-                    .foregroundStyle(overdue ? Theme.textPrimary : Theme.textSecondary)
-                    .lineLimit(1).fixedSize()
+    /// Add to Day, then Mark done and Clear (NeedsYouRowControls), each in
+    /// its own 24 pt place so the icons line up down the list.
+    @ViewBuilder private func todoIcons(_ todo: ProactiveTodo, done: Bool, busy: Bool) -> some View {
+        if busy {
+            ProgressView().controlSize(.small)
+        } else {
+            HStack(spacing: 0) {
+                addToDayIcon(todo, done: done)
+                rowControls(todo.actionRow, slots: true)
             }
-            // Side by side, who it is from shares the second line with the due time.
-            if below && !done && !todoSub(todo).isEmpty {
-                Text(todoSub(todo)).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
-            }
-            if below { Spacer(minLength: 6) }
-            if busy {
-                ProgressView().controlSize(.small)
-            } else if todo.canAddToDay && !done {
-                if actions.addedToDay.contains(todo.id) {
-                    Text("ON DAY ✓").font(.wisp(size: 9.5, design: .monospaced)).foregroundStyle(Theme.textMuted).fixedSize()
-                } else {
-                    NotchChrome.small("Add to Day") { Task { await actions.addToDay(todo, today: today) } }
-                        .help("Fit it into today's plan")
-                }
-            }
-            if !busy { rowControls(todo.actionRow) }
+            .fixedSize()
         }
-        .fixedSize(horizontal: !below, vertical: false)
-        .padding(.leading, below ? Self.rowInset : 0)
     }
 
-    /// A row's trailing ×: Clear, and Mark done for a dated reminder.
-    private func rowControls(_ row: NeedsYouRow) -> some View {
+    @ViewBuilder private func addToDayIcon(_ todo: ProactiveTodo, done: Bool) -> some View {
+        if !todo.canAddToDay || done {
+            Color.clear.frame(width: Theme.iconButtonSize, height: Theme.iconButtonSize).accessibilityHidden(true)
+        } else if actions.addedToDay.contains(todo.id) {
+            Image(systemName: "calendar.badge.checkmark").font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
+                .frame(width: Theme.iconButtonSize, height: Theme.iconButtonSize)
+                .help("On your Day")
+                .accessibilityLabel("On your Day: " + todo.title)
+        } else {
+            glyphButton("calendar.badge.plus", help: "Add to Day: fit it into today's plan",
+                        spoken: "Add to Day: " + todo.title) {
+                Task { await actions.addToDay(todo, today: today) }
+            }
+        }
+    }
+
+    /// A row's trailing ✓ and ×: Mark done for a dated reminder, and Clear.
+    private func rowControls(_ row: NeedsYouRow, slots: Bool = false) -> some View {
         NeedsYouRowControls(row: row, actions: itemActions, onResize: { model.onResize() },
-                            onConfirmed: { await today.refresh(afterMutation: true) })
+                            onConfirmed: { await today.refresh(afterMutation: true) },
+                            hitSize: Theme.iconButtonSize, keepsSlots: slots)
     }
 
     // MARK: Mail and texts
 
-    private static let attentionLimit = 4
-
-    /// What mail and texts need from you, in NEEDS YOU under the cards:
-    /// replies first, then FYI; the sender on one line and what it is about
-    /// on the next.
-    private func attention(_ threads: [ProactiveThread]) -> some View {
-        // Stacked, one fewer, so the normal panel stays short.
-        let limit: Int = sideBySide ? Self.attentionLimit : Self.attentionLimit - 1
-        let visible: [ProactiveThread] = actions.showAllThreads ? threads : Array(threads.prefix(limit))
-        return VStack(alignment: .leading, spacing: 2) {
-            ForEach(visible) { thread in threadRow(thread) }
-            if threads.count > limit {
-                Button(actions.showAllThreads ? "Show fewer"
-                       : "+\(threads.count - limit) more · Show all") {
+    /// NEEDS ATTENTION: what mail and texts need from you, replies first,
+    /// one line each until opened; the first few, then All n ›.
+    @ViewBuilder private func attention(_ threads: [ProactiveThread]) -> some View {
+        if !threads.isEmpty {
+            let limit: Int = BriefLists.threadsShown
+            let visible: [ProactiveThread] = actions.showAllThreads ? threads : Array(threads.prefix(limit))
+            let replies: Int = threads.filter(\.needsReply).count
+            let link: String? = threads.count > limit ? (actions.showAllThreads ? "Fewer" : "All \(threads.count)") : nil
+            VStack(alignment: .leading, spacing: 1) {
+                listHeading(BriefLists.attentionHeading(replies: replies, total: threads.count),
+                            spoken: BriefLists.attentionHeading(replies: replies, total: threads.count).capitalized,
+                            link: link, help: actions.showAllThreads ? "Show the first few" : "Show all mail and texts") {
                     actions.showAllThreads.toggle()
                     model.onResize()
                 }
-                .buttonStyle(.plain).font(.wisp(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
-                .padding(.leading, 32).padding(.top, 3)
+                ForEach(visible) { thread in threadRow(thread) }
             }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Mail and texts")
         }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Mail and texts")
+    }
+
+    /// Mail and texts as listed: none just cleared, none a reply card holds.
+    private func listedThreads(_ shown: ProactiveState, cards: [ProactiveCard]) -> [ProactiveThread] {
+        let open = shown.orderedThreads.filter { !itemActions.isHidden($0.actionRow) }
+        return ProactiveState.threads(open, coveredBy: cards)
     }
 
     private func threadRow(_ thread: ProactiveThread) -> some View {
@@ -1346,67 +1899,62 @@ struct ProactiveBriefSection: View {
         let hot = thread.needsReply
         let hovered = hoveredThread == thread.id
         return VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .top, spacing: 4) {
+            HStack(alignment: .center, spacing: 2) {
                 Button {
                     if open { actions.expanded.remove(thread.id) } else { actions.expanded.insert(thread.id) }
                     model.onResize()
                 } label: {
                     threadLabel(thread, open: open)
-                        .padding(.vertical, 6).padding(.leading, 8).padding(.trailing, 6)
-                        .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(hovered || open ? 0.05 : hot ? 0.03 : 0)))
-                        .overlay(alignment: .leading) {
-                            // Replies owed get a quiet accent, so they read first.
-                            if hot { RoundedRectangle(cornerRadius: 1).fill(Color.white.opacity(0.6)).frame(width: 2).padding(.vertical, 6) }
-                        }
+                        .padding(.vertical, 4).padding(.leading, 6).padding(.trailing, 4)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(hovered || open ? 0.05 : 0)))
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(StudyRowButtonStyle())
                 .onHover { inside in hoveredThread = inside ? thread.id : (hoveredThread == thread.id ? nil : hoveredThread) }
-                .help(open ? "Hide the actions" : "Reply, open or ask about this")
+                .help(open ? "Hide the actions" : (hot ? "Reply, open or ask about this" : "Open or ask about this"))
                 .accessibilityValue(open ? "Expanded" : "Collapsed")
                 // Beside the row, not in it: a button inside the row's button
                 // would open the thread instead.
-                rowControls(thread.actionRow).padding(.top, 6)
+                rowControls(thread.actionRow)
             }
             if let failure = itemActions.failures[thread.id] {
                 Text(failure).font(.wisp(size: 11)).foregroundStyle(Theme.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true).padding(.leading, 32)
+                    .fixedSize(horizontal: false, vertical: true).padding(.leading, 30)
             }
             if open { threadDetail(thread) }
         }
     }
 
-    /// The sender on one line, what it's about on the next (all of it once
-    /// opened); NEEDS REPLY or FYI and the time on the right.
+    /// One line until opened; opened, the whole summary under the sender.
     @ViewBuilder private func threadLabel(_ thread: ProactiveThread, open: Bool) -> some View {
-        // Stacked (full width), an FYI is one line until it is opened.
-        if !sideBySide && !thread.needsReply && !open {
-            threadLine(thread)
+        if open {
+            threadLines(thread)
         } else {
-            threadLines(thread, open: open)
+            threadLine(thread)
         }
     }
 
-    /// An FYI on one line: who, what it's about, the label and the time.
+    /// Who, what it's about, REPLY or FYI and the time, on one line.
     private func threadLine(_ thread: ProactiveThread) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 9) {
+        let hot = thread.needsReply
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
             Image(systemName: DayTimeline.sourceSymbol(thread.source))
-                .font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).frame(width: 15)
+                .font(.wisp(size: 11)).foregroundStyle(hot ? Theme.textSecondary : Theme.textMuted).frame(width: 15)
             Text(thread.shownWho.isEmpty ? "Someone" : thread.shownWho).font(.wisp(size: 13, weight: .semibold))
-                .foregroundStyle(Theme.textSecondary).lineLimit(1).fixedSize()
-            Text(thread.line).font(.wisp(size: 13)).foregroundStyle(Theme.textMuted).lineLimit(1)
+                .foregroundStyle(hot ? Theme.textPrimary : Theme.textSecondary).lineLimit(1).layoutPriority(1)
+            Text(thread.line).font(.wisp(size: 13)).foregroundStyle(hot ? Theme.textSecondary : Theme.textMuted).lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            threadBadge(false)
+            threadBadge(hot)
             Text(timeLabel(thread.receivedTs)).font(.wisp(size: 10, design: .monospaced))
-                .foregroundStyle(Theme.textMuted).fixedSize()
+                .foregroundStyle(Theme.textMuted).lineLimit(1).fixedSize()
         }
-        .help(thread.line)
+        .help((thread.shownWho.isEmpty ? "" : thread.shownWho + ": ") + thread.line)
         .accessibilityElement(children: .combine)
     }
 
-    private func threadLines(_ thread: ProactiveThread, open: Bool) -> some View {
+    private func threadLines(_ thread: ProactiveThread) -> some View {
         let hot = thread.needsReply
-        return HStack(alignment: .top, spacing: 9) {
+        return HStack(alignment: .top, spacing: 8) {
             Image(systemName: DayTimeline.sourceSymbol(thread.source))
                 .font(.wisp(size: 11)).foregroundStyle(hot ? Theme.textSecondary : Theme.textMuted)
                 .frame(width: 15).padding(.top, 2)
@@ -1415,7 +1963,6 @@ struct ProactiveBriefSection: View {
                     .foregroundStyle(hot ? Theme.textPrimary : Theme.textSecondary).lineLimit(1)
                 Text(thread.line).font(.wisp(size: 13))
                     .foregroundStyle(hot ? Theme.textSecondary : Theme.textMuted)
-                    .lineLimit(open ? nil : 1)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1429,11 +1976,12 @@ struct ProactiveBriefSection: View {
     }
 
     private func threadBadge(_ hot: Bool) -> some View {
-        Text(hot ? "NEEDS REPLY" : "FYI").font(.wisp(size: 9, weight: .semibold, design: .monospaced))
+        Text(hot ? "REPLY" : "FYI").font(.wisp(size: 9, weight: .semibold, design: .monospaced))
             .foregroundStyle(hot ? Theme.textPrimary : Theme.textMuted)
-            .padding(.horizontal, 6).padding(.vertical, 2)
-            .overlay(Capsule().stroke(hot ? Color.white.opacity(0.45) : Theme.chipStroke, lineWidth: 1))
+            .padding(.horizontal, 5).padding(.vertical, 2)
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(hot ? Color.white.opacity(0.45) : Theme.chipStroke, lineWidth: 1))
             .fixedSize()
+            .accessibilityLabel(hot ? "Needs a reply" : "For your information")
     }
 
     private func threadDetail(_ thread: ProactiveThread) -> some View {

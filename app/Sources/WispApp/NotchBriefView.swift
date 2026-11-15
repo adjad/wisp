@@ -43,6 +43,8 @@ struct NotchBriefView: View {
     /// Two columns in the wider panel (OverlayView sets it from `wideKey`
     /// while the display has room).
     private let wide: Bool
+    /// "Found in your mail": the app's one model, or a QA scene's own.
+    private let mailMemory: MailMemoryModel
     /// Clear and Mark done on the Top 3's Needs you rows.
     @ObservedObject private var needActions: NeedsYouActionsModel = NotchBriefView.needsYouActions
     static let needsYouActions = NeedsYouActionsModel(baseURL: WispClient.baseURL)
@@ -72,12 +74,13 @@ struct NotchBriefView: View {
 
     @MainActor
     init(model: OverlayModel, today: TodayModel, open: String? = nil, uncapped: Bool = false,
-         actions: ProactiveActions? = nil, wide: Bool = false) {
+         actions: ProactiveActions? = nil, wide: Bool = false, mailMemory: MailMemoryModel? = nil) {
         self.model = model
         self.today = today
         self.uncapped = uncapped
         self.actions = actions ?? .shared
         self.wide = wide
+        self.mailMemory = mailMemory ?? MailMemoryCards.model
         // The QA driver names the old rows; each maps to the tile that holds it.
         _open = State(initialValue: open.flatMap { tag in
             switch tag {
@@ -149,7 +152,7 @@ struct NotchBriefView: View {
                                           coverage: Self.coverage(plan), wide: wide,
                                           schoolRows: plan.study?.briefPlate ?? StudyUpcomingRows(),
                                           studyCards: plan.study?.briefCards ?? StudyBriefCards(),
-                                          mailMemory: MailMemoryCards.model)
+                                          mailMemory: mailMemory)
                     HStack(spacing: 12) {
                         askChip(plan)
                         Spacer(minLength: 0)
@@ -191,16 +194,12 @@ struct NotchBriefView: View {
     /// The tallest an opened row (to-dos, mail and texts) gets before it scrolls.
     static let proactiveCap: CGFloat = 300
 
-    /// What Wisp read to make the Brief, beside Ask about this: the whole line
-    /// when it fits, else without what was found (the cards and rows show that).
+    /// What Wisp read to make the Brief, beside Ask about this, short ("Wisp
+    /// read 49 · skipped 3 · found 3"); the whole work line is its tooltip.
     @ViewBuilder private func workLine(_ proactive: ProactiveState) -> some View {
-        if let full = proactive.workLine {
-            let short = proactive.workLine(short: true) ?? full
-            ViewThatFits(in: .horizontal) {
-                Text(full)
-                Text(short).help(full)
-            }
-            .font(.wisp(size: 11.5)).foregroundStyle(Theme.textMuted).lineLimit(1)
+        if let foot = proactive.footLine {
+            Text(foot).font(.wisp(size: 11.5)).foregroundStyle(Theme.textMuted).lineLimit(1)
+                .help(proactive.workLine ?? foot)
         }
     }
 
@@ -278,7 +277,7 @@ struct NotchBriefView: View {
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .clipped()
         if !brief.suggestions.isEmpty { suggestionsRow(brief.suggestions) }
-        MailMemorySection(memory: MailMemoryCards.model, onResize: { model.onResize() })
+        MailMemorySection(memory: mailMemory, onResize: { model.onResize() })
         footerChips(plan)
     }
 
@@ -898,11 +897,16 @@ struct NeedsYouRowControls: View {
     var onResize: () -> Void = {}
     /// After the service confirmed: read the day again.
     var onConfirmed: () async -> Void = {}
+    /// Each icon's hit area; the Brief's lists use Theme.iconButtonSize (24 pt).
+    var hitSize: CGFloat = 16
+    /// Keep Mark done's and Clear's places when they aren't offered, so the
+    /// icons line up down a list.
+    var keepsSlots = false
 
     var body: some View {
         let offered = actions.actions(for: row)
         if offered.isEmpty {
-            EmptyView()
+            if keepsSlots { slot; slot } else { EmptyView() }
         } else if let working = actions.busy[row.id] {
             HStack(spacing: 5) {
                 ProgressView().controlSize(.mini)
@@ -912,22 +916,31 @@ struct NeedsYouRowControls: View {
             .accessibilityElement(children: .combine)
             .accessibilityLabel(working.progress)
         } else {
-            HStack(spacing: 4) {
+            HStack(spacing: keepsSlots ? 0 : 4) {
                 if offered.contains(.markDone) {
                     icon("checkmark", action: .markDone)
+                } else if keepsSlots {
+                    slot
                 }
                 if offered.contains(.clear) {
                     icon("xmark", action: .clear)
+                } else if keepsSlots {
+                    slot
                 }
             }
             .fixedSize()
         }
     }
 
+    /// An empty icon place.
+    private var slot: some View {
+        Color.clear.frame(width: hitSize, height: hitSize).accessibilityHidden(true)
+    }
+
     private func icon(_ symbol: String, action: NeedsYouRowAction) -> some View {
         Button { answer(action) } label: {
-            Image(systemName: symbol).font(.wisp(size: 9, weight: .semibold))
-                .foregroundStyle(Theme.textMuted).frame(width: 16, height: 16).contentShape(Rectangle())
+            Image(systemName: symbol).font(.wisp(size: hitSize > 16 ? 10.5 : 9, weight: .semibold))
+                .foregroundStyle(Theme.textMuted).frame(width: hitSize, height: hitSize).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(!actions.busy.isEmpty)

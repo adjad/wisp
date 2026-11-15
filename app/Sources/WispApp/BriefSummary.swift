@@ -978,3 +978,117 @@ enum BriefPlate {
         return rest.first?.isNumber == true && rest.allSatisfy { $0.isNumber || $0.isUppercase }
     }
 }
+
+// MARK: - READY FOR YOU and YOUR LISTS (Option 2)
+
+/// The words of the Brief's READY FOR YOU zone (ProactiveCards.swift): the tag
+/// that says what Wisp did for each prepared thing, the zone's read line and
+/// its one line when nothing is ready. Pure, checked by BriefSummaryChecks.swift.
+enum BriefReady {
+    static let foundTag = "FOUND"
+    static let sendsOnTap = "Sends only when you tap"
+
+    /// What Wisp did for a "Before you ask" card, from what its button does:
+    /// a reply it wrote is DRAFTED, a free hour it found is FREE TIME, a
+    /// thing it added by itself is ADDED; anything else it SPOTTED.
+    static func cardTag(method: String, hasDraft: Bool) -> String {
+        switch method {
+        case "email_reply", "text_reply": return "DRAFTED"
+        case "block_time": return "FREE TIME"
+        case "undo_add", "group": return "ADDED"
+        default: return hasDraft ? "DRAFTED" : "SPOTTED"
+        }
+    }
+
+    /// What Study did: made a quiz (or other material it opens), found the
+    /// slides for what is coming up, or found a weak spot ("weak:" ids).
+    static func studyTag(id: String, opensMaterial: Bool) -> String {
+        if id.hasPrefix("weak:") { return "WEAK SPOT" }
+        return opensMaterial ? "QUIZ MADE" : "SLIDES"
+    }
+
+    /// READY FOR YOU's rows before "+N more · Show all": three either way, as
+    /// side by side a title that doesn't fit takes two lines.
+    static func rowsShown(sideBySide: Bool) -> Int { 3 }
+
+    /// "from 49 emails and texts · 10:24 AM"; nil before anything was read.
+    static func source(read: Int, at: String) -> String? {
+        guard read > 0 else { return nil }
+        let from = "from \(read) email\(read == 1 ? "" : "s") and texts"
+        return at.isEmpty ? from : from + " · " + at
+    }
+
+    /// "49 read · 10:24 AM": the read line short enough to keep its time.
+    static func sourceShort(read: Int, at: String) -> String? {
+        guard read > 0 else { return nil }
+        return at.isEmpty ? "\(read) read" : "\(read) read · " + at
+    }
+
+    /// The read line's forms, longest first: the sentence, then (side by
+    /// side, where the header is narrow) the short form. The view shows the
+    /// first that fits, so the time is never cut.
+    static func sourceForms(read: Int, at: String, sideBySide: Bool) -> [String] {
+        guard let full = source(read: read, at: at) else { return [] }
+        guard sideBySide, let short = sourceShort(read: read, at: at) else { return [full] }
+        return [full, short]
+    }
+
+    /// The tag column: the widest tag's characters at `charWidth`, plus the
+    /// tag's padding and outline.
+    static func tagColumn(_ tags: [String], charWidth: CGFloat) -> CGFloat {
+        let longest: Int = tags.map(\.count).max() ?? 0
+        return (CGFloat(longest) * charWidth).rounded(.up) + 12
+    }
+
+    /// The zone's one line with nothing ready: what was checked and when, and
+    /// what Wisp did today while it acts for you.
+    static func emptyLine(read: Int, at: String, actingToday: Int?) -> String {
+        var line = "Nothing needs you yet. Wisp checked \(read) email\(read == 1 ? "" : "s") and texts"
+        if !at.isEmpty { line += " at " + at }
+        if let actingToday { line += " · Acting for you · \(actingToday) today" }
+        return line
+    }
+
+    /// A drafted reply as one quoted line: its lines joined, blank ones and
+    /// runs of spaces gone. Nil for an empty draft.
+    static func draftQuote(_ draft: String) -> String? {
+        let words = draft.split(whereSeparator: { $0.isWhitespace || $0.isNewline })
+        guard !words.isEmpty else { return nil }
+        return "“" + words.joined(separator: " ") + "”"
+    }
+}
+
+/// YOUR LISTS' short lists: how many rows each shows and their headings.
+enum BriefLists {
+    /// To-dos and school rows before All n › (three side by side, two stacked).
+    static func todosShown(sideBySide: Bool) -> Int { sideBySide ? 3 : 2 }
+    static func schoolShown(sideBySide: Bool) -> Int { sideBySide ? 3 : 2 }
+    /// Mail and texts before All n ›.
+    static let threadsShown = 4
+
+    /// "SCHOOL · 1 DUE TODAY", or "SCHOOL · 4" with nothing due today.
+    static func schoolHeading(dueToday: Int, total: Int) -> String {
+        dueToday > 0 ? "SCHOOL · \(dueToday) DUE TODAY" : BriefPlate.heading("SCHOOL", count: total)
+    }
+
+    /// "NEEDS ATTENTION · 2 REPLIES", or "NEEDS ATTENTION · 5" with no reply owed.
+    static func attentionHeading(replies: Int, total: Int) -> String {
+        replies > 0 ? "NEEDS ATTENTION · \(replies) REPL\(replies == 1 ? "Y" : "IES")"
+            : BriefPlate.heading("NEEDS ATTENTION", count: total)
+    }
+
+    /// How many of these due times fall on the day shown.
+    static func dueToday(_ dues: [Double?], dayStart: Double, dayEnd: Double) -> Int {
+        dues.filter { due in
+            guard let due, due.isFinite else { return false }
+            return due >= dayStart && due < dayEnd
+        }.count
+    }
+
+    /// A to-do's due word as the one-line row shows it: "Tomorrow" is "Tmrw".
+    static func dueWord(_ label: String) -> String {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.lowercased().hasPrefix("tomorrow") { return "Tmrw" + trimmed.dropFirst("tomorrow".count) }
+        return trimmed
+    }
+}
