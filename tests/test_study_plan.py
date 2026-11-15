@@ -262,8 +262,9 @@ def test_attach_after_a_merged_import_and_with_a_missing_course_row(tmp_path, mo
     result = snapshot(at(9))
     day_hook.attach(result, now=at(9), timezone=TZ)
     due = {d["title"]: d["course_name"] for d in result["study"]["due_today"]}
-    assert due == {"Quiz 3": "CS 101: " + name, "Orphan": "", "Lab 5: Lists": "CS 101: " + name}
-    assert result["study"]["next_test"]["course_name"] == "CS 101: " + name
+    # The merged course keeps the name without the course code (the code stays in its own field).
+    assert due == {"Quiz 3": name, "Orphan": "", "Lab 5: Lists": name}
+    assert result["study"]["next_test"]["course_name"] == name
     titles = {d["id"]: d["title"] for d in result["deadlines"] if d["source"] == "study"}
     assert titles == {"study:canvas:dddddddddddd": "Lab 5: Lists · CS 101",
                       "study:canvas:12345:ffffffffffff": "Quiz 3 · CS 101",

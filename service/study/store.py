@@ -22,7 +22,11 @@ import secrets
 import sqlite3
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
+
+from service.study.course_names import clean_name, course_key, merge_key, same_course
+from service.study.plan import title_key
 
 _COURSE_FIELDS = ("name", "code", "grade", "score", "url", "source", "sample", "merge_key")
 _ASSIGNMENT_FIELDS = ("course_id", "title", "kind", "due_ts", "all_day", "points", "score",
@@ -43,11 +47,6 @@ _WS = re.compile(r"\s+")
 # Work already handed in: no later page can make it due again.
 _DONE_STATUSES = ("submitted", "graded")
 
-def merge_key(name) -> str:
-    """Same normalisation as canvas_parse: lower-case, punctuation to spaces, single spaces."""
-    return _WS.sub(" ", re.sub(r"[^0-9a-z]+", " ", str(name or "").lower())).strip()
-
-
 def _numeric(cid, url=None) -> bool:
     """A Canvas numeric course id. A 12-digit id could also be a name hash that happens to be
     all digits, so that length only counts when the row's url names the same course."""
@@ -58,23 +57,12 @@ def _numeric(cid, url=None) -> bool:
     return len(digits) != 12 or bool(url and str(url).rstrip("/").endswith("/courses/" + digits))
 
 
-_CODE_PREFIX = re.compile(r"[a-z]{2,6} ?\d{1,4}[a-z]?(?: \d{1,3})? (?=\S)")
-
-
-def _name_keys(key, code=None) -> set[str]:
-    """A course's merge_key, plus the same key without a leading course code: a course page
-    says "CS 101: Introduction to Programming" where the Dashboard says only the name."""
-    key = merge_key(key)
-    if not key:
-        return set()
-    keys = {key}
-    prefix = merge_key(code)
-    if prefix and key.startswith(prefix + " ") and len(key) > len(prefix) + 1:
-        keys.add(key[len(prefix) + 1:])
-    match = _CODE_PREFIX.match(key)
-    if match:
-        keys.add(key[match.end():])
-    return keys
+def _local_day(ts):
+    """The Mac's local calendar day of a due time (None when it is not a usable time)."""
+    try:
+        return datetime.fromtimestamp(float(ts)).date()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
 
 
 def _blank(value) -> bool:
@@ -209,12 +197,14 @@ class StudyStore:
 
     def _repair_nameless(self) -> None:
         """Open-time repair of a store split before nameless course pages could merge (see
-        ``_adopt_nameless``). Idempotent and never fatal: a store it cannot repair still opens."""
+        ``_adopt_nameless``), or before names with a course code, section or "&" could
+        (``_fold_named``, ``_adopt_by_assignments``). Idempotent and never fatal: a store it
+        cannot repair still opens."""
         with self._lock:
             try:
                 self._db.execute("BEGIN")
                 now = time.time()
-                for canonical in self._adopt_nameless(now):
+                for canonical in self._adopt_nameless(now) | self._fold_named(now) | self._adopt_by_assignments(now):
                     self._dedupe_assignments(canonical, now)
                 self._db.execute("COMMIT")
             except sqlite3.Error:
@@ -327,14 +317,24 @@ class StudyStore:
                     if not isinstance(cid, str) or not cid:
                         continue
                     canonical, retired = self._canonical_course(cid, c.get("url"), c.get("merge_key") or "",
-                                                                c.get("code"))
+                                                                c.get("code"), c.get("name"))
                     keep = [self._db.execute("SELECT * FROM courses WHERE id=?", (r,)).fetchone() for r in retired]
                     keep = [k for k in keep if k is not None]
+                    stored = self._db.execute("SELECT name, code FROM courses WHERE id=?", (canonical,)).fetchone()
+                    mine = [(c.get("name"), c.get("code"))]
+                    theirs = [(stored["name"], stored["code"])] if stored is not None else []
+                    # The merged course shows the name without a course code or section ("Writing and
+                    # Rhetoric: ..." over "WRIT 1 Writing and Rhetoric: ... Section 09"), whichever
+                    # page brought it, so no later read renames it back and forth.
+                    shown = clean_name((mine + theirs if cid == canonical else theirs + mine)
+                                       + [(k["name"], k["code"]) for k in keep])
                     if cid != canonical:
                         # A name-keyed copy of a course the store already has: its name, code and key
                         # only fill blanks, so "CS 101: Introduction to Programming" is not renamed back and forth.
                         names = {k: c.pop(k, None) for k in ("name", "code", "merge_key")}
                         keep.append({k: names.get(k) for k in _COURSE_FIELDS})
+                    if shown and shown != (c.get("name") if cid == canonical else (stored["name"] if stored else None)):
+                        c["name"], c["merge_key"] = shown, merge_key(shown)
                     self._write("courses", _COURSE_FIELDS, c | {"id": canonical}, _COURSE_DEFAULTS, now,
                                 keep=tuple(keep))
                     for old in retired:
@@ -363,6 +363,7 @@ class StudyStore:
                     if course_id:
                         touched.add(course_id)
                 touched |= self._adopt_nameless(now)
+                touched |= self._adopt_by_assignments(now)
                 for course_id in touched:
                     self._dedupe_assignments(course_id, now)
                 kept = sum(self._db.execute("SELECT 1 FROM assignments WHERE id=?", (a,)).fetchone() is not None
@@ -373,15 +374,15 @@ class StudyStore:
                 raise
         return len({alias.get(c, c) for c in course_ids}), kept
 
-    def _canonical_course(self, cid: str, url, key: str, code=None) -> tuple[str, list[str]]:
-        """(the id to write, stored ids folded into it)."""
-        keys = _name_keys(key, code)
-        if not keys:
+    def _canonical_course(self, cid: str, url, key: str, code=None, name=None) -> tuple[str, list[str]]:
+        """(the id to write, stored ids folded into it). Names match by ``course_names.same_course``."""
+        mine = course_key(name or key, code)
+        if not mine.keys:
             return cid, []
         rows = [r for r in self._db.execute(
-                    "SELECT id, url, code, merge_key FROM courses WHERE sample=0 AND id<>? AND merge_key<>''"
+                    "SELECT id, name, url, code, merge_key FROM courses WHERE sample=0 AND id<>? AND merge_key<>''"
                     " ORDER BY updated_at, id", (cid,)).fetchall()
-                if keys & _name_keys(r["merge_key"], r["code"])]
+                if same_course(mine, course_key(r["name"] or r["merge_key"], r["code"]))]
         numeric = [r for r in rows if _numeric(r["id"], r["url"])]
         hashed = [r["id"] for r in rows if r not in numeric]
         stored = self._db.execute("SELECT url FROM courses WHERE id=?", (cid,)).fetchone()
@@ -429,6 +430,79 @@ class StudyStore:
             self._retire_course(twin["id"], row["id"])
             named.remove(twin)
             adopted.add(row["id"])
+        return adopted
+
+    def _fold_into(self, target, other, now: float) -> None:
+        """Fold stored course ``other`` into stored course ``target`` (the id that survives):
+        ``other`` fills blanks only, the display name is the one without a code or section."""
+        row = {"id": target["id"]}
+        shown = clean_name([(target["name"], target["code"]), (other["name"], other["code"])])
+        if shown and shown != target["name"]:
+            row |= {"name": shown, "merge_key": merge_key(shown)}
+        self._write("courses", _COURSE_FIELDS, row, _COURSE_DEFAULTS, now, keep=(other,))
+        self._retire_course(other["id"], target["id"])
+
+    def _fold_named(self, now: float) -> set[str]:
+        """Stored rows that ``_canonical_course`` now calls one course (a store split before
+        names with a course code, section or "&" could match) become one, as an import would
+        fold them. Only id-by-name rows are folded; numeric ids never fold into each other."""
+        out: set[str] = set()
+        for row in self._db.execute("SELECT * FROM courses WHERE sample=0 AND name<>'' ORDER BY updated_at, id"
+                                    ).fetchall():
+            if _numeric(row["id"], row["url"]):
+                continue
+            canonical, _ = self._canonical_course(row["id"], row["url"], row["merge_key"] or "", row["code"],
+                                                  row["name"])
+            target = self._db.execute("SELECT * FROM courses WHERE id=?", (canonical,)).fetchone()
+            if canonical == row["id"] or target is None:
+                continue
+            self._fold_into(target, row, now)
+            out.add(canonical)
+        return out
+
+    def _adopt_by_assignments(self, now: float) -> set[str]:
+        """A url-less row (the Dashboard's, keyed by a name hash) whose name still matches no
+        course page is that course page's row when EVERY one of its dated assignments (at least
+        one) is also in the numeric row, by normalised title and local due day; the pairing is
+        one-to-one across all candidate pairs (no other numeric row holds them all, no other
+        url-less row is wholly held by that numeric row); and nothing contradicts it (codes naming
+        another subject+number, two scores or two letter grades that differ, two names that
+        both carry no course code or section and still differ). One shared
+        assignment alone never decides it while the url-less row has others, and an assignment
+        two courses share leaves both apart. Returns the surviving ids."""
+        rows = self._db.execute("SELECT * FROM courses WHERE sample=0 ORDER BY updated_at, id").fetchall()
+        numeric = [r for r in rows if not _blank(r["url"]) and _numeric(r["id"], r["url"])]
+        urlless = [r for r in rows if _blank(r["url"]) and not _numeric(r["id"], r["url"])]
+        if not numeric or not urlless:
+            return set()
+        dated: dict[str, set] = {}
+        for a in self._db.execute("SELECT course_id, title, due_ts FROM assignments"
+                                  " WHERE due_ts IS NOT NULL AND course_id IS NOT NULL").fetchall():
+            key, day = merge_key(title_key(a["title"])), _local_day(a["due_ts"])
+            if key and day is not None:
+                dated.setdefault(a["course_id"], set()).add((key, day))
+
+        def agree(a, b) -> bool:
+            ca, cb = course_key(a["name"], a["code"]).course, course_key(b["name"], b["code"]).course
+            if ca and cb and ca != cb:
+                return False
+            if a["score"] is not None and b["score"] is not None and a["score"] != b["score"]:
+                return False
+            if not _blank(a["grade"]) and not _blank(b["grade"]) and str(a["grade"]).strip() != str(b["grade"]).strip():
+                return False
+            ka, kb = course_key(a["name"], a["code"]), course_key(b["name"], b["code"])
+            if ka.keys and kb.keys and ka.clean and kb.clean and not same_course(ka, kb):
+                return False   # two plain names that differ: the course page already took a Dashboard name
+            return _blank(a["url"]) or _blank(b["url"])
+
+        pairs = [(u, n) for u in urlless for n in numeric
+                 if dated.get(u["id"]) and dated[u["id"]] <= dated.get(n["id"], set()) and agree(u, n)]
+        adopted: set[str] = set()
+        for u, n in pairs:
+            if sum(p[0]["id"] == u["id"] for p in pairs) != 1 or sum(p[1]["id"] == n["id"] for p in pairs) != 1:
+                continue
+            self._fold_into(n, u, now)
+            adopted.add(n["id"])
         return adopted
 
     def _retire_course(self, old: str, canonical: str) -> None:
