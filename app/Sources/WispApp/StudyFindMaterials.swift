@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import CryptoKit
 import Foundation
 import SwiftUI
 
@@ -38,17 +39,20 @@ import SwiftUI
 // Safety, by design: the only thing Wisp does to the browser is open https
 // URLs that pass `StudyFindTarget.openableURL` (the course's Modules page and
 // at most 100 of the course's own pages) through `NSWorkspace.open` without
-// activating it. No AppleScript, Apple Events, JavaScript, key or mouse events,
-// and no Accessibility actions; the only Accessibility write is
-// `AXManualAccessibility = true`, exactly as StudyPageReader does for Chromium.
+// activating it, and closes the tabs it opened (StudyFindTabCloser: lists the
+// browser's tabs around each open to claim the one new tab, and closes only
+// that tab, only while it is still at the address opened or read). No
+// JavaScript, key or mouse events, and no Accessibility actions; the only
+// Accessibility write is `AXManualAccessibility = true`, exactly as
+// StudyPageReader does for Chromium.
 // Wisp never opens quizzes, assignments or outside tools (External Tool / LTI
 // items): Canvas would post the student's identity to the tool's site, start
 // the quiz, or launch an assignment's tool as its page opens. Each link is
 // sent to resolve with its Canvas module item type so the server drops tools
 // and quizzes; only items it returns as via "browser" are visited, by an
 // allowlist: direct `/pages/…` and `/discussion_topics/…` links, and
-// `/modules/items/<n>` only when its type was read as Page, Discussion or
-// External URL (an unreadable type is refused, and a refused type is never
+// `/modules/items/<n>` only when its type was read as Page or Discussion
+// (External URL items are never opened; an unreadable type is refused, and a refused type is never
 // replaced by a plainer label); and the client refuses any path with a tool,
 // LTI, quiz or `assignments` segment and ignores what such a page holds
 // (assignment instructions already come from Study's own dashboard read).
@@ -58,9 +62,8 @@ import SwiftUI
 // since Wisp's snapshot (or exactly at the opened URL) are read, so tabs the
 // student already had open never are. Accepted gap: a background tab the
 // student switches to during the wait looks new and may be read, but only if
-// it is on this same course (it is the student's own course page). An
-// External URL item that lands off the course gives only its address to
-// resolve, and only when exactly one new tab appeared since the snapshot. Nothing is added until the
+// it is on this same course (it is the student's own course page). Nothing is
+// opened that sounds important (StudyFindGuard). Nothing is added until the
 // student ticks it and presses Add. Under WISP_NOTCH_QA the reader returns
 // nothing and opening is a no-op.
 
@@ -69,14 +72,9 @@ import SwiftUI
 /// The course's Canvas site and course number, parsed from the course's
 /// stored `url` (never from `StudyCourse.id`), and the one rule every URL Wisp
 /// opens or reads must pass.
-struct StudyFindTarget: Equatable, Sendable {
-    /// Lowercased Canvas host, e.g. "canvas.school.edu".
-    let host: String
-    /// The digits in `/courses/<n>`.
-    let canvasID: String
-    /// `StudyCourse.id`, sent as `course_id`.
-    let courseID: String
-
+// The parts of StudyFindTarget that read Study's own course data; the address
+// rules themselves are in StudyFindRules.swift.
+extension StudyFindTarget {
     /// The course's own Canvas address, else one taken from links Study already
     /// holds for that course (its assignments' Canvas URLs). The fallback is used
     /// only when every such link names the same host and `/courses/<n>`.
@@ -108,174 +106,6 @@ struct StudyFindTarget: Equatable, Sendable {
             return known.contains(host) || host.hasSuffix(".instructure.com")
                 || host.split(separator: ".").contains("canvas")
         }
-    }
-
-    /// Host and `/courses/<n>` id of an https Canvas course URL.
-    private static func courseRef(_ raw: String) -> (host: String, id: String)? {
-        guard let parts = Self.parts(raw) else { return nil }
-        let segments = parts.segments
-        guard segments.count >= 2, segments[0] == "courses", Self.isDigits(segments[1]) else { return nil }
-        return (parts.host, segments[1])
-    }
-
-    init(host: String, canvasID: String, courseID: String) {
-        self.host = host.lowercased()
-        self.canvasID = canvasID
-        self.courseID = courseID
-    }
-
-    /// `https://<host>/courses/<id>/modules`.
-    var modulesURL: URL? {
-        var c = URLComponents()
-        c.scheme = "https"
-        c.host = host
-        c.path = "/courses/\(canvasID)/modules"
-        return c.url
-    }
-
-    /// The URL to open when `raw` is https on the course's host, default port,
-    /// no user info, a clean path under `/courses/<id>/`; else nil.
-    func allowedURL(_ raw: String) -> URL? {
-        guard let parts = Self.parts(raw), parts.host == host else { return nil }
-        let s = parts.segments
-        guard s.count >= 2, s[0] == "courses", s[1] == canvasID else { return nil }
-        return parts.url
-    }
-
-    /// The course's own navigation sections Wisp reads, besides Modules: Canvas's
-    /// list pages, read-only. Opening a list never opens an item on it.
-    static let sections: [(name: String, path: [String])] = [
-        ("Home", []), ("Announcements", ["announcements"]), ("Syllabus", ["assignments", "syllabus"]),
-        ("Assignments", ["assignments"]), ("Pages", ["pages"]), ("Discussions", ["discussion_topics"]),
-        ("Files", ["files"]), ("Grades", ["grades"]),
-    ]
-    private static let sectionPaths: Set<[String]> = Set(sections.map(\.path) + [["modules"], ["wiki"]])
-
-    /// Each section's address on this course.
-    var sectionURLs: [(name: String, url: URL)] {
-        Self.sections.compactMap { section in
-            var c = URLComponents()
-            c.scheme = "https"
-            c.host = host
-            c.path = "/" + (["courses", canvasID] + section.path).joined(separator: "/")
-            guard let url = c.url, isNavSection(url.absoluteString) else { return nil }
-            return (section.name, url)
-        }
-    }
-
-    /// Exactly one of the course's section list pages (Home, Announcements,
-    /// Syllabus, the Assignments list, Pages, Discussions, Files, Grades, Modules).
-    func isNavSection(_ raw: String) -> Bool {
-        guard let parts = Self.parts(raw), parts.host == host else { return false }
-        let s = parts.segments
-        guard s.count >= 2, s[0] == "courses", s[1] == canvasID else { return false }
-        return Self.sectionPaths.contains(Array(s.dropFirst(2)))
-    }
-
-    /// A page on the course that launches a tool, LTI, quiz or assignment item.
-    /// A section list page (the Assignments list, the Syllabus) is not one.
-    func isLaunchPage(_ raw: String) -> Bool {
-        Self.launchesTool(raw) && !isNavSection(raw)
-    }
-
-    func allows(_ raw: String) -> Bool { allowedURL(raw) != nil }
-
-    /// What Wisp may open: an allowed URL that doesn't launch a tool or quiz.
-    /// Checked before every open, whatever the server said.
-    func openableURL(_ raw: String) -> URL? {
-        guard !Self.launchesTool(raw) else { return nil }
-        return allowedURL(raw)
-    }
-
-    /// Path segments of pages that launch an External Tool / LTI or a quiz,
-    /// where Canvas posts the student's identity to another site (or starts
-    /// the quiz), and assignments (an External Tool assignment or a New Quiz
-    /// launches its tool as the page opens). Wisp never opens these, nor uses
-    /// anything read from them. Study already reads assignment instructions
-    /// through its own dashboard read.
-    private static let launchSegments: Set<String> = [
-        "external_tools", "quizzes", "lti", "quiz_lti", "quizzes_next", "lti_resource_links",
-        "external_content", "launch", "assignments",
-    ]
-
-    /// True when `raw`'s path has a tool, LTI or quiz segment (any case), or
-    /// when it can't be parsed at all.
-    static func launchesTool(_ raw: String) -> Bool {
-        guard let c = URLComponents(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)),
-              let decoded = StudyFindGuard.fullyDecoded(c.percentEncodedPath)
-        else { return true }
-        // Decoded until stable first, so "external_tool%2573" is "external_tools".
-        let path = decoded.lowercased()
-        return path.split(separator: "/").contains { segment in
-            launchSegments.contains(String(segment)) || segment.hasPrefix("lti")
-        }
-    }
-
-    /// Exactly the course's Modules page, `/courses/<id>/modules`.
-    func isModules(_ raw: String) -> Bool {
-        guard let parts = Self.parts(raw), parts.host == host else { return false }
-        let s = parts.segments
-        return s.count == 3 && s[0] == "courses" && s[1] == canvasID && s[2] == "modules"
-    }
-
-    /// Same page: scheme and host in any case, no fragment, no trailing "/".
-    static func samePage(_ a: String, _ b: String) -> Bool {
-        func normal(_ raw: String) -> String? {
-            guard var c = URLComponents(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
-            c.fragment = nil
-            c.scheme = c.scheme?.lowercased()
-            c.host = c.host?.lowercased()
-            var path = c.percentEncodedPath
-            while path.count > 1, path.hasSuffix("/") { path.removeLast() }
-            c.percentEncodedPath = path
-            return c.string
-        }
-        guard let x = normal(a), let y = normal(b) else { return false }
-        return x == y
-    }
-
-    /// Host and path without query or fragment, lowercased: how a link Wisp
-    /// sent is matched to the item the server returned (it drops Canvas queries).
-    static func pathKey(_ raw: String) -> String {
-        guard let c = URLComponents(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)) else { return raw }
-        var path = c.percentEncodedPath
-        while path.count > 1, path.hasSuffix("/") { path.removeLast() }
-        return (c.host ?? "").lowercased() + path.lowercased()
-    }
-
-    struct Parts {
-        let url: URL
-        let host: String
-        /// Path segments, percent-encoded, without empty ones at the end.
-        let segments: [String]
-    }
-
-    /// Parsed with URLComponents, never by string prefix. Refuses anything not
-    /// https, a non-default port, user or password, an encoded "/" "." or "\",
-    /// and "." or ".." or empty segments inside the path.
-    static func parts(_ raw: String) -> Parts? {
-        guard let c = URLComponents(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)),
-              c.scheme?.lowercased() == "https",
-              c.user == nil, c.password == nil,
-              let host = c.host?.lowercased(), !host.isEmpty,
-              c.port == nil || c.port == 443,
-              let url = c.url
-        else { return nil }
-        let path = c.percentEncodedPath
-        let lower = path.lowercased()
-        if lower.contains("%2f") || lower.contains("%2e") || lower.contains("%5c") || path.contains("\\") {
-            return nil
-        }
-        if path.isEmpty { return Parts(url: url, host: host, segments: []) }
-        guard path.hasPrefix("/") else { return nil }
-        var segments = path.split(separator: "/", omittingEmptySubsequences: false).dropFirst().map(String.init)
-        while segments.last == "" { segments.removeLast() }
-        if segments.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) { return nil }
-        return Parts(url: url, host: host, segments: segments)
-    }
-
-    private static func isDigits(_ text: String) -> Bool {
-        !text.isEmpty && text.count <= 20 && text.allSatisfy { $0.isASCII && $0.isNumber }
     }
 }
 
@@ -359,7 +189,8 @@ enum StudyFindReader {
 
     /// Front tabs as `want` decides from whether the tab is new since
     /// `known` and its URL. Only `.walk` tabs are read past their address.
-    static func scan(text: Bool, known: [StudyFindTab],
+    /// `stop` ends a read in progress at its next element, so Stop answers at once.
+    static func scan(text: Bool, known: [StudyFindTab], stop: StudyFindStop? = nil,
                      want: @escaping @Sendable (_ isNew: Bool, _ url: String) -> Want) async -> Scan {
         #if WISP_NOTCH_QA
         return Scan(pages: [], complete: true)
@@ -368,7 +199,7 @@ enum StudyFindReader {
         let pids = await browserPIDs()
         guard !pids.isEmpty else { return Scan(pages: [], complete: true) }
         return await Task.detached(priority: .userInitiated) { () -> Scan in
-            StudyFindReader.scanAll(pids, text: text, known: known, want: want)
+            StudyFindReader.scanAll(pids, text: text, known: known, stop: stop, want: want)
         }.value
         #endif
     }
@@ -454,11 +285,11 @@ enum StudyFindReader {
     }
 
     /// Never call on the main thread.
-    private static func scanAll(_ pids: [pid_t], text: Bool, known: [StudyFindTab],
+    private static func scanAll(_ pids: [pid_t], text: Bool, known: [StudyFindTab], stop: StudyFindStop?,
                                 want: (Bool, String) -> Want) -> Scan {
         let clock = Clock(deadline: now() + totalBudgetNanoseconds)
         var pages: [StudyFindPage] = []
-        let complete = eachFrontArea(pids, deadline: { clock.deadline }) { window, area in
+        let complete = eachFrontArea(pids, deadline: { stop?.isSet == true ? 0 : clock.deadline }) { window, area in
             let tab = StudyFindTab(element: area)
             let isNew = !tab.isAmong(known)
             let url = pageURL(area: area, window: window)
@@ -475,7 +306,7 @@ enum StudyFindReader {
             case .walk:
                 // Its own budget; the time it takes is added back for the other windows.
                 let started = now()
-                var w = Walk(deadline: started + walkBudgetNanoseconds, base: URL(string: url), wantText: text)
+                var w = Walk(deadline: started + walkBudgetNanoseconds, base: URL(string: url), wantText: text, stop: stop)
                 harvest(area, into: &w, depth: 0, root: true)
                 clock.deadline += now() - started
                 var body = w.lines.joined(separator: "\n")
@@ -541,13 +372,14 @@ enum StudyFindReader {
         let deadline: UInt64
         let base: URL?
         let wantText: Bool
+        let stop: StudyFindStop?
     }
 
     /// Document order, depth first. Links give URL and title; nested web areas
     /// their URL; static text the page text (when wanted). Password and text
     /// fields are never read.
     private static func harvest(_ element: AXUIElement, into w: inout Walk, depth: Int, root: Bool) {
-        guard w.visited < maxElements, now() < w.deadline else {
+        guard w.visited < maxElements, now() < w.deadline, w.stop?.isSet != true else {
             w.truncated = true
             return
         }
@@ -670,37 +502,11 @@ enum StudyFindReader {
 
     #endif
 
-    /// Module item types that launch a tool or quiz (the server drops them too).
-    static func isLaunchType(_ type: String) -> Bool {
-        let key = typeKey(type)
-        return key == "externaltool" || key == "contextexternaltool" || key == "lti" || key.hasPrefix("quiz")
-            || key == "newquiz" || key == "newquizzes" || key == "assessment"
-    }
-
-    /// Module item types Wisp never opens: tools, quizzes and assignments.
-    static func isNeverOpened(_ type: String) -> Bool {
-        isLaunchType(type) || typeKey(type) == "assignment"
-    }
-
-    /// The only module item types Wisp opens behind `/modules/items/<n>`:
-    /// pages, discussions and external URLs. Unknown, File, Quiz, Assignment,
-    /// ExternalTool and SubHeader are all refused.
-    static func isOpenableModuleType(_ type: String?) -> Bool {
-        guard let type else { return false }
-        // External URL items are never opened: only their title and
-        // /modules/items/<n> are known before the open (the server refuses them too).
-        return ["page", "wikipage", "discussion", "discussiontopic"].contains(typeKey(type))
-    }
-
-    static func isExternalURLType(_ type: String?) -> Bool {
-        type.map { typeKey($0) == "externalurl" } ?? false
-    }
-
-    /// Lower-case ASCII letters only: "External URL", "external_url" and
-    /// "ExternalUrl" are all "externalurl".
-    static func typeKey(_ type: String) -> String {
-        String(type.lowercased().filter { $0.isASCII && $0.isLetter })
-    }
+    // Module item type rules are in StudyFindRules.swift; these forward to them.
+    static func isLaunchType(_ type: String) -> Bool { StudyFindRules.isLaunchType(type) }
+    static func isNeverOpened(_ type: String) -> Bool { StudyFindRules.isNeverOpened(type) }
+    static func isOpenableModuleType(_ type: String?) -> Bool { StudyFindRules.isOpenableModuleType(type) }
+    static func typeKey(_ type: String) -> String { StudyFindRules.typeKey(type) }
 
     #if !WISP_NOTCH_QA
 
@@ -763,113 +569,198 @@ enum StudyFindReader {
 /// on words in the title and the address, then on the site. When in doubt it
 /// counts as important. Refused items are still listed, with the reason, so
 /// the student can open them by hand.
-enum StudyFindGuard {
-    private static let wordRules: [(reason: String, words: Set<String>)] = [
-        ("sounds like a test or quiz", ["test", "tests", "pretest", "posttest", "quiz", "quizzes", "quizzing", "exam",
-                                         "exams", "midterm", "midterms", "final", "finals", "assessment", "assessments",
-                                         "assessing", "examination", "examinations", "pretests", "posttests",
-                                         "placement", "examsoft"]),
-        ("survey or evaluation", ["survey", "surveys", "evaluation", "evaluations", "eval", "evals", "questionnaire",
-                                  "questionnaires", "poll", "polls", "polling", "feedback"]),
-        ("graded or proctored", ["graded", "grading", "proctor", "proctored", "proctoring", "proctorio", "honorlock",
-                                 "respondus", "lockdown", "examity", "turnitin", "gradescope", "proctoru"]),
-        ("submission or upload", ["submit", "submits", "submission", "submissions", "upload", "uploads", "uploading",
-                                  "dropbox"]),
-        ("starts something", ["attempt", "attempts", "start", "starts", "begin", "resume", "launch", "take", "retake"]),
-        ("timed", ["timed", "timer", "countdown"]),
-        ("payment or enrolment", ["pay", "payment", "payments", "purchase", "buy", "checkout", "tuition", "fee", "fees",
-                                  "billing", "invoice", "enroll", "enrol", "enrolls", "enrols", "enrollment", "enrolment",
-                                  "enrollments", "enrolments", "register", "registration", "subscribe", "subscription"]),
-        ("meeting or live session", ["meeting", "meetings", "zoom", "webex", "teams", "meet", "live", "webinar",
-                                     "conference", "conferences", "livestream", "join", "collaborate"]),
-        ("account or settings", ["account", "accounts", "settings", "profile", "password", "login", "logout", "signin",
-                                 "signout", "sso", "preferences", "notifications", "permissions", "passwords"]),
-    ]
+// StudyFindGuard (what Wisp never opens) is in StudyFindRules.swift.
 
-    /// Sites that only host forms, meetings, proctoring, graded homework or payments.
-    private static let hostRules: [(reason: String, hosts: [String])] = [
-        ("survey or evaluation", ["forms.gle", "forms.office.com", "forms.microsoft.com", "qualtrics.com",
-                                  "surveymonkey.com", "typeform.com", "jotform.com", "menti.com", "mentimeter.com",
-                                  "polleverywhere.com", "slido.com", "evaluationkit.com", "explorance.com"]),
-        ("meeting or live session", ["zoom.us", "zoom.com", "meet.google.com", "teams.microsoft.com", "teams.live.com",
-                                     "webex.com", "gotomeeting.com", "bigbluebutton.org", "collaborate.blackboard.com"]),
-        ("graded or proctored", ["proctorio.com", "honorlock.com", "examity.com", "respondus.com", "proctoru.com",
-                                 "gradescope.com", "turnitin.com", "webassign.net", "zybooks.com", "aleks.com",
-                                 "mheducation.com", "mylabmastering.com", "pearson.com", "tophat.com", "iclicker.com",
-                                 "kahoot.it", "kahoot.com", "wileyplus.com", "cengage.com", "achieve.macmillanlearning.com"]),
-        ("payment or enrolment", ["paypal.com", "stripe.com", "checkout.stripe.com", "touchnet.com", "touchnet.net",
-                                  "flywire.com", "cashnet.com"]),
-    ]
+// MARK: - Closing the tabs a run opened
 
-    /// Why this item is never opened or added, or nil.
-    static func refusal(title: String, url: String, type: String?) -> String? {
-        if let type {
-            if StudyFindReader.isLaunchType(type) { return "sounds like a test or quiz" }
-            if StudyFindReader.typeKey(type) == "assignment" { return "submission or upload" }
-        }
-        if let reason = words(in: title) { return reason }
-        guard let c = URLComponents(string: url.trimmingCharacters(in: .whitespacesAndNewlines)) else {
-            return "unknown address"
-        }
-        let host = (c.host ?? "").lowercased()
-        for rule in hostRules where rule.hosts.contains(where: { host == $0 || host.hasSuffix("." + $0) }) {
-            return rule.reason
-        }
-        if host == "docs.google.com", c.path.lowercased().hasPrefix("/forms") { return "survey or evaluation" }
-        // An address that won't decode cleanly is refused, never read raw.
-        guard let path = fullyDecoded(c.percentEncodedPath),
-              let query = fullyDecoded(c.percentEncodedQuery ?? "") else { return "unknown address" }
-        return words(in: path + " " + query)
-    }
+/// The owner asked for each tab a walk opens to be closed once it has been
+/// read ("make it close it after its done instead of opening like 50 tabs").
+/// The one Apple Events use in Find materials, bound to Wisp's own tab:
+/// - right before each open, Wisp lists the default browser's tabs (window id,
+///   tab id, or the tab's position where the browser has no tab ids, and URL);
+/// - right after, it lists them again and claims the ONE tab that is new, only
+///   if exactly one is and it is at the address Wisp opened, still loading, or
+///   on the course; none or several means no claim, and the tab stays open;
+/// - once that tab has been read, Wisp closes the claimed tab, found by window
+///   and tab id (or position), only if its address right now is the one Wisp
+///   opened or the one it read (case-sensitive).
+/// A tab the student had, switched to or navigated is never a candidate.
+/// Never runs JavaScript, never reads a page, never touches a window, never
+/// relaunches a browser. macOS asks the student once to let Wisp control the
+/// browser; if they say no, tabs stay open and the card says so. Stop and
+/// failures close nothing. Leaving a tab open is the safe failure.
+extension StudyFindTabCloser {
+    // Outcome, Tab, digest, Listing, the browser sets, the tab claim and its
+    // close-time check are in StudyFindRules.swift.
 
-    /// Percent-decoded until it stops changing (at most 4 rounds); nil when it
-    /// won't decode or a %XX is still left.
-    static func fullyDecoded(_ text: String) -> String? {
-        var current = text
-        for _ in 0..<4 {
-            guard let next = current.removingPercentEncoding else { return nil }
-            if next == current { break }
-            current = next
-        }
-        if current.range(of: "%[0-9A-Fa-f]{2}", options: .regularExpression) != nil { return nil }
-        return current
-    }
-
-    /// Words run together as stems: "MidtermReview", "finalexam", "quiz3".
-    private static let stems = ["quiz", "midterm", "proctor", "survey", "questionnaire", "pretest", "posttest"]
-
-    private static let phrases: [(phrase: String, reason: String)] = [
-        ("sign in", "account or settings"), ("log in", "account or settings"), ("sign out", "account or settings"),
-        ("log out", "account or settings"), ("check in", "account or settings"),
-        ("turn in", "submission or upload"), ("hand in", "submission or upload"),
-        ("time limit", "timed"), ("for credit", "graded or proctored"), ("points possible", "graded or proctored"),
-        ("mid term", "sounds like a test or quiz"), ("final exam", "sounds like a test or quiz"),
-    ]
-
-    private static func words(in text: String) -> String? {
-        // camelCase apart ("MidtermReview" → "Midterm Review"), then every
-        // non-letter is a space: "sign-in", "log_in", "turn/in" are phrases too.
-        var spaced = ""
-        var previous: Character = " "
-        for ch in text {
-            if ch.isUppercase, previous.isLowercase { spaced.append(" ") }
-            spaced.append(ch)
-            previous = ch
-        }
-        let lower = spaced.lowercased()
-        let tokens = lower.split(whereSeparator: { !($0.isASCII && $0.isLetter) }).map(String.init)
-        guard !tokens.isEmpty else { return nil }
-        let set = Set(tokens)
-        for rule in wordRules where !rule.words.isDisjoint(with: set) { return rule.reason }
-        let joined = " " + tokens.joined(separator: " ") + " "
-        for item in phrases where joined.contains(" " + item.phrase + " ") { return item.reason }
-        if lower.range(of: #"\bdue\s+in\s+\d"#, options: .regularExpression) != nil { return "timed" }
-        for token in tokens {
-            if stems.contains(where: { token.contains($0) }) { return "sounds like a test or quiz" }
-            if token.contains("exam"), !token.hasPrefix("exampl") { return "sounds like a test or quiz" }
-        }
+    /// The browser `url` opens in, as NSWorkspace.open would pick it.
+    @MainActor static func browser(for url: URL) -> (id: String, name: String)? {
+        #if WISP_NOTCH_QA
         return nil
+        #else
+        guard let app = NSWorkspace.shared.urlForApplication(toOpen: url),
+              let id = Bundle(url: app)?.bundleIdentifier else { return nil }
+        return (id, FileManager.default.displayName(atPath: app.path).replacingOccurrences(of: ".app", with: ""))
+        #endif
     }
+
+    /// Every tab of `browser`, or why not. Empty when it isn't running.
+    static func list(browser: String, wait: TimeInterval,
+                     keep: @Sendable (String) -> Bool) async -> Listing {
+        #if WISP_NOTCH_QA
+        return .failed
+        #else
+        guard scriptable.contains(browser) else { return .failed }
+        switch await run(listScript(browser, byID: tabIDs.contains(browser)), arguments: [], wait: wait) {
+        case .text(let out):
+            let tabs = out.split(separator: "\n").compactMap { line -> Tab? in
+                let parts = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false).map(String.init)
+                guard parts.count >= 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
+                let url = parts.count > 2 ? parts[2] : ""
+                return Tab(window: parts[0], key: parts[1], digest: digest(url), url: keep(url) ? url : nil)
+            }
+            return .tabs(tabs)
+        case .denied: return .denied
+        case .timedOut: return .timedOut
+        case .failed: return .failed
+        }
+        #endif
+    }
+
+
+    /// Closes `tab` only if its address right now is one of `addresses`.
+    static func close(_ tab: Tab, addresses: [String], browser: String, wait: TimeInterval) async -> Outcome {
+        #if WISP_NOTCH_QA
+        return .unsupported
+        #else
+        guard scriptable.contains(browser), let first = addresses.first else { return .unsupported }
+        let second = addresses.count > 1 ? addresses[1] : first
+        // The address check is repeated inside the script, right before close.
+        switch await run(closeScript(browser, byID: tabIDs.contains(browser)),
+                         arguments: [tab.window, tab.key, first, second], wait: wait) {
+        case .text(let said): return said == "closed" ? .closed : .notOne
+        case .denied: return .denied
+        case .timedOut: return .timedOut
+        case .failed: return .failed
+        }
+        #endif
+    }
+
+    private enum Reply { case text(String), denied, timedOut, failed }
+
+    /// The scripts carry only the browser's id from `scriptable` (never page
+    /// data); addresses and ids come in as arguments after "--". Both return
+    /// at once if the browser isn't running (never relaunching it).
+    private static func listScript(_ browser: String, byID: Bool) -> [String] {
+        [
+            "on run argv",
+            "if application id \"\(browser)\" is not running then return \"\"",
+            "tell application id \"\(browser)\"",
+            "set out to \"\"",
+            "repeat with w in windows",
+            "try",
+            "set wid to (id of w) as text",
+            "set i to 0",
+            "repeat with t in tabs of w",
+            "set i to i + 1",
+            "set u to \"\"",
+            "try",
+            "set u to (URL of t) as text",
+            "end try",
+            byID ? "set k to (id of t) as text" : "set k to i as text",
+            "set out to out & wid & (character id 9) & k & (character id 9) & u & (character id 10)",
+            "end repeat",
+            "end try",
+            "end repeat",
+            "return out",
+            "end tell",
+            "end run",
+        ]
+    }
+
+    private static func closeScript(_ browser: String, byID: Bool) -> [String] {
+        [
+            "on run argv",
+            "set wid to item -4 of argv",
+            "set k to item -3 of argv",
+            "set a1 to item -2 of argv",
+            "set a2 to item -1 of argv",
+            "if application id \"\(browser)\" is not running then return \"gone\"",
+            "tell application id \"\(browser)\"",
+            "considering case",
+            "repeat with w in windows",
+            "if ((id of w) as text) is wid then",
+            "set i to 0",
+            "repeat with t in tabs of w",
+            "set i to i + 1",
+            byID ? "set here to ((id of t) as text)" : "set here to (i as text)",
+            "if here is k then",
+            "set u to \"\"",
+            "try",
+            "set u to (URL of t) as text",
+            "end try",
+            "if u is a1 or u is a2 then",
+            "close t",
+            "return \"closed\"",
+            "end if",
+            "return \"moved\"",
+            "end if",
+            "end repeat",
+            "end if",
+            "end repeat",
+            "end considering",
+            "return \"gone\"",
+            "end tell",
+            "end run",
+        ]
+    }
+
+    private static func run(_ lines: [String], arguments: [String], wait: TimeInterval) async -> Reply {
+        await Task.detached(priority: .utility) { () -> Reply in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            process.arguments = lines.flatMap { ["-e", $0] } + ["--"] + arguments
+            let out = Pipe()
+            let err = Pipe()
+            process.standardOutput = out
+            process.standardError = err
+            do { try process.run() } catch { return .failed }
+            // The first call may wait on macOS's "Wisp wants to control…" prompt.
+            let timedOut = ManagedFlag()
+            let timer = DispatchWorkItem {
+                if process.isRunning {
+                    timedOut.set()
+                    process.terminate()
+                }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + wait, execute: timer)
+            let said = out.fileHandleForReading.readDataToEndOfFile()
+            let problem = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            process.waitUntilExit()
+            timer.cancel()
+            if timedOut.isSet { return .timedOut }
+            if problem.contains("-1743") { return .denied }
+            guard process.terminationStatus == 0 else { return .failed }
+            let text = String(data: said, encoding: .utf8) ?? ""
+            return .text(text.hasSuffix("\n") ? String(text.dropLast()) : text)
+        }.value
+    }
+}
+
+/// Set by Stop: a page read in progress ends at its next element.
+final class StudyFindStop: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    func set() { lock.lock(); value = true; lock.unlock() }
+    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+}
+
+/// A thread-safe one-way flag, for the close timer.
+private final class ManagedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    func set() { lock.lock(); value = true; lock.unlock() }
+    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
 }
 
 // MARK: - Backend shapes
@@ -1035,10 +926,11 @@ struct StudyFindAddResult: Equatable, Sendable {
 enum StudyFindText {
     static let button = "Find materials"
     static let help = "Opens this course's Canvas pages in your browser and finds its slides, docs and readings"
-    static let consentKey = "study.findMaterials.consented.v3"  // v3: the course's sections too
+    static let consentKey = "study.findMaterials.consented.v4"  // v4: Wisp closes the tabs it opens
     static let consent = "Wisp will open this course's Modules page and its sections (Home, Announcements, Syllabus, "
         + "Assignments, Pages, Discussions, Files, Grades) in your browser, read the links on them and on up "
-        + "to 100 of the course's own pages, and show you what it found. Each page opens as a tab you close yourself. "
+        + "to 100 of the course's own pages, and show you what it found. Each page opens as a tab, and Wisp closes it once "
+        + "it has read it (macOS asks once to let Wisp control your browser; Wisp only ever closes tabs it opened). "
         + "Nothing is added until you choose. "
         + "Linked Google files are read with your Drive sign-in; public articles are fetched without your cookies. "
         + "Opening an item may count as viewing it in Canvas. Course pages may load tools embedded in them, such as "
@@ -1075,6 +967,24 @@ enum StudyFindText {
         + "browser and the page has finished loading, then try again."
     static func tabs(_ n: Int) -> String {
         "Wisp opened \(n) \(n == 1 ? "tab" : "tabs") in your browser — you can close \(n == 1 ? "it" : "them")."
+    }
+    /// The tabs line once Wisp closes what it opens.
+    static func tabs(opened n: Int, closed: Int, problem: StudyFindTabCloser.Outcome?, browser: String) -> String {
+        let left = n - closed
+        switch problem {
+        case .denied?:
+            return "Wisp couldn't close the tabs it opened: allow Wisp to control \(browser) in System Settings › "
+                + "Privacy & Security › Automation. \(left) \(left == 1 ? "tab is" : "tabs are") still open."
+        case .unsupported?:
+            return "Wisp opened \(n) \(n == 1 ? "tab" : "tabs") in \(browser) and can't close tabs there — you can "
+                + "close \(n == 1 ? "it" : "them")."
+        case .timedOut?:
+            return "Wisp stopped closing tabs: \(browser) didn't answer in time. It closed \(closed) of \(n); you can "
+                + "close the rest."
+        default:
+            if left <= 0 { return "Wisp opened \(n) \(n == 1 ? "tab" : "tabs") in your browser and closed \(n == 1 ? "it" : "them")." }
+            return "Wisp opened \(n) \(n == 1 ? "tab" : "tabs") and closed \(closed) — you can close the other \(left)."
+        }
     }
     static let nothingFound = "Wisp didn't find any course materials on this course's Canvas pages."
     static let stoppedEarly = "Stopped. This is what Wisp found so far."
@@ -1136,25 +1046,7 @@ enum StudyFindText {
 
     /// Canvas's screen-reader notes on links ("Links to an external site.",
     /// "(opens in a new tab)") taken off a title, so sources get clean names.
-    static func cleanTitle(_ title: String) -> String {
-        var t = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let notes = [
-            #"\(?\s*links?\s+to\s+an\s+external\s+site\.?\s*\)?$"#,
-            #"\(?\s*opens\s+in\s+(a\s+)?new\s+(tab|window)\.?\s*\)?$"#,
-            #"\(?\s*external\s+link\.?\s*\)?$"#,
-        ]
-        var changed = true
-        while changed {
-            changed = false
-            for note in notes {
-                if let range = t.range(of: note, options: [.regularExpression, .caseInsensitive]) {
-                    t = String(t[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
-                    changed = true
-                }
-            }
-        }
-        return t
-    }
+    static func cleanTitle(_ title: String) -> String { StudyFindRules.cleanTitle(title) }
 
     static let recordingLabel = "Recording · link only"
 
@@ -1226,6 +1118,18 @@ final class StudyFindRun: ObservableObject {
     }
     @Published private(set) var step = ""
     @Published private(set) var tabsOpened = 0
+    @Published private(set) var tabsClosed = 0
+    /// Why tabs stopped being closed this run (not allowed, or no tab scripting).
+    @Published private(set) var closeProblem: StudyFindTabCloser.Outcome?
+    private(set) var browserName = "your browser"
+    private var browserID: String?
+    /// The browser has answered once: later calls wait less.
+    private var closeAnswered = false
+    /// This run's Stop signal for page reads in progress.
+    private var stopToken = StudyFindStop()
+    /// The tab Wisp claimed as its own right after the last open, and its
+    /// window's tabs at that moment (hashes only, for the re-check at close).
+    private var claim: (gen: Int, tab: StudyFindTabCloser.Tab, window: [StudyFindTabCloser.Tab], opened: String)?
     @Published private(set) var items: [StudyFoundItem] = []
     /// Item id → the text Wisp read from that course page.
     @Published private(set) var texts: [String: String] = [:]
@@ -1336,6 +1240,7 @@ final class StudyFindRun: ObservableObject {
     /// already have added some items, so the state is refreshed.
     func stop() {
         let wasAdding = phase == .adding
+        stopToken.set()
         generation += 1
         task?.cancel()
         task = nil
@@ -1373,12 +1278,24 @@ final class StudyFindRun: ObservableObject {
         note = nil
         result = nil
         tabsOpened = 0
+        tabsClosed = 0
+        closeProblem = nil
+        closeAnswered = false
+        claim = nil
+        stopToken = StudyFindStop()
         counts = nil
         titlesByURL = [:]
         sentTypes = [:]
         important = [:]
         phase = .working
         step = StudyFindText.openingModules
+        if let modules = target.modulesURL, let found = StudyFindTabCloser.browser(for: modules) {
+            browserID = found.id
+            browserName = found.name
+        } else {
+            browserID = nil
+        }
+        if browserID.map({ !StudyFindTabCloser.scriptable.contains($0) }) ?? true { closeProblem = .unsupported }
         task = Task { [weak self] in await self?.walk(gen) }
     }
 
@@ -1420,7 +1337,7 @@ final class StudyFindRun: ObservableObject {
         while Date() < modulesDeadline {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             guard live(gen) else { return }
-            let pages = await StudyFindReader.scan(text: false, known: beforeModules) { isNew, url in
+            let pages = await StudyFindReader.scan(text: false, known: beforeModules, stop: stopToken) { isNew, url in
                 if (isNew || StudyFindTarget.samePage(url, modulesString)) && t.isModules(url) { return .walk }
                 // Where a new tab went instead (Modules hidden): its address only.
                 return isNew && t.allows(url) ? .address : .skip
@@ -1445,6 +1362,8 @@ final class StudyFindRun: ObservableObject {
             previousCount = now.truncated ? nil : now.links.count
         }
         let modulesPage = page ?? best
+        await closeLast(landed: modulesPage?.url, gen: gen)
+        guard live(gen) else { return }
         if let modulesPage {
             c.modulesLinks = modulesPage.links.count
             c.moduleItems = modulesPage.links.filter { StudyFindTarget.pathKey($0.url).contains("/modules/items/") }.count
@@ -1476,6 +1395,10 @@ final class StudyFindRun: ObservableObject {
             guard live(gen) else { return }
             let landing = await land(opened: section.url.absoluteString, before: before, allowsOff: false, gen: gen,
                                      until: min(runDeadline, Date().addingTimeInterval(Self.pageWait)))
+            guard live(gen) else { return }
+            if case .course(let read)? = landing { await closeLast(landed: read.url, gen: gen) } else {
+                await closeLast(landed: nil, gen: gen)
+            }
             guard live(gen) else { return }
             guard case .course(let landed)? = landing, t.allows(landed.url), !t.isLaunchPage(landed.url),
                   StudyFindGuard.refusal(title: "", url: landed.url, type: nil) == nil
@@ -1543,10 +1466,15 @@ final class StudyFindRun: ObservableObject {
             guard let before = snapshot else { continue }
             guard await open(url) else { continue }
             guard live(gen) else { return }
-            // Only an External URL item may land off the course.
-            let allowsOff = StudyFindReader.isExternalURLType(sentTypes[StudyFindTarget.pathKey(item.url)])
-            let landing = await land(opened: url.absoluteString, before: before, allowsOff: allowsOff, gen: gen,
+            // Nothing Wisp opens may land off the course (External URL items are never opened).
+            let landing = await land(opened: url.absoluteString, before: before, allowsOff: false, gen: gen,
                                      until: min(runDeadline, Date().addingTimeInterval(Self.pageWait)))
+            guard live(gen) else { return }
+            switch landing {
+            case .course(let read)?: await closeLast(landed: read.url, gen: gen)
+            case .off(let address)?: await closeLast(landed: address, gen: gen)
+            case nil: await closeLast(landed: nil, gen: gen)
+            }
             guard live(gen) else { return }
             switch landing {
             case .course(let landed)?:
@@ -1606,7 +1534,7 @@ final class StudyFindRun: ObservableObject {
     /// as via "browser", on this course, and openable by path. Direct
     /// `/courses/<n>/pages/…` and `/discussion_topics/…` links first; then
     /// `/modules/items/<n>` only when the Canvas type Wisp sent for it was
-    /// Page, Discussion or External URL (unknown, File, Quiz, Assignment,
+    /// Page or Discussion (unknown, File, Quiz, Assignment, External URL,
     /// External Tool and SubHeader are all refused). Nothing else is opened.
     private static func visits(_ items: [StudyFoundItem], target: StudyFindTarget,
                                types: [String: String]) -> [StudyFoundItem] {
@@ -1657,7 +1585,7 @@ final class StudyFindRun: ObservableObject {
         while Date() < until {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             guard live(gen) else { return nil }
-            let scan = await StudyFindReader.scan(text: true, known: before) { isNew, url in
+            let scan = await StudyFindReader.scan(text: true, known: before, stop: stopToken) { isNew, url in
                 guard isNew || StudyFindTarget.samePage(url, opened) else { return .skip }
                 if t.allows(url) { return t.isLaunchPage(url) ? .address : .walk }
                 // Off the course: a new tab's address only (so new tabs can be
@@ -1697,10 +1625,77 @@ final class StudyFindRun: ObservableObject {
         return nil
     }
 
+    /// Opens `url`; when tabs can be closed, lists the browser's tabs just
+    /// before and claims the one new tab just after (StudyFindTabCloser).
     private func open(_ url: URL) async -> Bool {
+        let gen = generation
+        claim = nil
+        let browser = closeProblem == nil ? browserID : nil
+        var before: [StudyFindTabCloser.Tab]?
+        let opened = url.absoluteString
+        if let browser { before = await listTabs(browser, gen: gen, opened: opened) }
         let ok = await opener(url)
-        if ok { tabsOpened += 1 }
+        guard ok else { return false }
+        tabsOpened += 1
+        if let browser, let before, gen == generation, closeProblem == nil {
+            for _ in 0..<4 {
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                guard gen == generation, let after = await listTabs(browser, gen: gen, opened: opened) else { break }
+                // Its address is kept only when it is the opened one, loading, or on the course.
+                if let tab = StudyFindTabCloser.newTab(before: before, after: after,
+                                                       byID: StudyFindTabCloser.tabIDs.contains(browser)),
+                   tab.url != nil {
+                    claim = (gen, tab, after.filter { $0.window == tab.window }, opened)
+                    break
+                }
+            }
+        }
         return ok
+    }
+
+    /// The browser's tabs, addresses as hashes except one Wisp may claim.
+    private func listTabs(_ browser: String, gen: Int, opened: String) async -> [StudyFindTabCloser.Tab]? {
+        let t = target
+        let listing = await StudyFindTabCloser.list(browser: browser, wait: closeAnswered ? 8 : 60) { url in
+            url.isEmpty || StudyFindTarget.samePage(url, opened) || t.allows(url)
+        }
+        guard gen == generation else { return nil }
+        switch listing {
+        case .tabs(let tabs):
+            closeAnswered = true
+            return tabs
+        case .denied:
+            closeProblem = .denied
+        case .timedOut:
+            closeProblem = .timedOut
+        case .failed:
+            break
+        }
+        return nil
+    }
+
+    /// Closes the tab Wisp claimed at the last open, now that it has been read
+    /// (or given up on), for run `gen`: only if it is still at the address Wisp
+    /// opened or the one it read (`landed`). No claim, no close.
+    private func closeLast(landed: String?, gen: Int) async {
+        guard let held = claim, held.gen == gen, gen == generation else { return }
+        claim = nil
+        guard closeProblem == nil, let browser = browserID else { return }
+        let addresses = [held.opened, landed ?? held.opened]
+        // Re-listed first: the claimed tab must still be the same tab, at one of
+        // those addresses, with its window otherwise unchanged (by position).
+        guard let now = await listTabs(browser, gen: gen, opened: held.opened), gen == generation,
+              StudyFindTabCloser.stillOurs(held.tab, claimWindow: held.window, now: now, addresses: addresses,
+                                           byID: StudyFindTabCloser.tabIDs.contains(browser))
+        else { return }
+        let outcome = await StudyFindTabCloser.close(held.tab, addresses: addresses,
+                                                     browser: browser, wait: closeAnswered ? 8 : 60)
+        guard gen == generation else { return }
+        switch outcome {
+        case .closed: tabsClosed += 1
+        case .denied, .unsupported, .timedOut: closeProblem = outcome
+        case .notOne, .failed: break
+        }
     }
 
     /// In the student's default browser, without bringing it forward.
@@ -2137,7 +2132,8 @@ private struct StudyFindCard: View {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Image(systemName: "safari").font(.wisp(size: 9)).foregroundStyle(Theme.textMuted)
                     .accessibilityHidden(true)
-                Text(StudyFindText.tabs(run.tabsOpened))
+                Text(StudyFindText.tabs(opened: run.tabsOpened, closed: run.tabsClosed, problem: run.closeProblem,
+                                        browser: run.browserName))
                     .font(.wisp(.caption)).foregroundStyle(Theme.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -2268,6 +2264,10 @@ private struct StudyFindCard: View {
                 Image(systemName: "exclamationmark.circle").font(.wisp(size: 10.5)).foregroundStyle(Theme.warn)
                     .accessibilityHidden(true)
                 Text(message).font(.wisp(.footnote)).foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let counts = run.counts {
+                Text(StudyFindText.summary(counts)).font(.wisp(.caption)).foregroundStyle(Theme.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
             }
             tabsLine
