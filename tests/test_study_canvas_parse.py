@@ -466,6 +466,12 @@ def test_a_course_page_with_no_title_and_no_heading_has_an_empty_name():
         assert course["url"] == "https://canvas.example.edu/courses/12345"
 
 
+def test_the_parser_and_the_store_share_one_name_normalisation():
+    from service.study import course_names, store
+    assert cp._norm is course_names.merge_key is store.merge_key
+    assert cp._norm("WRIT 1 Writing & Rhetoric: Section 09") == "writ 1 writing rhetoric section 09"
+
+
 def test_this_file_is_in_the_simulation_manifest():
     from pathlib import Path
     manifest = (Path(__file__).resolve().parents[1] / "scripts" / "run_simulation_qa.py").read_text()
