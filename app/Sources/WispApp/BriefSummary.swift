@@ -811,10 +811,12 @@ enum BriefPlate {
         var done = false
     }
 
-    /// Rows the list shows before "Show all": five side by side, three
-    /// stacked (the normal panel), so the stacked Brief stays short.
+    /// Rows the list shows before "Show all": five side by side, two stacked
+    /// (the normal panel), so the stacked Brief stays within a tenth of the
+    /// Brief before R6. Side by side, NEEDS YOU is the taller half in the
+    /// usual Brief, so fewer rows there would not make it shorter.
     static let shownSideBySide = 5
-    static let shownStacked = 3
+    static let shownStacked = 2
 
     static func shown(sideBySide: Bool) -> Int { sideBySide ? shownSideBySide : shownStacked }
     /// The zones sit side by side from this content width (a panel of about

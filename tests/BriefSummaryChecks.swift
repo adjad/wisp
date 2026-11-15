@@ -444,8 +444,8 @@ func briefPlateChecks(_ check: (Bool, String) -> Void) {
     check(BriefPlate.sideBySide(width: 796, textScale: 1), "the 840 pt wide panel puts them side by side")
     check(BriefPlate.sideBySide(width: 796, textScale: 1.3) && !BriefPlate.sideBySide(width: 700, textScale: 1.3),
           "larger text needs more room before the zones sit side by side")
-    check(BriefPlate.shown(sideBySide: true) == 5 && BriefPlate.shown(sideBySide: false) == 3,
-          "five rows side by side, three stacked, before Show all")
+    check(BriefPlate.shown(sideBySide: true) == 5 && BriefPlate.shown(sideBySide: false) == 2,
+          "five rows side by side, two stacked, before Show all")
     check(BriefPlate.heading("NEEDS YOU", count: 4) == "NEEDS YOU · 4" && BriefPlate.heading("NEEDS YOU", count: 0) == "NEEDS YOU",
           "a zone heading counts only when there is something")
     briefWordingChecks(check)

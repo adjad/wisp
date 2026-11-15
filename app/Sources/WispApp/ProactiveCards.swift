@@ -984,7 +984,14 @@ struct ProactiveBriefSection: View {
         let tomorrow = schoolCalendar.date(byAdding: .day, value: 1, to: bounds.end) ?? bounds.end.addingTimeInterval(86_400)
         return ProactiveState.plate(todos: todos, school: schoolRows.items, isDone: { actions.isDone($0) },
                                     now: today.now.timeIntervalSince1970, dayStart: dayStart,
-                                    todayEnd: todayEnd, tomorrowEnd: tomorrow.timeIntervalSince1970)
+                                    todayEnd: todayEnd, tomorrowEnd: tomorrow.timeIntervalSince1970,
+                                    named: calendarNamed)
+    }
+
+    /// The events the calendar line names (BriefPlate.calendarLine's first
+    /// three), which the list then leaves out.
+    private var calendarNamed: [String] {
+        Array((allDayEvents + events.map(\.title)).prefix(3))
     }
 
     private var dayLink: some View {
@@ -1023,7 +1030,7 @@ struct ProactiveBriefSection: View {
         .accessibilityHint("Opens Day")
     }
 
-    /// The first five (three stacked), then "+N to-dos · +M in Study · Show all".
+    /// The first five (two stacked), then "+N to-dos · +M in Study · Show all".
     private func plateList(_ items: [PlateItem]) -> some View {
         let limit: Int = BriefPlate.shown(sideBySide: sideBySide)
         let visible: [PlateItem] = actions.showAllTodos ? items : Array(items.prefix(limit))
@@ -1133,17 +1140,32 @@ struct ProactiveBriefSection: View {
             .lineLimit(1).fixedSize()
     }
 
+    /// The title, and the course and time beside it when both fit on one
+    /// line, else under it (wrapping rather than cut with room beside it).
     private func schoolText(_ title: String, under: String) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(title).font(.wisp(size: 13.5)).foregroundStyle(Theme.textPrimary)
-                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
-            if !under.isEmpty {
-                // A long course name wraps rather than being cut with room beside it.
-                Text(under).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
-                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+        let head: Text = Text(title)
+        return Group {
+            if under.isEmpty {
+                schoolTitleText(head)
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        schoolTitleText(head).fixedSize()
+                        subText(under).fixedSize()
+                    }
+                    VStack(alignment: .leading, spacing: 1) {
+                        schoolTitleText(head)
+                        subText(under).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func schoolTitleText(_ title: Text) -> some View {
+        title.font(.wisp(size: 13.5)).foregroundStyle(Theme.textPrimary)
+            .lineLimit(2).fixedSize(horizontal: false, vertical: true)
     }
 
     private func schoolDue(_ chip: String) -> some View {
@@ -1217,20 +1239,41 @@ struct ProactiveBriefSection: View {
     /// The title as the row shows it: without a course code in brackets at its end.
     private func todoTitle(_ todo: ProactiveTodo) -> String { BriefPlate.splitCourse(todo.title).title }
 
-    /// The title; under it who it is from, unless that goes on the second line.
+    /// The title; who it is from beside it when both fit on one line, else
+    /// under it, unless that goes on the second line (side by side).
     private func todoText(_ todo: ProactiveTodo, done: Bool) -> some View {
-        let sub: String = sideBySide ? "" : todoSub(todo)
-        return VStack(alignment: .leading, spacing: 1) {
-            Text(todoTitle(todo)).font(.wisp(size: 13.5))
-                .foregroundStyle(done ? Theme.textMuted : Theme.textPrimary)
-                .strikethrough(done, color: Theme.textMuted)
-                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
-                .help(todo.title)
-            if !sub.isEmpty && !done {
-                Text(sub).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
+        let sub: String = sideBySide || done ? "" : todoSub(todo)
+        let title: Text = Text(todoTitle(todo))
+        return Group {
+            if sub.isEmpty {
+                todoTitleText(title, done: done, help: todo.title)
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        todoTitleText(title, done: done, help: todo.title).fixedSize()
+                        subText(sub).fixedSize()
+                    }
+                    VStack(alignment: .leading, spacing: 1) {
+                        todoTitleText(title, done: done, help: todo.title)
+                        subText(sub).lineLimit(1)
+                    }
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func todoTitleText(_ title: Text, done: Bool, help: String) -> some View {
+        title.font(.wisp(size: 13.5))
+            .foregroundStyle(done ? Theme.textMuted : Theme.textPrimary)
+            .strikethrough(done, color: Theme.textMuted)
+            .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            .help(help)
+    }
+
+    /// A row's muted second part: who a to-do is from, a school row's course and time.
+    private func subText(_ text: String) -> Text {
+        Text(text).font(.wisp(size: 11)).foregroundColor(Theme.textMuted)
     }
 
     /// When it is due, then Add to Day and ✓ / ×: the to-do's second line

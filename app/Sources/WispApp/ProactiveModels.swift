@@ -724,11 +724,14 @@ enum PlateItem: Identifiable, Equatable {
 
 extension ProactiveState {
     /// School work and to-dos as one list, most urgent first (BriefPlate.order).
+    /// `named`: the events the calendar line above the list names; a to-do
+    /// that only restates one of them is left out (BriefPlate.restatesCalendar).
     static func plate(todos: [ProactiveTodo], school: [StudyDaySummary.Due], isDone: (ProactiveTodo) -> Bool,
-                      now: Double, dayStart: Double, todayEnd: Double, tomorrowEnd: Double) -> [PlateItem] {
+                      now: Double, dayStart: Double, todayEnd: Double, tomorrowEnd: Double,
+                      named: [String] = []) -> [PlateItem] {
         var items: [String: PlateItem] = [:]
         var entries: [BriefPlate.Entry] = []
-        for todo in todos {
+        for todo in todos where !restatesCalendar(todo, named: named) {
             let item = PlateItem.todo(todo)
             items[item.id] = item
             entries.append(BriefPlate.Entry(key: item.id, title: todo.title, due: todo.dueTs,
@@ -741,6 +744,16 @@ extension ProactiveState {
         }
         let ordered = BriefPlate.order(entries, now: now, dayStart: dayStart, todayEnd: todayEnd, tomorrowEnd: tomorrowEnd)
         return ordered.compactMap { items[$0.key] }
+    }
+
+    /// Whether a to-do only restates an event the calendar line already names:
+    /// a calendar event, by its title (case and punctuation aside). It is left
+    /// out of the list, so nothing shows twice in ON YOUR PLATE; an event the
+    /// line doesn't name (tomorrow's, a fourth one today) stays.
+    static func restatesCalendar(_ todo: ProactiveTodo, named: [String]) -> Bool {
+        guard todo.kind == "event" || todo.source == "calendar" else { return false }
+        let key = BriefPlate.words(todo.title)
+        return !key.isEmpty && named.contains { BriefPlate.words($0) == key }
     }
 
     /// Mail and texts without the ones a reply card already holds: a thread

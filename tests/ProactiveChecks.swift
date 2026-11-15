@@ -347,6 +347,17 @@ struct ProactiveChecks {
         check(plate.map(\.id) == ["todo:late", "school:lab", "school:quiz", "todo:tom", "todo:later", "todo:none"],
               "overdue, today, tomorrow (by time), later, undated: \(plate.map(\.id))")
         check(plate.filter(\.isSchool).count == 2, "school rows keep their kind")
+        // R6 polish: an event the calendar line already names is not also a to-do row.
+        let events = [ProactiveTodo(id: "hack", title: "Hack Day", source: "calendar", dueTs: noon, dueLabel: "12 PM", kind: "event"),
+                      ProactiveTodo(id: "fair", title: "Career fair", source: "calendar", dueTs: day0 + 86400 + 3600, kind: "event"),
+                      ProactiveTodo(id: "prep", title: "Hack Day", source: "reminders", dueTs: noon, kind: "task")]
+        let named = ProactiveState.plate(todos: events, school: [], isDone: { _ in false }, now: day0, dayStart: day0,
+                                         todayEnd: day0 + 86400, tomorrowEnd: day0 + 2 * 86400, named: ["hack day!"])
+        check(named.map(\.id) == ["todo:prep", "todo:fair"],
+              "the named event leaves the list; tomorrow's event and a to-do sharing its name stay: \(named.map(\.id))")
+        check(ProactiveState.plate(todos: events, school: [], isDone: { _ in false }, now: day0, dayStart: day0,
+                                   todayEnd: day0 + 86400, tomorrowEnd: day0 + 2 * 86400).count == 3,
+              "with nothing named, every event stays")
 
         print("Proactive checks: \(count) passed")
     }
