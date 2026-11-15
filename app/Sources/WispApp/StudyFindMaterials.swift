@@ -172,24 +172,6 @@ struct StudyFindTarget: Equatable, Sendable {
         return Self.sectionPaths.contains(Array(s.dropFirst(2)))
     }
 
-    /// An outside tool in the course's own menu: exactly
-    /// `/courses/<id>/external_tools/<n>` on this host, with no query (a tool
-    /// linked from inside a page or module carries one, or is a module item).
-    /// The clean launch address, or nil.
-    func navToolURL(_ raw: String) -> URL? {
-        guard let parts = Self.parts(raw), parts.host == host,
-              URLComponents(url: parts.url, resolvingAgainstBaseURL: false)?.query == nil
-        else { return nil }
-        let s = parts.segments
-        guard s.count == 4, s[0] == "courses", s[1] == canvasID, s[2] == "external_tools", Self.isDigits(s[3])
-        else { return nil }
-        var c = URLComponents()
-        c.scheme = "https"
-        c.host = host
-        c.path = "/courses/\(canvasID)/external_tools/\(s[3])"
-        return c.url
-    }
-
     /// A page on the course that launches a tool, LTI, quiz or assignment item.
     /// A section list page (the Assignments list, the Syllabus) is not one.
     func isLaunchPage(_ raw: String) -> Bool {
@@ -219,8 +201,11 @@ struct StudyFindTarget: Equatable, Sendable {
     /// True when `raw`'s path has a tool, LTI or quiz segment (any case), or
     /// when it can't be parsed at all.
     static func launchesTool(_ raw: String) -> Bool {
-        guard let c = URLComponents(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)) else { return true }
-        let path = c.percentEncodedPath.lowercased()
+        guard let c = URLComponents(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let decoded = StudyFindGuard.fullyDecoded(c.percentEncodedPath)
+        else { return true }
+        // Decoded until stable first, so "external_tool%2573" is "external_tools".
+        let path = decoded.lowercased()
         return path.split(separator: "/").contains { segment in
             launchSegments.contains(String(segment)) || segment.hasPrefix("lti")
         }
@@ -702,7 +687,9 @@ enum StudyFindReader {
     /// ExternalTool and SubHeader are all refused.
     static func isOpenableModuleType(_ type: String?) -> Bool {
         guard let type else { return false }
-        return ["page", "wikipage", "discussion", "discussiontopic", "externalurl"].contains(typeKey(type))
+        // External URL items are never opened: only their title and
+        // /modules/items/<n> are known before the open (the server refuses them too).
+        return ["page", "wikipage", "discussion", "discussiontopic"].contains(typeKey(type))
     }
 
     static func isExternalURLType(_ type: String?) -> Bool {
@@ -763,6 +750,125 @@ enum StudyFindReader {
         else { return nil }
         c.fragment = nil
         return c.string
+    }
+}
+
+// MARK: - Never opened: anything that sounds important
+
+/// The owner's rule: Wisp never opens, or adds, anything that is or sounds like
+/// a test, quiz, exam, survey or course evaluation, a graded or proctored
+/// activity, a submission or upload page, a link that starts, attempts or
+/// resumes something, anything timed, a payment or enrolment page, a meeting,
+/// or an account or settings page. Checked on the Canvas item type first, then
+/// on words in the title and the address, then on the site. When in doubt it
+/// counts as important. Refused items are still listed, with the reason, so
+/// the student can open them by hand.
+enum StudyFindGuard {
+    private static let wordRules: [(reason: String, words: Set<String>)] = [
+        ("sounds like a test or quiz", ["test", "tests", "pretest", "posttest", "quiz", "quizzes", "quizzing", "exam",
+                                         "exams", "midterm", "midterms", "final", "finals", "assessment", "assessments",
+                                         "assessing", "examination", "examinations", "pretests", "posttests",
+                                         "placement", "examsoft"]),
+        ("survey or evaluation", ["survey", "surveys", "evaluation", "evaluations", "eval", "evals", "questionnaire",
+                                  "questionnaires", "poll", "polls", "polling", "feedback"]),
+        ("graded or proctored", ["graded", "grading", "proctor", "proctored", "proctoring", "proctorio", "honorlock",
+                                 "respondus", "lockdown", "examity", "turnitin", "gradescope", "proctoru"]),
+        ("submission or upload", ["submit", "submits", "submission", "submissions", "upload", "uploads", "uploading",
+                                  "dropbox"]),
+        ("starts something", ["attempt", "attempts", "start", "starts", "begin", "resume", "launch", "take", "retake"]),
+        ("timed", ["timed", "timer", "countdown"]),
+        ("payment or enrolment", ["pay", "payment", "payments", "purchase", "buy", "checkout", "tuition", "fee", "fees",
+                                  "billing", "invoice", "enroll", "enrol", "enrolls", "enrols", "enrollment", "enrolment",
+                                  "enrollments", "enrolments", "register", "registration", "subscribe", "subscription"]),
+        ("meeting or live session", ["meeting", "meetings", "zoom", "webex", "teams", "meet", "live", "webinar",
+                                     "conference", "conferences", "livestream", "join", "collaborate"]),
+        ("account or settings", ["account", "accounts", "settings", "profile", "password", "login", "logout", "signin",
+                                 "signout", "sso", "preferences", "notifications", "permissions", "passwords"]),
+    ]
+
+    /// Sites that only host forms, meetings, proctoring, graded homework or payments.
+    private static let hostRules: [(reason: String, hosts: [String])] = [
+        ("survey or evaluation", ["forms.gle", "forms.office.com", "forms.microsoft.com", "qualtrics.com",
+                                  "surveymonkey.com", "typeform.com", "jotform.com", "menti.com", "mentimeter.com",
+                                  "polleverywhere.com", "slido.com", "evaluationkit.com", "explorance.com"]),
+        ("meeting or live session", ["zoom.us", "zoom.com", "meet.google.com", "teams.microsoft.com", "teams.live.com",
+                                     "webex.com", "gotomeeting.com", "bigbluebutton.org", "collaborate.blackboard.com"]),
+        ("graded or proctored", ["proctorio.com", "honorlock.com", "examity.com", "respondus.com", "proctoru.com",
+                                 "gradescope.com", "turnitin.com", "webassign.net", "zybooks.com", "aleks.com",
+                                 "mheducation.com", "mylabmastering.com", "pearson.com", "tophat.com", "iclicker.com",
+                                 "kahoot.it", "kahoot.com", "wileyplus.com", "cengage.com", "achieve.macmillanlearning.com"]),
+        ("payment or enrolment", ["paypal.com", "stripe.com", "checkout.stripe.com", "touchnet.com", "touchnet.net",
+                                  "flywire.com", "cashnet.com"]),
+    ]
+
+    /// Why this item is never opened or added, or nil.
+    static func refusal(title: String, url: String, type: String?) -> String? {
+        if let type {
+            if StudyFindReader.isLaunchType(type) { return "sounds like a test or quiz" }
+            if StudyFindReader.typeKey(type) == "assignment" { return "submission or upload" }
+        }
+        if let reason = words(in: title) { return reason }
+        guard let c = URLComponents(string: url.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return "unknown address"
+        }
+        let host = (c.host ?? "").lowercased()
+        for rule in hostRules where rule.hosts.contains(where: { host == $0 || host.hasSuffix("." + $0) }) {
+            return rule.reason
+        }
+        if host == "docs.google.com", c.path.lowercased().hasPrefix("/forms") { return "survey or evaluation" }
+        // An address that won't decode cleanly is refused, never read raw.
+        guard let path = fullyDecoded(c.percentEncodedPath),
+              let query = fullyDecoded(c.percentEncodedQuery ?? "") else { return "unknown address" }
+        return words(in: path + " " + query)
+    }
+
+    /// Percent-decoded until it stops changing (at most 4 rounds); nil when it
+    /// won't decode or a %XX is still left.
+    static func fullyDecoded(_ text: String) -> String? {
+        var current = text
+        for _ in 0..<4 {
+            guard let next = current.removingPercentEncoding else { return nil }
+            if next == current { break }
+            current = next
+        }
+        if current.range(of: "%[0-9A-Fa-f]{2}", options: .regularExpression) != nil { return nil }
+        return current
+    }
+
+    /// Words run together as stems: "MidtermReview", "finalexam", "quiz3".
+    private static let stems = ["quiz", "midterm", "proctor", "survey", "questionnaire", "pretest", "posttest"]
+
+    private static let phrases: [(phrase: String, reason: String)] = [
+        ("sign in", "account or settings"), ("log in", "account or settings"), ("sign out", "account or settings"),
+        ("log out", "account or settings"), ("check in", "account or settings"),
+        ("turn in", "submission or upload"), ("hand in", "submission or upload"),
+        ("time limit", "timed"), ("for credit", "graded or proctored"), ("points possible", "graded or proctored"),
+        ("mid term", "sounds like a test or quiz"), ("final exam", "sounds like a test or quiz"),
+    ]
+
+    private static func words(in text: String) -> String? {
+        // camelCase apart ("MidtermReview" → "Midterm Review"), then every
+        // non-letter is a space: "sign-in", "log_in", "turn/in" are phrases too.
+        var spaced = ""
+        var previous: Character = " "
+        for ch in text {
+            if ch.isUppercase, previous.isLowercase { spaced.append(" ") }
+            spaced.append(ch)
+            previous = ch
+        }
+        let lower = spaced.lowercased()
+        let tokens = lower.split(whereSeparator: { !($0.isASCII && $0.isLetter) }).map(String.init)
+        guard !tokens.isEmpty else { return nil }
+        let set = Set(tokens)
+        for rule in wordRules where !rule.words.isDisjoint(with: set) { return rule.reason }
+        let joined = " " + tokens.joined(separator: " ") + " "
+        for item in phrases where joined.contains(" " + item.phrase + " ") { return item.reason }
+        if lower.range(of: #"\bdue\s+in\s+\d"#, options: .regularExpression) != nil { return "timed" }
+        for token in tokens {
+            if stems.contains(where: { token.contains($0) }) { return "sounds like a test or quiz" }
+            if token.contains("exam"), !token.hasPrefix("exampl") { return "sounds like a test or quiz" }
+        }
+        return nil
     }
 }
 
@@ -923,15 +1029,14 @@ struct StudyFindAddResult: Equatable, Sendable {
 enum StudyFindText {
     static let button = "Find materials"
     static let help = "Opens this course's Canvas pages in your browser and finds its slides, docs and readings"
-    static let consentKey = "study.findMaterials.consented.v4"  // v4: sections and the course menu's outside tools
+    static let consentKey = "study.findMaterials.consented.v3"  // v3: the course's sections too
     static let consent = "Wisp will open this course's Modules page and its sections (Home, Announcements, Syllabus, "
         + "Assignments, Pages, Discussions, Files, Grades) in your browser, read the links on them and on up "
         + "to 100 of the course's own pages, and show you what it found. Each page opens as a tab you close yourself. "
         + "Nothing is added until you choose. "
         + "Linked Google files are read with your Drive sign-in; public articles are fetched without your cookies. "
         + "Opening an item may count as viewing it in Canvas. Course pages may load tools embedded in them, such as "
-        + "video players. Wisp never opens quizzes, assignments or tools inside modules, and opens the outside "
-        + "tools in the course's menu only if you turn that on below."
+        + "video players. Wisp never opens quizzes, assignments or outside tools."
     static let noCanvasLink = "Wisp doesn't have a Canvas link for this course yet. Read your school tabs first."
     static let needsAddress = "Find materials: open this course in Canvas and press Read again so Wisp knows its address."
     static let openingModules = "Opening the Modules page in your browser"
@@ -939,32 +1044,6 @@ enum StudyFindText {
     static func sorting(_ n: Int) -> String { "Sorting \(n) \(n == 1 ? "link" : "links")" }
     static func readingPage(_ i: Int, of n: Int) -> String { "Reading course page \(i) of \(n)" }
     static func readingSection(_ name: String, _ i: Int, of n: Int) -> String { "Reading \(name) (\(i) of \(n))" }
-    static func readingTool(_ name: String) -> String { "Reading the links in \(name)" }
-    /// Opening the course menu's outside tools is its own choice, off until the
-    /// student turns it on: each launch tells that tool's site who they are.
-    static let toolsKey = "study.findMaterials.outsideTools.v1"
-    static let toolsToggle = "Also open the outside tools in the course's menu"
-    static let toolsExplain = "Such as Ed Discussion, Gradescope or YuJa. They open signed in as you, so Canvas tells "
-        + "each tool's site who you are. Wisp reads only their links. Never Zoom, course surveys, badges or proctoring."
-    static let toolsOff = "turned off"
-    static let outsideTool = "Outside tool"
-    /// The course menu's outside tools and what happened to each.
-    static func toolsLine(_ tools: [StudyFindTool]) -> String {
-        var done: [String] = []
-        var notOpened: [String] = []
-        for tool in tools {
-            switch tool.status {
-            case .read(let links): done.append("\(tool.name) (\(links) \(links == 1 ? "link" : "links"))")
-            case .couldntRead: done.append("\(tool.name) (couldn't read)")
-            case .skipped(let why): notOpened.append("\(tool.name) (\(why))")
-            case .waiting: notOpened.append("\(tool.name) (time limit)")
-            }
-        }
-        var parts: [String] = []
-        if !done.isEmpty { parts.append("Outside tools: " + done.joined(separator: ", ")) }
-        if !notOpened.isEmpty { parts.append("Not opened: " + notOpened.joined(separator: ", ")) }
-        return parts.joined(separator: " · ")
-    }
     /// One line of counts on the found card, so a run can be judged without seeing
     /// the page. Counts only: no titles or addresses.
     static func summary(_ c: StudyFindCounts) -> String {
@@ -1033,12 +1112,24 @@ enum StudyFindText {
     /// The row note for an item the server refused.
     static func refused(_ reason: String) -> String {
         switch reason {
+        case "quiz": return "Can't open: test or quiz"
+        case "survey": return "Can't open: survey or evaluation"
+        case "graded": return "Can't open: graded or proctored"
+        case "submission": return "Can't open: submission or upload"
+        case "start": return "Can't open: starts something"
+        case "timed": return "Can't open: timed"
+        case "payment": return "Can't open: payment or enrolment"
+        case "meeting": return "Can't open: meeting or live session"
+        case "account": return "Can't open: account or settings"
+        case "outside": return "Can't open: outside link"
         case "tool": return "Can't open: outside tool"
-        case "quiz": return "Can't open: quiz"
         case "assignment": return "Can't open: assignment"
         default: return "Can't open: unknown type"
         }
     }
+
+    /// The row note for an item Wisp never opens because it sounds important.
+    static func notOpened(_ reason: String) -> String { "Not opened: \(reason)" }
     static func kindName(_ kind: String) -> String {
         switch kind {
         case "slides": return "Slides"
@@ -1085,36 +1176,6 @@ struct StudyFindCounts: Equatable, Sendable {
     var truncated = 0
 }
 
-/// An outside tool from the course's menu (Ed Discussion, Gradescope, YuJa…).
-/// The owner asked for these to be opened ("add any outside source"); some are
-/// never opened because they start something or hold no course material.
-struct StudyFindTool: Equatable, Identifiable, Sendable {
-    enum Status: Equatable, Sendable {
-        case waiting
-        case read(links: Int)
-        case couldntRead
-        case skipped(String)
-    }
-    /// Its clean launch address.
-    let id: String
-    let name: String
-    var status: Status
-
-    /// Why a tool is never opened, from its menu name, or nil.
-    static func skipReason(_ name: String) -> String? {
-        let n = name.lowercased()
-        if n.contains("zoom") || n.contains("webex") || n.contains("teams meeting") { return "can start a meeting" }
-        if n.range(of: #"\bsets\b"#, options: .regularExpression) != nil || n.contains("evaluation")
-            || n.contains("survey") || n.contains("feedback") { return "course survey" }
-        if n.contains("badge") || n.contains("parchment") || n.contains("credential") { return "badges, no course material" }
-        if n.contains("proctor") || n.contains("honorlock") || n.contains("respondus") || n.contains("lockdown") {
-            return "exam proctoring"
-        }
-        if n.contains("attendance") || n.contains("check in") || n.contains("check-in") { return "records attendance" }
-        return nil
-    }
-}
-
 /// One course's Find materials run. Kept per course across view rebuilds (the
 /// notch can close and reopen mid-run), so the walk carries on and the card
 /// shows where it is when it comes back.
@@ -1139,7 +1200,6 @@ final class StudyFindRun: ObservableObject {
     @Published private(set) var note: String?
     @Published private(set) var result: StudyFindAddResult?
     @Published private(set) var counts: StudyFindCounts?
-    @Published private(set) var tools: [StudyFindTool] = []
 
     let target: StudyFindTarget
     private let transport: Transport
@@ -1151,14 +1211,14 @@ final class StudyFindRun: ObservableObject {
     private var titlesByURL: [String: String] = [:]
     /// `StudyFindTarget.pathKey` of each link sent → its Canvas module item type.
     private var sentTypes: [String: String] = [:]
+    /// Item id → why it is never opened or added (StudyFindGuard).
+    private var important: [String: String] = [:]
 
     /// The owner asked for up to 100 opened pages (was 10). The run limit scales with
     /// the cap (5 minutes plus 9 s a page: 20 minutes at 100), and Wisp pauses
     /// `openPause` between page opens so the course site isn't hammered.
     static let maxVisits = 100
-    static let maxTools = 10
-    static let toolWait: TimeInterval = 25
-    static let runSeconds: TimeInterval = 300 + TimeInterval(maxVisits + maxTools + StudyFindTarget.sections.count) * 9
+    static let runSeconds: TimeInterval = 300 + TimeInterval(maxVisits) * 9
     static let openPause: UInt64 = 1_500_000_000
     static let modulesWait: TimeInterval = 60
     static let pageWait: TimeInterval = 20
@@ -1229,7 +1289,6 @@ final class StudyFindRun: ObservableObject {
         note = nil
         result = nil
         counts = nil
-        tools = []
         tabsOpened = 0
     }
 
@@ -1275,9 +1334,9 @@ final class StudyFindRun: ObservableObject {
         result = nil
         tabsOpened = 0
         counts = nil
-        tools = []
         titlesByURL = [:]
         sentTypes = [:]
+        important = [:]
         phase = .working
         step = StudyFindText.openingModules
         task = Task { [weak self] in await self?.walk(gen) }
@@ -1378,7 +1437,8 @@ final class StudyFindRun: ObservableObject {
             let landing = await land(opened: section.url.absoluteString, before: before, allowsOff: false, gen: gen,
                                      until: min(runDeadline, Date().addingTimeInterval(Self.pageWait)))
             guard live(gen) else { return }
-            guard case .course(let landed)? = landing, t.allows(landed.url), !t.isLaunchPage(landed.url)
+            guard case .course(let landed)? = landing, t.allows(landed.url), !t.isLaunchPage(landed.url),
+                  StudyFindGuard.refusal(title: "", url: landed.url, type: nil) == nil
             else { continue }
             c.sectionsRead += 1
             c.sectionLinks += landed.links.count
@@ -1414,7 +1474,7 @@ final class StudyFindRun: ObservableObject {
 
         // 4. One level deep: up to 100 of the course's own pages, only from
         //    what this resolve returned as via "browser".
-        let visits = Self.visits(found, target: t, types: sentTypes)
+        let visits = Self.visits(found, target: t, types: sentTypes).filter { important[$0.id] == nil }
         c.pagesPlanned = visits.count
         counts = c
         var deeper: [StudyFindLink] = []
@@ -1427,7 +1487,10 @@ final class StudyFindRun: ObservableObject {
             }
             // Re-checked here, whatever the server said: the course's own
             // page, and never a tool, LTI or quiz launch.
-            guard let url = t.openableURL(item.url) else { continue }
+            guard let url = t.openableURL(item.url),
+                  StudyFindGuard.refusal(title: item.title, url: item.url,
+                                         type: sentTypes[StudyFindTarget.pathKey(item.url)]) == nil
+            else { continue }
             step = StudyFindText.readingPage(index + 1, of: visits.count)
             if index > 0 {
                 // A short pause between opens, so the course site isn't hammered.
@@ -1450,7 +1513,8 @@ final class StudyFindRun: ObservableObject {
                 // Re-checked before anything read from the landed page is
                 // used: this course, and not a tool or quiz launch page (its
                 // links and frames are ignored too).
-                guard t.allows(landed.url), !t.isLaunchPage(landed.url) else { continue }
+                guard t.allows(landed.url), !t.isLaunchPage(landed.url),
+                      StudyFindGuard.refusal(title: "", url: landed.url, type: nil) == nil else { continue }
                 c.pagesRead += 1
                 if landed.truncated { c.truncated += 1 }
                 counts = c
@@ -1470,60 +1534,7 @@ final class StudyFindRun: ObservableObject {
             }
         }
 
-        // 5. Outside tools in the course's own menu (the owner asked for them),
-        //    one level, read-only: Wisp opens the Canvas launch address, reads
-        //    only the links on the tab(s) the launch opened, and opens nothing
-        //    from them. Never: meetings, surveys, badges, proctoring, attendance.
-        var menuTools: [StudyFindTool] = []
-        var seenTools = Set<String>()
-        for link in (modulesPage?.links ?? []) + sectionLinks {
-            guard menuTools.count < Self.maxTools, let url = t.navToolURL(link.url),
-                  !seenTools.contains(url.absoluteString) else { continue }
-            seenTools.insert(url.absoluteString)
-            let name = link.title.isEmpty ? StudyFindText.outsideTool : link.title
-            menuTools.append(StudyFindTool(id: url.absoluteString, name: name,
-                                             status: StudyFindTool.skipReason(name).map { .skipped($0) } ?? .waiting))
-        }
-        // Off until the student turns it on: each tool is then listed, not opened.
-        if !UserDefaults.standard.bool(forKey: StudyFindText.toolsKey) {
-            for i in menuTools.indices where menuTools[i].status == .waiting {
-                menuTools[i].status = .skipped(StudyFindText.toolsOff)
-            }
-        }
-        tools = menuTools
-        for i in menuTools.indices where menuTools[i].status == .waiting {
-            guard live(gen) else { return }
-            if Date() >= runDeadline {
-                note = StudyFindText.timeCap
-                break
-            }
-            // Re-checked here: this course's own menu entry, nothing else.
-            guard let url = t.navToolURL(menuTools[i].id) else { continue }
-            step = StudyFindText.readingTool(menuTools[i].name)
-            try? await Task.sleep(nanoseconds: Self.openPause)
-            guard live(gen) else { return }
-            let snapshot = await StudyFindReader.tabs()
-            guard live(gen) else { return }
-            guard let before = snapshot, await open(url) else {
-                menuTools[i].status = .couldntRead
-                tools = menuTools
-                continue
-            }
-            guard live(gen) else { return }
-            let read = await landTool(before: before, gen: gen,
-                                      until: min(runDeadline, Date().addingTimeInterval(Self.toolWait)))
-            guard live(gen) else { return }
-            if let read {
-                menuTools[i].status = .read(links: read.links.count)
-                deeper += read.links
-                deeperFrames += read.frames
-            } else {
-                menuTools[i].status = .couldntRead
-            }
-            tools = menuTools
-        }
-
-        // 6. Classify what those pages link to, then show it all. Nothing
+        // 5. Classify what those pages link to, then show it all. Nothing
         //    from this round is opened.
         let second = Self.links(deeper, frames: deeperFrames, except: &sent)
         if !second.isEmpty, live(gen), Date() < runDeadline {
@@ -1646,30 +1657,6 @@ final class StudyFindRun: ObservableObject {
         return nil
     }
 
-    /// The tab(s) an outside tool's launch opened: only tabs new since `before`
-    /// (Wisp's own), at most two, in a complete scan. Links only, never text,
-    /// read once their count is steady (at least 4 s in, for the launch's redirects).
-    private func landTool(before: [StudyFindTab], gen: Int, until: Date) async -> (links: [StudyFindLink], frames: [String])? {
-        let started = Date()
-        var lastCount: Int?
-        var latest: [StudyFindPage] = []
-        while Date() < until {
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            guard live(gen) else { return nil }
-            let scan = await StudyFindReader.scan(text: false, known: before) { isNew, _ in isNew ? .walk : .skip }
-            guard live(gen) else { return nil }
-            let fresh = scan.pages.filter(\.isNew)
-            guard scan.complete, (1...2).contains(fresh.count) else { continue }
-            let count = fresh.reduce(0) { $0 + $1.links.count + $1.frames.count }
-            let cut = fresh.contains(where: \.truncated)
-            latest = fresh
-            if Date().timeIntervalSince(started) >= 4, !cut, count > 0, lastCount == count { break }
-            lastCount = cut ? nil : count
-        }
-        guard !latest.isEmpty else { return nil }
-        return (latest.flatMap(\.links), latest.flatMap(\.frames))
-    }
-
     private func open(_ url: URL) async -> Bool {
         let ok = await opener(url)
         if ok { tabsOpened += 1 }
@@ -1693,6 +1680,12 @@ final class StudyFindRun: ObservableObject {
     }
 
     private func merge(_ found: [StudyFoundItem]) {
+        for item in found where item.reason == nil && important[item.id] == nil {
+            if let why = StudyFindGuard.refusal(title: item.title, url: item.url,
+                                                type: sentTypes[StudyFindTarget.pathKey(item.url)]) {
+                important[item.id] = why
+            }
+        }
         var index: [String: Int] = [:]
         for (i, item) in items.enumerated() { index[item.id] = i }
         for item in found {
@@ -1718,6 +1711,7 @@ final class StudyFindRun: ObservableObject {
     func blocker(_ item: StudyFoundItem) -> String? {
         if let reason = item.reason { return StudyFindText.refused(reason) }
         if item.known { return StudyFindText.added }
+        if let why = important[item.id] { return StudyFindText.notOpened(why) }
         switch item.via {
         case "drive", "web":
             return item.kind == "video" || item.kind == "other" ? StudyFindText.cantAdd : nil
@@ -1727,6 +1721,12 @@ final class StudyFindRun: ObservableObject {
         default:
             return StudyFindText.cantAdd
         }
+    }
+
+    /// The list group an item shows under: refused items all go under "Can't open".
+    func group(_ item: StudyFoundItem) -> String {
+        if item.reason != nil || important[item.id] != nil { return "other" }
+        return StudyFindText.order.contains(item.kind) ? item.kind : "other"
     }
 
     func toggle(_ item: StudyFoundItem) {
@@ -1966,7 +1966,6 @@ struct StudyFindMaterialsView: View {
 
 private struct StudyFindCard: View {
     @ObservedObject var run: StudyFindRun
-    @AppStorage(StudyFindText.toolsKey) private var openTools = false
     let course: StudyCourse
     let onFinished: () async -> Void
     let onResize: () -> Void
@@ -2044,25 +2043,12 @@ private struct StudyFindCard: View {
                 Text(StudyFindText.consent).font(.wisp(.footnote)).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            toolsChoice
             HStack(spacing: 6) {
                 StudyChrome.pill("Continue", primary: true) { run.consent() }
-                    .accessibilityHint("Opens the Modules page in your browser and reads its links")
+                    .accessibilityHint("Opens this course's Canvas pages in your browser and reads their links")
                 StudyChrome.pill("Cancel") { set { run.close() } }
                 Spacer(minLength: 0)
             }
-        }
-    }
-
-    /// The separate, off-by-default choice to open the course menu's outside tools.
-    private var toolsChoice: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Toggle(StudyFindText.toolsToggle, isOn: $openTools)
-                .toggleStyle(.checkbox)
-                .font(.wisp(.footnote)).foregroundStyle(Theme.textSecondary)
-            Text(StudyFindText.toolsExplain).font(.wisp(.caption)).foregroundStyle(Theme.textMuted)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.leading, 20)
         }
     }
 
@@ -2127,12 +2113,6 @@ private struct StudyFindCard: View {
                 Text(StudyFindText.summary(counts)).font(.wisp(.caption)).foregroundStyle(Theme.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if !run.tools.isEmpty {
-                Text(StudyFindText.toolsLine(run.tools)).font(.wisp(.caption)).foregroundStyle(Theme.textMuted)
-                    .fixedSize(horizontal: false, vertical: true)
-                // Turned off this run: the choice is here for the next one.
-                if run.tools.contains(where: { $0.status == .skipped(StudyFindText.toolsOff) }) { toolsChoice }
-            }
             if run.items.isEmpty {
                 Text(StudyFindText.nothingFound).font(.wisp(.footnote)).foregroundStyle(Theme.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
@@ -2156,9 +2136,7 @@ private struct StudyFindCard: View {
 
     private var list: some View {
         let groups = StudyFindText.order.compactMap { kind -> Group? in
-            let rows = run.items.filter { item in
-                (StudyFindText.order.contains(item.kind) ? item.kind : "other") == kind
-            }
+            let rows = run.items.filter { item in run.group(item) == kind }
             return rows.isEmpty ? nil : Group(id: kind, rows: rows)
         }
         return VStack(alignment: .leading, spacing: 2) {
