@@ -724,7 +724,9 @@ struct DayTimeline: Equatable {
         if reason.hasPrefix("Waiting for a current calendar") { return "waiting until Wisp can read your calendar" }
         if reason.hasPrefix("Needs "), let gap = reason.range(of: "is ")?.upperBound {
             let largest = reason[gap...].split(separator: " ").first.map(String.init) ?? ""
-            return "no long enough gap" + (largest.isEmpty ? "" : " (the longest free stretch is \(largest) min)")
+            // Short, and the number and its unit never part: the row's reason
+            // was cut right at the number ("…stretch is 6…").
+            return "no gap long enough" + (largest.isEmpty ? "" : " (the longest is \(largest)\u{00A0}min)")
         }
         return reason
     }
@@ -761,7 +763,13 @@ struct DayTimeline: Equatable {
         let backlog = open.count - dueToday.count
         let suggestions = items.filter { $0.style == .suggested }
         let usual = items.filter { $0.style == .usual }
-        let events = items.filter { $0.style == .calendar || $0.style == .task }
+        // Counted from the list the agenda draws: what happens at a time
+        // (calendar events, plan and study blocks, plans caught in texts, to-dos
+        // at their time), and apart from it what is due by a time (reminders,
+        // school work, to-dos due by then). Only calendar and plan blocks were
+        // counted, and the due rows not at all ("nothing else planned").
+        let events = items.filter(isOnTheClock)
+        let due = items.filter(isDueBy).count
         var first: String
         if !calendarRead && events.isEmpty && dueToday.isEmpty && suggestions.isEmpty {
             // Not "nothing is planned": Wisp hasn't seen the calendar.
@@ -784,18 +792,54 @@ struct DayTimeline: Equatable {
             }
         } else if backlog > 0 {
             first = "\(count(backlog).capitalizedFirst) overdue reminder\(backlog == 1 ? "" : "s") to look at"
-                + (events.isEmpty ? "." : ", and \(count(events.count)) thing\(events.count == 1 ? "" : "s") on the clock.")
+            if events.isEmpty && due == 0 {
+                first += "."
+            } else if due == 0 {
+                first += ", and \(things(events.count)) on the clock."
+            } else {
+                first += ", " + clockAndDue(events.count, due, isToday: isToday) + "."
+            }
         } else if !suggestions.isEmpty {
             first = "Nothing is due. I've suggested \(count(suggestions.count)) block\(suggestions.count == 1 ? "" : "s") around your calendar."
         } else {
-            first = events.isEmpty
-                ? (isToday ? "Nothing is planned for the rest of today." : "Nothing is planned that day.")
-                : "\(count(events.count).capitalizedFirst) thing\(events.count == 1 ? "" : "s") on the clock\(isToday ? " for the rest of today" : ""), nothing else planned."
+            if events.isEmpty && due == 0 {
+                first = isToday ? "Nothing is planned for the rest of today." : "Nothing is planned that day."
+            } else if due == 0 {
+                first = "\(things(events.count).capitalizedFirst) on the clock\(isToday ? " for the rest of today" : ""), nothing else planned."
+            } else {
+                first = clockAndDue(events.count, due, isToday: isToday).capitalizedFirst + "."
+            }
         }
         if let last = items.map(\.end).max(), last < endOfDay - 2 * hour {
             first += " Clear after " + clock(last) + "."
         }
         return first
+    }
+
+    /// On the agenda at a time of its own: a calendar event, a plan or study
+    /// block, a plan caught in texts, a to-do that happens at its time.
+    static func isOnTheClock(_ item: DayItem) -> Bool {
+        switch item.style {
+        case .calendar, .task, .caught: return true
+        case .todo: return item.due == nil
+        default: return false
+        }
+    }
+
+    /// On the agenda as due by a time, still ahead: a reminder, school work,
+    /// a to-do due by then. Overdue rows are the backlog, counted apart.
+    static func isDueBy(_ item: DayItem) -> Bool {
+        item.style == .needsYou || (item.style == .todo && item.due != nil)
+    }
+
+    /// "one thing", "four things".
+    static func things(_ n: Int) -> String { "\(count(n)) thing\(n == 1 ? "" : "s")" }
+
+    /// "four things on the clock and two due today", "two things due today".
+    static func clockAndDue(_ events: Int, _ due: Int, isToday: Bool) -> String {
+        let when = isToday ? "today" : "that day"
+        if events == 0 { return "\(things(due)) due \(when), nothing on the clock" }
+        return "\(things(events)) on the clock and \(count(due)) due \(when)"
     }
 
     // MARK: Brief
@@ -2018,6 +2062,8 @@ enum StudyBlockCalendar {
     static let idPrefix = "study-block:"
     static let fallbackError = "Couldn't add that to your calendar."
     static let undoFallbackError = "Couldn't undo that."
+    /// Undo's "changed" reply without a sentence of its own.
+    static let changedFallback = "The event was changed in Calendar, so Wisp left it there."
     static let addedText = "Added to calendar"
     static let errorCap = 160
     static let timeout: TimeInterval = 60
@@ -2090,8 +2136,14 @@ enum StudyBlockCalendar {
         guard let status else { return .failed(fallback) }
         let reply = data.flatMap { try? JSONDecoder().decode(Reply.self, from: $0) }
         if status == 404, reply?.ok == nil { return .routeMissing }
+        // Undo of an event already deleted in Calendar ("gone"): it is off the
+        // calendar, which is what Undo asked for.
+        if operation == .undo, reply?.ok == true, reply?.status == "gone" { return .succeeded(sourceID: nil) }
         if (200..<300).contains(status), reply?.ok == true { return .succeeded(sourceID: reply?.source_id) }
-        return .failed(errorLine(reply?.error, fallback: fallback))
+        // Undo of an event changed in Calendar ("changed"): the service left it
+        // alone and says so; the row stays added, with Undo (Ledger.show).
+        let changed = operation == .undo && reply?.status == "changed"
+        return .failed(errorLine(reply?.error, fallback: changed ? changedFallback : fallback))
     }
 
     enum Phase: Equatable {
@@ -2118,6 +2170,9 @@ enum StudyBlockCalendar {
     /// Every block's add this session, and whether the routes exist.
     struct Ledger: Equatable {
         var phases: [String: Phase] = [:]
+        /// When each block's last request finished (seconds since 1970): a
+        /// snapshot made after it is the truth, whatever this session did.
+        var finishedAt: [String: Double] = [:]
         /// A 404 from an older service hides the action for the session.
         var routeMissing = false
 
@@ -2149,7 +2204,9 @@ enum StudyBlockCalendar {
             return true
         }
 
-        mutating func finish(_ operation: Operation, _ id: String, _ outcome: Outcome) {
+        mutating func finish(_ operation: Operation, _ id: String, _ outcome: Outcome,
+                             at time: Double = Date().timeIntervalSince1970) {
+            finishedAt[id] = time
             switch (operation, outcome) {
             case (_, .routeMissing):
                 routeMissing = true
@@ -2161,11 +2218,28 @@ enum StudyBlockCalendar {
             }
         }
 
-        /// A fresh snapshot: once it agrees with what this session did, it is the truth.
-        mutating func settle(_ id: String, snapshotAdded: Bool?) {
+        /// A snapshot of the block: once it agrees with what this session did,
+        /// it is the truth. One made after the last request finished
+        /// (`generatedAt`) is the truth even when it disagrees: an event added
+        /// here and then deleted in Calendar comes back `added: false`, so the
+        /// row offers Add again rather than keeping "Added to calendar". An
+        /// error line stays while the snapshot agrees with it.
+        mutating func settle(_ id: String, snapshotAdded: Bool?, generatedAt: Double? = nil) {
+            let fresh: Bool = snapshotAdded != nil
+                && generatedAt.map { made in finishedAt[id].map { made >= $0 } ?? true } == true
             switch phase(id) {
             case .added where snapshotAdded == true, .undone where snapshotAdded == false: phases[id] = .idle
+            case .added where fresh, .undone where fresh: phases[id] = .idle
+            case .addFailed where fresh && snapshotAdded == true: phases[id] = .idle
+            case .undoFailed where fresh && snapshotAdded == false: phases[id] = .idle
             default: break
+            }
+        }
+
+        /// A fresh plan: every block this session acted on, against the plan's facts.
+        mutating func settle(_ blocks: [Block], generatedAt: Double) {
+            for block in blocks where phases[block.id] != nil {
+                settle(block.id, snapshotAdded: block.added, generatedAt: generatedAt)
             }
         }
     }

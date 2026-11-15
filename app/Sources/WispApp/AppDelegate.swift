@@ -1939,14 +1939,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         onDismiss: { [weak self] in self?.dismissToMenuBar() })
         }
         panel?.isCompact = { [weak self] in self?.model.collapsed ?? false }
-        // The Brief's two columns widen this window, from the same state
-        // OverlayView widens its content from. The search panel keeps the plain layout.
+        // Brief's and Day's two columns widen this window, from the same state
+        // OverlayView widens its content from (NotchWide). The search panel keeps the plain layout.
         panel?.layoutProvider = { [weak self] in
             MainActor.assumeIsolated {
                 let layout = DisplayGeometry.shared.layout
                 guard let self else { return layout }
-                return layout.widened(NotchBriefView.showsWide(model: self.model, today: self.todayModel,
-                                                               canWiden: layout.canWiden))
+                return layout.widened(NotchWide.shows(model: self.model, today: self.todayModel,
+                                                      canWiden: layout.canWiden))
             }
         }
         model.onResize = { [weak self] in

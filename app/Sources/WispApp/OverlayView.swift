@@ -40,8 +40,9 @@ struct OverlayView: View {
     // The header's laid-out height (it grows with Text size), for the Brief and
     // Day scroll cap.
     @State private var headerHeight: CGFloat = 30
-    // The Brief in two columns in a wider panel (the header's toggle); persists.
-    @AppStorage(NotchBriefView.wideKey) private var briefWide = false
+    // Brief and Day in two columns in a wider panel (the header's toggle,
+    // NotchWide); persists.
+    @AppStorage(NotchBriefView.wideKey) private var wideChosen = false
     // Which way the page change in flight slides (NotchPageSlide).
     @State private var pageSlide = NotchPageSlide()
     // The panel's drawn height (followHeight): nil until the open panel's
@@ -106,13 +107,13 @@ struct OverlayView: View {
 
     private var renderKey: String { "\(textSize)-\(contrastTick)" }
     private var layout: SurfaceLayout { display.layout }
-    /// Whether the Brief can show two columns (NotchBriefView.canShowWide);
-    /// the header's toggle shows only then.
-    private var briefCanWiden: Bool {
-        NotchBriefView.canShowWide(model: model, today: todayModel, canWiden: layout.canWiden)
+    /// Whether the panel can be wide (NotchWide.canShow: Brief or Day); the
+    /// header's toggle shows only then.
+    private var panelCanWiden: Bool {
+        NotchWide.canShow(model: model, today: todayModel, canWiden: layout.canWiden)
     }
-    /// The Brief in two columns, in the wider panel.
-    private var briefIsWide: Bool { briefWide && briefCanWiden }
+    /// Brief or Day in two columns, in the wider panel.
+    private var panelIsWide: Bool { wideChosen && panelCanWiden }
     private var isNotch: Bool { layout.style == .notch }
 
     /// Brief and Day under the fixed header: as tall as their content until the
@@ -141,7 +142,7 @@ struct OverlayView: View {
     private var expandedPanel: some View {
         let page = model.page
         pageSlide.follow(page)
-        let surfaceWidth: CGFloat = layout.widened(briefIsWide).expandedWidth
+        let surfaceWidth: CGFloat = layout.widened(panelIsWide).expandedWidth
         let pageWidth: CGFloat = max(0, surfaceWidth - 2 * Self.sideInset)
         return VStack(alignment: .leading, spacing: 0) {
             header
@@ -222,7 +223,7 @@ struct OverlayView: View {
         .onExitCommand { model.requestCollapse() }
         // Two columns on or off: refit the window, which reads the same state,
         // once SwiftUI has laid the change out.
-        .onChange(of: briefIsWide) { model.onResize() }
+        .onChange(of: panelIsWide) { model.onResize() }
         // Every change of page moves together, on the panel's one spring: the
         // pages, the panel's height and width, the selected tab's capsule, the
         // header's buttons. The window grows ahead of it and shrinks after it
@@ -301,9 +302,9 @@ struct OverlayView: View {
                 }
             }
         case .brief:
-            tabScroll { NotchBriefView(model: model, today: todayModel, wide: briefIsWide) }
+            tabScroll { NotchBriefView(model: model, today: todayModel, wide: panelIsWide) }
         case .day:
-            tabScroll { NotchDayView(model: model, today: todayModel) }
+            tabScroll { NotchDayView(model: model, today: todayModel, wide: panelIsWide) }
         case .meet:
             tabScroll { NotchMeetingView(model: MeetingModel.shared) }
         case .study:
@@ -546,14 +547,15 @@ struct OverlayView: View {
             if model.tab == .ask && (!model.turns.isEmpty || model.showingCorpus) {
                 ctrl("square.and.pencil", "New chat (⌘N)", { model.newChat() })
             }
-            // Brief: one column or two. The icon shows the layout the click switches to.
-            if briefCanWiden {
+            // Brief and Day: one column or two, one choice for both. The icon
+            // shows the layout the click switches to.
+            if panelCanWiden {
                 // VoiceOver hears one switch, "Two columns", with its state,
                 // rather than a label that flips with each press.
-                ctrl(briefWide ? "rectangle.split.1x2" : "rectangle.split.2x1",
-                     briefWide ? "Show the Brief in one column" : "Show the Brief in two columns",
-                     toggle: (label: "Two columns", isOn: briefWide),
-                     { setBriefWide(!briefWide) })
+                ctrl(wideChosen ? "rectangle.split.1x2" : "rectangle.split.2x1",
+                     NotchWide.toggleHelp(wide: wideChosen),
+                     toggle: (label: "Two columns", isOn: wideChosen),
+                     { setWide(!wideChosen) })
             }
             // Brief and Day: ask about your day out loud; it opens Ask and listens.
             if model.tab != .ask && model.tab != .research {
@@ -603,13 +605,13 @@ struct OverlayView: View {
         .accessibilityHidden(true)
     }
 
-    /// The Brief's columns, switched so the window and the content change width
+    /// Brief and Day's columns, switched so the window and the content change width
     /// in the same pass: the window is refit now, from the saved choice the
     /// layout provider reads, instead of a runloop after SwiftUI has redrawn the
-    /// content at the new width (a visible one-frame snap). onChange(briefIsWide)
+    /// content at the new width (a visible one-frame snap). onChange(panelIsWide)
     /// still refits once the new height is laid out.
-    private func setBriefWide(_ on: Bool) {
-        briefWide = on
+    private func setWide(_ on: Bool) {
+        wideChosen = on
         model.onResizeNow()
     }
 

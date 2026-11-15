@@ -123,7 +123,7 @@ final class MotionRig {
         panel.reduceMotion = { reduce }
         panel.layoutProvider = {
             MainActor.assumeIsolated {
-                base.widened(NotchBriefView.showsWide(model: model, today: today, canWiden: base.canWiden))
+                base.widened(NotchWide.shows(model: model, today: today, canWiden: base.canWiden))
             }
         }
         model.onResize = { [weak panel] in DispatchQueue.main.async { panel?.resizeToFit() } }
@@ -351,8 +351,9 @@ enum Harness {
             try await run("meet-to-narrow-brief") { m.tab = .brief }
             try await run("narrow-brief-to-study") { m.tab = .study }
             try await run("study-to-narrow-brief") { m.tab = .brief }
-            // The Brief in two columns: the panel widens to its wide layout
-            // (840 pt where the display allows), and tabs switch out of it.
+            // Brief and Day in two columns (one shared choice): the panel widens
+            // to its wide layout (840 pt where the display allows), Brief and Day
+            // switch without any change of width, and tabs switch out of both.
             let wide = { (on: Bool) in
                 UserDefaults.standard.set(on, forKey: NotchBriefView.wideKey)
                 m.onResizeNow()
@@ -360,6 +361,13 @@ enum Harness {
             if rig.base.canWiden {
                 try await run("brief-wide-on", prepare: { m.tab = .brief }) { wide(true) }
                 try await run("wide-brief-to-day") { m.tab = .day }
+                // Out of the wide Day to each narrow tab and back.
+                try await run("wide-day-to-ask") { m.tab = .ask }
+                try await run("ask-to-wide-day") { m.tab = .day }
+                try await run("wide-day-to-study") { m.tab = .study }
+                try await run("study-to-wide-day") { m.tab = .day }
+                try await run("wide-day-to-meet") { m.tab = .meet }
+                try await run("meet-to-wide-day") { m.tab = .day }
                 try await run("day-to-wide-brief") { m.tab = .brief }
                 // Out of the wide Brief to each narrow tab and back: the panel
                 // narrows (and widens) on the page's spring, the leaving page
@@ -567,7 +575,8 @@ enum Harness {
             if abs(final.win - final.vis) > 2 { problems.append("(c) window \(f(final.win)) != final content \(f(final.vis))") }
         }
         if total <= 20 { visibleTotal += " (small: snap check skipped)" }
-        let widthLine = widthCheck(before: before, samples: samples, final: final, reduce: reduce, problems: &problems)
+        let widthLine = widthCheck(before: before, samples: samples, final: final, reduce: reduce,
+                                   steady: steadyWidth.contains(name), problems: &problems)
 
         // The selected-tab capsule: one solid white shape that moves. Two
         // capsules crossfading show as a wide band of half-bright pixels.
@@ -645,13 +654,24 @@ enum Harness {
         return TransitionResult(name: name, ok: problems.isEmpty, lines: lines)
     }
 
+    /// Switches between the two wide tabs, Brief and Day: no width change at all.
+    static let steadyWidth: Set<String> = ["wide-brief-to-day", "day-to-wide-brief"]
+
     /// The panel's width through a change: the window's and the drawn
     /// surface's. (f) With motion, a width change of more than 20 pt must be
     /// caught part-way (one move, not a snap); with Reduce Motion, the first
     /// sample is already at the final width.
     static func widthCheck(before: MotionSample, samples: [MotionSample], final: MotionSample, reduce: Bool,
-                           problems: inout [String]) -> String {
+                           steady: Bool = false, problems: inout [String]) -> String {
         guard before.surfaceW > 0, final.surfaceW > 0 else { return "  width: not read" }
+        if steady {
+            // Wide Brief <-> wide Day: the panel keeps its width throughout.
+            let moved = ([final] + samples).filter { $0.surfaceW > 0 }.map { abs($0.surfaceW - before.surfaceW) }.max() ?? 0
+            if moved > 1.5 { problems.append("(f) the width moved \(f(moved)) pt on a switch that keeps the wide panel") }
+            if abs(final.winW - before.winW) > 1.5 {
+                problems.append("(f) the window's width changed \(f(before.winW)) -> \(f(final.winW)) on a switch that keeps the wide panel")
+            }
+        }
         let total = abs(final.surfaceW - before.surfaceW)
         let read = samples.filter { $0.surfaceW > 0 }
         var mid = 0
