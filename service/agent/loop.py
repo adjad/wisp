@@ -2499,9 +2499,10 @@ async def run_agent(
             # message draft, an outbound-unknown marker) are str subclasses,
             # and str() would reduce them to text no receipt check accepts.
             outcome = classify_tool_outcome(tool.name, result)
-            from service.tools.registry import not_done_receipt, not_sent_receipt
+            from service.tools.registry import not_delivered_receipt, not_done_receipt, not_sent_receipt
             refusal = ({"not_sent": True} if not_sent_receipt(tool, result)
-                       else {"not_done": True} if not_done_receipt(tool, result) else None)
+                       else {"not_done": True} if not_done_receipt(tool, result)
+                       else {"not_delivered": True} if not_delivered_receipt(tool, result) else None)
             if refusal:
                 # The tool proved it stopped before doing anything (no address,
                 # a bad date, several matches): settled as such, so it can't

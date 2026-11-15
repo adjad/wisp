@@ -326,6 +326,18 @@ def confirm_preview(tool: str, args: dict) -> str | None:
     return None
 
 
+def _typed_own_request_addresses() -> set[str]:
+    """Email addresses written in the person's own request line this turn,
+    lowercased: the first non-empty line of their message, quoted spans masked."""
+    from service.tools.self_send import turn_text
+    from service.utterance_shape import mask_quoted
+    lines = [line for line in (turn_text() or "").splitlines() if line.strip()]
+    if not lines:
+        return set()
+    request = mask_quoted(lines[0])
+    return {m.lower().rstrip(".") for m in re.findall(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", request)}
+
+
 def _own_address_guard(to: str, tool: str, confirmed_self_send: bool = False,
                        typed: str = "") -> str | None:
     """Corrective message when `to` is one of the USER'S OWN addresses — else None.
@@ -375,6 +387,17 @@ def _own_address_guard(to: str, tool: str, confirmed_self_send: bool = False,
         from service.memory.identity import user_emails
         own = {e.strip().lower() for e in (user_emails() or []) if e}
     except Exception:  # noqa: BLE001 — no identity yet is not a failure
+        return None
+    # The person typed this very address in their own request this turn ("send
+    # an email to <their address> with my schedule"): that is them naming the
+    # recipient, not the model borrowing the attribution address. VERIFIED
+    # FAILURE 2026-11-15: that request was refused before any card. Only the
+    # person's own words count (turn_text is this turn's user message, never
+    # model text or an earlier turn), and only the request line itself: quoted
+    # spans are masked and anything after the first line (pasted mail, a page,
+    # a file) is not read. The approval card, showing the address, still follows.
+    if all(r.strip().lower() in _typed_own_request_addresses() for r in _split_recipients(to)
+           if r.strip().lower() in own) and any(r.strip().lower() in own for r in _split_recipients(to)):
         return None
     if addr not in own:
         # Several recipients ("a@x.com, me@y.com"): any one of them that is
@@ -1692,7 +1715,8 @@ async def send_message(to: str, text: str, confirmed_self_send: bool = False,
         # RCS). Messages' own "Send as Text Message" on the failed bubble is
         # the next step; nothing here resends it.
         by_imessage = not by_sms and res.get("delivery_service") == "iMessage"
-        return (f"The text to {display} was not delivered: {NOT_DELIVERED_TEXT}"
+        from service.tools.registry import _NotDeliveredResult
+        return _NotDeliveredResult(f"The text to {display} was not delivered: {NOT_DELIVERED_TEXT}"
                 + (f" {TEXT_FORWARDING_HINT}" if by_sms else "")
                 + (" Messages couldn't reach them by iMessage. In Messages, Control-click the "
                    "failed message and choose Send as Text Message." if by_imessage else "")
