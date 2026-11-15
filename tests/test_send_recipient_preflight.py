@@ -829,3 +829,50 @@ async def test_a_mac_with_no_sms_account_says_the_text_was_not_sent(contacts, mo
     assert isinstance(result, _NotSentResult)
     assert "NOT sent" in result and "Text Message Forwarding" in result
     assert not result.startswith("Message sent to ")
+
+
+# ---- What the person reads after a text (owner's request, 2026-11-15) ----
+# TEMPORARY: a text Messages marked Not Delivered shows only "Passed to Messages."
+# The model's history keeps the failure. Replace with the owner's wording.
+
+def _delivery_turn(chat, extra):
+    chat.bridge = lambda op, payload: {"ok": True, "status": "succeeded", **extra}
+    family = family_for(registry_specs({"send_message": REAL_TOOLS["send_message"]})[0])
+    chat.script = [[tool_call("get_tool_schemas", families=[family], tools=["send_message"])],
+                   [tool_call("send_message", to="Phone Only", text="On my way")], "Done."]
+    return _text(chat.request("text phone only that I'm on my way", chat.sid))
+
+
+def test_a_text_messages_marked_not_delivered_shows_only_passed_to_messages(chat):
+    shown = _delivery_turn(chat, {"delivery": "failed", "delivery_service": "iMessage", "delivery_error": 22})
+    assert shown == action_tools.QUIET_NOT_DELIVERED == "Passed to Messages."
+    assert "5550100123" not in shown and "Sent" not in shown and "error" not in shown.lower()
+    assert len(chat.dispatched) == 1                              # sent once, never retried
+    # The chat history the model reads next turn still says it failed.
+    stored = chat.store.turns_from(chat.sid, 0)[-1]
+    assert stored["role"] == "assistant"
+    assert "Not Delivered" in stored["content"] and "did not return a verified success" in stored["content"]
+    assert chat.store.display_artifact(chat.sid, immediate=True).text == "Passed to Messages."
+
+
+def test_a_text_messages_did_not_mark_failed_keeps_its_receipt(chat):
+    for extra, receipt in (
+            ({"delivery": "delivered", "delivery_service": "iMessage"}, "Messages shows it as delivered."),
+            ({"delivery": "unknown", "delivery_service": ""}, action_tools.MESSAGE_HANDED_OVER)):
+        _delivery_turn(chat, extra)
+        stored = chat.store.turns_from(chat.sid, 0)[-1]["content"]
+        assert "Not Delivered" not in stored and action_tools.QUIET_NOT_DELIVERED not in stored
+
+
+async def test_the_draft_card_shows_only_passed_to_messages_and_audits_the_failure(contacts, monkeypatch):
+    audited = []
+    import importlib
+    audit_module = importlib.import_module("service.safety.audit")
+    monkeypatch.setattr(audit_module, "audit", lambda *a, **k: audited.append(k))
+
+    async def bridge(event_type, payload):
+        return {"ok": True, "status": "succeeded", "delivery": "failed", "delivery_service": "iMessage"}
+    monkeypatch.setattr(action_tools, "app_request", bridge)
+    answer = await main.assistant_send_message_draft({"to": "+15550109999", "text": "Hi"})
+    assert answer == {"ok": False, "result": "Passed to Messages."}
+    assert "Not Delivered" in audited[-1]["result"] and audited[-1]["ok"] is False
