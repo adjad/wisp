@@ -89,14 +89,23 @@ def test_only_the_automation_refusal_carries_the_fixed_code():
     assert not re.search(r"ok: true[^\n]*refusal", SENDER)
 
 
+def _message_scripts():
+    """messageScript's three scripts: short code, by text first, iMessage first."""
+    script = _function(SENDER, "messageScript")
+    short = script[script.index("if shortCode {"):script.index("if viaText {")]
+    text = script[script.index("if viaText {"):script.rindex("return \"\"\"")]
+    imessage = script[script.rindex("return \"\"\""):]
+    return short, text, imessage
+
+
 def test_a_short_code_is_texted_by_sms_and_never_by_imessage():
     # Messages accepts an iMessage send to a short code and then marks it Not
     # Delivered, so the old "iMessage, then SMS on error" order never reached SMS.
     body = _function(SENDER, "sendMessage")
-    short, rest = body.split('""" : """')
-    short = short[short.index("let script"):]
+    short, _text, rest = _message_scripts()
     assert "service type = SMS" in short and "iMessage" not in short and "try" not in short
     assert rest.index("service type = iMessage") < rest.index("service type = SMS")
+    assert "messageScript(to: to, text: text, shortCode: shortCode, viaText: viaText)" in body
     assert ": shortCode ? noTextRelay" in body
     assert "(3...6).contains(t.count) && t.allSatisfy(\\.isNumber)" in _function(SENDER, "isShortCode")
     assert "Text Message Forwarding" in re.search(r'static let noTextRelay = "([^"]+)"', SENDER).group(1)
@@ -135,6 +144,24 @@ def test_the_app_reads_the_text_back_from_messages_before_answering():
     assert since < run < settle
     assert '"delivery": seen.state.rawValue, "delivery_service": seen.service' in body
     # With no SMS account the short-code script stops before its send line.
-    short = body[body.index("let script"):body.index('""" : """')]
+    short = _message_scripts()[0]
     assert short.index('return "\\(noSMSAccount)"') < short.index("send ")
     assert 'static let noSMSAccount = "no_sms_account"' in SENDER
+
+
+def test_a_person_reached_by_text_is_texted_through_the_sms_account_first():
+    # 2026-11-15: an RCS contact's old iMessage handle took the send, then
+    # Messages marked it Not Delivered (error 22) and nothing fell back.
+    body = _function(SENDER, "sendMessage")
+    _short, text, _imessage = _message_scripts()
+    assert text.index("service type = SMS") < text.index("service type = iMessage")
+    assert "is 0 then" in text and "on error" in text
+    # The handle is normalised before the store lookup, the send and the read-back.
+    handle = body.index("MessageDeliveryCheck.sendHandle(given)")
+    last = body.index("MessageDeliveryCheck.lastWorkingService(to: to)")
+    script = body.index("messageScript(to: to")
+    assert handle < last < script
+    assert 'lastService == "SMS" || lastService == "RCS"' in body
+    assert '"delivery_error": seen.error' in body
+    check = READER[READER.index("static func lastWorkingService"):READER.index("static let query")]
+    assert "SQLITE_OPEN_READONLY" in check and "COALESCE(m.error, 0) = 0" in check

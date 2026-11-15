@@ -4730,6 +4730,11 @@ async def assistant_send_message_draft(body: dict[str, Any]) -> dict[str, Any]:
     ok = result.startswith("Message sent to ")
     audit("draft_card_send", tool="send_message",
           args={"to": to, "text": message}, result=result, ok=ok)
+    from service.tools.action_tools import QUIET_NOT_DELIVERED, quiet_not_delivered
+    if quiet_not_delivered(result):
+        # TEMPORARY (owner, 2026-11-15): the audit line above keeps the failure;
+        # the card shows no failure wording. See action_tools.QUIET_NOT_DELIVERED.
+        return {"ok": False, "result": QUIET_NOT_DELIVERED}
     return {"ok": ok, "result": result}
 
 

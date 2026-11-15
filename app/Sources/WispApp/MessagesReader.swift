@@ -624,6 +624,73 @@ enum MessageDeliveryCheck {
     struct Reading: Equatable {
         let state: State
         let service: String
+        /// Messages' own error code on the row (22 is iMessage's Not Delivered), 0 when none.
+        var error: Int64 = 0
+    }
+
+    /// The recipient as Messages names its handles: E.164 for a phone number
+    /// whose country code is known ("+…" already; on a +1-region Mac, 11 digits
+    /// starting with 1, the form lookup_contact returns as "1 (NNN) NNN-NNNN",
+    /// or 10 digits), lowercase for an email. Anything else is passed as it was given, never
+    /// with a guessed country code.
+    ///
+    /// The 11-digit form gets its +1 only on a Mac set to a +1 (North American
+    /// Numbering Plan) region: elsewhere an 11-digit number starting with 1 can
+    /// be a local mobile (a Chinese 150… number, say), which Messages reads by
+    /// the Mac's region, and a +1 would text someone else.
+    static func sendHandle(_ to: String, region: String? = Locale.current.region?.identifier) -> String {
+        let t = to.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.contains("@") { return t.lowercased() }
+        let digits = t.filter(\.isNumber)
+        guard digits.count >= 7, t.allSatisfy({ $0.isNumber || " +-().".contains($0) }) else { return t }
+        if t.hasPrefix("+") { return "+" + digits }
+        guard let region, nanpRegions.contains(region) else { return t }
+        if digits.count == 11 && digits.hasPrefix("1") { return "+" + digits }
+        if digits.count == 10 && !digits.hasPrefix("0") && !digits.hasPrefix("1") { return "+1" + digits }
+        return t
+    }
+
+    /// Regions whose numbers are +1.
+    static let nanpRegions: Set<String> = [
+        "US", "CA", "PR", "VI", "GU", "AS", "MP", "UM", "AG", "AI", "BB", "BM", "BS", "DM", "DO",
+        "GD", "JM", "KN", "KY", "LC", "MS", "SX", "TC", "TT", "VC", "VG",
+    ]
+
+    /// The service of the newest message with this person that Messages did
+    /// not mark as failed, in either direction ("iMessage", "SMS", "RCS"), or
+    /// nil with no such message. It says how their conversation actually goes:
+    /// a person reached by RCS or SMS can still have an old iMessage handle,
+    /// and Messages accepts an iMessage send to it and only then marks it Not
+    /// Delivered (error 22), so the send has to pick the working service first.
+    static func lastWorkingService(dbPath: String = storePath, to: String) -> String? {
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+            sqlite3_close(db)
+            return nil
+        }
+        defer { sqlite3_close(db) }
+        var ids: [Int64] = []
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT ROWID, id FROM handle", -1, &stmt, nil) == SQLITE_OK else { return nil }
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            if let h = sqlite3_column_text(stmt, 1), sameHandle(String(cString: h), to) {
+                ids.append(sqlite3_column_int64(stmt, 0))
+            }
+        }
+        sqlite3_finalize(stmt)
+        guard !ids.isEmpty else { return nil }
+        let list = ids.map(String.init).joined(separator: ",")
+        let sql = """
+            SELECT COALESCE(m.service, '') FROM message m
+            WHERE m.handle_id IN (\(list)) AND COALESCE(m.error, 0) = 0
+              AND (m.is_from_me = 0 OR COALESCE(m.is_delivered, 0) = 1)
+            ORDER BY m.date DESC LIMIT 1
+            """
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_step(stmt) == SQLITE_ROW, let s = sqlite3_column_text(stmt, 0) else { return nil }
+        let service = String(cString: s)
+        return service.isEmpty ? nil : service
     }
 
     static let storePath = (NSHomeDirectory() as NSString)
@@ -677,10 +744,11 @@ enum MessageDeliveryCheck {
             // A row whose text can't be read is not taken as this message.
             guard let body, body.trimmingCharacters(in: .whitespacesAndNewlines) == wanted else { continue }
             let service = sqlite3_column_text(stmt, 6).map { String(cString: $0) } ?? ""
-            let state: State = sqlite3_column_int64(stmt, 5) != 0 ? .failed
+            let error = sqlite3_column_int64(stmt, 5)
+            let state: State = error != 0 ? .failed
                 : sqlite3_column_int(stmt, 4) != 0 ? .delivered
                 : sqlite3_column_int(stmt, 3) != 0 ? .sent : .pending
-            return Reading(state: state, service: service)
+            return Reading(state: state, service: service, error: error)
         }
         return none
     }
@@ -703,7 +771,7 @@ enum MessageDeliveryCheck {
             if Date().timeIntervalSince(started) + step > window { break }
             Thread.sleep(forTimeInterval: step)
         }
-        return last.state == .sent ? last : Reading(state: .unknown, service: last.service)
+        return last.state == .sent ? last : Reading(state: .unknown, service: last.service, error: last.error)
     }
 }
 

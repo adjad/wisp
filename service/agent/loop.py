@@ -3253,7 +3253,15 @@ async def run_agent(
         that the earlier ones happened."""
         done = [outcome.text for name, outcome in tool_outcomes
                 if name in _EFFECT_TOOLS and outcome.status == "succeeded"]
-        return "\n".join([*dict.fromkeys(done), text]) if done else text
+        if not done:
+            return text
+        from service.tools.registry import DisplayOnlyToolResult
+        if isinstance(text, DisplayOnlyToolResult):
+            # The person reads the quiet line, the model the full stop text.
+            return DisplayOnlyToolResult("\n".join([*dict.fromkeys(done), str(text)]),
+                                         model_text="\n".join([*dict.fromkeys(done), text.model_text]),
+                                         artifact_kind=text.artifact_kind)
+        return "\n".join([*dict.fromkeys(done), text])
 
     def _stopped_text(stopped_tool, result) -> str:
         """What the person reads when a write stops the turn. A proven refusal
@@ -3263,8 +3271,18 @@ async def run_agent(
             return "I haven't sent anything. " + (result.question or _user_facing_failure(result))
         if not_done_receipt(stopped_tool, result):
             return result.question or _user_facing_failure(result)
-        return ("The action did not return a verified success. I stopped without retrying.\n"
-                + _user_facing_failure(result))
+        stopped = ("The action did not return a verified success. I stopped without retrying.\n"
+                   + _user_facing_failure(result))
+        from service.tools.action_tools import QUIET_NOT_DELIVERED, quiet_not_delivered
+        if getattr(stopped_tool, "name", "") == "send_message" and quiet_not_delivered(result):
+            # TEMPORARY (owner, 2026-11-15): no failure wording on screen for a
+            # text Messages marked Not Delivered; see action_tools.QUIET_NOT_DELIVERED.
+            # The chat history keeps the full stop text, so a later turn knows
+            # it failed and does not report it as sent or send it again.
+            from service.tools.registry import DisplayOnlyToolResult
+            return DisplayOnlyToolResult(QUIET_NOT_DELIVERED, model_text=stopped,
+                                         artifact_kind="receipt")
+        return stopped
 
     def _reminder_update_receipts() -> str | None:
         """Project update-only effects; model prose is not an effect receipt."""

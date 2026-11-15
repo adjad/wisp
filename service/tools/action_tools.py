@@ -1579,6 +1579,20 @@ async def forward_email(message_id: str, to: str, note: str = "") -> str:
 
 
 MESSAGE_HANDED_OVER = "Messages accepted it; delivery isn't confirmed here."
+# TEMPORARY, at the owner's request on 2026-11-15 ("just remove the error message
+# for now - I will add something else later"): a text Messages marked Not
+# Delivered shows the person only QUIET_NOT_DELIVERED. The model, the audit log
+# and the debug export still get the full failure below, nothing is retried, and
+# no reply says Sent. Replace this visible line with the owner's wording.
+NOT_DELIVERED_TEXT = "Messages shows it as Not Delivered."
+QUIET_NOT_DELIVERED = "Passed to Messages."
+
+
+def quiet_not_delivered(result) -> bool:
+    """A send_message result Messages itself marked Not Delivered."""
+    return NOT_DELIVERED_TEXT in str(result or "")
+
+
 TEXT_FORWARDING_HINT = ("To send SMS texts from this Mac, turn on Text Message Forwarding for it "
                         "on your iPhone: Settings › Apps › Messages › Text Message Forwarding.")
 
@@ -1673,8 +1687,15 @@ async def send_message(to: str, text: str, confirmed_self_send: bool = False,
         return _not_sent(f"(the text to {display} was NOT sent: this Mac can't send SMS texts. "
                          f"{TEXT_FORWARDING_HINT})")
     if delivery == "failed":
-        return (f"The text to {display} was not delivered: Messages shows it as Not Delivered."
+        # Error 22 on an iMessage is Messages failing to reach that handle by
+        # iMessage (seen 2026-11-15 for a person whose conversation runs on
+        # RCS). Messages' own "Send as Text Message" on the failed bubble is
+        # the next step; nothing here resends it.
+        by_imessage = not by_sms and res.get("delivery_service") == "iMessage"
+        return (f"The text to {display} was not delivered: {NOT_DELIVERED_TEXT}"
                 + (f" {TEXT_FORWARDING_HINT}" if by_sms else "")
+                + (" Messages couldn't reach them by iMessage. In Messages, Control-click the "
+                   "failed message and choose Send as Text Message." if by_imessage else "")
                 + " Check Messages before trying again; do not retry automatically.")
     if delivery == "delivered":
         return f"Message sent to {display}. Messages shows it as delivered."
