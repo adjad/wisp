@@ -324,7 +324,7 @@ class StudyStore:
                     mine = [(c.get("name"), c.get("code"))]
                     theirs = [(stored["name"], stored["code"])] if stored is not None else []
                     # The merged course shows the name without a course code or section ("Writing and
-                    # Rhetoric: ..." over "WRIT 1 Writing and Rhetoric: ... Section 09"), whichever
+                    # Rhetoric: ..." over "WRIT 1 Writing and Rhetoric: ... Section 04"), whichever
                     # page brought it, so no later read renames it back and forth.
                     shown = clean_name((mine + theirs if cid == canonical else theirs + mine)
                                        + [(k["name"], k["code"]) for k in keep])

@@ -2,9 +2,9 @@
 
 ``merge_key`` is the stored key (and the parser's name hash input): lower-case, punctuation
 to spaces, single spaces. ``course_key`` is what two rows are compared by when deciding they
-are one course: the Dashboard says "Writing and Rhetoric: Voices and Global Perspectives"
-where the course's own pages say "WRIT 1 Writing and Rhetoric: Voices & Global Perspectives
-Section 09" with the code "WRIT-1-09". Term suffixes ("(Fall 2026)", "F26") are left alone:
+are one course: the Dashboard says "Writing and Rhetoric: Voices and Public Argument"
+where the course's own pages say "WRIT 1 Writing and Rhetoric: Voices & Public Argument
+Section 04" with the code "WRIT-1-04". Term suffixes ("(Fall 2026)", "F26") are left alone:
 they also tell two runs of one course apart.
 """
 from __future__ import annotations
@@ -13,9 +13,9 @@ import re
 from typing import NamedTuple
 
 _WS = re.compile(r"\s+")
-# A code field ("WRIT-1-09", "CS 101", "STAT 101-02") once normalised: subject, number, section.
+# A code field ("WRIT-1-04", "CS 101", "STAT 101-02") once normalised: subject, number, section.
 _CODE_FIELD = re.compile(r"([a-z]{2,6}) ?(\d{1,4}[a-z]?)(?: (\d{1,3}[a-z]?))?")
-# A course code leading a name ("WRIT 1 ", "CS 101: ", "WRIT-1 - ", "WRIT-1-09 ").
+# A course code leading a name ("WRIT 1 ", "CS 101: ", "WRIT-1 - ", "WRIT-1-04 ").
 _LEAD = re.compile(r"([a-z]{2,6}) ?(\d{1,4}[a-z]?)(?: (\d{1,3}))? (?=\S)")
 _SECTION_TAIL = re.compile(r" (?:section|sec) (\d{1,3}[a-z]?)$")
 _BARE_TAIL = re.compile(r" (\d{1,3}[a-z]?)$")
@@ -28,7 +28,7 @@ def merge_key(name) -> str:
 class CourseKey(NamedTuple):
     keys: frozenset      # the full key, plus the key without code and section when that is non-trivial
     course: str | None   # subject + number ("writ 1"), from the code field or the name
-    section: str | None  # "09"
+    section: str | None  # "04"
     clean: bool          # the name carries no course code or section marker
 
 

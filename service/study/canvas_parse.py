@@ -538,7 +538,7 @@ def _course_from_title(title: str, *, plain: bool = False) -> str | None:
 
 
 def _code_only(line: str) -> bool:
-    """A bare course code ("CSE-20-01", "STAT 101-02"): a breadcrumb's short name, not a course name."""
+    """A bare course code ("CS-101-01", "STAT 101-02"): a breadcrumb's short name, not a course name."""
     m = _CODE.match(line or "")
     return bool(m) and not re.sub(r"[\s\-:.,()]+", "", line[m.end():])
 
