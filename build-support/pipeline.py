@@ -99,7 +99,10 @@ def clean_env() -> dict[str, str]:
                UV_LINK_MODE="copy", UV_KEYRING_PROVIDER="disabled", UV_NO_CONFIG="1",
                CLANG_MODULE_CACHE_PATH=str(STATE / "module-cache"),
                SWIFTPM_MODULECACHE_OVERRIDE=str(STATE / "module-cache"),
-               MACOSX_DEPLOYMENT_TARGET=CONFIG["minimum_macos"], TZ="UTC")
+               MACOSX_DEPLOYMENT_TARGET=CONFIG["minimum_macos"], TZ="UTC",
+               # Every build, smoke and test child: never the host's Keychain through the
+               # pre-rename lookup (service/config/keychain_legacy.py).
+               WISP_KEYCHAIN_LEGACY="off")
     return env
 
 
@@ -246,7 +249,9 @@ def guarded(runner, label, python, kind, target, *, root=ROOT, timeout=180):
     scratch = Path(tempfile.mkdtemp(prefix="test-", dir=runner.logs)).resolve()
     env = dict(runner.env, WISP_HOME=str(scratch / "moe"), TMPDIR=str(scratch),
                WISP_SANDBOX_HOME=str(scratch / "sandbox"), WISP_LING_TEMPLATE=str(scratch / "absent-template"),
-               PYTEST_DISABLE_PLUGIN_AUTOLOAD="1", TZ="America/Los_Angeles")
+               PYTEST_DISABLE_PLUGIN_AUTOLOAD="1", TZ="America/Los_Angeles",
+               # Never the build host's Keychain from a smoke or test child (see keychain_legacy).
+               WISP_KEYCHAIN_LEGACY="off")
     worker = scratch / "test_worker.py"
     shutil.copy2(SUPPORT / "test_worker.py", worker)
     profile = sandbox_profile(scratch, root, python)

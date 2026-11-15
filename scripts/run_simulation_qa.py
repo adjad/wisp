@@ -229,6 +229,7 @@ PROFILE_TESTS = {
         "tests/test_inference_providers.py",
         "tests/test_cloud_key_read.py",
         "tests/test_keychain_rename_copy.py",
+        "tests/test_keychain_legacy_guard.py",
         "tests/test_remote_reasoning_replay.py",
         "tests/test_gemini_provider_and_ttft.py",
         "tests/test_remote_media.py",
@@ -1071,6 +1072,9 @@ def _child_environment(state_dir: Path, *, include_node_runtime: bool = False) -
         "PYTHONHASHSEED": "0",
         "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
         "PYTEST_ADDOPTS": "-p no:cacheprovider",
+        # Script-style tests run here without pytest or conftest: never the real
+        # Keychain through the pre-rename lookup (service/config/keychain_legacy.py).
+        "WISP_KEYCHAIN_LEGACY": "off",
     }
     # The outer build sandbox allows Foundation replacement folders bearing
     # only this run's executable prefix. Native contracts must retain it through
