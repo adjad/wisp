@@ -497,6 +497,7 @@ func dayChecks(_ check: (Bool, String) -> Void) {
 
     dayTodoChecks(check, dayStart: dayStart, now: now, clock: clock, dayClock: dayClock)
     dayWeekChecks(check, dayStart: dayStart, now: now)
+    dayNextChecks(check, dayStart: dayStart, clock: clock)
 
     // How busy the calendar is: one verdict for the CAL line and the lede.
     func event(_ title: String, _ start: Double, _ end: Double?) -> DayLoad.Event {
@@ -1188,4 +1189,102 @@ func dayWeekChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: Doubl
     check(DayWeek.spoken(DayWeek.cards(shown: saturday, today: saturday, calendar: monday, shownLoad: bar(0, 0))[5])
           == "Saturday 14, today, free", "free")
     _ = now
+}
+
+/// The Next card and Later today (C3): which thing is next (ties, all-day and
+/// due rows), its words, the rows after it, the Show more line, the bars and
+/// the card's buttons.
+func dayNextChecks(_ check: (Bool, String) -> Void, dayStart: Double, clock: (Double) -> String) {
+    let hour = 3600.0
+    func at(_ h: Double) -> Double { dayStart + h * hour }
+    let now = at(13 + 20.0 / 60)
+    let blocks = [
+        DayBlockInput(id: "lunch", title: "Lunch with Sam Rivera", start: at(12), end: at(13), kind: "calendar"),
+        DayBlockInput(id: "review", title: "STAT 110 review session", start: at(14), end: at(15.5), kind: "calendar"),
+        DayBlockInput(id: "plan", title: "Plan block at two", start: at(14), end: at(14.5), kind: "task", taskID: "t1"),
+        DayBlockInput(id: "pset", title: "Study: Problem set 6", start: at(15.75), end: at(16.5), kind: "study"),
+        DayBlockInput(id: "notes", title: "Review lecture 9 notes", start: at(13.5), end: at(14.25), kind: "suggestion",
+                      evidenceID: "n9"),
+        DayBlockInput(id: "practice", title: "Ultimate practice", start: at(18.5), end: at(20), kind: "calendar"),
+    ]
+    let needs = [
+        DayNeedInput(id: "lab", title: "CS 101 Lab 4", source: "reminders", due: at(23.98)),
+        DayNeedInput(id: "ps", title: "Problem set 6 · MATH 110", source: "study", due: at(23.98)),
+        DayNeedInput(id: "n9", title: "Review lecture 9 notes", source: "reminders", due: nil),
+    ]
+    let timeline = DayTimeline.build(blocks: blocks, allDay: ["Campus Fall Fest"], needs: needs, caught: [], now: now,
+                                     dayStart: dayStart, dayEnd: at(24), workStart: at(9), workEnd: at(22),
+                                     isToday: true, clock: clock, dayClock: clock)
+    let next = DayTimeline.nextUp(timeline.items, now: now)
+    check(next?.id == "block:review", "a Calendar event beats a plan block at the same time; a suggestion is never next: \(next?.id ?? "nil")")
+    check(next.map { DayTimeline.nextLabel($0, now: now) } == "NEXT · IN 40 MIN", next.map { DayTimeline.nextLabel($0, now: now) } ?? "")
+    check(next.map { DayTimeline.spokenNextLabel($0, now: now) } == "Next, in 40 min", "said as words")
+    check(next.map { DayTimeline.nextTimeLine($0, clock: clock) } == "14:00 – 15:30 · 1 h 30 min",
+          next.map { DayTimeline.nextTimeLine($0, clock: clock) } ?? "")
+    // The suggestion at 1:30 holds the time, so free runs only until it.
+    check(DayTimeline.nowFreeLine(timeline.items, now: now, clock: clock) == "Now 13:20 · free until 13:30",
+          DayTimeline.nowFreeLine(timeline.items, now: now, clock: clock) ?? "nil")
+    check(DayTimeline.nowFreeLine(timeline.items, now: at(13.6), clock: clock) == nil, "not free while something holds now")
+    check(DayTimeline.nowFreeLine(timeline.items, now: now, clock: clock, calendarRead: false) == nil
+          && DayTimeline.nothingNextLine(calendarRead: false).contains("can't read your calendar")
+          && DayTimeline.nothingNextLine(calendarRead: true) == "Nothing else on the clock today.",
+          "no free time or all-clear claimed while Calendar can't be read")
+    let onNow = DayTimeline.nextUp(timeline.items, now: at(14.5))
+    check(onNow?.id == "block:review" && onNow.map { DayTimeline.nextLabel($0, now: at(14.5)) } == "NOW · 1 H LEFT",
+          "one already on stays next, with the time left: \(onNow.map { DayTimeline.nextLabel($0, now: at(14.5)) } ?? "nil")")
+    check(DayTimeline.nextUp(timeline.items, now: at(13.995)).map { DayTimeline.nextLabel($0, now: at(13.995)) } == "NEXT · IN 1 MIN"
+          && DayTimeline.nextUp(timeline.items, now: at(14)).map { DayTimeline.nextLabel($0, now: at(14)) } == "NOW · 1 H 30 MIN LEFT",
+          "a minute away, then on")
+    let far = DayTimeline.build(blocks: [DayBlockInput(id: "e", title: "Evening", start: at(18), end: nil, kind: "calendar")],
+                                allDay: [], needs: [], caught: [], now: at(16.9), dayStart: dayStart, dayEnd: at(24),
+                                workStart: at(9), workEnd: at(17), isToday: true, clock: clock, dayClock: clock)
+    let farNext = DayTimeline.nextUp(far.items, now: at(16.9))
+    check(farNext.map { DayTimeline.nextLabel($0, now: at(16.9)) } == "NEXT · IN 1 H 6 MIN"
+          && farNext.map { DayTimeline.nextTimeLine($0, clock: clock) } == "From 18:00",
+          "hours and minutes; an event with no end reads From")
+    // Only due rows and an all-day item left: nothing is next.
+    let late = DayTimeline.build(blocks: blocks, allDay: ["Campus Fall Fest"], needs: needs, caught: [], now: at(21),
+                                 dayStart: dayStart, dayEnd: at(24), workStart: at(9), workEnd: at(22),
+                                 isToday: true, clock: clock, dayClock: clock)
+    check(DayTimeline.nextUp(late.items, now: at(21)) == nil, "due rows and all-day items are never next")
+    let studyNext = DayTimeline.nextUp(timeline.items, now: at(15.6))
+    check(studyNext.map { DayTimeline.nextTimeLine($0, clock: clock) } == "15:45 – 16:30 · 45 min · Study block",
+          "a study block says what it is: \(studyNext.map { DayTimeline.nextTimeLine($0, clock: clock) } ?? "nil")")
+
+    // Later today: the rest after the card's item, timed rows and due rows apart.
+    let agenda = timeline.agenda(now: now, isToday: true)
+    let later = DayTimeline.laterRows(agenda, excluding: next)
+    check(later.timed.map(\.id) == ["block:notes", "block:plan", "block:pset", "block:practice"],
+          "timed rows after the card, in agenda order: \(later.timed.map(\.id))")
+    check(later.due.map(\.id) == ["need:lab", "need:ps"], "due rows apart: \(later.due.map(\.id))")
+    let narrow = DayTimeline.agenda(agenda, without: next)
+    check(!narrow.ahead.contains { $0.id == "block:review" } && narrow.thingsAhead == agenda.thingsAhead - 1
+          && !narrow.ahead.contains { if case .free(_, let end) = $0 { return end == at(14) } else { return false } },
+          "the one-column agenda drops the card's row and the free stretch up to it")
+    check(DayTimeline.agenda(agenda, without: nil) == agenda, "no card, the agenda as it was")
+    check(DayTimeline.moreLine(later.due, clock: clock) == "Show 2 more · due 23:59: CS 101 Lab 4 and Problem set 6 · MATH 110",
+          DayTimeline.moreLine(later.due, clock: clock))
+    check(DayTimeline.moreLine(Array(later.timed.suffix(2)) + later.due, clock: clock)
+          == "Show 4 more: Study: Problem set 6, Ultimate practice and 2 more",
+          DayTimeline.moreLine(Array(later.timed.suffix(2)) + later.due, clock: clock))
+    check(DayTimeline.moreLine([], clock: clock).isEmpty, "nothing hidden, no line")
+    check(later.timed.map { DayTimeline.laterTime($0, clock: clock) } == ["13:30", "14:00", "15:45", "18:30"]
+          && later.due.map { DayTimeline.laterTime($0, clock: clock) } == ["23:59", "23:59"], "times in a column")
+    check(later.timed.map { DayTimeline.laterDetail($0, now: now, isToday: true, clock: clock) }
+          == ["Suggested · about 45 min", "Your plan · 30 min", "45 min", "1 h 30 min"],
+          "details: \(later.timed.map { DayTimeline.laterDetail($0, now: now, isToday: true, clock: clock) })")
+    // Bars: two hours fills it, a short one keeps a sliver, due rows hold none.
+    let fractions = later.timed.map { DayTimeline.durationFraction($0) }
+    check(fractions == [0.375, 0.25, 0.375, 0.75], "duration bars against two hours: \(fractions)")
+    check(later.due.allSatisfy { DayTimeline.durationFraction($0) == nil }, "due rows draw a dot, not a bar")
+    let long = DayItem(id: "x", title: "Long", detail: "", start: at(9), end: at(13), style: .calendar, begins: at(9), ends: at(13))
+    let short = DayItem(id: "y", title: "Short", detail: "", start: at(9), end: at(9.05), style: .calendar, begins: at(9), ends: at(9.05))
+    check(DayTimeline.durationFraction(long) == 1 && DayTimeline.durationFraction(short) == 0.12, "capped, and never invisible")
+
+    // The card's buttons: only for a described Calendar event; Move only where the menu has it.
+    check(DayTimeline.nextButtons(isDescribedEvent: true, menuOffersMove: true, cancelActive: false) == [.open, .move]
+          && DayTimeline.nextButtons(isDescribedEvent: true, menuOffersMove: false, cancelActive: false) == [.open]
+          && DayTimeline.nextButtons(isDescribedEvent: false, menuOffersMove: true, cancelActive: false).isEmpty
+          && DayTimeline.nextButtons(isDescribedEvent: true, menuOffersMove: true, cancelActive: true).isEmpty,
+          "Open and Move only where they work today; none during a cancel")
 }

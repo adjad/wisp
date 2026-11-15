@@ -570,7 +570,17 @@ struct NotchDayView: View {
                 .onExitCommand { closeMove() }
                 .transaction { $0.animation = nil }
         }
-        agenda(timeline)
+        // On today, the next thing on the clock leads as its own card; it
+        // replaces its row below. In two halves the rest is Later today, one
+        // short row each; in one column (and on another day) the agenda as before.
+        let next: DayItem? = nextItem(timeline)
+        let calendarRead: Bool = !unread.contains { $0.source == "calendar" }
+        if today.isShowingCurrentDay { nextSection(next, timeline: timeline, calendarRead: calendarRead) }
+        if halves && today.isShowingCurrentDay {
+            laterSection(timeline, next: next)
+        } else {
+            agenda(timeline, skipping: next)
+        }
         if today.isShowingCurrentDay && !staleReminders.asks.isEmpty {
             // A question that arrives after the first frame never animates the panel's height.
             staleSection.transaction { $0.animation = nil }
@@ -828,19 +838,320 @@ struct NotchDayView: View {
         return t.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
     }
 
+    // MARK: Next up
+
+    /// The next thing on the clock on today, or nil.
+    private func nextItem(_ timeline: DayTimeline) -> DayItem? {
+        guard today.isShowingCurrentDay else { return nil }
+        return DayTimeline.nextUp(timeline.items, now: today.now.timeIntervalSince1970)
+    }
+
+    /// The Next card, or one line when nothing is left on the clock today.
+    @ViewBuilder private func nextSection(_ next: DayItem?, timeline: DayTimeline, calendarRead: Bool) -> some View {
+        if let next {
+            nextCard(next, timeline: timeline, calendarRead: calendarRead)
+        } else {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("NEXT").font(.wisp(size: 10.5, design: .monospaced)).foregroundStyle(Theme.textMuted)
+                Text(DayTimeline.nothingNextLine(calendarRead: calendarRead)).font(.wisp(size: 13)).foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    private func nextCard(_ item: DayItem, timeline: DayTimeline, calendarRead: Bool) -> some View {
+        let now: Double = today.now.timeIntervalSince1970
+        let label: String = DayTimeline.nextLabel(item, now: now)
+        let free: String? = DayTimeline.nowFreeLine(timeline.items, now: now, clock: today.clock, calendarRead: calendarRead)
+        let spoken: String = DayTimeline.spokenNextLabel(item, now: now) + ": " + spokenRow(item)
+        return VStack(alignment: .leading, spacing: 6) {
+            nextHeader(label, free: free)
+            nextTitleRow(item)
+            nextDetail(item)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 14).fill(Theme.chipFill))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.chipStroke, lineWidth: 1))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(spoken)
+    }
+
+    /// "NEXT · IN 40 MIN" at the left, "Now 1:20 PM · free until 2:00 PM" at the right.
+    private func nextHeader(_ label: String, free: String?) -> some View {
+        let lead = Text(label).font(.wisp(size: 10.5, weight: .medium, design: .monospaced)).foregroundStyle(Theme.warn)
+        return ViewThatFits(in: .horizontal) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                lead.fixedSize()
+                Spacer(minLength: 8)
+                if let free { Text(free).font(.wisp(size: 11.5)).foregroundStyle(Theme.textSecondary).fixedSize() }
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                lead.fixedSize()
+                if let free {
+                    Text(free).font(.wisp(size: 11.5)).foregroundStyle(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .accessibilityHidden(true)
+    }
+
+    /// The title and the card's actions beside it, or under it when both don't fit.
+    private func nextTitleRow(_ item: DayItem) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 10) {
+                nextTitle(item, lines: 1).fixedSize()
+                Spacer(minLength: 8)
+                nextActions(item)
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                nextTitle(item, lines: 2)
+                nextActions(item)
+            }
+        }
+    }
+
+    private func nextTitle(_ item: DayItem, lines: Int) -> some View {
+        let struck: Bool = cancelStatus(item).map { !$0.failed } ?? false
+        return Text(item.title).font(.wisp(size: 18, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+            .lineLimit(lines).fixedSize(horizontal: false, vertical: true)
+            .strikethrough(struck)
+            .help(item.title)
+    }
+
+    /// Open in Calendar and Move… for a Calendar event the service described
+    /// (Move only where the ⋯ menu offers it), then the row's own actions:
+    /// the cancel Undo, Keep, Done or Add to calendar, and ⋯.
+    private func nextActions(_ item: DayItem) -> some View {
+        let event: CheckInEvent? = calendarEvent(for: item)
+        let settled: Bool = event.map { checkIn.cancelled[$0.id] != nil } ?? false
+        let offersMove: Bool = event.map { e in
+            eventMenuEntries(item, e).contains { if case .move = $0 { return true } else { return false } }
+        } ?? false
+        let buttons: [DayTimeline.NextButton] = DayTimeline.nextButtons(isDescribedEvent: event != nil, menuOffersMove: offersMove,
+                                                                         cancelActive: cancelActive(item) || settled)
+        return HStack(spacing: 6) {
+            if let event, buttons.contains(.open) {
+                NotchChrome.chip("Open in Calendar ↗", icon: nil, help: "Opens this event in Calendar") { openInCalendar(event) }
+            }
+            if let event, buttons.contains(.move) {
+                NotchChrome.chip("Move…", icon: nil, help: "Pick another time; Wisp finds free ones") { openMove(event) }
+                    .accessibilityLabel("Move \(item.title)")
+            }
+            trailing(item)
+        }
+        .fixedSize()
+    }
+
+    /// The time line, then where a cancel or a calendar add stands, or the block's warning.
+    @ViewBuilder private func nextDetail(_ item: DayItem) -> some View {
+        Text(DayTimeline.nextTimeLine(item, clock: today.clock)).font(.wisp(size: 12.5)).foregroundStyle(Theme.textSecondary)
+            .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+        if let status = laterStatus(item) {
+            let ink: Color = status.failed ? Theme.bad : Theme.textMuted
+            Text(status.text).font(.wisp(.footnote)).foregroundStyle(ink)
+                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// What a cancel, a planner warning or a calendar add says about a row,
+    /// beyond what it is: nil for a row with nothing to report.
+    private func laterStatus(_ item: DayItem) -> (text: String, failed: Bool)? {
+        if let status = cancelStatus(item) { return status }
+        if let id = item.blockID, let block = plan?.displayBlocks.first(where: { $0.id == id }),
+           let warning = block.warnings.lazy.compactMap(DayTimeline.plainWarning).first {
+            return (warning, false)
+        }
+        return calendarLine(item)
+    }
+
+    // MARK: Later today
+
+    /// The rest of today in short rows: when, a bar as long as it runs, what it
+    /// is, its actions. What is due by a time waits behind one "Show N more"
+    /// line that names it, as do rows past the first eight.
+    @ViewBuilder private func laterSection(_ timeline: DayTimeline, next: DayItem?) -> some View {
+        let now: Double = today.now.timeIntervalSince1970
+        let agenda: DayAgenda = timeline.agenda(now: now, isToday: true)
+        let over: [DayItem] = agenda.earlier.filter { $0.isOver(cancelActive: cancelActive($0)) }
+        let live: [DayItem] = agenda.earlier.filter { !$0.isOver(cancelActive: cancelActive($0)) }
+        let later = DayTimeline.laterRows(agenda, excluding: next)
+        let timed: [DayItem] = live + later.timed
+        // The Next card stands in for the first row, so it counts toward the eight.
+        let limit: Int = next == nil ? Self.agendaRows : Self.agendaRows - 1
+        let hidden: [DayItem] = Array(timed.dropFirst(limit)) + later.due
+        let rows: [DayItem] = showWholeAgenda ? timed + later.due : Array(timed.prefix(limit))
+        if !timed.isEmpty || !later.due.isEmpty || !over.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                laterHeader(over)
+                if showEarlier { ForEach(over) { laterRow($0).transition(.opacity) } }
+                ForEach(rows) { laterRow($0) }
+                    .transition(.opacity)
+                if !hidden.isEmpty { laterMore(hidden) }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Later today")
+        }
+    }
+
+    /// "LATER TODAY", and at its right what ended in the last two hours, which opens.
+    private func laterHeader(_ over: [DayItem]) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text("LATER TODAY").font(.wisp(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
+                .accessibilityAddTraits(.isHeader)
+            Spacer(minLength: 8)
+            if !over.isEmpty {
+                Button {
+                    showEarlier.toggle()
+                    model.onResize()
+                } label: {
+                    Text(showEarlier ? "Hide earlier" : "Earlier: " + DayTimeline.earlierLine(over))
+                        .font(.wisp(size: 11.5)).foregroundStyle(Theme.textMuted).lineLimit(1)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(StudyRowButtonStyle())
+                .help(showEarlier ? "Hide what's over" : "Show what's over")
+            }
+        }
+        .padding(.bottom, 2)
+    }
+
+    /// "Show 2 more · due 11:59 PM: Lab 5 and Problem set 6", or Show fewer.
+    private func laterMore(_ hidden: [DayItem]) -> some View {
+        let label: String = showWholeAgenda ? "Show fewer" : DayTimeline.moreLine(hidden, clock: today.clock)
+        return Button {
+            showWholeAgenda.toggle()
+            model.onResize()
+        } label: {
+            HStack(spacing: 4) {
+                Text(label).lineLimit(1).truncationMode(.tail)
+                Image(systemName: showWholeAgenda ? "chevron.up" : "chevron.down").font(.wisp(size: 8, weight: .semibold))
+            }
+            .font(.wisp(.footnote, weight: .medium)).foregroundStyle(Theme.textSecondary)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(StudyRowButtonStyle())
+        .padding(.leading, timeColumn + 10 + Self.laterBarWidth + 10).padding(.top, 3)
+        .help(label)
+    }
+
+    /// The Later row's duration bar: 30 pt for two hours or more.
+    private static var laterBarWidth: CGFloat { 30 * Theme.textScale }
+
+    private func laterRow(_ item: DayItem) -> some View {
+        let over: Bool = item.isOver(cancelActive: cancelActive(item))
+        // Time, bar and title share the title's first line.
+        return HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(DayTimeline.laterTime(item, clock: today.clock))
+                .font(.wisp(.callout, weight: .semibold)).monospacedDigit()
+                .foregroundStyle(item.style == .overdue ? DayInk.now : Theme.textPrimary)
+                .lineLimit(1)
+                .frame(width: timeColumn, alignment: .leading)
+            laterBar(item)
+            VStack(alignment: .leading, spacing: 1) {
+                laterLine(item, actions: !over)
+                laterStatusLine(item)
+            }
+            .animation(Theme.Motion.panel(reduceMotion: reduceMotion), value: calendarShow(item))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .help(item.title)
+        }
+        .padding(.vertical, 4)
+        .opacity(over ? 0.45 : 1)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(spokenRow(item))
+    }
+
+    /// How long it runs, against two hours, in its kind's ink; a dot for what
+    /// is due by a time and holds no stretch.
+    private func laterBar(_ item: DayItem) -> some View {
+        let width: CGFloat = Self.laterBarWidth
+        let fraction: Double? = DayTimeline.durationFraction(item)
+        let ink: Color = DayInk.fill(item.style)
+        return ZStack(alignment: .leading) {
+            Capsule().fill(Theme.chipFill).frame(width: width, height: 4)
+            if let fraction {
+                Capsule().fill(ink).frame(width: max(4, width * CGFloat(fraction)), height: 4)
+            } else {
+                Circle().fill(ink).frame(width: 5, height: 5)
+            }
+        }
+        .frame(width: width)
+        .alignmentGuide(.firstTextBaseline) { d in d.height / 2 + 5 * Theme.textScale }
+        .accessibilityHidden(true)
+    }
+
+    /// The title, its muted detail and the row's actions: all on one line when
+    /// they fit whole; else the detail under the title; else (larger text) the
+    /// actions under both, so a title is never cut to make room for a button.
+    private func laterLine(_ item: DayItem, actions: Bool) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    laterTitle(item).lineLimit(1).fixedSize()
+                    laterDetail(item).lineLimit(1).fixedSize()
+                }
+                Spacer(minLength: 8)
+                if actions { trailing(item) }
+            }
+            HStack(alignment: .center, spacing: 8) {
+                // The detail takes the room the title and actions leave (no
+                // ideal width of its own, so only the title decides the fit).
+                VStack(alignment: .leading, spacing: 1) {
+                    laterTitle(item).lineLimit(1).fixedSize()
+                    laterDetail(item).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                        .frame(minWidth: 0, idealWidth: 0, maxWidth: .infinity, alignment: .leading)
+                }
+                if actions { trailing(item) }
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                laterTitle(item).lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                laterDetail(item).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                if actions { trailing(item) }
+            }
+        }
+    }
+
+    private func laterTitle(_ item: DayItem) -> Text {
+        let struck: Bool = cancelStatus(item).map { !$0.failed } ?? false
+        return Text(item.title).font(.wisp(.callout, weight: .semibold))
+            .foregroundColor(item.style == .usual ? Theme.textSecondary : Theme.textPrimary)
+            .strikethrough(struck)
+    }
+
+    private func laterDetail(_ item: DayItem) -> Text {
+        Text(DayTimeline.laterDetail(item, now: today.now.timeIntervalSince1970, isToday: true, clock: today.clock))
+            .font(.wisp(.footnote)).foregroundColor(DayInk.detail(item.style))
+    }
+
+    /// Where a cancel or a calendar add stands, or the block's warning: one line.
+    @ViewBuilder private func laterStatusLine(_ item: DayItem) -> some View {
+        if let status = laterStatus(item) {
+            let ink: Color = status.failed ? Theme.bad : Theme.textMuted
+            Text(status.text).font(.wisp(.footnote)).foregroundStyle(ink)
+                .lineLimit(1).truncationMode(.tail)
+                .help(status.text)
+                .transition(.opacity)
+        }
+    }
+
     // MARK: The agenda
 
     /// The day's calendar as a list: one dim line for what just ended, the now
     /// line, then each thing on its own full-width row in time order, with the
     /// free stretches between. A long day shows its first rows and Show more.
-    @ViewBuilder private func agenda(_ timeline: DayTimeline) -> some View {
+    @ViewBuilder private func agenda(_ timeline: DayTimeline, skipping next: DayItem? = nil) -> some View {
         let now = today.now.timeIntervalSince1970
         let isToday = today.isShowingCurrentDay
-        let agenda = timeline.agenda(now: now, isToday: isToday)
+        let agenda = DayTimeline.agenda(timeline.agenda(now: now, isToday: isToday), without: next)
         // A cancel still in its Undo window keeps an ended event live, on its own row.
         let over = agenda.earlier.filter { $0.isOver(cancelActive: cancelActive($0)) }
         let live = agenda.earlier.filter { !$0.isOver(cancelActive: cancelActive($0)) }
-        let ahead = showWholeAgenda ? agenda.ahead : agenda.firstRows(holding: Self.agendaRows)
+        // The Next card stands in for the first row, so it counts toward the eight.
+        let limit: Int = next == nil ? Self.agendaRows : Self.agendaRows - 1
+        let ahead = showWholeAgenda ? agenda.ahead : agenda.firstRows(holding: limit)
         // An empty day has nothing to list; the blurb above already says so.
         if !agenda.earlier.isEmpty || !agenda.ahead.isEmpty {
             VStack(alignment: .leading, spacing: 2) {
@@ -857,8 +1168,8 @@ struct NotchDayView: View {
                     }
                 }
                 .transition(.opacity)
-                if agenda.thingsAhead > Self.agendaRows {
-                    Button(showWholeAgenda ? "Show fewer" : "Show \(agenda.thingsAhead - Self.agendaRows) more") {
+                if agenda.thingsAhead > limit {
+                    Button(showWholeAgenda ? "Show fewer" : "Show \(agenda.thingsAhead - limit) more") {
                         showWholeAgenda.toggle()
                         model.onResize()
                     }
@@ -1271,13 +1582,18 @@ struct NotchDayView: View {
     /// card's rules (CheckInCancel.menuEntries). Cancel starts the same 5-second
     /// Undo on the shared queue; Undo is on the block itself. After a cancel
     /// the service couldn't confirm, nothing here may send another: only Open.
+    /// What the ⋯ menu offers for a Calendar block, by the check-in card's rules.
+    private func eventMenuEntries(_ item: DayItem, _ event: CheckInEvent) -> [CheckInCancel.MenuEntry] {
+        let failure = checkIn.cancelFailures[event.id]?.failure
+        if let failure, failure.isUncertain { return [.reason(failure.message), .open] }
+        return CheckInCancel.menuEntries(described: true, canCancel: event.canCancel, canMove: event.canMove,
+                                         calendarWritable: event.calendarWritable, organizerIsUser: event.organizerIsUser,
+                                         cancelReason: event.cancelBlocked, isPast: item.past)
+    }
+
     @ViewBuilder private func eventEntries(_ item: DayItem, _ event: CheckInEvent) -> some View {
         let failure = checkIn.cancelFailures[event.id]?.failure
-        let entries: [CheckInCancel.MenuEntry] = failure?.isUncertain == true
-            ? [.reason(failure!.message), .open]
-            : CheckInCancel.menuEntries(described: true, canCancel: event.canCancel, canMove: event.canMove,
-                                        calendarWritable: event.calendarWritable, organizerIsUser: event.organizerIsUser,
-                                        cancelReason: event.cancelBlocked, isPast: item.past)
+        let entries: [CheckInCancel.MenuEntry] = eventMenuEntries(item, event)
         ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
             switch entry {
             case .cancel:
@@ -1739,6 +2055,20 @@ enum DayInk {
     /// A free stretch's mark: a faint dotted bar.
     static var freeBar: some View {
         Rule().stroke(Theme.textMuted.opacity(0.6), style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [0, 4]))
+    }
+
+    /// A Later today row's duration bar, in its style's ink (as `bar`).
+    static func fill(_ style: DayStyle) -> Color {
+        switch style {
+        case .calendar: return Theme.textPrimary
+        case .task: return Color(white: 0.6)
+        case .suggested: return suggested
+        case .usual: return Color(white: 0.3)
+        case .caught: return caught
+        case .needsYou: return Color.white.opacity(0.55)
+        case .overdue: return now
+        case .todo: return Color.white.opacity(0.45)
+        }
     }
 
     static func detail(_ style: DayStyle) -> Color {
