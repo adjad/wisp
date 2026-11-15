@@ -924,6 +924,7 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/notch-command-contract": "native/notch-command-compile",
     "native/screen-look-contract": "native/screen-look-compile",
     "native/read-aloud-voice-contract": "native/read-aloud-voice-compile",
+    "native/study-find-contract": "native/study-find-compile",
     "native/notch-tab-contract": "native/notch-tab-compile",
     "native/know-you-contract": "native/know-you-compile",
     "native/user-hours-contract": "native/user-hours-compile",
@@ -1207,6 +1208,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     notch_command = str(build_dir / "notch-command")
     screen_look = str(build_dir / "screen-look")
     read_aloud_voice = str(build_dir / "read-aloud-voice")
+    study_find = str(build_dir / "study-find")
     notch_tab = str(build_dir / "notch-tab")
     know_you = str(build_dir / "know-you")
     user_hours = str(build_dir / "user-hours")
@@ -1367,6 +1369,16 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/read-aloud-voice-contract", [read_aloud_voice]),
+        (
+            "native/study-find-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/StudyFindRules.swift",
+                "tests/StudyFindChecks.swift", "-o", study_find,
+            ],
+        ),
+        ("native/study-find-contract", [study_find]),
         (
             "native/notch-tab-compile",
             [
