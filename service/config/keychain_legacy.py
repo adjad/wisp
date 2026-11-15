@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import os
 import re
 import subprocess
 
@@ -66,10 +67,27 @@ def legacy_service(kind: str, current: str) -> str | None:
     return old if old and old != current else None
 
 
+class RealKeychainRefused(PermissionError):
+    """A real `security` launch was refused (under tests, or switched off)."""
+
+
+def _real_launch(argv: list[str], **kwargs):
+    # Tests must never reach the person's login Keychain: under pytest (or with
+    # WISP_KEYCHAIN_LEGACY=off, for test children that don't run under pytest) the
+    # real process is refused. Tests pass their own fake through LAUNCH instead.
+    if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("WISP_KEYCHAIN_LEGACY") == "off":
+        raise RealKeychainRefused("keychain_legacy: a real security process is refused here")
+    return subprocess.run(argv, **kwargs)
+
+
+# The one place this module starts a process. tests/conftest.py replaces it for every test.
+LAUNCH = _real_launch
+
+
 def _run(argv: list[str], *, timeout: float, stdin: bytes | None = None):
-    return subprocess.run(["/usr/bin/security", *argv], input=stdin,
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                          timeout=timeout, env=_ENV, check=False)
+    return LAUNCH(["/usr/bin/security", *argv], input=stdin,
+                  stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                  timeout=timeout, env=_ENV, check=False)
 
 
 def legacy_exists(kind: str, current: str, account: str, *, timeout: float = 10) -> bool:
