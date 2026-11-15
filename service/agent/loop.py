@@ -3279,8 +3279,11 @@ async def run_agent(
             # text Messages marked Not Delivered; see action_tools.QUIET_NOT_DELIVERED.
             # The chat history keeps the full stop text, so a later turn knows
             # it failed and does not report it as sent or send it again.
+            # The stored model text skips add_turn's credential scrub (display-only
+            # results are stored as given), so it is scrubbed here.
+            from service.safety.redaction import scrub
             from service.tools.registry import DisplayOnlyToolResult
-            return DisplayOnlyToolResult(QUIET_NOT_DELIVERED, model_text=stopped,
+            return DisplayOnlyToolResult(QUIET_NOT_DELIVERED, model_text=scrub(stopped)[0],
                                          artifact_kind="receipt")
         return stopped
 

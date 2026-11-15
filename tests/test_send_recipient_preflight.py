@@ -876,3 +876,27 @@ async def test_the_draft_card_shows_only_passed_to_messages_and_audits_the_failu
     answer = await main.assistant_send_message_draft({"to": "+15550109999", "text": "Hi"})
     assert answer == {"ok": False, "result": "Passed to Messages."}
     assert "Not Delivered" in audited[-1]["result"] and audited[-1]["ok"] is False
+
+
+def test_the_stored_failure_text_goes_through_the_credential_scrub(chat, monkeypatch):
+    from service.safety import redaction
+    real = redaction.scrub
+    monkeypatch.setattr(redaction, "scrub", lambda text, *a, **k: (real(text, *a, **k)[0] + " [scrubbed]",
+                                                                    *real(text, *a, **k)[1:]))
+    _delivery_turn(chat, {"delivery": "failed", "delivery_service": "iMessage"})
+    assert chat.store.turns_from(chat.sid, 0)[-1]["content"].endswith(" [scrubbed]")
+
+
+def test_the_draft_cards_show_the_quiet_line_neutral_with_no_tick():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1] / "app/Sources/WispApp"
+    client = (root / "WispClient.swift").read_text(encoding="utf-8")
+    assert f'static let quietNotDelivered = "{action_tools.QUIET_NOT_DELIVERED}"' in client
+    notch = (root / "OverlayView.swift").read_text(encoding="utf-8")
+    window = (root / "Chat/ChatViews.swift").read_text(encoding="utf-8")
+    assert "|| draft.status == WispClient.quietNotDelivered)\n" in notch
+    assert "? Theme.textSecondary : Theme.bad)" in notch
+    assert "|| draft.status == WispClient.quietNotDelivered\n" in window
+    assert "? ChatTheme.text2 : ChatTheme.danger)" in window
+    # The tick and "Message sent" still need ok, which the quiet answer never has.
+    assert 'Image(systemName: draft.sent ? "checkmark.circle.fill" : "bubble.left")' in notch
