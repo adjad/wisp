@@ -304,10 +304,11 @@ final class ProactiveActions: ObservableObject {
 
     #if WISP_NOTCH_QA
     func qaReset(account: String? = nil, openDraft: String? = nil, expanded: Set<String> = [], replying: String? = nil,
-                 hero: String? = nil, openRow: String? = nil) {
+                 hero: String? = nil, openRow: String? = nil, showAll: Bool = false) {
         self.account = account
         heroID = hero
         self.openRow = openRow
+        showAllTodos = showAll
         openDrafts = openDraft.map { [$0] } ?? []
         self.expanded = expanded
         self.replying = replying
@@ -335,6 +336,10 @@ struct ProactiveBriefSection: View {
     @ObservedObject var itemActions: NeedsYouActionsModel = NotchBriefView.needsYouActions
     /// The rest of today's calendar, for the calendar line.
     var events: [(start: Double, title: String)] = []
+    /// Today's all-day events, and how many timed ones have already ended, so
+    /// the calendar line reads the same day the cards do (BriefPlate.calendarLine).
+    var allDayEvents: [String] = []
+    var endedEvents = 0
     /// Kept for callers; the zones scroll with the tab (OverlayView.tabScroll).
     var scrollCap: CGFloat? = 300
     /// HOOK(W3): told when Reply is tapped on a thread.
@@ -979,7 +984,14 @@ struct ProactiveBriefSection: View {
         let tomorrow = schoolCalendar.date(byAdding: .day, value: 1, to: bounds.end) ?? bounds.end.addingTimeInterval(86_400)
         return ProactiveState.plate(todos: todos, school: schoolRows.items, isDone: { actions.isDone($0) },
                                     now: today.now.timeIntervalSince1970, dayStart: dayStart,
-                                    todayEnd: todayEnd, tomorrowEnd: tomorrow.timeIntervalSince1970)
+                                    todayEnd: todayEnd, tomorrowEnd: tomorrow.timeIntervalSince1970,
+                                    named: calendarNamed)
+    }
+
+    /// The events the calendar line names (BriefPlate.calendarLine's first
+    /// three), which the list then leaves out.
+    private var calendarNamed: [String] {
+        Array((allDayEvents + events.map(\.title)).prefix(3))
     }
 
     private var dayLink: some View {
@@ -995,16 +1007,19 @@ struct ProactiveBriefSection: View {
         .help("The rest of today, hour by hour (⌘3)")
     }
 
-    /// "11:45 AM Hack Day · 12 PM Hacktoberfest", or that nothing else is on
-    /// today; with no to-dos either, that goes on the same line. Opens Day.
+    /// "11:45 AM Hack Day · 12 PM Hacktoberfest", today's all-day events
+    /// first; or that nothing is left on today, or nothing was on it; with no
+    /// to-dos either, that goes on the same line. Opens Day.
     private func calendarLine(todosEmpty: String?) -> some View {
         let calendarUnread = unread.contains { $0.source == "calendar" }
-        let dayLine: String = events.isEmpty ? ProactiveState.emptyDayLine(calendarUnread: calendarUnread)
-            : events.prefix(3).map { today.clock($0.start) + " " + $0.title }.joined(separator: " · ")
+        let upcoming: [String] = events.map { today.clock($0.start) + " " + $0.title }
+        let dayLine: String = BriefPlate.calendarLine(upcoming: upcoming, allDay: allDayEvents,
+                                                      earlierToday: endedEvents, calendarUnread: calendarUnread)
+        let quiet: Bool = events.isEmpty && allDayEvents.isEmpty
         let line: String = todosEmpty.map { dayLine + " · " + $0 } ?? dayLine
         return Button { model.tab = .day } label: {
             Text(line).font(.wisp(size: 13))
-                .foregroundStyle(events.isEmpty ? Theme.textMuted : Theme.textSecondary)
+                .foregroundStyle(quiet ? Theme.textMuted : Theme.textSecondary)
                 .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
@@ -1015,7 +1030,7 @@ struct ProactiveBriefSection: View {
         .accessibilityHint("Opens Day")
     }
 
-    /// The first five (three stacked), then "+N to-dos · +M in Study · Show all".
+    /// The first five (two stacked), then "+N to-dos · +M in Study · Show all".
     private func plateList(_ items: [PlateItem]) -> some View {
         let limit: Int = BriefPlate.shown(sideBySide: sideBySide)
         let visible: [PlateItem] = actions.showAllTodos ? items : Array(items.prefix(limit))
@@ -1125,15 +1140,32 @@ struct ProactiveBriefSection: View {
             .lineLimit(1).fixedSize()
     }
 
+    /// The title, and the course and time beside it when both fit on one
+    /// line, else under it (wrapping rather than cut with room beside it).
     private func schoolText(_ title: String, under: String) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(title).font(.wisp(size: 13.5)).foregroundStyle(Theme.textPrimary)
-                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
-            if !under.isEmpty {
-                Text(under).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
+        let head: Text = Text(title)
+        return Group {
+            if under.isEmpty {
+                schoolTitleText(head)
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        schoolTitleText(head).fixedSize()
+                        subText(under).fixedSize()
+                    }
+                    VStack(alignment: .leading, spacing: 1) {
+                        schoolTitleText(head)
+                        subText(under).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func schoolTitleText(_ title: Text) -> some View {
+        title.font(.wisp(size: 13.5)).foregroundStyle(Theme.textPrimary)
+            .lineLimit(2).fixedSize(horizontal: false, vertical: true)
     }
 
     private func schoolDue(_ chip: String) -> some View {
@@ -1195,24 +1227,53 @@ struct ProactiveBriefSection: View {
     }
 
     /// Who it is from and what they said: "Jo Tanaka · “let's talk tmrw”".
+    /// With no sender, the course a title ended in ("Readings [CS 101]"); a
+    /// quote that only repeats the title is left out (BriefPlate.quoteRepeats).
     private func todoSub(_ todo: ProactiveTodo) -> String {
-        [todo.who, todo.quote.isEmpty ? "" : "“" + todo.quote + "”"].filter { !$0.isEmpty }.joined(separator: " · ")
+        let split = BriefPlate.splitCourse(todo.title)
+        let from: String = todo.shownWho.isEmpty ? split.course : todo.shownWho
+        let quote: String = BriefPlate.quoteRepeats(todo.quote, title: split.title) ? "" : "“" + todo.quote + "”"
+        return [from, quote].filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
-    /// The title; under it who it is from, unless that goes on the second line.
+    /// The title as the row shows it: without a course code in brackets at its end.
+    private func todoTitle(_ todo: ProactiveTodo) -> String { BriefPlate.splitCourse(todo.title).title }
+
+    /// The title; who it is from beside it when both fit on one line, else
+    /// under it, unless that goes on the second line (side by side).
     private func todoText(_ todo: ProactiveTodo, done: Bool) -> some View {
-        let sub: String = sideBySide ? "" : todoSub(todo)
-        return VStack(alignment: .leading, spacing: 1) {
-            Text(todo.title).font(.wisp(size: 13.5))
-                .foregroundStyle(done ? Theme.textMuted : Theme.textPrimary)
-                .strikethrough(done, color: Theme.textMuted)
-                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
-                .help(todo.title)
-            if !sub.isEmpty && !done {
-                Text(sub).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
+        let sub: String = sideBySide || done ? "" : todoSub(todo)
+        let title: Text = Text(todoTitle(todo))
+        return Group {
+            if sub.isEmpty {
+                todoTitleText(title, done: done, help: todo.title)
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        todoTitleText(title, done: done, help: todo.title).fixedSize()
+                        subText(sub).fixedSize()
+                    }
+                    VStack(alignment: .leading, spacing: 1) {
+                        todoTitleText(title, done: done, help: todo.title)
+                        subText(sub).lineLimit(1)
+                    }
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func todoTitleText(_ title: Text, done: Bool, help: String) -> some View {
+        title.font(.wisp(size: 13.5))
+            .foregroundStyle(done ? Theme.textMuted : Theme.textPrimary)
+            .strikethrough(done, color: Theme.textMuted)
+            .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            .help(help)
+    }
+
+    /// A row's muted second part: who a to-do is from, a school row's course and time.
+    private func subText(_ text: String) -> Text {
+        Text(text).font(.wisp(size: 11)).foregroundColor(Theme.textMuted)
     }
 
     /// When it is due, then Add to Day and ✓ / ×: the to-do's second line
@@ -1331,7 +1392,7 @@ struct ProactiveBriefSection: View {
         HStack(alignment: .firstTextBaseline, spacing: 9) {
             Image(systemName: DayTimeline.sourceSymbol(thread.source))
                 .font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).frame(width: 15)
-            Text(thread.who.isEmpty ? "Someone" : thread.who).font(.wisp(size: 13, weight: .semibold))
+            Text(thread.shownWho.isEmpty ? "Someone" : thread.shownWho).font(.wisp(size: 13, weight: .semibold))
                 .foregroundStyle(Theme.textSecondary).lineLimit(1).fixedSize()
             Text(thread.line).font(.wisp(size: 13)).foregroundStyle(Theme.textMuted).lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1350,7 +1411,7 @@ struct ProactiveBriefSection: View {
                 .font(.wisp(size: 11)).foregroundStyle(hot ? Theme.textSecondary : Theme.textMuted)
                 .frame(width: 15).padding(.top, 2)
             VStack(alignment: .leading, spacing: 1) {
-                Text(thread.who.isEmpty ? "Someone" : thread.who).font(.wisp(size: 13, weight: .semibold))
+                Text(thread.shownWho.isEmpty ? "Someone" : thread.shownWho).font(.wisp(size: 13, weight: .semibold))
                     .foregroundStyle(hot ? Theme.textPrimary : Theme.textSecondary).lineLimit(1)
                 Text(thread.line).font(.wisp(size: 13))
                     .foregroundStyle(hot ? Theme.textSecondary : Theme.textMuted)

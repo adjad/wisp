@@ -144,6 +144,7 @@ struct NotchBriefView: View {
                     if proactive.updating && !proactive.isWorking { ProcessingRow(label: Self.updatingLabel) }
                     ProactiveBriefSection(proactive: proactive, model: model, today: today, actions: actions,
                                           events: restOfToday(plan),
+                                          allDayEvents: allDayToday(plan), endedEvents: endedToday(plan),
                                           scrollCap: uncapped ? nil : Self.proactiveCap,
                                           coverage: Self.coverage(plan), wide: wide,
                                           schoolRows: plan.study?.briefPlate ?? StudyUpcomingRows(),
@@ -226,6 +227,19 @@ struct NotchBriefView: View {
                 && ($0.end ?? $0.start + 1800) > now }
             .sorted { $0.start < $1.start }
             .map { (start: $0.start, title: DayTimeline.eventTitle($0.title)) }
+    }
+
+    /// Today's all-day events by title, for the calendar line.
+    private func allDayToday(_ plan: TodayPlan) -> [String] {
+        plan.all_day.filter { !DayTimeline.isPlaceholderEvent($0.title) }.map { DayTimeline.eventTitle($0.title) }
+    }
+
+    /// How many of today's timed events have already ended: with none left,
+    /// the calendar line says nothing is left rather than nothing was on.
+    private func endedToday(_ plan: TodayPlan) -> Int {
+        let now = today.now.timeIntervalSince1970
+        return plan.displayBlocks.filter { ($0.kind == "calendar" || $0.kind == "manual") && !DayTimeline.isPlaceholderEvent($0.title)
+            && ($0.end ?? $0.start + 1800) <= now }.count
     }
 
     /// Ask about this, and the way to the Day tab.
