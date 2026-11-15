@@ -1376,7 +1376,10 @@ final class StudyFindRun: ObservableObject {
     }
 
     @Published var visible = false
-    @Published private(set) var phase: Phase = .idle
+    @Published private(set) var phase: Phase = .idle {
+        // [notch hold] Tells the notch a walk started or ended (AppDelegate.watchForStudyJobEnding).
+        didSet { if phase != oldValue { NotificationCenter.default.post(name: Self.phaseChanged, object: self) } }
+    }
     @Published private(set) var step = ""
     @Published private(set) var tabsOpened = 0
     @Published private(set) var tabsClosed = 0
@@ -1420,6 +1423,13 @@ final class StudyFindRun: ObservableObject {
     static let addTimeout: TimeInterval = 120
 
     private static var runs: [String: StudyFindRun] = [:]
+
+    // [notch hold] Read by the notch's automatic close (OverlayModel.studyJobRunningNow, studyHoldsOpen).
+    static let phaseChanged = Notification.Name("WispStudyFindRunPhaseChanged")
+    /// A walk or an add is under way for some course.
+    static var anyRunning: Bool { runs.values.contains { $0.running } }
+    /// Some course's found card is waiting for Add or Done.
+    static var anyAwaitingChoice: Bool { runs.values.contains { $0.visible && $0.phase == .found } }
 
     /// The run for this course (one per course and Canvas site).
     static func shared(for target: StudyFindTarget) -> StudyFindRun {
@@ -2233,7 +2243,6 @@ private struct StudyFindCard: View {
             .studyReportsHeight(onResize)
             .onAppear { run.setFinished(onFinished) }
             .onChange(of: run.phase) { _, _ in onResize() }
-            .onExitCommand { if !run.running { set { run.close() } } }
         }
     }
 
