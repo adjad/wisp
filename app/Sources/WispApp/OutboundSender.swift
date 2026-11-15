@@ -95,34 +95,73 @@ enum OutboundSender {
     static let noSMSAccount = "no_sms_account"
     static let noTextRelay = "This Mac can't send SMS texts. On your iPhone, turn on Settings › Apps › Messages › Text Message Forwarding for this Mac."
 
-    static func sendMessage(actionId: String, to: String, text: String) {
-        DispatchQueue.global(qos: .userInitiated).async {
-            let shortCode = isShortCode(to)
-            // A short code goes by SMS only: iMessage cannot reach it, and an
-            // iMessage send to it does not fail here, it fails later in
-            // Messages. With no SMS account the script raises and nothing is
-            // sent. Everyone else: iMessage first, then SMS, because `buddy
-            // ... of service ... iMessage` fails outright for a recipient who
-            // isn't on iMessage.
-            let script = shortCode ? """
+    /// The script for one send. `viaText` sends through the SMS account first
+    /// (the iPhone relays it, as SMS or RCS) and falls back to iMessage only
+    /// when that send raises or this Mac has no SMS account.
+    static func messageScript(to: String, text: String, shortCode: Bool, viaText: Bool) -> String {
+        if shortCode {
+            return """
             tell application "Messages"
                 set targetBuddy to "\(escape(to))"
                 if (count of (accounts whose service type = SMS)) is 0 then return "\(noSMSAccount)"
                 set theService to 1st account whose service type = SMS
                 send "\(escape(text))" to participant targetBuddy of theService
             end tell
-            """ : """
+            """
+        }
+        if viaText {
+            return """
             tell application "Messages"
                 set targetBuddy to "\(escape(to))"
-                try
+                if (count of (accounts whose service type = SMS)) is 0 then
                     set theService to 1st account whose service type = iMessage
                     send "\(escape(text))" to participant targetBuddy of theService
-                on error
-                    set theService to 1st account whose service type = SMS
-                    send "\(escape(text))" to participant targetBuddy of theService
-                end try
+                else
+                    try
+                        set theService to 1st account whose service type = SMS
+                        send "\(escape(text))" to participant targetBuddy of theService
+                    on error
+                        set theService to 1st account whose service type = iMessage
+                        send "\(escape(text))" to participant targetBuddy of theService
+                    end try
+                end if
             end tell
             """
+        }
+        return """
+        tell application "Messages"
+            set targetBuddy to "\(escape(to))"
+            try
+                set theService to 1st account whose service type = iMessage
+                send "\(escape(text))" to participant targetBuddy of theService
+            on error
+                set theService to 1st account whose service type = SMS
+                send "\(escape(text))" to participant targetBuddy of theService
+            end try
+        end tell
+        """
+    }
+
+    static func sendMessage(actionId: String, to given: String, text: String) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            // Messages names phone handles in E.164; "1 (NNN) NNN-NNNN" from
+            // Contacts is the same number without its plus sign.
+            let to = MessageDeliveryCheck.sendHandle(given)
+            let shortCode = isShortCode(to)
+            // VERIFIED FAILURE 2026-11-15: a person whose conversation runs on
+            // RCS still had an old iMessage handle. The iMessage send below was
+            // accepted, then Not Delivered (error 22), and the SMS fallback
+            // never ran because nothing raised. So a person whose newest
+            // working message went by SMS or RCS is texted that way first.
+            let lastService = shortCode ? nil : MessageDeliveryCheck.lastWorkingService(to: to)
+            let viaText = lastService == "SMS" || lastService == "RCS"
+            // A short code goes by SMS only: iMessage cannot reach it, and an
+            // iMessage send to it does not fail here, it fails later in
+            // Messages. With no SMS account the script stops before any send.
+            // Everyone else: iMessage first, then SMS, because `buddy ... of
+            // service ... iMessage` fails outright for a recipient who isn't
+            // on iMessage, unless their conversation already runs by text.
+            let script = messageScript(to: to, text: text, shortCode: shortCode, viaText: viaText)
             var err: NSDictionary?
             guard let s = NSAppleScript(source: script) else {
                 post(actionId: actionId, ok: false, error: "couldn't build the send script")
@@ -149,7 +188,8 @@ enum OutboundSender {
             // store says which, so read the row back before answering.
             let seen = MessageDeliveryCheck.settle(to: to, text: text, sinceNs: since)
             post(actionId: actionId, ok: true, error: "",
-                 extra: ["delivery": seen.state.rawValue, "delivery_service": seen.service])
+                 extra: ["delivery": seen.state.rawValue, "delivery_service": seen.service,
+                         "delivery_error": seen.error])
         }
     }
 

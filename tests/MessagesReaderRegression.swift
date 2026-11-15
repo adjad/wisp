@@ -531,7 +531,8 @@ enum MessagesReaderRegression {
         // What the real app hit: accepted, then Not Delivered.
         sql("INSERT INTO message VALUES (\(now), 'Wisp test 1', NULL, 1, 1, 0, 0, 22, 'iMessage')")
         let failed = Check.read(dbPath: path, to: "22821", text: "Wisp test 1 ", sinceNs: since)
-        precondition(failed == Check.Reading(state: .failed, service: "iMessage"), "An error on the row is a failure")
+        precondition(failed == Check.Reading(state: .failed, service: "iMessage", error: 22),
+                     "An error on the row is a failure, with its code")
         precondition(Check.settle(dbPath: path, to: "22821", text: "Wisp test 1", sinceNs: since,
                                   window: 1, step: 0.2) == failed, "A failure ends the wait at once")
         precondition(state("22821", "Some other text") == .unknown, "Another text is not this message")
@@ -569,6 +570,51 @@ enum MessagesReaderRegression {
         precondition(sqlite3_step(stmt) == SQLITE_DONE)
         sqlite3_finalize(stmt)
         precondition(state("22821", "not a typedstream") == .unknown)
+        checkSendHandle()
+        checkLastWorkingService(root: root)
+    }
+
+    // The handle a send goes to: E.164 only when the country code is known.
+    static func checkSendHandle() {
+        typealias Check = MessageDeliveryCheck
+        precondition(Check.sendHandle("1 (650) 555-0100") == "+16505550100", "Contacts' display form gets its plus")
+        precondition(Check.sendHandle("+1 650-555-0100") == "+16505550100")
+        precondition(Check.sendHandle(" +44 20 7946 0000 ") == "+442079460000")
+        precondition(Check.sendHandle("(650) 555-0100") == "(650) 555-0100", "No country code is guessed")
+        precondition(Check.sendHandle("Pat@Example.TEST") == "pat@example.test")
+        precondition(Check.sendHandle("22821") == "22821", "A short code is left alone")
+        precondition(Check.sendHandle("Mom") == "Mom")
+    }
+
+    // Which service a person's conversation last worked on, from a synthetic store.
+    static func checkLastWorkingService(root: URL) {
+        typealias Check = MessageDeliveryCheck
+        let path = root.appendingPathComponent("service.db").path
+        precondition(Check.lastWorkingService(dbPath: path, to: "+16505550100") == nil,
+                     "A store that can't be read says nothing")
+        var db: OpaquePointer?
+        precondition(sqlite3_open(path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        func sql(_ statement: String) {
+            precondition(sqlite3_exec(db, statement, nil, nil, nil) == SQLITE_OK,
+                         "Fixture SQL failed: \(statement)")
+        }
+        sql("CREATE TABLE message (date INTEGER, text TEXT, attributedBody BLOB, is_from_me INTEGER, " +
+            "handle_id INTEGER, is_sent INTEGER, is_delivered INTEGER, error INTEGER, service TEXT)")
+        sql("CREATE TABLE handle (id TEXT)")
+        // One person, three handles: RCS (1), iMessage (2), and a stranger (3).
+        sql("INSERT INTO handle VALUES ('+16505550100'), ('+16505550100'), ('+16505550199')")
+        precondition(Check.lastWorkingService(dbPath: path, to: "+16505550100") == nil, "No messages, no service")
+        sql("INSERT INTO message VALUES (100, 'a', NULL, 0, 1, 0, 0, 0, 'RCS')")
+        sql("INSERT INTO message VALUES (200, 'b', NULL, 1, 2, 0, 0, 22, 'iMessage')")
+        sql("INSERT INTO message VALUES (300, 'c', NULL, 1, 2, 1, 0, 0, 'iMessage')")
+        sql("INSERT INTO message VALUES (400, 'd', NULL, 0, 3, 0, 0, 0, 'iMessage')")
+        precondition(Check.lastWorkingService(dbPath: path, to: "1 (650) 555-0100") == "RCS",
+                     "A failed or undelivered iMessage is not how they are reached")
+        sql("INSERT INTO message VALUES (500, 'e', NULL, 1, 2, 1, 1, 0, 'iMessage')")
+        precondition(Check.lastWorkingService(dbPath: path, to: "+16505550100") == "iMessage",
+                     "A delivered iMessage is newer, so iMessage works")
+        precondition(Check.lastWorkingService(dbPath: path, to: "+16505550123") == nil, "Another number is not them")
     }
 
     static func checkBackendRetry() {
