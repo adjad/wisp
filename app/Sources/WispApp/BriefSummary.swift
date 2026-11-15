@@ -539,7 +539,7 @@ enum BriefTexts {
     /// Who sent a text: the service's sender, else the text's "Name: …" prefix
     /// (an older service sent only the text).
     static func name(_ need: BriefNeed) -> String {
-        if !need.who.isEmpty { return need.who }
+        if !need.who.isEmpty { return BriefPlate.who(need.who) }
         let title = need.title
         if let range = title.range(of: ": "), title.distance(from: title.startIndex, to: range.lowerBound) <= 40 {
             return String(title[..<range.lowerBound])
@@ -811,10 +811,12 @@ enum BriefPlate {
         var done = false
     }
 
-    /// Rows the list shows before "Show all": five side by side, three
-    /// stacked (the normal panel), so the stacked Brief stays short.
+    /// Rows the list shows before "Show all": five side by side, two stacked
+    /// (the normal panel), so the stacked Brief stays within a tenth of the
+    /// Brief before R6. Side by side, NEEDS YOU is the taller half in the
+    /// usual Brief, so fewer rows there would not make it shorter.
     static let shownSideBySide = 5
-    static let shownStacked = 3
+    static let shownStacked = 2
 
     static func shown(sideBySide: Bool) -> Int { sideBySide ? shownSideBySide : shownStacked }
     /// The zones sit side by side from this content width (a panel of about
@@ -868,5 +870,111 @@ enum BriefPlate {
     /// The zone heading's count, as its chip shows it.
     static func heading(_ title: String, count: Int) -> String {
         count > 0 ? "\(title) · \(count)" : title
+    }
+
+    // MARK: Wording (B1 to B4)
+
+    /// Who a to-do or a thread is from, as a row shows it. A text in a group
+    /// arrives as "<speaker> in <group>"; an unnamed group's label lost its
+    /// "Group" word on the way ("<speaker> in of 3 (…)"), and a group with no
+    /// name at all left "<speaker> in" with nothing after it. Those read as
+    /// "<speaker> in a group of 3 (…)" and "<speaker>"; a named group's
+    /// leftover `Group "Name"` reads as the name.
+    static func who(_ raw: String) -> String {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return "" }
+        // An unnamed group on its own: "of 3 (…)".
+        if let group = unnamedGroup(text) { return "A group " + group }
+        guard let range = text.range(of: " in ") else {
+            return text.hasSuffix(" in") ? String(text.dropLast(3)).trimmingCharacters(in: .whitespaces) : text
+        }
+        let speaker = text[..<range.lowerBound].trimmingCharacters(in: .whitespaces)
+        var label = text[range.upperBound...].trimmingCharacters(in: .whitespaces)
+        if label.hasPrefix("Group ") {
+            label = String(label.dropFirst("Group ".count)).trimmingCharacters(in: CharacterSet(charactersIn: "\" "))
+        }
+        if speaker.isEmpty { return label }
+        if label.isEmpty { return speaker }
+        if let group = unnamedGroup(label) { return speaker + " in a group " + group }
+        return speaker + " in " + label
+    }
+
+    /// "of 3 (A, B, …)" → "of 3 (A, B, …)" when the text is an unnamed group's
+    /// label without its "Group" word; nil otherwise.
+    private static func unnamedGroup(_ text: String) -> String? {
+        guard text.hasPrefix("of ") else { return nil }
+        let rest = text.dropFirst(3)
+        let digits = rest.prefix { $0.isNumber }
+        guard !digits.isEmpty else { return nil }
+        let after = rest.dropFirst(digits.count)
+        return after.isEmpty || after.hasPrefix(" (") ? text : nil
+    }
+
+    /// Whether a to-do's quoted source line says only what its title says:
+    /// the same words (case, punctuation and quotes aside), or one holding the
+    /// other with fewer than three words more. Such a quote is left out.
+    static func quoteRepeats(_ quote: String, title: String) -> Bool {
+        let q = words(quote), t = words(title)
+        guard !q.isEmpty else { return true }
+        guard !t.isEmpty else { return false }
+        if q == t { return true }
+        let (short, long) = q.count <= t.count ? (q, t) : (t, q)
+        guard long.count - short.count < 3 else { return false }
+        // `short` appears in `long` as a run of whole words.
+        for start in 0...(long.count - short.count) where Array(long[start..<(start + short.count)]) == short {
+            return true
+        }
+        return false
+    }
+
+    /// Lower-cased words without punctuation or quote marks.
+    static func words(_ text: String) -> [String] {
+        let kept = text.lowercased().unicodeScalars.map { scalar -> Character in
+            CharacterSet.alphanumerics.contains(scalar) ? Character(scalar) : " "
+        }
+        return String(kept).split(separator: " ").map(String.init)
+    }
+
+    /// ON YOUR PLATE's calendar line, read against the same day the cards
+    /// read: today's all-day events and what is still to come ("11:45 AM Hack
+    /// Day"), at most three; with none left, "Nothing left on your calendar
+    /// today" when something was on it earlier, else "Nothing on your
+    /// calendar today". Never "else": nothing is listed above it.
+    static func calendarLine(upcoming: [String], allDay: [String], earlierToday: Int, calendarUnread: Bool) -> String {
+        if calendarUnread && upcoming.isEmpty && allDay.isEmpty { return "Wisp can't see your calendar yet" }
+        let named: [String] = allDay.map { "All day: " + $0 } + upcoming
+        if !named.isEmpty { return named.prefix(3).joined(separator: " · ") }
+        return earlierToday > 0 ? "Nothing left on your calendar today" : "Nothing on your calendar today"
+    }
+
+    /// A to-do title that ends in its course's code in brackets ("Readings
+    /// [CS 101]", "Readings (CS 101)"): the title without it, and the code,
+    /// which the row shows where it shows who a to-do is from, as a school row
+    /// shows its course. Any other title is kept whole, with no course.
+    static func splitCourse(_ title: String) -> (title: String, course: String) {
+        let text = title.trimmingCharacters(in: .whitespaces)
+        guard let last = text.last, last == "]" || last == ")" else { return (text, "") }
+        let open: Character = last == "]" ? "[" : "("
+        guard let start = text.lastIndex(of: open), start > text.startIndex else { return (text, "") }
+        let inner = text[text.index(after: start)..<text.index(before: text.endIndex)].trimmingCharacters(in: .whitespaces)
+        let head = text[..<start].trimmingCharacters(in: .whitespaces)
+        guard !head.isEmpty, isCourseCode(inner) else { return (text, "") }
+        return (head, inner)
+    }
+
+    /// "CS 101", "QNT 210A", "MATH-110": letters, then a number, at most a
+    /// couple of words; not a time or an ordinary word in brackets.
+    static func isCourseCode(_ text: String) -> Bool {
+        let parts = text.split(whereSeparator: { $0 == " " || $0 == "-" })
+        guard (1...3).contains(parts.count), text.count <= 14 else { return false }
+        guard let letters = parts.first, letters.allSatisfy({ $0.isLetter && $0.isUppercase }), (2...5).contains(letters.count) else {
+            // "CS101" in one word.
+            let one = text.filter { $0 != " " && $0 != "-" }
+            let lead = one.prefix { $0.isLetter && $0.isUppercase }
+            let tail = one.dropFirst(lead.count)
+            return (2...5).contains(lead.count) && tail.first?.isNumber == true && tail.allSatisfy { $0.isNumber || $0.isUppercase }
+        }
+        let rest = parts.dropFirst().joined()
+        return rest.first?.isNumber == true && rest.allSatisfy { $0.isNumber || $0.isUppercase }
     }
 }
