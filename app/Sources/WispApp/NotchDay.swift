@@ -305,6 +305,102 @@ enum DayCalendarState: Equatable {
     }
 }
 
+/// `GET /assistant/today/week?start=&timezone=` (service/assistant/today_api.py):
+/// seven days from the calendar copy and the planner, read-only. A day whose
+/// calendar isn't current has `ready` false and no numbers.
+struct DayWeekReply: Equatable {
+    struct Span: Equatable {
+        /// Minutes from the day's local midnight.
+        let start: Int
+        let end: Int
+        let kind: String
+    }
+
+    struct Day: Equatable {
+        let day: String
+        let ready: Bool
+        var onClock = 0
+        var minutes = 0
+        var due = 0
+        var spans: [Span] = []
+    }
+
+    let start: String
+    let timezone: String
+    let days: [Day]
+
+    static let path = "/assistant/today/week"
+
+    static func query(start: String, timezone: String) -> String {
+        var components = URLComponents()
+        components.path = path
+        components.queryItems = [URLQueryItem(name: "start", value: start), URLQueryItem(name: "timezone", value: timezone)]
+        return components.string ?? path
+    }
+
+    /// The reply for exactly the week asked for, or nil: not an object, another
+    /// week or zone, or not seven consecutive days in order. Extra keys are
+    /// ignored. A day marked ready that lacks a number or has a malformed span
+    /// is read as not ready (its date alone), never guessed.
+    static func decode(_ data: Data, start: String, timezone: String, days expected: [String]) -> DayWeekReply? {
+        guard expected.count == 7,
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              object["start"] as? String == start, object["timezone"] as? String == timezone,
+              let rows = object["days"] as? [Any], rows.count == 7 else { return nil }
+        var days: [Day] = []
+        for (row, key) in zip(rows, expected) {
+            guard let row = row as? [String: Any], row["day"] as? String == key else { return nil }
+            days.append(day(row, key: key))
+        }
+        return DayWeekReply(start: start, timezone: timezone, days: days)
+    }
+
+    private static func int(_ value: Any?) -> Int? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        let double = number.doubleValue
+        guard double.isFinite, double >= 0, double == double.rounded() else { return nil }
+        return Int(double)
+    }
+
+    private static func day(_ row: [String: Any], key: String) -> Day {
+        let notReady = Day(day: key, ready: false)
+        guard let ready = row["calendar_ready"] as? NSNumber, CFGetTypeID(ready) == CFBooleanGetTypeID(),
+              ready.boolValue,
+              let onClock = int(row["on_clock"]), let minutes = int(row["on_clock_minutes"]), let due = int(row["due"]),
+              let rawSpans = row["spans"] as? [Any] else { return notReady }
+        var spans: [Span] = []
+        for raw in rawSpans {
+            guard let parts = raw as? [Any], parts.count == 3, let from = int(parts[0]), let to = int(parts[1]),
+                  let kind = parts[2] as? String, to > from, to <= 24 * 60 + 60 else { return notReady }
+            spans.append(Span(start: from, end: to, kind: kind))
+        }
+        guard spans.count == onClock else { return notReady }
+        return Day(day: key, ready: true, onClock: onClock, minutes: minutes, due: due, spans: spans)
+    }
+
+    /// A ready day's card load, counted and drawn the way the shown day's is:
+    /// the spans of real commitments (calendar events, plan and study blocks;
+    /// suggestions and learned "usually busy" windows hold nothing), on a bar
+    /// over the working hours `workStart`–`workEnd` (minutes) widened to whole
+    /// hours around them. The count is those spans, so it can be below the
+    /// service's `on_clock`, which counts every timed block. Nil when not ready.
+    static func load(_ day: Day, workStart: Int, workEnd: Int) -> DayLoadBar? {
+        guard day.ready else { return nil }
+        let held = day.spans.filter { !["suggestion", "behavior", "behavior_away"].contains($0.kind) }
+        let spans = held.map { (start: Double($0.start * 60), end: Double($0.end * 60)) }
+        let span = DayWeek.span(workStart: Double(workStart * 60), workEnd: Double(workEnd * 60), spans: spans,
+                                dayStart: 0, dayEnd: 86400)
+        return DayWeek.load(onClock: held.count, due: day.due, spans: spans, span: span, now: nil)
+    }
+
+    /// Loads by day key, for the cards other than the shown one.
+    func loads(workStart: Int, workEnd: Int) -> [String: DayLoadBar] {
+        var out: [String: DayLoadBar] = [:]
+        for day in days { if let load = Self.load(day, workStart: workStart, workEnd: workEnd) { out[day.day] = load } }
+        return out
+    }
+}
+
 struct DayWeekCard: Equatable, Identifiable {
     /// "2026-11-11", the key `GET /assistant/today?day=` takes.
     let day: String
@@ -353,9 +449,11 @@ enum DayWeek {
         return (0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: first) }
     }
 
-    /// The week row for the week holding `shown`: `shownLoad` goes on the shown
-    /// day's card only.
-    static func cards(shown: Date, today: Date, calendar: Calendar, shownLoad: DayLoadBar?) -> [DayWeekCard] {
+    /// The week row for the week holding `shown`: `shownLoad` (the shown day's
+    /// own plan) on the shown day's card, `weekLoads` (the week route's) on the
+    /// others, by day key.
+    static func cards(shown: Date, today: Date, calendar: Calendar, shownLoad: DayLoadBar?,
+                      weekLoads: [String: DayLoadBar] = [:]) -> [DayWeekCard] {
         let key: (Date) -> String = { date in
             let parts = calendar.dateComponents([.year, .month, .day], from: date)
             return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
@@ -367,7 +465,7 @@ enum DayWeek {
             let day = key(date)
             return DayWeekCard(day: day, date: date, weekday: weekdays[index], weekdayName: weekdayNames[index],
                                number: calendar.component(.day, from: date), isToday: day == todayKey,
-                               isShown: day == shownKey, load: day == shownKey ? shownLoad : nil)
+                               isShown: day == shownKey, load: day == shownKey ? shownLoad : weekLoads[day])
         }
     }
 
@@ -425,6 +523,30 @@ enum DayWeek {
     /// the other days. With the shown day's alone, the compact row.
     static func fullRow(_ cards: [DayWeekCard]) -> Bool {
         cards.filter { $0.load != nil }.count > 1
+    }
+
+    /// The form a week row keeps while the panel is open: chosen before its
+    /// first frame from what was already read (`latched`), so a week arriving
+    /// while it's open fills the compact cards in place and the height never
+    /// jumps; the full row waits for the next open.
+    static func full(latched: Bool?, cards: [DayWeekCard]) -> Bool {
+        latched ?? fullRow(cards)
+    }
+
+    /// The first day of the person's calendar week holding `date`, as the
+    /// week route's `start`.
+    static func start(of date: Date, calendar: Calendar) -> String {
+        let first = dates(containing: date, calendar: calendar).first ?? date
+        let parts = calendar.dateComponents([.year, .month, .day], from: first)
+        return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
+    }
+
+    /// The week's seven day keys from `start`, as the route answers them.
+    static func keys(_ dates: [Date], calendar: Calendar) -> [String] {
+        dates.map { date in
+            let parts = calendar.dateComponents([.year, .month, .day], from: date)
+            return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
+        }
     }
 
     /// Each card's share of the row: equal in the full row; in the compact row
