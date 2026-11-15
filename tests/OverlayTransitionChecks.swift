@@ -582,6 +582,47 @@ struct OverlayTransitionChecks {
         print("PASS: the Day's halves stack as one column and sit side by side in the wide panel")
     }
 
+    /// The Day's week row (EqualColumns): it spans the width it is given, and
+    /// it is as tall before the shown day's load arrives as after it, so the
+    /// panel never jumps when the plan lands under it.
+    @MainActor static func weekRowChecks() {
+        struct Card: View {
+            let loaded: Bool
+            var body: some View {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("SAT 14").fixedSize()
+                    Text(loaded ? "3 · 2 due" : " ").lineLimit(1)
+                    Rectangle().frame(height: 9).opacity(loaded ? 1 : 0)
+                }
+                .padding(7)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        func row(_ loaded: Int?) -> some View {
+            EqualColumns(spacing: 6) {
+                ForEach(0..<7, id: \.self) { i in Card(loaded: i == loaded) }
+            }
+        }
+        func host(_ view: some View, width: CGFloat) -> NSHostingView<AnyView> {
+            let hosting = NSHostingView(rootView: AnyView(view.frame(width: width)))
+            hosting.frame = NSRect(x: 0, y: 0, width: width, height: 200)
+            hosting.layoutSubtreeIfNeeded()
+            return hosting
+        }
+        for width in [596.0, 796.0] {
+            let before = host(row(nil), width: width).fittingSize.height
+            let after = host(row(5), width: width).fittingSize.height
+            check(before > 0 && abs(before - after) < 0.5,
+                  "The week row keeps its height when the shown day's load arrives (\(width) pt): \(before) vs \(after)")
+        }
+        // Wider cards for a wider panel, never wider rows: the row takes the width it is given.
+        let narrowRow = host(row(5), width: 596).fittingSize
+        let wideRow = host(row(5), width: 796).fittingSize
+        check(abs(narrowRow.width - 596) < 0.5 && abs(wideRow.width - 796) < 0.5 && wideRow.height <= narrowRow.height + 0.5,
+              "The week row spans the width it is given: \(narrowRow) / \(wideRow)")
+        print("PASS: the week row spans its width and holds its height before the load")
+    }
+
     static func waitUntil(_ condition: () -> Bool) async {
         for _ in 0..<100 {
             if condition() { return }
@@ -993,6 +1034,7 @@ struct OverlayTransitionChecks {
             heartbeatSecondsChecks()
             pinnedPageWidthChecks()
             dayHalvesChecks()
+            weekRowChecks()
             coldStartFailureChecks()
             tryAgainChecks()
         }
