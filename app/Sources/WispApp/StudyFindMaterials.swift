@@ -970,21 +970,7 @@ enum StudyFindText {
     }
     /// The tabs line once Wisp closes what it opens.
     static func tabs(opened n: Int, closed: Int, problem: StudyFindTabCloser.Outcome?, browser: String) -> String {
-        let left = n - closed
-        switch problem {
-        case .denied?:
-            return "Wisp couldn't close the tabs it opened: allow Wisp to control \(browser) in System Settings › "
-                + "Privacy & Security › Automation. \(left) \(left == 1 ? "tab is" : "tabs are") still open."
-        case .unsupported?:
-            return "Wisp opened \(n) \(n == 1 ? "tab" : "tabs") in \(browser) and can't close tabs there — you can "
-                + "close \(n == 1 ? "it" : "them")."
-        case .timedOut?:
-            return "Wisp stopped closing tabs: \(browser) didn't answer in time. It closed \(closed) of \(n); you can "
-                + "close the rest."
-        default:
-            if left <= 0 { return "Wisp opened \(n) \(n == 1 ? "tab" : "tabs") in your browser and closed \(n == 1 ? "it" : "them")." }
-            return "Wisp opened \(n) \(n == 1 ? "tab" : "tabs") and closed \(closed) — you can close the other \(left)."
-        }
+        StudyFindTabCloser.tabsLine(opened: n, closed: closed, problem: problem, browser: browser)
     }
     static let nothingFound = "Wisp didn't find any course materials on this course's Canvas pages."
     static let stoppedEarly = "Stopped. This is what Wisp found so far."
@@ -1119,12 +1105,13 @@ final class StudyFindRun: ObservableObject {
     @Published private(set) var step = ""
     @Published private(set) var tabsOpened = 0
     @Published private(set) var tabsClosed = 0
-    /// Why tabs stopped being closed this run (not allowed, or no tab scripting).
-    @Published private(set) var closeProblem: StudyFindTabCloser.Outcome?
+    /// This run's tab closing: once the browser refuses, fails or doesn't
+    /// answer, no further call is made this run (StudyFindTabCloser.Gate).
+    @Published private(set) var closeGate = StudyFindTabCloser.Gate(browser: nil)
+    /// Why tabs stopped being closed this run (not allowed, failed, timed out, or no tab scripting).
+    var closeProblem: StudyFindTabCloser.Outcome? { closeGate.problem }
     private(set) var browserName = "your browser"
     private var browserID: String?
-    /// The browser has answered once: later calls wait less.
-    private var closeAnswered = false
     /// This run's Stop signal for page reads in progress.
     private var stopToken = StudyFindStop()
     /// The tab Wisp claimed as its own right after the last open, and its
@@ -1279,8 +1266,6 @@ final class StudyFindRun: ObservableObject {
         result = nil
         tabsOpened = 0
         tabsClosed = 0
-        closeProblem = nil
-        closeAnswered = false
         claim = nil
         stopToken = StudyFindStop()
         counts = nil
@@ -1295,7 +1280,7 @@ final class StudyFindRun: ObservableObject {
         } else {
             browserID = nil
         }
-        if browserID.map({ !StudyFindTabCloser.scriptable.contains($0) }) ?? true { closeProblem = .unsupported }
+        closeGate = StudyFindTabCloser.Gate(browser: browserID)
         task = Task { [weak self] in await self?.walk(gen) }
     }
 
@@ -1655,23 +1640,13 @@ final class StudyFindRun: ObservableObject {
 
     /// The browser's tabs, addresses as hashes except one Wisp may claim.
     private func listTabs(_ browser: String, gen: Int, opened: String) async -> [StudyFindTabCloser.Tab]? {
+        guard closeGate.mayCall else { return nil }
         let t = target
-        let listing = await StudyFindTabCloser.list(browser: browser, wait: closeAnswered ? 8 : 60) { url in
+        let listing = await StudyFindTabCloser.list(browser: browser, wait: closeGate.wait) { url in
             url.isEmpty || StudyFindTarget.samePage(url, opened) || t.allows(url)
         }
         guard gen == generation else { return nil }
-        switch listing {
-        case .tabs(let tabs):
-            closeAnswered = true
-            return tabs
-        case .denied:
-            closeProblem = .denied
-        case .timedOut:
-            closeProblem = .timedOut
-        case .failed:
-            break
-        }
-        return nil
+        return closeGate.record(listing)
     }
 
     /// Closes the tab Wisp claimed at the last open, now that it has been read
@@ -1680,7 +1655,7 @@ final class StudyFindRun: ObservableObject {
     private func closeLast(landed: String?, gen: Int) async {
         guard let held = claim, held.gen == gen, gen == generation else { return }
         claim = nil
-        guard closeProblem == nil, let browser = browserID else { return }
+        guard closeGate.mayCall, let browser = browserID else { return }
         let addresses = [held.opened, landed ?? held.opened]
         // Re-listed first: the claimed tab must still be the same tab, at one of
         // those addresses, with its window otherwise unchanged (by position).
@@ -1689,13 +1664,9 @@ final class StudyFindRun: ObservableObject {
                                            byID: StudyFindTabCloser.tabIDs.contains(browser))
         else { return }
         let outcome = await StudyFindTabCloser.close(held.tab, addresses: addresses,
-                                                     browser: browser, wait: closeAnswered ? 8 : 60)
+                                                     browser: browser, wait: closeGate.wait)
         guard gen == generation else { return }
-        switch outcome {
-        case .closed: tabsClosed += 1
-        case .denied, .unsupported, .timedOut: closeProblem = outcome
-        case .notOne, .failed: break
-        }
+        if closeGate.record(outcome) { tabsClosed += 1 }
     }
 
     /// In the student's default browser, without bringing it forward.
