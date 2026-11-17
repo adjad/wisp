@@ -148,6 +148,10 @@ enum OutboundSender {
         return (err == nil ? out : nil, err)
     }
 
+    /// Errors Messages raises while resolving the service, buddy or participant,
+    /// before it queues anything: -1728 "Can't get ..." and -1719 "invalid index".
+    private static let lookupFailureCodes: Set<Int> = [-1728, -1719]
+
     static func sendMessage(actionId: String, to given: String, text: String) {
         DispatchQueue.global(qos: .userInitiated).async {
             // Messages names phone handles in E.164; "1 (NNN) NNN-NNNN" from
@@ -187,10 +191,21 @@ enum OutboundSender {
                         // Queued despite the error: read its real state below.
                         result = (out: nil, error: nil)
                     case .unreadable:
-                        // No way to tell, so no resend and no claim either way.
-                        post(actionId: actionId, ok: true, error: "",
-                             extra: ["delivery": "uncertain"])
-                        return
+                        // Without Full Disk Access the store can't be read. An error
+                        // Messages raises while looking up the recipient, buddy or
+                        // service means nothing was queued, so the other route is safe,
+                        // as it was before the store check existed.
+                        if lookupFailureCodes.contains(code) {
+                            let backup = messageScript(to: to, text: text, shortCode: false,
+                                                       viaText: viaText, fallback: true)
+                            result = runMessageScript(backup)
+                        } else {
+                            // Any other error may have come after the text was queued:
+                            // no resend and no claim either way.
+                            post(actionId: actionId, ok: true, error: "",
+                                 extra: ["delivery": "uncertain"])
+                            return
+                        }
                     }
                 }
             }

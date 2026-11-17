@@ -155,7 +155,9 @@ def _text_problem(result) -> str:
 
 async def _text_reply(card: dict, draft: str) -> dict:
     """The send_message_draft core: a literal handle, the policy floor, and a
-    human-reviewed body. An unconfirmed send is "unknown", never "failed".
+    human-reviewed body. A text handed to Messages without delivery evidence ends as
+    "handed_over" (ok, not a failure, not a confirmed send); an unconfirmed send is
+    "unknown", never "failed".
     Anything but a sent text carries `error`, a sentence the card can show."""
     from service.tools.action_tools import human_reviewed_content, send_message
     from service.tools.registry import _literal_message_recipient, _OutboundUnknownResult
@@ -167,15 +169,20 @@ async def _text_reply(card: dict, draft: str) -> dict:
         return {"ok": False, "status": "blocked", "error": problem}
     with human_reviewed_content():
         result = await send_message(to=to, text=draft)
-    from service.tools.action_tools import MESSAGE_HANDED_OVER_PREFIX
+    from service.tools.action_tools import MESSAGE_HANDED_OVER_LINE, MESSAGE_HANDED_OVER_PREFIX
     ok = isinstance(result, str) and result.startswith("Message sent to ")
-    # Handed to Messages without delivery evidence is neither sent nor failed.
-    unknown = isinstance(result, _OutboundUnknownResult) or (
-        isinstance(result, str) and result.startswith(MESSAGE_HANDED_OVER_PREFIX))
+    # Handed to Messages without delivery evidence is neither sent nor failed: the card
+    # ends in the draft card's own line, with no error, no lock and no retry.
+    handed = (isinstance(result, str) and not isinstance(result, _OutboundUnknownResult)
+              and result.startswith(MESSAGE_HANDED_OVER_PREFIX))
+    unknown = isinstance(result, _OutboundUnknownResult)
     _audit("draft_card_send", tool="send_message", source="proactive_card",
            args={"to": to, "text_sha256": _sha(draft)}, result=str(result)[:200], ok=ok)
     if ok:
         return {"ok": True, "status": "succeeded", "result": str(result)}
+    if handed:
+        return {"ok": True, "status": "handed_over", "result": str(result),
+                "message": MESSAGE_HANDED_OVER_LINE}
     return {"ok": False, "status": "unknown" if unknown else "failed", "result": str(result),
             "error": _TEXT_UNCONFIRMED if unknown else _text_problem(result)}
 

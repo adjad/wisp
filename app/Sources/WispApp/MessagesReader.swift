@@ -774,7 +774,7 @@ enum MessageDeliveryCheck {
     /// `absent` is returned only after the store was readable and showed no row
     /// for the whole window, which is the one case where a second route is safe.
     static func confirmQueued(dbPath: String = storePath, to: String, text: String, sinceNs: Int64,
-                              window: TimeInterval = 2.5, step: TimeInterval = 0.5) -> Probe {
+                              window: TimeInterval = 4.5, step: TimeInterval = 0.5) -> Probe {
         let started = Date()
         while true {
             let seen = probe(dbPath: dbPath, to: to, text: text, sinceNs: sinceNs)

@@ -366,8 +366,15 @@ def test_messages_has_its_own_permission_row():
     refresh = _body(setup, "func refresh() async")
     # The last definite answer is remembered in UserDefaults (never in memory only):
     # a closed Mail, Notes or Messages reads "can't say", not "permission removed".
-    assert "await Self.messagesAutomationState(ask: false)" in refresh and "next[.messages] = messages" in refresh
-    assert "await Self.automationState(ask: false)" in refresh and "next[.mail] = mail" in refresh
+    # The read only probes; the answer is remembered when this generation is applied, so a
+    # dropped stale read can't overwrite a newer stored answer.
+    assert "await Self.messagesAutomationProbe(ask: false)" in refresh
+    assert "await Self.automationProbe(ask: false)" in refresh
+    assert "automationState(ask: false)" not in refresh
+    applied = refresh.index("refreshApplied = generation")
+    assert refresh.index("recordAutomation(mailRead, item: .mail)") > applied
+    assert refresh.index("recordAutomation(messagesRead, item: .messages)") > applied
+    assert "next[.mail] = Self.recordAutomation(" in refresh and "next[.messages] = Self.recordAutomation(" in refresh
     assert "private var answered" not in setup and "keepingAnswer" not in setup
     assert "defaults.set(answer.rawValue, forKey: automationKey(item))" in setup
     # Only a target Wisp started itself is closed again, politely.

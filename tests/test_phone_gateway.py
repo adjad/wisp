@@ -783,3 +783,24 @@ def test_state_dir_defaults_under_home(tmp_path, monkeypatch):
 def test_qr_matrix_trims_coreimage_border():
     framed = "00000\n01110\n01010\n01110\n00000\n"
     assert qrmod.matrix_from_output(framed) == [[True] * 3, [True, False, True], [True] * 3]
+
+
+def test_forwarded_requests_carry_the_gateway_link_key(tmp_path, monkeypatch):
+    from service.gateway_link import GATEWAY_KEY_HEADER
+    link = "d4" * 32                      # invented
+    with make_env(tmp_path, monkeypatch, link_key=link) as env:
+        calls = [("get", "/phone/v1/hello", None), ("post", "/phone/v1/agent", {"prompt": "hi"}),
+                 ("post", "/phone/v1/agent/approve", {"session_id": "s1", "action_id": "a",
+                                                      "approved": True, "scope": "once"}),
+                 ("get", "/phone/v1/sessions", None), ("get", "/phone/v1/sessions/s1", None),
+                 ("delete", "/phone/v1/sessions/s1", None), ("get", "/phone/v1/today", None)]
+        for verb, path, body in calls:
+            kwargs = {"json": body} if body is not None else {}
+            assert getattr(env.client, verb)(path, headers=env.auth, **kwargs).status_code == 200
+        assert len(env.upstream.requests) == len(calls)
+        assert all(r.headers.get(GATEWAY_KEY_HEADER) == link for r in env.upstream.requests)
+
+
+def test_without_a_link_key_no_header_is_sent(env):
+    env.client.get("/phone/v1/sessions", headers=env.auth)
+    assert "x-wisp-gateway-key" not in env.upstream.requests[-1].headers

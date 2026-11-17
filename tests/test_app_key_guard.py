@@ -281,3 +281,170 @@ def test_backend_never_reads_or_writes_a_bytecode_cache():
     assert '"PYTHONDONTWRITEBYTECODE": "1"' in manager
     assert '"PYTHONPYCACHEPREFIX":' not in manager and ".moe/cache/pycache\")" not in manager
     assert '"PYTHONPYCACHEPREFIX",' in manager           # an inherited one is dropped
+
+
+# --- the phone gateway's own narrower key -----------------------------------------------
+
+from service import gateway_link   # noqa: E402
+from service.gateway_link import GATEWAY_KEY_HEADER   # noqa: E402
+
+GATEWAY_KEY = "c3" * 32               # invented
+FORWARDED = [("GET", "/mode"), ("POST", "/agent"), ("POST", "/agent/approve"),
+             ("GET", "/sessions"), ("GET", "/sessions/s-1"), ("DELETE", "/sessions/s-1"),
+             ("GET", "/assistant/today")]
+NOT_FORWARDED = [("POST", "/assistant/send_message_draft"), ("POST", "/mcp/reload"),
+                 ("POST", "/mode"), ("GET", "/memory/facts"), ("GET", "/sessions/s-1/x"),
+                 ("PUT", "/sessions/s-1"), ("POST", "/sessions"), ("DELETE", "/sessions"),
+                 ("GET", "/agent"), ("POST", "/inference/cloud")]
+
+
+@pytest.fixture
+def link_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("WISP_HOME", str(tmp_path))
+    path = tmp_path / "phone_gateway" / "gateway-link.key"
+    path.parent.mkdir(mode=0o700)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.write(fd, GATEWAY_KEY.encode())
+    os.close(fd)
+    return path
+
+
+def _gw(value=GATEWAY_KEY):
+    return {GATEWAY_KEY_HEADER: value}
+
+
+@pytest.mark.parametrize("method,path", FORWARDED)
+def test_gateway_key_passes_each_forwarded_route(keyed, guarded, link_file, method, path):
+    client, reached = guarded
+    assert _call(client, method, path, _gw()).status_code == 200
+    assert reached == [(method, path)]
+
+
+@pytest.mark.parametrize("method,path", NOT_FORWARDED)
+def test_gateway_key_refused_on_other_routes(keyed, guarded, link_file, method, path):
+    client, reached = guarded
+    assert _call(client, method, path, _gw()).status_code == 403
+    assert not reached
+
+
+def test_gateway_key_refused_on_a_websocket(keyed, guarded, link_file):
+    client, reached = guarded
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/agent/stream", headers=_gw()):
+            pass
+    assert not reached
+
+
+def test_the_real_app_takes_the_gateway_key_only_on_forwarded_routes(keyed, wisp, link_file):
+    assert wisp.get("/mode", headers=_gw()).status_code == 200
+    assert wisp.post("/mcp/reload", json={}, headers=_gw()).status_code == 403
+    assert wisp.post("/assistant/send_message_draft", json={}, headers=_gw()).status_code == 403
+
+
+def _refused(guarded, headers):
+    client, reached = guarded
+    assert client.get("/mode", headers=headers).status_code == 403
+    assert not reached
+
+
+@pytest.mark.parametrize("value", ["", GATEWAY_KEY[:-1], GATEWAY_KEY + "0", OTHER,
+                                   GATEWAY_KEY.upper(), KEY])
+def test_wrong_gateway_value_refused(keyed, guarded, link_file, value):
+    _refused(guarded, _gw(value))
+
+
+def test_duplicated_gateway_header_refused(keyed, guarded, link_file):
+    _refused(guarded, [(GATEWAY_KEY_HEADER, GATEWAY_KEY), (GATEWAY_KEY_HEADER, GATEWAY_KEY)])
+
+
+def test_wrong_app_key_is_not_rescued_by_the_gateway_key(keyed, guarded, link_file):
+    _refused(guarded, {APP_KEY_HEADER: OTHER, GATEWAY_KEY_HEADER: GATEWAY_KEY})
+
+
+def test_absent_secret_file_refused(keyed, guarded, link_file):
+    link_file.unlink()
+    _refused(guarded, _gw())
+
+
+def test_symlinked_secret_refused(keyed, guarded, link_file, tmp_path):
+    real = tmp_path / "elsewhere.key"
+    real.write_text(GATEWAY_KEY)
+    os.chmod(real, 0o600)
+    link_file.unlink()
+    link_file.symlink_to(real)
+    _refused(guarded, _gw())
+
+
+@pytest.mark.parametrize("mode", [0o640, 0o604, 0o644, 0o660, 0o666, 0o610])
+def test_group_or_world_accessible_secret_refused(keyed, guarded, link_file, mode):
+    os.chmod(link_file, mode)
+    _refused(guarded, _gw())
+
+
+def test_secret_owned_by_someone_else_refused(keyed, guarded, link_file, monkeypatch):
+    real = os.getuid()
+    monkeypatch.setattr(gateway_link.os, "getuid", lambda: real + 1)
+    _refused(guarded, _gw())
+
+
+@pytest.mark.parametrize("content", ["", "short", "g" * 64, GATEWAY_KEY.upper(),
+                                     GATEWAY_KEY + "\n", GATEWAY_KEY + "00"])
+def test_malformed_secret_refused(keyed, guarded, link_file, content):
+    link_file.write_text(content)
+    _refused(guarded, _gw(content.strip() or "x"))
+    _refused(guarded, _gw())
+
+
+def test_folder_in_place_of_the_secret_refused(keyed, guarded, link_file):
+    link_file.unlink()
+    link_file.mkdir()
+    _refused(guarded, _gw())
+
+
+def test_gateway_key_never_opens_a_backend_the_app_did_not_launch_differently(
+        monkeypatch, guarded, link_file):
+    monkeypatch.setattr(credential_pipe, "_app_key", None)
+    monkeypatch.setattr(credential_pipe, "_app_launch", False)
+    client, reached = guarded
+    assert client.post("/mcp/reload", json={}).status_code == 200      # needs no key at all
+
+
+def test_ensure_secret_creates_a_private_file_and_reuses_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("WISP_HOME", str(tmp_path))
+    first = gateway_link.ensure_secret()
+    path = gateway_link.secret_path()
+    assert path == tmp_path / "phone_gateway" / "gateway-link.key"
+    assert len(first) == 64 and gateway_link.read_secret() == first
+    assert (path.stat().st_mode & 0o777) == 0o600
+    assert gateway_link.ensure_secret() == first
+
+
+def test_ensure_secret_replaces_a_link_in_its_place(tmp_path, monkeypatch):
+    monkeypatch.setenv("WISP_HOME", str(tmp_path))
+    path = gateway_link.secret_path()
+    path.parent.mkdir(mode=0o700)
+    target = tmp_path / "x"
+    target.write_text("keep")
+    path.symlink_to(target)
+    key = gateway_link.ensure_secret()
+    assert not path.is_symlink() and gateway_link.read_secret() == key
+    assert target.read_text() == "keep"
+
+
+def test_allowlist_is_pinned_to_the_gateway_source():
+    from pathlib import Path
+    import re
+    source = (Path(__file__).resolve().parents[1] / "service/phone_gateway/app.py").read_text()
+    forwarded = set(re.findall(r'forward_json\("([A-Z]+)", f?"([^"]+)"', source))
+    forwarded |= {("POST", "/agent")}
+    assert forwarded == {("POST", "/agent/approve"), ("GET", "/sessions"),
+                         ("GET", "/sessions/{_checked_sid(sid, 'sid')}"),
+                         ("DELETE", "/sessions/{_checked_sid(sid, 'sid')}"),
+                         ("GET", "/assistant/today"), ("POST", "/agent")}
+    assert 'client().get("/mode"' in source
+    declared = {(m, rx.pattern) for m, rx in gateway_link.GATEWAY_ROUTES}
+    assert len(declared) == len(FORWARDED)
+    for method, path in FORWARDED:
+        assert gateway_link.is_gateway_route(method, path)
+    for method, path in NOT_FORWARDED:
+        assert not gateway_link.is_gateway_route(method, path)

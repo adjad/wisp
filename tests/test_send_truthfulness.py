@@ -70,6 +70,8 @@ async def test_the_draft_card_does_not_call_a_handed_over_text_failed(contacts, 
     _bridge(monkeypatch, delivery="unknown")
     answer = await main.assistant_send_message_draft({"to": PHONE, "text": "Hi"})
     assert answer["ok"] is True and answer["result"].startswith("Handed to Messages for ")
+    assert answer["status"] == "handed_over" and answer["message"] == action_tools.MESSAGE_HANDED_OVER_LINE
+    assert answer["message"] == "Handed to Messages; delivery isn't confirmed yet."
     app = (ROOT / "app/Sources/WispApp/OverlayModel.swift").read_text(encoding="utf-8")
     chat = (ROOT / "app/Sources/WispApp/Chat/ChatStore.swift").read_text(encoding="utf-8")
     assert 'hasPrefix("Handed to Messages")' in app and 'hasPrefix("Handed to Messages")' in chat
@@ -109,7 +111,16 @@ def test_the_app_resends_by_the_other_route_only_when_the_store_shows_nothing_qu
     fallback = body.index("fallback: true")
     assert check < fallback
     assert re.search(r"case \.absent:\s*let backup = messageScript\(", body)
-    assert re.search(r'case \.unreadable:[^}]*"delivery": "uncertain"[^}]*return', body, re.S)
+    unreadable = body[body.index("case .unreadable:"):body.index("let out = result.out")]
+    # An unreadable store: a lookup error (nothing queued yet) still falls back; any
+    # other error is "uncertain" with no resend.
+    assert "lookupFailureCodes.contains(code)" in unreadable
+    assert unreadable.index("lookupFailureCodes") < unreadable.index("fallback: true") < unreadable.index('"delivery": "uncertain"')
+    assert re.search(r'else \{[^}]*"delivery": "uncertain"[^}]*return', unreadable, re.S)
+    assert re.search(r"lookupFailureCodes: Set<Int> = \[-1728, -1719\]", sender)
+    assert "-1743" not in sender[sender.index("lookupFailureCodes: Set<Int>"):][:80]
+    reader = (ROOT / "app/Sources/WispApp/MessagesReader.swift").read_text(encoding="utf-8")
+    assert re.search(r"static func confirmQueued\([^)]*window: TimeInterval = 4\.5", reader, re.S)
     assert re.search(r"case \.found:[^}]*result = \(out: nil, error: nil\)", body, re.S)
     assert "code != -1743" in body
 
@@ -145,3 +156,38 @@ def test_a_refused_system_action_is_not_a_success(tool, text):
 ])
 def test_a_confirmed_system_action_still_succeeds(tool, text):
     assert classify_tool_outcome(tool, text).status == "succeeded"
+
+
+async def test_the_proactive_card_ends_a_handed_over_text_in_the_same_line(contacts, monkeypatch, tmp_path):
+    """One meaning on every path: not a failure, not a confirmed send, no lock, no retry."""
+    from service.proactive import executor
+    _bridge(monkeypatch, delivery="unknown")
+    import service.safety as safety
+    from service.safety import Tier
+    import types
+    monkeypatch.setattr(safety, "decide", lambda *a, **k: types.SimpleNamespace(tier=Tier.ALLOW, reason=""))
+    card = {"action": {"recipient": PHONE}}
+    answer = await executor._text_reply(card, "Hi")
+    assert answer["ok"] is True and answer["status"] == "handed_over"
+    assert answer["message"] == action_tools.MESSAGE_HANDED_OVER_LINE
+    assert "error" not in answer
+    for word in ("Sent", "Delivered", "sent", "delivered"):
+        assert word not in answer["message"]
+
+
+async def test_an_uncertain_text_is_still_unknown_on_the_proactive_card(contacts, monkeypatch):
+    from service.proactive import executor
+    _bridge(monkeypatch, delivery="uncertain")
+    import service.safety as safety
+    from service.safety import Tier
+    import types
+    monkeypatch.setattr(safety, "decide", lambda *a, **k: types.SimpleNamespace(tier=Tier.ALLOW, reason=""))
+    answer = await executor._text_reply({"action": {"recipient": PHONE}}, "Hi")
+    assert answer["ok"] is False and answer["status"] == "unknown"
+
+
+def test_both_apps_cards_show_the_one_line():
+    app = (ROOT / "app/Sources/WispApp/OverlayModel.swift").read_text(encoding="utf-8")
+    chat = (ROOT / "app/Sources/WispApp/Chat/ChatStore.swift").read_text(encoding="utf-8")
+    for source in (app, chat):
+        assert action_tools.MESSAGE_HANDED_OVER_LINE in source

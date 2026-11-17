@@ -1604,6 +1604,8 @@ async def forward_email(message_id: str, to: str, note: str = "") -> str:
 # Messages took the text but gave no delivered or not-delivered evidence in time.
 # Neither "sent" nor "failed" is claimed. The prefix is a receipt the registry accepts.
 MESSAGE_HANDED_OVER_PREFIX = "Handed to Messages for "
+# The one line a person sees for it, on every card: not sent, not failed.
+MESSAGE_HANDED_OVER_LINE = "Handed to Messages; delivery isn't confirmed yet."
 MESSAGE_HANDED_OVER = ("Delivery isn't confirmed yet, so don't tell the user it was sent or "
                        "delivered; say it was handed to Messages and delivery isn't confirmed.")
 # TEMPORARY, at the owner's request on 2026-11-15 ("just remove the error message

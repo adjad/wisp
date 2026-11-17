@@ -936,8 +936,11 @@ final class FirstRunPermissions: ObservableObject {
         let notifications = await Self.notificationsState()
         // Remembered across closes and relaunches (see resolveAutomation): a closed
         // Mail or Notes can't be asked about, and that is not a removed grant.
-        let mail = await Self.automationState(ask: false)
-        let messages = await Self.messagesAutomationState(ask: false)
+        // Only the probes here: what they found is weighed and remembered below, once this
+        // read is known to be the newest. A stale read that is dropped must not overwrite
+        // an answer a newer one (or request()) already stored.
+        let mailRead = await Self.automationProbe(ask: false)
+        let messagesRead = await Self.messagesAutomationProbe(ask: false)
         let fullDiskAccess = await Task.detached { Self.fullDiskAccessState() }.value
         let readable = await Task.detached { Self.messagesReadable() }.value
         guard generation > refreshApplied else { return }
@@ -958,8 +961,8 @@ final class FirstRunPermissions: ObservableObject {
         next[.accessibility] = Self.promptOnceState(
             granted: AXIsProcessTrusted(),
             promptedBefore: defaults.bool(forKey: Permissions.accessibilityPromptedKey))
-        next[.mail] = mail
-        next[.messages] = messages
+        next[.mail] = Self.recordAutomation(mailRead, item: .mail)
+        next[.messages] = Self.recordAutomation(messagesRead, item: .messages)
         resetItems = Set([Item.mail, .messages].filter { Self.storedAutomation($0) == .reset })
         messagesReadable = readable
         waiting = waiting.filter { !Self.isDecided(next[$0] ?? .checking) }
@@ -1221,6 +1224,16 @@ final class FirstRunPermissions: ObservableObject {
     /// be asked about (procNotFound), which keeps the last answer macOS gave.
     private static func automationState(ask: Bool) async -> State {
         await Task.detached { automationStateNow(ask: ask) }.value
+    }
+
+    /// What one probe of Mail and Notes found. Nothing is remembered.
+    private static func automationProbe(ask: Bool) async -> AutomationRead {
+        await Task.detached { automationRead(automationStatuses(of: automationTargets, ask: ask)) }.value
+    }
+
+    /// What one probe of Messages found. Nothing is remembered.
+    private static func messagesAutomationProbe(ask: Bool) async -> AutomationRead {
+        await Task.detached { automationRead(automationStatuses(of: messagesAutomationTargets, ask: ask)) }.value
     }
 
     /// The same answer, on the calling thread (quick unless `ask` shows a prompt).

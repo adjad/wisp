@@ -236,6 +236,16 @@ def test_an_unconfirmed_text_tells_the_card_where_to_check(store, monkeypatch):
     assert store.card("card:t")["action"]["locked"] == "unknown"      # still never offered again
 
 
+def test_a_text_handed_to_messages_ends_the_card_in_the_draft_cards_line(store, monkeypatch):
+    from service.tools.action_tools import MESSAGE_HANDED_OVER, MESSAGE_HANDED_OVER_PREFIX
+    _text_card(store)
+    _text_send_answers(monkeypatch, f"{MESSAGE_HANDED_OVER_PREFIX}+15551234567. {MESSAGE_HANDED_OVER}")
+    result = asyncio.run(executor.fire("card:t", "On it", store=store))
+    assert result["ok"] is True and result["status"] == "handed_over" and result["removed"] is True
+    assert result["message"] == "Handed to Messages; delivery isn't confirmed yet." and "error" not in result
+    assert store.card("card:t") is None              # no lock, no second Send offered
+
+
 def test_a_text_that_was_not_sent_gives_the_card_the_bridges_reason(store, monkeypatch):
     import service.tools.action_tools as actions
     _text_card(store)

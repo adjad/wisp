@@ -1,8 +1,8 @@
 """Keep web pages out of Wisp's loopback API.
 
 Wisp's service listens on 127.0.0.1:8765 for the Wisp app, the phone gateway
-and the CLI (a backend the app launched answers only the app: see AppKeyGuard
-below). None of those is a browser, so none of them sends `Origin` or
+and the CLI (a backend the app launched answers the app, and the phone gateway
+on the few routes it forwards: see AppKeyGuard below). None of those is a browser, so none of them sends `Origin` or
 `Sec-Fetch-*` headers. A web page the user happens to have open can still
 reach the port two ways:
 
@@ -127,8 +127,10 @@ class LocalOriginGuard:
 # the listener is the process it spawned. Every route and WebSocket then requires it,
 # except the few below that say nothing personal and change nothing.
 #
-# A backend started any other way (scripts/run.sh, tests, the QA harnesses) was given
-# no key and requires none; see credential_pipe.app_key_state.
+# The phone gateway cannot hold this key; it sends its own narrower link secret on the
+# few routes it forwards (see app_key_problem). A backend started any other way
+# (scripts/run.sh, tests, the QA harnesses) was given no key and requires none; see
+# credential_pipe.app_key_state.
 APP_KEY_HEADER = "x-wisp-app-key"
 # /identity: the app's own launch check asks it before it can send anything else.
 # /health: liveness for scripts and the CLI; it reports engine state, nothing personal.
@@ -136,13 +138,23 @@ APP_KEY_OPEN_PATHS = frozenset({"/identity", "/health"})
 _APP_KEY_REFUSED = "Only the Wisp app can use this service."
 
 
-def app_key_problem(path: str, headers: Headers) -> str | None:
-    """Why a request without this launch's app key must be refused, or None."""
+def app_key_problem(path: str, headers: Headers, method: str = "") -> str | None:
+    """Why a request without this launch's app key must be refused, or None.
+
+    A request with no valid app key is still let through when it carries the phone
+    gateway's link secret and is one of the few routes the gateway forwards
+    (service/gateway_link.py). The app key defends against other user accounts and
+    sandboxed apps, which cannot read the private state directory; the gateway secret
+    keeps that property while letting a gateway the user started themself work."""
     from service.credential_pipe import app_key_state
     required, key = app_key_state()
     if not required or path in APP_KEY_OPEN_PATHS:
         return None
     sent = headers.getlist(APP_KEY_HEADER)
+    if not sent:
+        from service.gateway_link import GATEWAY_KEY_HEADER, gateway_key_valid
+        if method and gateway_key_valid(method, path, headers.getlist(GATEWAY_KEY_HEADER)):
+            return None
     if key is None or len(sent) != 1:
         return _APP_KEY_REFUSED
     try:
@@ -156,7 +168,8 @@ def app_key_problem(path: str, headers: Headers) -> str | None:
 
 class AppKeyGuard:
     """Pure ASGI middleware (no buffering, so streams pass through): every request
-    and WebSocket handshake must carry this launch's app key, when one is required."""
+    and WebSocket handshake must carry this launch's app key, when one is required.
+    The one exception is the phone gateway's link secret on the routes it forwards."""
 
     def __init__(self, app):
         self.app = app
@@ -164,7 +177,8 @@ class AppKeyGuard:
     async def __call__(self, scope, receive, send):
         kind = scope.get("type")
         if kind in ("http", "websocket"):
-            problem = app_key_problem(scope.get("path", ""), Headers(scope=scope))
+            problem = app_key_problem(scope.get("path", ""), Headers(scope=scope),
+                                      scope.get("method", "") if kind == "http" else "")
             if problem:
                 if kind == "http":
                     await JSONResponse({"detail": problem}, status_code=403)(scope, receive, send)

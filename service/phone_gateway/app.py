@@ -18,6 +18,8 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from service.gateway_link import GATEWAY_KEY_HEADER, SID_RE, is_gateway_route
+
 from . import DEFAULT_BACKEND, GATEWAY_VERSION
 from .models import ModelCatalog
 from .store import DeviceStore, state_dir
@@ -27,7 +29,6 @@ MAX_PROMPT_CHARS = 16000
 MAX_TOKEN_CHARS = 256
 FAIL_LIMIT = 10
 FAIL_WINDOW_S = 60.0
-SID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 NONCE_RE = re.compile(r"[0-9a-f]{32,128}")
 _MAX_ID_FIELD = 200
 _SCOPES = ("once", "always", "never")
@@ -176,6 +177,7 @@ def create_app(
     model_dirs: Sequence[Path] = (),
     mac_name: str | None = None,
     clock: Callable[[], float] = time.monotonic,
+    link_key: str | None = None,
 ) -> FastAPI:
     backend = _check_backend(backend)
     directory = state if state is not None else state_dir()
@@ -188,7 +190,10 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         # trust_env=False: never route loopback traffic through an env proxy.
-        client = httpx.AsyncClient(base_url=backend, transport=transport,
+        # link_key: the gateway's own credential for the backend (service/gateway_link.py),
+        # sent on every forwarded request and never logged.
+        link_headers = {GATEWAY_KEY_HEADER: link_key} if link_key else None
+        client = httpx.AsyncClient(base_url=backend, transport=transport, headers=link_headers,
                                    timeout=_QUICK_TIMEOUT, trust_env=False,
                                    follow_redirects=False)
         holder["client"] = client
@@ -231,6 +236,7 @@ def create_app(
         return JSONResponse(_UNREACHABLE, status_code=502)
 
     async def forward_json(method: str, path: str, body: dict[str, Any] | None = None) -> Response:
+        assert is_gateway_route(method, path), "not a forwarded route"
         try:
             upstream = await client().request(method, path, json=body)
         except httpx.HTTPError:
@@ -256,6 +262,7 @@ def create_app(
         device = await authenticate(request)
         reachable, mode = False, None
         try:
+            assert is_gateway_route("GET", "/mode")
             upstream = await client().get("/mode", timeout=_HELLO_TIMEOUT)
             if upstream.status_code < 300:
                 reachable = True
@@ -276,6 +283,7 @@ def create_app(
     async def agent(request: Request) -> Response:
         await authenticate(request)
         body = _build_agent_body(await _read_json_object(request))
+        assert is_gateway_route("POST", "/agent")
         upstream_request = client().build_request("POST", "/agent", json=body, timeout=_STREAM_TIMEOUT)
         try:
             upstream = await client().send(upstream_request, stream=True)

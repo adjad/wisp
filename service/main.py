@@ -4752,7 +4752,7 @@ async def assistant_send_message_draft(body: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "result": "The message is empty."}
     with human_reviewed_content():
         result = await send_message(to=to, text=message)
-    from service.tools.action_tools import MESSAGE_HANDED_OVER_PREFIX
+    from service.tools.action_tools import MESSAGE_HANDED_OVER_LINE, MESSAGE_HANDED_OVER_PREFIX
     ok = result.startswith(("Message sent to ", MESSAGE_HANDED_OVER_PREFIX))
     audit("draft_card_send", tool="send_message",
           args={"to": to, "text": message}, result=result, ok=ok)
@@ -4761,6 +4761,10 @@ async def assistant_send_message_draft(body: dict[str, Any]) -> dict[str, Any]:
         # TEMPORARY (owner, 2026-11-15): the audit line above keeps the failure;
         # the card shows no failure wording. See action_tools.QUIET_NOT_DELIVERED.
         return {"ok": False, "result": QUIET_NOT_DELIVERED}
+    if result.startswith(MESSAGE_HANDED_OVER_PREFIX):
+        # Not a failure and not a confirmed send: one meaning on every card.
+        return {"ok": True, "status": "handed_over", "result": result,
+                "message": MESSAGE_HANDED_OVER_LINE}
     return {"ok": ok, "result": result}
 
 

@@ -568,6 +568,11 @@ enum MessagesReaderRegression {
         precondition(Check.confirmQueued(dbPath: path, to: "22821", text: "never queued", sinceNs: since,
                                          window: 0.4, step: 0.2) == .absent,
                      "Readable and empty means nothing was queued")
+        // The default window waits about 4.5 s (Messages can take that long to write the row).
+        let waitStart = Date()
+        precondition(Check.confirmQueued(dbPath: path, to: "22821", text: "never queued either",
+                                         sinceNs: since) == .absent)
+        precondition(Date().timeIntervalSince(waitStart) >= 4.0, "The default window is 4.5 seconds")
         precondition(Check.confirmQueued(dbPath: root.appendingPathComponent("missing-dir/none.db").path,
                                          to: "22821", text: "hi", sinceNs: since,
                                          window: 0.4, step: 0.2) == .unreadable,

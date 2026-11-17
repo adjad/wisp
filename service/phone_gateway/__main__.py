@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
+from service import gateway_link
+
 from . import DEFAULT_BACKEND, DEFAULT_PORT
 from . import qr as qrmod
 from . import tailscale
@@ -43,7 +45,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     try:
         host = tailscale.resolve_bind_host(args.host)
-        app = create_app(state=state_dir(), backend=args.backend,
+        link_key = gateway_link.ensure_secret()
+        app = create_app(state=state_dir(), backend=args.backend, link_key=link_key,
                          model_dirs=[Path(p) for p in args.model], mac_name=_computer_name())
     except (tailscale.BindError, ValueError, StoreError, OSError) as exc:
         return _err(str(exc))
