@@ -128,14 +128,13 @@ enum BackendRecoveryChecks {
         defer { try? FileManager.default.removeItem(at: logURL) }
         try "\(first)\n".write(to: logURL, atomically: true, encoding: .utf8)
         // Bytecode written beside the packaged sources adds unsealed files to
-        // Wisp.app and breaks its code signature on first launch.
+        // Wisp.app and breaks its code signature; a user-writable cache folder would let
+        // another program plant bytecode the service runs. So none is written or read.
         let env = BackendManager.backendEnvironment(
             base: ["PATH": "/usr/bin"], home: "/tmp/wisp-home-fixture"
         )
-        precondition(
-            env["PYTHONPYCACHEPREFIX"] == "/tmp/wisp-home-fixture/.moe/cache/pycache",
-            "bytecode must be cached outside the app bundle"
-        )
+        precondition(env["PYTHONDONTWRITEBYTECODE"] == "1", "bytecode must never be written")
+        precondition(env["PYTHONPYCACHEPREFIX"] == nil, "no user-writable bytecode cache")
         precondition(env["PYTHONUNBUFFERED"] == "1", "backend logs must stay unbuffered")
         precondition(env["PATH"] == "/usr/bin", "inherited environment must be preserved")
         // The Mac's region reaches the service as a plain two-letter code, never an inherited value.
@@ -150,15 +149,17 @@ enum BackendRecoveryChecks {
             precondition(inherited[key] == nil, key)
         }
         precondition(inherited["PATH"] == "/usr/bin")
-        precondition(inherited["PYTHONPYCACHEPREFIX"] == "/Users/sam/.moe/cache/pycache")
+        precondition(inherited["PYTHONPYCACHEPREFIX"] == nil)
         precondition(BackendManager.backendEnvironment(base: ["WISP_REGION": "ZZ"], region: "gb")["WISP_REGION"] == "GB")
         precondition(BackendManager.backendEnvironment(base: ["WISP_REGION": "US"], region: nil)["WISP_REGION"] == nil)
         precondition(BackendManager.backendEnvironment(base: [:], region: "en_US; rm")["WISP_REGION"] == nil)
         precondition(
             BackendManager.backendEnvironment(
-                base: ["PYTHONPYCACHEPREFIX": "/inside/Wisp.app"], home: "/tmp/wisp-home-fixture"
-            )["PYTHONPYCACHEPREFIX"] == "/tmp/wisp-home-fixture/.moe/cache/pycache",
-            "an inherited cache prefix must not redirect bytecode into the bundle"
+                base: ["PYTHONPYCACHEPREFIX": "/tmp/planted", "PYTHONDONTWRITEBYTECODE": ""],
+                home: "/tmp/wisp-home-fixture"
+            ).filter { $0.key.hasPrefix("PYTHON") && $0.key != "PYTHONUNBUFFERED" && $0.key != "PYTHONNOUSERSITE" }
+                == ["PYTHONDONTWRITEBYTECODE": "1"],
+            "an inherited cache prefix is never passed on, and bytecode is never written"
         )
 
         precondition(

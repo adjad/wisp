@@ -39,6 +39,7 @@ import asyncio
 import json
 import os
 import shutil
+import stat
 from pathlib import Path
 
 from service.identity import NEVER_INHERITED as _NEVER_INHERITED
@@ -56,6 +57,34 @@ _CALL_TIMEOUT_S = 90.0
 _MAX_RESULT_CHARS = 8000
 
 PROTOCOL_VERSION = "2024-11-05"
+
+
+_CONFIG_LIMIT_BYTES = 1024 * 1024
+
+
+def _read_owned_config(path: Path) -> str | None:
+    """mcp.json's text, or None when it is absent or not safe to act on.
+
+    Every server in it is a command Wisp runs, so the file must be the person's own:
+    a regular file (not a symlink, which could point anywhere), owned by this user,
+    and writable by no one else (group or world write would let another account
+    choose the commands). Wisp itself writes it 0600 (service/google_workspace.py)."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:                       # absent, or a symlink (ELOOP)
+        return None
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o022 or info.st_size > _CONFIG_LIMIT_BYTES):
+            return None
+        with os.fdopen(fd, "rb", closefd=False) as handle:
+            data = handle.read(_CONFIG_LIMIT_BYTES + 1)
+        if len(data) > _CONFIG_LIMIT_BYTES:
+            return None
+        return data.decode("utf-8")
+    finally:
+        os.close(fd)
 
 
 class MCPServer:
@@ -254,8 +283,9 @@ class MCPManager:
 
     def _read_config(self) -> dict:
         try:
-            if CONFIG_PATH.exists():
-                data = json.loads(CONFIG_PATH.read_text())
+            text = _read_owned_config(CONFIG_PATH)
+            if text is not None:
+                data = json.loads(text)
                 servers = data.get("servers")
                 if isinstance(servers, dict):
                     return servers

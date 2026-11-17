@@ -6,7 +6,7 @@ from contextlib import contextmanager
 
 
 @contextmanager
-def fixture_pipe(values, role='primary', generation='absent', mutate=None):
+def fixture_pipe(values, role='primary', generation='absent', mutate=None, app_key=None):
     from service import credential_pipe
     # Each use models a separate launched service in tests sharing a process.
     credential_pipe._attempted = False
@@ -14,6 +14,8 @@ def fixture_pipe(values, role='primary', generation='absent', mutate=None):
     reader, writer = os.pipe()
     doc = {'version':1,'pid':os.getpid(),'uid':os.getuid(),'role':role,
            'generation':generation,'credentials':values}
+    if app_key is not None:
+        doc['app_key'] = app_key
     body = json.dumps(doc).encode()
     frame = b'WISPCP1\n' + struct.pack('!I',len(body)) + body
     if mutate:
@@ -31,3 +33,4 @@ def fixture_pipe(values, role='primary', generation='absent', mutate=None):
         os.close(saved)
         os.environ.pop('WISP_CREDENTIAL_PIPE', None)
         credential_pipe._attempted = False
+        credential_pipe._app_key, credential_pipe._app_launch = None, False

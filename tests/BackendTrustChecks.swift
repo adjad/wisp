@@ -44,8 +44,23 @@ enum BackendTrustChecks {
         await freshGateChecks()
         await ownServiceChangeChecks()
         refusalNoticeChecks()
+        appKeyChecks()
         if !CommandLine.arguments.contains("--pure") { await liveChecks() }
         print("\(checks) backend trust checks passed")
+    }
+
+    // MARK: the per-launch app key
+
+    static func appKeyChecks() {
+        let first = BackendAppKey.make(), second = BackendAppKey.make()
+        let hex = Set("0123456789abcdef")
+        check(first.count == 64 && first.allSatisfy { hex.contains($0) }, "the key is 64 lowercase hex characters")
+        check(first != second, "every launch gets a new key")
+        let before = BackendAppKey.current
+        BackendAppKey.set(first)
+        check(BackendAppKey.current == first, "the request layer reads the key this launch set")
+        BackendAppKey.set(before)
+        check(BackendAppKey.headerField == "X-Wisp-App-Key", "the header the backend reads (x-wisp-app-key)")
     }
 
     // MARK: pure policy

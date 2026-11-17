@@ -617,8 +617,9 @@ app.add_middleware(RecoveryMiddleware)
 from service.wisp_reset import ResetGate, router as wisp_reset_router
 app.add_middleware(ResetGate)           # /resetwisp: refuse everything else once deleting starts
 app.include_router(wisp_reset_router)
-from service.local_http import BodyLimit, LocalOriginGuard
+from service.local_http import AppKeyGuard, BodyLimit, LocalOriginGuard
 app.add_middleware(BodyLimit)           # /agent: refuse an over-large media body before parsing it
+app.add_middleware(AppKeyGuard)         # other programs: this launch's app key on every route
 app.add_middleware(LocalOriginGuard)    # web pages: loopback Host, same-origin changes only
 from service.memory.api import router as memory_router
 app.include_router(memory_router)

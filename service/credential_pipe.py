@@ -11,10 +11,23 @@ import time
 NAMES = ('WISP_LOCAL_OMLX_KEY', 'WISP_MINI_INFERENCE_KEY', 'WISP_MINI_NODE_KEY')
 MAGIC = b'WISPCP1\n'
 _attempted = False
+# The per-launch app key (see app_key_state). Set only from a primary frame that carried one.
+_app_key = None
+# The backend the app launched (WISP_LAUNCH_NONCE) consumed a primary frame.
+_app_launch = False
+
+
+def app_key_state():
+    """(required, key) for service.local_http.AppKeyGuard.
+
+    Required when this launch's frame carried a key, and also when the Wisp app launched
+    this backend through the frame without one (then nothing matches: refused, never open).
+    A backend started any other way (scripts, tests, QA harnesses) requires none."""
+    return (_app_key is not None or _app_launch), _app_key
 
 
 def consume(role, *, optional=False):
-    global _attempted
+    global _attempted, _app_key, _app_launch
     metadata = os.environ.pop('WISP_CREDENTIAL_PIPE', None)
     inherited = [os.environ.pop(name, None) for name in NAMES]
     if not _attempted and metadata is None and optional and not any(value is not None for value in inherited):
@@ -24,6 +37,7 @@ def consume(role, *, optional=False):
         if _attempted:
             raise ValueError
         _attempted = True
+        _app_key, _app_launch = None, False
         if any(value is not None for value in inherited) or not isinstance(metadata, str):
             raise ValueError
         parts = metadata.split(':')
@@ -56,7 +70,10 @@ def consume(role, *, optional=False):
                 result[key] = value
             return result
         doc = json.loads(raw[12:], object_pairs_hook=unique)
-        if (set(doc) != {'version','pid','uid','role','generation','credentials'}
+        base = {'version','pid','uid','role','generation','credentials'}
+        if (not (set(doc) == base or (role == 'primary' and set(doc) == base | {'app_key'}))
+                or ('app_key' in doc and (not isinstance(doc['app_key'], str)
+                                          or not re.fullmatch('[0-9a-f]{64}', doc['app_key'])))
                 or type(doc['version']) is not int or doc['version'] != 1
                 or type(doc['pid']) is not int or doc['pid'] != os.getpid()
                 or type(doc['uid']) is not int or doc['uid'] != os.getuid() or doc['role'] != role
@@ -69,6 +86,9 @@ def consume(role, *, optional=False):
                 or any(not isinstance(v, str) or not re.fullmatch('[0-9a-f]{64}', v) for v in values.values())
                 or len(set(values.values())) != len(values)):
             raise ValueError
+        if role == 'primary':
+            _app_key = doc.get('app_key')
+            _app_launch = bool(os.environ.get('WISP_LAUNCH_NONCE'))
         return values, doc['generation']
     except (OSError, ValueError, TypeError, KeyError, RecursionError, struct.error):
         raise ValueError('Native credential pipe unavailable') from None

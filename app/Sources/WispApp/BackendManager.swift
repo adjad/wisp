@@ -213,6 +213,8 @@ final class BackendManager {
         ]
         let configDigest = Self.configurationDigest()
         let launchNonce = UUID().uuidString
+        // Every route but /identity and /health refuses a request without it (BackendAppKey).
+        let appKey = BackendAppKey.make()
         let snapshot: BackendCredentials.Snapshot
         let credentialPipe = Pipe()
         defer {
@@ -272,6 +274,8 @@ final class BackendManager {
                     self?.launchEnded(pid: pid, status: status, logURL: logURL, after: logStartOffset)
                 }
             }
+            // Before the child exists, so no request the gate admits for it carries an older key.
+            BackendAppKey.set(appKey)
             try proc.run()
             unprovenLaunch = proc.processIdentifier
             // Record exactly which process this is before anything can judge the port.
@@ -285,7 +289,8 @@ final class BackendManager {
             do {
                 try credentialPipe.fileHandleForReading.close()
                 try BackendCredentials.writePipe(credentialPipe, credentials: snapshot.credentials,
-                    generation: snapshot.generation, role: "primary", pid: proc.processIdentifier)
+                    generation: snapshot.generation, role: "primary", pid: proc.processIdentifier,
+                    appKey: appKey)
             } catch {
                 if proc.isRunning { proc.terminate() }
                 return
@@ -619,12 +624,15 @@ final class BackendManager {
 
     /// Environment for the packaged backend.
     ///
-    /// Bytecode must be cached outside the bundle: writing .pyc beside the
-    /// packaged sources adds unsealed files to Wisp.app and invalidates its
-    /// code signature on first launch. Caching outside preserves import speed.
+    /// No bytecode is written or read from a cache: writing .pyc beside the packaged
+    /// sources adds unsealed files to Wisp.app and invalidates its code signature, and a
+    /// cache outside the bundle (the old ~/.moe/cache/pycache) is a folder any program
+    /// of this user can write, so a planted .pyc would run inside the service with Wisp's
+    /// permissions. The sources are compiled in memory at each start instead.
     /// Inherited variables that choose where Python loads code from. Never passed on.
     nonisolated static let inheritedPythonPathKeys: Set<String> = [
         "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE", "PYTHONEXECUTABLE",
+        "PYTHONPYCACHEPREFIX",
     ]
 
     nonisolated static func backendEnvironment(
@@ -645,10 +653,11 @@ final class BackendManager {
             "PYTHONUNBUFFERED": "1",
             // No per-user site-packages (~/.local/lib/python3.x/site-packages): a `.pth` file
             // any program dropped there would otherwise run inside the service at its next
-            // start. Not `-I`, which would also drop PYTHONPYCACHEPREFIX below.
+            // start.
             "PYTHONNOUSERSITE": "1",
-            "PYTHONPYCACHEPREFIX": (home as NSString)
-                .appendingPathComponent(".moe/cache/pycache"),
+            // No bytecode cache at all (see above): never written, and no user-writable
+            // prefix to read one from.
+            "PYTHONDONTWRITEBYTECODE": "1",
         ]) { _, new in new }
         // The Mac's own region ("US", "GB"), so the service can read a phone number saved in
         // Contacts without a country code as a number in the person's own country. An app
