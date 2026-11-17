@@ -3,10 +3,11 @@ import Foundation
 
 // Copy/run/open actions for a code block MarkdownView renders. Every action
 // here is triggered by an explicit button click the user can see and choose
-// not to press — nothing executes automatically. "Run" first shows the whole
-// script and asks (Cancel is the default), then opens a new, visible Terminal
-// window running the exact command (via `do script`), never silently in the
-// background, so what runs is always in plain sight.
+// not to press — nothing executes automatically. A script is never run from the
+// first click: the code block shows the whole script inline and asks (Cancel is
+// the default), and only its second button calls `runInTerminalConfirmed`, which
+// opens a new, visible Terminal window running the exact command (via `do script`),
+// never silently in the background, so what runs is always in plain sight.
 enum ScriptRunner {
     // Where a code block's language tag says it belongs. `interpreter == nil`
     // for shell/sh/bash/zsh means "run the file directly" (chmod +x + execute);
@@ -22,6 +23,12 @@ enum ScriptRunner {
             case .safari: return "Open in Safari"
             case .pages: return "Open in Pages"
             }
+        }
+        /// True when the block is a script that executes on this Mac. Those are
+        /// reachable only through the inline confirmation.
+        var runsScript: Bool {
+            if case .terminal = self { return true }
+            return false
         }
         var icon: String {
             switch self {
@@ -53,14 +60,13 @@ enum ScriptRunner {
         NSPasteboard.general.setString(text, forType: .string)
     }
 
+    /// Opens a non-script block (HTML in Safari, prose in Pages). A script target
+    /// does nothing here: it only runs through `runInTerminalConfirmed`, after the
+    /// code block's own confirmation card.
     static func perform(_ target: RunTarget, code: String) {
         switch target {
-        case .terminal(let interpreter, let ext):
-            // The model wrote this code: nothing runs until the person has seen all of it
-            // and chosen to. Button actions arrive on the main thread.
-            let confirmed = MainActor.assumeIsolated { ScriptRunner.confirmTerminalRun(code, interpreter: interpreter) }
-            guard confirmed else { return }
-            runInTerminal(code, interpreter: interpreter, ext: ext)
+        case .terminal:
+            return
         case .safari:
             guard let path = writeTemp(code, ext: "html") else { return }
             openWithApp("Safari", path: path)
@@ -68,6 +74,20 @@ enum ScriptRunner {
             guard let path = writeTemp(code, ext: "txt") else { return }
             openWithApp("Pages", path: path)
         }
+    }
+
+    /// Call only from the confirmation card's "Run in Terminal" button.
+    static func runInTerminalConfirmed(_ target: RunTarget, code: String) {
+        guard case .terminal(let interpreter, let ext) = target else { return }
+        runInTerminal(code, interpreter: interpreter, ext: ext)
+    }
+
+    /// The one plain sentence the confirmation card shows.
+    static func confirmationSentence(for target: RunTarget) -> String {
+        var interpreter: String?
+        if case .terminal(let name, _) = target { interpreter = name }
+        return "It runs with \(interpreterName(interpreter)) on this Mac, with Terminal's permissions, "
+            + "so it can read, change or delete your files."
     }
 
     /// What runs the script, in the person's words.
@@ -79,51 +99,6 @@ enum ScriptRunner {
         case "osascript": return "AppleScript (osascript)"
         default: return interpreter
         }
-    }
-
-    /// Shows the full script, scrollable and selectable, and asks. Cancel is the default
-    /// button (Return cancels); only choosing "Run in Terminal" runs it.
-    @MainActor
-    static func confirmTerminalRun(_ code: String, interpreter: String?) -> Bool {
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Run this script in Terminal?"
-        alert.informativeText = "It runs with \(interpreterName(interpreter)) on this Mac, with Terminal's "
-            + "permissions, so it can read, change or delete your files. Read it before you run it."
-        let cancel = alert.addButton(withTitle: "Cancel")
-        cancel.keyEquivalent = "\r"
-        let run = alert.addButton(withTitle: "Run in Terminal")
-        run.keyEquivalent = ""
-        run.hasDestructiveAction = true
-
-        let scroll = NSTextView.scrollableTextView()
-        scroll.frame = NSRect(x: 0, y: 0, width: 520, height: 260)
-        scroll.hasVerticalScroller = true
-        scroll.borderType = .bezelBorder
-        if let text = scroll.documentView as? NSTextView {
-            text.isEditable = false
-            text.isSelectable = true
-            text.isRichText = false
-            text.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-            text.textContainerInset = NSSize(width: 6, height: 6)
-            text.string = code
-            text.setAccessibilityLabel("The script that will run")
-        }
-        alert.accessoryView = scroll
-        alert.layout()
-        // The notch and the chat sit above ordinary windows; the question must not hide behind them.
-        let above = NSWindow.Level(rawValue: max(NSWindow.Level.statusBar.rawValue,
-                                                 DisplayGeometry.shared.layout.windowLevel.rawValue) + 1)
-        alert.window.level = above
-        // runModal puts the alert back at the modal-panel level, under an open notch, which
-        // then covers the script. Raise it again once the modal session is running.
-        let window = alert.window
-        RunLoop.main.perform(inModes: [.modalPanel, .common]) {
-            window.level = above
-            window.orderFrontRegardless()
-        }
-        NSApp.activate(ignoringOtherApps: true)
-        return alert.runModal() == .alertSecondButtonReturn
     }
 
     private static func runInTerminal(_ code: String, interpreter: String?, ext: String) {

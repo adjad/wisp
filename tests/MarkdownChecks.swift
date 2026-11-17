@@ -2,10 +2,12 @@ import Foundation
 
 // Inert stand-in: parser checks never build the SwiftUI body or invoke actions.
 enum ScriptRunner {
-    struct RunTarget { let icon: String; let label: String }
+    struct RunTarget { let icon: String; let label: String; let runsScript: Bool }
     static func runTarget(forLang: String) -> RunTarget? { nil }
     static func copy(_ text: String) { fatalError("Markdown parser checks must not copy") }
     static func perform(_ target: RunTarget, code: String) { fatalError("Markdown parser checks must not run code") }
+    static func runInTerminalConfirmed(_ target: RunTarget, code: String) { fatalError("Markdown parser checks must not run code") }
+    static func confirmationSentence(for target: RunTarget) -> String { "" }
 }
 
 @main

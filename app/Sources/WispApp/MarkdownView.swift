@@ -248,49 +248,7 @@ struct MarkdownView: View {
     // MARK: - Block rendering
 
     private func codeCard(_ b: Block) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 10) {
-                if !b.codeLang.isEmpty {
-                    Text(b.codeLang).font(palette.font(10, weight: .medium))
-                        .foregroundStyle(palette.muted)
-                }
-                Spacer(minLength: 8)
-                codeActionButton(icon: "doc.on.doc", label: "Copy") {
-                    ScriptRunner.copy(b.body)
-                }
-                // Untagged blocks (no ```lang```) land on Pages as plain
-                // content; most languages with no sensible single-file "run"
-                // (json/css/swift/…) get no run button at all — just Copy.
-                if let target = ScriptRunner.runTarget(forLang: b.codeLang) {
-                    codeActionButton(icon: target.icon, label: target.label) {
-                        ScriptRunner.perform(target, code: b.body)
-                    }
-                }
-            }
-            Text(b.body)
-                .font(palette.font(12.5, design: .monospaced))
-                .foregroundStyle(palette.text)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 8).fill(palette.codeFill))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(palette.chipStroke, lineWidth: 1))
-    }
-
-    private func codeActionButton(icon: String, label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 4) {
-                Image(systemName: icon).font(palette.font(9))
-                Text(label).font(palette.font(10, weight: .medium))
-            }
-            .foregroundStyle(palette.secondary)
-            .padding(.horizontal, 7).padding(.vertical, 3)
-            .background(Capsule().fill(palette.chipFill))
-            .overlay(Capsule().stroke(palette.chipStroke, lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-        .help(label)
+        CodeBlockCard(lang: b.codeLang, code: b.body)
     }
 
     // A real grid instead of literal "| a | b |" text — the header row is bold
@@ -510,5 +468,127 @@ struct MarkdownView: View {
         guard let parsed = try? AttributedString(markdown: s, options: opts) else { return AttributedString(s) }
         // Paragraphs, list items and table cells all come through here.
         return MarkdownLinks.safe(parsed)
+    }
+}
+
+
+/// One fenced code block. "Run in Terminal" does not run anything: it swaps the
+/// block into a confirming state right here, in the panel or chat it was drawn in,
+/// showing the whole script (scrollable) and a Cancel / Run in Terminal choice.
+/// The state is local to this block, so leaving the page drops it.
+private struct CodeBlockCard: View {
+    let lang: String
+    let code: String
+    @Environment(\.markdownPalette) private var palette
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    @Environment(\.reduceMotionOverride) private var reduceMotionOverride
+    @State private var confirming = false
+    private var reduceMotion: Bool { reduceMotionOverride ?? systemReduceMotion }
+
+    var body: some View {
+        let target = ScriptRunner.runTarget(forLang: lang)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 10) {
+                if !lang.isEmpty {
+                    Text(lang).font(palette.font(10, weight: .medium))
+                        .foregroundStyle(palette.muted)
+                }
+                Spacer(minLength: 8)
+                if !confirming {
+                    actionButton(icon: "doc.on.doc", label: "Copy") {
+                        ScriptRunner.copy(code)
+                    }
+                    // Untagged blocks (no ```lang```) land on Pages as plain
+                    // content; most languages with no sensible single-file "run"
+                    // (json/css/swift/...) get no run button at all, just Copy.
+                    if let target {
+                        actionButton(icon: target.icon, label: target.label) {
+                            if target.runsScript {
+                                confirming = true
+                            } else {
+                                ScriptRunner.perform(target, code: code)
+                            }
+                        }
+                    }
+                }
+            }
+            if confirming, let target, target.runsScript {
+                ScrollView {
+                    Text(code)
+                        .font(palette.font(12.5, design: .monospaced))
+                        .foregroundStyle(palette.text)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                }
+                .frame(maxHeight: 200)
+                .background(RoundedRectangle(cornerRadius: 8).fill(palette.chipFill))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(palette.chipStroke, lineWidth: 1))
+                .accessibilityLabel("The script that will run")
+                confirmCard(target)
+            } else {
+                Text(code)
+                    .font(palette.font(12.5, design: .monospaced))
+                    .foregroundStyle(palette.text)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8).fill(palette.codeFill))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(confirming ? Theme.bad : palette.chipStroke, lineWidth: 1))
+        .animation(Theme.Motion.panel(reduceMotion: reduceMotion), value: confirming)
+        .onExitCommand { confirming = false }
+    }
+
+    private func confirmCard(_ target: ScriptRunner.RunTarget) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Run this script in Terminal?")
+                .font(palette.font(13, weight: .semibold))
+                .foregroundStyle(palette.text)
+            Text(ScriptRunner.confirmationSentence(for: target))
+                .font(palette.font(12))
+                .foregroundStyle(palette.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Spacer()
+                Button("Cancel") { confirming = false }
+                    .buttonStyle(.plain)
+                    .keyboardShortcut(.defaultAction)
+                    .font(palette.font(13))
+                    .foregroundStyle(palette.secondary)
+                    .padding(.horizontal, 14).padding(.vertical, 6)
+                    .background(Capsule().fill(palette.chipFill))
+                    .overlay(Capsule().stroke(palette.chipStroke, lineWidth: 1))
+                    .accessibilityLabel("Cancel, do not run the script")
+                Button("Run in Terminal") {
+                    confirming = false
+                    ScriptRunner.runInTerminalConfirmed(target, code: code)
+                }
+                .buttonStyle(.plain)
+                .font(palette.font(13, weight: .medium))
+                .foregroundStyle(.black)
+                .padding(.horizontal, 14).padding(.vertical, 6)
+                .background(Capsule().fill(Theme.bad))
+                .accessibilityLabel("Run in Terminal, run the script")
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 12).fill(palette.chipFill))
+    }
+
+    private func actionButton(icon: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Image(systemName: icon).font(palette.font(9))
+                Text(label).font(palette.font(10, weight: .medium))
+            }
+            .foregroundStyle(palette.secondary)
+            .padding(.horizontal, 7).padding(.vertical, 3)
+            .background(Capsule().fill(palette.chipFill))
+            .overlay(Capsule().stroke(palette.chipStroke, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .help(label)
     }
 }
