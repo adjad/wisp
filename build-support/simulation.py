@@ -80,7 +80,7 @@ def main():
             ("assistant-delivery", ["WispClient.swift", "AgentSend.swift", "AssistantDelivery.swift"], "AssistantDeliveryChecks.swift"),
             ("node-presentation", ["NodePresentation.swift"], "NodePresentationChecks.swift"),
             ("backend-credentials", ["BackendCredentials.swift"], "BackendCredentialChecks.swift"),
-            ("backend-recovery", ["BackendCredentials.swift", "BackendManager.swift", "PortGuard.swift", "BackendOwnership.swift"], "BackendRecoveryChecks.swift"),
+            ("backend-recovery", ["BackendCredentials.swift", "BackendManager.swift", "PortGuard.swift", "BackendOwnership.swift", "BackendTrust.swift"], "BackendRecoveryChecks.swift"),
             ("prompt-queue", ["PromptQueue.swift", "AgentSend.swift"], "PromptQueueChecks.swift"),
             ("google-connect", ["GoogleAccountState.swift"], "GoogleConnectChecks.swift"),
             ("calendar-reader", ["WispClient.swift", "AgentSend.swift", "AssistantDelivery.swift", "CalendarReader.swift",

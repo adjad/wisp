@@ -103,7 +103,7 @@ def test_send_message_degarbles_before_sending() -> None:
     finally:
         action_tools.app_request = orig
 
-    check("send went through", "Message sent" in result, result)
+    check("send went through", "Handed to Messages for " in result, result)
     check("payload has real newlines, not literal backslash-n",
           calls and calls[0]["text"] ==
           "Hey Dad, here's the plan:\n\n- 10am run\n- 1pm meeting",
@@ -174,7 +174,7 @@ def test_approved_text_is_not_second_guessed() -> None:
         with action_tools.human_reviewed_content():
             sent = asyncio.run(action_tools.send_message(
                 "+17073171671", "Best,\n[Your Name]"))
-        check("an approved draft sends anyway", "Message sent" in sent, sent)
+        check("an approved draft sends anyway", "Handed to Messages for " in sent, sent)
         check("the app got the text the user approved, unaltered",
               calls and calls[0]["text"] == "Best,\n[Your Name]", calls)
     finally:
