@@ -362,11 +362,19 @@ final class NotchPermissionPageModel: ObservableObject {
 
     private func appCameForward(_ bundleID: String?) {
         guard let wait = waiting, !wait.inPlace, !PrivacyRelaunch.isSystemSettings(bundleID: bundleID, path: nil) else { return }
+        // The switch can land a moment after the person leaves System Settings (a
+        // password or Touch ID sheet closing), so it is read a few times, a second
+        // apart, until it shows.
         Task { [weak self, access] in
-            await access.refresh()
-            guard let self, self.waiting?.token == wait.token,
-                  NotchPermissionPage.comesBack(before: wait.before, now: access.state(wait.item)) else { return }
-            self.comeBack()
+            for attempt in 0..<4 {
+                if attempt > 0 { try? await Task.sleep(nanoseconds: 1_000_000_000) }
+                await access.refresh()
+                guard let self, self.waiting?.token == wait.token else { return }
+                if NotchPermissionPage.comesBack(before: wait.before, now: access.state(wait.item)) {
+                    self.comeBack()
+                    return
+                }
+            }
         }
     }
 
