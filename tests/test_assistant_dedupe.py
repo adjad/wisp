@@ -295,10 +295,11 @@ def test_cancel_reaches_items_far_ahead() -> None:
         far_msg, soon_msg, several_msg, miss_msg = asyncio.run(run())
     finally:
         assistant_tools.assistant_store = real
-    check("a reminder four months out is cancelled", far_msg == "Cancelled “Passport renewal”.", far_msg)
+    check("a reminder four months out is cancelled", far_msg.startswith("Cancelled “Passport renewal” (")
+          and "no Calendar or Apple Reminders copy" in far_msg, far_msg)
     check("and its row is gone", store.get(far["id"]) is None)
     check("the live item wins over a past one with the same name",
-          soon_msg == "Cancelled “Car service”." and store.get(soon["id"]) is None
+          soon_msg.startswith("Cancelled “Car service” (") and store.get(soon["id"]) is None
           and store.get(past["id"]) is not None, soon_msg)
     from datetime import datetime
     days = [datetime.fromtimestamp(row["when_ts"]).strftime("%a %b %-d, ") for row in (first, second)]

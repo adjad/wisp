@@ -2406,6 +2406,26 @@ async def run_agent(
         move_bindings[_action_fingerprint("update_event", prepared["args"])] = prepared["binding"]
         return prepared["args"], prepared["preview"], None
 
+    # cancel_event: the exact item each confirmation card named, by the call's
+    # fingerprint (see bind_event_cancel). Execution removes only that item.
+    cancel_bindings: dict[str, dict] = {}
+
+    def bind_event_cancel(args: dict) -> tuple[str | None, str | None]:
+        """Resolve a cancel_event call once, before its card: (preview, error).
+        Only for the built-in tool; any other registration keeps the plain card."""
+        from service.tools import assistant_tools as _assistant_tools
+        from service.tools.assistant_tools import prepare_event_cancel
+        if getattr(get_tool("cancel_event"), "func", None) is not _assistant_tools.cancel_event:
+            return None, None
+        try:
+            prepared = prepare_event_cancel(args)
+        except Exception:  # noqa: BLE001 — a failed lookup keeps the plain card; the tool re-checks
+            return None, None
+        if "error" in prepared:
+            return None, prepared["error"]
+        cancel_bindings[_action_fingerprint("cancel_event", args)] = prepared["binding"]
+        return prepared["preview"], None
+
     async def execute_tool(tool, args):
         nonlocal guarded_meeting
         _exec_state["ran"] = False
@@ -2419,6 +2439,12 @@ async def run_agent(
             from service.tools.assistant_tools import bound_event_move
             with bound_event_move(binding):
                 return await execute_tool_unbound(tool, args)
+        if tool.name == "cancel_event":
+            cancel_binding = cancel_bindings.get(_action_fingerprint(tool.name, args))
+            if cancel_binding is not None:
+                from service.tools.assistant_tools import bound_event_cancel
+                with bound_event_cancel(cancel_binding):
+                    return await execute_tool_unbound(tool, args)
         return await execute_tool_unbound(tool, args)
 
     async def execute_tool_unbound(tool, args):
@@ -5085,7 +5111,10 @@ async def run_agent(
             _lines = []
             for _, _bname, _bargs in _batch_calls:
                 if _bname == "cancel_event":
-                    _lines.append(f"Cancel: {_bargs.get('title', '?')}")
+                    # The exact item when it resolves; otherwise the plain line, and
+                    # the tool itself refuses after the card without removing anything.
+                    _cancel_line, _ = bind_event_cancel(_bargs)
+                    _lines.append(_cancel_line or f"Cancel: {_bargs.get('title', '?')}")
                 else:
                     _lines.append(_calendar_create_preview(_bargs))
             _batch_action = {
@@ -5723,7 +5752,16 @@ async def run_agent(
                     # only fires for 2+ in the same step) — still gets a real
                     # preview rather than just the generic reason text.
                     elif name == "cancel_event":
-                        action["preview"] = f"Cancel: {args.get('title', '?')}"
+                        # Name the exact item (title, date and time, calendar or list)
+                        # and bind the approved call to it. One that can't be removed
+                        # never reaches a card: the reason is the tool result.
+                        _cancel_line, _cancel_problem = bind_event_cancel(args)
+                        if _cancel_problem and cid not in batch_verdict:
+                            result = _cancel_problem
+                            await emit({"type": "tool_result", "id": cid, "result": result})
+                            msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                            continue
+                        action["preview"] = _cancel_line or f"Cancel: {args.get('title', '?')}"
                     elif name == "add_calendar_event":
                         action["preview"] = _calendar_create_preview(args)
                     elif name == "update_event":

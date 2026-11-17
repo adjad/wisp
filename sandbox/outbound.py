@@ -25,7 +25,7 @@ from sandbox.world import World
 
 RESULT_ACTIONS = {"send_message", "send_email", "reply_to_email", "draft_email",
                   "draft_message", "mark_email_read", "archive_email", "prepare_email_reply"}
-FIRE_AND_FORGET = {"create_calendar_event", "delete_calendar_event",
+FIRE_AND_FORGET = {"create_calendar_event", "delete_calendar_event", "cancel_calendar_event",
                    "create_apple_reminder", "delete_apple_reminder", "sync_emails_now"}
 NOTIFY_ONLY = {"reminder", "scheduled_send_result", "scheduled_send_missed",
                "email_summary", "daily_brief"}
@@ -337,9 +337,10 @@ class OutboundConsumer:
                     "duration_min": ev.get("duration_min", 60),
                 }
                 return {"calendar"}
-            if etype == "delete_calendar_event":
+            if etype in ("delete_calendar_event", "cancel_calendar_event"):
+                # cancel_calendar_event names its occurrence by expected_start_ts.
                 sid = str(ev.get("source_id") or "")
-                when_ts = ev.get("when_ts")
+                when_ts = ev.get("when_ts") if etype == "delete_calendar_event" else ev.get("expected_start_ts")
                 to_delete = [k for k, row in state["calendar"].items()
                             if row["source_id"] == sid and
                             (when_ts is None or

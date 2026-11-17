@@ -1208,68 +1208,213 @@ async def update_event(title: str, when_iso: str, duration_min: int | None = Non
     return f"Moved “{row['title']}” to {start:%a %b %-d, %-I:%M %p}–{end:%-I:%M %p}.{once}{notified}"
 
 
+def _norm_title(text: object) -> str:
+    return " ".join(str(text or "").split()).casefold()
+
+
+def _cancel_matches(title: str, when_iso: str = "", *, now: float | None = None
+                    ) -> tuple[list[dict], list[dict], str | None]:
+    """(matches, upcoming rows, problem) for one cancel request.
+
+    Upcoming FIRST, then the past. Searching only `upcoming` is what made
+    "delete all of my old reminders" impossible: past-due items are by
+    definition not upcoming (2026-08-18: the model then proposed six cancels
+    against the user's FUTURE events, all correctly denied). Every future item
+    counts, with a five-minute grace and no horizon. A reminder the stale policy
+    hides is still cancellable by name: hiding must never stop a removal.
+
+    An exact title wins over a partial one, so "Standup" never also matches
+    "Standup prep". `when_iso` (the item's current local start or due time)
+    picks one of several same-titled items, to the minute."""
+    now = time.time() if now is None else now
+    q = _norm_title(title)
+    upcoming = assistant_store.active_between(now - 300, None, include_stale=True)
+    if not q:
+        return [], upcoming, None
+    at = None
+    if (when_iso or "").strip():
+        if calendar_time_problem(when_iso):
+            return [], upcoming, "(error: the item's current time is invalid; nothing was cancelled.)"
+        at = _calendar_local_start(when_iso)[0].timestamp()
+
+    def pick(rows: list[dict]) -> list[dict]:
+        found = [c for c in rows if q in _norm_title(c["title"])]
+        found = [c for c in found if _norm_title(c["title"]) == q] or found
+        if at is not None:
+            found = [c for c in found if c.get("when_ts") is not None
+                     and abs(float(c["when_ts"]) - at) < 60]
+        return found
+    matches = pick(upcoming) or pick(assistant_store.history(days=365, include_stale=True))
+    return matches, upcoming, None
+
+
+def _cancel_group(c: dict) -> list[dict]:
+    return [c] + [t for t in (assistant_store.get(i) for i in c.get("duplicate_ids") or []) if t]
+
+
+def _series_count(source_id: str) -> int:
+    """How many active synced occurrences share this Calendar identifier (EventKit
+    gives every occurrence of a repeating event the same one)."""
+    with assistant_store.transaction(write=False) as db:
+        row = db.execute("SELECT COUNT(*) AS n FROM scheduled_commitments WHERE source='calendar' "
+                         "AND status='active' AND source_id=?", (source_id,)).fetchone()
+    return int(row["n"] if row is not None else 0)
+
+
+def _when_words(c: dict) -> str:
+    when = c.get("when_ts")
+    if when is None:
+        return "no date"
+    at = datetime.fromtimestamp(float(when))
+    if c.get("all_day"):
+        return at.strftime("%a %b %-d, %Y") + " (all day)"
+    return at.strftime("%a %b %-d, %Y %-I:%M %p")
+
+
+def cancel_plan(title: str, when_iso: str = "", *, now: float | None = None) -> dict:
+    """What cancel_event would remove, without removing it.
+
+    Returns {"error": text, "needs_input": bool} when it can't run, else {"row": the
+    collapsed item, "group": every stored copy of it, "calendar": the synced Calendar
+    occurrence or None, "recurring": bool, "native": "calendar"|"reminders"|"wisp",
+    "preview": the confirmation card line naming the exact item}. Shared by the tool
+    and its card, so the card names what the approved call removes."""
+    q = _norm_title(title)
+    if not q:
+        return {"error": "Which event or reminder should I cancel?", "needs_input": True}
+    matches, upcoming, problem = _cancel_matches(title, when_iso, now=now)
+    if problem:
+        return {"error": problem, "needs_input": True}
+    if not matches:
+        from service.tools.title_match import near_miss_note
+        at = " at that time" if (when_iso or "").strip() else ""
+        return {"error": f"Nothing upcoming or past matches “{title}”{at}." + near_miss_note(
+            title, [c["title"] for c in upcoming]), "needs_input": True}
+    upcoming_ids = {c.get("id") for c in upcoming}
+    if len(matches) > 1:
+        # Several occurrences of ONE repeating Calendar event: the next one, like a move.
+        # The card states its date and "this occurrence only"; never the series.
+        ids = {(c.get("source"), c.get("source_id")) for c in matches}
+        if (len(ids) == 1 and next(iter(ids))[0] == "calendar" and next(iter(ids))[1]
+                and all(c.get("id") in upcoming_ids for c in matches)
+                and not any(c.get("duplicate_ids") for c in matches)):
+            matches = [min(matches, key=lambda c: float(c["when_ts"]))]
+        else:
+            lst = "; ".join(f"{c['title']} ({_when_words(c)})" for c in matches[:5])
+            return {"error": f"Several items match “{title}”: {lst}. Which one? Please be more "
+                             "specific, or give its current date and time.", "needs_input": True}
+    c = matches[0]
+    read_only = _read_only_calendar_row(c)
+    if read_only:
+        return {"error": f"“{read_only['title']}” is on a read-only calendar; Wisp can't change it from "
+                         "this Mac. Nothing was cancelled. Cancel it in Calendar if it is yours to cancel.",
+                "needs_input": False}
+    group = _cancel_group(c)
+    natives = [row for row in group if row.get("source") in {"calendar", "reminders"}]
+    if len(natives) > 1:
+        return {"error": f"“{c['title']}” is stored as several Calendar/Reminders items; nothing was "
+                         "cancelled. Remove the one you mean in Calendar or Reminders.", "needs_input": False}
+    calendar = None
+    recurring = False
+    native = "wisp"
+    where = "in Wisp only (no Calendar or Reminders copy)"
+    notice = ""
+    for row in natives:
+        if not row.get("source_id") or row.get("when_ts") is None:
+            return {"error": f"Wisp doesn't have the exact {'Calendar' if row['source'] == 'calendar' else 'Reminders'} "
+                             f"identity of “{row['title']}”, so nothing was cancelled.", "needs_input": False}
+        if row["source"] == "calendar":
+            calendar, reason = _calendar_cancel_check(row)
+            if reason:
+                return {"error": reason, "needs_input": False}
+            recurring = _series_count(row["source_id"]) > 1
+            native = "calendar"
+            cal = str(row.get("context") or "").strip()
+            where = f"from Calendar{f' (calendar “{cal}”)' if cal else ''}"
+            invitees = int(calendar["invitee_count"] or 0)
+            if invitees:
+                notice = (f" Its {invitees} invitee{'s' if invitees != 1 else ''} will be sent the "
+                          "cancellation.")
+        else:
+            native = "reminders"
+            lst = str(row.get("context") or "").strip()
+            where = f"from Apple Reminders{f' (list “{lst}”)' if lst else ''}"
+    once = " — this occurrence only; the rest of the series stays" if recurring else ""
+    verb = "Cancel" if native == "calendar" else "Delete"
+    return {"row": c, "group": group, "calendar": calendar, "recurring": recurring, "native": native,
+            "preview": f"{verb}: {c['title']} — {_when_words(c)}, {where}{once}.{notice}"}
+
+
+def prepare_event_cancel(args: dict) -> dict:
+    """Resolve a cancel_event call once, before its confirmation card.
+
+    {"error": text} (no card: the text is the tool result) or {"preview": the card line,
+    "binding": the exact item the approved call may remove}."""
+    plan = cancel_plan(str(args.get("title") or ""), str(args.get("when_iso") or ""))
+    if "error" in plan:
+        return {"error": plan["error"]}
+    row = plan["row"]
+    return {"preview": plan["preview"],
+            "binding": {"id": row["id"], "title": row["title"], "when_ts": row.get("when_ts")}}
+
+
+# The item the user confirmed, set by the agent loop around the approved call (see
+# prepare_event_cancel). cancel_event then removes it only while the same title still
+# resolves to exactly that item, so the card and the delete can't name different things.
+_CANCEL_BINDING: contextvars.ContextVar[dict | None] = contextvars.ContextVar("event_cancel_binding", default=None)
+
+
+@contextlib.contextmanager
+def bound_event_cancel(binding: dict | None):
+    token = _CANCEL_BINDING.set(binding)
+    try:
+        yield
+    finally:
+        _CANCEL_BINDING.reset(token)
+
+
 @register(
     "cancel_event",
-    "Cancel or delete ONE upcoming event or reminder, matched by part of its title (no search "
-    "first); a real event is removed from macOS Calendar too. To move an event: "
-    "update_event. To finish a reminder: complete_reminder. To delete many reminders: "
-    "clear_reminders.",
+    "Cancel or delete ONE event or reminder by part of its title (no search first); also "
+    "removed from Calendar or Apple Reminders (one occurrence of a repeat). Move an event: "
+    "update_event. Finish a reminder: complete_reminder. Delete many reminders: clear_reminders.",
     {"type": "object",
      "properties": {
          "title": {"type": "string",
                    "description": "the event/reminder to cancel (any distinctive part of its title)"},
+         "when_iso": {"type": "string",
+                      "description": "its CURRENT local start, only to pick one of several same-titled items"},
      },
      "required": ["title"]},
     category="calendar_write",
 )
-async def cancel_event(title: str) -> str:
-    q = title.lower().strip()
-    # Upcoming FIRST, then the past. Searching only `upcoming` is what made
-    # "delete all of my old reminders" impossible: past-due items are by
-    # definition not upcoming, so nothing ever matched them and the model was
-    # left proposing cancels against the user's FUTURE events instead.
-    #
-    # MEASURED FAILURE (2026-08-18 22:36 log): asked to delete old reminders,
-    # the model called cancel_event six times on upcoming items — the UCSC
-    # move-in appointment, the YC event, tomorrow's alarm — because those were
-    # the only things the tool could see. The user (correctly) denied all six
-    # on the batch confirmation card, and Wisp then reported "the system
-    # blocked all of them — they're either already gone or marked as
-    # protected", which was not true of any of them. Meanwhile 136 genuinely
-    # past-due items sat in the store, unreachable.
-    #
-    # Upcoming is checked first so an ambiguous title still prefers the live
-    # commitment over a stale one with the same name.
-    #
-    # Every future item, with the usual five-minute grace and no horizon: a
-    # reminder four months out is as cancellable as one due tomorrow.
-    upcoming = assistant_store.active_between(time.time() - 300, None, include_stale=True)
-    matches = [c for c in upcoming if q in c["title"].lower()]
-    if not matches:
-        # A reminder the stale policy hides is still cancellable by name: hiding an item
-        # must never stop the user removing it.
-        matches = [c for c in assistant_store.history(days=365, include_stale=True)
-                   if q in c["title"].lower()]
-    if not matches:
-        from service.tools.title_match import near_miss_note
-        return f"Nothing upcoming or past matches “{title}”." + near_miss_note(
-            title, [c["title"] for c in upcoming])
-    if len(matches) > 1:
-        lst = "; ".join(
-            f"{c['title']} ({datetime.fromtimestamp(c['when_ts']).strftime('%a %b %-d, %-I:%M %p')})"
-            for c in matches[:5])
-        return not_done(f"Several items match “{title}”: {lst}. Which one? Please be more specific.")
-    c = matches[0]
-    read_only = _read_only_calendar_row(c)
-    if read_only:
-        return not_done(f"“{read_only['title']}” is on a read-only calendar; Wisp can't change it from this Mac. "
-                        "Nothing was cancelled. Cancel it in Calendar if it is yours to cancel.")
+async def cancel_event(title: str, when_iso: str = "") -> str:
+    plan = cancel_plan(title, when_iso)
+    if "error" in plan:
+        return not_done(plan["error"])
+    c = plan["row"]
+    binding = _CANCEL_BINDING.get()
+    if binding is not None and (
+            binding.get("id") != c.get("id") or _norm_title(binding.get("title")) != _norm_title(c["title"])
+            or (binding.get("when_ts") is None) != (c.get("when_ts") is None)
+            or (c.get("when_ts") is not None and abs(float(binding["when_ts"]) - float(c["when_ts"])) >= 1)):
+        return not_done(f"(couldn't cancel “{binding.get('title')}”: it changed after you confirmed. "
+                        "Nothing was cancelled.)")
     from service.assistant.hub import hub
     error = await _retire(c)
     if error:
         return f"(error: {error})"
     await hub.publish({"type": "changed"})
-    return f"Cancelled “{c['title']}”."
+    when = _when_words(c)
+    if plan["native"] == "calendar":
+        cal = plan["calendar"] or {}
+        once = " Only this occurrence was removed; the rest of the series is unchanged." if plan["recurring"] else ""
+        sent = (" Calendar sent its invitees the cancellation." if int(cal.get("invitee_count") or 0) else "")
+        return f"Cancelled “{c['title']}” ({when}). It was removed from Calendar.{once}{sent}"
+    if plan["native"] == "reminders":
+        return f"Cancelled “{c['title']}” ({when}). It was deleted from Apple Reminders."
+    return (f"Cancelled “{c['title']}” ({when}) in Wisp. It had no Calendar or Apple Reminders copy, "
+            "so nothing else changed.")
 
 
 def _read_only_calendar_row(c: dict) -> dict | None:
@@ -1291,6 +1436,52 @@ def _read_only_calendar_row(c: dict) -> dict | None:
     return None
 
 
+def _calendar_cancel_check(row: dict) -> tuple[dict | None, str]:
+    """(the synced occurrence to cancel with the invitee count to send, why not or "").
+
+    The Day tab's rules (checkin.cancel_block_reason): never a read-only calendar or
+    someone else's event, and with invitees only when the user organizes it. An
+    invitee count not synced yet is sent as 0: the app compares it with the live
+    event and refuses on any difference, so an event with invitees is never cancelled
+    on a guess, and an event Wisp just created (none) can be undone before the next
+    sync."""
+    from service.assistant.checkin import cancel_block_reason
+    if str(row.get("source_id") or "").startswith("gcal:"):
+        return None, (f"“{row['title']}” is a Google Calendar event Wisp reads over the web; it "
+                      "can't be changed from this Mac. Nothing was cancelled.")
+    occurrence = assistant_store.calendar_occurrence(row["source_id"], row["when_ts"])
+    if occurrence is None:
+        return None, f"“{row['title']}” is no longer in your synced Calendar; nothing was cancelled."
+    if occurrence["invitee_count"] is None:
+        occurrence = {**occurrence, "invitee_count": 0}
+    if (reason := cancel_block_reason(occurrence)):
+        return None, f"{reason.rstrip('.')}. Nothing was cancelled."
+    return occurrence, ""
+
+
+async def _cancel_calendar_row(row: dict) -> str | None:
+    """Cancel one exact synced Calendar occurrence through the app's verified path (the
+    same one the Day tab's Cancel uses): the app finds it by identifier AND start, checks
+    it still has this title and invitee count, refuses a read-only calendar or someone
+    else's event, removes only this occurrence, and reads back that it is gone. None on a
+    verified result, else why not."""
+    if not row.get("source_id") or row.get("when_ts") is None:
+        return "Calendar identity is incomplete; cancellation was not confirmed."
+    occurrence, reason = _calendar_cancel_check(row)
+    if reason:
+        return reason
+    from service.assistant.outbox import request as app_request
+    result = await app_request("cancel_calendar_event", {
+        "source_id": occurrence["source_id"], "expected_title": occurrence["title"],
+        "expected_start_ts": occurrence["when_ts"], "invitee_count": occurrence["invitee_count"]})
+    if result.get("ok") is not True:
+        if result.get("status") == "unknown":
+            return (f"Calendar did not confirm whether “{row['title']}” was cancelled. Check Calendar "
+                    "before trying again")
+        return str(result.get("error") or "Calendar did not confirm the cancellation").rstrip(". ")
+    return None
+
+
 async def _retire(c: dict) -> str | None:
     """Remove one commitment everywhere it exists.
 
@@ -1300,22 +1491,17 @@ async def _retire(c: dict) -> str | None:
     simply becomes visible again and the cancellation looks like it silently
     failed.
     """
-    from service.assistant.hub import hub
-    group = [c] + [t for t in (assistant_store.get(i) for i in c.get("duplicate_ids") or [])
-                   if t]
+    group = _cancel_group(c)
     if sum(row["source"] in {"calendar", "reminders"} for row in group) > 1:
         return "Several native records share this item; select one exact record before cancelling."
-    # Calendar writes finish first. A failure cannot retire the local twin or
-    # claim the whole group was cancelled. Native receipts reconcile Calendar.
+    # Native writes finish first. A failure cannot retire the local twin or
+    # claim the whole group was cancelled. The verified native receipt marks the
+    # synced row dismissed (AssistantStore.complete_calendar_action).
     from service.assistant.outbox import request as app_request
     for row in group:
         if row["source"] == "calendar":
-            if not row.get("source_id") or row.get("when_ts") is None:
-                return "Calendar identity is incomplete; cancellation was not confirmed."
-            result = await app_request("delete_calendar_event", {
-                "source_id": row["source_id"], "when_ts": row["when_ts"]})
-            if not result.get("ok"):
-                return str(result.get("error") or "Calendar cancellation was not confirmed")
+            if (error := await _cancel_calendar_row(row)):
+                return error
         elif row["source"] == "reminders":
             if not row.get("source_id") or row.get("when_ts") is None:
                 return "Reminders identity is incomplete; cancellation was not confirmed."
@@ -1326,6 +1512,8 @@ async def _retire(c: dict) -> str | None:
                 return str(result.get("error") or "Reminders cancellation was not confirmed")
     for row in group:
         if row["source"] == "calendar":
+            # The verified receipt has already dismissed this occurrence, before the
+            # request returned (assistant_action_result records it first).
             continue
         elif row["source"] == "manual":
             assistant_store.delete(row["id"])
