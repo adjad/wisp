@@ -221,7 +221,8 @@ _LOCAL_SEND_DENY = [
 # before the host, and dotted hex/octal forms of 127.0.0.1. A command that
 # names a loopback host or this port at all is also confirmed under full
 # access (see _SHELL_EGRESS), so a missed spelling still gets a card. The real
-# fix is a per-launch secret the send routes require; that is not built yet.
+# boundary is the per-launch app key every route of an app-launched backend
+# requires (service/local_http.AppKeyGuard); a command never holds it.
 _LOOPBACK_V4 = r"(?:127|0+177|0x0*7f)(?:\.(?:0x[0-9a-f]+|\d+)){1,3}"
 _LOOPBACK_NAME = (r"(?:[\w.-]*localhost\.?|" + _LOOPBACK_V4 + r"|0+(?:\.0+){1,3}"
                   r"|\[[0-9a-z:.%]*\])")     # any bracketed IPv6 literal, zone ids included

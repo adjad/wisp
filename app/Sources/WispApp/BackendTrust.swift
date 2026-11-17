@@ -213,6 +213,27 @@ enum BackendTrustConfiguration {
     static var current: Value { storage.withLock { $0 } }
 }
 
+/// This launch's app key. BackendManager makes a new one for every backend it spawns and
+/// hands it over on the private credential pipe (never argv or the environment, which other
+/// programs of the same user can read); BackendTrustProtocol adds it to every request it
+/// forwards, so it goes only to a listener just proven to be that spawned process. The
+/// backend refuses every route but /identity and /health without it
+/// (service/local_http.AppKeyGuard). Memory only: nothing on disk holds it.
+enum BackendAppKey {
+    static let headerField = "X-Wisp-App-Key"
+    private static let storage = OSAllocatedUnfairLock<String?>(initialState: nil)
+
+    /// 32 random bytes as 64 lowercase hex characters (the form the backend accepts).
+    static func make() -> String {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        arc4random_buf(&bytes, bytes.count)
+        return bytes.map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func set(_ key: String?) { storage.withLock { $0 = key } }
+    static var current: String? { storage.withLock { $0 } }
+}
+
 /// Verifies the backend anew for each request. Everything that talks to the
 /// backend goes through `BackendTrustProtocol`, which asks this first.
 actor BackendTrustGate {
@@ -379,6 +400,10 @@ final class BackendTrustProtocol: URLProtocol, URLSessionDataDelegate {
     private func forward() {
         let marked = (request as NSURLRequest).mutableCopy() as! NSMutableURLRequest
         URLProtocol.setProperty(true, forKey: Self.bypassKey, in: marked)
+        // Only now, after the listener was proven to be the process this app spawned.
+        if let key = BackendAppKey.current {
+            marked.setValue(key, forHTTPHeaderField: BackendAppKey.headerField)
+        }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.timeoutIntervalForRequest = max(request.timeoutInterval, 1)

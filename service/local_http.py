@@ -1,7 +1,8 @@
 """Keep web pages out of Wisp's loopback API.
 
 Wisp's service listens on 127.0.0.1:8765 for the Wisp app, the phone gateway
-and the CLI. None of those is a browser, so none of them sends `Origin` or
+and the CLI (a backend the app launched answers only the app: see AppKeyGuard
+below). None of those is a browser, so none of them sends `Origin` or
 `Sec-Fetch-*` headers. A web page the user happens to have open can still
 reach the port two ways:
 
@@ -32,8 +33,7 @@ handler runs:
 
 What it does not do: a local program that is not a browser can send any
 headers it likes, so this is no defence against code already running on the
-Mac (that is what the shell deny in safety/policy.py and the confirmation
-cards are for). The same-origin rule relies on the browser sending `Origin`
+Mac; AppKeyGuard below is that defence for a backend the app launched. The same-origin rule relies on the browser sending `Origin`
 or `Sec-Fetch-Site` on a request that changes something; every current
 Safari, Chrome and Firefox does.
 
@@ -43,6 +43,8 @@ the repository's conftest.py fills it, and nothing reads it from the
 environment, a file or a request.
 """
 from __future__ import annotations
+
+import hmac
 
 from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
@@ -109,6 +111,65 @@ class LocalOriginGuard:
             # accept makes the server answer the handshake with 403.
             if browser_request_problem("WEBSOCKET", Headers(scope=scope)):
                 await WebSocketClose(code=1008)(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+# --------------------------------------------------------------------------
+# The app's per-launch key: only the Wisp app that launched this backend
+# --------------------------------------------------------------------------
+#
+# LocalOriginGuard keeps web pages out; it cannot tell the Wisp app from any other
+# program on this Mac. When the app launches the backend it generates a random key
+# for that launch and hands it over on the private credential pipe (never argv or the
+# environment, which other programs of the same user can read). The app's request
+# layer (BackendTrustProtocol) adds it to every request it sends, after checking that
+# the listener is the process it spawned. Every route and WebSocket then requires it,
+# except the few below that say nothing personal and change nothing.
+#
+# A backend started any other way (scripts/run.sh, tests, the QA harnesses) was given
+# no key and requires none; see credential_pipe.app_key_state.
+APP_KEY_HEADER = "x-wisp-app-key"
+# /identity: the app's own launch check asks it before it can send anything else.
+# /health: liveness for scripts and the CLI; it reports engine state, nothing personal.
+APP_KEY_OPEN_PATHS = frozenset({"/identity", "/health"})
+_APP_KEY_REFUSED = "Only the Wisp app can use this service."
+
+
+def app_key_problem(path: str, headers: Headers) -> str | None:
+    """Why a request without this launch's app key must be refused, or None."""
+    from service.credential_pipe import app_key_state
+    required, key = app_key_state()
+    if not required or path in APP_KEY_OPEN_PATHS:
+        return None
+    sent = headers.getlist(APP_KEY_HEADER)
+    if key is None or len(sent) != 1:
+        return _APP_KEY_REFUSED
+    try:
+        given = sent[0].encode("ascii")
+    except UnicodeEncodeError:
+        return _APP_KEY_REFUSED
+    if not hmac.compare_digest(given, key.encode("ascii")):
+        return _APP_KEY_REFUSED
+    return None
+
+
+class AppKeyGuard:
+    """Pure ASGI middleware (no buffering, so streams pass through): every request
+    and WebSocket handshake must carry this launch's app key, when one is required."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        kind = scope.get("type")
+        if kind in ("http", "websocket"):
+            problem = app_key_problem(scope.get("path", ""), Headers(scope=scope))
+            if problem:
+                if kind == "http":
+                    await JSONResponse({"detail": problem}, status_code=403)(scope, receive, send)
+                else:
+                    await WebSocketClose(code=1008)(scope, receive, send)
                 return
         await self.app(scope, receive, send)
 

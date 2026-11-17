@@ -276,7 +276,7 @@ enum BackendCredentials {
     }
 
     static func writePipe(_ pipe: Pipe, credentials: [String: String], generation: String,
-                          role: String, pid: pid_t) throws {
+                          role: String, pid: pid_t, appKey: String? = nil) throws {
         let allowed = role == "primary" ? Set(accounts.values) :
             (role == "gateway" ? Set(["WISP_LOCAL_OMLX_KEY", "WISP_MINI_INFERENCE_KEY"]) : Set(["WISP_MINI_NODE_KEY"]))
         guard ["primary", "gateway", "node"].contains(role), pid > 0,
@@ -284,8 +284,14 @@ enum BackendCredentials {
               role == "primary" || Set(credentials.keys) == allowed,
               credentials.values.allSatisfy(valid), Set(credentials.values).count == credentials.count,
               generation == "absent" || valid(generation) else { throw Failure.malformed }
-        var body = try JSONSerialization.data(withJSONObject: ["version": 1, "pid": pid, "uid": getuid(),
-            "role": role, "generation": generation, "credentials": credentials], options: [.sortedKeys])
+        // The app's per-launch key (BackendAppKey): the primary backend only, in the form it accepts.
+        if let appKey {
+            guard role == "primary", valid(appKey) else { throw Failure.malformed }
+        }
+        var document: [String: Any] = ["version": 1, "pid": pid, "uid": getuid(),
+            "role": role, "generation": generation, "credentials": credentials]
+        if let appKey { document["app_key"] = appKey }
+        var body = try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
         defer { body.resetBytes(in: 0..<body.count) }
         var frame = Data("WISPCP1\n".utf8)
         var length = UInt32(body.count).bigEndian
