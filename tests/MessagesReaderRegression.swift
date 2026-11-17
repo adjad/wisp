@@ -558,6 +558,20 @@ enum MessagesReaderRegression {
                                   window: 0.6, step: 0.2, sentGrace: 0.2)
                      == Check.Reading(state: .sent, service: "SMS"))
         sql("INSERT INTO message VALUES (\(now), 'mail handle', NULL, 1, 3, 1, 1, 0, 'iMessage')")
+        // After a Messages error, a queued row blocks the second route; no row, in a
+        // readable store, allows it; an unreadable store allows neither claim.
+        precondition(Check.probe(dbPath: path, to: "22821", text: "Wisp test 1", sinceNs: since)
+                     == .found(Check.Reading(state: .failed, service: "iMessage", error: 22)))
+        precondition(Check.confirmQueued(dbPath: path, to: "22821", text: "Wisp test 1", sinceNs: since,
+                                         window: 0.4, step: 0.2) != .absent,
+                     "A queued row means no second send")
+        precondition(Check.confirmQueued(dbPath: path, to: "22821", text: "never queued", sinceNs: since,
+                                         window: 0.4, step: 0.2) == .absent,
+                     "Readable and empty means nothing was queued")
+        precondition(Check.confirmQueued(dbPath: root.appendingPathComponent("missing-dir/none.db").path,
+                                         to: "22821", text: "hi", sinceNs: since,
+                                         window: 0.4, step: 0.2) == .unreadable,
+                     "A store that can't be read is uncertain, not empty")
         precondition(state("Pat@Example.test", "mail handle") == .delivered)
         precondition(state("at@example.test", "mail handle") == .unknown)
         // A body kept only as a typedstream is read; one that can't be read is not taken.

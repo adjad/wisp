@@ -4743,7 +4743,8 @@ async def assistant_send_message_draft(body: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "result": "The message is empty."}
     with human_reviewed_content():
         result = await send_message(to=to, text=message)
-    ok = result.startswith("Message sent to ")
+    from service.tools.action_tools import MESSAGE_HANDED_OVER_PREFIX
+    ok = result.startswith(("Message sent to ", MESSAGE_HANDED_OVER_PREFIX))
     audit("draft_card_send", tool="send_message",
           args={"to": to, "text": message}, result=result, ok=ok)
     from service.tools.action_tools import QUIET_NOT_DELIVERED, quiet_not_delivered

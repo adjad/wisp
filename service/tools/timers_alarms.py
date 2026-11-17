@@ -440,7 +440,12 @@ def _set_countdown(duration: str, label: str = "") -> str:
 def _set_alarm(time: str, label: str = "", repeat_daily: bool = False) -> str:  # noqa: A002
     import datetime as _dt
 
-    raw = (time or "").strip().lower().replace(".", ":")
+    raw = (time or "").strip().lower()
+    # "7 a.m.", "7:30 p.m.", "at 6pm", "noon", "midnight" are how people say it.
+    raw = re.sub(r"\b([ap])\.\s?m\b\.?", r"\1m", raw)
+    raw = re.sub(r"^(?:at|around|about)\s+", "", raw)
+    raw = {"noon": "12:00pm", "midday": "12:00pm", "midnight": "12:00am"}.get(raw, raw)
+    raw = raw.replace(".", ":")
     m = re.fullmatch(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", raw)
     if not m:
         return not_done(f"(error: I couldn't read {time!r} as a clock time. "

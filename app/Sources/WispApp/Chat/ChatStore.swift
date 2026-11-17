@@ -817,7 +817,9 @@ final class ChatStore: ObservableObject {
             let outcome = await backend.sendDraft(to: draft.to, text: draft.text)
             updateDraft(conversation, messageID: messageID) {
                 $0.isSending = false; $0.sent = outcome.ok
-                $0.status = outcome.ok ? "Sent"
+                $0.status = outcome.ok && outcome.result.hasPrefix("Handed to Messages")
+                    ? "Handed to Messages; delivery isn't confirmed yet."
+                    : outcome.ok ? "Sent"
                     : outcome.result.contains("could not reach") ? outcome.result + " It may have sent, so check Messages before trying again."
                     : outcome.result
             }

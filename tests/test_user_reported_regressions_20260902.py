@@ -101,7 +101,7 @@ def test_denied_message_or_email_terminates_after_one_confirmation(monkeypatch):
         client = ScriptedClient([call, call, call])
         answer, approver, events = asyncio.run(_run(
             client, prompt, tools=[tool], required=(frozenset({tool}),)))
-        assert answer == "Okay — I didn’t send it."
+        assert answer == "Okay — I didn’t send it: you declined the approval."
         assert client.requests == 1
         assert len(approver.seen) == 1
         assert sum(e.get("type") == "tool_call" for e in events) == 1

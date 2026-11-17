@@ -224,7 +224,7 @@ def test_unreviewed_normalization_is_unchanged(monkeypatch):
         return {"ok": True, "status": "succeeded"}
     monkeypatch.setattr(A, "app_request", sink)
     result = asyncio.run(A.send_message(PHONE, r"Hello\nthere\tfriend"))
-    assert result.startswith("Message sent to ")
+    assert result.startswith(("Message sent to ", "Handed to Messages for "))
     assert calls == [{"to": PHONE, "text": "Hello\nthere\tfriend"}]
 
 

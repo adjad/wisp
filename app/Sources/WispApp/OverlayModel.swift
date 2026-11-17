@@ -1397,7 +1397,10 @@ final class OverlayModel: ObservableObject {
             guard self.messageDraft?.id == draftID else { return }
             self.messageDraft?.isSending = false
             self.messageDraft?.sent = outcome.ok
-            self.messageDraft?.status = outcome.ok ? "Sent" : outcome.result
+            // Messages took it without saying whether it arrived: not "Sent".
+            let handedOver = outcome.ok && outcome.result.hasPrefix("Handed to Messages")
+            self.messageDraft?.status = handedOver ? "Handed to Messages; delivery isn't confirmed yet."
+                : outcome.ok ? "Sent" : outcome.result
             self.onResize()
         }
     }
