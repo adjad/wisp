@@ -175,6 +175,7 @@ PROFILE_TESTS = {
     "outbound": {
         "tests/test_action_tools_sanitize.py",
         "tests/test_event_move.py",
+        "tests/test_cancel_reaches_mac_apps.py",
         "tests/test_outbound_content_provenance.py",
         "tests/test_outbound_language_clarification.py",
         "tests/test_outbound_payload_presentation.py",

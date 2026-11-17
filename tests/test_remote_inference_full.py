@@ -255,7 +255,7 @@ class MainChecks(FullFixture):
                 self.assertNotIn('remote', ast.unparse(node).lower().replace('remote_only_profile', ''), node.name)
         self.assertEqual(seen, names)
         ns = {'HTTPException': HTTPException,
-              'assistant_store': SimpleNamespace(set_status=Mock(return_value=False)),
+              'assistant_store': SimpleNamespace(set_status=Mock(return_value=False), get=Mock(return_value=None)),
               'assistant_hub': SimpleNamespace(publish=AsyncMock())}
         selected({'assistant_update'}, ns)
         self.assertEqual(asyncio.run(ns['assistant_update']('synthetic-id', {'status': 'done'})), {'ok': False})

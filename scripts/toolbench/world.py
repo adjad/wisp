@@ -1491,7 +1491,7 @@ def make_fakes(w: World) -> dict:
         notified = " Invitees were notified of the new time." if plan["invitees"] else ""
         return f"Moved “{e['title']}” to {plan['when']:%a %b %-d, %-I:%M %p}–{end:%-I:%M %p}.{once}{notified}"
 
-    def cancel_event(title, **_):
+    def cancel_event(title, when_iso=None, **_):
         q = str(title).lower().strip()
         now = w.now
         live = [("event", e, _ev_times(e)[0]) for e in w.events

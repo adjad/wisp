@@ -201,7 +201,19 @@ async def fire(card_id: str, request: Request):
     result = await run(card_id, body.draft, body.recipient)
     if result.get("status") == "not_found":
         raise HTTPException(status_code=404, detail=result["error"])
+    if result.get("ok") is True:
+        # A card may have added or removed a Calendar event or a reminder (an Undo of
+        # "Wisp added this"): an open Day tab reads again instead of showing it still there.
+        await _announce_changed()
     return result
+
+
+async def _announce_changed() -> None:
+    try:
+        from service.assistant.hub import hub
+        await hub.publish({"type": "changed"}, durable=False)
+    except Exception:  # noqa: BLE001 — the app's next read shows it anyway
+        pass
 
 
 @router.post("/cards/{card_id}/dismiss")
@@ -291,6 +303,7 @@ async def complete_todo(todo_id: str, request: Request):
         raise HTTPException(502, message.strip("()").removeprefix("error: ").rstrip(".") + ".")
     store().set_todo_done(todo, True)
     store().clear_item(todo_id, body.fingerprint)
+    await _announce_changed()
     return {"ok": True, "todo_id": todo_id, "decision": "done"}
 
 
