@@ -112,7 +112,16 @@ enum ScriptRunner {
         alert.accessoryView = scroll
         alert.layout()
         // The notch and the chat sit above ordinary windows; the question must not hide behind them.
-        alert.window.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
+        let above = NSWindow.Level(rawValue: max(NSWindow.Level.statusBar.rawValue,
+                                                 DisplayGeometry.shared.layout.windowLevel.rawValue) + 1)
+        alert.window.level = above
+        // runModal puts the alert back at the modal-panel level, under an open notch, which
+        // then covers the script. Raise it again once the modal session is running.
+        let window = alert.window
+        RunLoop.main.perform(inModes: [.modalPanel, .common]) {
+            window.level = above
+            window.orderFrontRegardless()
+        }
         NSApp.activate(ignoringOtherApps: true)
         return alert.runModal() == .alertSecondButtonReturn
     }
