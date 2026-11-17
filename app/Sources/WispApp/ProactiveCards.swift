@@ -2221,7 +2221,7 @@ struct CappedScroll<Content: View>: View {
 
     var body: some View {
         if let cap {
-            CappedHeight(cap: cap) {
+            CappedHeight(cap: cap, room: more(cap) ? Self.fade : 0) {
                 ScrollViewReader { proxy in
                     ScrollView(.vertical) {
                         content
@@ -2289,13 +2289,21 @@ struct CappedScroll<Content: View>: View {
 
 /// Lays out one scroll view as tall as its content, up to `cap`. A vertical
 /// ScrollView asked for its ideal height answers with its content's height.
+/// `room` is what the content has under it for the bottom fade (CappedScroll's
+/// `showsMore`), which is learned a pass after the content changes: the height
+/// is decided from the content without it, so content shrinking back under the
+/// cap is its own height at once, never its height plus the room that is about
+/// to go (with Reduce Motion that drew one frame 24 pt too tall). Over the cap
+/// the room changes nothing outside: the scroll view is the cap's height.
 struct CappedHeight: Layout {
     let cap: CGFloat
+    var room: CGFloat = 0
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         guard let scroll = subviews.first else { return .zero }
         let ideal = scroll.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil))
-        return CGSize(width: proposal.width ?? ideal.width, height: max(min(ideal.height, cap), 1))
+        let content: CGFloat = max(ideal.height - room, 0)
+        return CGSize(width: proposal.width ?? ideal.width, height: max(min(content, cap), 1))
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {

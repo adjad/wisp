@@ -48,6 +48,10 @@ struct OverlayView: View {
     // The panel's drawn height (followHeight): nil until the open panel's
     // content is first measured, and again once it closes.
     @State private var shownHeight: CGFloat?
+    // The content's latest measured height, which followHeight's next turn
+    // checks so a height measured since wins. A box, not state: writing it
+    // redraws nothing.
+    @State private var measuredHeight = MeasuredHeight()
     // The selected tab's white capsule, which glides from tab to tab.
     @Namespace private var tabSelection
 
@@ -190,7 +194,11 @@ struct OverlayView: View {
                 .onAppear { followHeight(geo.size.height, animated: false) }
                 .onChange(of: geo.size.height) { _, height in followHeight(height, animated: true) }
         })
-        .frame(height: shownHeight, alignment: .top)
+        // Reduce Motion: the surface is the content's own height in the same
+        // pass. Through shownHeight it took the new height a pass later, so a
+        // change drew one frame at the old height (content cut off, or empty
+        // room under it) before the cut.
+        .frame(height: reduceMotion ? nil : shownHeight, alignment: .top)
         // Re-fit the native window whenever the CONTENT height changes. The
         // window doesn't auto-size to SwiftUI — OverlayPanel sets its height
         // from host.fittingSize, and its bottom edge hard-CLIPS anything taller
@@ -211,13 +219,16 @@ struct OverlayView: View {
         // SurfaceLayout.expandedWidth from the same state (AppDelegate's layout
         // provider asks NotchBriefView.showsWide), so they cannot disagree.
         .frame(width: surfaceWidth)
-        // A change of width (into or out of the wide Brief, or its toggle)
-        // glides on the panel's spring; Reduce Motion: at once. The window
-        // already covers both widths (OverlayPanel.resizeToFit).
-        .animation(Theme.Motion.panel(reduceMotion: reduceMotion), value: surfaceWidth)
         .background(Theme.surface)
         .clipShape(layout.panelShape)
         .shadow(color: .black.opacity(0.55), radius: 20, y: 10)
+        // A change of width (into or out of the wide Brief or Day, or the
+        // two-column toggle) glides on the panel's spring; Reduce Motion: at
+        // once. Below the surface, its clip and its shadow, so they glide too:
+        // above them only the content moved, and the toggle (no change of
+        // page to carry the surface) snapped the black surface to its new
+        // width. The window already covers both widths (OverlayPanel.resizeToFit).
+        .animation(Theme.Motion.panel(reduceMotion: reduceMotion), value: surfaceWidth)
         // Pointer enter/exit is handled by the panel's AppKit tracking area
         // (HoverView), not SwiftUI .onHover — see OverlayPanel/AppDelegate.
         .onExitCommand { model.requestCollapse() }
@@ -241,10 +252,30 @@ struct OverlayView: View {
     /// panel's spring, or at once when the panel has just opened (the open
     /// has its own motion) or with Reduce Motion. A spring already moving
     /// is retargeted, so text streaming in grows the panel in one smooth run.
+    ///
+    /// The spring starts on the next run-loop turn, outside SwiftUI's update,
+    /// and a growing panel's window is refit in that same turn, before the
+    /// first animated frame (onResizeNow). Started here, the surface began to
+    /// grow while the window was still the old size, and the window followed
+    /// only when model.onResize's own turn came round (later still while the
+    /// arriving tab, the Brief or the Day, was being built): the panel's
+    /// bottom edge was cut flat for those frames and then jumped down, the
+    /// stutter going from a short tab to a tall one. A shrink needs no refit
+    /// now (the window waits for it, OverlayPanel.resizeToFit) but takes the
+    /// same turn, so changes still land in the order they were measured.
     private func followHeight(_ height: CGFloat, animated: Bool) {
+        measuredHeight.latest = height
         guard abs(height - (shownHeight ?? -1)) > 0.25 else { return }
-        if animated, shownHeight != nil, let spring = Theme.Motion.panel(reduceMotion: reduceMotion) {
-            withAnimation(spring) { shownHeight = height }
+        if animated, let shown = shownHeight, let spring = Theme.Motion.panel(reduceMotion: reduceMotion) {
+            let grows = height > shown
+            DispatchQueue.main.async {
+                // The panel closed in the meantime (its next open measures
+                // afresh), or the content has measured again since: that
+                // newer height is the one to follow.
+                guard shownHeight != nil, measuredHeight.latest == height else { return }
+                withAnimation(spring) { shownHeight = height }
+                if grows { model.onResizeNow() }
+            }
         } else {
             shownHeight = height
         }
@@ -520,7 +551,7 @@ struct OverlayView: View {
         let selected = model.tab.stripTab == tab
         let count = tab == .day ? todayCount : 0
         let shortcut = tab.title + (tab.shortcutDigit.map { " (⌘" + String($0) + ")" } ?? "")
-        return Button { model.leaveKnowYou(); model.closePermissionPage(); model.tab = tab } label: {
+        return Button { model.leaveKnowYou(); model.closePermissionPage(); selectTab(tab) } label: {
             tabLabel(tab, onCapsule: false)
                 // Where the strip's white capsule sits when this tab is chosen.
                 .matchedGeometryEffect(id: tab, in: tabSelection)
@@ -596,13 +627,24 @@ struct OverlayView: View {
             Button("") { model.pinned.toggle() }.keyboardShortcut("p", modifiers: .command)
             ForEach(NotchTab.strip, id: \.self) { tab in
                 if let digit = tab.shortcutDigit {
-                    Button("") { model.tab = tab }.keyboardShortcut(KeyEquivalent(digit), modifiers: .command)
+                    Button("") { selectTab(tab) }.keyboardShortcut(KeyEquivalent(digit), modifiers: .command)
                 }
             }
         }
         .opacity(0)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
+    }
+
+    /// A tab chosen on the strip or with its ⌘ digit. The window is refit in
+    /// this run-loop turn, before the first animated frame, as for the columns
+    /// (setWide): a switch into the wide Brief or Day widens the panel on the
+    /// page's spring, and a window refit only on the next turn left the
+    /// widening edges cut off at the old width until it caught up. The height
+    /// follows in its own turn (followHeight), with the window ahead of it.
+    private func selectTab(_ tab: NotchTab) {
+        model.tab = tab
+        model.onResizeNow()
     }
 
     /// Brief and Day's columns, switched so the window and the content change width
@@ -1598,6 +1640,11 @@ private struct NotchPageShift: ViewModifier {
             .offset(x: CGFloat(steps) * Theme.Motion.slideStep)
             .opacity(away ? 0 : 1)
     }
+}
+
+/// The panel content's latest measured height (OverlayView.followHeight).
+private final class MeasuredHeight {
+    var latest: CGFloat?
 }
 
 /// Lays its content out at a fixed width whatever width it is offered, from

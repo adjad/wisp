@@ -57,7 +57,13 @@ struct NotchDayView: View {
     /// a third taller than the right (DayTimeline.trimLater), decided once per
     /// plan and layout so it never flips on its own result.
     @State private var laterTrim: (key: String, trimmed: Bool)?
-    private var laterTrimmed: Bool { halves && laterTrim?.trimmed == true }
+    /// This page's decision, else the last one made (DayLaterTrimMemory): the
+    /// Day page is built afresh on every switch to it, and starting untrimmed
+    /// laid the wide Day out with every Later row, measured the halves and
+    /// took a row away a pass later, so the panel's height changed course
+    /// part-way through the switch.
+    private var currentLaterTrim: (key: String, trimmed: Bool)? { laterTrim ?? DayLaterTrimMemory.last }
+    private var laterTrimmed: Bool { halves && currentLaterTrim?.trimmed == true }
     /// The last Remove, while its Undo bar shows: the ids it sent, so Undo brings
     /// a grouped review back as one action.
     @State private var lastRemoved: (ids: [String], notice: String)?
@@ -236,10 +242,12 @@ struct NotchDayView: View {
         let left: CGFloat = heights["left"] ?? 0, right: CGFloat = heights["right"] ?? 0
         guard halves, !showWholeAgenda, today.isShowingCurrentDay, left > 0 else { return }
         let key: String = "\(plan?.generated_at ?? 0)|\(Theme.textScale)|\(today.day)|\(staleReminders.asks.count)"
-        guard laterTrim?.key != key else { return }
-        let trimmed: Bool = DayTimeline.trimLater(trimmed: laterTrim?.trimmed ?? false, left: Double(left), right: Double(right),
+        let current = currentLaterTrim
+        guard current?.key != key else { return }
+        let trimmed: Bool = DayTimeline.trimLater(trimmed: current?.trimmed ?? false, left: Double(left), right: Double(right),
                                                   rowAllowance: Double(44 * Theme.textScale))
         laterTrim = (key, trimmed)
+        DayLaterTrimMemory.last = (key, trimmed)
         if trimmed { model.onResize() }
     }
 
@@ -2138,6 +2146,14 @@ struct DayRefreshLoop: ViewModifier {
             model.onResize()
         }
     }
+}
+
+/// The wide Day's last Later-today decision (NotchDayView.balanceHalves), kept
+/// for the app's life so a Day page built afresh by a tab switch is laid out
+/// trimmed or not from its first frame, as the last one was.
+@MainActor
+enum DayLaterTrimMemory {
+    static var last: (key: String, trimmed: Bool)?
 }
 
 /// The Day tab's card sources: plans caught in texts and the stale-reminder
