@@ -167,8 +167,11 @@ async def _text_reply(card: dict, draft: str) -> dict:
         return {"ok": False, "status": "blocked", "error": problem}
     with human_reviewed_content():
         result = await send_message(to=to, text=draft)
+    from service.tools.action_tools import MESSAGE_HANDED_OVER_PREFIX
     ok = isinstance(result, str) and result.startswith("Message sent to ")
-    unknown = isinstance(result, _OutboundUnknownResult)
+    # Handed to Messages without delivery evidence is neither sent nor failed.
+    unknown = isinstance(result, _OutboundUnknownResult) or (
+        isinstance(result, str) and result.startswith(MESSAGE_HANDED_OVER_PREFIX))
     _audit("draft_card_send", tool="send_message", source="proactive_card",
            args={"to": to, "text_sha256": _sha(draft)}, result=str(result)[:200], ok=ok)
     if ok:

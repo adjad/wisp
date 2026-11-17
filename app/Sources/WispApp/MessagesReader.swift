@@ -721,17 +721,26 @@ enum MessageDeliveryCheck {
         ORDER BY m.date DESC LIMIT 50
         """
 
-    /// One look at the store.
-    static func read(dbPath: String, to: String, text: String, sinceNs: Int64) -> Reading {
-        let none = Reading(state: .unknown, service: "")
+    /// What one look at the store found for a send.
+    enum Probe: Equatable {
+        /// A row for this text to this handle, in whatever state.
+        case found(Reading)
+        /// The store was read and holds no such row.
+        case absent
+        /// The store could not be opened or queried: nothing is known.
+        case unreadable
+    }
+
+    /// One look at the store, telling "no row" apart from "could not look".
+    static func probe(dbPath: String, to: String, text: String, sinceNs: Int64) -> Probe {
         var db: OpaquePointer?
         guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
             sqlite3_close(db)
-            return none
+            return .unreadable
         }
         defer { sqlite3_close(db) }
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, query, -1, &stmt, nil) == SQLITE_OK else { return none }
+        guard sqlite3_prepare_v2(db, query, -1, &stmt, nil) == SQLITE_OK else { return .unreadable }
         defer { sqlite3_finalize(stmt) }
         sqlite3_bind_int64(stmt, 1, sinceNs)
         let wanted = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -748,9 +757,31 @@ enum MessageDeliveryCheck {
             let state: State = error != 0 ? .failed
                 : sqlite3_column_int(stmt, 4) != 0 ? .delivered
                 : sqlite3_column_int(stmt, 3) != 0 ? .sent : .pending
-            return Reading(state: state, service: service, error: error)
+            return .found(Reading(state: state, service: service, error: error))
         }
-        return none
+        return .absent
+    }
+
+    /// One look at the store.
+    static func read(dbPath: String, to: String, text: String, sinceNs: Int64) -> Reading {
+        if case .found(let reading) = probe(dbPath: dbPath, to: to, text: text, sinceNs: sinceNs) {
+            return reading
+        }
+        return Reading(state: .unknown, service: "")
+    }
+
+    /// After Messages raised an error on a send: was the text queued anyway?
+    /// `absent` is returned only after the store was readable and showed no row
+    /// for the whole window, which is the one case where a second route is safe.
+    static func confirmQueued(dbPath: String = storePath, to: String, text: String, sinceNs: Int64,
+                              window: TimeInterval = 2.5, step: TimeInterval = 0.5) -> Probe {
+        let started = Date()
+        while true {
+            let seen = probe(dbPath: dbPath, to: to, text: text, sinceNs: sinceNs)
+            if seen != .absent { return seen }
+            if Date().timeIntervalSince(started) + step > window { return .absent }
+            Thread.sleep(forTimeInterval: step)
+        }
     }
 
     /// Watches the row for a short window. A failure or a delivery ends it at

@@ -89,11 +89,15 @@ def test_only_the_automation_refusal_carries_the_fixed_code():
     assert not re.search(r"ok: true[^\n]*refusal", SENDER)
 
 
+def script_source():
+    return _function(SENDER, "messageScript")
+
+
 def _message_scripts():
     """messageScript's three scripts: short code, by text first, iMessage first."""
     script = _function(SENDER, "messageScript")
-    short = script[script.index("if shortCode {"):script.index("if viaText {")]
-    text = script[script.index("if viaText {"):script.rindex("return \"\"\"")]
+    short = script[script.index("if shortCode {"):script.index("if viaText && !fallback {")]
+    text = script[script.index("if viaText && !fallback {"):script.rindex("return \"\"\"")]
     imessage = script[script.rindex("return \"\"\""):]
     return short, text, imessage
 
@@ -104,7 +108,9 @@ def test_a_short_code_is_texted_by_sms_and_never_by_imessage():
     body = _function(SENDER, "sendMessage")
     short, _text, rest = _message_scripts()
     assert "service type = SMS" in short and "iMessage" not in short and "try" not in short
-    assert rest.index("service type = iMessage") < rest.index("service type = SMS")
+    # The default route is iMessage; SMS is the fallback, run by sendMessage only.
+    assert 'let service = fallback == viaText ? "iMessage" : "SMS"' in script_source()
+    assert "try" not in rest and "on error" not in rest
     assert "messageScript(to: to, text: text, shortCode: shortCode, viaText: viaText)" in body
     assert ": shortCode ? noTextRelay" in body
     assert "(3...6).contains(t.count) && t.allSatisfy(\\.isNumber)" in _function(SENDER, "isShortCode")
@@ -114,11 +120,12 @@ def test_a_short_code_is_texted_by_sms_and_never_by_imessage():
 def test_a_sent_text_is_not_reported_as_delivered():
     from service.tools import action_tools
     source = (ROOT / "service/tools/action_tools.py").read_text(encoding="utf-8")
-    assert 'return f"Message sent to {display}. {MESSAGE_HANDED_OVER}"' in source
+    assert 'return f"{MESSAGE_HANDED_OVER_PREFIX}{display}. {MESSAGE_HANDED_OVER}"' in source
+    assert action_tools.MESSAGE_HANDED_OVER_PREFIX == "Handed to Messages for "
     assert 'if delivery == "failed":' in source and 'if delivery == "no_sms_account":' in source
-    assert action_tools.MESSAGE_HANDED_OVER == "Messages accepted it; delivery isn't confirmed here."
     from service.tools.registry import classify_tool_outcome
-    receipt = "Message sent to 22821. " + action_tools.MESSAGE_HANDED_OVER
+    receipt = "Handed to Messages for 22821. " + action_tools.MESSAGE_HANDED_OVER
+    assert "sent" in action_tools.MESSAGE_HANDED_OVER and not receipt.lower().startswith("message sent")
     assert classify_tool_outcome("send_message", receipt).status == "succeeded"
 
 
@@ -139,7 +146,7 @@ def test_the_app_reads_the_text_back_from_messages_before_answering():
     assert check.index("!= 0 ? .failed") < check.index("? .delivered") < check.index("? .sent : .pending")
     body = _function(SENDER, "sendMessage")
     since = body.index("MessageDeliveryCheck.storeDate(")
-    run = body.index("s.executeAndReturnError(&err)")
+    run = body.index("runMessageScript(script)")
     settle = body.index("MessageDeliveryCheck.settle(to: to, text: text, sinceNs: since)")
     assert since < run < settle
     assert '"delivery": seen.state.rawValue, "delivery_service": seen.service' in body
@@ -154,8 +161,8 @@ def test_a_person_reached_by_text_is_texted_through_the_sms_account_first():
     # Messages marked it Not Delivered (error 22) and nothing fell back.
     body = _function(SENDER, "sendMessage")
     _short, text, _imessage = _message_scripts()
-    assert text.index("service type = SMS") < text.index("service type = iMessage")
-    assert "is 0 then" in text and "on error" in text
+    assert "is 0 then" in text and "service type = SMS" in text
+    assert "try" not in text and "on error" not in text
     # The handle is normalised before the store lookup, the send and the read-back.
     handle = body.index("MessageDeliveryCheck.sendHandle(given)")
     last = body.index("MessageDeliveryCheck.lastWorkingService(to: to)")

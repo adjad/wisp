@@ -95,10 +95,15 @@ enum OutboundSender {
     static let noSMSAccount = "no_sms_account"
     static let noTextRelay = "This Mac can't send SMS texts. On your iPhone, turn on Settings › Apps › Messages › Text Message Forwarding for this Mac."
 
-    /// The script for one send. `viaText` sends through the SMS account first
-    /// (the iPhone relays it, as SMS or RCS) and falls back to iMessage only
-    /// when that send raises or this Mac has no SMS account.
-    static func messageScript(to: String, text: String, shortCode: Bool, viaText: Bool) -> String {
+    /// The script for one send, one route only. `viaText` sends through the SMS
+    /// account first (the iPhone relays it, as SMS or RCS), or by iMessage when
+    /// this Mac has no SMS account. Otherwise iMessage. With `fallback` the
+    /// other route is used instead. There is no `try` here on purpose: if Messages
+    /// raises an error after it already queued the text, a second route inside
+    /// the script would send a second copy. sendMessage runs the fallback only
+    /// after the store shows the first send queued nothing.
+    static func messageScript(to: String, text: String, shortCode: Bool, viaText: Bool,
+                              fallback: Bool = false) -> String {
         if shortCode {
             return """
             tell application "Messages"
@@ -109,37 +114,38 @@ enum OutboundSender {
             end tell
             """
         }
-        if viaText {
+        if viaText && !fallback {
             return """
             tell application "Messages"
                 set targetBuddy to "\(escape(to))"
                 if (count of (accounts whose service type = SMS)) is 0 then
                     set theService to 1st account whose service type = iMessage
-                    send "\(escape(text))" to participant targetBuddy of theService
                 else
-                    try
-                        set theService to 1st account whose service type = SMS
-                        send "\(escape(text))" to participant targetBuddy of theService
-                    on error
-                        set theService to 1st account whose service type = iMessage
-                        send "\(escape(text))" to participant targetBuddy of theService
-                    end try
+                    set theService to 1st account whose service type = SMS
                 end if
+                send "\(escape(text))" to participant targetBuddy of theService
             end tell
             """
         }
+        let service = fallback == viaText ? "iMessage" : "SMS"
         return """
         tell application "Messages"
             set targetBuddy to "\(escape(to))"
-            try
-                set theService to 1st account whose service type = iMessage
-                send "\(escape(text))" to participant targetBuddy of theService
-            on error
-                set theService to 1st account whose service type = SMS
-                send "\(escape(text))" to participant targetBuddy of theService
-            end try
+            set theService to 1st account whose service type = \(service)
+            send "\(escape(text))" to participant targetBuddy of theService
         end tell
         """
+    }
+
+    /// One run of a Messages script: its result, or the error it raised.
+    private static func runMessageScript(_ source: String) -> (out: NSAppleEventDescriptor?, error: NSDictionary?) {
+        guard let s = NSAppleScript(source: source) else {
+            return (nil, NSDictionary(dictionary: [NSAppleScript.errorMessage: "couldn't build the send script",
+                                                   NSAppleScript.errorNumber: 0]))
+        }
+        var err: NSDictionary?
+        let out = s.executeAndReturnError(&err)
+        return (err == nil ? out : nil, err)
     }
 
     static func sendMessage(actionId: String, to given: String, text: String) {
@@ -162,14 +168,34 @@ enum OutboundSender {
             // service ... iMessage` fails outright for a recipient who isn't
             // on iMessage, unless their conversation already runs by text.
             let script = messageScript(to: to, text: text, shortCode: shortCode, viaText: viaText)
-            var err: NSDictionary?
-            guard let s = NSAppleScript(source: script) else {
-                post(actionId: actionId, ok: false, error: "couldn't build the send script")
-                return
-            }
             // A few seconds of slack: the row's date is Messages' clock for the send.
             let since = MessageDeliveryCheck.storeDate(Date().addingTimeInterval(-5))
-            let out = s.executeAndReturnError(&err)
+            var result = runMessageScript(script)
+            if let err = result.error, !shortCode {
+                let code = err[NSAppleScript.errorNumber] as? Int ?? 0
+                // Messages can raise an error after it already queued the text.
+                // A second route then sends a second copy, so the fallback runs
+                // only when the store, readable, shows nothing was queued. A
+                // refused Automation permission never reached Messages at all.
+                if code != -1743 {
+                    switch MessageDeliveryCheck.confirmQueued(to: to, text: text, sinceNs: since) {
+                    case .absent:
+                        let backup = messageScript(to: to, text: text, shortCode: false,
+                                                   viaText: viaText, fallback: true)
+                        result = runMessageScript(backup)
+                    case .found:
+                        // Queued despite the error: read its real state below.
+                        result = (out: nil, error: nil)
+                    case .unreadable:
+                        // No way to tell, so no resend and no claim either way.
+                        post(actionId: actionId, ok: true, error: "",
+                             extra: ["delivery": "uncertain"])
+                        return
+                    }
+                }
+            }
+            let out = result.out
+            let err = result.error
             if let err {
                 let code = err[NSAppleScript.errorNumber] as? Int ?? 0
                 let reason = code == -1743
@@ -179,7 +205,7 @@ enum OutboundSender {
                 post(actionId: actionId, ok: false, error: reason, extra: refusal(code))
                 return
             }
-            if out.stringValue == noSMSAccount {
+            if out?.stringValue == noSMSAccount {
                 // The script stopped before any send: this Mac has no SMS account.
                 post(actionId: actionId, ok: true, error: "", extra: ["delivery": noSMSAccount])
                 return

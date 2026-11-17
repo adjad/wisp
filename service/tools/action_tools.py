@@ -1601,7 +1601,11 @@ async def forward_email(message_id: str, to: str, note: str = "") -> str:
 
 
 
-MESSAGE_HANDED_OVER = "Messages accepted it; delivery isn't confirmed here."
+# Messages took the text but gave no delivered or not-delivered evidence in time.
+# Neither "sent" nor "failed" is claimed. The prefix is a receipt the registry accepts.
+MESSAGE_HANDED_OVER_PREFIX = "Handed to Messages for "
+MESSAGE_HANDED_OVER = ("Delivery isn't confirmed yet, so don't tell the user it was sent or "
+                       "delivered; say it was handed to Messages and delivery isn't confirmed.")
 # TEMPORARY, at the owner's request on 2026-11-15 ("just remove the error message
 # for now - I will add something else later"): a text Messages marked Not
 # Delivered shows the person only QUIET_NOT_DELIVERED. The model, the audit log
@@ -1725,6 +1729,14 @@ async def send_message(to: str, text: str, confirmed_self_send: bool = False,
         return f"Message sent to {display}. Messages shows it as delivered."
     if delivery == "sent":
         return f"Message sent to {display}."
-    return f"Message sent to {display}. {MESSAGE_HANDED_OVER}"
+    if delivery == "uncertain":
+        # The app's Messages call raised an error and the store could not be read
+        # to see whether the text was queued. Not resent, not claimed either way.
+        from service.tools.registry import _OutboundUnknownResult
+        return _OutboundUnknownResult(
+            "Message outcome unknown — Messages reported an error and this Mac can't tell whether "
+            "the text was queued. Check Messages before trying again; do not retry automatically.",
+            operation="send_message", action_id=res.get("action_id") or "")
+    return f"{MESSAGE_HANDED_OVER_PREFIX}{display}. {MESSAGE_HANDED_OVER}"
 
 

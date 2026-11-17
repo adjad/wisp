@@ -412,6 +412,9 @@ _TOOL_EFFECTS = {
 }
 
 
+_PAREN_FAILURE_TOOLS = frozenset({"toggle_setting", "clipboard_write", "screen_capture"})
+
+
 def classify_tool_outcome(tool_name: str, result: str, *, planned: bool = False,
                           denied: bool = False) -> ToolOutcome:
     text = str(result or "")
@@ -451,6 +454,11 @@ def classify_tool_outcome(tool_name: str, result: str, *, planned: bool = False,
             "(not sent", "(not scheduled", "(couldn't", "(could not",
             "(no recipient", "(nothing to send", "(channel must", "was not sent")):
         return ToolOutcome("failed", text, effect)
+    if (tool_name in _PAREN_FAILURE_TOOLS and text.lstrip().startswith("(")
+            or tool_name == "screen_capture" and low.startswith("screenshot cancelled")):
+        # These tools word every refusal as "(could not …)" / "(I couldn't …)" /
+        # "(… needs an admin password …)"; none of those is a completed change.
+        return ToolOutcome("failed", text, effect)
     if tool_name == "update_event":
         if (text == EVENT_UPDATE_UNAVAILABLE or low.startswith("no upcoming calendar event matches")
                 or "which one?" in low or low == "which event should move?"):
@@ -484,7 +492,7 @@ def classify_tool_outcome(tool_name: str, result: str, *, planned: bool = False,
         # evidence of a write. The creation tool emits this receipt after save.
         return ToolOutcome("failed", text, effect)
     receipts = {
-        "send_message": "message sent to ", "send_email": "email sent to ",
+        "send_message": ("message sent to ", "handed to messages for "), "send_email": "email sent to ",
         "reply_to_email": "reply sent", "forward_email": "forwarded to ",
         "schedule_send": "scheduled:", "draft_email": "draft opened in mail",
         "draft_message": "message draft prepared in wisp",

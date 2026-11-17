@@ -581,13 +581,13 @@ def test_a_saved_name_is_shown_as_saved_and_an_exact_handle_wins(monkeypatch):
 # ---- The receipt names the contact too ----
 
 async def test_a_text_receipt_names_the_matched_contact(contacts, app_bridge):
-    assert await action_tools.send_message("Ian", "Running late") == f"Message sent to Brian Chen ({PHONE}). " + action_tools.MESSAGE_HANDED_OVER
-    assert await action_tools.send_message(PHONE, "Running late") == f"Message sent to Brian Chen ({PHONE}). " + action_tools.MESSAGE_HANDED_OVER
+    assert await action_tools.send_message("Ian", "Running late") == f"Handed to Messages for Brian Chen ({PHONE}). " + action_tools.MESSAGE_HANDED_OVER
+    assert await action_tools.send_message(PHONE, "Running late") == f"Handed to Messages for Brian Chen ({PHONE}). " + action_tools.MESSAGE_HANDED_OVER
     assert [payload["to"] for _, payload in app_bridge] == [PHONE, PHONE]
 
 
 async def test_a_text_receipt_for_an_unsaved_number_is_unchanged(contacts, app_bridge):
-    assert await action_tools.send_message("+15550109999", "Hi") == "Message sent to +15550109999. " + action_tools.MESSAGE_HANDED_OVER
+    assert await action_tools.send_message("+15550109999", "Hi") == "Handed to Messages for +15550109999. " + action_tools.MESSAGE_HANDED_OVER
 
 
 async def test_a_scheduled_send_stores_the_matched_contact(contacts, queued):
@@ -648,8 +648,8 @@ def test_the_text_card_in_a_chat_names_the_matched_contact(chat, monkeypatch):
     # The call keeps the typed name, so a repeat in the same turn is still caught.
     assert card["args"]["to"] == "Ian"
     assert chat.dispatched == [("send_message", {"to": PHONE, "text": "Running late"})]
-    results = [e["result"] for e in events if e["type"] == "tool_result" and "Message sent" in e["result"]]
-    assert results == [f"Message sent to Brian Chen ({PHONE}). " + action_tools.MESSAGE_HANDED_OVER]
+    results = [e["result"] for e in events if e["type"] == "tool_result" and "Handed to Messages" in e["result"]]
+    assert results == [f"Handed to Messages for Brian Chen ({PHONE}). " + action_tools.MESSAGE_HANDED_OVER]
 
 
 def test_several_matches_in_a_chat_still_ask_with_no_card(chat, monkeypatch):
@@ -785,8 +785,8 @@ def test_the_model_can_never_supply_the_bound_number():
     ({"delivery": "delivered", "delivery_service": "iMessage"}, "+15550109999",
      "Message sent to +15550109999. Messages shows it as delivered."),
     ({"delivery": "unknown", "delivery_service": ""}, "+15550109999",
-     "Message sent to +15550109999. " + action_tools.MESSAGE_HANDED_OVER),
-    ({}, "+15550109999", "Message sent to +15550109999. " + action_tools.MESSAGE_HANDED_OVER),
+     "Handed to Messages for +15550109999. " + action_tools.MESSAGE_HANDED_OVER),
+    ({}, "+15550109999", "Handed to Messages for +15550109999. " + action_tools.MESSAGE_HANDED_OVER),
 ])
 async def test_a_text_receipt_says_what_messages_recorded(contacts, monkeypatch, extra, to, expected):
     async def bridge(event_type, payload):

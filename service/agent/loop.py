@@ -87,10 +87,32 @@ def _note_decision(tool: str, approved: bool) -> bool:
     return approved
 
 
-async def _finish_denied_outbound(emit: Emit) -> str:
-    await emit({"type": "text", "text": _DENIED_OUTBOUND_TEXT})
+def _denied_outbound_text(result: object = "") -> str:
+    """The reply for a send that did not go: one short, plain reason when the
+    result shows which, never the policy's own wording or a tool name."""
+    low = str(result or "").lower()
+    if "user denied this action" in low:
+        reason = "you declined the approval"
+    elif "own address" in low:
+        reason = "that address is yours, so I need you to confirm you mean to message yourself"
+    elif "not an email address" in low:
+        reason = "that is a phone number, not an email address"
+    elif "no address" in low or "no recipient" in low or "no contact" in low:
+        reason = "I couldn't find an address for that name"
+    elif "view-only" in low:
+        reason = "Harbor is in view-only mode"
+    elif "blocked by safety" in low:
+        reason = "it wasn't allowed to go out as asked"
+    else:
+        return _DENIED_OUTBOUND_TEXT
+    return f"{_DENIED_OUTBOUND_TEXT[:-1]}: {reason}."
+
+
+async def _finish_denied_outbound(emit: Emit, result: object = "") -> str:
+    text = _denied_outbound_text(result)
+    await emit({"type": "text", "text": text})
     await emit({"type": "done"})
-    return _DENIED_OUTBOUND_TEXT
+    return text
 
 
 def _action_fingerprint(tool: str, args: dict) -> str:
@@ -3718,7 +3740,7 @@ async def run_agent(
             hard_failed.add(_name)
             if _direct_outcome.effect != "read":
                 if _name in _TERMINAL_OUTBOUND_DENIALS:
-                    return await _finish_denied_outbound(emit)
+                    return await _finish_denied_outbound(emit, _result)
                 response = (_reminder_update_receipts() or
                             _earlier_effect_receipts(
                                 "The requested action was not completed because approval was denied."))
@@ -3750,7 +3772,7 @@ async def run_agent(
                 return ""
         if (_direct_outcome.status == "denied"
                 and _name in _TERMINAL_OUTBOUND_DENIALS):
-            return await _finish_denied_outbound(emit)
+            return await _finish_denied_outbound(emit, _result)
         # Typed workflow source groups are singletons. Once one of those
         # required reads fails, later contact lookups cannot make the payload
         # complete and only add latency. Stop dispatching downstream reads;
@@ -5946,7 +5968,7 @@ async def run_agent(
                 hard_failed.add(name)
                 if outcome.effect != "read":
                     if name in _TERMINAL_OUTBOUND_DENIALS:
-                        return await _finish_denied_outbound(emit)
+                        return await _finish_denied_outbound(emit, result)
                     response = (_reminder_update_receipts() or
                                 _earlier_effect_receipts(
                                     "The requested action was not completed because approval was denied."))
@@ -6015,7 +6037,7 @@ async def run_agent(
                     await emit({"type": "done"})
                     return ""
             if outcome.status == "denied" and name in _TERMINAL_OUTBOUND_DENIALS:
-                return await _finish_denied_outbound(emit)
+                return await _finish_denied_outbound(emit, result)
             if name == "create_tool" and get_tool(str(args.get("name", "")).strip().lower()):
                 # A tool created THIS turn is usable for the rest of it. The
                 # schema list is otherwise built once before the loop, so a
