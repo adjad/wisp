@@ -904,12 +904,12 @@ final class FirstRunPermissions: ObservableObject {
             MainActor.assumeIsolated { _ = Task { await self?.refresh() } }
         }
         // Ends with its owner too, not only on stop(): a view torn down without
-        // onDisappear must not leave a 2 s loop running for the life of the app.
+        // onDisappear must not leave a 1 s loop running for the life of the app.
         poll = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
                 await self.refresh()
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
         }
     }
@@ -921,14 +921,36 @@ final class FirstRunPermissions: ObservableObject {
         activeObserver = nil
     }
 
+    /// Which read started last, and which result is already on screen: reads
+    /// overlap (the poll, a return to Wisp, the end of a click), and a slow one
+    /// that began before a grant must not land after a newer one and put the old
+    /// answer back.
+    private var refreshStarted = 0
+    private var refreshApplied = 0
+
     func refresh() async {
+        refreshStarted += 1
+        let generation = refreshStarted
+        // The slow reads first, the instant ones last, so a grant made while this
+        // waited is the one it reports.
+        let notifications = await Self.notificationsState()
+        // Remembered across closes and relaunches (see resolveAutomation): a closed
+        // Mail or Notes can't be asked about, and that is not a removed grant.
+        let mail = await Self.automationState(ask: false)
+        let messages = await Self.messagesAutomationState(ask: false)
+        let fullDiskAccess = await Task.detached { Self.fullDiskAccessState() }.value
+        let readable = await Task.detached { Self.messagesReadable() }.value
+        guard generation > refreshApplied else { return }
+        refreshApplied = generation
         var next: [Item: State] = [:]
         next[.calendar] = Self.eventKitState(.event)
         next[.reminders] = Self.eventKitState(.reminder)
         next[.contacts] = Self.contactsState()
-        next[.fullDiskAccess] = Self.fullDiskAccessState()
-        next[.notifications] = await Self.notificationsState()
+        next[.fullDiskAccess] = fullDiskAccess
+        next[.notifications] = notifications
         // Read only (never a prompt): CGPreflight and AXIsProcessTrusted just report.
+        // Screen Recording is read by the process once and can stay "off" until
+        // Wisp quits and reopens, whatever System Settings shows.
         let defaults = UserDefaults.standard
         next[.screenRecording] = Self.promptOnceState(
             granted: CGPreflightScreenCaptureAccess(),
@@ -936,12 +958,10 @@ final class FirstRunPermissions: ObservableObject {
         next[.accessibility] = Self.promptOnceState(
             granted: AXIsProcessTrusted(),
             promptedBefore: defaults.bool(forKey: Permissions.accessibilityPromptedKey))
-        // Remembered across closes and relaunches (see resolveAutomation): a closed
-        // Mail or Notes can't be asked about, and that is not a removed grant.
-        next[.mail] = await Self.automationState(ask: false)
-        next[.messages] = await Self.messagesAutomationState(ask: false)
+        next[.mail] = mail
+        next[.messages] = messages
         resetItems = Set([Item.mail, .messages].filter { Self.storedAutomation($0) == .reset })
-        messagesReadable = Self.messagesReadable()
+        messagesReadable = readable
         waiting = waiting.filter { !Self.isDecided(next[$0] ?? .checking) }
         notReached = notReached.filter { !Self.isDecided(next[$0] ?? .checking) }
         states = next
@@ -1347,7 +1367,7 @@ final class FirstRunPermissions: ObservableObject {
                                              defaults: AutomationAnswerStore = UserDefaults.standard) -> State {
         let stored = storedAutomation(item, defaults: defaults)
         let resolved = resolveAutomation(read, stored: stored)
-        // Write only a change, and never on a read that can't say: the 2 s poll's
+        // Write only a change, and never on a read that can't say: the 1 s poll's
         // stale read must not overwrite an answer request() just recorded.
         if read != .unknown, resolved.stored != stored {
             if let answer = resolved.stored { defaults.set(answer.rawValue, forKey: automationKey(item)) }
