@@ -975,7 +975,23 @@ struct TodayPlanChecks {
         check(!lede.contains("Nothing needs you"), "no all-clear without a workspace: \(lede)")
     }
 
+    /// 2026-11-18: Cancel on a Day reminder row.
+    @MainActor static func reminderCancelChecks() {
+        let id = "reminders:" + String(repeating: "a", count: 24)
+        check(DayReminderCancel.isCancellable(id: id, source: "reminders", due: 1_800_000_000)
+              && !DayReminderCancel.isCancellable(id: id, source: "reminders", due: nil)
+              && !DayReminderCancel.isCancellable(id: "wisp:" + String(repeating: "a", count: 24), source: "reminders", due: 1)
+              && !DayReminderCancel.isCancellable(id: id, source: "email", due: 1),
+              "Cancel is for dated Reminders reminders only")
+        let refused = try! JSONSerialization.data(withJSONObject: ["detail": "That reminder changed; nothing was cancelled."])
+        check(DayReminderCancel.failure(status: 200, body: Data()) == nil
+              && DayReminderCancel.failure(status: 409, body: refused) == "That reminder changed; nothing was cancelled."
+              && DayReminderCancel.failure(status: 500, body: Data()) == "Reminders didn't confirm the delete (500).",
+              "A confirmed delete is quiet; anything else says why")
+    }
+
     static func main() async throws {
+        await reminderCancelChecks()
         try tolerantDecodeChecks()
         try sourceAccessChecks()
         try evidenceLabelChecks()

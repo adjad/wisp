@@ -12,6 +12,11 @@ Mark done completes a dated reminder through the one verified completion path
 app completes the exact native reminder, checking its title and due time, and reads the
 completion back; the row leaves only on that verified result. Both answers run only on
 the user's explicit click.
+
+Cancel (the Day tab's reminder rows, 2026-11-18) deletes one dated reminder through
+the same verified removal Ask's cancel uses (assistant_tools._retire): the app deletes
+the exact native reminder, checking its title and due time, and reads back that it is
+gone; only then does the row leave. It runs only on the user's click and its confirm.
 """
 from __future__ import annotations
 
@@ -103,3 +108,30 @@ async def done(body: Answer, request: Request, item_id: str = Path(pattern=_ITEM
         raise HTTPException(502, message.strip("()").removeprefix("error: ").rstrip(".") + ".")
     await _changed()
     return {"ok": True, "id": item_id, "decision": "done"}
+
+
+class CancelAnswer(BaseModel):
+    """What the Day row showed: the reminder's title and due time, so only that
+    reminder, unchanged, is removed."""
+    model_config = ConfigDict(extra="forbid")
+    title: str = Field(min_length=1, max_length=500)
+    due_ts: float
+
+
+@router.post("/{item_id}/cancel")
+async def cancel(body: CancelAnswer, request: Request, item_id: str = Path(pattern=_ITEM_ID)):
+    _native_only(request)
+    from service.assistant.daily_workspace import clean, needs_you_fingerprint
+    store = _store()
+    row = reminder_for(store, item_id)
+    if row is None:
+        raise HTTPException(404, "That reminder is no longer in your list.")
+    if needs_you_fingerprint(clean(row["title"]), row["when_ts"]) != needs_you_fingerprint(clean(body.title), body.due_ts):
+        # It changed since the row was drawn: remove only what the user saw.
+        raise HTTPException(409, "That reminder changed; nothing was cancelled.")
+    from service.tools.assistant_tools import _retire
+    error = await _retire(row)
+    if error:
+        raise HTTPException(502, error.rstrip(". ") + ".")
+    await _changed()
+    return {"ok": True, "id": item_id, "decision": "cancelled"}

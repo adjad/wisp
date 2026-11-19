@@ -68,6 +68,11 @@ struct NotchDayView: View {
     /// a grouped review back as one action.
     @State private var lastRemoved: (ids: [String], notice: String)?
     @State private var lastRemovedTask: Task<Void, Never>?
+    /// A reminder row's Cancel (DayReminderCancel): the row asking "Delete from
+    /// Reminders?", the one being deleted, and why one wasn't.
+    @State private var cancelAsking: String?
+    @State private var cancelBusy: String?
+    @State private var cancelFailed: [String: String] = [:]
     /// How long the Undo bar stays after Remove.
     private static let removeUndoSeconds: UInt64 = 8
 
@@ -1492,7 +1497,16 @@ struct NotchDayView: View {
     }
 
     /// The block's main action as a button, and everything else in one ⋯ menu.
+    /// A reminder also shows Cancel in the open, not inside the menu.
     @ViewBuilder private func actions(_ item: DayItem) -> some View {
+        if let reminder = cancellableReminder(item), cancelAsking == reminder.id || cancelBusy == reminder.id {
+            reminderCancelConfirm(reminder)
+        } else {
+            rowActions(item)
+        }
+    }
+
+    @ViewBuilder private func rowActions(_ item: DayItem) -> some View {
         HStack(spacing: 4) {
             calendarAction(item)
             if let deadline = schoolDeadline(item), let review = deadline.review, review.offered {
@@ -1523,6 +1537,16 @@ struct NotchDayView: View {
                     }
                 } else if let need = need(for: item), !planned(need) {
                     NotchChrome.small("Plan time") { planTime(item) }.disabled(today.busy)
+                }
+                if let reminder = cancellableReminder(item) {
+                    NotchChrome.small("Cancel") {
+                        cancelFailed[reminder.id] = nil
+                        cancelAsking = reminder.id
+                        model.onResize()
+                    }
+                    .disabled(today.busy || cancelBusy != nil)
+                    .help(cancelFailed[reminder.id] ?? "Delete this reminder from Reminders")
+                    .accessibilityLabel("Cancel \(reminder.title)")
                 }
             case .calendar, .task:
                 EmptyView()
@@ -1675,6 +1699,55 @@ struct NotchDayView: View {
                                 kind: need.task_kind ?? "task", minutes: need.suggested_minutes, priority: need.priority,
                                 due: need.due_ts.flatMap { $0 > now ? Date(timeIntervalSince1970: $0) : nil },
                                 origin: DayTimeline.planOrigin(due: need.due_ts, now: now))
+        }
+    }
+
+    /// The dated Reminders reminder a row stands for, if Cancel can delete it.
+    private func cancellableReminder(_ item: DayItem) -> DailyAttentionItem? {
+        guard let need = need(for: item),
+              DayReminderCancel.isCancellable(id: need.id, source: need.source, due: need.due_ts) else { return nil }
+        return need
+    }
+
+    /// Cancel's one question, in the row: nothing is deleted until Delete.
+    private func reminderCancelConfirm(_ reminder: DailyAttentionItem) -> some View {
+        HStack(spacing: 6) {
+            if cancelBusy == reminder.id {
+                ProgressView().controlSize(.small)
+                Text("Deleting…").font(.wisp(size: 10.5)).foregroundStyle(Theme.textSecondary)
+            } else {
+                Text(DayReminderCancel.question).font(.wisp(size: 10.5, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                NotchChrome.small("Keep") { cancelAsking = nil; model.onResize() }
+                    .keyboardShortcut(.cancelAction)
+                    .accessibilityLabel("Keep \(reminder.title)")
+                Button("Delete") { cancelReminder(reminder) }
+                    .buttonStyle(.plain)
+                    .font(.wisp(size: 10.5, weight: .semibold)).foregroundStyle(.black)
+                    .padding(.horizontal, 8).padding(.vertical, 2)
+                    .background(Capsule().fill(Theme.bad))
+                    .fixedSize()
+                    .accessibilityLabel("Delete \(reminder.title) from Reminders")
+            }
+        }
+    }
+
+    /// Deletes the reminder through the service's verified path; the row leaves on
+    /// the refresh that follows a confirmed delete.
+    private func cancelReminder(_ reminder: DailyAttentionItem) {
+        guard cancelBusy == nil, let due = reminder.due_ts else { return }
+        cancelBusy = reminder.id
+        Task {
+            let failure = await DayReminderCancel.send(id: reminder.id, title: reminder.title, due: due)
+            cancelBusy = nil
+            cancelAsking = nil
+            if let failure {
+                cancelFailed[reminder.id] = failure
+                NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                                     userInfo: [.announcement: "Not cancelled: \(failure)"])
+            } else {
+                await today.refresh(afterMutation: true)
+            }
+            model.onResize()
         }
     }
 
@@ -2424,5 +2497,25 @@ enum NotchChrome {
         }
         guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) else { return }
         NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
+    }
+}
+
+
+extension DayReminderCancel {
+    /// Nil once Reminders confirmed the delete, else what to say.
+    static func send(id: String, title: String, due: Double) async -> String? {
+        var request = URLRequest(url: WispClient.baseURL.appendingPathComponent("assistant/needs_you")
+            .appendingPathComponent(id).appendingPathComponent("cancel"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["title": title, "due_ts": due])
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            return failure(status: status, body: data)
+        } catch {
+            return "Wisp couldn't reach its service. Nothing was deleted."
+        }
     }
 }

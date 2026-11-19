@@ -244,3 +244,72 @@ def test_reminder_for_finds_only_active_dated_reminders(store):
     assert reminder_for(store, "email:" + item_id.split(":")[1]) is None
     store.set_status(cid, "done")
     assert reminder_for(store, item_id) is None
+
+
+# --- Cancel on the Day tab's reminder rows (2026-11-18) ------------------------------------
+
+def _cancel_store(store, monkeypatch):
+    from service.tools import assistant_tools
+    monkeypatch.setattr(assistant_tools, "assistant_store", store)
+
+
+def test_cancel_deletes_the_exact_reminder_through_the_verified_path(store, monkeypatch):
+    _cancel_store(store, monkeypatch)
+    due = NOW - 2 * 86400
+    cid, item_id, _ = _synced(store, due=due)
+    native = AsyncMock(return_value={"ok": True, "status": "succeeded", "error": "", "source_id": "ek-1"})
+    monkeypatch.setattr(outbox, "request", native)
+    response = TestClient(main.app).post(f"/assistant/needs_you/{item_id}/cancel",
+                                         json={"title": "Wisp verification timed 2113", "due_ts": due})
+    assert response.status_code == 200, response.text
+    assert response.json()["decision"] == "cancelled"
+    native.assert_awaited_once()
+    kind, payload = native.await_args.args
+    assert kind == "delete_reminder"
+    assert payload["source_id"] == "ek-1" and payload["expected_title"] == "Wisp verification timed 2113"
+    assert payload["expected_due_ts"] == due
+    assert store._db.execute("SELECT status FROM commitments WHERE id=?", (cid,)).fetchone()["status"] == "dismissed"
+
+
+def test_cancel_keeps_the_reminder_when_the_delete_is_not_verified(store, monkeypatch):
+    _cancel_store(store, monkeypatch)
+    due = NOW - 2 * 86400
+    cid, item_id, _ = _synced(store, due=due)
+    monkeypatch.setattr(outbox, "request", AsyncMock(return_value={"ok": False, "status": "unknown",
+                                                                   "error": "native reply lost"}))
+    response = TestClient(main.app).post(f"/assistant/needs_you/{item_id}/cancel",
+                                         json={"title": "Wisp verification timed 2113", "due_ts": due})
+    assert response.status_code == 502
+    assert "native reply lost" in response.json()["detail"]
+    assert store._db.execute("SELECT status FROM commitments WHERE id=?", (cid,)).fetchone()["status"] == "active"
+
+
+def test_cancel_refuses_a_changed_unknown_or_page_request(store, monkeypatch):
+    _cancel_store(store, monkeypatch)
+    due = NOW - 2 * 86400
+    _, item_id, _ = _synced(store, due=due)
+    native = AsyncMock(side_effect=AssertionError("nothing to delete"))
+    monkeypatch.setattr(outbox, "request", native)
+    client = TestClient(main.app)
+    seen = {"title": "Wisp verification timed 2113", "due_ts": due}
+    assert client.post(f"/assistant/needs_you/{item_id}/cancel",
+                       json=dict(seen, due_ts=due - 3 * 86400)).status_code == 409, "a moved reminder"
+    assert client.post(f"/assistant/needs_you/{item_id}/cancel",
+                       json=dict(seen, title="Something else")).status_code == 409, "a renamed reminder"
+    assert client.post("/assistant/needs_you/reminders:" + "0" * 24 + "/cancel", json=seen).status_code == 404
+    assert client.post("/assistant/needs_you/wisp:" + "0" * 24 + "/cancel", json=seen).status_code == 404
+    assert client.post(f"/assistant/needs_you/{item_id}/cancel", json=seen,
+                       headers={"Origin": "https://example.com"}).status_code == 403
+    native.assert_not_called()
+
+
+def test_the_day_row_shows_cancel_in_the_open():
+    """2026-11-18, the owner: Cancel for an overdue reminder, or any reminder, next to
+    Plan time, not inside the ⋯ menu."""
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1] / "app" / "Sources" / "WispApp"
+    view = (root / "NotchDayView.swift").read_text()
+    row = view[view.index("@ViewBuilder private func rowActions("):view.index("private func moreMenu(")]
+    assert row.index('NotchChrome.small("Plan time")') < row.index('NotchChrome.small("Cancel")') < row.index("moreMenu(item)")
+    assert "reminderCancelConfirm(reminder)" in view and 'Button("Delete") { cancelReminder(reminder) }' in view
+    assert 'appendingPathComponent("cancel")' in view

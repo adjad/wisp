@@ -2885,3 +2885,24 @@ enum StudyLinkRule {
         return (url, quizSegments.isDisjoint(with: segments) ? "assignment" : "quiz_page")
     }
 }
+
+
+/// Cancel on a Day reminder row (2026-11-18, the owner: "give an option to cancel
+/// overdue reminders and any reminder - don't hide it behind the menu"). One inline
+/// question, then `POST /assistant/needs_you/<id>/cancel`, which deletes the exact
+/// reminder in Reminders and reads back that it is gone (needs_you_api.cancel).
+enum DayReminderCancel {
+    static let question = "Delete from Reminders?"
+
+    /// A dated Reminders reminder, named by the id the service's Needs you route takes.
+    static func isCancellable(id: String, source: String, due: Double?) -> Bool {
+        source == "reminders" && id.hasPrefix("reminders:") && (due?.isFinite ?? false)
+    }
+
+    /// Pure: what a reply means for the row.
+    static func failure(status: Int, body: Data) -> String? {
+        if status == 200 { return nil }
+        let detail = ((try? JSONSerialization.jsonObject(with: body)) as? [String: Any])?["detail"] as? String
+        return detail ?? "Reminders didn't confirm the delete (\(status))."
+    }
+}
