@@ -1015,12 +1015,13 @@ final class FirstRunPermissions: ObservableObject {
                     tries += 1
                     let store = eventStore(entity)
                     do {
-                        _ = item == .calendar ? try await store.requestFullAccessToEvents()
-                                              : try await store.requestFullAccessToReminders()
+                        let granted = item == .calendar ? try await store.requestFullAccessToEvents()
+                                                        : try await store.requestFullAccessToReminders()
+                        if granted { Self.noteGranted(entity) }
                     } catch {
                         NSLog("Wisp: macOS did not answer the \(item.rawValue) request: \(error.localizedDescription)")
                     }
-                    after = EKEventStore.authorizationStatus(for: entity)
+                    after = Self.eventKitStatus(entity)
                 } while Self.eventKitAsksAgain(before: before, after: after, tries: tries)
                 patience.cancel()
                 // After the let-go a newer click may own the row: this late answer
@@ -1108,6 +1109,26 @@ final class FirstRunPermissions: ObservableObject {
         }
     }
 
+    /// Calendar and Reminders grants macOS confirmed to this launch. Right after a
+    /// yes, EKEventStore.authorizationStatus can still say notDetermined for a
+    /// second or more in the same process (seen 2026-11-18: Allow pressed, the
+    /// request answered YES, two reads later still notDetermined), which showed
+    /// "macOS didn't show its question" under a permission just granted. The
+    /// request's own yes counts. Main thread only.
+    nonisolated(unsafe) private static var grantedThisLaunch: Set<EKEntityType> = []
+
+    static func noteGranted(_ entity: EKEntityType) { grantedThisLaunch.insert(entity) }
+
+    /// macOS's answer for Calendar or Reminders, counting a yes it gave this launch.
+    nonisolated static func eventKitStatus(_ entity: EKEntityType) -> EKAuthorizationStatus {
+        effectiveStatus(EKEventStore.authorizationStatus(for: entity), grantedThisLaunch: grantedThisLaunch.contains(entity))
+    }
+
+    /// Pure: a status still reading notDetermined after a confirmed yes is full access.
+    nonisolated static func effectiveStatus(_ raw: EKAuthorizationStatus, grantedThisLaunch: Bool) -> EKAuthorizationStatus {
+        raw == .notDetermined && grantedThisLaunch ? .fullAccess : raw
+    }
+
     /// An ask that left macOS with no answer recorded: its question never showed
     /// (or was dismissed without a choice), so Wisp is still absent from the list.
     static func eventKitUnanswered(before: EKAuthorizationStatus, after: EKAuthorizationStatus) -> Bool {
@@ -1158,7 +1179,7 @@ final class FirstRunPermissions: ObservableObject {
     /// Calendar and Reminders are two permissions with two Settings pages, so two
     /// rows: one row for both sent a person who denied only Reminders to Calendars.
     private static func eventKitState(_ entity: EKEntityType) -> State {
-        switch EKEventStore.authorizationStatus(for: entity) {
+        switch eventKitStatus(entity) {
         case .fullAccess: return .allowed
         case .notDetermined: return .notAsked
         default: return .notAllowed

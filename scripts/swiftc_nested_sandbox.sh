@@ -12,8 +12,9 @@
 # sandbox. It only removes swiftc's own sandbox around macro plugins, and the
 # only plugins that run are Apple's, compiling this repository's sources. Only
 # scripts that compile @State views without `-target ...macosx14.0` need it;
-# the others (display geometry, overlay transition) build for macOS 14, where
-# @State is not a macro, and do not source this file.
+# the others (display geometry, overlay transition) do not source this file.
+# The Markdown contract builds for macOS 14 and still needed it once MarkdownView
+# held @State (2026-11-18), so the target does not decide it.
 swiftc_nested_sandbox_flags=()
 if swiftc -disable-sandbox -print-target-info >/dev/null 2>&1; then
     swiftc_nested_sandbox_flags=(-disable-sandbox)

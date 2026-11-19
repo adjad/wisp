@@ -1508,6 +1508,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// here first, holds or no holds, since it is what the person just asked for.
     /// Nothing in the panel is lost; it is only closed.
     private func stepAside() {
+        if lowerForQuestion() { return }
         switch presentation.desired {
         case .chat: requestPresentation(.bar)
         case .search: closeSearch()
@@ -1531,8 +1532,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.rawValue <= panel.rawValue
     }
 
+    /// The panel's own level while the permission page waits on macOS's question
+    /// (lowerForQuestion); nil the rest of the time.
+    private var levelBeforeQuestion: NSWindow.Level?
+    private var questionHoldEnds: DispatchWorkItem?
+    /// A question nobody answers lets the panel go back to its level after this.
+    private static let questionHoldLimit: TimeInterval = 120
+
+    /// The notch's permission page asking a question macOS shows in a dialog
+    /// (Calendar, Reminders and the rest; NotchPermissionPageModel.waitsInPlace): the
+    /// panel stays open and drops to a normal window's level so the question shows
+    /// above it, rather than rolling up on every click. Auto-close waits meanwhile.
+    /// False where it steps aside as before (a System Settings page, anything else).
+    private func lowerForQuestion() -> Bool {
+        guard let panel, presentation.desired == .chat, !model.collapsed,
+              model.showingPermissions, model.permissionPage.waitsInPlace else { return false }
+        if levelBeforeQuestion == nil { levelBeforeQuestion = panel.level }
+        panel.level = .normal
+        cancelScheduledCollapse()
+        questionHoldEnds?.cancel()
+        let end = DispatchWorkItem { [weak self] in self?.raiseAfterQuestion() }
+        questionHoldEnds = end
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.questionHoldLimit, execute: end)
+        return true
+    }
+
+    /// Back to the panel's own level: the question has an answer, the page closed,
+    /// or nobody answered in time.
+    private func raiseAfterQuestion() {
+        questionHoldEnds?.cancel()
+        questionHoldEnds = nil
+        guard let level = levelBeforeQuestion else { return }
+        levelBeforeQuestion = nil
+        panel?.level = level
+        panel?.orderFrontRegardless()
+    }
+
     /// What it stepped aside for was answered (the microphone's question).
     private func stepBack() {
+        raiseAfterQuestion()
         guard presentation.desired == .bar else { return }
         expand()
     }
@@ -1551,6 +1589,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func permissionPageComesBack() {
         // Still open and nothing closing it, so no opening will end the page's wait.
         if presentation.desired == .chat && !model.collapsed {
+            raiseAfterQuestion()
             model.permissionPage.panelOpened()
             return
         }
@@ -1578,6 +1617,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // A panel that just closed is the moment Getting to know you may be offered.
         if step.to == .bar { considerKnowYouOffer(after: 10) }
+        if step.to == .bar || step.to == .hidden { raiseAfterQuestion() }
         if step.to == .chat { readyLineSeen() }
         drivePresentation()
     }
@@ -1671,6 +1711,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let job = self.holdForStudyJob()
             if answer || job { return }
             if self.model.holdsOpenBesidesAnswer { return }
+            // The permission page is waiting on macOS's question (lowerForQuestion).
+            if self.levelBeforeQuestion != nil { return }
             // A menu opened from the panel (the chat switcher) runs outside it,
             // so the pointer leaving the panel is not the person leaving. Hold
             // the collapse until the menu closes (see installMenuTrackingObservers).
@@ -1716,6 +1758,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let job = self.holdForStudyJob()
             if answer || job { return }
             if self.model.holdsOpenBesidesAnswer { return }
+            // The permission page is waiting on macOS's question (lowerForQuestion).
+            if self.levelBeforeQuestion != nil { return }
             self.collapse()
         }
         pendingCollapse = work

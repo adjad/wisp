@@ -602,7 +602,8 @@ def test_one_click_on_allow_gets_macos_to_ask():
     ask = request[request.index("case .ask:"):request.index("case .contacts:")]
     order = ["let patience = letGoIfUnanswered(item, token: token)", "eventStores[entity] = nil",
              "NSApp.activate(ignoringOtherApps: true)", "let store = eventStore(entity)",
-             "requestFullAccessToReminders()", "after = EKEventStore.authorizationStatus(for: entity)",
+             "requestFullAccessToReminders()", "if granted { Self.noteGranted(entity) }",
+             "after = Self.eventKitStatus(entity)",
              "while Self.eventKitAsksAgain(before: before, after: after, tries: tries)",
              "patience.cancel()", "waiting.remove(item)",
              "unanswered[item] = Self.eventKitUnanswered(before: before, after: after)"]
@@ -799,3 +800,31 @@ def test_ask_always_asks_the_service_even_after_setup_said_no_model():
     send = srcs["AgentSend.swift"]
     assert 'case "setup_needed": return .setup' in send
     assert "choose a model in Settings › Models" in send
+
+
+def test_a_yes_from_macos_counts_before_the_status_catches_up():
+    """2026-11-18, the owner on 0.1.7 build 45: Allow on Reminders, the request
+    answered YES, but EKEventStore.authorizationStatus still said notDetermined in
+    that launch, so the row read "macOS didn't show its question". The request's own
+    yes now counts, for the click and for every later read of the row."""
+    setup = _sources()["FirstRunSetupView.swift"]
+    assert "static func effectiveStatus(_ raw: EKAuthorizationStatus, grantedThisLaunch: Bool)" in setup
+    assert "switch eventKitStatus(entity) {" in _body(setup, "private static func eventKitState(")
+    request = _body(setup, "func request(_ item: Item) async")
+    assert "after = EKEventStore.authorizationStatus(for: entity)" not in request
+
+
+def test_the_permission_page_stays_open_under_a_question():
+    """2026-11-18, the owner: every click on a permission closed the notch. A
+    question macOS asks in a dialog now leaves the page open, lowered under it,
+    until the answer; System Settings pages still step aside."""
+    app = _sources()["AppDelegate.swift"]
+    aside = _body(app, "private func stepAside()")
+    assert aside.index("if lowerForQuestion() { return }") < aside.index("switch presentation.desired")
+    lower = _body(app, "private func lowerForQuestion() -> Bool")
+    assert "model.permissionPage.waitsInPlace" in lower and "panel.level = .normal" in lower
+    assert "questionHoldLimit" in lower
+    assert "raiseAfterQuestion()" in _body(app, "private func permissionPageComesBack()")
+    assert app.count("if self.levelBeforeQuestion != nil { return }") == 2
+    page = _sources()["NotchPermissionPage.swift"]
+    assert "var waitsInPlace: Bool { waiting?.inPlace == true }" in page

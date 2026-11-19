@@ -299,6 +299,11 @@ struct FirstRunSetupChecks {
               && !FirstRunPermissions.eventKitUnanswered(before: .notDetermined, after: .denied)
               && !FirstRunPermissions.eventKitUnanswered(before: .denied, after: .denied),
               "An ask that leaves macOS with no answer is reported; a Don't Allow is an answer")
+        // 2026-11-18: a yes the request reported counts while the status still lags.
+        check(FirstRunPermissions.effectiveStatus(.notDetermined, grantedThisLaunch: true) == .fullAccess
+              && FirstRunPermissions.effectiveStatus(.notDetermined, grantedThisLaunch: false) == .notDetermined
+              && FirstRunPermissions.effectiveStatus(.denied, grantedThisLaunch: true) == .denied,
+              "A confirmed yes reads as full access; nothing else changes")
         // An Automation question nobody answers: "Asking…" while it is new, then Ask again.
         // 2026-11-13, a tester on 0.5.0: one click on Allow for Reminders showed no
         // question. An ask macOS leaves unanswered is made once more by the same

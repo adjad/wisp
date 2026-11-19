@@ -6,9 +6,10 @@ import AppKit
 /// (Permissions.openFix); Settings' Mac permissions row opens the whole list.
 ///
 /// The notch panel sits above normal windows (SurfaceLayout.windowLevel), so
-/// anything macOS shows for a permission would open under it. The page's actions
-/// tuck the panel away first (Permissions.stepAside) and bring it back to show the
-/// answer. The setup window's Permissions step stays for setup and Settings ›
+/// anything macOS shows for a permission would open under it. For a question macOS
+/// asks in a dialog the panel stays open and drops to a normal window's level until
+/// the answer (AppDelegate.lowerForQuestion); for a System Settings page it tucks
+/// away first (Permissions.stepAside) and comes back to show the answer. The setup window's Permissions step stays for setup and Settings ›
 /// Privacy; both use FirstRunPermissions, so the rules live in one place.
 enum NotchPermissionPage {
     typealias Item = FirstRunPermissions.Item
@@ -137,12 +138,12 @@ enum NotchPermissionPage {
             case .screenRecording:
                 return "Wisp tucks away so you can answer macOS. " + relaunchNote
             case .mail:
-                return "Wisp tucks away so you can answer macOS. Mail and Notes open to ask, then Notes closes. "
+                return "macOS asks above this page. Mail and Notes open to ask, then Notes closes. "
                     + "If you allow it, Mail stays open in the background so Wisp can read it."
             case .messages:
-                return "Wisp tucks away so you can answer macOS. Messages opens for a moment to ask, then closes."
+                return "macOS asks above this page. Messages opens for a moment to ask, then closes."
             default:
-                return "Wisp tucks away so you can answer macOS. It asks once."
+                return "macOS asks above this page, once."
             }
         case .notAllowed:
             if FirstRunPermissions.isAddOnly(item, state, calendarAddOnly: calendarAddOnly) { return calendarAddOnlyNote }
@@ -266,6 +267,10 @@ final class NotchPermissionPageModel: ObservableObject {
 
     /// A close under way or still to come is for one of the page's own actions, so the page stays.
     var keepsThroughClose: Bool { waiting != nil }
+
+    /// A click waiting on macOS's own question (Calendar, Reminders and the rest
+    /// answered in a dialog): the panel stays open under it instead of tucking away.
+    var waitsInPlace: Bool { waiting?.inPlace == true }
 
     func stillWaiting(at date: Date) -> Bool {
         waiting.map { NotchPermissionPage.stillWaiting(since: $0.since, at: date) } ?? false
