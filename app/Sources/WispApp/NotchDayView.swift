@@ -235,7 +235,10 @@ struct NotchDayView: View {
                     .disabled(today.planIsStale)
                     .transition(.opacity)
             } else if today.error.isEmpty {
-                ProcessingRow(label: NotchBriefView.loadingLabel(today: today, starting: model.serviceStarting))
+                // Still words, no pulsing dots: the Day's load is short and the
+                // dots read as busy motion beside the week row.
+                Text(NotchBriefView.loadingLabel(today: today, starting: model.serviceStarting))
+                    .font(.wisp(.body)).foregroundStyle(Theme.textSecondary)
                     .transition(.opacity)
             }
     }
