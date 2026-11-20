@@ -142,8 +142,13 @@ struct NotchDayView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            // The week row comes first, right under the tabs, so it stays level
+            // when you switch days: everything that changes with the day (notices,
+            // the summary, the agenda) sits below it, and only that moves the
+            // panel's height.
+            weekHead
             notices
-            // The summary and the week row run the panel's whole width, above the halves.
+            // The summary runs the panel's whole width, above the halves.
             dayHead
             // In the wide panel, two halves: the left runs in today's order up to
             // and including Old reminders, the right holds what follows. In the
@@ -406,10 +411,19 @@ struct NotchDayView: View {
 
     // MARK: The head: summary and week row
 
-    /// The whole width above the halves: why Wisp can't read a source, the
-    /// summary sentence with the all-day items at its right, then the week row.
-    /// The week row is there from the first frame (dates need no plan), so the
-    /// panel never jumps when the plan arrives under it.
+    /// The week row, at the top of the Day. It is there from the first frame
+    /// (dates need no plan) and nothing above it changes with the day, so it
+    /// holds still while you switch days.
+    @ViewBuilder private var weekHead: some View {
+        if let plan {
+            weekRow(load: holding ? nil : shownLoad(plan, timeline: timeline(plan)))
+        } else {
+            weekRow(load: nil)
+        }
+    }
+
+    /// The whole width above the halves: why Wisp can't read a source, then the
+    /// summary sentence with the all-day items at its right.
     @ViewBuilder private var dayHead: some View {
         if let plan {
             let timeline = timeline(plan)
@@ -425,9 +439,6 @@ struct NotchDayView: View {
             .allowsHitTesting(!holding)
             .accessibilityHidden(holding)
             .transition(.opacity)
-            weekRow(load: holding ? nil : shownLoad(plan, timeline: timeline))
-        } else {
-            weekRow(load: nil)
         }
     }
 
