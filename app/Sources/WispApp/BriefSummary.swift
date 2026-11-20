@@ -373,10 +373,18 @@ extension SourceAccess {
     /// Contacts, which only the app reads (ContactsReader), so texts show names:
     /// a row only once macOS said no and Contacts is on in Wisp's Settings.
     /// Never before macOS was asked, so a new install isn't told off for it.
-    static func contacts(denied: Bool, enabled: Bool) -> SourceAccess? {
-        guard denied, enabled else { return nil }
+    /// Contacts isn't asked in setup: this row is where it's asked, once it would
+    /// help. `textsWithoutNames` is macOS never asked yet while Wisp reads your
+    /// texts, which then show numbers; its Allow… asks macOS (Permissions.openFix).
+    static func contacts(denied: Bool, enabled: Bool, textsWithoutNames: Bool = false) -> SourceAccess? {
+        guard enabled else { return nil }
+        if denied {
+            return SourceAccess(source: "contacts", ready: false, state: "unavailable", blocked: "contacts_access",
+                                reason: "Turn on Contacts for Wisp in System Settings > Privacy & Security, so texts show names, not numbers.")
+        }
+        guard textsWithoutNames else { return nil }
         return SourceAccess(source: "contacts", ready: false, state: "unavailable", blocked: "contacts_access",
-                            reason: "Turn on Contacts for Wisp in System Settings > Privacy & Security, so texts show names, not numbers.")
+                            reason: "Your texts show phone numbers. Allow Contacts so they show names instead.")
     }
 
     /// The row's icon; Contacts has none among the Day's sources.

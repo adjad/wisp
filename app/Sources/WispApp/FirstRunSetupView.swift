@@ -729,8 +729,8 @@ struct DownloadProgressWatch: Equatable {
 final class FirstRunPermissions: ObservableObject {
     /// `mail` is Automation for Mail and Notes, which only helps while those apps
     /// are open; `messages` is Automation for Messages, which sends the texts the
-    /// person approves in Ask (OutboundSender.sendMessage), asked here so the
-    /// first send doesn't stop on a macOS prompt; `fullDiskAccess` is what reads
+    /// person approves in Ask (OutboundSender.sendMessage), asked at that first
+    /// send (or from its row in Settings › Privacy); `fullDiskAccess` is what reads
     /// Messages, and Mail and Notes when they are closed. `screenRecording` and
     /// `accessibility` are asked through Permissions' own click-time requests, so
     /// only the microphone and per-app Automation wait until first use.
@@ -742,6 +742,14 @@ final class FirstRunPermissions: ObservableObject {
         /// step open.
         var isExtra: Bool { self == .screenRecording || self == .accessibility }
         static let core = allCases.filter { !$0.isExtra }
+        /// The four the setup window asks about: what Brief and Day are built on.
+        /// Every other one is asked when a task first needs it: Messages at the first
+        /// text you approve (OutboundSender.sendMessage), Contacts from the Brief's row
+        /// once your texts show numbers (SourceAccess.contacts), Notifications when Wisp
+        /// first has an alert for you (Notifications.deliver), the microphone at the
+        /// first voice ask, Screen Recording and Accessibility at the first look at your
+        /// screen, Study read or Smart Search. Settings › Privacy still lists them all.
+        static let setup: [Item] = [.calendar, .reminders, .mail, .fullDiskAccess]
         var id: String { rawValue }
     }
     enum State: Equatable { case checking, notAsked, allowed, notAllowed, notOnThisMac }
@@ -785,22 +793,16 @@ final class FirstRunPermissions: ObservableObject {
     }
 #endif
     /// The step's footer: every row is optional, so no "N of M" score, only how
-    /// many could still be switched on (a Mac without Messages data is not one).
-    /// A Contacts row waiting on Full Disk Access has no button of its own, so
-    /// Full Disk Access carries it and it isn't counted twice.
+    /// many of the setup rows (Item.setup) could still be switched on (a Mac
+    /// without Messages data is not one). The rest are asked at use, so never counted.
     static func summary(_ states: [Item: State], messagesReadable: Bool = true) -> String {
-        let waiting = contactsWaits(states, messagesReadable: messagesReadable)
-        let off = Item.core.filter {
-            !(waiting && $0 == .contacts) && (states[$0] == .notAsked || states[$0] == .notAllowed)
-        }.count
+        let off = Item.setup.filter { states[$0] == .notAsked || states[$0] == .notAllowed }.count
         return off == 0 ? "All optional · nothing left off" : "All optional · \(off) still off"
     }
 
-    /// Every one has an answer from macOS, whichever it was. A Contacts row waiting
-    /// on Full Disk Access follows that answer instead of needing its own.
+    /// Every setup row has an answer from macOS, whichever it was.
     static func allAnswered(_ states: [Item: State], messagesReadable: Bool) -> Bool {
-        let waiting = contactsWaits(states, messagesReadable: messagesReadable)
-        return Item.core.allSatisfy { (waiting && $0 == .contacts) || isDecided(states[$0] ?? .checking) }
+        Item.setup.allSatisfy { isDecided(states[$0] ?? .checking) }
     }
 
     var allAnswered: Bool { Self.allAnswered(states, messagesReadable: messagesReadable) }
@@ -1555,7 +1557,6 @@ struct FirstRunSetupView: View {
     /// The Permissions step's optional Screen Recording and Accessibility rows.
     /// Open again after one was asked for (Screen Recording's quit and reopen
     /// comes back here), so the row's answer is in view.
-    @State private var showMoreAccess = UserDefaults.standard.bool(forKey: Permissions.screenRecordingPromptedKey)
         || UserDefaults.standard.bool(forKey: Permissions.accessibilityPromptedKey)
     var openDetailedSetup: () -> Void
     /// Closes the window and opens the notch on Ask; with a prompt, Ask's box
@@ -2311,33 +2312,15 @@ struct FirstRunSetupView: View {
                           detail: "Emails that need a reply, and your notes, while those apps are open. "
                               + "Opens Mail and Notes to ask, then closes Notes. If you allow it, Mail stays "
                               + "open in the background so Wisp can read it.")
-            permissionRow(.messages, icon: "message", title: "Messages",
-                          detail: "Sends the texts you approve in Ask. Opens Messages for a moment to ask, then closes it.")
             permissionRow(.fullDiskAccess, icon: "internaldrive", title: "Full Disk Access",
                           detail: fullDiskAccessDetail)
-            contactsRow
-            permissionRow(.notifications, icon: "bell", title: "Notifications",
-                          detail: "Alerts for reminders you set, and when Wisp is ready.")
             launchAtLoginRow
-            // Not needed to set up or for a first answer, so out of the way and
-            // out of the count; still asked only from the row's own click.
-            DisclosureGroup(isExpanded: $showMoreAccess) {
-                VStack(alignment: .leading, spacing: 0) {
-                    permissionRow(.screenRecording, icon: "rectangle.dashed.badge.record", title: "Screen Recording",
-                                  detail: FirstRunPermissions.screenRecordingDetail(permissions.state(.screenRecording)))
-                    permissionRow(.accessibility, icon: "accessibility", title: PrivacyNames.accessibility,
-                                  detail: FirstRunPermissions.accessibilityDetail(permissions.state(.accessibility)))
-                }
-            } label: {
-                Text("More access (optional)").font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Theme.textSecondary)
-            }
-            .padding(.top, 8)
-            Text("Skipped one? Open Wisp's Settings and choose Permissions… under Privacy, any time. Screen "
-                 + "Recording and \(PrivacyNames.accessibilityWithFormerName), under More access, let Wisp look "
-                 + "at your screen when you ask "
-                 + "about it. Only the microphone, asked the first time you use voice, and macOS's questions "
-                 + "about Wisp controlling another app wait until first use.")
+            Text("Skipped one? Open Wisp's Settings and choose Permissions… under Privacy, any time. "
+                 + "Everything else is asked only when a task needs it: Messages when you first send a text, "
+                 + "Contacts when your texts show numbers instead of names, Notifications when Wisp first has "
+                 + "an alert for you, the microphone when you first ask by voice, and Screen Recording or "
+                 + "\(PrivacyNames.accessibilityWithFormerName) when you first ask about your screen or read "
+                 + "school pages in Study.")
                 .font(.system(size: 12)).foregroundStyle(Theme.textMuted).padding(.top, 8)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -2353,21 +2336,6 @@ struct FirstRunSetupView: View {
                 + "that opens, switch on Wisp. " + FirstRunPermissions.fullDiskAccessRelaunchNote
         case .notOnThisMac: return "Nothing here needs it yet: no Messages, Mail or Notes data on this Mac."
         default: return "So Wisp can read Messages, and Mail and Notes when those apps are closed."
-        }
-    }
-
-    /// Contacts puts names on Messages: it waits for Full Disk Access, which is
-    /// what reads Messages, unless macOS already has an answer or Full Disk Access
-    /// has nothing to read here (FirstRunPermissions.contactsWaits).
-    @ViewBuilder private var contactsRow: some View {
-        if FirstRunPermissions.contactsWaits(permissions.states, messagesReadable: permissions.messagesReadable) {
-            OnboardingCard(icon: "person.crop.circle", title: "Contacts",
-                           detail: "Names instead of phone numbers in Messages. It's useful once Full Disk Access lets Wisp read Messages.") {
-                Text("After Full Disk Access").font(.system(size: 11.5)).foregroundStyle(Theme.textMuted)
-            }
-        } else {
-            permissionRow(.contacts, icon: "person.crop.circle", title: "Contacts",
-                          detail: "Names instead of phone numbers in Messages.")
         }
     }
 

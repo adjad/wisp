@@ -152,8 +152,25 @@ enum OutboundSender {
     /// before it queues anything: -1728 "Can't get ..." and -1719 "invalid index".
     private static let lookupFailureCodes: Set<Int> = [-1728, -1719]
 
+    /// macOS holds no answer yet for Wisp scripting Messages. Reads only; never asks.
+    private static func messagesNotAskedYet() -> Bool {
+        FirstRunPermissions.automationStateNow(of: FirstRunPermissions.messagesAutomationTargets,
+                                               item: .messages, ask: false) == .notAsked
+    }
+
     static func sendMessage(actionId: String, to given: String, text: String) {
         DispatchQueue.global(qos: .userInitiated).async {
+            // Messages' Automation isn't asked in setup: macOS asks as this first
+            // approved send reaches Messages. The panel steps aside so that question
+            // isn't under it, and comes back once the send has its answer.
+            let firstAsk = messagesNotAskedYet()
+            if firstAsk { DispatchQueue.main.async { NotificationCenter.default.post(name: .wispStepAside, object: nil) } }
+            defer {
+                if firstAsk {
+                    _ = messagesNotAskedYet() // remembers the answer the send just got
+                    DispatchQueue.main.async { NotificationCenter.default.post(name: .wispStepBack, object: nil) }
+                }
+            }
             // Messages names phone handles in E.164; "1 (NNN) NNN-NNNN" from
             // Contacts is the same number without its plus sign.
             let to = MessageDeliveryCheck.sendHandle(given)

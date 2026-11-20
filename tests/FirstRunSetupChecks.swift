@@ -1100,9 +1100,19 @@ struct FirstRunSetupChecks {
         noData[.contacts] = .notAsked
         check(!FirstRunPermissions.contactsWaits(noData, messagesReadable: false),
               "Full Disk Access not needed here: Contacts has its own Allow, never After Full Disk Access")
-        check(FirstRunPermissions.summary(noData, messagesReadable: false) == "All optional · 1 still off"
-              && !FirstRunPermissions.allAnswered(noData, messagesReadable: false),
-              "...and until it is answered it is the one still off")
+        check(FirstRunPermissions.summary(noData, messagesReadable: false) == "All optional · nothing left off"
+              && FirstRunPermissions.allAnswered(noData, messagesReadable: false),
+              "...and Contacts isn't asked in setup, so it is never the one still off")
+        // Setup asks for four; the rest wait for the task that needs them.
+        check(FirstRunPermissions.Item.setup == [.calendar, .reminders, .mail, .fullDiskAccess],
+              "Setup's rows: Calendar, Reminders, Mail & Notes, Full Disk Access")
+        let restUnasked: [FirstRunPermissions.Item: FirstRunPermissions.State] = [
+            .calendar: .allowed, .reminders: .allowed, .mail: .allowed, .fullDiskAccess: .allowed,
+            .messages: .notAsked, .contacts: .notAsked, .notifications: .notAsked,
+            .screenRecording: .notAsked, .accessibility: .notAsked]
+        check(FirstRunPermissions.summary(restUnasked) == "All optional · nothing left off"
+              && FirstRunPermissions.allAnswered(restUnasked, messagesReadable: true),
+              "Messages, Contacts, Notifications and the rest, never asked yet: setup is done")
         noData[.contacts] = .allowed
         check(FirstRunPermissions.allAnswered(noData, messagesReadable: false)
               && FirstRunPermissions.summary(noData, messagesReadable: false) == "All optional · nothing left off",

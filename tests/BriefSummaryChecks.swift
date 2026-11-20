@@ -409,6 +409,12 @@ func firstDayChecks(_ check: (Bool, String) -> Void) {
     check(contacts?.headline == "Wisp can't see your contacts yet" && contacts?.fixLink == BriefDetail.contactsAccess
           && contacts?.detail.contains("names, not numbers") == true && contacts?.symbol == "person.crop.circle",
           "Contacts denied: why, and the Contacts setting")
+    // Contacts isn't asked in setup: while macOS never asked and your texts show
+    // numbers, the row asks for it; Contacts off in Wisp still shows nothing.
+    let unasked = SourceAccess.contacts(denied: false, enabled: true, textsWithoutNames: true)
+    check(unasked?.fixLink == BriefDetail.contactsAccess && unasked?.detail.contains("show names") == true
+          && SourceAccess.contacts(denied: false, enabled: false, textsWithoutNames: true) == nil,
+          "Contacts never asked, texts read: the row offers it")
 }
 
 /// R6: the Brief's two zones, and its "On your plate" list in one urgency order.

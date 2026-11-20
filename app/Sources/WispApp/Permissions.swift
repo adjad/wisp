@@ -81,7 +81,7 @@ enum Permissions {
     /// The buttons under an Ask reply whose tools weren't allowed to read a
     /// source (`needs_access` kinds, AskAccess), as things stand now: a fix
     /// macOS already reports done is dropped, and Contacts points at Full Disk
-    /// Access while the setup window still waits on it (its contactsRow).
+    /// Access while it is still off and Messages unread (FirstRunPermissions.contactsWaits).
     /// Status reads only: it never asks.
     @MainActor static func askFixes(_ kinds: [String]) -> [BriefDetail.Action] {
         // The setup window's own rule (contactsWaits), so a Full Disk Access it

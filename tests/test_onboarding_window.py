@@ -39,14 +39,21 @@ def _body(text: str, signature: str) -> str:
 
 def test_prompts_only_follow_a_click():
     """A prompt may only come from the setup window's row button
-    (FirstRunPermissions.request) or ContactsReader's guarded request, which
-    the app starts with mayAsk false."""
+    (FirstRunPermissions.request), ContactsReader's guarded request, which
+    the app starts with mayAsk false, or the first alert Wisp has for you
+    (Notifications.allowedAskingFirstTime, the one place Notifications is asked)."""
     hits = {}
     for name, text in _sources().items():
         for match in PROMPTING.finditer(text):
             hits.setdefault(name, []).append(text.count("\n", 0, match.start()) + 1)
     assert set(hits) == {"FirstRunSetupView.swift", "ContactsReader.swift", "VoiceInput.swift",
-                         "Permissions.swift", "PageReader.swift"}, hits
+                         "Permissions.swift", "PageReader.swift", "Notifications.swift"}, hits
+    notes = _sources()["Notifications.swift"]
+    asking = _body(notes, "static func allowedAskingFirstTime() async -> Bool")
+    assert len(PROMPTING.findall(notes)) == len(PROMPTING.findall(asking)) == 1
+    assert "authorizationStatus == .notDetermined" in asking
+    assert "guard await allowedAskingFirstTime() else { return false }" in _body(notes, "static func deliver(")
+    assert "allowedAskingFirstTime" not in _body(notes, "static func postIfAllowed(")
     # The microphone is asked for only by pressing the mic (or ⌥⇧Space): the one
     # prompt is inside start(), reached only through toggle(), which only the
     # mic button and the voice hotkey call (OverlayModel.toggleVoice).
@@ -341,20 +348,25 @@ def test_full_disk_access_says_it_may_quit_and_marks_resume_first():
 
 
 def test_messages_has_its_own_permission_row():
-    """Sending a text scripts Messages (OutboundSender.sendMessage), so its
-    Automation prompt is a row of its own, after Mail & Notes, asked only by a
-    click, on a target list apart from Mail's."""
+    """Setup asks only for what Brief and Day are built on: Calendar, Reminders,
+    Mail & Notes and Full Disk Access. Sending a text scripts Messages
+    (OutboundSender.sendMessage): its Automation is asked at the first approved
+    send, with the panel out of the way, and stays a row of its own in Settings ›
+    Privacy, asked only by a click there, on a target list apart from Mail's."""
     setup = _sources()["FirstRunSetupView.swift"]
     step = _body(setup, "private var permissionsStep: some View")
     # A title is a literal, or PrivacyNames for a permission macOS renamed.
     rows = re.findall(r'permissionRow\(\.(\w+), icon: "[^"]+", title: "?([^",]+)"?,', step)
     assert rows == [("calendar", "Calendar"), ("reminders", "Reminders"), ("mail", "Mail & Notes"),
-                    ("messages", "Messages"), ("fullDiskAccess", "Full Disk Access"),
-                    ("notifications", "Notifications"), ("screenRecording", "Screen Recording"),
-                    ("accessibility", "PrivacyNames.accessibility")], rows
-    assert ('detail: "Sends the texts you approve in Ask. Opens Messages for a moment to ask, then closes it.")' in step)
-    mail = step[step.index("permissionRow(.mail"):step.index("permissionRow(.messages")]
+                    ("fullDiskAccess", "Full Disk Access")], rows
+    assert "static let setup: [Item] = [.calendar, .reminders, .mail, .fullDiskAccess]" in setup
+    mail = step[step.index("permissionRow(.mail"):step.index("permissionRow(.fullDiskAccess")]
     assert "Opens Mail and Notes to ask, then closes Notes." in mail and "Mail stays" in mail
+    sender = _sources()["OutboundSender.swift"]
+    send = _body(sender, "static func sendMessage(actionId: String, to given: String, text: String)")
+    assert "let firstAsk = messagesNotAskedYet()" in send
+    assert "name: .wispStepAside" in send and "name: .wispStepBack" in send
+    assert "ask: false) == .notAsked" in _body(sender, "private static func messagesNotAskedYet() -> Bool")
     assert 'nonisolated static let automationTargets = ["com.apple.mail", "com.apple.Notes"]' in setup
     assert 'nonisolated static let messagesAutomationTargets = ["com.apple.MobileSMS"]' in setup
     request = _body(setup, "func request(_ item: Item) async")
@@ -388,14 +400,14 @@ def test_messages_has_its_own_permission_row():
     assert "AXIsProcessTrustedWithOptions" not in setup and "CGRequestScreenCaptureAccess" not in setup
     footnote = step[step.index('Text("Skipped one?'):]
     assert "microphone" in footnote and "asked for later" not in footnote
-    # Screen Recording and Accessibility aren't needed to set up: they sit in an
-    # optional disclosure after the core rows and don't count toward "still off".
-    more = step[step.index("DisclosureGroup(isExpanded: $showMoreAccess)"):]
-    assert step.index("permissionRow(.notifications") < step.index("DisclosureGroup(isExpanded: $showMoreAccess)")
-    assert "permissionRow(.screenRecording" in more and "permissionRow(.accessibility" in more
-    assert 'Text("More access (optional)")' in more
+    for asked_at_use in ("Messages when you first send a text", "Contacts when your texts show numbers",
+                         "Notifications when Wisp first has", "Screen Recording"):
+        assert asked_at_use in footnote, asked_at_use
+    # Nothing else in the step: the rest are asked when a task needs them, and
+    # only the setup rows count toward "still off".
+    assert "DisclosureGroup" not in step and "showMoreAccess" not in setup
     for name in ("static func summary(", "static func allAnswered("):
-        assert "Item.core." in _body(setup, name) and "Item.allCases" not in _body(setup, name), name
+        assert "Item.setup." in _body(setup, name) and "Item.allCases" not in _body(setup, name), name
 
 
 def test_relaunch_waits_for_a_quitting_copy_instead_of_yielding_to_it():

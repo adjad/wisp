@@ -1,16 +1,16 @@
 import Foundation
 import UserNotifications
 
-// Thin wrapper over UNUserNotificationCenter for reminder alerts. It never asks
-// for permission: the setup window's Notifications row does, when clicked.
-// Posting is a no-op until (and unless) that is granted.
+// Thin wrapper over UNUserNotificationCenter for reminder alerts. Notifications
+// aren't asked in setup: the first alert Wisp has for you asks macOS (deliver),
+// once; the answer then holds. Posting is a no-op while they are off.
 enum Notifications {
 
     // `subtitle`, `category` and `userInfo` are only used by behavior nudges
     // (actionable notifications); every other caller keeps the defaults.
     static func deliver(id: String, title: String, body: String, subtitle: String = "",
                         category: String = "", userInfo: [String: String] = [:]) async -> Bool {
-        guard await allowed() else { return false }
+        guard await allowedAskingFirstTime() else { return false }
         let center = UNUserNotificationCenter.current()
         if !id.isEmpty {
             let delivered = await center.deliveredNotifications()
@@ -50,6 +50,15 @@ enum Notifications {
     static func allowed() async -> Bool {
         let status = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
         return status == .authorized || status == .provisional
+    }
+
+    /// Allowed, or, while macOS has never asked, its question now: the moment Wisp
+    /// first has an alert for you is when notifications are needed. macOS shows that
+    /// question once; after any answer this only reads the setting.
+    static func allowedAskingFirstTime() async -> Bool {
+        let center = UNUserNotificationCenter.current()
+        guard await center.notificationSettings().authorizationStatus == .notDetermined else { return await allowed() }
+        return (try? await center.requestAuthorization(options: [.alert, .sound])) ?? false
     }
 
     /// Posts and says whether it was shown, so a caller with a promise to keep

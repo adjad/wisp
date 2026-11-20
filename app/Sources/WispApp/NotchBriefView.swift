@@ -858,13 +858,15 @@ enum BriefFix {
         if let url = URL(string: action.url) { Permissions.openFix(url) }
     }
 
-    /// Contacts as Brief and Day show it: a row only once macOS said no and
-    /// Contacts is on in Wisp's Settings (ContactsReader.enabledKey). Reads the
-    /// status only; never asks.
+    /// Contacts as Brief and Day show it, while Contacts is on in Wisp's Settings
+    /// (ContactsReader.enabledKey): a row once macOS said no, or while it never
+    /// asked and Wisp reads your texts (so they show numbers). Reads the status
+    /// only; its Allow… asks.
     static func contactsAccess() -> SourceAccess? {
         let status = contactsStatus()
         let enabled = UserDefaults.standard.object(forKey: ContactsReader.enabledKey) as? Bool ?? true
-        return SourceAccess.contacts(denied: status == .denied || status == .restricted, enabled: enabled)
+        return SourceAccess.contacts(denied: status == .denied || status == .restricted, enabled: enabled,
+                                     textsWithoutNames: status == .notDetermined && contactsMemo.messagesReadable())
     }
 
     /// Contacts' status, asked of macOS at most every 5 seconds. Brief and Day
@@ -883,6 +885,19 @@ enum BriefFix {
         let lock = NSLock()
         var status: CNAuthorizationStatus?
         var at: TimeInterval = 0
+        var readable: Bool?
+        var readableAt: TimeInterval = 0
+
+        /// Whether Wisp reads your texts (Full Disk Access), looked at most every 5 seconds.
+        func messagesReadable() -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            let now = ProcessInfo.processInfo.systemUptime
+            if let known = readable, now - readableAt < 5 { return known }
+            let value = FirstRunPermissions.messagesReadable()
+            readable = value
+            readableAt = now
+            return value
+        }
     }
     private static let contactsMemo = ContactsMemo()
 }
