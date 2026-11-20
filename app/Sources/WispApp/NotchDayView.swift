@@ -517,11 +517,12 @@ struct NotchDayView: View {
                                                taskID: $0.task_id, evidenceID: $0.evidence_id) }
     }
 
-    /// The person's calendar, for the week's order and its first day.
+    /// The week row's calendar: its week starts on today's weekday, so today is
+    /// always the first card and the row runs seven days ahead from it.
     private var weekCalendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = today.timezone
-        calendar.firstWeekday = Calendar.autoupdatingCurrent.firstWeekday
+        calendar.firstWeekday = calendar.component(.weekday, from: today.now)
         return calendar
     }
 

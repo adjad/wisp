@@ -243,7 +243,7 @@ enum NotchQADriver {
             if let plan = c3Week.currentPlan {
                 var weekCalendar = Calendar(identifier: .gregorian)
                 weekCalendar.timeZone = zone
-                weekCalendar.firstWeekday = Calendar.autoupdatingCurrent.firstWeekday
+                weekCalendar.firstWeekday = weekCalendar.component(.weekday, from: now)
                 let dates = DayWeek.dates(containing: now, calendar: weekCalendar)
                 await c3Week.refreshWeek(start: DayWeek.start(of: now, calendar: weekCalendar),
                                          days: DayWeek.keys(dates, calendar: weekCalendar), revision: plan.revision)

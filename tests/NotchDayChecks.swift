@@ -1139,6 +1139,18 @@ func dayWeekChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: Doubl
     check(DayWeek.dates(containing: sundayShown, calendar: monday).count == 7
           && DayWeek.cards(shown: sundayShown, today: saturday, calendar: monday, shownLoad: nil).last?.isShown == true,
           "a Sunday in a Monday-first week is its last day")
+    // The Day's own row starts its week on today's weekday (NotchDayView.weekCalendar):
+    // today is the first card, then the six days after it, and every one can be shown.
+    var fromToday = utc
+    fromToday.firstWeekday = utc.component(.weekday, from: saturday)
+    let rolling = DayWeek.cards(shown: saturday, today: saturday, calendar: fromToday, shownLoad: nil)
+    check(rolling.first?.isToday == true && rolling.map(\.weekday) == ["SAT", "SUN", "MON", "TUE", "WED", "THU", "FRI"]
+          && rolling.map(\.number) == [14, 15, 16, 17, 18, 19, 20],
+          "a week from today: Sat 14 first, through Fri 20: \(rolling.map(\.number))")
+    let thursdayAhead = utc.date(from: DateComponents(year: 2026, month: 11, day: 19, hour: 9))!
+    check(DayWeek.cards(shown: thursdayAhead, today: saturday, calendar: fromToday, shownLoad: nil).first?.isToday == true
+          && DayWeek.start(of: thursdayAhead, calendar: fromToday) == "2026-11-14",
+          "a later day picked from that row keeps today first, and the week read starts today")
     let monthEnd = utc.date(from: DateComponents(year: 2026, month: 12, day: 31, hour: 12))!
     check(DayWeek.cards(shown: monthEnd, today: saturday, calendar: monday, shownLoad: nil).map(\.number) == [28, 29, 30, 31, 1, 2, 3]
           && DayWeek.cards(shown: monthEnd, today: saturday, calendar: monday, shownLoad: nil).allSatisfy { !$0.isToday },
