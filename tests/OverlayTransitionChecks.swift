@@ -184,6 +184,48 @@ struct OverlayTransitionChecks {
     }
 
     /// The paths an open and a close take (RevealMotion), built on NotchBox's springs.
+    /// Harbor's closed notch shape against NotchBox's, measured off its window on a
+    /// 16-inch MacBook Pro at 2x (2026-11-19): row widths in pixels, top to bottom.
+    static func notchShapeProfileChecks() {
+        let metrics = DisplayMetrics(frame: CGRect(x: 0, y: 0, width: 1728, height: 1117),
+                                     visibleFrame: CGRect(x: 0, y: 0, width: 1728, height: 1084),
+                                     safeAreaTop: 32, auxLeftWidth: 771.5, auxRightWidth: 771.5, isBuiltIn: true)
+        let layout = SurfaceLayout.make(for: metrics)
+        let bar = layout.barFrame.size, r = layout.earRadius, rb = layout.barCornerRadius
+        let body = CGSize(width: layout.bodyWidth(ofWindow: bar.width), height: bar.height)
+        let scale: CGFloat = 2
+        let w = Int(bar.width * scale), h = Int(bar.height * scale)
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w,
+                                  space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else {
+            check(false, "A bitmap for the notch shape"); return
+        }
+        ctx.scaleBy(x: scale, y: scale)
+        ctx.setFillColor(gray: 1, alpha: 1)
+        // The body: square top, NotchBox's rounded bottom; then each ear beside its top corner.
+        let bodyPath = CGMutablePath()
+        bodyPath.move(to: CGPoint(x: r, y: body.height))
+        bodyPath.addArc(tangent1End: CGPoint(x: r, y: 0), tangent2End: CGPoint(x: r + rb, y: 0), radius: rb)
+        bodyPath.addArc(tangent1End: CGPoint(x: r + body.width, y: 0), tangent2End: CGPoint(x: r + body.width, y: rb), radius: rb)
+        bodyPath.addLine(to: CGPoint(x: r + body.width, y: body.height))
+        bodyPath.closeSubpath()
+        ctx.addPath(bodyPath); ctx.fillPath()
+        for side in [NotchEar.left, .right] {
+            let origin = side.origin(body: body, radius: r)
+            ctx.saveGState()
+            ctx.translateBy(x: r + origin.x, y: origin.y)
+            ctx.addPath(NotchEar.path(side, radius: r)); ctx.fillPath()
+            ctx.restoreGState()
+        }
+        guard let data = ctx.data?.assumingMemoryBound(to: UInt8.self) else { check(false, "Pixels"); return }
+        // A bitmap context's memory starts at the image's top row, as NotchBox's rows count.
+        func width(topRow row: Int) -> Int { (0..<w).filter { data[row * w + $0] > 8 }.count }
+        // NotchBox: top row 386, body 366 (rows 10 to 50), bottom row 342.
+        check(abs(width(topRow: 0) - 386) <= 3, "The top row reaches out like NotchBox's ears: \(width(topRow: 0)) px")
+        check(abs(width(topRow: 30) - 366) <= 2, "The body is NotchBox's, just inside the notch: \(width(topRow: 30)) px")
+        check(abs(width(topRow: h - 1) - 342) <= 4, "The bottom corners round like NotchBox's: \(width(topRow: h - 1)) px")
+        check(width(topRow: 12) == width(topRow: 30), "The ears are gone well before the middle")
+    }
+
     static func revealMotionChecks() {
         let open = NotchSpring.open, close = NotchSpring.close
         check(abs(open.response - 0.5 / 1.2) < 1e-9 && open.dampingRatio == 0.7,
@@ -306,7 +348,9 @@ struct OverlayTransitionChecks {
         fixture.height = 300
         let layout = panel.layoutProvider()
         let target = layout.expandedFrame(contentHeight: 300)
-        let bar = layout.barFrame.size
+        // The mask is the shape's body; on a notch the window also holds its ears.
+        let bar = CGSize(width: layout.bodyWidth(ofWindow: layout.barFrame.width), height: layout.barFrame.height)
+        let targetBody = CGSize(width: layout.bodyWidth(ofWindow: target.width), height: target.height)
         panel.present()
         let mask = panel.contentView!.layer!.mask!
 
@@ -330,9 +374,19 @@ struct OverlayTransitionChecks {
         }
         // A loaded machine oversleeps the 4 ms poll, so only ask for a handful.
         check(samples > 4, "The open was sampled through its travel: \(samples)")
-        check(widest <= target.width + 0.5 && tallest <= target.height + 0.5,
+        check(widest <= targetBody.width + 0.5 && tallest <= target.height + 0.5,
               "An open never passes the panel: \(widest) x \(tallest) for \(target.size)")
-        check(panel.frame == target && mask.bounds.size == target.size, "At rest the window and the mask are the panel")
+        check(panel.frame == target && mask.bounds.size == targetBody, "At rest the window is the panel and the mask its body")
+        let earsAtRest = (mask.sublayers ?? []).filter { $0.name?.hasPrefix("wisp.ear.") == true && !$0.isHidden }
+        if layout.earRadius > 0 {
+            let r = layout.earRadius
+            check(earsAtRest.count == 2
+                  && earsAtRest.contains { $0.frame == CGRect(x: -r, y: targetBody.height - r, width: r, height: r) }
+                  && earsAtRest.contains { $0.frame == CGRect(x: targetBody.width, y: targetBody.height - r, width: r, height: r) },
+                  "The ears sit on the body's top corners: \(earsAtRest.map(\.frame))")
+        } else {
+            check(earsAtRest.isEmpty, "A card or capsule has no ears")
+        }
         check(mask.animationKeys()?.isEmpty != false, "No residual animation after the open")
 
         var closed = false
@@ -378,15 +432,16 @@ struct OverlayTransitionChecks {
         // Where the shape came to rest on the screen, against where the bar
         // will be: the same rectangle, so nothing steps sideways at the swap.
         let landed = mask.frame.offsetBy(dx: panel.frame.minX, dy: panel.frame.minY)
-        check(abs(landed.minX - layout.barFrame.minX) < 0.01 && abs(landed.maxX - layout.barFrame.maxX) < 0.01
-              && abs(landed.maxY - layout.barFrame.maxY) < 0.01 && abs(landed.minY - layout.barFrame.minY) < 0.01,
-              "A close lands exactly on the bar: \(landed) for \(layout.barFrame)")
+        let barBody = layout.barFrame.insetBy(dx: layout.earRadius, dy: 0)
+        check(abs(landed.minX - barBody.minX) < 0.01 && abs(landed.maxX - barBody.maxX) < 0.01
+              && abs(landed.maxY - barBody.maxY) < 0.01 && abs(landed.minY - barBody.minY) < 0.01,
+              "A close lands exactly on the bar's body: \(landed) for \(barBody)")
         if layout.style == .notch {
             check(layout.barFrame.midX == layout.screenFrame.midX && target.midX == layout.screenFrame.midX,
                   "The bar and the panel share the notch's centre: \(layout.barFrame.midX), \(target.midX), \(layout.screenFrame.midX)")
         }
         panel.settleToBar()
-        check(mask.bounds.size == panel.frame.size && panel.frame.size == bar, "Then the bar")
+        check(mask.bounds.size == bar && panel.frame == layout.barFrame, "Then the bar")
         check(panel.frame == layout.barFrame, "The bar's window is where the close landed")
         check(panel.hasBarBacking == layout.barIsVisible, "The bar stays backed while the collapsed bar takes over")
         await waitUntil { !panel.hasBarBacking }
@@ -479,12 +534,12 @@ struct OverlayTransitionChecks {
         check(panel.frame.width == wide.expandedWidth && panel.frame.height == 320, "Covering is wide and still tall")
         check(panel.hasPendingShrink, "The target waits for the settle")
         let mask = panel.contentView!.layer!.mask!
-        check(mask.bounds.size == panel.frame.size, "The mask follows the covering frame")
+        check(mask.bounds.size == panel.maskBody, "The mask follows the covering frame")
         try? await Task.sleep(for: .milliseconds(settle / 2))
         check(panel.frame == covering && panel.hasPendingShrink, "Still the covering frame before the settle")
         await waitUntil { panel.frame.height == 240 }
         check(panel.frame == target && !panel.hasPendingShrink, "Settles to the target: \(panel.frame) vs \(target)")
-        check(mask.bounds.size == panel.frame.size, "The mask follows the target")
+        check(mask.bounds.size == panel.maskBody, "The mask follows the target")
 
         // Narrow back and shrink together: the covering frame keeps the wide width until the settle.
         let wideFrame = panel.frame
@@ -700,7 +755,7 @@ struct OverlayTransitionChecks {
         await waitUntil { opened == 1 }
         check(!panel.isRevealing, "Open must release animation ownership")
         check(panel.frame.height == 320, "Deferred content height must apply after opening")
-        check(mask.bounds.size == panel.frame.size, "Open mask fits panel")
+        check(mask.bounds.size == panel.maskBody, "Open mask fits panel")
         check(mask.contentsScale == panel.backingScaleFactor, "Mask rasterizes at the screen's scale")
 
         // A shrink waits for the content's own animation; a grow never does.
@@ -709,7 +764,7 @@ struct OverlayTransitionChecks {
         panel.resizeToFit()
         check(panel.frame.height == 320 && panel.hasPendingShrink, "A shrink waits for the content to animate out")
         await waitUntil { panel.frame.height == 240 }
-        check(!panel.hasPendingShrink && mask.bounds.size == panel.frame.size, "The held shrink lands and the mask follows")
+        check(!panel.hasPendingShrink && mask.bounds.size == panel.maskBody, "The held shrink lands and the mask follows")
         // Rapid toggles: a shrink, then a grow before it lands, then a shrink.
         fixture.height = 200
         try? await Task.sleep(for: .milliseconds(60))
@@ -752,7 +807,7 @@ struct OverlayTransitionChecks {
         panel.resizeToFit()
         await waitUntil { closed }
         panel.settleToBar()
-        check(mask.bounds.size == panel.frame.size, "Compact mask fits after close")
+        check(mask.bounds.size == panel.maskBody, "Compact mask fits after close")
         check(mask.animationKeys()?.isEmpty != false, "No residual animation at rest")
 
         // A display change (a resolution switch, a monitor plugged in) while an
@@ -768,7 +823,7 @@ struct OverlayTransitionChecks {
         panel.applyDisplayChange()
         check(cutOpens == 1 && !panel.isRevealing, "A display change finishes the open it interrupts")
         check(machine.active == nil && machine.settled == .chat, "The interrupted open's step is settled")
-        check(mask.bounds.size == panel.frame.size && mask.animationKeys()?.isEmpty != false,
+        check(mask.bounds.size == panel.maskBody && mask.animationKeys()?.isEmpty != false,
               "The interrupted open is refit and fully shown")
         machine.request(.bar)
         let cutClose = machine.next()
@@ -784,7 +839,7 @@ struct OverlayTransitionChecks {
         check(cutCloses == 1 && !panel.isRevealing, "A display change finishes the close it interrupts")
         panel.settleToBar()
         check(machine.active == nil && machine.settled == .bar, "The interrupted close's step is settled")
-        check(mask.bounds.size == panel.frame.size, "Compact mask fits after an interrupted close")
+        check(mask.bounds.size == panel.maskBody, "Compact mask fits after an interrupted close")
         // The cancelled animations' own callbacks land later and add nothing.
         try? await Task.sleep(for: .milliseconds(450))
         check(cutOpens == 1 && cutCloses == 1, "An interrupted reveal completes exactly once")
@@ -1071,6 +1126,7 @@ struct OverlayTransitionChecks {
         lifecycleChecks()
         coveringChecks()
         revealMotionChecks()
+        notchShapeProfileChecks()
         approvalAnnouncementChecks()
         alwaysAllowLineChecks()
         forgetResultChecks()

@@ -82,10 +82,16 @@ struct SurfaceLayout: Equatable {
     /// The narrowest usable width worth widening to; a display with less room
     /// than this keeps the one-column Brief.
     static let minWideWidth: CGFloat = 800
-    /// Collapsed bar overhang on each side of the notch — a hairline of black
-    /// so the bar reads as Wisp's, not merely as the hardware. At least this:
-    /// half a point more each side where that centres the bar (`centrable`).
-    static let wing: CGFloat = 6
+    /// The concave "ears" where a notch shape meets the top edge (NotchBox's
+    /// shape, measured on a 16-inch MacBook Pro, 2026-11-19): the top row runs
+    /// this much past the body on each side and curves into it. The body under
+    /// them sits just inside the camera housing, so nothing but the ears ever
+    /// shows beside the notch, and the bar reads as the hardware flowing into
+    /// the menu bar instead of a black slab hanging off it.
+    static let notchEarRadius: CGFloat = 5
+    /// How far the closed body sits inside each side of the camera housing, at
+    /// least (half a point more where that centres it, `centrable`).
+    static let notchBodyInset: CGFloat = 0.5
     /// Extra reach of the hover zone past the visible bar. Forgiving on the
     /// way in, and paired with a dwell delay so a brush doesn't open it.
     static let hoverMarginX: CGFloat = 8
@@ -162,12 +168,16 @@ struct SurfaceLayout: Equatable {
     }
     var barCornerRadius: CGFloat {
         switch style {
-        case .notch: return 10
+        case .notch: return 9
         case .menuBar: return Self.edgeSeed.height / 2
         case .floating: return 14
         }
     }
     var panelCornerRadius: CGFloat { style == .notch ? 28 : 24 }
+    /// The ears' radius: a notch shape has them, a card or capsule has none.
+    var earRadius: CGFloat { style == .notch ? Self.notchEarRadius : 0 }
+    /// The visible body of a window this wide: the window less its two ears.
+    func bodyWidth(ofWindow width: CGFloat) -> CGFloat { max(width - 2 * earRadius, 0) }
     /// SwiftUI content sits below the camera housing on a notch; a card just
     /// needs ordinary padding.
     var contentTopInset: CGFloat { style == .notch ? notchSize.height + 8 : 16 }
@@ -309,7 +319,7 @@ struct SurfaceLayout: Equatable {
                           height: metrics.safeAreaTop > 0 ? metrics.safeAreaTop : referenceNotch.height)
             // The bar, the panel and the shape that travels between them all
             // share the notch's own centre (see `centrable`).
-            let barW = centrable(notch.width + 2 * wing, in: frame.width, .up)
+            let barW = centrable(notch.width - 2 * notchBodyInset + 2 * notchEarRadius, in: frame.width, .down)
             let barH = notch.height.rounded()
             let bar = CGRect(x: (frame.midX - barW / 2).rounded(), y: frame.maxY - barH,
                              width: barW, height: barH)

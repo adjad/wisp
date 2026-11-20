@@ -227,6 +227,16 @@ final class OverlayPanel: NSPanel {
         // during the grow/shrink instead of matching the panel's own shape.
         mask.maskedCorners = layout.maskedCorners
         mask.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
+        // A notch's ears (SurfaceLayout.notchEarRadius): two small shapes hung off
+        // the mask's top corners. A mask's sublayers add to what it lets through,
+        // so they widen its top row and curve into the body, outside its bounds.
+        for side in [NotchEar.left, .right] {
+            let ear = CAShapeLayer()
+            ear.name = side.name
+            ear.fillColor = NSColor.black.cgColor
+            ear.anchorPoint = .zero
+            mask.addSublayer(ear)
+        }
         container.layer?.mask = mask
         self.revealMask = mask
 
@@ -443,10 +453,32 @@ final class OverlayPanel: NSPanel {
             CATransaction.begin(); CATransaction.setDisableActions(true)
         }
         matchBackingScale(mask)
-        mask.bounds = CGRect(origin: .zero, size: frame.size)
+        let body = CGSize(width: layout.bodyWidth(ofWindow: frame.width), height: frame.height)
+        mask.bounds = CGRect(origin: .zero, size: body)
         mask.position = CGPoint(x: frame.width / 2, y: frame.height)
         mask.cornerRadius = isCompact() ? barCornerRadius : panelCornerRadius
+        placeEars(on: mask, body: body)
         if disableActions { CATransaction.commit() }
+    }
+
+    /// The ears' layers, left then right.
+    private func ears(of mask: CALayer) -> [CAShapeLayer] {
+        [NotchEar.left, .right].compactMap { side in
+            mask.sublayers?.first { $0.name == side.name } as? CAShapeLayer
+        }
+    }
+
+    /// The ears at the top corners of a body this size, in the mask's own
+    /// coordinates (its origin is the body's bottom left).
+    private func placeEars(on mask: CALayer, body: CGSize) {
+        let radius = layout.earRadius
+        for (ear, side) in zip(ears(of: mask), [NotchEar.left, .right]) {
+            ear.isHidden = radius <= 0
+            ear.contentsScale = mask.contentsScale
+            ear.bounds = CGRect(x: 0, y: 0, width: radius, height: radius)
+            ear.path = radius > 0 ? NotchEar.path(side, radius: radius) : nil
+            ear.position = side.origin(body: body, radius: radius)
+        }
     }
 
     // MARK: - Top-anchored reveal
@@ -464,6 +496,7 @@ final class OverlayPanel: NSPanel {
         isRevealing = false
         pendingReveal = nil
         revealMask?.removeAllAnimations()
+        revealMask.map { ears(of: $0).forEach { $0.removeAllAnimations() } }
         showContent()
     }
 
@@ -508,6 +541,9 @@ final class OverlayPanel: NSPanel {
         layer.backgroundColor = color
         CATransaction.commit()
     }
+
+    /// The mask's size for the window as it is: the body, without the ears (for tests).
+    var maskBody: CGSize { CGSize(width: layout.bodyWidth(ofWindow: frame.width), height: frame.height) }
 
     /// Whether the bar's backing is on (for tests).
     var hasBarBacking: Bool { stage?.layer?.backgroundColor != nil }
@@ -555,8 +591,10 @@ final class OverlayPanel: NSPanel {
             completion()
             return
         }
-        let startSize = visibleBounds?.size ?? (opening ? bar.size : frame.size)
-        let endSize = opening ? frame.size : bar.size
+        // The mask is the body; the window also holds the ears beside it.
+        func body(_ window: CGSize) -> CGSize { CGSize(width: layout.bodyWidth(ofWindow: window.width), height: window.height) }
+        let startSize = visibleBounds?.size ?? body(opening ? bar.size : frame.size)
+        let endSize = body(opening ? frame.size : bar.size)
         let startRadius = visibleRadius ?? (opening ? barCornerRadius : panelCornerRadius)
         let endRadius = opening ? panelCornerRadius : barCornerRadius
         let token = revealGeneration
@@ -570,6 +608,7 @@ final class OverlayPanel: NSPanel {
         mask.position = CGPoint(x: frame.width / 2, y: frame.height)
         mask.bounds = CGRect(origin: .zero, size: endSize)
         mask.cornerRadius = endRadius
+        placeEars(on: mask, body: endSize)
         CATransaction.commit()
 
         let finish = { [weak self] in
@@ -611,9 +650,26 @@ final class OverlayPanel: NSPanel {
         group.animations = [size, radius]
         group.duration = motion.duration
         group.preferredFrameRateRange = Self.revealFrameRate
+        // The ears ride the same samples, so they stay on the body's top corners.
+        let radiusNow = layout.earRadius
+        let earMotions: [(CAShapeLayer, CAKeyframeAnimation)] = radiusNow > 0
+            ? zip(ears(of: mask), [NotchEar.left, .right]).map { ear, side in
+                let move = CAKeyframeAnimation(keyPath: "position")
+                move.values = motion.progress.map { p in
+                    NSValue(point: side.origin(body: CGSize(width: max(along(startSize.width, endSize.width, p), 0),
+                                                            height: max(along(startSize.height, endSize.height, p), 0)),
+                                               radius: radiusNow))
+                }
+                move.calculationMode = .linear
+                move.duration = motion.duration
+                move.preferredFrameRateRange = Self.revealFrameRate
+                return (ear, move)
+            }
+            : []
         CATransaction.begin()
         CATransaction.setCompletionBlock(finish)
         mask.add(group, forKey: "reveal")
+        for (ear, move) in earMotions { ear.add(move, forKey: "reveal") }
         CATransaction.commit()
         // Once the content has faded, a close is only the surface in the
         // mask's shape. Its layers come out of the picture until the bar is
@@ -655,5 +711,45 @@ final class OverlayPanel: NSPanel {
         CATransaction.flush()
         passMouseThrough(collapsed: true)
         dropBarBackingSoon()
+    }
+}
+
+
+/// One of a notch shape's two ears (SurfaceLayout.notchEarRadius): the top row
+/// reaches `radius` past the body and curves into its side, as NotchBox draws
+/// it and as the camera housing itself meets the menu bar.
+enum NotchEar {
+    case left, right
+
+    var name: String { self == .left ? "wisp.ear.left" : "wisp.ear.right" }
+
+    /// The ear's bottom-left corner in the mask's coordinates (origin at the
+    /// body's bottom left, y up): beside the body's top corner, outside it.
+    func origin(body: CGSize, radius: CGFloat) -> CGPoint {
+        CGPoint(x: self == .left ? -radius : body.width, y: body.height - radius)
+    }
+
+    /// The ear in its own `radius` square, y up: full width along the top,
+    /// nothing at the bottom, and between them a quarter circle centred on the
+    /// square's outer bottom corner. Its points are where NotchBox's closed shape
+    /// measured (the top row 5 pt past the body, gone 5 pt down).
+    static func path(_ side: NotchEar, radius r: CGFloat) -> CGPath {
+        let path = CGMutablePath()
+        // Left: the body is on the right (x = r); the circle is centred at (0, 0).
+        // Right: mirrored, the body on the left and the circle at (r, 0).
+        let inner: CGFloat = side == .left ? r : 0
+        let outer: CGFloat = side == .left ? 0 : r
+        path.move(to: CGPoint(x: inner, y: 0))
+        path.addLine(to: CGPoint(x: inner, y: r))
+        path.addLine(to: CGPoint(x: outer, y: r))
+        // From the outer top corner down and in to the body's side.
+        let steps = 24
+        for i in 1...steps {
+            let a = CGFloat(i) / CGFloat(steps) * .pi / 2          // 0 at the top, π/2 at the body
+            let x = r * sin(a), y = r * cos(a)
+            path.addLine(to: CGPoint(x: side == .left ? x : r - x, y: y))
+        }
+        path.closeSubpath()
+        return path
     }
 }

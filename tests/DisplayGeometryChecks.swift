@@ -75,9 +75,12 @@ struct DisplayGeometryChecks {
             func whole(_ r: CGRect) -> Bool { r.minX == r.minX.rounded() && r.maxX == r.maxX.rounded() }
             check(l.barFrame.midX == centre && whole(l.barFrame),
                   "\(name): bar dead centre on the notch: \(l.barFrame) for centre \(centre)")
-            let wrap = l.notchSize.width + 2 * SurfaceLayout.wing
-            check(l.barFrame.width >= wrap && l.barFrame.width < wrap + 2,
-                  "\(name): bar wraps the notch with equal wings of 6 to 7 pt: \(l.barFrame.width) for \(wrap)")
+            // NotchBox's shape: the body just inside the camera housing (0.5 to 2.5 pt
+            // each side), the ears' 5 pt beyond it along the top row only.
+            let body = l.bodyWidth(ofWindow: l.barFrame.width)
+            check(l.earRadius == SurfaceLayout.notchEarRadius
+                  && body <= l.notchSize.width - 1 && body >= l.notchSize.width - 5,
+                  "\(name): the bar's body sits just inside the notch: \(body) for \(l.notchSize.width)")
             for wide in [false, true] {
                 let f = l.widened(wide).expandedFrame(contentHeight: 300)
                 check(f.midX == centre && whole(f),
@@ -124,11 +127,15 @@ struct DisplayGeometryChecks {
         check(SurfaceLayout.make(for: notched(1512, 982)).hoverDwell == HoverIntent.dwell, "Notch keeps its dwell")
 
         check(real.notchSize == CGSize(width: 185, height: 32), "Reads the physical notch")
-        check(real.barFrame.width == 198 && real.barFrame.minX == 657,
-              "Bar wraps the notch, a point wider than notch plus wings so it sits dead centre")
+        check(real.barFrame.width == 194 && real.barFrame.minX == 659 && real.barCornerRadius == 9,
+              "Bar: a 184 pt body inside the 185 pt notch, ears to 194, NotchBox's 9 pt bottom corners")
         let sixteen = SurfaceLayout.make(for: notched(1728, 1117))
-        check(sixteen.barFrame == CGRect(x: 765, y: 1085, width: 198, height: 32),
-              "On a 16-inch display the bar leaves 6.5 pt either side of the notch (771.5 to 956.5)")
+        check(sixteen.barFrame == CGRect(x: 767, y: 1085, width: 194, height: 32)
+              && sixteen.bodyWidth(ofWindow: 194) == 184,
+              "On a 16-inch display the body is 772 to 956, inside the notch (771.5 to 956.5), as NotchBox's is")
+        check(SurfaceLayout.make(for: notchless(1440, 900)).earRadius == 0
+              && SurfaceLayout.make(for: notched(1512, 982), forcing: .floating).earRadius == 0,
+              "Only a notch has ears")
         check(SurfaceLayout.centrable(197, in: 1728, .up) == 198 && SurfaceLayout.centrable(640, in: 1728, .down) == 640
               && SurfaceLayout.centrable(640, in: 1147, .down) == 639 && SurfaceLayout.centrable(152.2, in: 1147, .up) == 153,
               "A width takes the display's parity, moving the way it was rounded")
