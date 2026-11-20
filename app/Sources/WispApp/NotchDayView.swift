@@ -83,13 +83,13 @@ struct NotchDayView: View {
     /// Which optional pieces of the tab are showing. Only these flags drive the
     /// fade, never the plan's data, so a routine refresh doesn't animate.
     private struct Showing: Equatable {
-        var notice, error, stale, removed, otherDay, loading, earlier, wholeAgenda, addRow: Bool
+        var notice, error, stale, removed, otherDay, loading, held, earlier, wholeAgenda, addRow: Bool
     }
 
     private var showing: Showing {
         Showing(notice: model.transientNotice != nil, error: !today.error.isEmpty,
                 stale: today.staleNotice != nil, removed: lastRemoved != nil,
-                otherDay: !today.followsToday, loading: plan == nil,
+                otherDay: !today.followsToday, loading: plan == nil, held: holding,
                 earlier: showEarlier, wholeAgenda: showWholeAgenda,
                 addRow: addingTask || !model.todayTaskTitle.isEmpty)
     }
@@ -115,7 +115,30 @@ struct NotchDayView: View {
         return BriefPlate.sideBySide(width: panel - 2 * OverlayView.sideInset, textScale: Theme.textScale)
     }
 
-    private var plan: TodayPlan? { today.currentPlan }
+    /// The day on screen. While a newly picked day loads, the last plan read
+    /// for that day (this Day's visit) or else the day shown before stays up,
+    /// faded and inert, so the panel neither empties nor jumps; the fresh plan
+    /// then fades in and the panel resizes once. A failed read shows its error.
+    private var plan: TodayPlan? {
+        if let current = today.currentPlan { return current }
+        guard today.error.isEmpty else { return nil }
+        return DayPlanHold.pick(cached: dayCache[DayPlanHold.key(day: today.day, zone: today.timezone.identifier)],
+                                previous: heldPlan)
+    }
+    /// True while `plan` is a held stand-in rather than the shown day's own read.
+    private var holding: Bool { today.currentPlan == nil && plan != nil }
+    /// The last plan shown, kept for the next day's load.
+    @State private var heldPlan: TodayPlan?
+    /// Plans read during this visit, by day and zone, for an instant return.
+    @State private var dayCache: [String: TodayPlan] = [:]
+    @State private var dayCacheOrder: [String] = []
+
+    private func remember(_ plan: TodayPlan?) {
+        guard let plan else { return }
+        heldPlan = plan
+        dayCache = DayPlanHold.store(plan, key: DayPlanHold.key(day: plan.day, zone: plan.timezone), in: dayCache,
+                                      order: &dayCacheOrder)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -136,6 +159,9 @@ struct NotchDayView: View {
                         Color.clear.preference(key: DayHalfHeights.self, value: ["right": geo.size.height])
                     })
             }
+            .opacity(holding ? DayPlanHold.fade : 1)
+            .allowsHitTesting(!holding)
+            .accessibilityHidden(holding)
             if plan != nil && (addingTask || !model.todayTaskTitle.isEmpty) { addTaskRow.transition(.opacity) }
             ReportDraftCard(draft: today.report, title: "Report a problem with this plan",
                             detailsLabel: "Include planner details", save: { model.saveReport(today.report) })
@@ -155,6 +181,7 @@ struct NotchDayView: View {
             Task { await checkIn.load(day: today.day, timezone: today.timezone.identifier); model.onResize() }
         }
         .onChange(of: plan?.generated_at) { _, _ in planChanged() }
+        .onChange(of: today.currentPlan?.generated_at, initial: true) { _, _ in remember(today.currentPlan) }
         .onPreferenceChange(DayHalfHeights.self) { heights in balanceHalves(heights) }
         // The week row's other days: read once the plan is on screen; the
         // task ends (and its read with it) when the Day closes.
@@ -228,7 +255,7 @@ struct NotchDayView: View {
     /// closed. No plan (a failed refresh, a day change) proves nothing and
     /// changes nothing.
     private func planChanged() {
-        guard let plan else { return }
+        guard let plan = today.currentPlan else { return }
         let events = plan.displayBlocks.compactMap(\.calendarEvent)
         checkIn.reconcileTimelineCancels(events)
         if let movingEvent, !events.contains(where: { CheckInModel.sameOccurrence($0, movingEvent) }) { closeMove() }
@@ -391,8 +418,11 @@ struct NotchDayView: View {
                 summaryRow(plan, timeline: timeline, calendar: plan.calendarState)
             }
             .disabled(today.planIsStale)
+            .opacity(holding ? DayPlanHold.fade : 1)
+            .allowsHitTesting(!holding)
+            .accessibilityHidden(holding)
             .transition(.opacity)
-            weekRow(load: shownLoad(plan, timeline: timeline))
+            weekRow(load: holding ? nil : shownLoad(plan, timeline: timeline))
         } else {
             weekRow(load: nil)
         }
@@ -509,14 +539,14 @@ struct NotchDayView: View {
     /// What the week read is for: the shown week, zone and plan revision; empty
     /// (no read) before the plan is on screen and while Calendar isn't read.
     private var weekReadKey: String {
-        guard let plan, plan.calendarState.isRead else { return "" }
+        guard let plan = today.currentPlan, plan.calendarState.isRead else { return "" }
         return DayWeek.start(of: shownNoon, calendar: weekCalendar) + "|" + today.timezone.identifier + "|\(plan.revision)"
     }
 
     /// One read of the week route, after the plan is on screen; the `.task` it
     /// runs in ends with the Day's view, which cancels a read in flight.
     private func readWeek() async {
-        guard let plan, plan.calendarState.isRead else { return }
+        guard let plan = today.currentPlan, plan.calendarState.isRead else { return }
         let calendar: Calendar = weekCalendar
         let days: [String] = DayWeek.keys(DayWeek.dates(containing: shownNoon, calendar: calendar), calendar: calendar)
         await today.refreshWeek(start: DayWeek.start(of: shownNoon, calendar: calendar), days: days, revision: plan.revision)
@@ -530,9 +560,11 @@ struct NotchDayView: View {
     /// A week card's tap: the existing day selection (the planner's), then a read.
     private func showDay(_ card: DayWeekCard) {
         guard !card.isShown, !today.busy else { return }
-        if card.isToday { today.returnToToday() } else { today.selectDate(card.date) }
+        withAnimation(Theme.Motion.panel(reduceMotion: reduceMotion)) {
+            if card.isToday { today.returnToToday() } else { today.selectDate(card.date) }
+        }
+        // The held day keeps the panel's height; it resizes once, for the new day.
         Task { await today.refresh(); model.onResize() }
-        model.onResize()
     }
 
     @ViewBuilder private func dayLead(_ plan: TodayPlan) -> some View {
@@ -2071,6 +2103,8 @@ struct DayWeekCardView: View {
     let card: DayWeekCard
     let compact: Bool
     let action: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    @Environment(\.reduceMotionOverride) private var reduceMotionOverride
 
     private var filled: Bool { card.isShown }
     private var ink: Color { filled ? Theme.surface : Theme.textPrimary }
@@ -2087,6 +2121,8 @@ struct DayWeekCardView: View {
         }
         // No pressed look: the white card must not flash.
         .buttonStyle(StudyRowButtonStyle())
+        // The white of the day shown eases from card to card on the panel's spring.
+        .animation(Theme.Motion.panel(reduceMotion: reduceMotionOverride ?? systemReduceMotion), value: card.isShown)
         .help(card.isShown ? "The day shown" : card.isToday ? "Back to today" : "Show this day")
         .accessibilityLabel(DayWeek.spoken(card))
         .accessibilityHint(card.isShown ? "" : "Shows this day")

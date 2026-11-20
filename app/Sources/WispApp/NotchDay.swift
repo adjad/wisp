@@ -2906,3 +2906,27 @@ enum DayReminderCancel {
         return detail ?? "Reminders didn't confirm the delete (\(status))."
     }
 }
+
+/// While a newly picked day loads, what the Day keeps on screen: that day's
+/// plan from earlier in this visit, else the day shown before, faded.
+enum DayPlanHold {
+    /// The held plan's opacity: present enough to keep the shape, plainly not live.
+    static let fade: Double = 0.4
+    /// Days kept for an instant return; a week plus one.
+    static let keep: Int = 8
+
+    static func key(day: String, zone: String) -> String { day + "|" + zone }
+
+    static func pick<Plan>(cached: Plan?, previous: Plan?) -> Plan? { cached ?? previous }
+
+    /// Adds or replaces one day; past `keep`, the oldest entries go.
+    static func store<Plan>(_ plan: Plan, key: String, in cache: [String: Plan],
+                            order: inout [String]) -> [String: Plan] {
+        var cache = cache
+        cache[key] = plan
+        order.removeAll { $0 == key }
+        order.append(key)
+        while order.count > keep { cache[order.removeFirst()] = nil }
+        return cache
+    }
+}

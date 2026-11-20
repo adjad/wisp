@@ -990,8 +990,25 @@ struct TodayPlanChecks {
               "A confirmed delete is quiet; anything else says why")
     }
 
+    @MainActor static func dayPlanHoldChecks() {
+        check(DayPlanHold.pick(cached: "wed", previous: "tue") == "wed"
+              && DayPlanHold.pick(cached: nil, previous: "tue") == "tue"
+              && DayPlanHold.pick(cached: nil as String?, previous: nil) == nil,
+              "a day picked again shows its own plan; a new one holds the day before")
+        var order: [String] = []
+        var cache: [String: Int] = [:]
+        for n in 0..<10 { cache = DayPlanHold.store(n, key: DayPlanHold.key(day: "d\(n)", zone: "UTC"), in: cache, order: &order) }
+        cache = DayPlanHold.store(42, key: DayPlanHold.key(day: "d5", zone: "UTC"), in: cache, order: &order)
+        check(cache.count == DayPlanHold.keep && cache["d0|UTC"] == nil && cache["d1|UTC"] == nil
+              && cache["d5|UTC"] == 42 && order.last == "d5|UTC" && order.count == DayPlanHold.keep
+              && DayPlanHold.key(day: "d1", zone: "UTC") != DayPlanHold.key(day: "d1", zone: "Asia/Tokyo"),
+              "the hold keeps the newest eight days, one per day and zone")
+        check(DayPlanHold.fade > 0.2 && DayPlanHold.fade < 0.6, "a held day reads as not live")
+    }
+
     static func main() async throws {
         await reminderCancelChecks()
+        await dayPlanHoldChecks()
         try tolerantDecodeChecks()
         try sourceAccessChecks()
         try evidenceLabelChecks()
