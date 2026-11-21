@@ -120,6 +120,9 @@ class FakeResidency:
         self.ensured += 1
         self.model = engine.ModelState(True, True, True)
 
+    def wait_for_ask(self):
+        self.waited = getattr(self, "waited", 0) + 1
+
     def begin(self):
         self.begun += 1
 
@@ -340,6 +343,18 @@ def test_model_swap_is_announced_and_released(world, monkeypatch):
     wait_for(lambda: manager.active is None)
     events = client.get(f"/ideate/projects/{project['id']}").json()["events"]
     assert events[0]["kind"] == "text" and "Loading Inkling 2 Mini" in events[0]["text"]
+    assert residency.ensured == 1 and residency.begun == residency.ended == 1
+    assert residency.waited == 1
+
+
+def test_a_loaded_model_is_still_made_the_only_one(world, monkeypatch):
+    """Inkling already loaded: the run still calls the swap helper, which unloads the rest."""
+    manager, client, residency = world
+    residency.model = engine.ModelState(True, True, True)
+    project = start(client, monkeypatch, scenario="other_dialog")
+    wait_for(lambda: manager.active is None)
+    events = client.get(f"/ideate/projects/{project['id']}").json()["events"]
+    assert not any("Loading Inkling" in (e.get("text") or "") for e in events)
     assert residency.ensured == 1 and residency.begun == residency.ended == 1
 
 

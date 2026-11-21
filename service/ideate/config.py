@@ -58,6 +58,11 @@ APPROVAL_TIMEOUT_S = 600.0
 CANCEL_GRACE_S = 5.0
 # Model swap: how long loading the model may take before the run fails.
 LOAD_TIMEOUT_S = 240.0
+# After a run ends, Inkling stays loaded this long for a follow-up message, then Ideate unloads
+# it (Wisp's bundled engine only). Ask's model loads again on Ask's next turn, not straight away.
+RELEASE_AFTER_S = 90.0
+# A run that starts while an Ask turn is answering waits this long for it before taking the engine.
+ASK_WAIT_S = 30.0
 
 # Sizes kept on disk and sent to the tab.
 EVENT_TEXT_CHARS = 2000

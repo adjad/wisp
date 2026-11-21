@@ -4,18 +4,21 @@ Wisp keeps one chat model warm for Ask (main.py's keep-warm set; service/memory_
 parks it when Wisp is idle; service/idle_unloader.py drops other idle models). Ideate fits
 into that instead of fighting it:
 
-- Before a run, if Inkling isn't loaded, the run's first event says so and Ideate calls the
-  engine client's own swap helper, `OMLXClient.ensure_only(model, exclusive=True)`, the same
-  call a Research job makes for its model: on Wisp's bundled engine it evicts the other
-  models (Ask's included) and loads Inkling; on the user's own oMLX.app it unloads nothing
-  and only loads.
+- When a run starts, Ideate holds the engine for Inkling (service/inference/engine_hold.py)
+  and always calls the engine client's swap helper, `OMLXClient.ensure_only(model,
+  exclusive=True)`, the same call a Research job makes: on Wisp's bundled engine it first
+  unloads every other model (Ask's included), waits until they are gone, then loads Inkling,
+  so only Inkling is resident. On the user's own oMLX.app it unloads nothing and only loads.
 - During the run Inkling is registered as in flight (`idle.begin`), so the idle unloader
   never drops it mid-run, and the run counts as a foreground turn (`idle.begin_foreground`),
   so background model work (mail gists, the Brief, Save memory's batch windows) stands
-  down instead of reloading Ask's model beside it.
-- After the run both are released (`idle.end`, `idle.end_foreground`). Nothing else is
-  pinned or unloaded: the idle unloader lets Inkling go after Wisp's idle minutes, and
-  Ask's model comes back on the next Ask turn (or Save memory's prewarm), as it always does.
+  down. While the hold is set, loading any other model is refused with a plain message
+  (an Ask turn says Ideate is building and to ask again when it finishes): no swap mid-run,
+  never two models resident.
+- After the run the hold and both registrations are released, and Inkling is unloaded
+  RELEASE_AFTER_S later unless another run has started (a follow-up message reuses it).
+  Ask's model is not loaded back straight away: the next Ask, Brief or Day turn loads it,
+  as it always does. An Ask turn in that grace swaps Inkling out the normal way.
 
 A run is a child process talking to the engine directly, so these calls are made from the
 runner's thread onto the service's own event loop (`bind_loop`), where the shared client
@@ -28,6 +31,7 @@ import ctypes
 import ctypes.util
 import errno
 import ipaddress
+import logging
 import os
 import shutil
 import uuid
@@ -37,6 +41,8 @@ from urllib.parse import urlsplit
 
 from service.ideate import config
 from service.ideate.harness import EngineTarget
+
+log = logging.getLogger(__name__)
 
 
 class EngineUnavailable(RuntimeError):
@@ -125,13 +131,72 @@ class Residency:
 
     def begin(self) -> None:
         from service import idle
+        from service.inference import engine_hold
+        self._cancel_release()
+        engine_hold.hold(config.MODEL_ID, "Ideate")
         idle.begin(config.MODEL_ID)
         idle.begin_foreground()
 
     def end(self) -> None:
         from service import idle
+        from service.inference import engine_hold
         idle.end(config.MODEL_ID)
         idle.end_foreground()
+        engine_hold.release(config.MODEL_ID)
+        self._schedule_release()
+
+    def wait_for_ask(self, timeout: float = config.ASK_WAIT_S, poll: float = 0.5) -> None:
+        """Let an Ask turn that is answering right now finish before the run takes the engine."""
+        import time
+        from service import idle
+        deadline = time.monotonic() + timeout
+        while idle.foreground_busy() and time.monotonic() < deadline:
+            time.sleep(poll)
+
+    # --- Unloading Inkling after a run -----------------------------------------------------
+    _release_handle: asyncio.TimerHandle | None = None
+
+    def _schedule_release(self) -> None:
+        loop = self._loop
+        if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(self._arm_release)
+
+    def _cancel_release(self) -> None:
+        loop = self._loop
+        if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(self._disarm_release)
+
+    def _disarm_release(self) -> None:
+        if self._release_handle is not None:
+            self._release_handle.cancel()
+            self._release_handle = None
+
+    def _arm_release(self) -> None:
+        self._disarm_release()
+        loop = asyncio.get_running_loop()
+        self._release_handle = loop.call_later(
+            config.RELEASE_AFTER_S, lambda: loop.create_task(self.release_now()))
+
+    async def release_now(self) -> bool:
+        """Unload Inkling if no run holds it. Wisp's bundled engine only (on the user's own
+        oMLX, other apps may be using what is loaded). True when an unload was sent."""
+        from service import idle
+        from service.inference import engine_hold
+        self._release_handle = None
+        if engine_hold.holder() is not None or idle.in_flight(config.MODEL_ID) > 0:
+            return False
+        try:
+            client = self._get_client()
+            if not getattr(client, "managed", False) or not bundled():
+                return False
+            if config.MODEL_ID not in set(await client.loaded_models()):
+                return False
+            await client.unload(config.MODEL_ID)
+        except Exception as exc:  # noqa: BLE001 - best effort; the idle unloader is the backstop
+            log.info("ideate: unloading the model failed: %s", type(exc).__name__)
+            return False
+        log.info("ideate: unloaded %s after the run", config.MODEL_ID)
+        return True
 
 
 # --- A copy of the model that is already on this Mac ---------------------------------------

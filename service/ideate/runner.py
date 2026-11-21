@@ -187,17 +187,20 @@ class Manager:
                 run.error = (f"{config.MODEL_LABEL} isn't downloaded yet. Open Settings and download it, "
                              "then come back.")
                 return
+            # An Ask turn answering right now finishes first; then the run holds the engine
+            # and makes Inkling the only model loaded (engine.py), even when it already is.
+            self.residency.wait_for_ask()
             self.residency.begin()
             begun = True
             if not state.loaded:
                 self.store.append(project, "text", text=f"Loading {config.MODEL_LABEL}. Ask's model steps "
                                                        "aside while Ideate works, and comes back after.")
-                try:
-                    self.residency.ensure_sync()
-                except Exception as exc:  # noqa: BLE001
-                    log.info("ideate: model load failed: %s", type(exc).__name__)
-                    run.error = f"{config.MODEL_LABEL} couldn't load. Close other apps to free memory, then try again."
-                    return
+            try:
+                self.residency.ensure_sync()
+            except Exception as exc:  # noqa: BLE001
+                log.info("ideate: model load failed: %s", type(exc).__name__)
+                run.error = f"{config.MODEL_LABEL} couldn't load. Close other apps to free memory, then try again."
+                return
             if run.cancel:
                 outcome = "cancelled"
                 return

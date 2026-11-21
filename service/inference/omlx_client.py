@@ -14,7 +14,7 @@ import httpx
 from service.config.quarantine import guard_client
 
 from service import idle
-from service.inference import engine_epoch
+from service.inference import engine_epoch, engine_hold
 from service.config import omlx_api_key, omlx_base_url
 from service.config.endpoints import EndpointConfigurationError, Target, endpoint, is_loopback
 
@@ -1008,6 +1008,7 @@ class OMLXClient:
     async def load(self, model: str) -> None:
         if not self.managed:
             raise EndpointConfigurationError("Only managed local models can be loaded")
+        engine_hold.check(model)       # an Ideate run holds the engine: nothing loads beside it
         with engine_epoch.operation(), idle.own_load(self.activity_key(model)):
             r = await self._client.post(f"/v1/models/{model}/load")
         if r.status_code == 507:
@@ -1106,6 +1107,9 @@ class OMLXClient:
         """
         import asyncio
 
+        # An Ideate run holds the engine for its model: another model is refused here,
+        # before anything is unloaded, so the run keeps its model (engine_hold.py).
+        engine_hold.check(model)
         # A prewarm load in flight (service/memory_saver.py) finishes first, so this
         # doesn't POST a second load of the same model beside it.
         from service import memory_saver
