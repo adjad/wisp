@@ -50,7 +50,7 @@ enum NotchQAOnboarding {
 
         let scenes: [(String, OnboardingStep, SetupGuideModel, GoogleAccountModel, CGFloat)] = [
             ("1-model", .brain, downloading, google([]), 600),
-            ("2-permissions", .permissions, downloading, google([]), 860),
+            ("2-permissions", .permissions, downloading, google([]), 640),
             ("3-google", .google, downloading, google([]), 600),
             ("3-google-waiting", .google, downloading, google([], authorizing: true), 600),
             ("3-google-connected", .google, downloading, google([sam]), 640),

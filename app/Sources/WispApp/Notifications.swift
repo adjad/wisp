@@ -58,8 +58,48 @@ enum Notifications {
     static func allowedAskingFirstTime() async -> Bool {
         let center = UNUserNotificationCenter.current()
         guard await center.notificationSettings().authorizationStatus == .notDetermined else { return await allowed() }
-        return (try? await center.requestAuthorization(options: [.alert, .sound])) ?? false
+        return await requestFirst()
     }
+
+    // Provisional first. What macOS documents for UNAuthorizationOptions.provisional:
+    // requesting it shows no permission prompt and grants "provisional" authorization
+    // at once; alerts then arrive quietly (in Notification Center, with no banner and
+    // no sound), each with Keep and Turn Off buttons, and the person can turn
+    // them up from there or in System Settings. A later request without .provisional
+    // while the status is provisional is documented to ask normally. We can't
+    // confirm either on a live Mac from this tree, so askForAlerts() reads the
+    // status back and reports what it found rather than assuming it worked.
+
+    /// The options of the first request: quiet delivery, no question to answer.
+    static let firstRequestOptions: UNAuthorizationOptions = [.alert, .sound, .provisional]
+    /// The options of the later, in-context request for full alerts (banners and sound).
+    static let fullAlertOptions: UNAuthorizationOptions = [.alert, .sound]
+
+    /// The first request, always provisional. Never prompts.
+    @discardableResult
+    static func requestFirst() async -> Bool {
+        (try? await UNUserNotificationCenter.current().requestAuthorization(options: firstRequestOptions)) ?? false
+    }
+
+    /// Whether alerts are delivered quietly only (provisional). Reads the setting.
+    static func isProvisional() async -> Bool {
+        await UNUserNotificationCenter.current().notificationSettings().authorizationStatus == .provisional
+    }
+
+    /// The chip beside reminder alerts ("Get alerts for reminders"): asks macOS for
+    /// full alerts, once the person has seen quiet delivery and wants more. The
+    /// person's own click only. True when alerts are now fully allowed. If macOS
+    /// shows no question (it was already answered), System Settings' Notifications
+    /// page is where to change it.
+    @discardableResult
+    static func askForAlerts() async -> Bool {
+        let center = UNUserNotificationCenter.current()
+        _ = try? await center.requestAuthorization(options: fullAlertOptions)
+        return await center.notificationSettings().authorizationStatus == .authorized
+    }
+
+    static let getAlertsChip = "Get alerts for reminders"
+    static let quietNote = "Reminder alerts arrive quietly in Notification Center, with no banner or sound."
 
     /// Posts and says whether it was shown, so a caller with a promise to keep
     /// ("Wisp is ready") can say it another way when notifications are off.

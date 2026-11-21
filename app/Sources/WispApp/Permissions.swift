@@ -262,7 +262,7 @@ enum Permissions {
             let axOpts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
             _ = AXIsProcessTrustedWithOptions(axOpts)
         case .settings:
-            openSettingsPane("com.apple.preference.security?Privacy_Accessibility")
+            openSettingsPane(PrivacyNames.accessibilityPane)
         }
     }
 

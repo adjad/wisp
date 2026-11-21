@@ -54,10 +54,20 @@ enum PrivacyRelaunch {
     /// asked. Otherwise only right after Wisp sent the person to a privacy page,
     /// and only when the sender can't be told or is part of macOS itself, never
     /// for the Dock, a logout or another program's quit. Never when the quit
-    /// gives a logout, restart, shutdown or sleep reason, whoever sent it. Pure.
-    static func shouldRelaunch(_ quit: Quit, paneOpenedAt: TimeInterval?, now: TimeInterval) -> Bool {
+    /// gives a logout, restart, shutdown or sleep reason, whoever sent it. And
+    /// never when the live probe says Full Disk Access already works
+    /// (`accessProbePasses`, AccessProbe.State.works): nothing then needs a
+    /// restart, so a Quit & Reopen the person chose is just a quit, unless
+    /// something else still does (`restartStillNeeded`, Screen Recording). Pure.
+    ///
+    /// This is the only place Wisp decides to reopen itself after a privacy
+    /// switch. It runs only for a quit Apple Event macOS sends (Quit & Reopen); a
+    /// pane that was opened and a Wisp that came back never reach it.
+    static func shouldRelaunch(_ quit: Quit, paneOpenedAt: TimeInterval?, now: TimeInterval,
+                               accessProbePasses: Bool = false, restartStillNeeded: Bool = false) -> Bool {
         guard case let .appleEvent(bundleID, path, reason) = quit else { return false }
         if let reason, shutdownReasons.contains(reason) { return false }
+        if accessProbePasses && !restartStillNeeded { return false }
         if isSystemSettings(bundleID: bundleID, path: path) { return true }
         // Any other reason from a sender that isn't System Settings: not a plain quit.
         if reason != nil { return false }

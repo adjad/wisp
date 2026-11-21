@@ -2321,6 +2321,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         messagesReader?.start()
         browserHistoryReader?.start()
         activityReader?.start()
+        startAccessProbe()
+    }
+
+    private var accessProbeObserver: NSObjectProtocol?
+
+    /// Full Disk Access is found by reading, never by being told (AccessProbe), so
+    /// a grant made in System Settings needs no restart: the moment a store starts
+    /// to open, its reader posts what it can read.
+    private func startAccessProbe() {
+        guard accessProbeObserver == nil else { return }
+        accessProbeObserver = NotificationCenter.default.addObserver(
+            forName: .wispAccessProbeChanged, object: nil, queue: .main
+        ) { [weak self] note in
+            let gained = note.userInfo?["gained"] as? [String] ?? []
+            MainActor.assumeIsolated {
+                guard !gained.isEmpty else { return }
+                self?.resyncReaders(after: .fullDiskAccess)
+                // Mail's body read is left out of that resync (see resyncedWhenReachable).
+                if gained.contains(AccessProbe.Store.mail.rawValue) { self?.mailReader?.syncRaw() }
+            }
+        }
+        AccessProbeMonitor.shared.start()
     }
 
     /// The source readers, each started once at launch. None of them asks macOS
@@ -2618,11 +2640,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// again once this process has gone (PrivacyRelaunch).
     private func relaunchIfSystemSettingsAsked(_ quit: PrivacyRelaunch.Quit) {
         guard !relaunchScheduled else { return }
+        // A live read, not the last one: when it already opens, Full Disk Access needs
+        // no restart. Screen Recording is the one switch that still does.
+        let access = AccessProbe.probe().state
+        let screenNeedsRestart = !CGPreflightScreenCaptureAccess()
+            && UserDefaults.standard.bool(forKey: Permissions.screenRecordingPromptedKey)
         let relaunch = PrivacyRelaunch.shouldRelaunch(quit, paneOpenedAt: PrivacyRelaunch.paneOpenedAt(),
-                                                      now: Date().timeIntervalSince1970)
+                                                      now: Date().timeIntervalSince1970,
+                                                      accessProbePasses: access.works,
+                                                      restartStillNeeded: screenNeedsRestart)
         if case let .appleEvent(bundleID, path, reason) = quit {
             NSLog("%@", "Wisp quit: Apple Event from \(bundleID ?? path ?? "an unknown sender")"
-                  + (reason.map { " (reason \($0))" } ?? "") + "; "
+                  + (reason.map { " (reason \($0))" } ?? "") + "; file access \(AccessProbeMonitor.word(access)); "
                   + (relaunch ? "reopening once this copy has quit" : "not reopening"))
         }
         guard relaunch, let arguments = WispReset.relaunchArguments(

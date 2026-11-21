@@ -8,6 +8,8 @@ struct NotchPermissionsView: View {
     @ObservedObject var model: OverlayModel
     @ObservedObject var page: NotchPermissionPageModel
     @ObservedObject var access: FirstRunPermissions
+    /// Full Disk Access's live probe: the reopen prompt and a partial grant show from it.
+    @ObservedObject private var probe = AccessProbeMonitor.shared
     /// The page's room under the header (SurfaceLayout.pageContentCap).
     let cap: CGFloat?
     /// The title row's laid-out height, which grows with Text size.
@@ -51,10 +53,14 @@ struct NotchPermissionsView: View {
                 Color.clear.onAppear { titleHeight = geo.size.height }
                     .onChange(of: geo.size.height) { titleHeight = geo.size.height }
             })
-            CappedScroll(cap: cap.map(scrollCap), reveals: true) { rows }
+            CappedScroll(cap: cap.map(scrollCap), reveals: true) {
+                VStack(alignment: .leading, spacing: Self.spacing) { notices; rows }
+            }
         }
         .onChange(of: access.states) { _, _ in model.onResize() }
         .onChange(of: access.waiting) { _, _ in model.onResize() }
+        .onChange(of: probe.reopenPromptVisible) { _, _ in model.onResize() }
+        .onChange(of: probe.state) { _, _ in model.onResize() }
         .onChange(of: page.focus.map { access.state($0) }) { old, new in announce(old: old, new: new) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Mac permissions")
@@ -63,6 +69,34 @@ struct NotchPermissionsView: View {
     /// What's left for the rows under the title.
     private func scrollCap(_ cap: CGFloat) -> CGFloat {
         max(cap - titleHeight - Self.spacing, SurfaceLayout.minTabScroll)
+    }
+
+    /// Only when the live probe has something to say: a Reopen button after a
+    /// return from System Settings where reads still fail 10 s later (never on its
+    /// own), and which stores a folder-scoped Full Disk Access leaves out.
+    @ViewBuilder private var notices: some View {
+        if probe.reopenPromptVisible {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(ReopenPrompt.title).font(.wisp(.reading, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                Text(ReopenPrompt.detail).font(.wisp(.footnote)).foregroundStyle(Theme.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    NotchSettingsChrome.pill(ReopenPrompt.button, primary: true) { probe.reopenWisp() }
+                    NotchSettingsChrome.pill("Not now", primary: false) { probe.dismissPrompt() }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .accessibilityElement(children: .contain)
+            .revealInPanel("permission-reopen")
+        }
+        if case .partial(let unreadable) = probe.state {
+            Text(AccessProbe.partialNote(unreadable))
+                .font(.wisp(.footnote)).foregroundStyle(Theme.textMuted)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14)
+        }
     }
 
     private var rows: some View {
@@ -165,6 +199,20 @@ struct NotchPermissionsView: View {
             Text(NotchPermissionPage.purpose(item))
             let next = self.next(item)
             if !next.isEmpty { Text(next) }
+            if item == .notifications && access.notificationsProvisional {
+                Text(Notifications.quietNote)
+                NotchSettingsChrome.pill(Notifications.getAlertsChip, primary: false) {
+                    Task {
+                        // macOS's question opens above this panel: tuck away, then come back.
+                        Permissions.stepAside()
+                        NSApp.activate(ignoringOtherApps: true)
+                        _ = await Notifications.askForAlerts()
+                        await access.refresh()
+                        Permissions.stepBack()
+                    }
+                }
+                .padding(.top, 4)
+            }
             if NotchPermissionPage.canStartOver(item, access.state(item)) {
                 if page.startOverFailed == item { Text(NotchPermissionPage.startOverFailed).foregroundStyle(Theme.warn) }
                 NotchSettingsChrome.pill(NotchPermissionPage.startOverTitle, primary: false) { page.startOver(item) }

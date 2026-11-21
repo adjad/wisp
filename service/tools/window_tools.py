@@ -35,15 +35,19 @@ def _as_str(value: str) -> str:
 def _accessibility_names(mac_version: str | None = None) -> tuple[str, str]:
     """The Accessibility permission's name in a sentence, and its pane's name.
 
-    macOS 27 renamed the Privacy & Security pane to "Device Control and Data
-    Access" (the same switch); the app says the same (PrivacyNames.swift).
+    macOS 26 and before: "Accessibility". macOS 27.0 to 27.2: renamed "Device
+    Control and Data Access" (the same switch). macOS 27.3 and later:
+    "Accessibility" again, with a separate "System & App Protection Override"
+    pane next to it. The app says the same (PrivacyNames.swift, which tests pin).
     """
     version = platform.mac_ver()[0] if mac_version is None else mac_version
+    parts = (version or "0").split(".")
     try:
-        major = int((version or "0").split(".")[0])
+        major = int(parts[0])
+        minor = int(parts[1]) if len(parts) > 1 else 0
     except ValueError:
-        major = 0
-    if major >= 27:
+        major, minor = 0, 0
+    if major == 27 and minor < 3:
         return ("Device Control and Data Access (called Accessibility before macOS 27)",
                 "Device Control and Data Access")
     return "Accessibility access", "Accessibility"

@@ -742,14 +742,16 @@ final class FirstRunPermissions: ObservableObject {
         /// step open.
         var isExtra: Bool { self == .screenRecording || self == .accessibility }
         static let core = allCases.filter { !$0.isExtra }
-        /// The four the setup window asks about: what Brief and Day are built on.
-        /// Every other one is asked when a task first needs it: Messages at the first
+        /// The two the setup window asks about: Calendar and Reminders, what Brief and Day
+        /// are built on. Every other one is asked when a task first needs it: Mail & Notes
+        /// Automation from Brief's "Allow Wisp to read Mail" row (BriefAccessRows), Full Disk
+        /// Access from Brief and Day's "See your texts" row, Messages at the first
         /// text you approve (OutboundSender.sendMessage), Contacts from the Brief's row
         /// once your texts show numbers (SourceAccess.contacts), Notifications when Wisp
         /// first has an alert for you (Notifications.deliver), the microphone at the
         /// first voice ask, Screen Recording and Accessibility at the first look at your
         /// screen, Study read or Smart Search. Settings › Privacy still lists them all.
-        static let setup: [Item] = [.calendar, .reminders, .mail, .fullDiskAccess]
+        static let setup: [Item] = [.calendar, .reminders]
         var id: String { rawValue }
     }
     enum State: Equatable { case checking, notAsked, allowed, notAllowed, notOnThisMac }
@@ -779,6 +781,8 @@ final class FirstRunPermissions: ObservableObject {
     @Published private(set) var resetItems: Set<Item> = []
     /// Read with the rest, so the Contacts row and the footer's count agree on it.
     @Published private(set) var messagesReadable = false
+    /// Notifications are allowed but quiet (provisional): the page can offer full alerts.
+    @Published private(set) var notificationsProvisional = false
     private var activeObserver: NSObjectProtocol?
     private var poll: Task<Void, Never>?
 
@@ -844,7 +848,8 @@ final class FirstRunPermissions: ObservableObject {
 
     /// The Full Disk Access row's promise, before System Settings opens.
     static let fullDiskAccessRelaunchNote =
-        "macOS may ask Wisp to quit and reopen. That's expected: setup picks up right here."
+        "No restart needed: Wisp checks as soon as you're back. If macOS offers to quit and reopen Wisp, "
+        + "you can choose Later. Setup picks up right here."
 
     /// Screen Recording only takes effect once Wisp quits and reopens.
     static let screenRecordingRelaunchNote =
@@ -900,6 +905,8 @@ final class FirstRunPermissions: ObservableObject {
     /// when the person comes back to Wisp.
     func start() {
         guard poll == nil else { return }
+        // The live Full Disk Access probe runs every 2 s while a permission page is up.
+        AccessProbeMonitor.shared.pageOpened()
         activeObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
         ) { [weak self] _ in
@@ -917,6 +924,7 @@ final class FirstRunPermissions: ObservableObject {
     }
 
     func stop() {
+        if poll != nil { AccessProbeMonitor.shared.pageClosed() }
         poll?.cancel()
         poll = nil
         if let activeObserver { NotificationCenter.default.removeObserver(activeObserver) }
@@ -936,6 +944,8 @@ final class FirstRunPermissions: ObservableObject {
         // The slow reads first, the instant ones last, so a grant made while this
         // waited is the one it reports.
         let notifications = await Self.notificationsState()
+        var provisional = false
+        if Bundle.main.bundleURL.pathExtension == "app" { provisional = await Notifications.isProvisional() }
         // Remembered across closes and relaunches (see resolveAutomation): a closed
         // Mail or Notes can't be asked about, and that is not a removed grant.
         // Only the probes here: what they found is weighed and remembered below, once this
@@ -967,6 +977,7 @@ final class FirstRunPermissions: ObservableObject {
         next[.messages] = Self.recordAutomation(messagesRead, item: .messages)
         resetItems = Set([Item.mail, .messages].filter { Self.storedAutomation($0) == .reset })
         messagesReadable = readable
+        notificationsProvisional = provisional
         waiting = waiting.filter { !Self.isDecided(next[$0] ?? .checking) }
         notReached = notReached.filter { !Self.isDecided(next[$0] ?? .checking) }
         states = next
@@ -1043,7 +1054,7 @@ final class FirstRunPermissions: ObservableObject {
         case .contacts:
             _ = try? await CNContactStore().requestAccess(for: .contacts)
         case .notifications:
-            _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
+            _ = await Notifications.requestFirst()
         case .mail:
             // macOS can't ask about an app that isn't running, so Mail and Notes are
             // started in the background first, and closed again once asked.
@@ -1196,14 +1207,6 @@ final class FirstRunPermissions: ObservableObject {
         }
     }
 
-    /// What Wisp reads with Full Disk Access: Messages always, Mail and Notes when
-    /// those apps are closed (MailDBReader, NotesDBReader).
-    nonisolated static let fullDiskAccessPaths = [
-        "Library/Messages/chat.db",
-        "Library/Mail",
-        "Library/Group Containers/group.com.apple.notes/NoteStore.sqlite",
-    ]
-
     /// Whether Messages' history really opens (TCC, not file modes: access(2)
     /// says yes either way).
     nonisolated static func messagesReadable(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> Bool {
@@ -1212,23 +1215,16 @@ final class FirstRunPermissions: ObservableObject {
         return false
     }
 
-    /// Full Disk Access shows only in whether those files really read: any one that
-    /// does means it is on. None of them existing means nothing here needs it yet.
+    /// Full Disk Access shows only in whether those files really open (AccessProbe,
+    /// the one live probe): any that does means it is on, even if only some do (a
+    /// grant scoped to chosen folders, macOS 27.3). None of them existing means
+    /// nothing here needs it yet.
     nonisolated static func fullDiskAccessState(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> State {
-        var refused = false
-        for relative in fullDiskAccessPaths {
-            let url = home.appendingPathComponent(relative)
-            var isDirectory: ObjCBool = false
-            if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
-                // A folder is read by listing it: that is what the privacy check guards.
-                do { _ = try FileManager.default.contentsOfDirectory(atPath: url.path); return .allowed }
-                catch { refused = true; continue }
-            }
-            let fd = open(url.path, O_RDONLY)
-            if fd >= 0 { close(fd); return .allowed }
-            if errno != ENOENT { refused = true }
+        switch AccessProbe.probe(home: home).state {
+        case .on, .partial: return .allowed
+        case .off: return .notAllowed
+        case .unknown: return .notOnThisMac
         }
-        return refused ? .notAllowed : .notOnThisMac
     }
 
     private static func notificationsState() async -> State {
@@ -2321,34 +2317,16 @@ struct FirstRunSetupView: View {
                           detail: FirstRunPermissions.eventKitDetail(
                               .reminders, base: "What's due, and the reminders Wisp sets for you.",
                               state: permissions.state(.reminders), unanswered: permissions.unanswered[.reminders] == true))
-            permissionRow(.mail, icon: "envelope", title: "Mail & Notes",
-                          detail: "Emails that need a reply, and your notes, while those apps are open. "
-                              + "Opens Mail and Notes to ask, then closes Notes. If you allow it, Mail stays "
-                              + "open in the background so Wisp can read it.")
-            permissionRow(.fullDiskAccess, icon: "internaldrive", title: "Full Disk Access",
-                          detail: fullDiskAccessDetail)
             launchAtLoginRow
             Text("Skipped one? Open Wisp's Settings and choose Permissions… under Privacy, any time. "
-                 + "Everything else is asked only when a task needs it: Messages when you first send a text, "
+                 + "The rest are asked when a task needs them: Mail when Brief first reads your mail, "
+                 + "Full Disk Access when you want your texts, Messages when you first send a text, "
                  + "Contacts when your texts show numbers instead of names, Notifications when Wisp first has "
                  + "an alert for you, the microphone when you first ask by voice, and Screen Recording or "
                  + "\(PrivacyNames.accessibilityWithFormerName) when you first ask about your screen or read "
                  + "school pages in Study.")
                 .font(.system(size: 12)).foregroundStyle(Theme.textMuted).padding(.top, 8)
                 .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    /// Said in the row before the Settings page opens (never a modal): switching
-    /// it on can make macOS quit and reopen Wisp, and setup comes back at this
-    /// step when it does (FirstRunSetup.resumeKey).
-    private var fullDiskAccessDetail: String {
-        switch permissions.state(.fullDiskAccess) {
-        case .notAllowed, .notAsked:
-            return "So Wisp can read Messages, and Mail and Notes when those apps are closed. In the page "
-                + "that opens, switch on Wisp. " + FirstRunPermissions.fullDiskAccessRelaunchNote
-        case .notOnThisMac: return "Nothing here needs it yet: no Messages, Mail or Notes data on this Mac."
-        default: return "So Wisp can read Messages, and Mail and Notes when those apps are closed."
         }
     }
 
@@ -2429,7 +2407,7 @@ struct FirstRunSetupView: View {
         case .contacts: return base + "Privacy_Contacts"
         case .notifications: return "com.apple.preference.notifications"
         case .screenRecording: return base + "Privacy_ScreenCapture"
-        case .accessibility: return base + "Privacy_Accessibility"
+        case .accessibility: return PrivacyNames.accessibilityPane
         }
     }
 

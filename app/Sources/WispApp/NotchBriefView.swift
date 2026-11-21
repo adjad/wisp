@@ -145,6 +145,7 @@ struct NotchBriefView: View {
                     // (calendar, school work, to-dos, found in mail), side by side
                     // when wide enough. It replaces the tiles and the Top 3.
                     if let contacts = BriefFix.contactsAccess() { accessRow(contacts) }
+                    if today.isShowingCurrentDay { BriefAccessRowsView() }
                     // Back after a long absence: the cards below are from
                     // before, and the refreshed ones replace them on their own.
                     if proactive.updating && !proactive.isWorking { ProcessingRow(label: Self.updatingLabel) }
@@ -290,6 +291,7 @@ struct NotchBriefView: View {
     /// in mind (the day's goal among it).
     @ViewBuilder private func underLede(_ brief: BriefContent) -> some View {
         if today.isShowingCurrentDay, let contacts = BriefFix.contactsAccess() { accessRow(contacts) }
+        if today.isShowingCurrentDay { BriefAccessRowsView() }
         if !brief.intro.isEmpty { introLines(brief.intro) }
         if !brief.summary.isEmpty { goalLines(brief.summary) }
     }

@@ -2,7 +2,7 @@
 
 Real SwiftUI, rendered by the notch QA renderer at 2x (`WISP_NOTCH_QA`). Invented data only; nothing contacts the service.
 The strip at the top of each notch page is the real `OverlayView` header, mounted and cropped (`NotchQAIdeate.headerImage`).
-Setup pages are the real `FirstRunSetupView` on its `.customize` step.
+Setup pages are the real `FirstRunSetupView` on its `.customize` step. The Setup permissions step (`onboarding-2-permissions.png`) and Brief's access rows come from the same renderer.
 
 ## Render recipe
 
@@ -66,3 +66,17 @@ OverlayView(model: model, corpus: ..., researchModel: ..., todayModel: today, se
 HarborPersonaStore.choose(.builderLearn)   // sets tabs [.ideate, .study] and the Ideate kind
 FirstRunSetupView(setup: s, knowYou: k, google: g, initialStep: .customize, openDetailedSetup: {}, finish: { _ in }, qaFixture: true)
 ```
+
+## Setup asks for two permissions; the rest at first use
+
+Setup's Permissions step lists Calendar and Reminders only (`FirstRunPermissions.Item.setup`), with a footnote saying the rest are asked when a task needs them. Mail & Notes and Full Disk Access stay in Settings › Privacy and on the notch permission page.
+
+- `onboarding-2-permissions.png`: `FirstRunSetupView(initialStep: .permissions, qaFixture: true)` (`NotchQAOnboarding`, `WISP_NOTCH_QA_ONBOARDING=1`). The two rows show whatever macOS says to the QA binary; nothing is asked.
+
+Brief's quiet rows (`BriefAccessRows`, `NotchQAIdeate.briefRows`, `WISP_NOTCH_QA_IDEATE=1`): the real header with Brief selected, `BriefAccessRowsView` on `BriefAccessRowsModel.qaFixture(...)` (fixed rows, reads nothing from this Mac), and one invented sentence under them.
+
+- `brief-rows-allow-mail.png`: "Allow Wisp to read Mail" with Allow…. Its button is the only thing that asks for Mail & Notes Automation. Shown while Automation is undecided, Google isn't covering mail and the Envelope Index can't be read.
+- `brief-rows-see-texts.png`: "See your texts" with Allow…, which opens the notch permission page on Full Disk Access. Shown when the live probe says Messages can't be opened.
+- `brief-rows-all.png`: all three, the third being "See your mail and notes when they're closed" (Mail and Notes closed, stores unreadable).
+
+Every row has a small x that hides it until tomorrow. Day shows the same rows.

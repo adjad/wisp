@@ -134,7 +134,7 @@ enum NotchPermissionPage {
             if unanswered { return "macOS didn't show its question. Quit and reopen Wisp, then click Allow again." }
             switch item {
             case .fullDiskAccess:
-                return "macOS has no question for this. In the page that opens, switch on Wisp. " + relaunchNote
+                return "macOS has no question for this. In the page that opens, switch on Wisp. " + fullDiskAccessNote
             case .screenRecording:
                 return "Wisp tucks away so you can answer macOS. " + relaunchNote
             case .mail:
@@ -153,7 +153,8 @@ enum NotchPermissionPage {
                     + "In the page that opens, switch on Wisp."
                 : "Wisp is off in System Settings. In the page that opens, switch on Wisp."
             if canStartOver(item, state) { return page + " " + startOverNote }
-            return item == .fullDiskAccess || item == .screenRecording ? page + " " + relaunchNote : page
+            if item == .fullDiskAccess { return page + " " + fullDiskAccessNote }
+            return item == .screenRecording ? page + " " + relaunchNote : page
         }
     }
 
@@ -175,7 +176,13 @@ enum NotchPermissionPage {
     static let calendarAddOnlyNote = "Wisp can only add events, not read your calendar. In the page that opens, "
         + "click Options next to Wisp and choose Full Access."
 
-    /// Full Disk Access and Screen Recording, on the page: said before the Settings
+    /// Full Disk Access, on the page: Wisp reads again as soon as the person is back
+    /// (AccessProbe), so nothing has to restart. Said before the Settings page opens
+    /// because macOS may still offer Quit & Reopen, and that can wait.
+    static let fullDiskAccessNote = "No restart needed: Wisp checks as soon as you're back. "
+        + "If macOS offers to quit and reopen Wisp, you can choose Later."
+
+    /// Screen Recording, on the page: said before the Settings
     /// page opens, because Quit & Reopen would otherwise look like a crash.
     static let relaunchNote = "macOS may ask Wisp to quit and reopen. That's expected, and this page comes back."
 

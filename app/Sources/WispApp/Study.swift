@@ -1551,8 +1551,13 @@ enum StudyText {
     static let nothingDue = "Nothing is due soon."
     static let noMaterials = "Nothing made yet. Choose a course or an assignment, then pick what to make."
     static let readOnlyNote = "Wisp only reads these pages. It never submits or changes anything on your school site."
-    static let needsAccessibility = "Wisp needs Accessibility to read your school tabs. "
-        + "Turn it on in System Settings › Privacy & Security › Accessibility."
+    /// With the permission's name on this Mac (PrivacyNames: Study stays free of other app files).
+    static func needsAccessibilityNamed(name: String, path: String) -> String {
+        "Wisp needs \(name) to read your school tabs. Turn it on in \(path)."
+    }
+    /// Without a Mac's wording: the macOS 26 name.
+    static let needsAccessibility = needsAccessibilityNamed(name: "Accessibility",
+                                                      path: "System Settings › Privacy & Security › Accessibility")
     static let noSchoolTabs = "Wisp didn't find a school page. Open your school site in a browser tab, then try again."
     static let clearConfirm = "This removes your courses, assignments and everything Study made on this Mac."
     static let cleared = "School data removed from this Mac."

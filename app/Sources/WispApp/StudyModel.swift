@@ -130,7 +130,7 @@ final class StudyModel: ObservableObject {
             pages = []
             #else
             guard StudyPageReader.hasAccessibility else {
-                notice = StudyText.needsAccessibility
+                notice = StudyText.needsAccessibilityNamed(name: PrivacyNames.accessibility, path: PrivacyNames.accessibilityPath)
                 return
             }
             pages = await StudyPageReader.read()

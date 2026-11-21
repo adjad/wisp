@@ -99,6 +99,34 @@ enum NotchQAIdeate {
                               tabsBlockedNote: WildcardTabs.blockedNote(for: .meet))
         }
         await write(blocked, to: outDir, name: "settings-tabs-row-blocked", width: 640, settle: true)
+
+        await briefRows(outDir: outDir)
+    }
+
+    /// Brief's quiet access rows (BriefAccessRows), fixed states, under the real header
+    /// with Brief selected and one invented sentence in Brief's lede style.
+    private static func briefRows(outDir: URL) async {
+        choose([.ideate, .study])
+        guard let header = await headerImage(selected: .brief) else { print("brief rows: header NOT measured"); return }
+        let lede = "Two meetings today, and Priya's note about the budget is waiting for a reply."
+        let all = BriefAccessRows.Shown(allowMail: true, seeTexts: true, closed: [.mail, .notes])
+        let scenes: [(String, BriefAccessRows.Shown)] = [
+            ("brief-rows-allow-mail", BriefAccessRows.Shown(allowMail: true)),
+            ("brief-rows-see-texts", BriefAccessRows.Shown(seeTexts: true)),
+            ("brief-rows-all", all),
+        ]
+        for (name, shown) in scenes {
+            let model = BriefAccessRowsModel.qaFixture(shown)
+            kept.append(model)
+            let view = panel(header: header) {
+                VStack(alignment: .leading, spacing: 12) {
+                    BriefAccessRowsView(model: model)
+                    Text(lede).font(.wisp(size: 16.5)).foregroundStyle(Theme.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            await write(view, to: outDir, name: name, width: 640, settle: true)
+        }
     }
 
     // MARK: Pieces

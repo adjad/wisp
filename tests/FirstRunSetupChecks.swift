@@ -146,7 +146,7 @@ struct FirstRunSetupChecks {
         check(marked.isEmpty, "Finished, or an upgrader opening Permissions…: nothing marked")
         check(FirstRunPermissions.fullDiskAccessRelaunchNote.contains("quit and reopen")
               && FirstRunPermissions.fullDiskAccessRelaunchNote.contains("picks up right here"),
-              "The Full Disk Access row says macOS may quit and reopen Wisp, and setup picks up here")
+              "The Full Disk Access row says no restart is needed, that Quit & Reopen can wait, and setup picks up here")
         check(FirstRunSetup.canAnswer(ready: false, remoteOnly: true), "Remote-only (Cloud Everything) counts as able to answer")
         check(FirstRunSetup.canAnswer(ready: true, remoteOnly: false) && !FirstRunSetup.canAnswer(ready: false, remoteOnly: false),
               "Otherwise only a ready local model can answer")
@@ -423,8 +423,12 @@ struct FirstRunSetupChecks {
               && !NotchPermissionPage.comesBack(before: .notAsked, now: .notAllowed)
               && !NotchPermissionPage.comesBack(before: .notAllowed, now: .notAllowed),
               "Leaving System Settings brings the panel back only for a new yes")
-        check(NotchPermissionPage.next(.fullDiskAccess, .notAllowed).contains(NotchPermissionPage.relaunchNote)
-              && NotchPermissionPage.next(.screenRecording, .notAsked).contains(NotchPermissionPage.relaunchNote)
+        check(NotchPermissionPage.next(.fullDiskAccess, .notAllowed).contains(NotchPermissionPage.fullDiskAccessNote)
+              && NotchPermissionPage.next(.fullDiskAccess, .notAsked).contains(NotchPermissionPage.fullDiskAccessNote)
+              && !NotchPermissionPage.next(.fullDiskAccess, .notAllowed).contains(NotchPermissionPage.relaunchNote)
+              && NotchPermissionPage.fullDiskAccessNote.contains("No restart needed"),
+              "Full Disk Access says no restart is needed (the live probe), and macOS's offer can wait")
+        check(NotchPermissionPage.next(.screenRecording, .notAsked).contains(NotchPermissionPage.relaunchNote)
               && !NotchPermissionPage.next(.calendar, .notAllowed, calendarAddOnly: false).contains(NotchPermissionPage.relaunchNote)
               && !NotchPermissionPage.next(.calendar, .notAllowed, calendarAddOnly: true).contains(NotchPermissionPage.relaunchNote),
               "Only the permissions that can quit Wisp warn about it")
@@ -1089,9 +1093,9 @@ struct FirstRunSetupChecks {
               && FirstRunPermissions.label(.messages, .notAllowed) == "Denied", "Messages: Not set, Allowed, Denied")
         check(FirstRunSetupView.settingsPane(.messages).hasSuffix("Privacy_Automation"), "Denied Messages opens Automation")
         // No score: every row is optional, and a Mac without that data is not "off".
-        check(FirstRunPermissions.summary([.calendar: .allowed, .reminders: .notAllowed, .mail: .notAsked,
-                                           .fullDiskAccess: .notOnThisMac, .contacts: .allowed, .notifications: .allowed])
-              == "All optional · 2 still off", "Counts only what could still be switched on")
+        check(FirstRunPermissions.summary([.calendar: .notAsked, .reminders: .notAllowed, .mail: .notAsked,
+                                           .fullDiskAccess: .notAllowed, .contacts: .allowed, .notifications: .allowed])
+              == "All optional · 2 still off", "Counts only Calendar and Reminders: Mail and Full Disk Access are asked later")
         check(FirstRunPermissions.summary([.calendar: .allowed, .fullDiskAccess: .notOnThisMac]) == "All optional · nothing left off",
               "Nothing left")
         // Contacts and Full Disk Access: no dead end on a Mac with nothing for Full Disk Access to read.
@@ -1106,9 +1110,59 @@ struct FirstRunSetupChecks {
         check(FirstRunPermissions.summary(noData, messagesReadable: false) == "All optional · nothing left off"
               && FirstRunPermissions.allAnswered(noData, messagesReadable: false),
               "...and Contacts isn't asked in setup, so it is never the one still off")
-        // Setup asks for four; the rest wait for the task that needs them.
-        check(FirstRunPermissions.Item.setup == [.calendar, .reminders, .mail, .fullDiskAccess],
-              "Setup's rows: Calendar, Reminders, Mail & Notes, Full Disk Access")
+        // Setup asks for two; the rest wait for the task that needs them.
+        check(FirstRunPermissions.Item.setup == [.calendar, .reminders],
+              "Setup's rows: Calendar and Reminders only")
+        // Brief and Day's rows for what Setup no longer asks (BriefAccessRows).
+        typealias Rows = BriefAccessRows
+        func rows(_ edit: (inout Rows.Facts) -> Void) -> Rows.Shown { var f = Rows.Facts(); edit(&f); return Rows.decide(f) }
+        check(rows { _ in }.isEmpty, "Nothing known (probe unknown, Automation decided): no rows")
+        check(rows { $0.automationUndecided = true }.allowMail
+              && rows { $0.automationUndecided = true }.rows == [.allowMail],
+              "Mail Automation undecided, nothing else covering mail: the Allow Wisp to read Mail row")
+        check(!rows { $0.automationUndecided = true; $0.gmailCovers = true }.allowMail,
+              "Google covers mail: no Mail Automation row")
+        check(!rows { $0.automationUndecided = true; $0.outcomes = [.mail: .readable]; $0.probe = .on }.allowMail,
+              "The Envelope Index reads: no Mail Automation row")
+        check(!rows { $0.automationUndecided = false }.allowMail, "Automation decided (allowed or refused): no row")
+        check(!rows { $0.automationUndecided = true; $0.mailInstalled = false }.allowMail, "No Mail on this Mac: no row")
+        check(rows { $0.probe = .off; $0.outcomes = [.messages: .refused] }.seeTexts
+              && rows { $0.probe = .partial(unreadable: [.messages, .notes]); $0.outcomes = [.messages: .refused, .notes: .refused, .mail: .readable] }.seeTexts,
+              "Full Disk Access off, or partial including Messages: See your texts")
+        check(!rows { $0.probe = .partial(unreadable: [.notes]); $0.outcomes = [.messages: .readable, .notes: .refused] }.seeTexts
+              && !rows { $0.probe = .on; $0.outcomes = [.messages: .readable] }.seeTexts
+              && !rows { $0.probe = .unknown }.seeTexts,
+              "Messages readable, probe on or unknown: no texts row")
+        check(rows { $0.probe = .off; $0.outcomes = [.mail: .refused, .notes: .refused] }.closed == [.mail, .notes]
+              && rows { $0.probe = .off; $0.outcomes = [.mail: .refused, .notes: .refused] }.rows == [.seeClosed],
+              "Mail and Notes closed and unreadable: one row for both")
+        check(rows { $0.probe = .off; $0.outcomes = [.mail: .refused, .notes: .refused]; $0.mailOpen = true }.closed == [.notes]
+              && rows { $0.probe = .off; $0.outcomes = [.mail: .refused, .notes: .refused]; $0.mailOpen = true; $0.notesOpen = true }.closed.isEmpty,
+              "An open app is read through the app: no row for it")
+        check(rows { $0.probe = .off; $0.outcomes = [.mail: .refused, .notes: .refused]; $0.gmailCovers = true }.closed == [.notes],
+              "Google covering mail leaves only Notes in the closed-apps row")
+        check(rows { $0.probe = .partial(unreadable: [.mail]); $0.outcomes = [.mail: .refused, .notes: .readable, .messages: .readable] }.closed == [.mail]
+              && rows { $0.probe = .on }.closed.isEmpty && rows { $0.probe = .unknown }.closed.isEmpty,
+              "Only a store the probe says is unreadable; never when on or unknown")
+        check(rows { $0.probe = .off; $0.outcomes = [.messages: .refused, .mail: .missing, .notes: .missing] }.closed.isEmpty,
+              "A store that isn't on this Mac gets no row")
+        check(rows { $0.probe = .off; $0.outcomes = [:] }.seeTexts,
+              "Off with no outcomes recorded: treated as every store, so texts still shows")
+        check(Rows.closedTitle([.mail, .notes]) == "See your mail and notes when they're closed"
+              && Rows.closedTitle([.mail]) == "See your mail when Mail is closed"
+              && Rows.closedTitle([.notes]) == "See your notes when Notes is closed"
+              && Rows.seeTextsTitle == "See your texts" && Rows.allowMailTitle == "Allow Wisp to read Mail",
+              "The rows' words")
+        var comps = DateComponents(); comps.year = 2026; comps.month = 11; comps.day = 21; comps.hour = 9
+        let day = Calendar.current.date(from: comps) ?? Date()
+        check(Rows.dayKey(day) == "2026-11-21" && Rows.isDismissed(stored: "2026-11-21", today: Rows.dayKey(day))
+              && !Rows.isDismissed(stored: "2026-11-20", today: Rows.dayKey(day)) && !Rows.isDismissed(stored: nil, today: "2026-11-21"),
+              "A row put away stays away that day only")
+        let all = rows { $0.automationUndecided = true; $0.probe = .off; $0.outcomes = [.messages: .refused, .mail: .refused, .notes: .refused] }
+        check(all.rows == [.allowMail, .seeTexts, .seeClosed]
+              && Rows.visible(all, dismissed: [.seeTexts]).rows == [.allowMail, .seeClosed]
+              && Rows.visible(all, dismissed: Set(Rows.Row.allCases)).isEmpty,
+              "Dismissed rows drop out, the others stay")
         let restUnasked: [FirstRunPermissions.Item: FirstRunPermissions.State] = [
             .calendar: .allowed, .reminders: .allowed, .mail: .allowed, .fullDiskAccess: .allowed,
             .messages: .notAsked, .contacts: .notAsked, .notifications: .notAsked,
@@ -1125,8 +1179,8 @@ struct FirstRunSetupChecks {
         fdaOff[.contacts] = .notAsked
         check(FirstRunPermissions.contactsWaits(fdaOff, messagesReadable: false),
               "Full Disk Access still off with Messages unread: Contacts waits for it")
-        check(FirstRunPermissions.summary(fdaOff, messagesReadable: false) == "All optional · 1 still off",
-              "A waiting Contacts isn't counted on top of Full Disk Access")
+        check(FirstRunPermissions.summary(fdaOff, messagesReadable: false) == "All optional · nothing left off",
+              "Full Disk Access is not a setup row, so off never counts and a waiting Contacts isn't counted either")
         check(FirstRunPermissions.allAnswered(fdaOff, messagesReadable: false),
               "A waiting Contacts follows Full Disk Access's answer, so the step can still tick")
         var fdaOn = fdaOff

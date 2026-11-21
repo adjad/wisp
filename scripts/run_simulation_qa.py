@@ -218,6 +218,8 @@ PROFILE_TESTS = {
         "tests/test_mail_recache_brief.py",
         # The notch panel takes the keyboard on every asked-for open and every press (source checks).
         "tests/test_panel_keyboard.py",
+        # Full Disk Access's live probe, the single relaunch path, provisional notifications, per-version names (source checks).
+        "tests/test_access_probe.py",
         "tests/test_shell_local_service_deny.py",
         # /resetwisp on a scratch home under pytest's temp dir; no Google, Keychain, TCC or live service.
         "tests/test_wisp_reset.py",
@@ -969,6 +971,8 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/ideate-routing-contract": "native/ideate-routing-compile",
     "native/mail-recache-contract": "native/mail-recache-compile",
     "native/panel-key-contract": "native/panel-key-compile",
+    "native/access-probe-contract": "native/access-probe-compile",
+    "native/look-capture-path-contract": "native/look-capture-path-compile",
 }
 
 
@@ -1258,6 +1262,8 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     ideate_routing = str(build_dir / "ideate-routing")
     mail_recache = str(build_dir / "mail-recache")
     panel_key = str(build_dir / "panel-key")
+    access_probe = str(build_dir / "access-probe")
+    look_capture_path = str(build_dir / "look-capture-path")
     know_you = str(build_dir / "know-you")
     user_hours = str(build_dir / "user-hours")
     chat_logic = str(build_dir / "chat-logic")
@@ -1438,6 +1444,28 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/panel-key-contract", [panel_key]),
+        (
+            "native/access-probe-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/AccessProbe.swift",
+                "app/Sources/WispApp/PrivacyRelaunch.swift",
+                "app/Sources/WispApp/PrivacyNames.swift",
+                "tests/AccessProbeChecks.swift", "-o", access_probe,
+            ],
+        ),
+        ("native/access-probe-contract", [access_probe]),
+        (
+            "native/look-capture-path-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/LookCapturePath.swift",
+                "tests/LookCapturePathChecks.swift", "-o", look_capture_path,
+            ],
+        ),
+        ("native/look-capture-path-contract", [look_capture_path]),
         (
             "native/screen-look-compile",
             [

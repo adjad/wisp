@@ -50,8 +50,14 @@ def test_prompts_only_follow_a_click():
                          "Permissions.swift", "PageReader.swift", "Notifications.swift"}, hits
     notes = _sources()["Notifications.swift"]
     asking = _body(notes, "static func allowedAskingFirstTime() async -> Bool")
-    assert len(PROMPTING.findall(notes)) == len(PROMPTING.findall(asking)) == 1
-    assert "authorizationStatus == .notDetermined" in asking
+    # Two requests exist: the first one (provisional, so macOS shows no question) and
+    # the in-context ask for full alerts, which only the page's chip calls.
+    first = _body(notes, "static func requestFirst() async -> Bool")
+    later = _body(notes, "static func askForAlerts() async -> Bool")
+    assert len(PROMPTING.findall(notes)) == len(PROMPTING.findall(first)) + len(PROMPTING.findall(later)) == 2
+    assert "requestFirst()" in asking and "authorizationStatus == .notDetermined" in asking
+    assert "firstRequestOptions" in first and ".provisional" in notes.split("firstRequestOptions: UNAuthorizationOptions =")[1].split("\n")[0]
+    assert sum(t.count("Notifications.askForAlerts()") for t in _sources().values()) == 1
     assert "guard await allowedAskingFirstTime() else { return false }" in _body(notes, "static func deliver(")
     assert "allowedAskingFirstTime" not in _body(notes, "static func postIfAllowed(")
     # The microphone is asked for only by pressing the mic (or ⌥⇧Space): the one
@@ -342,14 +348,15 @@ def test_full_disk_access_says_it_may_quit_and_marks_resume_first():
     request = _body(setup, "func request(_ item: Item) async")
     fda = request[request.index("case .fullDiskAccess:"):]
     assert fda.index("FirstRunSetup.expectRelaunch(") < fda.index("Permissions.openFullDiskAccessPane()")
-    detail = _body(setup, "private var fullDiskAccessDetail: String")
-    assert "FirstRunPermissions.fullDiskAccessRelaunchNote" in detail
-    assert "NSAlert" not in detail
+    # Setup no longer has a Full Disk Access row (Brief and Day offer it when texts can't be read),
+    # so no setup-only detail is left to say it.
+    assert "fullDiskAccessDetail" not in setup
 
 
 def test_messages_has_its_own_permission_row():
-    """Setup asks only for what Brief and Day are built on: Calendar, Reminders,
-    Mail & Notes and Full Disk Access. Sending a text scripts Messages
+    """Setup asks only for what Brief and Day are built on: Calendar and Reminders.
+    Mail & Notes Automation is asked by Brief's "Allow Wisp to read Mail" row and Full
+    Disk Access by the "See your texts" row (BriefAccessRows). Sending a text scripts Messages
     (OutboundSender.sendMessage): its Automation is asked at the first approved
     send, with the panel out of the way, and stays a row of its own in Settings ›
     Privacy, asked only by a click there, on a target list apart from Mail's."""
@@ -357,11 +364,9 @@ def test_messages_has_its_own_permission_row():
     step = _body(setup, "private var permissionsStep: some View")
     # A title is a literal, or PrivacyNames for a permission macOS renamed.
     rows = re.findall(r'permissionRow\(\.(\w+), icon: "[^"]+", title: "?([^",]+)"?,', step)
-    assert rows == [("calendar", "Calendar"), ("reminders", "Reminders"), ("mail", "Mail & Notes"),
-                    ("fullDiskAccess", "Full Disk Access")], rows
-    assert "static let setup: [Item] = [.calendar, .reminders, .mail, .fullDiskAccess]" in setup
-    mail = step[step.index("permissionRow(.mail"):step.index("permissionRow(.fullDiskAccess")]
-    assert "Opens Mail and Notes to ask, then closes Notes." in mail and "Mail stays" in mail
+    assert rows == [("calendar", "Calendar"), ("reminders", "Reminders")], rows
+    assert "static let setup: [Item] = [.calendar, .reminders]" in setup
+    assert "permissionRow(.mail" not in step and "permissionRow(.fullDiskAccess" not in step
     sender = _sources()["OutboundSender.swift"]
     send = _body(sender, "static func sendMessage(actionId: String, to given: String, text: String)")
     assert "let firstAsk = messagesNotAskedYet()" in send
@@ -400,7 +405,8 @@ def test_messages_has_its_own_permission_row():
     assert "AXIsProcessTrustedWithOptions" not in setup and "CGRequestScreenCaptureAccess" not in setup
     footnote = step[step.index('Text("Skipped one?'):]
     assert "microphone" in footnote and "asked for later" not in footnote
-    for asked_at_use in ("Messages when you first send a text", "Contacts when your texts show numbers",
+    for asked_at_use in ("The rest are asked when a task needs them", "Mail when Brief first reads your mail",
+                         "Full Disk Access when you want your texts", "Messages when you first send a text", "Contacts when your texts show numbers",
                          "Notifications when Wisp first has", "Screen Recording"):
         assert asked_at_use in footnote, asked_at_use
     # Nothing else in the step: the rest are asked when a task needs them, and
@@ -840,3 +846,27 @@ def test_the_permission_page_stays_open_under_a_question():
     assert app.count("if self.levelBeforeQuestion != nil { return }") == 2
     page = _sources()["NotchPermissionPage.swift"]
     assert "var waitsInPlace: Bool { waiting?.inPlace == true }" in page
+
+
+def test_brief_and_day_ask_for_what_setup_no_longer_does():
+    """Setup asks for Calendar and Reminders only. Mail & Notes Automation is asked by one
+    button on Brief's "Allow Wisp to read Mail" row (the request Setup's row used), never by
+    a timer; Full Disk Access is a quiet row that opens the notch permission page."""
+    rows = _sources()["BriefAccessRows.swift"]
+    model = rows[rows.index("final class BriefAccessRowsModel"):]
+    # The one ask: FirstRunPermissions.request(.mail), only from the button's method.
+    assert model.count("permissions.request(.mail)") == 1
+    assert "permissions.request(.mail)" in _body(model, "func allowMail()")
+    assert "ask: false" in model and "ask: true" not in model
+    assert not PROMPTING.search(rows)
+    assert "Timer" not in rows and "Task.sleep" not in rows
+    # Full Disk Access opens the notch page through the same link every fix uses.
+    assert "Permissions.openFix(url)" in _body(model, "func openFullDiskAccess()")
+    assert "BriefDetail.fullDiskAccess.url" in _body(model, "func openFullDiskAccess()")
+    # Mounted in Brief (both layouts) and Day, on the current day.
+    brief = _sources()["NotchBriefView.swift"]
+    assert brief.count("BriefAccessRowsView()") == 2
+    assert "BriefAccessRowsView()" in _sources()["NotchDayView.swift"]
+    # Setup's step no longer lists them.
+    step = _body(_sources()["FirstRunSetupView.swift"], "private var permissionsStep: some View")
+    assert "Mail & Notes" not in step and "Full Disk Access\"" not in step

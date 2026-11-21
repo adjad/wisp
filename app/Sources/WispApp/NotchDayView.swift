@@ -432,6 +432,7 @@ struct NotchDayView: View {
             let unread = unreadAccess(plan).filter { $0.source != "calendar" }
             Group {
                 ForEach(unread, id: \.source) { accessRow($0) }
+                if today.isShowingCurrentDay { BriefAccessRowsView() }
                 summaryRow(plan, timeline: timeline, calendar: plan.calendarState)
             }
             .disabled(today.planIsStale)

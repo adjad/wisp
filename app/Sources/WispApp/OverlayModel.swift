@@ -1692,7 +1692,18 @@ final class OverlayModel: ObservableObject {
     /// at as a pending preview with a "Wisp saw:" chip. `frontPID` is the app in
     /// front before Wisp's panel opened. Nothing is sent until they press send.
     func lookAtFrontWindow(frontPID: pid_t? = NSWorkspace.shared.frontmostApplication?.processIdentifier) {
-        guard screenRecordingReadyForLook() else { return }
+        switch LookCapturePath.choose(pickerAvailable: LookPicker.available,
+                                      pickerWorksWithoutGrant: LookCapturePath.storedPickerWorksWithoutGrant(),
+                                      screenRecordingAllowed: CGPreflightScreenCaptureAccess()) {
+        case .picker:
+            lookWithPicker()
+            return
+        case .needsScreenRecording:
+            _ = screenRecordingReadyForLook()
+            return
+        case .legacy:
+            break
+        }
         cancelAttachmentRead()
         Task { [weak self] in
             let number = await Task.detached(priority: .userInitiated) {
@@ -1704,6 +1715,28 @@ final class OverlayModel: ObservableObject {
                 return
             }
             self.look { accepted in ScreenSnapshot.lookAtWindow(number, accepted: accepted) }
+        }
+    }
+
+    /// Look through macOS's own picker (LookPicker): the person chooses a window
+    /// or display each time. Cancelling the picker ends the Look quietly. The
+    /// image becomes the same pending preview and "Wisp saw:" chip as any Look.
+    private func lookWithPicker() {
+        cancelAttachmentRead()
+        lookWarning = nil; lookWarningAction = nil
+        Task { [weak self] in
+            let result = await LookPicker.pickAndCapture()
+            guard let self else { return }
+            switch result {
+            case .captured(let jpeg, let label):
+                self.setAttachment(.image(jpeg: jpeg, source: .screen), name: "Screen", screenLabel: label)
+            case .refused(let message):
+                self.showTransientNotice(message, duration: 6)
+            case .failed(let message):
+                self.showTransientNotice(message)
+            case .cancelled:
+                break
+            }
         }
     }
 

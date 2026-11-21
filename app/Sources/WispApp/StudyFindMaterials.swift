@@ -2064,14 +2064,14 @@ private struct StudyFindCard: View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Image(systemName: "hand.raised").font(.wisp(size: 10.5)).foregroundStyle(Theme.warn)
                 .accessibilityHidden(true)
-            Text(StudyText.needsAccessibility)
+            Text(StudyText.needsAccessibilityNamed(name: PrivacyNames.accessibility, path: PrivacyNames.accessibilityPath))
                 .font(.wisp(.footnote)).foregroundStyle(Theme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 6)
             VStack(alignment: .trailing, spacing: 4) {
                 NotchChrome.small("Open Settings") {
                     // Through Permissions, like every privacy page Wisp opens.
-                    Permissions.openSettingsPane("com.apple.preference.security?Privacy_Accessibility")
+                    Permissions.openSettingsPane(PrivacyNames.accessibilityPane)
                 }
                 NotchChrome.small(StudyText.tryAgainButton) { run.start() }
             }
