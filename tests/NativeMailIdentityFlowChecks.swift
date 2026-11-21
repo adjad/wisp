@@ -110,6 +110,13 @@ final class Reader {
     // Every scenario that reaches the closed-read failure has Mail closed.
     func mailAppOpen() -> Bool { false }
     static func automationDecided(_ bundleID: String) -> Bool { true }
+    // Opening Mail when Google isn't covering it (MailRecache) is checked on its own
+    // (MailRecacheChecks.swift); here it declines, as when Google covers mail or Automation
+    // isn't allowed, so the closed-read failure is reported exactly as before.
+    func considerOpeningMail(failure: (kind: String, reason: String)) {
+        postDiagnostic(available: false, reason: failure.reason, kind: failure.kind)
+    }
+    func noteMailRead() {}
 
     // WISP_NATIVE_READER_METHODS
 }

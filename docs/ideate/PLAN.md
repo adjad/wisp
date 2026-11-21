@@ -128,3 +128,21 @@ Version stays 0.1.8 (pipeline patch 0019). Preview staged as `/Applications/Harb
   Ideate reads free memory (vm_stat: free + inactive + speculative + purgeable). Below 15.1 GB + 3 GB it stops with
   "There isn't enough free memory for Inkling 2 Mini right now… Quit oMLX or other big apps", and loads nothing.
   The prompt-size measurement under the new ceiling was NOT completed and is not re-run without the user's yes.
+- **D18 Reading Mail when Google isn't covering it (user, 2026-11-21: "when google is not connected or offline, have
+  wisp check my mail and open mail if needed to recache everything").** `MailRecache.swift` (pure) + `MailReader`.
+  - *Trigger:* no Google account is connected and synced in the last 30 min (none connected, sign-in expired, or
+    offline so `last_headers_sync` goes stale), read from `/assistant/gmail/status`. Checked on the normal 5-min sync
+    and when Brief opens (Brief posts `wisp.briefOpenedForMail`; a cache older than 30 min is read then).
+  - *Order:* (a) Mail open + Automation allowed → AppleScript, as before; (b) Mail closed + Full Disk Access →
+    Envelope Index, as before (read even when Google covers mail); (c) only when both fail, Google isn't covering
+    mail and Automation is ALREADY allowed (`AEDeterminePermissionToAutomateTarget(..., askUserIfNeeded: false) ==
+    noErr`; undecided or refused is no) → open Mail hidden (activates false, hides true, not in recent items), wait
+    up to 60 s until it answers a script, then run headers, raw and history. Nothing in this path asks for a
+    permission; otherwise today's failure report is posted unchanged.
+  - *Polite:* opens Mail at most once per 30 min (the time is kept in UserDefaults so a relaunch doesn't reset it),
+    only when the last successful mail read is over 30 min old; not within 15 min of the person quitting Mail (a
+    quit Wisp didn't ask for is the person's). Afterwards it quits with `terminate` (never forced), and only if Wisp
+    opened that Mail, it is still hidden and in the background, the person never brought it forward, and it shows
+    no on-screen window. Gives the reads up to 15 min.
+  - *Brief:* while Wisp reads a Mail it opened, the service gets `syncing` with reason_kind `mail_recaching`;
+    Brief's Inbox says "Reading Mail…" and the model is told never to call the inbox empty.

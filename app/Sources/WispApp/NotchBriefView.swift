@@ -107,6 +107,9 @@ struct NotchBriefView: View {
         // While today has no summary: when it comes, and whether the first
         // one is being built (read again every 20 seconds while it is, so the
         // row goes if its retries run out; else every two minutes).
+        // Brief opened: a stale mail cache is read now (MailReader; with Google off it may open Mail
+        // hidden, MailRecache), so Brief isn't left with no mail just because Gmail is off.
+        .onAppear { NotificationCenter.default.post(name: MailReader.briefOpened, object: nil) }
         .task(id: today.isShowingCurrentDay && composedBrief == nil) {
             guard today.isShowingCurrentDay, composedBrief == nil else { return }
             while !Task.isCancelled {

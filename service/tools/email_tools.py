@@ -608,6 +608,16 @@ _swift_identity = _restored_native("identity", "\n".join(
     e for e in _identity_emails if e.casefold() not in _external_accounts)).splitlines()
 
 
+# The reason_kind MailReader sends while it reads a Mail it opened because Google isn't covering
+# mail (app/Sources/WispApp/MailRecache.swift): Brief says "Reading Mail…", never "no mail".
+READING_MAIL_KIND = "mail_recaching"
+
+
+def reading_mail() -> bool:
+    """Wisp is reading a Mail it opened: the sync is pending with the recache reason."""
+    return bool(_email_sync_pending) and _email_reason_kind == READING_MAIL_KIND
+
+
 def email_reason_kind() -> str:
     """The MailReader's last reason_kind, or ""."""
     return _email_reason_kind

@@ -725,6 +725,7 @@ final class MailReader {
     // MARK: - Lifecycle
 
     func start() {
+        observeMailApp()
         sync()
         syncRaw()
         // Beat the backend-startup race, then settle into a 5-min cadence for
@@ -772,6 +773,198 @@ final class MailReader {
             self?.historyTimer = Timer.scheduledTimer(withTimeInterval: 1800, repeats: true) { _ in
                 self?.syncHistory()
             }
+        }
+    }
+
+    // MARK: - Opening Mail when Google isn't covering it (MailRecache)
+
+    private let recacheLock = NSLock()
+    private var lastMailRead: Date?
+    private var openedMail: NSRunningApplication?
+    private var wispAskedMailToQuit = false
+    private var personTouchedMail = false
+    private var userQuitMailAt: Date?
+    private var recacheRunning = false
+    private var mailObservers: [NSObjectProtocol] = []
+    private static let openedAtKey = "wisp.mail.recacheOpenedAt"
+    /// Posted when Brief opens, so a stale mail cache is read then too.
+    static let briefOpened = Notification.Name("wisp.briefOpenedForMail")
+
+    private func noteMailRead() {
+        recacheLock.lock(); lastMailRead = Date(); recacheLock.unlock()
+    }
+
+    /// Who quits Mail, and whether the person brings forward a Mail Wisp opened.
+    private func observeMailApp() {
+        guard mailObservers.isEmpty else { return }
+        let center = NSWorkspace.shared.notificationCenter
+        func isMail(_ note: Notification) -> NSRunningApplication? {
+            let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            return app?.bundleIdentifier == "com.apple.mail" ? app : nil
+        }
+        mailObservers.append(center.addObserver(forName: NSWorkspace.didTerminateApplicationNotification,
+                                                object: nil, queue: nil) { [weak self] note in
+            guard let self, isMail(note) != nil else { return }
+            self.recacheLock.lock()
+            if MailRecache.quitWasPerson(wispAskedToQuit: self.wispAskedMailToQuit) { self.userQuitMailAt = Date() }
+            self.wispAskedMailToQuit = false
+            self.openedMail = nil
+            self.recacheLock.unlock()
+        })
+        mailObservers.append(center.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
+                                                object: nil, queue: nil) { [weak self] note in
+            guard let self, let app = isMail(note) else { return }
+            self.recacheLock.lock()
+            if self.openedMail?.processIdentifier == app.processIdentifier { self.personTouchedMail = true }
+            self.recacheLock.unlock()
+        })
+        mailObservers.append(NotificationCenter.default.addObserver(forName: Self.briefOpened, object: nil,
+                                                                    queue: nil) { [weak self] _ in
+            guard let self else { return }
+            self.recacheLock.lock()
+            let last = self.lastMailRead
+            self.recacheLock.unlock()
+            if last.map({ Date().timeIntervalSince($0) >= MailRecache.staleAfter }) ?? true { self.sync() }
+        })
+    }
+
+    /// macOS already lets Wisp script this app. Undecided or refused is false, and nothing is asked.
+    static func automationAllowed(_ bundleID: String) -> Bool {
+        var target = AEAddressDesc()
+        let created = bundleID.withCString { pointer in
+            AECreateDesc(DescType(typeApplicationBundleID), pointer, strlen(pointer), &target)
+        }
+        guard created == noErr else { return false }
+        defer { AEDisposeDesc(&target) }
+        return AEDeterminePermissionToAutomateTarget(&target, AEEventClass(typeWildCard),
+                                                     AEEventID(typeWildCard), false) == noErr
+    }
+
+    /// Google's mail accounts, as the service reports them; empty when it doesn't answer.
+    private static func gmailAccounts() async -> [MailRecache.GmailAccount] {
+        var req = URLRequest(url: WispClient.baseURL.appendingPathComponent("assistant/gmail/status"))
+        req.timeoutInterval = 5
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return [] }
+        let rows = json["accounts"] as? [[String: Any]] ?? []
+        return rows.compactMap(GoogleStatus.Account.parse).map {
+            MailRecache.GmailAccount(connected: $0.state == .connected, lastSync: $0.lastSync)
+        }
+    }
+
+    /// Step (c), or today's report. Runs off the scan that found Mail unreadable.
+    private func considerOpeningMail(failure: (kind: String, reason: String)) {
+        Task.detached(priority: .utility) { [weak self] in
+            guard let self else { return }
+            let now = Date()
+            let covers = MailRecache.gmailCovers(await Self.gmailAccounts(), now: now)
+            self.recacheLock.lock()
+            let facts = MailRecache.Facts(
+                mailOpen: self.mailAppOpen(), indexRead: false,
+                automationAllowed: Self.automationAllowed("com.apple.mail"), gmailCovers: covers,
+                mailInstalled: NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.mail") != nil,
+                lastRead: self.lastMailRead,
+                lastOpenedByWisp: UserDefaults.standard.object(forKey: Self.openedAtKey) as? Date,
+                userQuitAt: self.userQuitMailAt)
+            let route = MailRecache.route(facts, now: now)
+            let go = route == .openMail && !self.recacheRunning
+            if go { self.recacheRunning = true }
+            self.recacheLock.unlock()
+            guard go else {
+                self.postDiagnostic(available: false, reason: failure.reason, kind: failure.kind)
+                return
+            }
+            await self.openMailAndRead(failure: failure)
+            self.recacheLock.lock(); self.recacheRunning = false; self.recacheLock.unlock()
+        }
+    }
+
+    private func postReadingMail() {
+        let url = WispClient.baseURL.appendingPathComponent("assistant/sync/emails")
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["diagnostics": [
+            "available": true, "syncing": true, "reason": MailRecache.readingNote,
+            "reason_kind": MailRecache.readingKind]])
+        URLSession.shared.dataTask(with: req).resume()
+    }
+
+    /// Opens Mail hidden (setup's launchHidden: no activation, not in recent items), waits until
+    /// it answers, runs the header, raw and history reads, then quits it politely if allowed.
+    private func openMailAndRead(failure: (kind: String, reason: String)) async {
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.mail"),
+              !mailAppOpen() else {
+            postDiagnostic(available: false, reason: failure.reason, kind: failure.kind)
+            return
+        }
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = false
+        config.hides = true
+        config.addsToRecentItems = false
+        guard let app = try? await NSWorkspace.shared.openApplication(at: url, configuration: config) else {
+            postDiagnostic(available: false, reason: failure.reason, kind: failure.kind)
+            return
+        }
+        UserDefaults.standard.set(Date(), forKey: Self.openedAtKey)
+        recacheLock.lock(); openedMail = app; personTouchedMail = false; recacheLock.unlock()
+        postReadingMail()
+        NSLog("Wisp: opened Mail hidden to read it (Google isn't covering mail)")
+
+        // Wait until Mail answers a script.
+        let answerBy = Date().addingTimeInterval(MailRecache.answerTimeout)
+        var answered = false
+        while Date() < answerBy && !app.isTerminated {
+            if run("tell application id \"com.apple.mail\" to count of accounts", tag: "recache-ready").text != nil {
+                answered = true
+                break
+            }
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+        }
+        if answered {
+            sync()
+            syncRaw()
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            syncHistory()
+            // Until every read is done (twice in a row, so a history retry isn't missed).
+            let doneBy = Date().addingTimeInterval(MailRecache.recacheTimeout)
+            var quiet = 0
+            while Date() < doneBy && quiet < 2 && !app.isTerminated {
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
+                scanLock.lock()
+                let busy = headersInFlight || rawInFlight || historyInFlight || historyWaitScheduled
+                scanLock.unlock()
+                quiet = busy ? 0 : quiet + 1
+            }
+        } else {
+            postDiagnostic(available: false, reason: failure.reason, kind: failure.kind)
+        }
+        quitMailIfWispOpenedIt(app)
+    }
+
+    /// Quits a Mail Wisp opened, politely (`terminate`, never forced), unless the person has since
+    /// brought it forward, unhidden it or opened a window.
+    private func quitMailIfWispOpenedIt(_ app: NSRunningApplication) {
+        guard !app.isTerminated else { return }
+        recacheLock.lock()
+        let opened = openedMail?.processIdentifier == app.processIdentifier
+        let touched = personTouchedMail
+        recacheLock.unlock()
+        let windows = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+                       as? [[String: Any]] ?? []).filter {
+            ($0[kCGWindowOwnerPID as String] as? Int32) == app.processIdentifier
+                && ($0[kCGWindowLayer as String] as? Int) == 0
+        }.count
+        guard MailRecache.quitsAfterReading(openedByWisp: opened, isHidden: app.isHidden, isActive: app.isActive,
+                                            personTouched: touched, visibleWindows: windows) else {
+            NSLog("Wisp: left Mail open (the person is using it)")
+            recacheLock.lock(); openedMail = nil; recacheLock.unlock()
+            return
+        }
+        recacheLock.lock(); wispAskedMailToQuit = true; recacheLock.unlock()
+        if !app.terminate() {
+            recacheLock.lock(); wispAskedMailToQuit = false; recacheLock.unlock()
         }
     }
 
@@ -833,7 +1026,10 @@ final class MailReader {
                             app: "Mail", appRunning: self.mailAppOpen(),
                             automationDecided: Self.automationDecided("com.apple.mail"),
                             failure: self.dbReader.closedReadFailure())
-                        self.postDiagnostic(available: false, reason: failure.reason, kind: failure.kind)
+                        // (c): with Google not covering mail, open Mail hidden and read it, when
+                        // Automation is already allowed and it's polite to (MailRecache). Otherwise
+                        // today's report of why Mail can't be read.
+                        self.considerOpeningMail(failure: failure)
                     }
                     return
                 }
@@ -1298,6 +1494,7 @@ final class MailReader {
         // The launch header read has reached a terminal state, so the history
         // walk may start (see syncHistory).
         markHeadersCompleted()
+        if available { noteMailRead() }
         let url = WispClient.baseURL.appendingPathComponent("assistant/sync/emails")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"

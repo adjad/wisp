@@ -191,8 +191,10 @@ def _empty_mail_coverage(window: dict) -> str:
 def _email_block(now: float) -> str:
     """Header-only Daily email context with the same sender grouping as tools."""
     from service.tools.email_tools import (
-        email_sync_state, email_freshness_warning, sender_digest)
+        email_sync_state, email_freshness_warning, reading_mail, sender_digest)
     state = email_sync_state()
+    if state == "syncing" and reading_mail():
+        return "EMAIL: Wisp is reading Mail now. Say mail is being read; never call the inbox empty."
     if state == "syncing":
         return "EMAIL: Wisp is still syncing mail after launch."
     if state == "unavailable":
@@ -1683,8 +1685,10 @@ def _mail_rollup(rows: list[dict]) -> str:
 def _email_section(now: float) -> str:
     """A compact Daily Mail view grounded only in synced header subjects."""
     from service.tools.email_tools import (
-        _MARKETING_SUBJECT, header_importance, is_machine_sender)
+        _MARKETING_SUBJECT, header_importance, is_machine_sender, reading_mail)
     mail = _mail_split(now)
+    if mail["state"] == "syncing" and reading_mail():
+        return "**📧 Inbox**\n- Reading Mail…"
     if mail["state"] == "syncing":
         return "**📧 Inbox**\n- Mail is still syncing; ask again in a moment."
     if mail["state"] == "unavailable":

@@ -214,6 +214,8 @@ PROFILE_TESTS = {
         "tests/test_ideate_residency.py",
         # Ideate's GPU-limit row: source checks that it reaches Terminal only through the code card.
         "tests/test_ideate_gpu_row.py",
+        # Brief says "Reading Mail…" while Wisp reads a Mail it opened (MailRecache); synthetic state.
+        "tests/test_mail_recache_brief.py",
         "tests/test_shell_local_service_deny.py",
         # /resetwisp on a scratch home under pytest's temp dir; no Google, Keychain, TCC or live service.
         "tests/test_wisp_reset.py",
@@ -963,6 +965,7 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/user-hours-contract": "native/user-hours-compile",
     "native/ideate-contract": "native/ideate-compile",
     "native/ideate-routing-contract": "native/ideate-routing-compile",
+    "native/mail-recache-contract": "native/mail-recache-compile",
 }
 
 
@@ -1250,6 +1253,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     notch_tab = str(build_dir / "notch-tab")
     ideate = str(build_dir / "ideate")
     ideate_routing = str(build_dir / "ideate-routing")
+    mail_recache = str(build_dir / "mail-recache")
     know_you = str(build_dir / "know-you")
     user_hours = str(build_dir / "user-hours")
     chat_logic = str(build_dir / "chat-logic")
@@ -1410,6 +1414,16 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/ideate-routing-contract", [ideate_routing]),
+        (
+            "native/mail-recache-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/MailRecache.swift",
+                "tests/MailRecacheChecks.swift", "-o", mail_recache,
+            ],
+        ),
+        ("native/mail-recache-contract", [mail_recache]),
         (
             "native/screen-look-compile",
             [
