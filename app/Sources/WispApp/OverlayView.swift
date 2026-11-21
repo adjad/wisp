@@ -27,6 +27,9 @@ struct OverlayView: View {
     // rebuilds the panel's content once. Cheap: both are rare, deliberate.
     @AppStorage(Theme.textSizeKey) private var textSize: Double = 1.0
     @State private var contrastTick = 0
+    // The wildcard tabs changed (setup's You step, quick settings): the strip is
+    // read again, and a tab that left it gives way to Ask.
+    @State private var stripTick = 0
     // The notification also fires for Reduce Motion and Reduce Transparency;
     // only a real Increase Contrast change rebuilds (it resets child views' state).
     @State private var increasedContrast = Theme.increaseContrast
@@ -77,6 +80,12 @@ struct OverlayView: View {
             guard Theme.increaseContrast != increasedContrast else { return }
             increasedContrast = Theme.increaseContrast
             contrastTick &+= 1
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .wispWildcardTabsChanged)) { _ in
+            stripTick &+= 1
+            let strip = NotchTab.strip
+            if model.tab != .research, !strip.contains(model.tab) { model.tab = .ask }
+            DispatchQueue.main.async { model.onResize() }
         }
         // The rebuilt content is laid out fresh, so its height-change observer
         // never sees a change; ask the window to re-fit to the new size.
@@ -345,6 +354,13 @@ struct OverlayView: View {
                            cap: layout.studyContentCap(headerHeight: headerHeight))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, SurfaceLayout.tabTopPadding)
+        case .ideate:
+            // Like Study: stops at half the screen and scrolls inside itself.
+            NotchIdeateView(ideate: IdeateModel.shared, wide: panelIsWide,
+                            cap: layout.studyContentCap(headerHeight: headerHeight),
+                            onResize: { model.onResize() })
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, SurfaceLayout.tabTopPadding)
         case .research:
             if model.showingResearch {
                 ResearchView(model: researchModel, compact: true,
@@ -525,6 +541,8 @@ struct OverlayView: View {
         .background(Capsule().fill(Theme.chipFill))
         .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
         .fixedSize()
+        // Reads the tick, so the strip is drawn again when the wildcard tabs change.
+        .animation(nil, value: stripTick)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Wisp tabs")
     }
@@ -615,6 +633,7 @@ struct OverlayView: View {
         case .research: return "Open the research library (⌘O)"
         case .meet: return "Open the Wisp window (⌘O)"
         case .study: return "Open the Wisp window (⌘O)"
+        case .ideate: return "Open the Wisp window (⌘O)"
         }
     }
 

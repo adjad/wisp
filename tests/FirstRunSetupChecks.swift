@@ -918,7 +918,10 @@ struct FirstRunSetupChecks {
               "Waiting for approval says where; otherwise nothing")
         check(LaunchAtLogin.problem(turningOn: true).contains("Login Items")
               && LaunchAtLogin.problem(turningOn: false).contains("Login Items"), "A failure says where to do it by hand")
-        check(FirstRunSetupView.tabLines.map(\.tab) == ["Ask", "Brief", "Day"], "The tabs in the notch's order")
+        check(FirstRunSetupView.tabLines(for: NotchTab.strip(wildcards: [])).map(\.tab) == ["Ask", "Brief", "Day"], "The tabs in the notch's order")
+        check(FirstRunSetupView.tabLines(for: NotchTab.strip(wildcards: [.ideate, .study])).map(\.tab)
+              == ["Ask", "Brief", "Day", "Ideate", "Study"], "The tour lists the chosen tabs after Day")
+        check(FirstRunSetupView.tabCountWord(3) == "three" && FirstRunSetupView.tabCountWord(5) == "five", "The tour counts its tabs in words")
         for style in [SurfaceLayout.Style.notch, .menuBar, .floating] {
             check(FirstRunSetupView.findLine(style).contains("menu bar"), "Every display names the menu bar icon")
         }

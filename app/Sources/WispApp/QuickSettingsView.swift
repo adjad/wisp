@@ -44,6 +44,10 @@ struct QuickSettingsView: View {
     /// The panel's Text size scale (Theme.textScale reads the same key).
     @AppStorage(Theme.textSizeKey) private var textSize: Double = 1.0
 
+    /// The wildcard tabs and the Ideate variant, as saved (WildcardTabs).
+    @State private var wildcards = WildcardTabs.chosen()
+    @State private var ideateKind = HarborPersonaStore.ideateKind()
+
     enum BriefSlot { case morning, evening }
 
     private static let spacing: CGFloat = 12
@@ -79,6 +83,10 @@ struct QuickSettingsView: View {
         }
         .onAppear { voices = ReadAloudVoice.installedForOpening { voices = $0 } }
         .onDisappear { voicePreview.stop() }
+        .onReceive(NotificationCenter.default.publisher(for: .wispWildcardTabsChanged)) { _ in
+            wildcards = WildcardTabs.chosen()
+            ideateKind = HarborPersonaStore.ideateKind()
+        }
         .task {
             guard refreshes else { return }
             await settings.refreshQuick()
@@ -186,6 +194,12 @@ struct QuickSettingsView: View {
                 hairline
                 macPermissionsRow
                 hairline
+                tabsRow
+                if wildcards.contains(.ideate) {
+                    hairline
+                    ideateKindRow
+                }
+                hairline
                 setupRow
                 if google.showsRow {
                     // The user's deliberate exception for the very first connect
@@ -228,6 +242,42 @@ struct QuickSettingsView: View {
             Text("Calendar, Mail, Full Disk Access and more")
         } control: {
             pillButton("Review") { model.openPermissionPage(nil) }
+        }
+    }
+
+    /// Study, Meet and Ideate as switches of their own, two at most: a third is
+    /// refused until one is turned off. Chips, not a menu (the panel can't pop one up).
+    private var tabsRow: some View {
+        row("Tabs", help: QuickSettingsText.tabsHelp) {
+            Text(QuickSettingsText.tabs(wildcards))
+        } control: {
+            HStack(spacing: 6) {
+                ForEach(WildcardTabs.candidates, id: \.self) { tab in
+                    let on = wildcards.contains(tab)
+                    pillButton(tab.title, primary: on) { wildcards = WildcardTabs.set(WildcardTabs.toggled(tab, in: wildcards)) }
+                        .disabled(!on && !WildcardTabs.canAdd(tab, to: wildcards))
+                        .accessibilityLabel(tab.title)
+                        .accessibilityAddTraits(on ? [.isButton, .isSelected] : .isButton)
+                }
+            }
+        }
+    }
+
+    /// The Ideate variant a new project starts with.
+    private var ideateKindRow: some View {
+        row("Ideate is set up for", help: "The kind of project Ideate starts with. You can still ask for anything.") {
+            Text(ideateKind.title)
+        } control: {
+            HStack(spacing: 6) {
+                ForEach(IdeateKind.allCases, id: \.self) { kind in
+                    pillButton(kind.title, primary: ideateKind == kind) {
+                        ideateKind = kind
+                        HarborPersonaStore.setIdeateKind(kind)
+                    }
+                    .accessibilityLabel(kind.title)
+                    .accessibilityAddTraits(ideateKind == kind ? [.isButton, .isSelected] : .isButton)
+                }
+            }
         }
     }
 

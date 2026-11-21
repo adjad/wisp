@@ -67,6 +67,38 @@ enum NotchCommand: String, CaseIterable, Equatable {
         input.split(whereSeparator: \.isWhitespace).first?.lowercased() == "/corpus"
     }
 
+    /// Where a prompt is forced to go by what it starts with. "/ideate <idea>" sends
+    /// the idea to the Ideate tab; "/ask <text>" or "ask: <text>" keeps it in Ask
+    /// even when it reads like a build request. Neither is a command in the list
+    /// above: they carry text, so `match` and `suggestions` leave them alone and
+    /// the prompt is routed by `IdeateRoute.classify`, which applies the same prefixes.
+    enum RoutePrefix: Equatable { case ideate, ask }
+
+    /// The forced route and the text after the prefix, or nil for an ordinary prompt.
+    /// The text may be empty ("/ideate" alone); the caller then opens the tab.
+    static func routePrefix(_ input: String) -> (route: RoutePrefix, body: String)? {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = trimmed.lowercased()
+        func rest(_ word: String) -> String? {
+            guard lower.hasPrefix(word) else { return nil }
+            let tail = trimmed.dropFirst(word.count)
+            guard tail.isEmpty || tail.first!.isWhitespace else { return nil }
+            return tail.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if let body = rest("/ideate") { return (.ideate, body) }
+        if let body = rest("/ask") { return (.ask, body) }
+        if lower.hasPrefix("ask:") {
+            return (.ask, String(trimmed.dropFirst(4)).trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return nil
+    }
+
+    /// "/ideate" typed alone: open the Ideate tab (there is no idea to send yet).
+    static func isBareIdeate(_ input: String) -> Bool {
+        if let p = routePrefix(input), p.route == .ideate, p.body.isEmpty { return true }
+        return false
+    }
+
     /// The lowercased letters after a leading "/", when that is all the input is.
     private static func commandWord(_ input: String) -> String? {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)

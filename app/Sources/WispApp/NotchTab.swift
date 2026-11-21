@@ -2,17 +2,26 @@ import Foundation
 
 /// The notch panel's tabs. Ask is the conversation; Brief is what's going on,
 /// read only; Day is the rest of today, hour by hour; Meet listens to a meeting
-/// and writes its notes; Study keeps school work and makes study material.
+/// and writes its notes; Study keeps school work and makes study material;
+/// Ideate builds small projects from an idea. Meet, Study and Ideate are the
+/// wildcard tabs: the person picks up to two (WildcardTabs).
 /// Research is not in the
 /// strip: it is a mode of Ask (`/research`, a job opened from the window, New
 /// research), reached through `.research` and left by choosing a tab.
 ///
 /// Pure logic, checked by tests/NotchTabChecks.swift without the app.
 enum NotchTab: Int, CaseIterable, Equatable {
-    case ask, brief, day, research, meet, study
+    case ask, brief, day, research, meet, study, ideate
 
-    /// The tabs shown in the strip, in order, with ⌘1 to ⌘5.
-    static let strip: [NotchTab] = [.ask, .brief, .day, .meet, .study]
+    /// Ask, Brief and Day, always.
+    static let fixedStrip: [NotchTab] = [.ask, .brief, .day]
+
+    /// The tabs shown in the strip, in order, with ⌘1 to ⌘5: the fixed three
+    /// and the wildcard tabs the person chose (Meet and Study until they choose).
+    static var strip: [NotchTab] { strip(wildcards: WildcardTabs.chosen()) }
+
+    /// The strip for a given choice of wildcard tabs. Pure.
+    static func strip(wildcards: [NotchTab]) -> [NotchTab] { fixedStrip + WildcardTabs.validated(wildcards) }
 
     var title: String {
         switch self {
@@ -22,6 +31,7 @@ enum NotchTab: Int, CaseIterable, Equatable {
         case .research: return "Research"
         case .meet: return "Meet"
         case .study: return "Study"
+        case .ideate: return "Ideate"
         }
     }
 
@@ -80,9 +90,11 @@ enum NotchPage: Hashable {
         guard old != new else { return .none }
         if new.depth > old.depth { return NotchPageMotion(insertion: 3, removal: -1) }
         if new.depth < old.depth { return NotchPageMotion(insertion: -1, removal: 3) }
+        // A tab that left the strip (a wildcard turned off) has no place to slide from.
+        let strip = NotchTab.strip
         guard case .tab(let from) = old, case .tab(let to) = new,
-              let a = NotchTab.strip.firstIndex(of: from.stripTab),
-              let b = NotchTab.strip.firstIndex(of: to.stripTab), a != b else { return .none }
+              let a = strip.firstIndex(of: from.stripTab),
+              let b = strip.firstIndex(of: to.stripTab), a != b else { return .none }
         return b > a ? NotchPageMotion(insertion: 1, removal: -1) : NotchPageMotion(insertion: -1, removal: 1)
     }
 }
@@ -104,9 +116,11 @@ struct NotchTabMemory: Equatable {
 
     mutating func panelClosed(at date: Date) { closedAt = date }
 
-    func tabForOpening(current: NotchTab, byHover: Bool, at date: Date) -> NotchTab {
+    /// A remembered tab that has since left the strip (a wildcard turned off)
+    /// opens Ask; Research is a mode of Ask and stays.
+    func tabForOpening(current: NotchTab, byHover: Bool, at date: Date, strip: [NotchTab] = NotchTab.strip) -> NotchTab {
         guard byHover, let closedAt, date.timeIntervalSince(closedAt) <= Self.hoverWindow else { return .ask }
-        return current
+        return current == .research || strip.contains(current) ? current : .ask
     }
 }
 

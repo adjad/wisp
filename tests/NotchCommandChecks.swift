@@ -92,6 +92,25 @@ struct NotchCommandChecks {
               "isReset is the whole command only")
         check(NotchCommand.suggestions(for: "/rese") == [.research, .resetwisp], "it is listed while typing it")
 
+        // "/ideate <idea>" and "/ask <text>" / "ask: <text>" carry text, so they are
+        // not list commands: never matched, never suggested, and a prefix is not one.
+        check(NotchCommand.routePrefix("/ideate a pomodoro timer")?.route == .ideate, "/ideate routes")
+        check(NotchCommand.routePrefix("/ideate a pomodoro timer")?.body == "a pomodoro timer", "/ideate body")
+        check(NotchCommand.routePrefix("  /IDEATE   a game  ")?.body == "a game", "case and space are ignored")
+        check(NotchCommand.routePrefix("/ask build a flask app")?.route == .ask, "/ask stays in Ask")
+        check(NotchCommand.routePrefix("ask: build a flask app")?.body == "build a flask app", "ask: body")
+        check(NotchCommand.routePrefix("Ask:make a site")?.route == .ask, "Ask: is case-insensitive")
+        check(NotchCommand.routePrefix("/ideatex a game") == nil, "/ideatex is not /ideate")
+        check(NotchCommand.routePrefix("/asking about it") == nil, "/asking is not /ask")
+        check(NotchCommand.routePrefix("/Users/me/ideate.txt") == nil, "a path is not a route prefix")
+        check(NotchCommand.routePrefix("asking nicely") == nil, "a word starting with ask is not a prefix")
+        check(NotchCommand.routePrefix("build a thing") == nil, "ordinary prompts have no prefix")
+        check(NotchCommand.isBareIdeate("/ideate") && NotchCommand.isBareIdeate(" /Ideate ") && !NotchCommand.isBareIdeate("/ideate x"),
+              "bare /ideate opens the tab")
+        check(NotchCommand.match("/ideate a game") == nil && NotchCommand.match("/ask hi") == nil, "prefixed prompts are not list commands")
+        check(NotchCommand.suggestions(for: "/ideate a game").isEmpty, "no suggestions once words follow")
+        check(NotchCommand.match("/ideate") == nil, "bare /ideate is not a list command (the tab opens from isBareIdeate)")
+
         print("\(count) notch command checks passed.")
     }
 }

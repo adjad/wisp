@@ -1643,6 +1643,7 @@ struct FirstRunSetupView: View {
                     case .permissions: permissionsStep
                     case .google: OnboardingGoogleStep(model: google, refreshes: !qaFixture)
                     case .knowYou: knowYouStep
+                    case .customize: OnboardingCustomizeStep()
                     case .tour: tourStep
                     }
                 }
@@ -1697,7 +1698,7 @@ struct FirstRunSetupView: View {
             if !qaFixture { Task { await knowYou.load() } }
             knowYou.onClose = { _ in
                 aboutYouDecided()
-                step = .tour
+                step = .customize
             }
         }
         .onReceive(permissions.$states) { states in if !states.isEmpty { permissionsChanged(states) } }
@@ -1799,6 +1800,7 @@ struct FirstRunSetupView: View {
         case .permissions: return permissions.allAnswered
         case .google: return !google.status.accounts.isEmpty
         case .knowYou: return knowYouFinished
+        case .customize: return WildcardTabs.wasChosen()
         case .tour: return false
         }
     }
@@ -1903,6 +1905,17 @@ struct FirstRunSetupView: View {
                     }
                     .buttonStyle(FirstRunButtonStyle())
                     .help("Nothing more is saved. Type /about in Ask to answer these any time.")
+                }
+            case .customize:
+                Text("Optional").font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+                Spacer()
+                Button("Back") { go(step.previous) }.buttonStyle(FirstRunButtonStyle())
+                if HarborPersonaStore.persona() == nil {
+                    Button("Skip for now") { go(step.next) }.buttonStyle(FirstRunButtonStyle())
+                } else {
+                    Button("Continue") { go(step.next) }
+                        .buttonStyle(FirstRunButtonStyle(primary: true))
+                        .keyboardShortcut(.defaultAction)
                 }
             case .tour:
                 Button("Back") { go(step.previous) }.buttonStyle(FirstRunButtonStyle())
@@ -2490,7 +2503,7 @@ struct FirstRunSetupView: View {
                     .padding(.leading, 4).padding(.bottom, 9)
                     .accessibilityElement(children: .combine)
             }
-            Text("Open, it has three tabs").font(.system(size: 13, weight: .medium)).padding(.top, 6).padding(.bottom, 8)
+            Text("Open, it has \(Self.tabCountWord(Self.tabLines.count)) tabs").font(.system(size: 13, weight: .medium)).padding(.top, 6).padding(.bottom, 8)
             OpenNotchIllustration(tabs: Self.tabLines)
                 .padding(.bottom, 14)
             // Until Wisp can answer, a prompt would only leave a question it can't
@@ -2667,12 +2680,17 @@ struct FirstRunSetupView: View {
         }
     }
 
-    /// One line per notch tab, in the notch's order.
-    static let tabLines: [(tab: String, line: String)] = [
-        ("Ask", "Ask anything. With your permission it reads your mail, calendar, reminders and notes."),
-        ("Brief", "What needs you today, prepared before you ask."),
-        ("Day", "Your day hour by hour, with to-dos placed on the timeline."),
-    ]
+    /// One line per notch tab, in the notch's order: Ask, Brief, Day and the
+    /// wildcard tabs the person chose on the You step.
+    static var tabLines: [(tab: String, line: String)] { tabLines(for: NotchTab.strip) }
+
+    static func tabCountWord(_ count: Int) -> String {
+        ["three", "four", "five"].indices.contains(count - 3) ? ["three", "four", "five"][count - 3] : String(count)
+    }
+
+    static func tabLines(for strip: [NotchTab]) -> [(tab: String, line: String)] {
+        strip.map { ($0.title, WildcardTabs.tourLine($0)) }
+    }
 
     /// Where Wisp is on this display, in words that match the picture.
     static func findLine(_ style: SurfaceLayout.Style) -> String {

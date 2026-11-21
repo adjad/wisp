@@ -11,15 +11,20 @@ struct OnboardingChecks {
 
     static func main() {
         // One window, these steps, in this order.
-        check(OnboardingStep.allCases == [.brain, .permissions, .google, .knowYou, .tour],
-              "Model, Permissions, Google, About you, How to use")
-        check(OnboardingStep.allCases.map(\.title) == ["Model", "Permissions", "Google", "About you", "How to use"], "Titles")
+        check(OnboardingStep.allCases == [.brain, .permissions, .google, .knowYou, .customize, .tour],
+              "Model, Permissions, Google, About you, You, How to use")
+        check(OnboardingStep.allCases.map(\.title) == ["Model", "Permissions", "Google", "About you", "You", "How to use"], "Titles")
         check(OnboardingStep.brain.next == .permissions && OnboardingStep.permissions.next == .google
-              && OnboardingStep.google.next == .knowYou && OnboardingStep.knowYou.next == .tour
-              && OnboardingStep.tour.next == nil, "Continue walks the order")
-        check(OnboardingStep.brain.previous == nil && OnboardingStep.tour.previous == .knowYou, "Back walks it backwards")
+              && OnboardingStep.google.next == .knowYou && OnboardingStep.knowYou.next == .customize
+              && OnboardingStep.customize.next == .tour && OnboardingStep.tour.next == nil, "Continue walks the order")
+        check(OnboardingStep.brain.previous == nil && OnboardingStep.tour.previous == .customize
+              && OnboardingStep.customize.previous == .knowYou, "Back walks it backwards")
         check(OnboardingStep.restored(nil) == .brain && OnboardingStep.restored(99) == .brain
               && OnboardingStep.restored(2) == .google, "A saved step resumes; nothing or junk starts at the model")
+        // The tour moved from raw 4 to 5; a saved 4 lands on the new step before it, one extra screen.
+        check(OnboardingStep.restored(4) == .customize && OnboardingStep.restored(5) == .tour
+              && OnboardingStep.customize.rawValue == 4 && OnboardingStep.tour.rawValue == 5,
+              "A saved step of the old tour lands on You; the tour is last")
 
         // The Dock brings forward exactly one window.
         typealias C = WispReopen.Candidate

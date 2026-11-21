@@ -954,6 +954,23 @@ final class OverlayModel: ObservableObject {
         // Part of a command that could still be one of several ("/re"): keep the
         // list showing rather than sending a fragment to the model.
         if !NotchCommand.suggestions(for: prompt, includeCorpus: debugMode, includeScreen: screenCommandAvailable).isEmpty { return }
+        // A complex coding request goes to Ideate when it is in the strip; a
+        // question, a one-liner or anything with an attachment stays here.
+        // Pure and instant (IdeateRouting.swift); `/ideate x` forces it and
+        // `/ask x` or `ask: x` keeps it in Ask.
+        let ideateOn = NotchTab.strip.contains(.ideate)
+        if ideateOn, NotchCommand.isBareIdeate(prompt) { input = ""; tab = .ideate; return }
+        if !researchMode, !hasAttachment {
+            let routing = IdeateRoute.classify(prompt, ideateEnabled: ideateOn)
+            if case .ideate = routing {
+                input = ""
+                IdeateModel.shared.start(prompt: IdeateRoute.promptBody(prompt), kind: IdeateModel.shared.kind)
+                showTransientNotice(IdeateRoute.handoffLine(routing), duration: 6, info: true)
+                tab = .ideate
+                return
+            }
+            if NotchCommand.routePrefix(prompt)?.route == .ask { prompt = IdeateRoute.promptBody(prompt) }
+        }
         guard !corpusBusy else {
             showTransientNotice("Stop the corpus run before asking another question.")
             return
@@ -1261,6 +1278,7 @@ final class OverlayModel: ObservableObject {
         case .research: WispRouter.shared.open(.research)
         case .meet: WispRouter.shared.open(.today(focus: .plan))
         case .study: WispRouter.shared.open(.today(focus: .plan))
+        case .ideate: WispRouter.shared.open(.today(focus: .plan))
         }
     }
 

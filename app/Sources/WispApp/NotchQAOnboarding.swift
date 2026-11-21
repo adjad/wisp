@@ -56,6 +56,14 @@ enum NotchQAOnboarding {
             ("4-about-you", .knowYou, downloading, google([]), 600),
             ("5-how-to-use", .tour, ready, google([sam]), 1260),
         ]
+        // The You step's scenes are drawn one at a time below: the step reads what
+        // is chosen when it appears, so each scene sets that first.
+        // Tall windows, so the step's whole scroll content is in the image.
+        let youScenes: [(String, () -> Void, Bool, CGFloat)] = [
+            ("you-personas", { choose(nil) }, false, 940),
+            ("you-builder-subtypes", { choose(.builderUI) }, false, 1240),
+            ("you-change-list", { choose(.builderLearn) }, true, 1240),
+        ]
         for (name, step, setup, account, height) in scenes {
             let view = FirstRunSetupView(setup: setup, knowYou: knowYou(), google: account, initialStep: step,
                                          openDetailedSetup: {}, finish: { _ in }, qaFixture: true)
@@ -90,9 +98,53 @@ enum NotchQAOnboarding {
                 try? rep.representation(using: .png, properties: [:])?.write(to: outDir.appendingPathComponent("\(name).png"))
                 print("\(name): \(Int(view.bounds.width))×\(Int(view.bounds.height)) pt")
             }
+            for (name, prepare, openChange, height) in youScenes {
+                prepare()
+                let view = FirstRunSetupView(setup: downloading, knowYou: knowYou(), google: google([]), initialStep: .customize,
+                                             openDetailedSetup: {}, finish: { _ in }, qaFixture: true)
+                    .frame(height: height)
+                add("onboarding-\(name)", AnyView(view), size: CGSize(width: FirstRunSetup.width, height: height),
+                    scheme: .dark, offscreen: offscreen)
+                guard let (_, window) = windows.last else { continue }
+                if openChange {
+                    // "Change" is a plain button; press it the way VoiceOver would.
+                    window.setFrameOrigin(NSPoint(x: -20000, y: -20000))
+                    window.orderFrontRegardless()
+                }
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                if openChange {
+                    // "Change" sits 825 pt from the top at this width (the builder scene's layout); a real click.
+                    let point = NSPoint(x: 562, y: window.frame.height - 825)
+                    for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                        if let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                          windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1) {
+                            window.sendEvent(event)
+                        }
+                        try? await Task.sleep(nanoseconds: 80_000_000)
+                    }
+                    try? await Task.sleep(nanoseconds: 800_000_000)
+                }
+                guard let view = window.contentView else { continue }
+                view.layoutSubtreeIfNeeded()
+                if let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                    view.cacheDisplay(in: view.bounds, to: rep)
+                    try? rep.representation(using: .png, properties: [:])?
+                        .write(to: outDir.appendingPathComponent("onboarding-\(name).png"))
+                    print("onboarding-\(name): \(Int(view.bounds.width))×\(Int(view.bounds.height)) pt")
+                }
+            }
+            // Nothing the You scenes chose is left in this binary's own defaults.
+            UserDefaults.standard.removePersistentDomain(forName: ProcessInfo.processInfo.processName)
             app.terminate(nil)
         }
         app.run()
+    }
+
+    /// The You step's saved choice: a persona and the tabs it suggests, or nothing.
+    private static func choose(_ persona: HarborPersona?) {
+        let defaults = UserDefaults.standard
+        for key in [WildcardTabs.key, HarborPersonaStore.personaKey, HarborPersonaStore.ideateKindKey] { defaults.removeObject(forKey: key) }
+        if let persona { HarborPersonaStore.choose(persona) }
     }
 
     private static func refusing() -> URLSession {

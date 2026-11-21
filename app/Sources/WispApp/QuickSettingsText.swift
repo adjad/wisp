@@ -101,7 +101,7 @@ enum QuickSettingsSection: String, CaseIterable, Identifiable {
     /// alone doesn't say where Text size went.
     var contents: String {
         switch self {
-        case .general: return "Full access, Learn my routines, Mac permissions and Setup"
+        case .general: return "Full access, Learn my routines, Mac permissions, Tabs and Setup"
         case .brief: return "Daily summary and Brief updates"
         case .voice: return "Read answers aloud, Voice, Speaking rate and Text size"
         case .power: return "Save power and Save memory"
@@ -127,7 +127,16 @@ enum QuickSettingsText {
     static let setupHelp = "Open setup again to change permissions, Google, About you or open at login. "
         + "Your model stays as it is."
 
-    /// Full access's line: a status word ("On" shows amber) and the rest.
+    /// The Tabs row: which wildcard tabs sit after Ask, Brief and Day.
+    static func tabs(_ chosen: [NotchTab]) -> String {
+        let names = WildcardTabs.validated(chosen).map(\.title)
+        return names.isEmpty ? "Just Ask, Brief and Day" : "Ask, Brief, Day, " + names.joined(separator: ", ")
+    }
+
+    static let tabsHelp = "Choose up to two of Study, Meet and Ideate to sit after Ask, Brief and Day. "
+        + "Your choice stays on this Mac."
+
+        /// Full access's line: a status word ("On" shows amber) and the rest.
     static func fullAccess(on: Bool?, pending: Bool) -> (status: String?, rest: String) {
         if pending { return (nil, "Updating · waiting for confirmation…") }
         switch on {

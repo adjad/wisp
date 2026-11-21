@@ -21,6 +21,11 @@ enum NotchQADriver {
             NotchQAPages.run(outDir: outDir)
             return
         }
+        // WISP_NOTCH_QA_IDEATE=1: the Ideate tab, the strip with wildcard tabs, the Tabs row (NotchQAIdeate).
+        if ProcessInfo.processInfo.environment["WISP_NOTCH_QA_IDEATE"] == "1" {
+            NotchQAIdeate.run(outDir: outDir)
+            return
+        }
         // WISP_NOTCH_QA_ONBOARDING=1: only the onboarding window's steps (NotchQAOnboarding).
         if ProcessInfo.processInfo.environment["WISP_NOTCH_QA_ONBOARDING"] == "1" {
             NotchQAOnboarding.run(outDir: outDir, offscreen: offscreen)

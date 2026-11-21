@@ -14,10 +14,27 @@ struct NotchTabChecks {
             if !condition { fputs("FAIL: \(message)\n", stderr); exit(1) }
         }
 
-        // Tabs, in strip order, with ⌘1 to ⌘3. Research is a mode of Ask, not a tab.
-        check(NotchTab.strip == [.ask, .brief, .day, .meet, .study], "the strip reads Ask, Brief, Day, Meet, Study")
-        check(NotchTab.strip.map(\.shortcutDigit) == ["1", "2", "3", "4", "5"], "⌘1 to ⌘5 follow the strip")
-        check(NotchTab.strip.map(\.title) == ["Ask", "Brief", "Day", "Meet", "Study"], "tab titles")
+        // Tabs, in strip order, with ⌘1 to ⌘5. Research is a mode of Ask, not a tab.
+        // A Mac that never chose keeps Meet and Study (checked on a fresh defaults suite).
+        let fresh = UserDefaults(suiteName: "wisp.checks.notchtab.\(UUID().uuidString)")!
+        check(NotchTab.strip(wildcards: WildcardTabs.chosen(defaults: fresh)) == [.ask, .brief, .day, .meet, .study],
+              "the strip reads Ask, Brief, Day, Meet, Study until the person chooses")
+        check(NotchTab.strip(wildcards: []) == [.ask, .brief, .day], "no wildcards: Ask, Brief, Day")
+        check(NotchTab.strip(wildcards: [.ideate]) == [.ask, .brief, .day, .ideate], "one wildcard")
+        check(NotchTab.strip(wildcards: [.ideate, .study]) == [.ask, .brief, .day, .ideate, .study], "two wildcards keep their order")
+        check(NotchTab.strip(wildcards: [.study, .meet, .ideate]) == [.ask, .brief, .day, .study, .meet], "never more than two wildcards")
+        check(NotchTab.strip(wildcards: [.ask, .research, .meet, .meet]) == [.ask, .brief, .day, .meet],
+              "only wildcard tabs join, each once")
+        check(NotchTab.strip.first == .ask && NotchTab.strip.count >= 3 && NotchTab.strip.count <= 5, "the live strip is three to five tabs")
+        check(NotchTab.strip(wildcards: [.meet, .study]).map(\.shortcutDigit).prefix(3) == ["1", "2", "3"], "⌘1 to ⌘3 are fixed")
+        check(NotchTab.strip.enumerated().allSatisfy { $0.element.shortcutDigit == Character(String($0.offset + 1)) },
+              "⌘ digits follow the live strip")
+        check(!NotchTab.ideate.showsDay && !NotchTab.ideate.hasPrompt && NotchTab.ideate.stripTab == .ideate
+              && NotchTab.ideate.title == "Ideate" && NotchTab.ideate.rawValue == 6, "Ideate is last, with no prompt field")
+        check(NotchTab.strip(wildcards: [.meet]).map(\.title) == ["Ask", "Brief", "Day", "Meet"], "tab titles")
+        // A tab that is not in the strip has no digit, and a remembered one opens Ask.
+        check(NotchTab.allCases.filter { !NotchTab.strip.contains($0) }.allSatisfy { $0.shortcutDigit == nil },
+              "a tab outside the strip has no ⌘ digit")
         check(!NotchTab.strip.contains(.research) && NotchTab.research.shortcutDigit == nil, "Research is out of the strip")
         check(NotchTab.research.stripTab == .ask && NotchTab.day.stripTab == .day, "Research shows as Ask in the strip")
         check(NotchTab.brief.showsDay && NotchTab.day.showsDay && !NotchTab.ask.showsDay && !NotchTab.research.showsDay,
@@ -46,6 +63,15 @@ struct NotchTabChecks {
               "the last tab was Ask")
         check(memory.tabForOpening(current: .day, byHover: true, at: closed.addingTimeInterval(-5)) == .day,
               "a clock that moved back a little keeps the last tab")
+
+        let wide = NotchTab.strip(wildcards: [.meet, .study])
+        let narrow = NotchTab.strip(wildcards: [.ideate])
+        check(memory.tabForOpening(current: .study, byHover: true, at: closed.addingTimeInterval(60), strip: wide) == .study,
+              "a wildcard still in the strip is remembered")
+        check(memory.tabForOpening(current: .study, byHover: true, at: closed.addingTimeInterval(60), strip: narrow) == .ask,
+              "a remembered tab that left the strip opens Ask")
+        check(memory.tabForOpening(current: .research, byHover: true, at: closed.addingTimeInterval(60), strip: narrow) == .research,
+              "Research is a mode of Ask and is kept")
 
         // The setup card: an open card waits for Done; one set aside leaves when Wisp is ready.
         check(NotchSetupCard.open.afterReadiness(true) == .open, "an open setup card waits for Done once ready")
@@ -100,6 +126,12 @@ struct NotchTabChecks {
             check(NotchPage.motion(from: .tab(strip[strip.count - 1]), to: .tab(strip[0])) == back,
                   "last tab to first is back")
         }
+        let outside = NotchTab.allCases.first { $0 != .research && !strip.contains($0) }
+        if let outside {
+            check(NotchPage.motion(from: .tab(.ask), to: .tab(outside)) == .none
+                  && NotchPage.motion(from: .tab(outside), to: .tab(.day)) == .none,
+                  "a tab outside the strip has nothing to slide from or to")
+        }
         check(NotchPage.motion(from: .tab(.ask), to: .tab(.brief)) == NotchPageMotion(insertion: 1, removal: -1), "Ask to Brief")
         check(NotchPage.motion(from: .tab(.day), to: .tab(.ask)) == NotchPageMotion(insertion: -1, removal: 1), "Day to Ask")
         check(NotchPage.motion(from: .tab(.research), to: .tab(.ask)) == .none, "Research to Ask is no move")
@@ -123,6 +155,7 @@ struct NotchTabChecks {
         staleReminderChecks(check)
         needsYouActionChecks(check)
         studyChecks(check)
+        wildcardTabsChecks(check)
 
         print("\(count) notch tab, day, quick settings and stale reminder checks passed.")
     }
