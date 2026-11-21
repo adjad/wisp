@@ -26,7 +26,7 @@ sys.path.insert(0, str(ROOT))
 
 from service.engine import (BUNDLED_PORT, EngineError, EngineLayout,  # noqa: E402
                             EngineManager, RESERVED_PORTS, engine_settings)
-from service.engine.manager import merge_owned  # noqa: E402
+from service.engine.manager import merge_owned, physical_memory_bytes, wisp_memory  # noqa: E402
 
 PASS = FAIL = 0
 KEY = "a" * 64
@@ -197,8 +197,8 @@ def test_key_and_settings_persistence() -> None:
         again = EngineManager(layout)
         check("restart keeps the key", again.api_key == first.api_key)
         doc = json.loads(layout.settings_path.read_text())
-        check("fresh settings start the memory guard on aggressive",
-              doc.get("memory") == {"memory_guard_tier": "aggressive"})
+        check("fresh settings start the memory guard on custom at 90% of memory",
+              doc.get("memory") == wisp_memory(physical_memory_bytes()))
         memory = {"memory_guard_tier": "balanced", "prefill_memory_guard": True,
                   "max_process_memory": "70%", "max_model_memory": "60%"}
         doc["memory"] = memory

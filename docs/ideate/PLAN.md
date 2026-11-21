@@ -85,3 +85,9 @@ Version stays 0.1.8 (pipeline patch 0019). Preview staged as `/Applications/Harb
   Mac": an APFS clone (no extra disk) of the Inkling folder from the oMLX folder into Wisp's engine models folder.
 - **D11 Tabs.** wildcard-tabs.md: of 16 candidates only Clips is BUILD LATER; the rest fold into Ask/Brief/Day/Study/
   Meet/Ideate or drop. Ships with Study, Meet, Ideate as the only wildcards.
+- **D14 Engine ceiling (user, 2026-11-21: "raise ceiling to 90% of the devices memory").** The bundled engine moves
+  from "aggressive" (dynamic ceiling, 15.9 GB on a 24 GB Mac with apps open) to oMLX's "custom" tier with
+  `memory_guard_custom_ceiling_gb` = 90% of physical memory, rounded down to 0.1 GB (21.6 GB here; this Mac's
+  `iogpu.wired_limit_mb` is 22528, so the Metal cap doesn't lower it). An earlier Wisp's recorded "aggressive", and
+  Wisp's own ceiling when the memory size changes, migrate; a tier or ceiling the user picks in oMLX's admin UI is
+  kept. Ideate's 1.4k-token budget is unchanged until it is measured under the new ceiling.

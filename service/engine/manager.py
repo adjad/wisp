@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import threading
 import os
 import secrets
@@ -141,26 +142,70 @@ def engine_settings(port: int, api_key: str, model_dirs: Sequence[Path],
 
 # oMLX's memory guard tiers (process_memory_enforcer.py). oMLX starts on "balanced",
 # which keeps up to 8 GB free and refuses Gemma loads on a 24 GB Mac with other apps
-# open; Wisp's engine starts on "aggressive" instead.
+# open. Wisp's engine uses "custom" with its ceiling pinned at 90% of this Mac's memory
+# (the user, 2026-11-21: "raise ceiling to 90% of the devices memory"). Before that it
+# used "aggressive", whose dynamic ceiling followed free memory (15.9 GB on a 24 GB Mac
+# with apps open) and left Ideate's 15 GB model almost no room to read a prompt.
 MEMORY_GUARD_TIERS = frozenset({"safe", "balanced", "aggressive", "custom"})
-MEMORY_GUARD_TIER = "aggressive"
+MEMORY_GUARD_TIER = "custom"
+MEMORY_CEILING_SHARE = 0.90
 _ENGINE_DEFAULT_TIER = "balanced"
+# Tiers an earlier Wisp wrote itself; a record naming one of these, with the settings still
+# on it, is Wisp's own choice and moves to the current one.
+_EARLIER_WISP_TIERS = frozenset({"aggressive"})
 
 
-def memory_guard(existing: dict, already_set: bool) -> dict | None:
+def physical_memory_bytes() -> int:
+    try:
+        return int(os.sysconf("SC_PAGE_SIZE")) * int(os.sysconf("SC_PHYS_PAGES"))
+    except (ValueError, OSError, AttributeError):
+        return 0
+
+
+def ceiling_gb(total_bytes: int) -> float:
+    """90% of the Mac's memory in GB, rounded down to 0.1 GB. Pure."""
+    return math.floor(max(0, total_bytes) * MEMORY_CEILING_SHARE / 1024**3 * 10) / 10
+
+
+def wisp_memory(total_bytes: int) -> dict:
+    """The memory keys Wisp owns: the custom tier and its ceiling. Pure. oMLX refuses a
+    custom tier with no ceiling, so a Mac whose memory can't be read gets "aggressive"."""
+    ceiling = ceiling_gb(total_bytes)
+    if ceiling <= 0:
+        return {"memory_guard_tier": "aggressive"}
+    return {"memory_guard_tier": MEMORY_GUARD_TIER, "memory_guard_custom_ceiling_gb": ceiling}
+
+
+def memory_guard(existing: dict, already_set: bool, recorded: dict | None = None,
+                 total_bytes: int | None = None) -> dict | None:
     """The memory section Wisp writes, or None to leave the existing one alone. Pure.
 
-    No tier (or one oMLX can't read) gets Wisp's. oMLX's own first-start "balanced" is
-    moved to Wisp's once; after that "balanced" is the user's choice. "safe", "custom"
-    (with its ceiling) and "aggressive" are always kept, with every other memory key.
+    - No tier (or one oMLX can't read) gets Wisp's.
+    - oMLX's own first-start "balanced" is moved to Wisp's once; after that "balanced" is
+      the user's choice.
+    - A tier Wisp wrote itself (the record names it and the settings are still on it) is
+      moved to Wisp's current one: an earlier Wisp's "aggressive", or a custom ceiling for a
+      different amount of memory.
+    - Anything else the user picked ("safe", their own "custom" ceiling, "aggressive" with
+      no record of Wisp writing it) is kept, with every other memory key.
     """
+    total = physical_memory_bytes() if total_bytes is None else total_bytes
+    target = wisp_memory(total)
     memory = existing.get("memory")
     memory = memory if isinstance(memory, dict) else {}
     tier = memory.get("memory_guard_tier")
     tier = tier.lower() if isinstance(tier, str) else None
-    if tier in MEMORY_GUARD_TIERS and (tier != _ENGINE_DEFAULT_TIER or already_set):
-        return None
-    return {**memory, "memory_guard_tier": MEMORY_GUARD_TIER}
+    if tier not in MEMORY_GUARD_TIERS or (tier == _ENGINE_DEFAULT_TIER and not already_set):
+        return {**memory, **target}
+    recorded_tier = (recorded or {}).get("memory_guard_tier")
+    if already_set and tier == recorded_tier:
+        if tier in _EARLIER_WISP_TIERS:
+            return {**memory, **target}
+        if tier == MEMORY_GUARD_TIER and memory.get("memory_guard_custom_ceiling_gb") == \
+                (recorded or {}).get("memory_guard_custom_ceiling_gb") and \
+                memory.get("memory_guard_custom_ceiling_gb") != target["memory_guard_custom_ceiling_gb"]:
+            return {**memory, **target}
+    return None
 
 
 def read_settings(path: Path) -> dict:
@@ -401,12 +446,18 @@ class EngineManager:
         merged = merge_owned(existing, engine_settings(
             self.port, self.api_key, self.model_dirs(), user_dirs=_saved_model_dirs(existing)))
         record = self.layout.memory_guard_record
-        memory = memory_guard(existing, already_set=record.exists())
+        recorded = read_settings(record) if record.exists() else None
+        memory = memory_guard(existing, already_set=record.exists(), recorded=recorded)
         if memory is not None:
             merged["memory"] = memory
         _write_private(self.layout.settings_path, json.dumps(merged, indent=2))
-        if not record.exists():
-            _write_private(record, json.dumps({"memory_guard_tier": MEMORY_GUARD_TIER}))
+        # The record is what Wisp last wrote, so a later Wisp can tell its own choice
+        # from one the user made in the admin UI.
+        if memory is not None or not record.exists():
+            written = {key: memory[key] for key in ("memory_guard_tier", "memory_guard_custom_ceiling_gb")
+                       if memory is not None and key in memory} or wisp_memory(physical_memory_bytes())
+            if recorded != written:
+                _write_private(record, json.dumps(written))
         # Before the engine starts: it reads model_settings.json once, at startup.
         from . import profiles
         profiles.seed(self.layout.base_path / "model_settings.json",
