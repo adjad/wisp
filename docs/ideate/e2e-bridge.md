@@ -43,3 +43,10 @@ Nothing was written outside the project folder (checked the home folder's top le
 - Not tested here: the in-app tab driving this (it is tested after the swap), cancel on a live run, and the
   bundled (in-app) harness path. The bundled path is covered by `tests/test_ideate_harness_bundle.py` and the
   sandboxed `--version`/`get_state` smoke the bridge builder ran.
+
+## Rerun after the audit fixes (head 9dc2bb3c, stricter sandbox)
+
+Script variant, "Write tip.py: a function tip(total, percent) … print tip(42.5, 18)": `ls -la` ran without a card →
+`write tip.py` → `python3 tip.py` raised an approval card → Allow → ran ok → "Made `tip.py` … it prints `7.65`" →
+status `done` (42.5 × 18% = 7.65, correct). The hardened profile (Library stores denied, process-info limited to
+itself, barred commands, engine-port card) did not get in the harness's way. oQ3e stayed the only model loaded.
