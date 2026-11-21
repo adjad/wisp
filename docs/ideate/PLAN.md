@@ -1,6 +1,6 @@
 # Ideate + Customize Harbor — plan and decision log
 
-Base: Wisp `claude/harbor-0.1.8` b261fce8 (installed 0.1.8, build 54). Branch `claude/harbor-ideate`.
+Base: the installed 0.1.8 source, b261fce8 (build 54), on its own feature branch.
 Harbor stage branch: local `stage-ideate` from `stage-0.1.8` 1ed0716. Never pushed, never published.
 Version stays 0.1.8 (pipeline patch 0019). Preview staged as `/Applications/Harbor.app.new` only.
 
@@ -46,7 +46,7 @@ Version stays 0.1.8 (pipeline patch 0019). Preview staged as `/Applications/Harb
 
 ## Decision log
 
-- **D1 Base and isolation.** Own worktree from b261fce8; 0.1.7/0.1.8 branches, h017 worktrees and main untouched.
+- **D1 Base and isolation.** Own checkout from b261fce8; the 0.1.7 and 0.1.8 release lines and main untouched.
 - **D2 Strip size.** Ask · Brief · Day + at most two wildcards (same five-tab width as today). Never-asked
   installs keep Meet + Study, so nothing changes for the current user until they pick.
 - **D3 Onboarding place.** "Customize" goes after About you and before How to use, so the tour shows the

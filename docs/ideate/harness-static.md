@@ -222,7 +222,7 @@ Environment and directories to redirect (so nothing touches the user's own confi
 | Data / sessions | `PI_CODING_AGENT_SESSION_DIR` or `--session-dir` | `XDG_DATA_HOME/opencode/` (`opencode.db`, `log/opencode.log`, `shell/<hash>/sh_*.out`); `OPENCODE_DB` renames the db or `:memory:` |
 | Cache/state | none observed | `XDG_CACHE_HOME/opencode/bin/opencode-pty/<ver>/` (extracted helper), `XDG_STATE_HOME/opencode/pty/<id>/service.json,lock`, `$TMPDIR/opencode` |
 | HOME | node reads `$HOME` for the launcher only if `PI_CODING_AGENT_DIR` unset | set `HOME` as well; its default config also reads `~/.config/opencode` unless `XDG_CONFIG_HOME` is set |
-| Project-local | `.pi/` dirs only load if project-trusted; `--no-approve`/`--approve` give an explicit decision; `AGENTS.md`/`CLAUDE.md` load regardless unless `--no-context-files` | `opencode.json(c)` and `.opencode/` in every ancestor directory are merged, including above the repo root; `OPENCODE_DISABLE_CLAUDE_CODE=1` stops importing Claude Code files |
+| Project-local | `.pi/` dirs only load if project-trusted; `--no-approve`/`--approve` give an explicit decision; project instruction files load regardless unless `--no-context-files` | `opencode.json(c)` and `.opencode/` in every ancestor directory are merged, including above the repo root; an env switch stops importing other agents' instruction files |
 
 Caution: the OpenCode desktop app in `/Applications` keeps a background service whose registration lives in the user's
 `~/.config/opencode/service.json` (a server password sits there). A bridge must never use `run`/TUI without `--standalone`
@@ -414,7 +414,7 @@ env -i HOME="$H/home" PATH="$HARBOR_RUNTIME/bin:/usr/bin:/bin" TMPDIR="$H/tmp" \
      --no-context-files --no-approve
 # cwd = $P
 ```
-(`--no-context-files` stops a stray `AGENTS.md` steering the model; drop it if Harbor wants to honor user context files.)
+(`--no-context-files` stops a stray project instruction file steering the model; drop it if Harbor wants to honor user context files.)
 For a first session omit `--session-dir` resume flags; to resume send `--continue` (same cwd) or RPC `switch_session`.
 
 `$H/pi-agent/models.json` and `settings.json`: exactly the files in section 4 (Pi), with `defaultProvider`/`defaultModel` set and
