@@ -100,12 +100,21 @@ final class MailDBReader {
     // source reports truncation for the same account at the same depth.
     private let historyCap = 12000
 
+    /// Mail's "V<N>" data folders, highest N first. Pure.
+    static func versionFoldersNewestFirst(_ entries: [String]) -> [String] {
+        entries.compactMap { name -> (String, Int)? in
+            guard name.hasPrefix("V"), let n = Int(name.dropFirst()) else { return nil }
+            return (name, n)
+        }.sorted { $0.1 > $1.1 }.map(\.0)
+    }
+
     private func envelopeIndexPath() -> String? {
         let mailDir = mailDirectory
         guard let entries = try? FileManager.default.contentsOfDirectory(atPath: mailDir) else { return nil }
         // Highest "V<N>" wins — that's always the current format version;
         // stale V<N-1> directories can linger after a macOS upgrade.
-        for e in entries.sorted().reversed() where e.hasPrefix("V") {
+        // Numerically: a plain string sort puts "V9" after "V10".
+        for e in Self.versionFoldersNewestFirst(entries) {
             let candidate = "\(mailDir)/\(e)/MailData/Envelope Index"
             if FileManager.default.fileExists(atPath: candidate) { return candidate }
         }

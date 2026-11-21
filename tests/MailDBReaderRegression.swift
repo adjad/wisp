@@ -390,5 +390,10 @@ enum MailDBReaderRegression {
         precondition(R.closedReadFailure(mailDirectoryExists: false, listErrno: 0, hasIndex: false).kind
                      == "mail_not_configured")
         precondition(R.closedReadFailure(mailDirectoryExists: true, listErrno: 0, hasIndex: true).kind == "")
+
+        // Mail's data folders, newest version first, numerically ("V10" beats "V9").
+        precondition(R.versionFoldersNewestFirst(["V9", "V10", "V8", "Vx", "MailData", "V11.bak"]) == ["V10", "V9", "V8"],
+                     "V10 is newer than V9")
+        precondition(R.versionFoldersNewestFirst([]) == [])
     }
 }
