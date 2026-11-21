@@ -344,7 +344,23 @@ struct NotchIdeateView: View {
             Text(ideate.availability.reason.isEmpty ? "Ideate can't start on this Mac yet." : ideate.availability.reason)
                 .font(.wisp(.body)).foregroundStyle(Theme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
-            pill("Check again", icon: "arrow.clockwise", filled: false) { Task { await ideate.refresh() } }
+            HStack(spacing: 8) {
+                if ideate.availability.canLink {
+                    pill(ideate.linking ? "Linking" : "Use the copy on this Mac", icon: "link", filled: true) {
+                        ideate.linkModel()
+                    }
+                    .disabled(ideate.linking)
+                }
+                pill("Check again", icon: "arrow.clockwise", filled: false) { Task { await ideate.refresh() } }
+            }
+            if ideate.linking {
+                Text("Linking. This takes a moment and uses no extra space.")
+                    .font(.wisp(.footnote)).foregroundStyle(Theme.textSecondary)
+            } else if let note = ideate.linkNote {
+                Text(note).font(.wisp(.footnote))
+                    .foregroundStyle(ideate.linkFailed ? Theme.bad : Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 

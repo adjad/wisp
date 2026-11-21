@@ -75,5 +75,13 @@ Version stays 0.1.8 (pipeline patch 0019). Preview staged as `/Applications/Harb
   setting, so Ideate ships a lean profile instead: short system prompt, 4 tools, ~1.4k-token context budget with
   truncation/compaction, and an honest "ran out of memory room" error. This limits Ideate to small, few-step builds
   until the user raises the ceiling. Question for the user at the end.
+- **D12 Engine re-pin to oMLX 0.8.2.** The installed Harbor runs its bundled engine (0.7.3), which cannot run
+  Inkling 2 (`inkling2_loop` support arrived in oMLX 0.8.x). The user updated /Applications/oMLX.app to 0.8.2 on
+  2026-11-20, so the Harbor pipeline's engine-guard check fails (4 of 11 patches) and no 0.7.3 copy is left on disk.
+  Per the user's standing rule ("use my version of oMLX as the bundled version"), the preview re-pins the bundled
+  engine to 0.8.2 and ports the guard patches (docs/ideate/engine-0.8.2-repin.md). Needs a Release Auditor before
+  any release; the DMG pins can't be verified without a download.
+- **D13 Model folder.** The bundled engine sees only its own models folder. Ideate offers "Use the copy on this
+  Mac": an APFS clone (no extra disk) of the Inkling folder from the oMLX folder into Wisp's engine models folder.
 - **D11 Tabs.** wildcard-tabs.md: of 16 candidates only Clips is BUILD LATER; the rest fold into Ask/Brief/Day/Study/
   Meet/Ideate or drop. Ships with Study, Meet, Ideate as the only wildcards.

@@ -30,6 +30,7 @@ Each is `NotchIdeateView(ideate: IdeateModel.qaFixture(kind: K, state: S), cap: 
 - `ideate-general-failed.png`: `.failed`, one soft-red line and Try again.
 - `ideate-general-unavailable.png`: `.unavailable`.
 - `ideate-general-model-swap.png`: `.modelSwap`, the note that Ask's model steps aside while Ideate loads its own.
+- `ideate-general-needs-link.png`: `.needsLink`, Inkling 2 Mini is on this Mac but not in the engine's folder; "Use the copy on this Mac" clones it in (APFS clone, no extra disk).
 
 ## Tab strip (`NotchQAIdeate.headerImage`, real `OverlayView` header)
 

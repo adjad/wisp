@@ -29,6 +29,7 @@ enum NotchQAIdeate {
         pages.append(("ideate-general-failed", .general, .failed))
         pages.append(("ideate-general-unavailable", .general, .unavailable))
         pages.append(("ideate-general-model-swap", .general, .modelSwap))
+        pages.append(("ideate-general-needs-link", .general, .needsLink))
         return pages
     }()
 

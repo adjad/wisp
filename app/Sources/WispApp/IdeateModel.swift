@@ -17,6 +17,10 @@ struct IdeateAvailability: Equatable {
     /// The coding model is already loaded. When it is not, starting loads it (about 13 GB).
     var modelLoaded = false
     var projectsRoot = ""
+    /// A copy of the model is already on this Mac and can be linked into Wisp's model folder.
+    var canLink = false
+    /// Linked already; the engine lists it the next time it starts.
+    var linkPendingRestart = false
 
     init() {}
 
@@ -27,6 +31,8 @@ struct IdeateAvailability: Equatable {
         model = json["model"] as? String ?? ""
         modelLoaded = json["model_loaded"] as? Bool ?? false
         projectsRoot = json["projects_root"] as? String ?? ""
+        canLink = json["can_link"] as? Bool ?? false
+        linkPendingRestart = json["link_pending_restart"] as? Bool ?? false
     }
 }
 
@@ -75,7 +81,7 @@ struct IdeateFile: Identifiable, Equatable {
 
 /// A canned state for the notch QA renderer.
 enum IdeateQAState: CaseIterable {
-    case empty, running, approval, done, failed, unavailable, modelSwap
+    case empty, running, approval, done, failed, unavailable, modelSwap, needsLink
 }
 
 @MainActor
@@ -96,6 +102,11 @@ final class IdeateModel: ObservableObject {
     @Published private(set) var message: String?
     /// The error that ended the run, one line.
     @Published private(set) var failure: String?
+    /// Linking the on-Mac copy of the model is under way.
+    @Published private(set) var linking = false
+    /// What the last link attempt said, shown inline under the button (success or why not).
+    @Published private(set) var linkNote: String?
+    @Published private(set) var linkFailed = false
 
     /// The current ideator kind, saved under `wisp.ideate.kind`.
     @Published var kind: IdeateKind {
@@ -234,6 +245,26 @@ final class IdeateModel: ObservableObject {
             case .refused(let why): message = why; await poll(id)
             case .ok: await poll(id); ensurePolling()
             }
+        }
+    }
+
+    /// Clones the copy of the model that is already on this Mac into Wisp's model folder
+    /// (service: POST /ideate/model/link), then refreshes the status.
+    func linkModel() {
+        guard networking, !linking else { return }
+        linking = true
+        linkNote = nil
+        linkFailed = false
+        Task {
+            switch await call("POST", "model/link", body: [:]) {
+            case .refused(let why):
+                linkFailed = true
+                linkNote = why
+            case .ok(let json):
+                linkNote = json["message"] as? String
+            }
+            linking = false
+            await refresh()
         }
     }
 
@@ -412,6 +443,10 @@ final class IdeateModel: ObservableObject {
         case .modelSwap:
             availability.modelLoaded = false
             model.projects = recent
+        case .needsLink:
+            availability.available = false
+            availability.canLink = true
+            availability.reason = "Inkling 2 Mini is on this Mac but not in Wisp's model folder."
         case .unavailable:
             availability.available = false
             availability.reason = "Inkling 2 Mini isn't downloaded yet. Open Settings and download it, then come back."

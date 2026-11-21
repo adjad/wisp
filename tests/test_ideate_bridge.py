@@ -343,7 +343,7 @@ def test_model_swap_is_announced_and_released(world, monkeypatch):
     assert residency.ensured == 1 and residency.begun == residency.ended == 1
 
 
-def test_status_and_unavailable_reasons(world, monkeypatch):
+def test_status_and_unavailable_reasons(world, monkeypatch, tmp_path):
     manager, client, residency = world
     body = client.get("/ideate/status").json()
     assert body["available"] is True and body["harness"] == "pi" and body["model"] == config.MODEL_LABEL
@@ -356,7 +356,10 @@ def test_status_and_unavailable_reasons(world, monkeypatch):
     assert client.get("/ideate/projects").json()["projects"] == []
     monkeypatch.setattr(manager, "_sandbox_usable", lambda: True)
     residency.model = engine.ModelState(True, False, False)
-    assert "isn't downloaded" in client.get("/ideate/status").json()["reason"]
+    monkeypatch.setattr(engine, "_home", lambda: tmp_path / "no-home")
+    monkeypatch.setattr(engine, "models_dir", lambda: tmp_path / "no-models")
+    body = client.get("/ideate/status").json()
+    assert body["reason"] == "Inkling 2 Mini isn't on this Mac." and body["can_link"] is False
 
 
 def test_routes_refuse_web_pages_bad_ids_and_kinds(world):

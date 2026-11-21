@@ -12,6 +12,15 @@ from __future__ import annotations
 MODEL_ID = "Inkling-2-Mini-oQ3e-mtp"
 MODEL_LABEL = "Inkling 2 Mini"
 PROVIDER = "omlx"
+# Where the engine expects it: <models folder>/<ORG>/<MODEL_ID> (the Hugging Face id's layout).
+MODEL_ORG = "mlx-community"
+# Places a copy may already be on this Mac, relative to the home folder. Each is searched
+# for <MODEL_ID> at most MODEL_SEARCH_DEPTH folders down. The Hugging Face cache is searched
+# separately (models--<org>--<id>/snapshots/<rev>).
+MODEL_SEARCH_DIRS = ("Desktop/OMLX_Model_Files", "Documents/OMLX_Model_Files", ".omlx/models",
+                     ".lmstudio/models", "Models")
+MODEL_SEARCH_DEPTH = 2
+HF_CACHE_DIR = ".cache/huggingface/hub"
 
 # Pi's tool names. grep/find/ls are left out: bash covers them, and each schema costs prompt tokens.
 TOOLS = ("read", "write", "edit", "bash")

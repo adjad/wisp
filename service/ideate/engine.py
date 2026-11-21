@@ -24,7 +24,14 @@ state (prewarm task, epochs) lives.
 from __future__ import annotations
 
 import asyncio
+import ctypes
+import ctypes.util
+import errno
 import ipaddress
+import os
+import shutil
+import uuid
+from pathlib import Path
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -125,3 +132,158 @@ class Residency:
         from service import idle
         idle.end(config.MODEL_ID)
         idle.end_foreground()
+
+
+# --- A copy of the model that is already on this Mac ---------------------------------------
+
+class LinkRefused(RuntimeError):
+    """The link was not made; the text is plain words for the tab."""
+
+
+def _home() -> Path:
+    return Path.home()
+
+
+def models_dir() -> Path:
+    """The bundled engine's own models folder (the engine scans only this, plus folders added
+    in its admin page)."""
+    from service.engine import mode
+    return mode.engine_data_dir() / "models"
+
+
+def bundled() -> bool:
+    from service.engine import mode
+    return mode.is_bundled()
+
+
+def target_path() -> Path:
+    return models_dir() / config.MODEL_ORG / config.MODEL_ID
+
+
+def _valid_model_folder(path: Path) -> bool:
+    try:
+        if not path.is_dir():
+            return False
+        names = [p.name for p in path.iterdir()]
+    except OSError:
+        return False
+    return "config.json" in names and any(n.endswith(".safetensors") for n in names)
+
+
+def _search(base: Path, depth: int):
+    """Folders called MODEL_ID under base, at most `depth` levels down."""
+    if depth < 0 or not base.is_dir() or base.is_symlink():
+        return
+    try:
+        children = sorted(base.iterdir())
+    except OSError:
+        return
+    for child in children:
+        if child.name == config.MODEL_ID and child.is_dir() and not child.is_symlink():
+            yield child
+        elif depth > 0 and child.is_dir() and not child.is_symlink():
+            yield from _search(child, depth - 1)
+
+
+def find_local_copy() -> Path | None:
+    """A valid copy of the model outside Wisp's models folder, or None."""
+    home = _home()
+    own = target_path()
+    for rel in config.MODEL_SEARCH_DIRS:
+        for found in _search(home / rel, config.MODEL_SEARCH_DEPTH):
+            if found != own and _valid_model_folder(found):
+                return found
+    snapshots = (home / config.HF_CACHE_DIR / f"models--{config.MODEL_ORG}--{config.MODEL_ID}" / "snapshots")
+    try:
+        revisions = sorted(snapshots.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        revisions = []
+    for rev in revisions:
+        if _valid_model_folder(rev):
+            return rev
+    return None
+
+
+def link_pending() -> bool:
+    """Already cloned into the engine's folder (so it appears when the engine next starts)."""
+    return _valid_model_folder(target_path())
+
+
+def _clonefile(src: Path, dst: Path) -> None:
+    libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+    if libc.clonefile(os.fsencode(src), os.fsencode(dst), 0) != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code))
+
+
+def _same_volume(a: Path, b: Path) -> bool:
+    return os.stat(a).st_dev == os.stat(b).st_dev
+
+
+def _plan(source: Path) -> list[tuple[Path, Path]]:
+    """Every regular file to clone, as (real file, path relative to the model folder). Symlinks
+    are refused, except inside a Hugging Face snapshot, where a link is fine only when it lands
+    in that model's own blobs folder."""
+    hf_blobs = None
+    if source.parent.name == "snapshots" and source.parent.parent.name.startswith("models--"):
+        hf_blobs = (source.parent.parent / "blobs").resolve()
+    out: list[tuple[Path, Path]] = []
+    for dirpath, dirnames, filenames in os.walk(source, followlinks=False):
+        here = Path(dirpath)
+        for name in list(dirnames):
+            if (here / name).is_symlink():
+                raise LinkRefused("That copy contains a shortcut, so Wisp won't use it.")
+        for name in filenames:
+            f = here / name
+            real = f
+            if f.is_symlink():
+                real = f.resolve()
+                if hf_blobs is None or hf_blobs not in real.parents:
+                    raise LinkRefused("That copy contains a shortcut, so Wisp won't use it.")
+            if not real.is_file():
+                raise LinkRefused("That copy is incomplete, so Wisp won't use it.")
+            out.append((real, f.relative_to(source)))
+    return out
+
+
+def link_model(source: Path | None = None) -> Path:
+    """Clone the local copy into the engine's models folder (APFS clonefile: no extra disk,
+    no 13 GB copy). Refuses rather than copying when a clone isn't possible. The source is only
+    read. The clone is made under a temporary name, then renamed. Returns the final folder."""
+    if not bundled():
+        raise LinkRefused("Wisp is using your own oMLX. Add the folder in oMLX.")
+    source = source or find_local_copy()
+    if source is None:
+        raise LinkRefused(f"{config.MODEL_LABEL} isn't on this Mac.")
+    if source.is_symlink() or not _valid_model_folder(source):
+        raise LinkRefused("That copy is incomplete or is a shortcut, so Wisp won't use it.")
+    final = target_path()
+    if final.exists() or final.is_symlink():
+        raise LinkRefused("Wisp's model folder already has it. It shows up when Wisp's engine restarts.")
+    parent = final.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    if parent.is_symlink() or models_dir().is_symlink():
+        raise LinkRefused("Wisp's model folder is a shortcut, so nothing was linked.")
+    files = _plan(source)
+    if not _same_volume(source, parent):
+        raise LinkRefused("That copy is on another drive, and copying 13 GB isn't done here. "
+                          "Move it to this Mac's main drive first.")
+    tmp = parent / f".{config.MODEL_ID}.linking-{uuid.uuid4().hex[:8]}"
+    try:
+        tmp.mkdir()
+        for real, rel in files:
+            dst = tmp / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            _clonefile(real, dst)
+        if not _valid_model_folder(tmp):
+            raise LinkRefused("The copy came out incomplete. Nothing was linked.")
+        os.rename(tmp, final)
+    except LinkRefused:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    except OSError as exc:
+        shutil.rmtree(tmp, ignore_errors=True)
+        if exc.errno in (errno.ENOTSUP, errno.EXDEV, errno.EOPNOTSUPP, errno.ENOSYS):
+            raise LinkRefused("This drive can't share files without copying them, so nothing was linked.") from None
+        raise LinkRefused("Wisp couldn't link the model. Nothing was changed.") from None
+    return final

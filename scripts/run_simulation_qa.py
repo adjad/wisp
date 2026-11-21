@@ -208,6 +208,8 @@ PROFILE_TESTS = {
         # Ideate's bridge: a Python stand-in for Pi over RPC JSONL, tmp_path projects, a stand-in engine;
         # the real sandbox-exec case skips inside this profile's own sandbox.
         "tests/test_ideate_bridge.py",
+        # Finding Ideate's model on this Mac and cloning it into Wisp's engine folder (tmp trees only).
+        "tests/test_ideate_model_link.py",
         "tests/test_shell_local_service_deny.py",
         # /resetwisp on a scratch home under pytest's temp dir; no Google, Keychain, TCC or live service.
         "tests/test_wisp_reset.py",
