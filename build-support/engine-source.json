@@ -1,9 +1,10 @@
 {
   "schema": 1,
   "repo": "jundot/omlx",
-  "tag": "v0.7.3",
-  "omlx_version": "0.7.3",
-  "asset": "oMLX-0.7.3-macos26-27.dmg",
-  "size": 881239063,
-  "sha256": "2acfde41aeac0b022dbca803ca109437f3ccaf0c33f3415881526b985bee86f2"
+  "tag": "v0.8.2",
+  "omlx_version": "0.8.2",
+  "asset": "oMLX-0.8.2-macos26-27.dmg",
+  "size": 1,
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "unverified": "size and sha256 are placeholders and the asset name follows the 0.7.3 naming; set all three from GitHub's v0.8.2 release asset digest before a --fetch-engine build. Until then a download fails closed on the size check."
 }

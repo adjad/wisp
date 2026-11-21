@@ -1,6 +1,6 @@
 {
   "minimum_macos": "26.2",
-  "omlx_version": "0.7.3",
+  "omlx_version": "0.8.2",
   "schema": 1,
-  "source_tree_sha256": "43bc865f4662bd5d137997edb25229798d56344e89a2c587353d0e2c01669fac"
+  "source_tree_sha256": "07367fc87e9a960d0c4426509f16a00c95304e1581193686600cf3778ec04648"
 }

@@ -21,6 +21,11 @@
       "source": "https://github.com/dofuuz/python-soxr",
       "note": "LGPL-2.1 or later. Compiled extension shipped unmodified; the source for this version is available from the project at the address listed with it."
     },
+    "zeroconf": {
+      "class": "weak-copyleft",
+      "source": "https://github.com/python-zeroconf/python-zeroconf",
+      "note": "LGPL-2.1 or later. New in oMLX 0.8.2 (cluster peer discovery, imported only when that runs). Shipped unmodified as its Python sources beside the Cython-compiled extensions built from them, so it can be replaced by another copy of the same package; the source for this version is available from the project at the address listed with it."
+    },
     "certifi": {
       "class": "weak-copyleft",
       "note": "MPL-2.0 (CA bundle data). Shipped unmodified."
