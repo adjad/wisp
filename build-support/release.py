@@ -21,6 +21,7 @@ import time
 from urllib.parse import quote
 
 import engine as engine_build
+import ideate_harness
 from pipeline import (BoundReleaseAssets, BuildError, CONFIG, GitHubReleaseUploader, ROOT, SUPPORT, archive, clean_env,
                       git, inventory, json_write, relocation_smoke, distribution_roundtrip,
                       validate_native, validate_structure, verify_artifacts, signing_targets, verify_bundle_signature, scan_host_paths)
@@ -219,6 +220,7 @@ ENTITLEMENT_SOURCES = {
     "app": "build-support/app.entitlements",
     "python": "build-support/python.entitlements",
     "engine": engine_build.ENGINE_ENTITLEMENTS,
+    "node": ideate_harness.NODE_ENTITLEMENTS,
 }
 
 
@@ -362,6 +364,8 @@ def entitlement_role(bundle, target, main_executable=None):
                        else Path(main_executable))
     if target in (bundle, main_executable):
         return "app"
+    if ideate_harness.is_node_target(bundle, target):
+        return "node"
     return "engine" if engine_build.is_engine_target(bundle, target) else "python"
 
 

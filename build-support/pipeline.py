@@ -25,6 +25,7 @@ import zipfile
 
 import engine as engine_build
 import engine_licenses
+import ideate_harness
 import uv_tool
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -670,7 +671,7 @@ def source_files() -> list[Path]:
 
 
 def assemble(runner, binary, destination, meta, offline=False, engine_app=None, google_client=None,
-             uv_archive=None):
+             uv_archive=None, ideate_source=None, ideate_node=None):
     bundle = destination / "Wisp.app"
     contents = bundle / "Contents"
     resources = contents / "Resources"
@@ -742,6 +743,16 @@ def assemble(runner, binary, destination, meta, offline=False, engine_app=None, 
             engine_licenses.write_notices(bundle)
         except engine_licenses.LicenseError as exc:
             raise BuildError(str(exc)) from None
+    # Ideate's coding harness (ideate_harness.py): opt-in with --ideate-harness; release builds
+    # must match ideate-harness.lock.json, previews record a mismatch.
+    if ideate_source is not None:
+        try:
+            meta["ideate_harness"] = ideate_harness.stage(
+                bundle, ideate_source, ideate_node, release=not (meta["dirty"] or meta.get("preview")))
+        except ideate_harness.HarnessError as exc:
+            raise BuildError(str(exc)) from None
+    else:
+        meta["ideate_harness"] = None
     json_write(resources / "build-info.json", meta)
     # Normalize modes before signing so umask does not change candidate archives.
     for path in bundle.rglob("*"):
@@ -800,6 +811,11 @@ def validate_structure(bundle: Path, meta: dict):
         try:
             uv_tool.validate(bundle, meta["uv"])
         except uv_tool.UVToolError as exc:
+            raise BuildError(str(exc)) from None
+    if "ideate_harness" in meta or (bundle / ideate_harness.BUNDLE_DIR).exists():
+        try:
+            ideate_harness.validate(bundle, meta.get("ideate_harness"))
+        except ideate_harness.HarnessError as exc:
             raise BuildError(str(exc)) from None
     if engine_build.read_engine_json(bundle) is not None or meta.get("engine"):
         try:
@@ -1455,6 +1471,11 @@ def main():
     p.add_argument("--no-uv", action="store_true",
                    help="Build without the bundled uv/uvx (Google tools then need uv on the Mac); "
                         "otherwise a missing or mismatched pinned uv release fails the build")
+    p.add_argument("--ideate-harness", type=Path,
+                   help="Pi release folder (or the Pi install root ~/.pi/agent) bundled, pruned, as Ideate's "
+                        "coding harness (opt-in; release builds must match build-support/ideate-harness.lock.json)")
+    p.add_argument("--ideate-node", type=Path,
+                   help="Node binary bundled with --ideate-harness (default: Pi's own pi-node, else node on PATH)")
     p.add_argument("--test-python", type=Path, help="Existing interpreter for test/swift auditing only")
     p.add_argument("--qa-runtime", type=Path,
                    help="Closed Python runtime tree for the separate managed-QA artifact")
@@ -1467,6 +1488,8 @@ def main():
         p.error("--jobs must be at least 1")
     if args.fetch_engine and args.engine_app:
         p.error("--fetch-engine and --engine-app are mutually exclusive")
+    if args.ideate_node and not args.ideate_harness:
+        p.error("--ideate-node needs --ideate-harness")
     if args.dry_run:
         print(json.dumps({"command": args.command, "toolchain": CONFIG, "stages": ["preflight and lock validation", "pinned runtime and hash-checked binary dependencies", "pipeline contracts + isolated Python suites + Swift contracts" if args.command != "preview" else "SKIPPED for preview: Simulation QA, native/browser peer gates, benchmark contracts, distribution evidence", "Swift release build and icon generation", "tracked source + relocatable runtime assembly", "ad-hoc sealed native/resource/relocation verification", "normalized ZIP, checksums, dependency inventory, provenance, release notes"],
                           "external_release": "release requires protected CI, an exact version tag, credentials, and explicit dispatch", "installs_app": False, "offline": args.offline}, indent=2))
@@ -1549,6 +1572,13 @@ def main():
                     uv_archive = uv_tool.verified_archive(STATE / "uv-tool-cache", offline=args.offline)
                 except uv_tool.UVToolError as exc:
                     raise BuildError(f"{exc}. Pass --no-uv to build without the bundled uv.") from None
+            # Checked before any test runs, so a wrong harness folder fails fast.
+            ideate_source = None
+            if packaging and args.ideate_harness:
+                try:
+                    ideate_source = ideate_harness.release_dir(args.ideate_harness)
+                except ideate_harness.HarnessError as exc:
+                    raise BuildError(str(exc)) from None
             source_start = source_fingerprint() if meta else None
             if meta:
                 meta["tracked_source_sha256"] = source_start
@@ -1577,7 +1607,8 @@ def main():
                     output.mkdir(parents=True, exist_ok=False)
                     try:
                         bundle = assemble(runner, binary, output, meta, args.offline, engine_app,
-                                          google_client=google_client, uv_archive=uv_archive)
+                                          google_client=google_client, uv_archive=uv_archive,
+                                          ideate_source=ideate_source, ideate_node=args.ideate_node)
                         mounted.close()
                         validate_structure(bundle, meta)
                         prepare_native_for_signing(runner, bundle)

@@ -205,6 +205,9 @@ PROFILE_TESTS = {
         # run_shell's write guard: a Wisp folder and a home in a temp dir. The real-process
         # cases need to apply a sandbox, so they skip inside this profile's own sandbox.
         "tests/test_shell_sandbox.py",
+        # Ideate's bridge: a Python stand-in for Pi over RPC JSONL, tmp_path projects, a stand-in engine;
+        # the real sandbox-exec case skips inside this profile's own sandbox.
+        "tests/test_ideate_bridge.py",
         "tests/test_shell_local_service_deny.py",
         # /resetwisp on a scratch home under pytest's temp dir; no Google, Keychain, TCC or live service.
         "tests/test_wisp_reset.py",
@@ -621,6 +624,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_bundled_engine_mode.py",
     # Engine packaging on a synthetic oMLX.app: selection, pruning, pinning, validation.
     "tests/test_engine_packaging.py",
+    # Ideate's harness bundle on a fake Pi release and a fake Node: prune, pin, licences, validate.
+    "tests/test_ideate_harness_bundle.py",
     "tests/test_engine_licenses.py",
     # Pure fake enforcers/tasks, synthetic package bytes and intercepted HTTP.
     # No engine/model/native launch, real provider or host memory probes.

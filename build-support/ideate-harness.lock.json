@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "harness": "pi",
+  "version": "1.6.0",
+  "source_commit": "faac585884ae2c013a6b1400f3e9e77f10b34bac",
+  "manifest_sha256": "bac313d0d8b4a24e5e66a76d7fc90d643e250371b19707a4d36c74ece2aeadb8",
+  "entries": 7863,
+  "node": {
+    "version": "24.21.0",
+    "sha256": "5a525e49dc45f9e7a8b5893f86a32ea251971a72997c02e6e18c1f98046542d5",
+    "note": "SHA-256 of the source Node binary before it is thinned to arm64"
+  }
+}
