@@ -58,6 +58,37 @@ func wildcardTabsChecks(_ check: (Bool, String) -> Void) {
     check(WildcardTabs.toggled(.ideate, in: [.ideate, .study]) == [.study], "a chosen tab leaves")
     check(WildcardTabs.toggled(.ask, in: [.study]) == [.study], "a fixed tab can't be toggled")
 
+    // The words: title, subtitle, state line and count for 0, 1 and 2 picked.
+    check(WildcardTabs.rowTitle == "Extra tabs", "the row is called Extra tabs")
+    check(WildcardTabs.rowSubtitle == "Add up to 2 tabs next to Ask, Brief and Day", "the subtitle says what it does and the limit")
+    check(WildcardTabs.rowSubtitle.contains("\(WildcardTabs.maxCount)"), "the subtitle's number is the limit")
+    check(WildcardTabs.stateLine([]) == "None added yet", "state line: none")
+    check(WildcardTabs.stateLine([.ideate]) == "Ideate is on", "state line: one")
+    check(WildcardTabs.stateLine([.study, .meet]) == "Study and Meet are on", "state line: two, in order")
+    check(WildcardTabs.stateLine([.meet, .ideate]) == "Meet and Ideate are on", "state line follows the saved order")
+    check(WildcardTabs.stateLine([.study, .meet, .ideate]) == "Study and Meet are on", "state line never names a third")
+    check(WildcardTabs.countText([]) == "0 of 2" && WildcardTabs.countText([.meet]) == "1 of 2"
+          && WildcardTabs.countText([.meet, .study]) == "2 of 2" && WildcardTabs.countText([.meet, .study, .ideate]) == "2 of 2",
+          "count: 0 of 2, 1 of 2, 2 of 2")
+    check(WildcardTabs.blockedNote(for: .ideate) == "Remove one to add Ideate"
+          && WildcardTabs.blockedNote(for: .study) == "Remove one to add Study", "blocked note names the tab")
+    check(WildcardTabs.chipValue(.meet, in: [.meet]) == "on" && WildcardTabs.chipValue(.study, in: [.meet]) == "off", "chips say on or off")
+    check(WildcardTabs.chipHint(.meet, in: [.meet]) == "Removes Meet from the tab strip"
+          && WildcardTabs.chipHint(.study, in: [.meet]) == "Adds Study to the tab strip"
+          && WildcardTabs.chipHint(.ideate, in: [.meet, .study]) == "Remove one to add Ideate", "chip hints say what a press does")
+
+    // Pressing: the third is refused with the blocked note, never silently.
+    check(WildcardTabs.press(.study, in: []) == WildcardTabs.Press(tabs: [.study], blockedNote: nil), "press adds when there is room")
+    check(WildcardTabs.press(.meet, in: [.study]) == WildcardTabs.Press(tabs: [.study, .meet], blockedNote: nil), "the second joins at the end")
+    check(WildcardTabs.press(.ideate, in: [.study, .meet]) == WildcardTabs.Press(tabs: [.study, .meet], blockedNote: "Remove one to add Ideate"),
+          "a third is refused and reports the blocked note")
+    let afterRemove = WildcardTabs.press(.study, in: [.study, .meet])
+    check(afterRemove == WildcardTabs.Press(tabs: [.meet], blockedNote: nil), "pressing a picked tab removes it")
+    let afterAdd = WildcardTabs.press(.ideate, in: afterRemove.tabs)
+    check(afterAdd == WildcardTabs.Press(tabs: [.meet, .ideate], blockedNote: nil), "after removing one, adding works and order is kept")
+    check(WildcardTabs.press(.ask, in: [.study]) == WildcardTabs.Press(tabs: [.study], blockedNote: nil), "a fixed tab is ignored without a note")
+    check(WildcardTabs.stateLine(afterAdd.tabs) == "Meet and Ideate are on", "the state line follows the press")
+
     // The saved choice: unset keeps Meet and Study; an empty list is a real choice.
     check(WildcardTabs.chosen(defaults: defaults) == [.meet, .study] && !WildcardTabs.wasChosen(defaults: defaults),
           "never chosen: Meet and Study, so nothing changes for an existing install")

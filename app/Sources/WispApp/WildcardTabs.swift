@@ -224,7 +224,57 @@ enum WildcardTabs {
 
     static let ideateNote = "Ideate builds in its own folder and asks before anything risky."
 
-    static let limitNote = "Two at most. Untick one to add another."
+    // MARK: The words and the choice, shared by quick settings and the You step
+
+    /// The row's title, in quick settings and in the You step.
+    static let rowTitle = "Extra tabs"
+
+    /// What the row does and its limit.
+    static let rowSubtitle = "Add up to 2 tabs next to Ask, Brief and Day"
+
+    /// Which are on: "Study and Meet are on", "Ideate is on", "None added yet".
+    static func stateLine(_ current: [NotchTab]) -> String {
+        let names = validated(current).map(\.title)
+        switch names.count {
+        case 0: return "None added yet"
+        case 1: return "\(names[0]) is on"
+        default: return "\(names[0]) and \(names[1]) are on"
+        }
+    }
+
+    /// "0 of 2", "1 of 2", "2 of 2".
+    static func countText(_ current: [NotchTab]) -> String {
+        "\(validated(current).count) of \(maxCount)"
+    }
+
+    /// Shown (and as a tooltip) when a third tab is pressed.
+    static func blockedNote(for tab: NotchTab) -> String { "Remove one to add \(tab.title)" }
+
+    /// What a chip says to VoiceOver: "on" or "off".
+    static func chipValue(_ tab: NotchTab, in current: [NotchTab]) -> String {
+        validated(current).contains(tab) ? "on" : "off"
+    }
+
+    /// What pressing a chip does, for VoiceOver's hint.
+    static func chipHint(_ tab: NotchTab, in current: [NotchTab]) -> String {
+        let now = validated(current)
+        if now.contains(tab) { return "Removes \(tab.title) from the tab strip" }
+        return canAdd(tab, to: now) ? "Adds \(tab.title) to the tab strip" : blockedNote(for: tab)
+    }
+
+    /// The result of pressing one chip: the new list, and the note to show when
+    /// the press was refused (a third tab). Never a silent no-op.
+    struct Press: Equatable {
+        let tabs: [NotchTab]
+        let blockedNote: String?
+    }
+
+    static func press(_ tab: NotchTab, in current: [NotchTab]) -> Press {
+        let now = validated(current)
+        guard candidates.contains(tab) else { return Press(tabs: now, blockedNote: nil) }
+        if !now.contains(tab) && !canAdd(tab, to: now) { return Press(tabs: now, blockedNote: blockedNote(for: tab)) }
+        return Press(tabs: toggled(tab, in: now), blockedNote: nil)
+    }
 
     static func ideateIsOn(defaults: UserDefaults = .standard) -> Bool {
         chosen(defaults: defaults).contains(.ideate)

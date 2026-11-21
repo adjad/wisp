@@ -12,6 +12,8 @@ struct OnboardingCustomizeStep: View {
     @State private var tabs: [NotchTab]
     @State private var kind: IdeateKind
     @State private var changing = false
+    /// Set when a third tab is pressed at the cap; cleared by the next change.
+    @State private var blockedNote: String?
 
     init() {
         let saved = HarborPersonaStore.persona()
@@ -99,17 +101,18 @@ struct OnboardingCustomizeStep: View {
     private var tabsCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Your tabs").font(.system(size: 13, weight: .medium))
+                Text(WildcardTabs.rowTitle).font(.system(size: 13, weight: .medium))
                 Spacer()
                 Button(changing ? "Done" : "Change") { changing.toggle() }
                     .buttonStyle(FirstRunButtonStyle())
             }
+            Text(WildcardTabs.rowSubtitle)
+                .font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+                .fixedSize(horizontal: false, vertical: true)
             OnboardingTabStripPreview(tabs: NotchTab.strip(wildcards: tabs))
-            if tabs.isEmpty {
-                Text("Just Ask, Brief and Day. Meet, Study and Ideate are one tap away under Change.")
-                    .font(.system(size: 12)).foregroundStyle(Theme.textMuted)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            Text("\(WildcardTabs.stateLine(tabs)) \u{00B7} \(WildcardTabs.countText(tabs))")
+                .font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
             if changing { changeList }
             if tabs.contains(.study) { note("cloud", WildcardTabs.studyDisclosure) }
             if tabs.contains(.meet) { note("mic.slash", WildcardTabs.meetNote) }
@@ -125,7 +128,7 @@ struct OnboardingCustomizeStep: View {
             ForEach(WildcardTabs.candidates, id: \.self) { tab in
                 let on = tabs.contains(tab)
                 let blocked = !on && !WildcardTabs.canAdd(tab, to: tabs)
-                Button { setTabs(WildcardTabs.toggled(tab, in: tabs)) } label: {
+                Button { press(tab) } label: {
                     HStack(spacing: 8) {
                         Image(systemName: on ? "checkmark.square.fill" : "square")
                             .font(.system(size: 13))
@@ -140,11 +143,15 @@ struct OnboardingCustomizeStep: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .disabled(blocked)
+                .help(blocked ? WildcardTabs.blockedNote(for: tab) : WildcardTabs.chipHint(tab, in: tabs))
+                .accessibilityLabel(tab.title)
+                .accessibilityValue(WildcardTabs.chipValue(tab, in: tabs))
+                .accessibilityHint(WildcardTabs.chipHint(tab, in: tabs))
                 .accessibilityAddTraits(on ? [.isButton, .isSelected] : .isButton)
             }
-            if tabs.count >= WildcardTabs.maxCount {
-                Text(WildcardTabs.limitNote).font(.system(size: 11.5)).foregroundStyle(Theme.textMuted)
+            if let note = blockedNote {
+                Text(note).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.warn)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if tabs.contains(.ideate) { ideateVariants }
         }
@@ -177,13 +184,17 @@ struct OnboardingCustomizeStep: View {
 
     private func apply(_ leaf: HarborPersona) {
         persona = leaf
+        blockedNote = nil
         HarborPersonaStore.choose(leaf)
         tabs = WildcardTabs.chosen()
         if let suggested = leaf.ideateKind { kind = suggested }
     }
 
-    private func setTabs(_ next: [NotchTab]) {
-        tabs = WildcardTabs.set(next)
+    /// A press either changes the tabs or, at the cap, says what to do: never nothing.
+    private func press(_ tab: NotchTab) {
+        let result = WildcardTabs.press(tab, in: tabs)
+        blockedNote = result.blockedNote
+        if result.blockedNote == nil { tabs = WildcardTabs.set(result.tabs) }
     }
 }
 

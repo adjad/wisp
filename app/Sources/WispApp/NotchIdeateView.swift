@@ -18,6 +18,8 @@ struct NotchIdeateView: View {
 
     @State private var prompt = ""
     @State private var followUp = ""
+    /// "Show the command" was pressed on the GPU row.
+    @State private var gpuCommandShown = false
     @FocusState private var promptFocused: Bool
     @FocusState private var followUpFocused: Bool
 
@@ -42,11 +44,13 @@ struct NotchIdeateView: View {
         var approvals: Int
         var files: Int
         var message: Bool
+        var gpu: Int
     }
 
     private var branches: Branches {
         Branches(mode: mode.rawValue, rows: ideate.timeline.rows.count, earlier: ideate.timeline.earlier > 0,
-                 approvals: ideate.approvals.count, files: ideate.files.count, message: ideate.message != nil)
+                 approvals: ideate.approvals.count, files: ideate.files.count, message: ideate.message != nil,
+                 gpu: (ideate.showsGPULimit ? 1 : 0) + (gpuCommandShown ? 2 : 0) + (ideate.gpuRaised ? 4 : 0))
     }
 
     private enum Mode: Int { case unavailable, home, running, done, failed }
@@ -110,6 +114,13 @@ struct NotchIdeateView: View {
                     .accessibilityLabel("Use the idea: \(starter)")
                 }
             }
+            if ideate.showsGPULimit {
+                gpuRow.transition(.opacity)
+            } else if ideate.gpuRaised {
+                Label(IdeateGPULimit.raised, systemImage: "checkmark.circle")
+                    .font(.wisp(.footnote)).foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if ideate.swapsModel { modelNote }
             if !ideate.projects.isEmpty { recent }
             Text("Runs on Inkling 2 Mini on this Mac · builds in its own folder")
@@ -144,6 +155,47 @@ struct NotchIdeateView: View {
         guard !text.isEmpty else { return }
         ideate.start(prompt: text, kind: kind)
         prompt = ""
+    }
+
+    /// macOS keeps the GPU to less memory than the engine's ceiling. The command only runs
+    /// through the code block's own "Run this script in Terminal?" card (Cancel first), and
+    /// Terminal asks for the password, never Wisp. Skip keeps the smaller budget.
+    private var gpuRow: some View {
+        let limit = ideate.gpuLimit
+        let open = gpuCommandShown || ideate.qaShowsGPUCommand
+        return VStack(alignment: .leading, spacing: 8) {
+            Label(IdeateGPULimit.title, systemImage: "memorychip")
+                .font(.wisp(.callout, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+            Text(IdeateGPULimit.detail)
+                .font(.wisp(.footnote)).foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if open {
+                // The code block's own Copy and Run in Terminal buttons, and its confirming card.
+                MarkdownView(text: limit.codeBlock)
+            }
+            HStack(spacing: 8) {
+                if !open {
+                    pill("Show the command", icon: "terminal", filled: false) { gpuCommandShown = true }
+                }
+                pill("Skip", icon: "xmark", filled: false) {
+                    gpuCommandShown = false
+                    ideate.skipGPULimit()
+                }
+                .help(IdeateGPULimit.skipNote)
+            }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Theme.chipFill))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.chipStroke, lineWidth: 1))
+        .task(id: open) {
+            // While the command is open, look again every few seconds: the row goes once
+            // Terminal has raised the limit.
+            while open && !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                ideate.refreshGPULimit()
+                if !ideate.gpuLimit.isLow { gpuCommandShown = false; break }
+            }
+        }
     }
 
     private var modelNote: some View {

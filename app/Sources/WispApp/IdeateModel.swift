@@ -81,7 +81,7 @@ struct IdeateFile: Identifiable, Equatable {
 
 /// A canned state for the notch QA renderer.
 enum IdeateQAState: CaseIterable {
-    case empty, running, approval, done, failed, unavailable, modelSwap, needsLink
+    case empty, running, approval, done, failed, unavailable, modelSwap, needsLink, gpuLow, gpuCommand
 }
 
 @MainActor
@@ -107,6 +107,15 @@ final class IdeateModel: ObservableObject {
     /// What the last link attempt said, shown inline under the button (success or why not).
     @Published private(set) var linkNote: String?
     @Published private(set) var linkFailed = false
+
+    /// macOS's GPU memory limit, read when the tab appears and before a run (IdeateGPULimit).
+    @Published private(set) var gpuLimit = IdeateGPULimit(physicalBytes: 0, currentMB: -1)
+    /// Skipped for now: the row stays hidden until Wisp next starts.
+    @Published private(set) var gpuSkipped = false
+    /// The limit was low and is now raised: the tab says so once.
+    @Published private(set) var gpuRaised = false
+    /// QA only: the command is shown open, as after pressing "Show the command".
+    private(set) var qaShowsGPUCommand = false
 
     /// The current ideator kind, saved under `wisp.ideate.kind`.
     @Published var kind: IdeateKind {
@@ -142,8 +151,23 @@ final class IdeateModel: ObservableObject {
     /// The tab appeared: refresh and resume polling if a run is active.
     func appeared() {
         visible = true
+        refreshGPULimit()
         Task { await refresh() }
     }
+
+    /// The GPU row shows: the limit is low, not skipped, and no run is going.
+    var showsGPULimit: Bool { gpuLimit.isLow && !gpuSkipped && !status.isActive }
+
+    /// Reads the limit again (no password needed). Called on appear, before a run, and every
+    /// few seconds while the command is open, so the row goes once Terminal has raised it.
+    func refreshGPULimit() {
+        guard networking else { return }
+        let now = IdeateGPULimit.read()
+        if gpuLimit.isLow && !now.isLow && now.physicalBytes > 0 { gpuRaised = true }
+        gpuLimit = now
+    }
+
+    func skipGPULimit() { gpuSkipped = true }
 
     /// The tab went away. A run keeps polling, so it is up to date on return; an idle tab stops.
     func disappeared() {
@@ -190,6 +214,7 @@ final class IdeateModel: ObservableObject {
         guard !text.isEmpty, !status.isActive else { return }
         self.kind = kind
         message = nil
+        refreshGPULimit()
         guard networking else { return }
         status = .starting
         Task {
@@ -443,6 +468,11 @@ final class IdeateModel: ObservableObject {
         case .modelSwap:
             availability.modelLoaded = false
             model.projects = recent
+        case .gpuLow, .gpuCommand:
+            model.projects = recent
+            // A 24 GB Mac on macOS's default limit (0).
+            model.gpuLimit = IdeateGPULimit(physicalBytes: 24 * 1_073_741_824, currentMB: 0)
+            model.qaShowsGPUCommand = state == .gpuCommand
         case .needsLink:
             availability.available = false
             availability.canLink = true

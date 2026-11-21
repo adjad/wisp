@@ -127,12 +127,7 @@ enum QuickSettingsText {
     static let setupHelp = "Open setup again to change permissions, Google, About you or open at login. "
         + "Your model stays as it is."
 
-    /// The Tabs row: which wildcard tabs sit after Ask, Brief and Day.
-    static func tabs(_ chosen: [NotchTab]) -> String {
-        let names = WildcardTabs.validated(chosen).map(\.title)
-        return names.isEmpty ? "Just Ask, Brief and Day" : "Ask, Brief, Day, " + names.joined(separator: ", ")
-    }
-
+    /// The Extra tabs row's tooltip. Its title, subtitle and state line are WildcardTabs'.
     static let tabsHelp = "Choose up to two of Study, Meet and Ideate to sit after Ask, Brief and Day. "
         + "Your choice stays on this Mac."
 

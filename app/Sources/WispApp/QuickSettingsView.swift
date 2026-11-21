@@ -46,6 +46,9 @@ struct QuickSettingsView: View {
 
     /// The wildcard tabs and the Ideate variant, as saved (WildcardTabs).
     @State private var wildcards = WildcardTabs.chosen()
+    /// Set when a third tab is pressed at the cap; cleared by the next change.
+    /// Not private so the QA render can show the pressed state.
+    @State var tabsBlockedNote: String?
     @State private var ideateKind = HarborPersonaStore.ideateKind()
 
     enum BriefSlot { case morning, evening }
@@ -85,6 +88,7 @@ struct QuickSettingsView: View {
         .onDisappear { voicePreview.stop() }
         .onReceive(NotificationCenter.default.publisher(for: .wispWildcardTabsChanged)) { _ in
             wildcards = WildcardTabs.chosen()
+            tabsBlockedNote = nil
             ideateKind = HarborPersonaStore.ideateKind()
         }
         .task {
@@ -245,22 +249,51 @@ struct QuickSettingsView: View {
         }
     }
 
-    /// Study, Meet and Ideate as switches of their own, two at most: a third is
-    /// refused until one is turned off. Chips, not a menu (the panel can't pop one up).
+    /// Study, Meet and Ideate as chips, two at most. A picked chip is filled with a
+    /// checkmark, a free one is an outline with a plus, and at the cap the third is
+    /// dimmed (not disabled): pressing it says what to do instead of doing nothing.
     private var tabsRow: some View {
-        row("Tabs", help: QuickSettingsText.tabsHelp) {
-            Text(QuickSettingsText.tabs(wildcards))
+        row(WildcardTabs.rowTitle, help: QuickSettingsText.tabsHelp) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(WildcardTabs.rowSubtitle)
+                Text("\(WildcardTabs.stateLine(wildcards)) \u{00B7} \(WildcardTabs.countText(wildcards))")
+                    .foregroundStyle(Theme.textMuted)
+            }
         } control: {
-            HStack(spacing: 6) {
-                ForEach(WildcardTabs.candidates, id: \.self) { tab in
-                    let on = wildcards.contains(tab)
-                    pillButton(tab.title, primary: on) { wildcards = WildcardTabs.set(WildcardTabs.toggled(tab, in: wildcards)) }
-                        .disabled(!on && !WildcardTabs.canAdd(tab, to: wildcards))
-                        .accessibilityLabel(tab.title)
-                        .accessibilityAddTraits(on ? [.isButton, .isSelected] : .isButton)
+            VStack(alignment: .trailing, spacing: 6) {
+                HStack(spacing: 6) {
+                    ForEach(WildcardTabs.candidates, id: \.self) { tab in
+                        tabChip(tab)
+                    }
+                }
+                if let note = tabsBlockedNote {
+                    Text(note).font(.wisp(.body)).foregroundStyle(Theme.warn)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityLabel(note)
                 }
             }
         }
+    }
+
+    private func tabChip(_ tab: NotchTab) -> some View {
+        let on = wildcards.contains(tab)
+        let blocked = !on && !WildcardTabs.canAdd(tab, to: wildcards)
+        let note = WildcardTabs.blockedNote(for: tab)
+        return Button {
+            let result = WildcardTabs.press(tab, in: wildcards)
+            tabsBlockedNote = result.blockedNote
+            if result.blockedNote == nil { wildcards = WildcardTabs.set(result.tabs) }
+        } label: {
+            NotchSettingsChrome.tabChipLabel(tab.title, on: on)
+                .opacity(blocked ? 0.4 : 1)
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .help(blocked ? note : WildcardTabs.chipHint(tab, in: wildcards))
+        .accessibilityLabel(tab.title)
+        .accessibilityValue(WildcardTabs.chipValue(tab, in: wildcards))
+        .accessibilityHint(WildcardTabs.chipHint(tab, in: wildcards))
+        .accessibilityAddTraits(on ? [.isButton, .isSelected] : .isButton)
     }
 
     /// The Ideate variant a new project starts with.
@@ -858,6 +891,20 @@ enum NotchSettingsChrome {
         }
         .buttonStyle(.plain)
         .fixedSize()
+    }
+
+    /// A tab chip: filled with a checkmark when picked, an outline with a plus when not.
+    static func tabChipLabel(_ title: String, on: Bool) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: on ? "checkmark" : "plus").font(.system(size: 10, weight: .bold))
+                .accessibilityHidden(true)
+            Text(title).font(.wisp(.body, weight: on ? .semibold : .regular))
+        }
+        .foregroundStyle(on ? Color.black : Theme.textSecondary)
+        .padding(.horizontal, 12).padding(.vertical, 5)
+        .background(Capsule().fill(on ? Color(white: 0.95) : Color.clear))
+        .overlay(Capsule().strokeBorder(on ? Color.clear : Theme.chipStroke, lineWidth: 1))
+        .contentShape(Capsule())
     }
 
     static func pill(_ title: String, primary: Bool = false, action: @escaping () -> Void) -> some View {

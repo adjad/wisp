@@ -110,6 +110,31 @@ struct IdeateChecks {
               == "Ideate wants to write outside the project: notes.txt", "write approval")
         check(IdeateApprovalText.title(tool: "write", text: "", path: "") == "Ideate wants to write outside the project", "write approval without a path")
 
+        // The GPU memory limit row (IdeateGPULimit): the command from the memory size, when the row
+        // shows, and that the command reaches Terminal only as a bash block (the confirming card).
+        let gib: UInt64 = 1_073_741_824
+        let g24 = IdeateGPULimit(physicalBytes: 24 * gib, currentMB: 0)
+        check(g24.neededMB == 22118 && g24.command == "sudo sysctl iogpu.wired_limit_mb=22118",
+              "24 GB: 90% is 22118 MB")
+        check(IdeateGPULimit(physicalBytes: 16 * gib, currentMB: 0).neededMB == 14745, "16 GB: 14745 MB")
+        check(IdeateGPULimit(physicalBytes: 36 * gib, currentMB: 0).neededMB == 33177, "36 GB: 33177 MB")
+        check(IdeateGPULimit(physicalBytes: 64 * gib, currentMB: 0).neededMB == 58982, "64 GB: 58982 MB")
+        check(g24.isLow, "macOS's default (0) is low")
+        check(IdeateGPULimit(physicalBytes: 24 * gib, currentMB: 18000).isLow, "below 90% is low")
+        check(!IdeateGPULimit(physicalBytes: 24 * gib, currentMB: 22118).isLow, "exactly 90% hides the row")
+        check(!IdeateGPULimit(physicalBytes: 24 * gib, currentMB: 22528).isLow, "above 90% hides the row")
+        check(!IdeateGPULimit(physicalBytes: 24 * gib, currentMB: -1).isLow, "an unreadable limit shows nothing")
+        check(!IdeateGPULimit(physicalBytes: 0, currentMB: 0).isLow, "an unreadable memory size shows nothing")
+        check(g24.codeBlock == "```bash\nsudo sysctl iogpu.wired_limit_mb=22118\n```",
+              "the command is a bash block, so it runs only through the Run in Terminal card")
+        check(!g24.command.contains(";") && !g24.command.contains("&&") && !g24.command.contains("sysctl.conf")
+              && !g24.command.contains("launchctl") && !g24.command.contains("-w"),
+              "one command, nothing that makes it permanent")
+        check(IdeateGPULimit.detail.contains("resets when you restart") && IdeateGPULimit.detail.contains("never sees it")
+              && IdeateGPULimit.raised.contains("resets when you restart"), "the row says it resets and who sees the password")
+        let live = IdeateGPULimit.read()
+        check(live.physicalBytes == ProcessInfo.processInfo.physicalMemory && live.currentMB >= -1, "reads without a password")
+
         print("IdeateChecks: \(count) checks passed")
     }
 }

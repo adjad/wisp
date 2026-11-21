@@ -16,7 +16,7 @@ sandbox-exec -p '(version 1) (allow default) (deny network*)' env WISP_NOTCH_QA_
 Run the binary under `sandbox-exec` with network denied: mounting `OverlayView` refreshes against the service otherwise.
 Name the binary something other than the app so its saved choices (`UserDefaults`) never touch the real app's; both drivers clear their own domain at the end.
 
-Sources: `app/Sources/WispApp/NotchQAIdeate.swift` (Ideate, strip, Tabs row), `NotchQAOnboarding.swift` (You step; `youScenes`).
+Sources: `app/Sources/WispApp/NotchQAIdeate.swift` (Ideate, strip, Extra tabs row), `NotchQAOnboarding.swift` (You step; `youScenes`).
 Ideate fixture: `IdeateModel.qaFixture(kind:state:)` shown in `NotchIdeateView(ideate:cap:)`.
 
 ## Ideate tab (`NotchQAIdeate.ideatePages`)
@@ -30,6 +30,7 @@ Each is `NotchIdeateView(ideate: IdeateModel.qaFixture(kind: K, state: S), cap: 
 - `ideate-general-failed.png`: `.failed`, one soft-red line and Try again.
 - `ideate-general-unavailable.png`: `.unavailable`.
 - `ideate-general-model-swap.png`: `.modelSwap`, the note that Ask's model steps aside while Ideate loads its own.
+- `ideate-general-gpu-low.png`, `ideate-general-gpu-command.png`: the GPU-limit row, low and with the command shown (`ideatePages`, `.general`).
 - `ideate-general-needs-link.png`: `.needsLink`, Inkling 2 Mini is on this Mac but not in the engine's folder; "Use the copy on this Mac" clones it in (APFS clone, no extra disk).
 
 ## Tab strip (`NotchQAIdeate.headerImage`, real `OverlayView` header)
@@ -40,13 +41,15 @@ Each is `NotchIdeateView(ideate: IdeateModel.qaFixture(kind: K, state: S), cap: 
 
 ## Quick settings
 
-- `settings-tabs-row.png`: `QuickSettingsView(section: .general)` with Ideate and Study on: the Tabs row (Study, Meet, Ideate chips, Meet dimmed at the two-tab cap) and the "Ideate is set up for" row.
+- `settings-tabs-row.png`: `QuickSettingsView(section: .general)` with Ideate and Study on: the "Extra tabs" row. Title, "Add up to 2 tabs next to Ask, Brief and Day", then "Ideate and Study are on · 2 of 2". Picked chips are filled with a checkmark, free ones are outlines with a plus, and Meet is dimmed at the two-tab cap. Below it, the "Ideate is set up for" row.
+- `settings-tabs-row-blocked.png`: the same, with Meet pressed at the cap: the amber note "Remove one to add Meet" under the chips (the press state is seeded with `tabsBlockedNote`; hovering shows the same text as a tooltip). The words and the press decision live in `WildcardTabs` (`rowTitle`, `rowSubtitle`, `stateLine`, `countText`, `blockedNote`, `press`).
 
 ## Setup, "You" step (`FirstRunSetupView(initialStep: .customize, qaFixture: true)`, 640 pt wide)
 
 - `onboarding-you-personas.png`: nothing chosen yet, the seven personas.
-- `onboarding-you-builder-subtypes.png`: `HarborPersonaStore.choose(.builderUI)`, "I build things" open with its five subtypes, and Your tabs (Ask, Brief, Day, Ideate).
-- `onboarding-you-change-list.png`: `choose(.builderLearn)` (Ideate and Study), Change pressed by a real click: the checklist with Meet blocked, "Two at most", the Ideate variants, Study's cloud disclosure and Ideate's folder note.
+- `onboarding-you-builder-subtypes.png`: `HarborPersonaStore.choose(.builderUI)`, "I build things" open with its five subtypes, and the Extra tabs card (the strip, then "Ideate is on · 1 of 2").
+- `onboarding-you-change-list.png`: `choose(.builderLearn)` (Ideate and Study), Change pressed by a real click: the checklist with Meet dimmed, "Ideate and Study are on · 2 of 2", the Ideate variants, Study's cloud disclosure and Ideate's folder note.
+- `onboarding-you-change-list-blocked.png`: the same, then the dimmed Meet row pressed by a real click: "Remove one to add Meet" appears under the list.
 
 ## Key excerpts
 

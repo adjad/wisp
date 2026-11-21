@@ -30,6 +30,8 @@ enum NotchQAIdeate {
         pages.append(("ideate-general-unavailable", .general, .unavailable))
         pages.append(("ideate-general-model-swap", .general, .modelSwap))
         pages.append(("ideate-general-needs-link", .general, .needsLink))
+        pages.append(("ideate-general-gpu-low", .general, .gpuLow))
+        pages.append(("ideate-general-gpu-command", .general, .gpuCommand))
         return pages
     }()
 
@@ -89,6 +91,14 @@ enum NotchQAIdeate {
                               picking: nil, hours: UserHours(), choosingVoice: false, google: google)
         }
         await write(settings, to: outDir, name: "settings-tabs-row", width: 640, settle: true)
+
+        // The same row with Meet pressed at the cap: the note the press shows.
+        let blocked = panel(header: ideateHeader) {
+            QuickSettingsView(model: overlay, settings: loader, refreshes: false, cap: ideateRoom, section: .general,
+                              picking: nil, hours: UserHours(), choosingVoice: false, google: google,
+                              tabsBlockedNote: WildcardTabs.blockedNote(for: .meet))
+        }
+        await write(blocked, to: outDir, name: "settings-tabs-row-blocked", width: 640, settle: true)
     }
 
     // MARK: Pieces

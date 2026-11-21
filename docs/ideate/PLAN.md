@@ -91,3 +91,40 @@ Version stays 0.1.8 (pipeline patch 0019). Preview staged as `/Applications/Harb
   `iogpu.wired_limit_mb` is 22528, so the Metal cap doesn't lower it). An earlier Wisp's recorded "aggressive", and
   Wisp's own ceiling when the memory size changes, migrate; a tier or ceiling the user picks in oMLX's admin UI is
   kept. Ideate's 1.4k-token budget is unchanged until it is measured under the new ceiling.
+- **D15 Only Inkling while Ideate is in use (user, 2026-11-21: "unload any other harbor model while ideate is is in
+  use with inkling").**
+  - *Start:* a run waits up to 30 s for an Ask turn that is answering right now, then holds the engine for Inkling
+    (`service/inference/engine_hold.py`) and always calls `ensure_only(Inkling, exclusive=True)`, even when Inkling
+    is already loaded. On the bundled engine that unloads every other model (Gemma-Wisp and the keep-warm model
+    included), waits until they are gone, then loads Inkling.
+  - *"No longer in use" rule:* the run ended (done, failed or stopped). Inkling stays 90 s (`RELEASE_AFTER_S`) for a
+    follow-up message, then is unloaded unless another run has started. Leaving the tab doesn't end a run (it keeps
+    building in the background), so the tab is not the signal. Ask's model is not loaded back; the next Ask, Brief
+    or Day turn loads it as usual.
+  - *Ask during a run:* neither wait nor swap. While the hold is set, loading or making resident any other model is
+    refused at once with a plain message ("Ideate is using Wisp's model for a build right now… Ask again when the
+    build finishes, or stop it in Ideate"), before anything is unloaded. Waiting could leave Ask silent for minutes;
+    swapping would pull Inkling out mid-run and reload it on Pi's next request. Background work already stands down
+    (foreground). During the 90 s grace Ask swaps Inkling out the normal way.
+  - Bundled engine only for unloading: on the user's own oMLX.app Wisp never unloads (other apps may use it).
+- **D16 GPU memory limit (user, 2026-11-21: "let the user run the terminal command for increasing the memory
+  allocation before using ideate").** The bundled oMLX 0.8.2 clamps its ceiling to the Metal cap:
+  `iogpu.wired_limit_mb` when it is set, else Apple's `max_recommended_working_set_size` (a smaller share of
+  memory). That is the same knob, so the command is `sudo sysctl iogpu.wired_limit_mb=<90% of memory in MB>`
+  (22118 on a 24 GB Mac; oMLX warns only above 95%). `IdeateGPULimit` reads the limit and memory without a
+  password (sysctlbyname, ProcessInfo) when the tab appears and before a run. If the limit is 0 or below the need,
+  the empty tab shows one row: "Ideate needs more memory for the GPU", the reset-on-restart note, "Show the
+  command" and "Skip". The command is shown as a `bash` block, so it reaches Terminal only through MarkdownView's
+  card ("Run this script in Terminal?", Cancel is the default, a second press runs it in a visible Terminal
+  window, where macOS asks for the password). Wisp never runs sudo, never sees the password and never makes it
+  permanent. While the command is open the tab re-reads the limit every 3 s, hides the row once it is raised and
+  says so once. Skip hides it until Wisp restarts; Ideate then keeps the small budget. This Mac's limit is already
+  22528, so the row does not show here.
+- **D17 Free memory before Inkling loads (after a crash, 2026-11-21 13:09).** The isolated measurement (a copy of
+  the bundled engine on port 8894 with the 21.6 GB custom ceiling) loaded Inkling while the user's own oMLX server
+  also held a 12.5 GB model. 13.2 + 12.5 GB on a 24 GB Mac, with `iogpu.wired_limit_mb` at 22528, hung macOS for
+  92 s and the watchdog restarted it (panic-full-2026-11-21-130921). Each engine's 90% ceiling assumes it is alone,
+  and the bundled engine can't see another app's model. So before Inkling loads, after Wisp's own models are gone,
+  Ideate reads free memory (vm_stat: free + inactive + speculative + purgeable). Below 15.1 GB + 3 GB it stops with
+  "There isn't enough free memory for Inkling 2 Mini right now… Quit oMLX or other big apps", and loads nothing.
+  The prompt-size measurement under the new ceiling was NOT completed and is not re-run without the user's yes.
