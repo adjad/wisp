@@ -561,19 +561,67 @@ final class OverlayPanel: NSPanel {
         }
     }
 
-    /// Bring an opening panel forward: key, unless nobody asked for this open.
-    private func bringForward() {
-        if revealsWithoutKey {
-            // Nobody asked for this open: show it, but leave the keyboard
-            // with the app the person is typing in until they click here.
-            revealsWithoutKey = false
-            orderFrontRegardless()
-        } else {
-            makeKeyAndOrderFront(nil)
+    /// Bring an opening panel forward: it takes the keyboard (PanelKeyPolicy), unless this one
+    /// open is one nobody asked for (`quiet`), which leaves the keyboard with the app in front
+    /// until the person clicks here.
+    private func bringForward(quiet: Bool) {
+        switch PanelKeyPolicy.opening(revealsWithoutKey: quiet) {
+        case .showOnly: orderFrontRegardless()
+        case .takeKeyboard: takeKeyboard()
         }
     }
 
+    /// Wisp is the app macOS sends the keyboard to. NSApp.isActive alone can say yes while another
+    /// app is in front, so this asks which app is frontmost.
+    private var wispFrontmost: Bool {
+        NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier
+    }
+
+    /// Make the panel key and Wisp the frontmost app, so typing lands here (macOS 27.3: a key
+    /// non-activating panel in an app that isn't frontmost didn't get the keyboard).
+    private func takeKeyboard() {
+        makeKeyAndOrderFront(nil)
+        if PanelKeyPolicy.activates(wispFrontmost: wispFrontmost) {
+            // Remembered so the close hands the keyboard back to the app the person was in.
+            let front = NSWorkspace.shared.frontmostApplication
+            if front?.processIdentifier != ProcessInfo.processInfo.processIdentifier { appBeforeOpen = front }
+            if #available(macOS 14.0, *) { NSApp.activate() } else { NSApp.activate(ignoringOtherApps: true) }
+        }
+    }
+
+    /// The app that was in front when the panel took the keyboard.
+    private var appBeforeOpen: NSRunningApplication?
+
+    /// The panel closed: if Wisp is still the frontmost app only because of the panel, the app the
+    /// person was in gets the keyboard back. A Wisp window they opened meanwhile keeps it.
+    private func returnKeyboard() {
+        defer { appBeforeOpen = nil }
+        guard let previous = appBeforeOpen, !previous.isTerminated, wispFrontmost,
+              PanelKeyPolicy.returnsKeyboard(otherWispWindowKey: NSApp.keyWindow.map { $0 !== self } ?? false)
+        else { return }
+        if #available(macOS 14.0, *) {
+            NSApp.yieldActivation(to: previous)
+            previous.activate(from: NSRunningApplication.current, options: [])
+        } else {
+            previous.activate(options: [])
+        }
+    }
+
+    /// A press anywhere in the panel always takes the keyboard.
+    override func sendEvent(_ event: NSEvent) {
+        let press = event.type == .leftMouseDown || event.type == .rightMouseDown || event.type == .otherMouseDown
+        if PanelKeyPolicy.pressTakesKeyboard(isPress: press, isKey: isKeyWindow, wispFrontmost: wispFrontmost) {
+            takeKeyboard()
+        }
+        super.sendEvent(event)
+    }
+
     private func reveal(opening: Bool, completion: @escaping () -> Void) {
+        // "Without the keyboard" lasts for this one open and no longer: read it once and clear it
+        // here, so no early return below, no close and no later open can leave it set.
+        let quiet = opening && revealsWithoutKey
+        revealsWithoutKey = PanelKeyPolicy.flagAfterReveal(revealsWithoutKey)
+        if !opening { returnKeyboard() }
         // Capture visible geometry before replacing the one animation group.
         let visible = isRevealing ? revealMask?.presentation() : nil
         let visibleBounds = visible?.bounds
@@ -587,7 +635,7 @@ final class OverlayPanel: NSPanel {
             setFrame(full, display: true)
         }
         guard let mask = revealMask, frame.width > 0, frame.height > 0 else {
-            if opening { bringForward() }
+            if opening { bringForward(quiet: quiet) }
             completion()
             return
         }
@@ -623,7 +671,7 @@ final class OverlayPanel: NSPanel {
             if opening, self.revealGeneration == token { self.resizeToFit() }
         }
         guard !reduceMotion() else {
-            if opening { bringForward() }
+            if opening { bringForward(quiet: quiet) }
             finish()
             return
         }
@@ -688,7 +736,7 @@ final class OverlayPanel: NSPanel {
         // the window key, SwiftUI laying the panel out), and the reveal starts
         // that much late.
         CATransaction.flush()
-        if opening { bringForward() }
+        if opening { bringForward(quiet: quiet) }
     }
 
     /// The next open shows the panel without making it key (an unrequested offer).

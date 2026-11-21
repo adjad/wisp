@@ -216,6 +216,8 @@ PROFILE_TESTS = {
         "tests/test_ideate_gpu_row.py",
         # Brief says "Reading Mail…" while Wisp reads a Mail it opened (MailRecache); synthetic state.
         "tests/test_mail_recache_brief.py",
+        # The notch panel takes the keyboard on every asked-for open and every press (source checks).
+        "tests/test_panel_keyboard.py",
         "tests/test_shell_local_service_deny.py",
         # /resetwisp on a scratch home under pytest's temp dir; no Google, Keychain, TCC or live service.
         "tests/test_wisp_reset.py",
@@ -966,6 +968,7 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/ideate-contract": "native/ideate-compile",
     "native/ideate-routing-contract": "native/ideate-routing-compile",
     "native/mail-recache-contract": "native/mail-recache-compile",
+    "native/panel-key-contract": "native/panel-key-compile",
 }
 
 
@@ -1254,6 +1257,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     ideate = str(build_dir / "ideate")
     ideate_routing = str(build_dir / "ideate-routing")
     mail_recache = str(build_dir / "mail-recache")
+    panel_key = str(build_dir / "panel-key")
     know_you = str(build_dir / "know-you")
     user_hours = str(build_dir / "user-hours")
     chat_logic = str(build_dir / "chat-logic")
@@ -1424,6 +1428,16 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/mail-recache-contract", [mail_recache]),
+        (
+            "native/panel-key-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/PanelKeyPolicy.swift",
+                "tests/PanelKeyPolicyChecks.swift", "-o", panel_key,
+            ],
+        ),
+        ("native/panel-key-contract", [panel_key]),
         (
             "native/screen-look-compile",
             [
