@@ -91,6 +91,15 @@ def build_profile(project_root: Path, write_roots: list[Path], engine_port: int,
         lines.append("(deny file-read* " + " ".join(denied) + ")")
     readable = _subpaths([project_root, *harness_roots])
     lines.append("(allow file-read* " + " ".join(readable) + ")")
+    # Node resolves its entry point with realpath, which lstat()s every parent folder.
+    # A harness inside a hidden folder (~/.pi/agent/install/…) needs the metadata of
+    # those parents, by exact path only: their contents stay denied.
+    ancestors = []
+    for root in [project_root, *harness_roots]:
+        for spelled in shell_sandbox._spellings(Path(root)):
+            ancestors += [f'(literal "{_q(str(parent))}")' for parent in Path(spelled).parents]
+    if ancestors:
+        lines.append("(allow file-read-metadata " + " ".join(dict.fromkeys(ancestors)) + ")")
     writable = _subpaths(write_roots)
     devices = ['(literal "/dev/null")', '(literal "/dev/zero")', '(literal "/dev/stdout")',
                '(literal "/dev/stderr")', '(literal "/dev/dtracehelper")', '(regex #"^/dev/tty")',

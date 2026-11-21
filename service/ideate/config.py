@@ -20,12 +20,17 @@ TOOLS = ("read", "write", "edit", "bash")
 PROMPT_BUDGET_TOKENS = 1400
 # What Pi is told the model's window is. Pi compacts when the context passes
 # CONTEXT_WINDOW - COMPACT_RESERVE_TOKENS, which is PROMPT_BUDGET_TOKENS.
-CONTEXT_WINDOW = 4096
+# Pi also sizes each reply from this window: max_tokens = window - input - max(4096, 15% of
+# input), floored at 1 (pi-ai). 4096 left room for 1 token, measured 2026-11-21. The window
+# must cover the budget + Pi's 4096 safety + MAX_OUTPUT_TOKENS; the engine's real limit is
+# the prefill guard, which the budget keeps under.
+CONTEXT_WINDOW = 8192
 COMPACT_RESERVE_TOKENS = CONTEXT_WINDOW - PROMPT_BUDGET_TOKENS
 # Recent tokens a compaction keeps as they are; older turns become a summary.
 COMPACT_KEEP_RECENT_TOKENS = 500
 # The most one model reply may generate (thinking included).
 MAX_OUTPUT_TOKENS = 2048
+assert CONTEXT_WINDOW - PROMPT_BUDGET_TOKENS - 4096 >= MAX_OUTPUT_TOKENS
 # Reasoning effort sent to the engine (Pi's --thinking level). Most of the model's output is
 # thinking (70-95%), so Ideate asks for little. Whether the engine honours it is not yet measured.
 THINKING_LEVEL = "low"
