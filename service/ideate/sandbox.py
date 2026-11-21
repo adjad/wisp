@@ -43,6 +43,14 @@ def denied_read_roots() -> list[Path]:
     roots += [home / ".omlx", home / ".pi", home / ".config" / "opencode",
               home / ".local" / "share" / "opencode", home / ".ssh", home / ".aws", home / ".gnupg",
               home / ".netrc", home / ".docker", home / ".kube", home / ".config" / "gh"]
+    # The person's own data stores (the folders Wisp's readers use, plus their neighbours).
+    # Wisp holds Full Disk Access and a child inherits it, so these are denied by name.
+    lib = home / "Library"
+    roots += [lib / name for name in ("Mail", "Messages", "Safari", "Group Containers", "Containers",
+                                      "Cookies", "Preferences", "Calendars", "Reminders", "Notes",
+                                      "Keychains", "Suggestions", "HomeKit", "Accounts")]
+    roots += [lib / "Application Support" / name for name in ("AddressBook", "Google", "Firefox",
+                                                              "com.apple.sharedfilelist")]
     return list(dict.fromkeys(roots))
 
 
@@ -72,7 +80,9 @@ def build_profile(project_root: Path, write_roots: list[Path], engine_port: int,
         "(deny default)",
         "(allow process-fork)",
         "(allow process-exec*)",
-        "(allow process-info* (target same-sandbox))",
+        # Only itself: another process's environment (the harness holds the engine key) is
+        # readable through process-info, so a child may not look at its parent.
+        "(allow process-info* (target self))",
         "(allow signal (target same-sandbox))",
         "(allow sysctl-read)",
         "(allow mach-lookup)",
@@ -81,6 +91,10 @@ def build_profile(project_root: Path, write_roots: list[Path], engine_port: int,
         '(deny mach-lookup (global-name "com.apple.coreservices.launchservicesd")'
         ' (global-name "com.apple.coreservices.appleevents") (global-name "com.apple.pasteboard.1")'
         ' (global-name-prefix "com.apple.lsd."))',
+        # Nothing that brokers secrets, the screen, background transfers or privacy grants.
+        '(deny mach-lookup (global-name "com.apple.SecurityServer") (global-name "com.apple.nsurlsessiond")'
+        ' (global-name "com.apple.tccd") (global-name-prefix "com.apple.securityd")'
+        ' (global-name-prefix "com.apple.windowserver") (global-name-prefix "com.apple.screencapture"))',
         "(allow ipc-posix-shm*)",
         "(allow user-preference-read)",
         "(allow file-ioctl)",
@@ -102,7 +116,7 @@ def build_profile(project_root: Path, write_roots: list[Path], engine_port: int,
         lines.append("(allow file-read-metadata " + " ".join(dict.fromkeys(ancestors)) + ")")
     writable = _subpaths(write_roots)
     devices = ['(literal "/dev/null")', '(literal "/dev/zero")', '(literal "/dev/stdout")',
-               '(literal "/dev/stderr")', '(literal "/dev/dtracehelper")', '(regex #"^/dev/tty")',
+               '(literal "/dev/stderr")', '(literal "/dev/dtracehelper")', '(literal "/dev/tty")',
                '(regex #"^/dev/fd/")']
     lines.append("(allow file-write* " + " ".join(writable + devices) + ")")
     lines.append(f'(allow network-outbound (remote ip "localhost:{engine_port}"))')

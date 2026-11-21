@@ -313,6 +313,11 @@ class Manager:
                 else:
                     self._event(run, event)
         finally:
+            with self._lock:
+                for pending in list(run.pending.values()):
+                    if pending.timer:
+                        pending.timer.cancel()
+                run.pending.clear()
             session.close()
             _reap(proc)
             with self._lock:
@@ -354,7 +359,11 @@ class Manager:
         session = run.session
         if session is None:
             return
-        verdict = gate.judge(event.tool, event.args, run.project.work)
+        if run.cancel:
+            session.answer_gate(event.gate_id, False, "Stopped.")
+            return
+        port = run.engine.port if run.engine is not None else None
+        verdict = gate.judge(event.tool, event.args, run.project.work, port)
         if verdict.action == gate.ALLOW:
             session.answer_gate(event.gate_id, True)
             return

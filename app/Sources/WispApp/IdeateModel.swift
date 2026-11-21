@@ -170,6 +170,10 @@ final class IdeateModel: ObservableObject {
 
     // MARK: Actions
 
+    /// Whether start(prompt:kind:) would begin a run now. Ask routes to Ideate only when
+    /// this is true, so a routed prompt is never dropped.
+    var canStart: Bool { networking && !status.isActive }
+
     func start(prompt: String, kind: IdeateKind) {
         let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !status.isActive else { return }

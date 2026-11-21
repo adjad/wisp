@@ -962,7 +962,10 @@ final class OverlayModel: ObservableObject {
         if ideateOn, NotchCommand.isBareIdeate(prompt) { input = ""; tab = .ideate; return }
         if !researchMode, !hasAttachment {
             let routing = IdeateRoute.classify(prompt, ideateEnabled: ideateOn)
-            if case .ideate = routing {
+            if case .ideate = routing, !IdeateModel.shared.canStart {
+                // Ideate is busy with another build: answer here rather than drop it.
+                showTransientNotice("Ideate is busy with another build, so Ask is answering this one.", duration: 6, info: true)
+            } else if case .ideate = routing {
                 input = ""
                 IdeateModel.shared.start(prompt: IdeateRoute.promptBody(prompt), kind: IdeateModel.shared.kind)
                 showTransientNotice(IdeateRoute.handoffLine(routing), duration: 6, info: true)

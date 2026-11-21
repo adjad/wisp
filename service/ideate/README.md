@@ -38,6 +38,13 @@ A project left active when the service stopped is marked failed the next time it
 - **Sandbox.** The profile starts from `deny default`. Reads are allowed broadly, except
   Wisp's data folder (this project excepted), the Keychains folder, `~/.omlx` (holds the
   engine's key), `~/.pi`, OpenCode's folders, `~/.ssh`, `~/.aws` and a few other key stores.
+  The person's Library stores (Mail, Messages, Safari, Calendars, Containers, Group
+  Containers, Cookies, Preferences, AddressBook, Chrome and Firefox data) are denied by name, since a
+  child inherits Wisp's Full Disk Access. Mach lookups are broad but exclude Launch Services, Apple
+  Events, the pasteboard, SecurityServer, securityd, windowserver, screencapture, nsurlsessiond and
+  tccd. `process-info` is limited to the process itself, so a bash child can't read Pi's
+  environment (`ps -E`). Residual risk: the engine key is still in Pi's own environment, and the
+  denial relies on that rule rather than on scrubbing. Only `/dev/tty` itself is writable.
   A source-run Pi under `~/.pi/agent/install` gets read access to its own release folder only.
   Writes are allowed only in `work/`, `.ideate/agent/` and the usual `/dev` nodes. The only
   network allowed is outbound TCP to the engine's loopback port. There is no DNS, and Wisp's
@@ -58,7 +65,11 @@ A project left active when the service stopped is marked failed the next time it
   - write/edit inside `work/` runs; the sandbox is the boundary. Outside `work/`, or through
     `..`, `~` or a symlink, it gets a card saying the sandbox will refuse the write anyway,
     or it's refused when Wisp's path floor refuses it.
-  - read runs. Any other tool is refused.
+  - read runs inside `work/`; anywhere else it gets a card (Wisp's credential floor refuses
+    some paths outright). Any other tool is refused.
+  - A command naming the engine port, `127.0.0.1`, `localhost` or `0.0.0.0` gets its own card that
+    says it talks to Wisp's local model engine. `launchctl`, `security`, `screencapture`, `open`,
+    `osascript`, `shortcuts`, `defaults write` and `crontab` are refused with no card.
   - A card waits `APPROVAL_TIMEOUT_S`; no answer counts as no. Pi's RPC `bash` command (the
     human `!` command, which skips the hook) is never sent.
 - **Engine key.** When the engine has a key, it reaches Pi only as the environment variable

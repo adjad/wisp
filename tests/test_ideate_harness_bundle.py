@@ -233,3 +233,11 @@ def test_pipeline_validate_structure_accepts_and_checks_the_harness(tmp_path, so
             p.validate_structure(bundle, case.meta)
     finally:
         case.tearDown()
+
+
+def test_package_manager_config_and_env_files_are_left_out():
+    from pathlib import PurePosixPath as P
+    for name in (".npmrc", ".yarnrc", ".yarnrc.yml", ".env", ".env.local", ".env.production"):
+        assert h.pruned(P("node_modules/x") / name, False), name
+    assert not h.pruned(P("node_modules/x/environment.js"), False)
+    assert not hasattr(h, "is_harness_target")

@@ -413,7 +413,7 @@ def test_path_confinement(tmp_path):
 def test_gate_judgements(tmp_path):
     work = tmp_path / "work"
     work.mkdir()
-    assert gate.judge("read", {"path": "/etc/hosts"}, work).action == gate.ALLOW
+    assert gate.judge("read", {"path": "notes.txt"}, work).action == gate.ALLOW
     assert gate.judge("write", {"path": "a.txt"}, work).action == gate.ALLOW
     assert gate.judge("edit", {"path": "../a.txt"}, work).action == gate.CONFIRM
     assert gate.judge("bash", {"command": "ls -la"}, work).action == gate.ALLOW
@@ -490,3 +490,103 @@ def test_profile_really_confines_writes_and_network(tmp_path):
     assert (work / "in.txt").exists()
     assert not (tmp_path / "out.txt").exists() and not (project / ".ideate" / "meta.json").exists()
     assert "NET" not in result.stdout
+
+
+def test_read_outside_the_project_needs_a_card(tmp_path):
+    work = tmp_path / "work"
+    work.mkdir()
+    assert gate.judge("read", {"path": "src/a.txt"}, work).action == gate.ALLOW
+    for path in ("/etc/hosts", "../x", "~/Documents/a.txt", "/Users/someone/Library/Mail/V10/x"):
+        assert gate.judge("read", {"path": path}, work).action in (gate.CONFIRM, gate.DENY), path
+    assert gate.judge("read", {"path": "/etc/hosts"}, work).action == gate.CONFIRM
+    assert gate.judge("read", {}, work).action == gate.DENY
+
+
+def test_engine_talk_and_barred_commands(tmp_path):
+    work = tmp_path / "work"
+    work.mkdir()
+    for command in ("python3 -c 'import urllib.request as u; u.urlopen(\"http://localhost:8000/v1/models\")'",
+                    "nc 127.0.0.1 8000", "echo hi > /dev/tcp/0.0.0.0/22", "run-thing --port 8000"):
+        verdict = gate.judge("bash", {"command": command}, work, 8000)
+        assert verdict.action == gate.CONFIRM and verdict.note == gate.ENGINE_NOTE, command
+    assert "no internet" not in gate.ENGINE_NOTE and "fail" not in gate.ENGINE_NOTE
+    assert gate.judge("bash", {"command": "echo 18000"}, work, 8000).note != gate.ENGINE_NOTE
+    for command in ("launchctl list", "security find-generic-password -a x", "screencapture x.png",
+                    "open https://example.com", "osascript -e 'beep'", "shortcuts run x",
+                    "defaults write com.x y 1", "crontab -l", "ls && /usr/bin/open .", "sudo security dump-keychain",
+                    "echo a; osascript -e x"):
+        assert gate.judge("bash", {"command": command}, work, 8000).action == gate.DENY, command
+    assert gate.judge("bash", {"command": "python3 -c \"open('a.txt').read()\""}, work).action == gate.CONFIRM
+
+
+def test_profile_denies_stores_mach_and_foreign_ttys(tmp_path):
+    project = tmp_path / "proj"
+    work, agent = project / "work", project / ".ideate" / "agent"
+    work.mkdir(parents=True)
+    agent.mkdir(parents=True)
+    text = sandbox.build_profile(project, [work, agent], 8000)
+    for name in ("Library/Mail", "Library/Messages", "Library/Safari", "Library/Group Containers",
+                 "Library/Containers", "Library/Cookies", "Library/Preferences", "Library/Calendars",
+                 "Library/Keychains", "Application Support/AddressBook"):
+        assert name in text, name
+    for name in ("com.apple.SecurityServer", "com.apple.securityd", "com.apple.windowserver",
+                 "com.apple.screencapture", "com.apple.nsurlsessiond", "com.apple.tccd"):
+        assert name in text, name
+    assert '(literal "/dev/tty")' in text and 'regex #"^/dev/tty' not in text
+    assert "process-info* (target self)" in text and "same-sandbox))" not in text.split("process-info")[1][:40]
+
+
+def test_a_cancelled_run_gates_nothing(tmp_path):
+    answers = []
+
+    class Session:
+        def answer_gate(self, gate_id, allow, reason=""):
+            answers.append((gate_id, allow))
+
+    class Run:
+        cancel = True
+        session = Session()
+        engine = None
+        pending = {}
+
+    event = harness.HarnessEvent("gate", tool="write", args={"path": "a.txt"}, gate_id="g1", call_id="c1")
+    runner.Manager._gate(object(), Run(), event)
+    assert answers == [("g1", False)]
+
+
+def test_short_pi_override_is_unavailable(monkeypatch, tmp_path):
+    monkeypatch.setenv("WISP_IDEATE_PI", "/cli.js")
+    monkeypatch.setattr(harness, "_release_entry", lambda path: (Path("/a/b/cli.js"), "1"))
+    monkeypatch.setattr(harness, "_first_node", lambda: Path("/usr/bin/true"))
+    monkeypatch.setattr("service.safety.shell_sandbox.app_bundle", lambda: None)
+    install, why = harness.PiAdapter().discover()
+    assert install is None and why
+
+
+@pytest.mark.skipif(not sandbox.usable(), reason="a sandbox cannot be applied inside another sandbox")
+def test_profile_hides_stores_parent_environment_and_ttys(tmp_path):
+    import shutil
+    project = Path(os.path.realpath(tmp_path)) / "proj"
+    work, agent = project / "work", project / ".ideate" / "agent"
+    work.mkdir(parents=True)
+    agent.mkdir(parents=True)
+    profile = project / ".ideate" / "p.sb"
+    profile.write_text(sandbox.build_profile(project, [work, agent], 1))
+    # Node (when present) still starts under the profile.
+    node = shutil.which("node")
+    if node:
+        ran = subprocess.run(sandbox.contain([node, "--version"], profile), cwd=work, capture_output=True,
+                             text=True, timeout=30)
+        assert ran.returncode == 0 and ran.stdout.startswith("v"), ran.stderr
+    # A child may not read its parent's environment (the engine key lives there).
+    script = "/bin/sh -c '/bin/ps -E -ww -p $PPID 2>&1 | grep -c INVENTED_KEY_VALUE'"
+    env = dict(os.environ, WISP_IDEATE_ENGINE_KEY="INVENTED_KEY_VALUE")
+    ran = subprocess.run(sandbox.contain(["/bin/sh", "-c", script], profile), cwd=work, env=env,
+                         capture_output=True, text=True, timeout=30)
+    assert ran.stdout.strip() in ("0", ""), ran.stdout
+    # The person's stores can't be listed, even by a process that holds Full Disk Access.
+    mail = Path.home() / "Library" / "Mail"
+    if mail.exists():
+        ran = subprocess.run(sandbox.contain(["/bin/ls", str(mail)], profile), cwd=work,
+                             capture_output=True, text=True, timeout=30)
+        assert ran.returncode != 0

@@ -48,7 +48,7 @@ MIN_NODE = (22, 19, 0)
 MACH_MAGICS = {b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xca\xfe\xba\xbe",
                b"\xbe\xba\xfe\xca"}
 _UNWANTED = {".DS_Store", "__pycache__", "pyvenv.cfg", ".env", ".git", ".github", ".npmignore",
-             ".eslintrc", ".prettierrc", ".editorconfig", ".travis.yml"}
+             ".eslintrc", ".prettierrc", ".editorconfig", ".travis.yml", ".npmrc", ".yarnrc", ".yarnrc.yml"}
 _UNWANTED_SUFFIX = (".db", ".pyc", ".p12", ".p8", ".map", ".tsbuildinfo")
 _PRUNE_DIRS = {"test", "tests", "__tests__", "example", "examples", "docs", "doc", "benchmark", "benchmarks",
                "coverage", ".bin-cache"}
@@ -162,7 +162,7 @@ def node_license(node: Path) -> Path | None:
 def pruned(rel: PurePosixPath, is_dir: bool) -> bool:
     """True when `rel` (relative to the release folder) is left out of the bundle."""
     name = rel.name
-    if name in _UNWANTED or name.endswith(_UNWANTED_SUFFIX):
+    if name in _UNWANTED or name.endswith(_UNWANTED_SUFFIX) or name.startswith(".env"):
         return True
     if rel == _KEEP_DOCS or _KEEP_DOCS in rel.parents:
         return name == "images" and is_dir
@@ -357,7 +357,7 @@ def validate(bundle: Path, record) -> None:
             link = os.readlink(path)
             if os.path.isabs(link) or not path.exists() or not path.resolve().is_relative_to(root):
                 raise HarnessError(f"Non-relocatable link in the Ideate harness: {path.relative_to(bundle)}")
-        if path.name in _UNWANTED or path.name.endswith(_UNWANTED_SUFFIX):
+        if path.name in _UNWANTED or path.name.endswith(_UNWANTED_SUFFIX) or path.name.startswith(".env"):
             raise HarnessError(f"Unwanted file in the Ideate harness: {path.relative_to(bundle)}")
     digest, entries = manifest(target / "pi")
     if digest != record.get("manifest_sha256") or entries != record.get("entries"):
@@ -365,9 +365,5 @@ def validate(bundle: Path, record) -> None:
 
 
 def is_node_target(bundle: Path, target: Path) -> bool:
-    """For signing: Node and the native addons it loads take node.entitlements (JIT)."""
+    """For signing: only the Node binary takes node.entitlements (JIT); native addons are signed without them."""
     return Path(target) == Path(bundle) / BUNDLE_DIR / NODE_PATH
-
-
-def is_harness_target(bundle: Path, target: Path) -> bool:
-    return (Path(bundle) / BUNDLE_DIR) in Path(target).parents

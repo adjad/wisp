@@ -256,6 +256,8 @@ class PiAdapter(HarnessAdapter):
             if found is None or node is None:
                 return None, "WISP_IDEATE_PI doesn't point at a Pi release with Node beside it."
             entry, version = found
+            if len(entry.parents) < 6:
+                return None, "WISP_IDEATE_PI doesn't point at a Pi release with Node beside it."
             return HarnessInstall("pi", node, entry, version, "env", [entry.parents[5], node.parent]), ""
         found = _release_entry(Path.home() / ".pi" / "agent")
         node = _first_node()
@@ -264,6 +266,8 @@ class PiAdapter(HarnessAdapter):
         if node is None:
             return None, "Ideate's coding agent needs Node.js 22 or newer, which isn't installed."
         entry, version = found
+        if len(entry.parents) < 6:
+            return None, "Ideate's coding agent (Pi) isn't installed in the expected place."
         return HarnessInstall("pi", node, entry, version, "user", [entry.parents[5], node.parent]), ""
 
     def prepare(self, project: store.Project, install: HarnessInstall, engine: EngineTarget, *,
