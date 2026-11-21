@@ -197,6 +197,9 @@ class Manager:
                                                        "aside while Ideate works, and comes back after.")
             try:
                 self.residency.ensure_sync()
+            except engine_mod.NoRoom as exc:
+                run.error = str(exc)
+                return
             except Exception as exc:  # noqa: BLE001
                 log.info("ideate: model load failed: %s", type(exc).__name__)
                 run.error = f"{config.MODEL_LABEL} couldn't load. Close other apps to free memory, then try again."

@@ -4,6 +4,10 @@ Wisp keeps one chat model warm for Ask (main.py's keep-warm set; service/memory_
 parks it when Wisp is idle; service/idle_unloader.py drops other idle models). Ideate fits
 into that instead of fighting it:
 
+- Right before Inkling loads, free memory is checked (vm_stat). Another app's model, such as
+  one loaded in the user's own oMLX.app, is invisible to Wisp's engine. Below Inkling's
+  15.1 GB plus a 3 GB margin, the run stops with plain words instead of loading. Loading into
+  too little memory froze a 24 GB Mac on 2026-11-21.
 - When a run starts, Ideate holds the engine for Inkling (service/inference/engine_hold.py)
   and always calls the engine client's swap helper, `OMLXClient.ensure_only(model,
   exclusive=True)`, the same call a Research job makes: on Wisp's bundled engine it first
@@ -47,6 +51,38 @@ log = logging.getLogger(__name__)
 
 class EngineUnavailable(RuntimeError):
     pass
+
+
+class NoRoom(RuntimeError):
+    """Not enough free memory to load Inkling now; the text is plain words for the tab."""
+
+    def __init__(self, free: int, need: int):
+        gb = 1024**3
+        super().__init__(f"There isn't enough free memory for {config.MODEL_LABEL} right now: it needs about "
+                         f"{need / gb:.0f} GB and {free / gb:.0f} GB is free. Quit oMLX or other big apps, "
+                         "then try again.")
+        self.free, self.need = free, need
+
+
+def available_bytes() -> int:
+    """Memory macOS can hand out now: free, inactive, speculative and purgeable pages (vm_stat)."""
+    import re
+    import subprocess
+    try:
+        out = subprocess.run(["/usr/bin/vm_stat"], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return -1
+    page = re.search(r"page size of (\d+) bytes", out)
+    size = int(page.group(1)) if page else 16384
+    total = 0
+    for name in ("Pages free", "Pages inactive", "Pages speculative", "Pages purgeable"):
+        m = re.search(rf"{name}:\s+(\d+)", out)
+        total += int(m.group(1)) if m else 0
+    return total * size if total else -1
+
+
+def room_needed() -> int:
+    return config.MODEL_RESIDENT_BYTES + config.MEMORY_MARGIN_BYTES
 
 
 @dataclass
@@ -113,8 +149,28 @@ class Residency:
         return ModelState(True, row is not None, bool(row and row.get("loaded")))
 
     async def _ensure(self) -> None:
-        await self._get_client().ensure_only(config.MODEL_ID, exclusive=True,
-                                             settle_timeout=config.LOAD_TIMEOUT_S)
+        """Make Inkling the only model loaded: Wisp's other models go first, then free memory is
+        checked right before the load (another app's model is invisible to Wisp's engine), then
+        Inkling loads. Raises NoRoom instead of loading into too little memory."""
+        client = self._get_client()
+        from service import memory_saver
+        loaded = set(await client.loaded_models())
+        if config.MODEL_ID in loaded and loaded == {config.MODEL_ID}:
+            return
+        if not memory_saver.omlx_app(client):
+            for other in loaded - {config.MODEL_ID}:
+                await client.unload(other)
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + config.EVICT_SETTLE_S
+            while loop.time() < deadline and set(await client.loaded_models()) - {config.MODEL_ID}:
+                await asyncio.sleep(1.0)
+        if config.MODEL_ID not in loaded:
+            free, need = await asyncio.to_thread(available_bytes), room_needed()
+            if 0 <= free < need:
+                log.info("ideate: not loading %s: %d MB free, %d MB needed", config.MODEL_ID,
+                         free // 2**20, need // 2**20)
+                raise NoRoom(free, need)
+        await client.ensure_only(config.MODEL_ID, exclusive=True, settle_timeout=config.LOAD_TIMEOUT_S)
 
     def _on_loop(self, coro, timeout: float):
         if self._loop is None or self._loop.is_closed():

@@ -192,3 +192,71 @@ def test_wait_for_ask_returns_when_the_turn_ends(monkeypatch):
 
 def test_config_rules():
     assert config.RELEASE_AFTER_S > 0 and 0 < config.ASK_WAIT_S <= 60
+
+
+# --- Free memory right before Inkling loads ----------------------------------------------------
+
+GB = 1024**3
+
+
+def _ensure_world(monkeypatch, loaded, free):
+    rec = RecordingEngine(loaded)
+    c = _client(rec, monkeypatch)
+    order = []
+    real_unload = rec.unload
+
+    async def unload(model):
+        order.append(("unload", model)); await real_unload(model)
+    monkeypatch.setattr(c, "unload", unload, raising=False)
+
+    async def ensure_only(model, **kw):
+        order.append(("ensure", model)); await c._ensure_managed(model, settle_timeout=5, exclusive=True)
+    monkeypatch.setattr(c, "ensure_only", ensure_only, raising=False)
+
+    def avail():
+        order.append(("check", free)); return free
+    monkeypatch.setattr(engine, "available_bytes", avail)
+    monkeypatch.setattr(config, "EVICT_SETTLE_S", 1.0)
+    return rec, _Residency(c), order
+
+
+def test_others_unload_then_memory_is_checked_then_inkling_loads(monkeypatch):
+    rec, res, order = _ensure_world(monkeypatch, [ASK, OTHER], free=20 * GB)
+    engine_hold.hold(INK, "Ideate")
+    asyncio.run(res._ensure())
+    kinds = [k for k, _ in order]
+    assert kinds[:2] == ["unload", "unload"] and kinds[2] == "check" and kinds[3] == "ensure"
+    assert rec.loaded == [INK]
+
+
+def test_too_little_free_memory_refuses_and_loads_nothing(monkeypatch):
+    rec, res, order = _ensure_world(monkeypatch, [ASK], free=8 * GB)    # another app holds a model
+    with pytest.raises(engine.NoRoom) as err:
+        asyncio.run(res._ensure())
+    assert ("load", INK) not in rec.calls and INK not in rec.loaded
+    text = str(err.value)
+    assert "needs about 18 GB" in text and "8 GB is free" in text and "Quit oMLX" in text
+
+
+def test_inkling_already_loaded_skips_the_check(monkeypatch):
+    rec, res, order = _ensure_world(monkeypatch, [INK, ASK], free=1 * GB)
+    asyncio.run(res._ensure())
+    assert ("check", 1 * GB) not in order and rec.loaded == [INK]
+
+
+def test_only_inkling_loaded_does_nothing(monkeypatch):
+    rec, res, order = _ensure_world(monkeypatch, [INK], free=1 * GB)
+    asyncio.run(res._ensure())
+    assert order == [] and rec.calls == []
+
+
+def test_unreadable_free_memory_does_not_block(monkeypatch):
+    rec, res, order = _ensure_world(monkeypatch, [], free=-1)
+    asyncio.run(res._ensure())
+    assert rec.loaded == [INK]
+
+
+def test_available_bytes_reads_vm_stat():
+    free = engine.available_bytes()
+    assert free == -1 or 0 < free < 1024 * GB
+    assert engine.room_needed() == config.MODEL_RESIDENT_BYTES + config.MEMORY_MARGIN_BYTES >= 18 * GB

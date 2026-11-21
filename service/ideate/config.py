@@ -61,6 +61,13 @@ LOAD_TIMEOUT_S = 240.0
 # After a run ends, Inkling stays loaded this long for a follow-up message, then Ideate unloads
 # it (Wisp's bundled engine only). Ask's model loads again on Ask's next turn, not straight away.
 RELEASE_AFTER_S = 90.0
+# Inkling 2 Mini oQ3e resident (measured 15.1 GB), plus room for macOS and the prompt. A run checks
+# free memory right before loading it and refuses below this: on 2026-11-21 a second engine holding
+# a 12.5 GB model while Inkling loaded froze a 24 GB Mac until the watchdog restarted it.
+MODEL_RESIDENT_BYTES = int(15.1 * 1024**3)
+MEMORY_MARGIN_BYTES = 3 * 1024**3
+# How long Ideate waits for the models it unloaded to leave memory before checking.
+EVICT_SETTLE_S = 30.0
 # A run that starts while an Ask turn is answering waits this long for it before taking the engine.
 ASK_WAIT_S = 30.0
 
