@@ -241,7 +241,8 @@ def test_calendar_set_to_add_events_only_is_not_called_denied():
     off = nxt[nxt.index("case .notAllowed:"):]
     assert off.index("if FirstRunPermissions.isAddOnly(item, state, calendarAddOnly: calendarAddOnly) "
                      "{ return calendarAddOnlyNote }") < off.index("switch on Wisp")
-    note = page[page.index("static let calendarAddOnlyNote = "):page.index("/// Full Disk Access and Screen Recording, on the page")]
+    start = page.index("static let calendarAddOnlyNote = ")
+    note = page[start:page.index("\n\n", start)]
     assert "only add events" in note and "Options next to Wisp" in note and "Full Access" in note
 
     # Still not allowed, and still System Settings: no state, button or request changed.
