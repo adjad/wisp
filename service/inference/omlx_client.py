@@ -1198,7 +1198,36 @@ class OMLXClient:
                 except (httpx.HTTPError, ModelMemoryLimitError, EngineGuardUnavailableError):
                     pass  # optional keep-warm reload cannot fail the requested model
 
-    async def chat(
+    def _cloud_masker(self):
+        """The conversation's identifier mapping when this client talks to a cloud
+        provider; None for the managed engine, a user's loopback provider and any
+        loopback address, whose requests are never touched (service/safety/cloud_mask.py)."""
+        from service.safety import cloud_mask
+        if not cloud_mask.is_cloud(managed=getattr(self, "managed", True),
+                                   endpoint_name=getattr(self, "endpoint_name", "local"),
+                                   base_url=getattr(self, "base_url", "")):
+            return None
+        masker = cloud_mask.masker_for(cloud_mask.current_conversation())
+        if masker is None:
+            # No conversation bound (a background call): one mapping per client.
+            masker = self.__dict__.get("_fallback_masker")
+            if masker is None:
+                masker = self.__dict__["_fallback_masker"] = cloud_mask.Masker()
+        return masker
+
+    async def chat(self, model: str, messages: list[dict[str, Any]], **kwargs) -> dict[str, Any]:
+        """Non-streaming chat completion; see `_chat`. A cloud request leaves with
+        emails, phones and card numbers masked, and the reply comes back unmasked."""
+        masker = self._cloud_masker()
+        if masker is None:
+            return await self._chat(model, messages, **kwargs)
+        data = await self._chat(model, masker.mask_messages(messages), **kwargs)
+        for choice in (data.get("choices") or []) if isinstance(data, dict) else []:
+            if isinstance(choice, dict) and isinstance(choice.get("message"), dict):
+                masker.unmask_message(choice["message"])
+        return data
+
+    async def _chat(
         self,
         model: str,
         messages: list[dict[str, Any]],
@@ -1290,7 +1319,38 @@ class OMLXClient:
         finally:
             await events.aclose()
 
-    async def stream_events(
+    def stream_events(self, model: str, messages: list[dict[str, Any]], **kwargs) -> AsyncIterator[dict[str, Any]]:
+        """Streaming chat with typed events; see `_stream_events`. A cloud request is
+        masked on the way out and its events unmasked on the way back; any other
+        client's stream is returned untouched."""
+        masker = self._cloud_masker()
+        if masker is None:
+            return self._stream_events(model, messages, **kwargs)
+        return self._masked_events(masker, model, messages, **kwargs)
+
+    async def _masked_events(self, masker, model, messages, **kwargs) -> AsyncIterator[dict[str, Any]]:
+        streams = {"content": masker.stream(), "reasoning": masker.stream()}
+        events = self._stream_events(model, masker.mask_messages(messages), **kwargs)
+        try:
+            async for event in events:
+                kind = event.get("kind")
+                if kind in streams:
+                    text = streams[kind].feed(event.get("text") or "")
+                    if text:
+                        yield {**event, "text": text}
+                elif kind == "final":
+                    # Held partial placeholders go out before the final message.
+                    for held_kind, stream in streams.items():
+                        if tail := stream.flush():
+                            yield {"kind": held_kind, "text": tail}
+                    masker.unmask_message(event["message"])
+                    yield event
+                else:
+                    yield event
+        finally:
+            await events.aclose()
+
+    async def _stream_events(
         self,
         model: str,
         messages: list[dict[str, Any]],

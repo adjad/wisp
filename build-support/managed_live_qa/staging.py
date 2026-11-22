@@ -22,7 +22,7 @@ SOURCE_ALLOWLIST = (
     "service/tools/message_digest.py", "service/tools/untrusted.py", "service/assistant/brief.py",
     "service/inference/omlx_client.py", "service/inference/attributed_transport.py",
     "service/inference/local_peer.py", "service/inference/inference_errors.py",
-    "service/inference/engine_epoch.py", "service/inference/engine_hold.py",
+    "service/inference/engine_epoch.py", "service/inference/engine_hold.py", "service/safety/cloud_mask.py",
     "app/Sources/WispApp/BackendCredentials.swift",
 )
 SUPPORT_FILES = ("backend.py", "harness.py", "manifest.json", "native_main.swift")

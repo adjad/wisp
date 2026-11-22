@@ -860,13 +860,13 @@ def _chat_pipeline(raw):
     path = root / "service/inference/omlx_client.py"
     _functions(path, {"_ensure_choices", "_demote_unclosed_think", "_power_fields",
                          "_lift_gpu_power", "_power_call_started", "_power_call_ended"}, ns)
-    _functions(path, {"chat", "_completion_data", "_check_response"}, ns, methods=True)
+    _functions(path, {"_chat", "_completion_data", "_check_response"}, ns, methods=True)
 
     class Managed:
         managed = True
         api_prefix = "/v1"
         provider = SimpleNamespace(name="omlx")
-        chat = ns["chat"]
+        chat = ns["_chat"]
         _completion_data = staticmethod(ns["_completion_data"])
         _check_response = ns["_check_response"]
 

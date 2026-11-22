@@ -3967,7 +3967,9 @@ async def agent(body: dict[str, Any]):
 
     async def runner():
         from service.inference.power_tier import CHAT, power_tier
-        with diagnostics.use(trace), power_tier(CHAT):
+        from service.safety.cloud_mask import conversation as cloud_mask_conversation
+        # A cloud model's identifier placeholders are numbered per conversation.
+        with diagnostics.use(trace), power_tier(CHAT), cloud_mask_conversation(sid):
             try:
                 await runner_body()
             except asyncio.CancelledError:
