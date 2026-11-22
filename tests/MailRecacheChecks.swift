@@ -29,8 +29,22 @@ struct MailRecacheChecks {
         // Order: open Mail → script it; closed with the index → index; only then open Mail.
         var f = base; f.mailOpen = true
         check(M.route(f, now: now) == .mailApp, "(a) Mail open and allowed: script it")
+        // The index only moves while Mail runs: without Google, a good index read still opens Mail
+        // hidden once no live read is fresh, at most every 30 minutes.
         f = base; f.indexRead = true
-        check(M.route(f, now: now) == .envelopeIndex, "(b) closed with Full Disk Access: the index")
+        check(M.route(f, now: now) == .openMail, "(b) index read, no Google, no live read: open Mail hidden")
+        f = base; f.indexRead = true; f.lastRead = ago(1)
+        check(M.route(f, now: now) == .openMail, "an index read alone never makes the cache fresh")
+        f = base; f.indexRead = true; f.lastLiveRead = ago(10)
+        check(M.route(f, now: now) == .none(.cacheFresh), "index read, live read 10 min ago: leave Mail closed")
+        f = base; f.indexRead = true; f.lastLiveRead = ago(31)
+        check(M.route(f, now: now) == .openMail, "index read, live read 31 min ago: open Mail hidden")
+        f = base; f.indexRead = true; f.lastOpenedByWisp = ago(29)
+        check(M.route(f, now: now) == .none(.openedRecently), "index read, opened 29 min ago: wait")
+        f = base; f.indexRead = true; f.userQuitAt = ago(14)
+        check(M.route(f, now: now) == .none(.userQuitRecently), "index read, person quit 14 min ago: leave it")
+        f = base; f.indexRead = true; f.automationAllowed = false
+        check(M.route(f, now: now) == .none(.automationNotAllowed), "index read, Automation not allowed: never asks")
         f = base; f.indexRead = true; f.gmailCovers = true
         check(M.route(f, now: now) == .envelopeIndex, "the index is read even when Google covers mail")
         check(M.route(base, now: now) == .openMail, "(c) neither, Google off, allowed: open Mail")

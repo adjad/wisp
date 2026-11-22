@@ -860,8 +860,8 @@ final class MailReader {
     }
 
     /// Step (c), or today's report. Runs off the scan that found Mail unreadable, or (with
-    /// `failure` nil) off an index read that worked but left a Google account unchecked: then
-    /// the index result stands, and Mail is opened only to let a live read check that account.
+    /// `failure` nil) off an index read that worked: the index result stands, and Mail is opened
+    /// hidden only when no live read is fresh, so Mail fetches what arrived since it last ran.
     private func considerOpeningMail(failure: (kind: String, reason: String)?) {
         Task.detached(priority: .utility) { [weak self] in
             guard let self else { return }
@@ -869,8 +869,6 @@ final class MailReader {
             let accounts = await Self.gmailAccounts()
             let covers = MailRecache.gmailCovers(accounts, now: now)
             let unchecked = MailRecache.gmailLeavesUnchecked(accounts, now: now)
-            // Nothing to add to a good index read.
-            if failure == nil && !unchecked { return }
             self.recacheLock.lock()
             let facts = MailRecache.Facts(
                 mailOpen: self.mailAppOpen(), indexRead: failure == nil,
@@ -889,7 +887,8 @@ final class MailReader {
                 if let failure { self.postDiagnostic(available: false, reason: failure.reason, kind: failure.kind) }
                 return
             }
-            if unchecked { NSLog("Wisp: opening Mail hidden because a Google sign-in can't be checked") }
+            NSLog(unchecked ? "Wisp: opening Mail hidden because a Google sign-in can't be checked"
+                  : "Wisp: opening Mail hidden so it fetches new mail (its index only moves while Mail runs)")
             await self.openMailAndRead(failure: failure)
             self.recacheLock.lock(); self.recacheRunning = false; self.recacheLock.unlock()
         }
@@ -1036,8 +1035,8 @@ final class MailReader {
                         self.post(headers: headers, available: true, reason: "",
                                   readSource: "local_index", history: history,
                                   historyGeneration: generation)
-                        // The index can't vouch for a Google account that couldn't be
-                        // checked: a live read through Mail.app can (MailRecache).
+                        // The index holds only what Mail fetched before it closed: open it
+                        // hidden for a live read once none is fresh (MailRecache).
                         self.considerOpeningMail(failure: nil)
                     } else {
                         let failure = Permissions.unaskedAutomation(

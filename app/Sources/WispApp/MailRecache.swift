@@ -5,14 +5,15 @@ import Foundation
 ///
 ///   (a) Mail is open → read it through AppleScript, as always;
 ///   (b) Mail is closed and Full Disk Access is on → read the Envelope Index, without opening Mail;
-///   (c) neither works and Mail Automation is ALREADY allowed → open Mail hidden (no activation,
-///       not in recent items), wait until it answers, then run the header, raw and history reads.
+///   (c) Mail Automation is ALREADY allowed and no live read is fresh → open Mail hidden (no
+///       activation, not in recent items), wait until it answers, then run the header, raw and
+///       history reads. This runs after a good index read too.
 ///
-/// An index read can't vouch for a Google account Wisp couldn't check (its sign-in expired or its
-/// sync is failing): only a live read through Mail.app clears "Couldn't check <account>" (the
-/// service, service/proactive/cycle.py). So while any listed Google account is unchecked, one healthy
-/// account doesn't count as covering mail, an index read doesn't end the matter, and (c) applies
-/// even though the index read worked; the cache is then fresh only from a live read.
+/// The index only moves while Mail runs and fetches: closed, Mail downloads nothing, so the index
+/// holds the mail as of Mail's last run. Unless Google covers mail, a read of it is never fresh on
+/// its own: only a live read through Mail.app is (and only that clears "Couldn't check <account>"
+/// in the service, service/proactive/cycle.py). So while any listed Google account is unchecked,
+/// one healthy account doesn't count as covering mail either.
 ///
 /// Never asks for a permission. Polite: opens Mail at most once every 30 minutes, only when the mail
 /// cache is stale, never within 15 minutes of the person quitting Mail themselves, and afterwards
@@ -95,15 +96,18 @@ enum MailRecache {
         var userQuitAt: Date?
     }
 
-    /// The order: the open app first, then the index, then (only when allowed and polite) opening Mail.
+    /// The order: the open app first, then (only when allowed and polite) opening Mail, after the index
+    /// read or in its place. Any route but .openMail leaves the index read, if any, as the result.
     static func route(_ f: Facts, now: Date) -> Route {
         if f.mailOpen && f.automationAllowed { return .mailApp }
-        if f.indexRead && !f.gmailUnchecked { return .envelopeIndex }
-        if f.gmailCovers && !f.gmailUnchecked { return .none(.gmailCovers) }
+        // Google covering mail: the index (when read) is all Mail needs to add.
+        if f.gmailCovers && !f.gmailUnchecked { return f.indexRead ? .envelopeIndex : .none(.gmailCovers) }
         if !f.automationAllowed { return .none(.automationNotAllowed) }
         if !f.mailInstalled { return .none(.mailMissing) }
-        // An index read can't vouch for an unchecked Google account, so only a live read counts then.
-        if let last = f.gmailUnchecked ? f.lastLiveRead : f.lastRead, now.timeIntervalSince(last) < staleAfter { return .none(.cacheFresh) }
+        // The index is never fresh on its own (Mail fetches only while it runs), so with an index
+        // read, or an unchecked Google account, only a live read counts.
+        let last = f.indexRead || f.gmailUnchecked ? f.lastLiveRead : f.lastRead
+        if let last, now.timeIntervalSince(last) < staleAfter { return .none(.cacheFresh) }
         if let opened = f.lastOpenedByWisp, now.timeIntervalSince(opened) < openEvery { return .none(.openedRecently) }
         if let quit = f.userQuitAt, now.timeIntervalSince(quit) < userQuitGrace { return .none(.userQuitRecently) }
         return .openMail
