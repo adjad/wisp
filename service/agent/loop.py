@@ -21,6 +21,7 @@ from typing import Awaitable, Callable, Sequence
 
 from service import debug_capture, diagnostics
 from service.user_text import user_facing_failure as _user_facing_failure
+from service.agent.result_filter import intent_for
 from service.config import (narration_mode, no_thinking_kwargs, role_to_model,
                             thinking_after_tool_required, thinking_kwargs,
                             thinks_explicitly)
@@ -1604,7 +1605,8 @@ def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
 # instance cannot serve two generations in parallel), not this loop.
 
 
-def _fit_tool_result(result: str, name: str, limit: int = _MAX_TOOL_RESULT_CHARS) -> str:
+def _fit_tool_result(result: str, name: str, limit: int = _MAX_TOOL_RESULT_CHARS,
+                     intent: str = "") -> str:
     """Bound what a single tool result contributes to the context.
 
     Truncation is ANNOUNCED rather than silent, and names the tool's own
@@ -1616,6 +1618,14 @@ def _fit_tool_result(result: str, name: str, limit: int = _MAX_TOOL_RESULT_CHARS
         return DisplayOnlyToolResult.model_text
     if len(result) <= limit:
         return result
+    if intent:
+        # Ask only: keep what the question needs (drop unused fields, rank rows
+        # against it) before anything is cut. The cut below still announces
+        # itself if the shaped text is still over the cap.
+        from service.agent.result_filter import shape_result
+        result = shape_result(result, name, limit, intent)
+        if len(result) <= limit:
+            return result
     # Cut on a line boundary only when that keeps most of the budget. A fetched
     # page of minified JSON is a header, a fence line and one long line: cut
     # back to the last newline, the model got the header and none of the page.
@@ -5414,7 +5424,8 @@ async def run_agent(
                     from service.model_only import ask_result_limit
                     result = (f"({name} already ran with these exact arguments; it was NOT run "
                               "again. Same result as before, answer from it now:)\n"
-                              + _fit_tool_result(ask_read_cache[read_key], name, ask_result_limit(name)))
+                              + _fit_tool_result(ask_read_cache[read_key], name, ask_result_limit(name),
+                                               intent_for(messages, args)))
                 audit("reject_repeated_read", tool=name, args=args)
                 prev_step_refusals += 1
                 await emit({"type": "tool_result", "id": cid, "result": result})
@@ -5948,7 +5959,8 @@ async def run_agent(
                 # and a rejected argument comes back with a repair hint so the
                 # model fixes its own call instead of asking the user.
                 msgs.append({"role": "tool", "tool_call_id": cid,
-                             "content": _fit_tool_result(result, name, ask_result_limit(name))
+                             "content": _fit_tool_result(result, name, ask_result_limit(name),
+                                                         intent_for(messages, args))
                              + argument_fix_hint(name, args, result)
                              + web_degradation_hint(name, result)})
             else:
