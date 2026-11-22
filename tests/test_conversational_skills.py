@@ -21,12 +21,15 @@ def loaded_bundled_skills(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         skills._skills = original
 
 
-def test_wisp_ships_two_workflows_a_tool_skill_and_a_style_skill(loaded_bundled_skills) -> None:
+def test_wisp_ships_workflows_a_tool_skill_and_a_style_skill(loaded_bundled_skills) -> None:
     bundled = {name for name, skill in loaded_bundled_skills.items()
                if skill.bundled}
     # mac-controls is a tool skill (fixed device commands), not a workflow; humanizer
     # is the style skill behind Settings › Human-sounding replies.
-    assert bundled == {"interview-me", "idea-refine", "mac-controls", "humanizer"}
+    # The four fixed task workflows (tests/test_workflow_skills.py) are ordinary
+    # trigger-matched skills, not conversational ones.
+    assert bundled == {"interview-me", "idea-refine", "mac-controls", "humanizer",
+                       "inbox-cleanup", "meeting-prep", "week-review", "file-tidy"}
     assert all(skill.body for skill in loaded_bundled_skills.values())
     assert all(len(skill.body) <= skills.MAX_BODY_CHARS
                for skill in loaded_bundled_skills.values())

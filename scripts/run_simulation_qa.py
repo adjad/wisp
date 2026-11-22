@@ -82,6 +82,7 @@ PROFILE_TESTS = {
         "tests/test_conversation_memory.py",
         "tests/test_conversational_skills.py",
         "tests/test_mac_controls_skill.py",
+        "tests/test_workflow_skills.py",
         "tests/test_contextual_outbound_routing.py",
         "tests/test_workflow_bindings.py",
         "tests/test_workflow_engine.py",
@@ -309,6 +310,7 @@ PROFILE_TESTS = {
         # Route metadata over synthetic prompts; mocked retrieval, no tool execution.
         "tests/test_personal_grounding.py",
         "tests/test_web_response_followup.py",
+        "tests/test_result_filter.py",
         "tests/test_direct_dispatch.py",
         "tests/test_direct_dispatch_exec.py",
         # Actual ASGI with inert registry, fake inference and blocked sockets/processes.

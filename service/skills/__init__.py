@@ -63,6 +63,10 @@ _SHIPPED_BODIES: dict[str, frozenset[str]] = {
     "humanizer": frozenset({"d6763c18aeb53e0ff94678b9261c63a84777febb668783807d545c67cfa704a1"}),
     "idea-refine": frozenset({"f70b9cde78d2abbeae12a7a3ace0993e4f2f39db77429535f198ec64374645cb"}),
     "interview-me": frozenset({"f4451e9cc23fb16348516936980577ce592dddd6aea99ed27a4e6da037e740b4"}),
+    "inbox-cleanup": frozenset({"c4ea8745c3485352fd38fc7536136164655528f881f647f564d4be7fdaf59fd3"}),
+    "meeting-prep": frozenset({"7397867aba8b9dfa06eb858316113e8f5ff1514af0e18dacf1e0ace34fc81f42"}),
+    "week-review": frozenset({"d1f83f4afafd647e148d855115ce7bb5aa25a106bc7a319eba13962e5e6c3537"}),
+    "file-tidy": frozenset({"625adb3ac255b83f2bf41e31f7a5159ae0a88d3a613652d2916e515e2d9e2816"}),
     "mac-controls": frozenset({"6fe9b434bf7b76c7fec3940ecf93a2b4a43455f38e53d5a2aeeaef1b04b57240",
                                "7968c32f1d5aa6e80101ba8217ebe1a0d0b3c9ea3be7414b20960c148283f188"}),
 }
@@ -108,6 +112,10 @@ class Skill:
     always: bool = False
     bundled: bool = False
     conversation_workflow: bool = False
+    # Declared by a fixed workflow skill under metadata.wisp.contract: the
+    # built-in tools it may call and which of them change anything. Checked by
+    # service.skills.contracts.validate (and tests); never widens a tool's rules.
+    contract: dict = field(default_factory=dict)
 
     @property
     def compose(self) -> bool:
@@ -204,6 +212,7 @@ def _parse(path: Path, *, bundled: bool = False) -> Skill | None:
         always=bool(meta.get("always", wisp_meta.get("always", False))),
         bundled=bundled,
         conversation_workflow=bool(wisp_meta.get("conversation_workflow", False)),
+        contract=(wisp_meta["contract"] if isinstance(wisp_meta.get("contract"), dict) else {}),
     )
 
 
