@@ -32,6 +32,10 @@ def run_loop(tmp_path, *args, timeout=60, env=None):
                           capture_output=True, text=True, timeout=timeout)
 
 
+# A child that hangs with the shell alone: Simulation QA's sandbox refuses to run /bin/sleep.
+HANG = "/bin/sh -c 'while :; do :; done'"
+
+
 def alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -74,7 +78,7 @@ def test_a_hung_check_is_killed_with_its_children(tmp_path):
     work = tmp_path / "work"
     work.mkdir()
     # The check starts a child that outlives it unless the whole group is killed.
-    cmd = "sleep 300 & echo $! > child.pid; sleep 300"
+    cmd = HANG + " & echo $! > child.pid; " + HANG   # outlives the check unless its group is killed
     start = time.monotonic()
     result = run_loop(tmp_path, "--until", cmd, "--max", "2", "--check", "1")
     assert result.returncode == 1 and time.monotonic() - start < 15
@@ -184,7 +188,7 @@ def test_cancel_kills_the_running_check_group(tmp_path, sig):
     work = tmp_path / "work"
     work.mkdir()
     (tmp_path / "tmp").mkdir()
-    cmd = "sleep 300 & echo $! > child.pid; wait"
+    cmd = HANG + " & echo $! > child.pid; wait"
     proc = subprocess.Popen([sys.executable, str(LOOP_PY), "--until", cmd, "--max", "300"], cwd=work,
                             env={"PATH": os.environ["PATH"], "TMPDIR": str(tmp_path / "tmp") + "/"},
                             stdout=subprocess.PIPE, text=True, start_new_session=True)
