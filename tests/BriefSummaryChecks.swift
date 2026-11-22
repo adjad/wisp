@@ -401,6 +401,17 @@ func firstDayChecks(_ check: (Bool, String) -> Void) {
           && partly.lines.contains { $0.text == "Sam · Lunch?" }, "partly read mail: what was read, and the way to reconnect")
     check(BriefDetail.mail(needing: [], ready: true, summary: [], access: syncing).action == nil,
           "a check still running has nothing to fix")
+    // Mail.app is the fallback that can check those accounts: when it couldn't read, its reason joins the tooltip.
+    let closedRow = SourceAccess(source: "email", ready: false, state: "unavailable", reason: "Mail is closed.")
+    let withFallback = SourceAccess.mail(closedRow, readBy: [], unchecked: UncheckedMail(reconnect: ["work@gmail.com"]))
+    check(withFallback.reason == reconnect.reason + " Mail on this Mac: Mail is closed."
+          && withFallback.headline == reconnect.headline && withFallback.fixLink == reconnect.fixLink,
+          "Mail.app's reason is added to the Google detail; headline and fix are unchanged")
+    check(SourceAccess.mail(SourceAccess(source: "email", ready: false, state: "syncing", reason: "Reading Mail…"),
+                            readBy: [], unchecked: UncheckedMail(reconnect: ["work@gmail.com"])).reason == reconnect.reason
+          && SourceAccess.mail(SourceAccess(source: "email", ready: false, state: "unavailable"),
+                               readBy: [], unchecked: UncheckedMail(reconnect: ["work@gmail.com"])).reason == reconnect.reason,
+          "a syncing row or one with no reason adds nothing")
 
     // Contacts turned down: one row like the other sources, with its setting.
     check(SourceAccess.contacts(denied: false, enabled: true) == nil && SourceAccess.contacts(denied: true, enabled: false) == nil,

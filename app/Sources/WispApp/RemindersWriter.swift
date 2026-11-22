@@ -14,6 +14,11 @@ import EventKit
 /// (service/assistant/scheduler.py, record_sync). Without access nothing is
 /// read, only a small status is posted, so that keeps the one-minute pace that
 /// picks up a permission granted after launch.
+extension Notification.Name {
+    /// Calendar or Reminders went from "can't read" to readable, so the Brief can drop its row.
+    static let wispSourceAccessChanged = Notification.Name("WispSourceAccessChanged")
+}
+
 enum NativeSyncPace {
     static let heartbeat: TimeInterval = 120
     static let withoutAccess: TimeInterval = 60
@@ -29,6 +34,17 @@ enum NativeSyncPace {
 
     static func heartbeatInterval(authorized: Bool) -> TimeInterval {
         authorized ? heartbeat : withoutAccess
+    }
+
+    /// The Brief opened (the same name as MailReader.briefOpened, which this file
+    /// can't see when it is compiled alone).
+    static let briefOpened = Notification.Name("wisp.briefOpenedForMail")
+
+    /// Whether coming back to Wisp, or opening the Brief, reads access again at once
+    /// instead of waiting for the heartbeat: while access is missing, and once more
+    /// after the last report said it was. Pure.
+    static func rechecks(authorized: Bool, lastReportedAuthorized: Bool?) -> Bool {
+        !authorized || lastReportedAuthorized != true
     }
 
     /// Seconds to wait before a change-driven read, given when the last read began.
@@ -50,6 +66,9 @@ final class RemindersWriter {
     private var timer: Timer?
     private var historyTask: Task<Void, Never>?
     private var changeObserver: NSObjectProtocol?
+    private var recheckObservers: [NSObjectProtocol] = []
+    /// Whether the last report said Reminders could be read; nil before the first.
+    private var lastReportedAuthorized: Bool?
     private var pendingChangeSync: DispatchWorkItem?
     // Snapshot decisions and count are updated together on the main thread.
     // A late EventKit callback cannot replace a newer snapshot's count.
@@ -601,9 +620,22 @@ final class RemindersWriter {
     // "calendar" source since sync_source REPLACES a source's whole active
     // set on each post; mixing the two would let one wipe the other).
     func start() {
+        // A second start replaces the observers rather than adding more.
+        if let changeObserver { NotificationCenter.default.removeObserver(changeObserver) }
         changeObserver = NotificationCenter.default.addObserver(
             forName: .EKEventStoreChanged, object: store, queue: .main
         ) { [weak self] _ in self?.scheduleChangeSync() }
+        // Coming back to Wisp (after System Settings) or opening the Brief reads access
+        // again at once, so a grant just made doesn't wait for the heartbeat.
+        for observer in recheckObservers { NotificationCenter.default.removeObserver(observer) }
+        recheckObservers = [NSApplication.didBecomeActiveNotification, NativeSyncPace.briefOpened].map { name in
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                guard let self,
+                      NativeSyncPace.rechecks(authorized: self.isAuthorized,
+                                              lastReportedAuthorized: self.lastReportedAuthorized) else { return }
+                self.sync()
+            }
+        }
         // Reads only what macOS already allows: it never asks (Access.passive).
         DispatchQueue.main.async { [weak self] in self?.sync() }
         for delay in [1.0, 3.0, 6.0, 12.0, 25.0] {
@@ -634,6 +666,11 @@ final class RemindersWriter {
         }
         // Capture before the asynchronous fetch: receipt order is not snapshot order.
         let snapshotStartedAt = Date().timeIntervalSince1970
+        let authorizedNow = isAuthorized
+        if lastReportedAuthorized == false && authorizedNow {
+            NotificationCenter.default.post(name: .wispSourceAccessChanged, object: nil)
+        }
+        lastReportedAuthorized = authorizedNow
         guard isAuthorized else {
             // Never asks: see Access.passive.
             let report = Access.passive(status: Access.status(of: EKEventStore.authorizationStatus(for: .reminder)))

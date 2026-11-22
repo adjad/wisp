@@ -155,10 +155,10 @@ final class Reader {
     static func automationDecided(_ bundleID: String) -> Bool { true }
     // Opening Mail when Google isn't covering it is checked in MailRecacheChecks.swift; here it
     // declines, so the closed-read failure is reported exactly as before.
-    func considerOpeningMail(failure: (kind: String, reason: String)) {
-        postDiagnostic(available: false, reason: failure.reason, kind: failure.kind)
+    func considerOpeningMail(failure: (kind: String, reason: String)?) {
+        if let failure { postDiagnostic(available: false, reason: failure.reason, kind: failure.kind) }
     }
-    func noteMailRead() {}
+    func noteMailRead(live: Bool) {}
     func isMailRunning() -> Bool {
         touch("running"); runningChecks += 1
         if which == "closed" { return false }

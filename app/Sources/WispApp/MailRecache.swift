@@ -8,6 +8,12 @@ import Foundation
 ///   (c) neither works and Mail Automation is ALREADY allowed → open Mail hidden (no activation,
 ///       not in recent items), wait until it answers, then run the header, raw and history reads.
 ///
+/// An index read can't vouch for a Google account Wisp couldn't check (its sign-in expired or its
+/// sync is failing): only a live read through Mail.app clears "Couldn't check <account>" (the
+/// service, service/proactive/cycle.py). So while any listed Google account is unchecked, one healthy
+/// account doesn't count as covering mail, an index read doesn't end the matter, and (c) applies
+/// even though the index read worked; the cache is then fresh only from a live read.
+///
 /// Never asks for a permission. Polite: opens Mail at most once every 30 minutes, only when the mail
 /// cache is stale, never within 15 minutes of the person quitting Mail themselves, and afterwards
 /// quits only a Mail that Wisp opened, with `terminate` (never forced), and not if the person has
@@ -45,6 +51,15 @@ enum MailRecache {
         }
     }
 
+    /// Some listed Google account isn't connected and synced recently, so Google can't vouch for
+    /// its mail, even when another account is healthy.
+    static func gmailLeavesUnchecked(_ accounts: [GmailAccount], now: Date) -> Bool {
+        accounts.contains { account in
+            guard account.connected, let last = account.lastSync else { return true }
+            return now.timeIntervalSince(last) >= gmailFreshFor
+        }
+    }
+
     enum Route: Equatable {
         /// (a) script the open Mail.
         case mailApp
@@ -67,9 +82,13 @@ enum MailRecache {
         /// macOS already allows Wisp to script Mail. Undecided or denied is false.
         var automationAllowed: Bool
         var gmailCovers: Bool
+        /// A listed Google account is unchecked (gmailLeavesUnchecked).
+        var gmailUnchecked: Bool = false
         var mailInstalled = true
         /// The last successful read of Mail's mail (either way); nil when none yet.
         var lastRead: Date?
+        /// The last successful read through Mail.app itself; an index read doesn't count.
+        var lastLiveRead: Date? = nil
         /// When Wisp last opened Mail itself.
         var lastOpenedByWisp: Date?
         /// When the person last quit Mail themselves.
@@ -79,11 +98,12 @@ enum MailRecache {
     /// The order: the open app first, then the index, then (only when allowed and polite) opening Mail.
     static func route(_ f: Facts, now: Date) -> Route {
         if f.mailOpen && f.automationAllowed { return .mailApp }
-        if f.indexRead { return .envelopeIndex }
-        if f.gmailCovers { return .none(.gmailCovers) }
+        if f.indexRead && !f.gmailUnchecked { return .envelopeIndex }
+        if f.gmailCovers && !f.gmailUnchecked { return .none(.gmailCovers) }
         if !f.automationAllowed { return .none(.automationNotAllowed) }
         if !f.mailInstalled { return .none(.mailMissing) }
-        if let last = f.lastRead, now.timeIntervalSince(last) < staleAfter { return .none(.cacheFresh) }
+        // An index read can't vouch for an unchecked Google account, so only a live read counts then.
+        if let last = f.gmailUnchecked ? f.lastLiveRead : f.lastRead, now.timeIntervalSince(last) < staleAfter { return .none(.cacheFresh) }
         if let opened = f.lastOpenedByWisp, now.timeIntervalSince(opened) < openEvery { return .none(.openedRecently) }
         if let quit = f.userQuitAt, now.timeIntervalSince(quit) < userQuitGrace { return .none(.userQuitRecently) }
         return .openMail

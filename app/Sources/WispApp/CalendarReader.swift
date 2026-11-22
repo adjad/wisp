@@ -19,6 +19,9 @@ final class CalendarReader {
     private var timer: Timer?
     private var historyTask: Task<Void, Never>?
     private var changeObserver: NSObjectProtocol?
+    private var recheckObservers: [NSObjectProtocol] = []
+    /// Whether the last report said Calendar could be read; nil before the first.
+    private var lastReportedAuthorized: Bool?
     private var pendingChangeSync: DispatchWorkItem?
     private var lastSyncStartedAt: TimeInterval?
     // Main-thread state: which read is running and which report was posted last.
@@ -40,6 +43,17 @@ final class CalendarReader {
         changeObserver = NotificationCenter.default.addObserver(
             forName: .EKEventStoreChanged, object: store, queue: .main
         ) { [weak self] _ in self?.scheduleChangeSync() }
+        // Coming back to Wisp (after System Settings) or opening the Brief reads access
+        // again at once, so a grant just made doesn't wait for the heartbeat.
+        for observer in recheckObservers { NotificationCenter.default.removeObserver(observer) }
+        recheckObservers = [NSApplication.didBecomeActiveNotification, NativeSyncPace.briefOpened].map { name in
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                guard let self,
+                      NativeSyncPace.rechecks(authorized: self.isAuthorized,
+                                              lastReportedAuthorized: self.lastReportedAuthorized) else { return }
+                self.sync()
+            }
+        }
         DispatchQueue.main.async { [weak self] in self?.sync() }
         // Beat the backend-startup race: the Python backend may not be listening
         // yet when the app launches, so the earliest sync POSTs fail silently.
@@ -54,6 +68,7 @@ final class CalendarReader {
 
     deinit {
         if let changeObserver { NotificationCenter.default.removeObserver(changeObserver) }
+        for observer in recheckObservers { NotificationCenter.default.removeObserver(observer) }
         pendingChangeSync?.cancel()
         timer?.invalidate()
     }
@@ -101,6 +116,11 @@ final class CalendarReader {
         let snapshotStartedAt = Date().timeIntervalSince1970
         lastSyncStartedAt = snapshotStartedAt
         let number = readGate.issue()
+        let authorizedNow = isAuthorized
+        if lastReportedAuthorized == false && authorizedNow {
+            NotificationCenter.default.post(name: .wispSourceAccessChanged, object: nil)
+        }
+        lastReportedAuthorized = authorizedNow
         guard isAuthorized else {
             let raw = EKEventStore.authorizationStatus(for: .event)
             let report = Access.passive(status: Access.status(of: raw), source: .calendar)

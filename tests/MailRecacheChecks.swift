@@ -43,6 +43,41 @@ struct MailRecacheChecks {
         f = base; f.mailInstalled = false
         check(M.route(f, now: now) == .none(.mailMissing), "no Mail app: nothing to open")
 
+        // An unchecked Google account: an index read can't vouch for it, only a live Mail.app read can.
+        let expired = M.GmailAccount(connected: false, lastSync: ago(1))
+        let healthy = M.GmailAccount(connected: true, lastSync: ago(1))
+        check(!M.gmailLeavesUnchecked([], now: now), "no Google account: nothing unchecked")
+        check(!M.gmailLeavesUnchecked([healthy], now: now), "all healthy: nothing unchecked")
+        check(M.gmailLeavesUnchecked([expired], now: now), "expired sign-in: unchecked")
+        check(M.gmailLeavesUnchecked([healthy, expired], now: now), "healthy plus expired: still unchecked")
+        check(M.gmailLeavesUnchecked([.init(connected: true, lastSync: ago(45))], now: now), "offline: unchecked")
+        check(M.gmailLeavesUnchecked([.init(connected: true, lastSync: nil)], now: now), "never synced: unchecked")
+        check(M.gmailCovers([healthy, expired], now: now), "healthy plus expired still 'covers' on its own")
+        var u = base; u.indexRead = true; u.gmailUnchecked = true; u.gmailCovers = true
+        check(M.route(u, now: now) == .openMail, "index read + healthy + expired, no live read: open Mail")
+        u = base; u.indexRead = true; u.gmailUnchecked = true; u.lastRead = ago(1)
+        check(M.route(u, now: now) == .openMail, "index read fresh but no live read: open Mail")
+        u.lastLiveRead = ago(10)
+        check(M.route(u, now: now) == .none(.cacheFresh), "live read 10 min ago: fresh")
+        u.lastLiveRead = ago(31)
+        check(M.route(u, now: now) == .openMail, "live read 31 min ago: stale")
+        u = base; u.indexRead = true; u.gmailUnchecked = true; u.automationAllowed = false
+        check(M.route(u, now: now) == .none(.automationNotAllowed), "unchecked but Automation not allowed: none")
+        u = base; u.indexRead = true; u.gmailUnchecked = true; u.mailInstalled = false
+        check(M.route(u, now: now) == .none(.mailMissing), "unchecked but no Mail app: none")
+        u = base; u.indexRead = true; u.gmailUnchecked = true; u.lastOpenedByWisp = ago(29)
+        check(M.route(u, now: now) == .none(.openedRecently), "unchecked, opened 29 min ago: wait")
+        u = base; u.indexRead = true; u.gmailUnchecked = true; u.userQuitAt = ago(14)
+        check(M.route(u, now: now) == .none(.userQuitRecently), "unchecked, person quit 14 min ago: leave it")
+        u = base; u.mailOpen = true; u.indexRead = true; u.gmailUnchecked = true
+        check(M.route(u, now: now) == .mailApp, "unchecked with Mail open: script it")
+        u = base; u.gmailUnchecked = true; u.gmailCovers = true
+        check(M.route(u, now: now) == .openMail, "no index, healthy plus expired: open Mail")
+        u = base; u.indexRead = true; u.gmailCovers = true
+        check(M.route(u, now: now) == .envelopeIndex, "all healthy: the index, unchanged")
+        u = base; u.gmailCovers = true
+        check(M.route(u, now: now) == .none(.gmailCovers), "all healthy, no index: covers, unchanged")
+
         // Only when the cache is stale.
         f = base; f.lastRead = ago(10)
         check(M.route(f, now: now) == .none(.cacheFresh), "read 10 min ago: fresh")

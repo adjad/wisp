@@ -538,7 +538,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             forName: .wispOpenPermissionPage, object: nil, queue: .main
         ) { [weak self] note in
             let raw = note.object as? String
-            MainActor.assumeIsolated { self?.openPermissionPage(raw.flatMap(FirstRunPermissions.Item.init(rawValue:))) }
+            // "ask": the row's Allow… was pressed while macOS has no answer yet, so macOS's
+            // own question follows without a second click on the page (Permissions.asksDirectly).
+            let ask = note.userInfo?["ask"] as? Bool == true
+            MainActor.assumeIsolated {
+                let item = raw.flatMap(FirstRunPermissions.Item.init(rawValue:))
+                self?.openPermissionPage(item)
+                if ask, let item, self?.model.showingPermissions == true { self?.model.permissionPage.act(item) }
+            }
+        }
+        // Calendar or Reminders just became readable: the Brief drops its row without waiting.
+        NotificationCenter.default.addObserver(
+            forName: .wispSourceAccessChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: NativeSyncPace.reachableRefreshDelay)
+                await self?.todayModel.refresh()
+                await DayCards.refresh(force: true)
+                self?.model.onResize()
+            }
         }
         NotificationCenter.default.addObserver(
             forName: .wispStepAside, object: nil, queue: .main

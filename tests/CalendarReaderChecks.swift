@@ -135,6 +135,14 @@ import Foundation
         check(P.changeDelay(lastSyncStartedAt: 2000, now: 1000) == P.changeDebounce,
               "a clock that moved back does not stall reads")
         check(P.changeDebounce > 0 && P.changeFloor >= 60, "never faster than the old timer")
+        // Coming back to Wisp, or opening the Brief, reads access again while it is missing.
+        check(P.rechecks(authorized: false, lastReportedAuthorized: nil), "no access: read again")
+        check(P.rechecks(authorized: false, lastReportedAuthorized: false), "still no access: read again")
+        check(P.rechecks(authorized: false, lastReportedAuthorized: true), "access just went away: read again")
+        check(P.rechecks(authorized: true, lastReportedAuthorized: false), "access just came: read again")
+        check(P.rechecks(authorized: true, lastReportedAuthorized: nil), "nothing reported yet: read")
+        check(!P.rechecks(authorized: true, lastReportedAuthorized: true), "access and reported: wait for the heartbeat")
+        check(P.briefOpened.rawValue == "wisp.briefOpenedForMail", "the Brief-opened name is MailReader's")
     }
 
     // Calendar uses Reminders' permission rules, with its own name, Settings page

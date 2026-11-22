@@ -131,6 +131,10 @@ enum NotchPermissionPage {
             if waiting { return FirstRunPermissions.automationWaitingNote }
             if notReached { return FirstRunPermissions.automationNotReachedNote(item) }
             if reset { return FirstRunPermissions.automationResetNote }
+            if unanswered && canStartOver(item, state, unanswered: true) {
+                return "macOS didn't show its question. If Wisp is already switched on in System Settings, that was "
+                    + "saved for an older copy of Wisp: press Start over, then Allow."
+            }
             if unanswered { return "macOS didn't show its question. Quit and reopen Wisp, then click Allow again." }
             switch item {
             case .fullDiskAccess:
@@ -152,17 +156,29 @@ enum NotchPermissionPage {
                 ? "Wisp is off in System Settings, under \(PrivacyNames.accessibilityWithFormerName). "
                     + "In the page that opens, switch on Wisp."
                 : "Wisp is off in System Settings. In the page that opens, switch on Wisp."
-            if canStartOver(item, state) { return page + " " + startOverNote }
+            if canStartOver(item, state, calendarAddOnly: calendarAddOnly) { return page + " " + startOverNote }
             if item == .fullDiskAccess { return page + " " + fullDiskAccessNote }
             return item == .screenRecording ? page + " " + relaunchNote : page
         }
     }
 
-    /// Screen Recording and Accessibility, once asked and still not there: System
-    /// Settings may already show Wisp switched on, saved for an older copy of Wisp
-    /// (Permissions.startOver), and then there is no switch left to flip.
-    static func canStartOver(_ item: Item, _ state: State) -> Bool {
-        state == .notAllowed && (item == .screenRecording || item == .accessibility)
+    /// Screen Recording, Accessibility, Calendar and Reminders, once asked and still
+    /// not there: System Settings may already show Wisp switched on, saved for an older
+    /// copy of Wisp (Permissions.startOver), and then there is no switch left to flip.
+    /// Calendar and Reminders also offer it when macOS never showed its question
+    /// (`unanswered`), which is the same saved answer in the way. Calendar set to
+    /// add only is not that: its Options menu is the way on.
+    static func canStartOver(_ item: Item, _ state: State, unanswered: Bool = false,
+                             calendarAddOnly: Bool? = nil) -> Bool {
+        switch item {
+        case .screenRecording, .accessibility:
+            return state == .notAllowed
+        case .calendar, .reminders:
+            if state == .notAllowed { return !FirstRunPermissions.isAddOnly(item, state, calendarAddOnly: calendarAddOnly) }
+            return state == .notAsked && unanswered
+        default:
+            return false
+        }
     }
 
     static let startOverTitle = "Start over"
@@ -322,19 +338,15 @@ final class NotchPermissionPageModel: ObservableObject {
         }
     }
 
-    /// Start over for Screen Recording or Accessibility: forget macOS's saved answer,
-    /// so the row goes back to Allow and macOS asks again for this copy of Wisp.
+    /// Start over for Screen Recording, Accessibility, Calendar or Reminders: forget
+    /// macOS's saved answer, so the row goes back to Allow and macOS asks again for
+    /// this copy of Wisp.
     @Published private(set) var startOverFailed: Item?
 
     func startOver(_ item: Item) {
-        let extra: Permissions.Extra
-        switch item {
-        case .screenRecording: extra = .screenRecording
-        case .accessibility: extra = .accessibility
-        default: return
-        }
+        guard Permissions.staleGrant(item) != nil else { return }
         rowChoice = .chosen(item)
-        startOverFailed = Permissions.startOver(extra) ? nil : item
+        startOverFailed = Permissions.startOver(item) ? nil : item
         Task { [access] in await access.refresh() }
     }
 

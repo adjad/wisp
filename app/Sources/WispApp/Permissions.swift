@@ -55,7 +55,11 @@ enum Permissions {
     /// Any other System Settings page (Internet Accounts) opens directly.
     static func openFix(_ url: URL) {
         if let item = NotchPermissionPage.item(forFix: url.absoluteString) {
-            NotificationCenter.default.post(name: .wispOpenPermissionPage, object: item.rawValue)
+            // Calendar and Reminders that macOS hasn't answered ask right away, so the
+            // person doesn't click Allow twice (AppDelegate presses the page's row).
+            let ask = asksDirectly(item, status: eventKitStatus(item))
+            NotificationCenter.default.post(name: .wispOpenPermissionPage, object: item.rawValue,
+                                            userInfo: ask ? ["ask": true] : nil)
         } else {
             if url.scheme == "x-apple.systempreferences" { PrivacyRelaunch.notePaneOpened() }
             stepAside()
@@ -193,22 +197,28 @@ enum Permissions {
     // no. macOS had saved each grant against the code hash of one build (its record
     // read `cdhash H"…"`, not Wisp's certificate), so a newer copy of Wisp doesn't
     // match it and the switch in System Settings is already on, with nothing to flip.
-    // The way out is to drop that record and ask again, which binds it to this copy.
+    // Calendar and Reminders are saved the same way (found 2026-11-22: the Brief kept
+    // asking after both were switched on). The way out is to drop that record and ask
+    // again, which binds it to this copy.
 
     /// macOS's name for the grant `tccutil` resets, and the marker that says Wisp
-    /// already showed its one question. Nil for anything but these two.
-    static func staleGrant(_ extra: Extra) -> (service: String, promptedKey: String)? {
-        switch extra {
+    /// already showed its one question (nil for Calendar and Reminders, which have
+    /// no such marker: macOS's own status says whether it was asked). Nil for any
+    /// other permission.
+    static func staleGrant(_ item: FirstRunPermissions.Item) -> (service: String, promptedKey: String?)? {
+        switch item {
         case .screenRecording: return ("ScreenCapture", screenRecordingPromptedKey)
         case .accessibility: return ("Accessibility", accessibilityPromptedKey)
-        case .fullDiskAccess: return nil
+        case .calendar: return ("Calendar", nil)
+        case .reminders: return ("Reminders", nil)
+        default: return nil
         }
     }
 
     /// `tccutil reset <service> <bundle>`, only ever for Wisp's own bundle id; nil
     /// for an unbundled developer build, so it never runs there. Pure.
-    static func startOverArguments(_ extra: Extra, bundleID: String?) -> [String]? {
-        guard let grant = staleGrant(extra), let bundleID, bundleID == WispReset.bundleID else { return nil }
+    static func startOverArguments(_ item: FirstRunPermissions.Item, bundleID: String?) -> [String]? {
+        guard let grant = staleGrant(item), let bundleID, bundleID == WispReset.bundleID else { return nil }
         return ["reset", grant.service, bundleID]
     }
 
@@ -216,9 +226,9 @@ enum Permissions {
     /// the person's own press. True when macOS dropped it; the next press of Allow
     /// shows macOS's question.
     @discardableResult
-    static func startOver(_ extra: Extra) -> Bool {
-        guard let grant = staleGrant(extra),
-              let arguments = startOverArguments(extra, bundleID: Bundle.main.bundleIdentifier) else { return false }
+    static func startOver(_ item: FirstRunPermissions.Item) -> Bool {
+        guard let grant = staleGrant(item),
+              let arguments = startOverArguments(item, bundleID: Bundle.main.bundleIdentifier) else { return false }
         let tcc = Process()
         tcc.executableURL = URL(fileURLWithPath: WispReset.tccutil)
         tcc.arguments = arguments
@@ -227,8 +237,19 @@ enum Permissions {
         guard (try? tcc.run()) != nil else { return false }
         tcc.waitUntilExit()
         guard tcc.terminationStatus == 0 else { return false }
-        UserDefaults.standard.removeObject(forKey: grant.promptedKey)
+        if let key = grant.promptedKey { UserDefaults.standard.removeObject(forKey: key) }
         return true
+    }
+
+    /// Whether a Brief or Day row's Allow… asks macOS's own question straight away: only
+    /// Calendar and Reminders while macOS has no answer yet. Pure; status reads never ask.
+    static func asksDirectly(_ item: FirstRunPermissions.Item, status: EKAuthorizationStatus) -> Bool {
+        (item == .calendar || item == .reminders) && status == .notDetermined
+    }
+
+    /// The status the Brief row's Allow… decides on, read without asking.
+    private static func eventKitStatus(_ item: FirstRunPermissions.Item) -> EKAuthorizationStatus {
+        EKEventStore.authorizationStatus(for: item == .reminders ? .reminder : .event)
     }
 
     // Screen Recording: needed for screen_capture (the `screencapture` CLI wrapper).

@@ -1882,8 +1882,11 @@ struct SourceAccess: Equatable {
     /// readable, and its headline names the account.
     static func mail(_ row: SourceAccess, readBy: [String], unchecked: UncheckedMail) -> SourceAccess {
         if !unchecked.isEmpty {
+            // Mail.app is the fallback that can check those accounts: when it couldn't read
+            // either, its reason says why, on the tooltip beside the Google one.
+            let why = row.state == .unavailable && !row.reason.isEmpty ? " Mail on this Mac: " + row.reason : ""
             var partly = SourceAccess(source: "email", ready: false, state: "unavailable", blocked: "google_mail",
-                                      reason: unchecked.detail)
+                                      reason: unchecked.detail + why)
             partly.unchecked = unchecked
             return partly
         }

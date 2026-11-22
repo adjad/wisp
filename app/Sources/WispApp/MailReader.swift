@@ -780,6 +780,9 @@ final class MailReader {
 
     private let recacheLock = NSLock()
     private var lastMailRead: Date?
+    /// The last read through Mail.app itself. The on-disk index can't vouch for a Google
+    /// account Wisp couldn't check (MailRecache), so it is kept apart from lastMailRead.
+    private var lastLiveMailRead: Date?
     private var openedMail: NSRunningApplication?
     private var wispAskedMailToQuit = false
     private var personTouchedMail = false
@@ -790,8 +793,11 @@ final class MailReader {
     /// Posted when Brief opens, so a stale mail cache is read then too.
     static let briefOpened = Notification.Name("wisp.briefOpenedForMail")
 
-    private func noteMailRead() {
-        recacheLock.lock(); lastMailRead = Date(); recacheLock.unlock()
+    private func noteMailRead(live: Bool) {
+        recacheLock.lock()
+        lastMailRead = Date()
+        if live { lastLiveMailRead = lastMailRead }
+        recacheLock.unlock()
     }
 
     /// Who quits Mail, and whether the person brings forward a Mail Wisp opened.
@@ -853,18 +859,26 @@ final class MailReader {
         }
     }
 
-    /// Step (c), or today's report. Runs off the scan that found Mail unreadable.
-    private func considerOpeningMail(failure: (kind: String, reason: String)) {
+    /// Step (c), or today's report. Runs off the scan that found Mail unreadable, or (with
+    /// `failure` nil) off an index read that worked but left a Google account unchecked: then
+    /// the index result stands, and Mail is opened only to let a live read check that account.
+    private func considerOpeningMail(failure: (kind: String, reason: String)?) {
         Task.detached(priority: .utility) { [weak self] in
             guard let self else { return }
             let now = Date()
-            let covers = MailRecache.gmailCovers(await Self.gmailAccounts(), now: now)
+            let accounts = await Self.gmailAccounts()
+            let covers = MailRecache.gmailCovers(accounts, now: now)
+            let unchecked = MailRecache.gmailLeavesUnchecked(accounts, now: now)
+            // Nothing to add to a good index read.
+            if failure == nil && !unchecked { return }
             self.recacheLock.lock()
             let facts = MailRecache.Facts(
-                mailOpen: self.mailAppOpen(), indexRead: false,
+                mailOpen: self.mailAppOpen(), indexRead: failure == nil,
                 automationAllowed: Self.automationAllowed("com.apple.mail"), gmailCovers: covers,
+                gmailUnchecked: unchecked,
                 mailInstalled: NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.mail") != nil,
                 lastRead: self.lastMailRead,
+                lastLiveRead: self.lastLiveMailRead,
                 lastOpenedByWisp: UserDefaults.standard.object(forKey: Self.openedAtKey) as? Date,
                 userQuitAt: self.userQuitMailAt)
             let route = MailRecache.route(facts, now: now)
@@ -872,9 +886,10 @@ final class MailReader {
             if go { self.recacheRunning = true }
             self.recacheLock.unlock()
             guard go else {
-                self.postDiagnostic(available: false, reason: failure.reason, kind: failure.kind)
+                if let failure { self.postDiagnostic(available: false, reason: failure.reason, kind: failure.kind) }
                 return
             }
+            if unchecked { NSLog("Wisp: opening Mail hidden because a Google sign-in can't be checked") }
             await self.openMailAndRead(failure: failure)
             self.recacheLock.lock(); self.recacheRunning = false; self.recacheLock.unlock()
         }
@@ -893,10 +908,10 @@ final class MailReader {
 
     /// Opens Mail hidden (setup's launchHidden: no activation, not in recent items), waits until
     /// it answers, runs the header, raw and history reads, then quits it politely if allowed.
-    private func openMailAndRead(failure: (kind: String, reason: String)) async {
+    private func openMailAndRead(failure: (kind: String, reason: String)?) async {
         guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.mail"),
               !mailAppOpen() else {
-            postDiagnostic(available: false, reason: failure.reason, kind: failure.kind)
+            if let failure { postDiagnostic(available: false, reason: failure.reason, kind: failure.kind) }
             return
         }
         let config = NSWorkspace.OpenConfiguration()
@@ -904,7 +919,7 @@ final class MailReader {
         config.hides = true
         config.addsToRecentItems = false
         guard let app = try? await NSWorkspace.shared.openApplication(at: url, configuration: config) else {
-            postDiagnostic(available: false, reason: failure.reason, kind: failure.kind)
+            if let failure { postDiagnostic(available: false, reason: failure.reason, kind: failure.kind) }
             return
         }
         UserDefaults.standard.set(Date(), forKey: Self.openedAtKey)
@@ -938,7 +953,7 @@ final class MailReader {
                 quiet = busy ? 0 : quiet + 1
             }
         } else {
-            postDiagnostic(available: false, reason: failure.reason, kind: failure.kind)
+            if let failure { postDiagnostic(available: false, reason: failure.reason, kind: failure.kind) }
         }
         quitMailIfWispOpenedIt(app)
     }
@@ -1021,6 +1036,9 @@ final class MailReader {
                         self.post(headers: headers, available: true, reason: "",
                                   readSource: "local_index", history: history,
                                   historyGeneration: generation)
+                        // The index can't vouch for a Google account that couldn't be
+                        // checked: a live read through Mail.app can (MailRecache).
+                        self.considerOpeningMail(failure: nil)
                     } else {
                         let failure = Permissions.unaskedAutomation(
                             app: "Mail", appRunning: self.mailAppOpen(),
@@ -1494,7 +1512,7 @@ final class MailReader {
         // The launch header read has reached a terminal state, so the history
         // walk may start (see syncHistory).
         markHeadersCompleted()
-        if available { noteMailRead() }
+        if available { noteMailRead(live: readSource == "mail_app") }
         let url = WispClient.baseURL.appendingPathComponent("assistant/sync/emails")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"

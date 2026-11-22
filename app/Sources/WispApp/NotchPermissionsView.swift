@@ -213,7 +213,7 @@ struct NotchPermissionsView: View {
                 }
                 .padding(.top, 4)
             }
-            if NotchPermissionPage.canStartOver(item, access.state(item)) {
+            if NotchPermissionPage.canStartOver(item, access.state(item), unanswered: access.unanswered[item] == true) {
                 if page.startOverFailed == item { Text(NotchPermissionPage.startOverFailed).foregroundStyle(Theme.warn) }
                 NotchSettingsChrome.pill(NotchPermissionPage.startOverTitle, primary: false) { page.startOver(item) }
                     .padding(.top, 4)

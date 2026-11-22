@@ -280,6 +280,40 @@ struct FirstRunSetupChecks {
               && NotchPermissionPage.next(.calendar, .allowed, calendarAddOnly: true)
                   == NotchPermissionPage.next(.calendar, .allowed, calendarAddOnly: false),
               "A Calendar that is really off, Reminders, and an allowed Calendar read as before")
+        // Start over reaches Calendar and Reminders too: a grant saved for an older copy shows as on.
+        typealias Page = NotchPermissionPage
+        check(Page.canStartOver(.calendar, .notAllowed, calendarAddOnly: false)
+              && Page.canStartOver(.reminders, .notAllowed)
+              && Page.canStartOver(.reminders, .notAllowed, calendarAddOnly: true)
+              && !Page.canStartOver(.calendar, .notAllowed, calendarAddOnly: true)
+              && Page.canStartOver(.calendar, .notAsked, unanswered: true)
+              && Page.canStartOver(.reminders, .notAsked, unanswered: true)
+              && !Page.canStartOver(.calendar, .notAsked) && !Page.canStartOver(.calendar, .allowed, unanswered: true)
+              && !Page.canStartOver(.reminders, .allowed) && !Page.canStartOver(.mail, .notAllowed)
+              && !Page.canStartOver(.contacts, .notAsked, unanswered: true)
+              && Page.canStartOver(.screenRecording, .notAllowed) && Page.canStartOver(.accessibility, .notAllowed)
+              && !Page.canStartOver(.screenRecording, .notAsked, unanswered: true),
+              "Start over: Calendar and Reminders when denied (not add-only) or unanswered; the old two when denied")
+        check(Page.next(.calendar, .notAllowed, calendarAddOnly: false).hasSuffix(Page.startOverNote)
+              && Page.next(.reminders, .notAllowed, calendarAddOnly: false).hasSuffix(Page.startOverNote)
+              && Page.next(.calendar, .notAllowed, calendarAddOnly: true) == Page.calendarAddOnlyNote
+              && Page.next(.calendar, .notAsked, unanswered: true).contains("press Start over")
+              && Page.next(.mail, .notAsked, unanswered: true).contains("Quit and reopen Wisp"),
+              "the sentence under a denied or unanswered Calendar or Reminders row offers Start over")
+        let wisp = WispReset.bundleID
+        check(Permissions.startOverArguments(.calendar, bundleID: wisp) == ["reset", "Calendar", wisp]
+              && Permissions.startOverArguments(.reminders, bundleID: wisp) == ["reset", "Reminders", wisp]
+              && Permissions.startOverArguments(.screenRecording, bundleID: wisp) == ["reset", "ScreenCapture", wisp]
+              && Permissions.startOverArguments(.calendar, bundleID: "com.example.other") == nil
+              && Permissions.startOverArguments(.reminders, bundleID: nil) == nil
+              && Permissions.startOverArguments(.mail, bundleID: wisp) == nil
+              && Permissions.staleGrant(.calendar)?.promptedKey == nil
+              && Permissions.staleGrant(.accessibility)?.promptedKey == Permissions.accessibilityPromptedKey,
+              "tccutil resets only Wisp's own bundle, with Calendar and Reminders' service names")
+        check(Permissions.asksDirectly(.calendar, status: .notDetermined) && Permissions.asksDirectly(.reminders, status: .notDetermined)
+              && !Permissions.asksDirectly(.calendar, status: .denied) && !Permissions.asksDirectly(.reminders, status: .fullAccess)
+              && !Permissions.asksDirectly(.contacts, status: .notDetermined) && !Permissions.asksDirectly(.mail, status: .notDetermined),
+              "Allow… on a Brief row asks macOS straight away only for undecided Calendar and Reminders")
         check(NotchPermissionPage.action(.calendar, .notAllowed) == .openSettings
               && FirstRunPermissions.eventKitClick(.writeOnly) == .openSettings
               && FirstRunPermissions.isDecided(.notAllowed),
