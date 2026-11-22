@@ -1,7 +1,7 @@
 {
   "path": "omlx/process_memory_enforcer.py",
-  "input_sha256": "242834641aeb16450d57e062449221a066206a62d066d57c312be073d656ba19",
-  "output_sha256": "c8025c08bb264bd5a3cfb428eb9a7ea73089b6147255efeb67d06f8acc868bdb",
+  "input_sha256": "597ab73186116966848cb9480b66f3e70b1d7d71ba20bd2a8990fa27abc6f047",
+  "output_sha256": "735ae1ebf045fe873bd3eab340db175aa481beed14f81e1efb618d6dccf25c56",
   "edits": [
     {
       "old": "logger = logging.getLogger(__name__)",

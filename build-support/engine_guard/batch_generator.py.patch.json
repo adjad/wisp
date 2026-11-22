@@ -1,7 +1,7 @@
 {
   "path": "omlx/patches/mlx_lm_mtp/batch_generator.py",
-  "input_sha256": "8b2a6ce941c1055ea4408ba9318bb7b136302548f6d59ce3a722a3c0628929b8",
-  "output_sha256": "08adc2070b740e831c1533f90828e7798f5f31b47b12538cb364050beeeee2ac",
+  "input_sha256": "e430a96ae77dd272699636aca6860d419e2af238042113dc4db36f4c5e396787",
+  "output_sha256": "0d8ecdedfde6b2deacdba448255d8e0df5f6071bff71ba8096429e484c518a6d",
   "edits": [
     {
       "old": "from omlx.prefill_progress import get_prefill_tracker\n",

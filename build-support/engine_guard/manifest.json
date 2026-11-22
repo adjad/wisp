@@ -1,7 +1,7 @@
 {
   "version": 2,
   "id": "wisp-engine-overlay-v2",
-  "upstream_tree_sha256": "07367fc87e9a960d0c4426509f16a00c95304e1581193686600cf3778ec04648",
+  "upstream_tree_sha256": "b9ce3915ea027ce64e594bf791aab5f91ac30c8ca44d723f948d782a8312faca",
   "patches": [
     {
       "path": "omlx/__init__.py",
@@ -12,17 +12,17 @@
     },
     {
       "path": "omlx/engine/vlm.py",
-      "input_sha256": "9206da8de97b0a4170b2a91209ab4b114295f3b5c63b37acb5a51a04a405e7ab",
-      "output_sha256": "0c16a980f12d3822499aff1f0c4bc4c5434804e84af84767aff397b524ab5bb1",
+      "input_sha256": "dfac8750ad70a624b36fa0107aed8896e8c2e7eb7a3984ec56da53ed42b826fb",
+      "output_sha256": "ce0a1275a41829c78cc5a458863e7bee25e6f03fa8eeb65ef6d0c5d8fd947e88",
       "patch": "vlm.py.patch.json",
-      "patch_sha256": "e7774c16b419487cd92bbb42237b28682190874ef23243de69d8c2843f6b58fe"
+      "patch_sha256": "aa12c96f3e07421c25aca2a6a9e3a4d582136ded9ebbfa5cdf766caeeca5f10d"
     },
     {
       "path": "omlx/engine_pool.py",
-      "input_sha256": "070364d2e0084f860486ccc1edcfbf6eec9439af6bb2f4f578eb73ddfe31a64f",
-      "output_sha256": "07125f6aad86d739b5f1af4294a1951f17e992d2339d3c8d5d0a934db18d0596",
+      "input_sha256": "dfe3d4f5d4acc1cf073e0eb06f14c69e33dca8fceae633086162e2a805dcc7eb",
+      "output_sha256": "d107c3b2c217890f5497d1b9aebc2423be7f2eb1ba7a2fb61ac43326f1f8000c",
       "patch": "engine_pool.py.patch.json",
-      "patch_sha256": "c75f270e2d84d5675b4f16d845ec515fb063bc0da2af5b5b7116b0c38565f82e"
+      "patch_sha256": "01888a33eee04de54868177a295e7300974d52bdf8aa53c2de5c7de553c3ef82"
     },
     {
       "path": "omlx/patches/gemma4_verify_attention.py",
@@ -40,24 +40,24 @@
     },
     {
       "path": "omlx/patches/mlx_lm_mtp/batch_generator.py",
-      "input_sha256": "8b2a6ce941c1055ea4408ba9318bb7b136302548f6d59ce3a722a3c0628929b8",
-      "output_sha256": "08adc2070b740e831c1533f90828e7798f5f31b47b12538cb364050beeeee2ac",
+      "input_sha256": "e430a96ae77dd272699636aca6860d419e2af238042113dc4db36f4c5e396787",
+      "output_sha256": "0d8ecdedfde6b2deacdba448255d8e0df5f6071bff71ba8096429e484c518a6d",
       "patch": "batch_generator.py.patch.json",
-      "patch_sha256": "9bf425e6e92b162b2e4bd765d103cca33c620b9fba8b389c7b161e359fa6f280"
+      "patch_sha256": "dd459cfab7ceb96aa69a0957f399e0607c231b89743516afbbc57e58d275a4a4"
     },
     {
       "path": "omlx/process_memory_enforcer.py",
-      "input_sha256": "242834641aeb16450d57e062449221a066206a62d066d57c312be073d656ba19",
-      "output_sha256": "c8025c08bb264bd5a3cfb428eb9a7ea73089b6147255efeb67d06f8acc868bdb",
+      "input_sha256": "597ab73186116966848cb9480b66f3e70b1d7d71ba20bd2a8990fa27abc6f047",
+      "output_sha256": "735ae1ebf045fe873bd3eab340db175aa481beed14f81e1efb618d6dccf25c56",
       "patch": "process_memory_enforcer.py.patch.json",
-      "patch_sha256": "42b2484a0d2d9837ab59faf865bdc1a605a65495960b220c7e5e0ab41b3dd1a2"
+      "patch_sha256": "471982492f2505d5b7eee715a22cb6f87d8c62c3cc5858bd01f246a8067ac867"
     },
     {
       "path": "omlx/server.py",
-      "input_sha256": "6854cd3368a55cbeb8ce73512884ef3a69ba7737e63c758d19f3f404eb16d9e4",
-      "output_sha256": "b1e768055ad3ad200d89a86b3d65bd4fde860c51975f6f77c7fba92b3492b6b0",
+      "input_sha256": "56eadc3364e14bc512fff0fa19348431384398b6cbbe69e1332a989caccc8685",
+      "output_sha256": "c035e11ad11102a4620a22b2f22b98cf0d3b379e4f5064e710f64daf3db44f45",
       "patch": "server.py.patch.json",
-      "patch_sha256": "0b0f5b539c479f78077068327091bcd1de4f6df259f66e498c3ca71b6115ad05"
+      "patch_sha256": "62d6db8e6f368a01ba23497e7bdabec157a5e90ed4782b44348ff6c14c448bc5"
     }
   ],
   "additions": [
