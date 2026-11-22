@@ -1476,6 +1476,23 @@ async def disconnect_local_provider_inference() -> dict[str, Any]:
 @app.post("/config")
 async def config(body: dict[str, Any]) -> dict[str, Any]:
     role, model = body.get("role"), body.get("model")
+    group = body.get("roles")
+    # Settings' two menus (General use, Coding) each move several roles: one overlay write,
+    # so a failure cannot leave some of a menu's roles moved and others not.
+    if isinstance(group, dict) and group:
+        assignments = {str(r): str(m) for r, m in group.items()
+                       if isinstance(r, str) and r and isinstance(m, str) and m}
+        if len(assignments) != len(group) or not set(assignments) <= set(models_config()["roles"]):
+            return {"ok": False, "error": "Unknown role or empty model."}
+        if set(assignments) & set(PROVIDER_CONNECTION_ROLES):
+            with _local_provider_operation_lock:
+                _supersede_local_provider_probe_unlocked()
+                set_roles(assignments)
+        else:
+            set_roles(assignments)
+        if set(assignments) & {"fast", "general", "agent"}:
+            _sync_keep_warm()
+        return {"ok": True, "roles": {r: role_to_model(r) for r in models_config()["roles"]}}
     if role and model:
         if role in PROVIDER_CONNECTION_ROLES:
             # A pending provider connection will rewrite these bindings when it saves.

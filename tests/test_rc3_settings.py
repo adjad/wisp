@@ -37,7 +37,10 @@ def test_role_menus_offer_chat_models_only():
     settings = _read("SettingsView.swift")
     # Every role's menu is built by RoleModelChoices, which leaves out the
     # embedder and the reranker; no menu lists the raw roster any more.
-    assert "ForEach(loader.modelChoices(for: role), id: \\.self)" in settings
+    # Two menus since 2026-11-21 (General use, Coding), both built on RoleModelChoices.
+    assert "ForEach(loader.modelChoices(for: group), id: \\.self)" in settings
+    groups = _body(_read("QuickSettingsText.swift"), "enum ModelUseGroups")
+    assert "RoleModelChoices.choices(installed: installed, roles: roles, keeping: keeping)" in groups
     assert "installed + roles.values" not in settings
     choices = _body(settings, "func modelChoices(for role: String) -> [String]")
     assert "RoleModelChoices.choices(installed: installed, roles: roles, keeping: selectedModel(for: role))" in choices

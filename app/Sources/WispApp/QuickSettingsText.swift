@@ -394,6 +394,49 @@ enum RoleModelChoices {
         + "Check that Wisp is running, then try again."
 }
 
+/// Settings › Models' two menus (user request 2026-11-21: "remove the old list and add these
+/// two - general use and one for coding"). Each menu moves several roles in one save
+/// (POST /config {"roles": …}); `research` is not one of them: it follows the coding model
+/// unless it was given its own. Pure: the loader supplies the installed list and the roles.
+enum ModelUseGroups {
+    struct Group: Equatable, Identifiable {
+        let id: String
+        let title: String
+        let detail: String
+        /// The role the menu shows; the others follow it.
+        let primary: String
+        let roles: [String]
+    }
+
+    static let general = Group(id: "general", title: "General use",
+                               detail: "Chat, Brief, mail, planning and tool use",
+                               primary: "general", roles: ["general", "fast", "reasoning"])
+    static let coding = Group(id: "coding", title: "Coding",
+                              detail: "Writing and fixing code",
+                              primary: "coding", roles: ["coding"])
+    static let all = [general, coding]
+
+    /// Listed first in the Coding menu when this Mac has them (the user's Qwen 3.5 9B).
+    static let codingFirst = ["Qwen3.5-9B-oQ4e-mtp"]
+
+    /// The menu's models: every chat model on this Mac (RoleModelChoices), with the Coding
+    /// menu's suggestions first when they are installed.
+    static func choices(_ group: Group, installed: [String], roles: [String: String],
+                        keeping: String? = nil) -> [String] {
+        let ids = RoleModelChoices.choices(installed: installed, roles: roles, keeping: keeping)
+        guard group == coding else { return ids }
+        let first = codingFirst.filter { ids.contains($0) }
+        return first + ids.filter { !first.contains($0) }
+    }
+
+    /// What one pick saves. A role bound to the cloud or to a connected app keeps that binding.
+    static func assignments(_ group: Group, model: String, keep: Set<String> = []) -> [String: String] {
+        var out: [String: String] = [:]
+        for role in group.roles where !keep.contains(role) || role == group.primary { out[role] = model }
+        return out
+    }
+}
+
 /// One standing rule from GET /permissions: an "Always allow" the person tapped on
 /// a card, or an always-block. Settings › Privacy & Access lists them so each can
 /// be seen and removed (service/safety/grants.py keeps them in ~/.moe/grants.json).

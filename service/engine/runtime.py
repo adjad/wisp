@@ -1,7 +1,7 @@
 """The one engine this backend process owns, when running in bundled mode."""
 from __future__ import annotations
 
-from .manager import EngineLayout, EngineManager
+from .manager import EngineLayout, EngineManager, user_model_dirs
 from .mode import engine_code_root, engine_data_dir, is_bundled
 
 _manager: EngineManager | None = None
@@ -10,7 +10,9 @@ _manager: EngineManager | None = None
 def manager() -> EngineManager:
     global _manager
     if _manager is None:
-        _manager = EngineManager(EngineLayout(engine_code_root(), engine_data_dir()))
+        layout = EngineLayout(engine_code_root(), engine_data_dir())
+        # Every model already on this Mac, not only Wisp's downloads (manager.USER_MODEL_DIRS).
+        _manager = EngineManager(layout, extra_model_dirs=user_model_dirs(own=layout.models_dir))
     return _manager
 
 

@@ -361,6 +361,50 @@ final class SettingsLoader: ObservableObject {
         RoleModelChoices.choices(installed: installed, roles: roles, keeping: selectedModel(for: role))
     }
 
+    /// A menu's models: every chat model the engine lists, the Coding menu's suggestions first.
+    func modelChoices(for group: ModelUseGroups.Group) -> [String] {
+        ModelUseGroups.choices(group, installed: installed, roles: roles,
+                               keeping: selectedModel(for: group.primary))
+    }
+
+    /// The menu's role runs on the connected local app (Agent follows General use).
+    func groupOnLocalApp(_ group: ModelUseGroups.Group) -> Bool {
+        let role = group.primary == "general" ? "agent" : group.primary
+        return localProviderActive && localProviderSavedAssigned && localProviderRoles.contains(role)
+    }
+
+    /// One pick moves every role in the menu, in one save. Roles bound to the cloud or to a
+    /// connected app keep that binding.
+    func setGroup(_ group: ModelUseGroups.Group, _ model: String) {
+        let keep = savedCloudRoles.union(localProviderActive ? localProviderRoles : [])
+        let assignments = ModelUseGroups.assignments(group, model: model, keep: keep)
+        let previous = assignments.keys.reduce(into: [String: String?]()) { $0[$1] = roles[$1] }
+        for (role, value) in assignments { roles[role] = value }
+        roleSaveProblem = nil
+        saving = true
+        Task {
+            await PendingConfigWrites.shared.begin()
+            var req = URLRequest(url: WispClient.baseURL.appendingPathComponent("config"))
+            req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: ["roles": assignments])
+            var saved = false
+            if let (data, response) = try? await URLSession.shared.data(for: req),
+               let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+               let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+                saved = object["ok"] as? Bool == true
+            }
+            // Not saved: the menu goes back, unless a later pick or a refresh replaced it.
+            if !saved, self.roles[group.primary] == model {
+                for (role, value) in previous { self.roles[role] = value }
+                self.roleSaveProblem = RoleModelChoices.saveProblem
+            }
+            self.saving = false
+            await PendingConfigWrites.shared.end()
+            NotificationCenter.default.post(name: .wispInferenceConfigurationChanged, object: nil)
+        }
+    }
+
     func selectedModel(for role: String) -> String {
         if role == "research", roles["research"] == nil {
             // No explicit override yet — show what it actually resolves to
@@ -1835,40 +1879,33 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 14) {
                         if modelsPane == "assignments" {
                         EngineSettingsView()
-                        Text("Pick the expert for each kind of task")
+                        Text("Pick a model for everyday use and one for coding")
                             .font(.callout)
                             .foregroundStyle(.secondary)
-                        ForEach(loader.roleOrder, id: \.self) { role in
+                        ForEach(ModelUseGroups.all) { group in
                             HStack(alignment: .center) {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(loader.label(role))
+                                    Text(group.title)
                                         .font(.system(size: 14, weight: .medium))
-                                    Text(loader.desc(role))
+                                    Text(group.detail)
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                if role == "reasoning" && loader.localProviderStateUnknown {
+                                if loader.cloudStateUnknown || loader.localProviderStateUnknown {
                                     Label("Assignment unknown", systemImage: "questionmark.circle")
                                         .accessibilityLabel("Assignment unknown")
                                         .font(.system(size: 12, weight: .medium))
                                         .foregroundStyle(.secondary)
                                         .frame(width: 190, alignment: .trailing)
-                                } else if loader.localProviderActive && loader.localProviderSavedAssigned
-                                            && role == "reasoning" {
-                                    Label("Local · \(loader.savedModelLabel(for: role))",
+                                } else if loader.groupOnLocalApp(group) {
+                                    Label("Local · \(loader.savedModelLabel(for: group.primary))",
                                           systemImage: "desktopcomputer")
                                         .font(.system(size: 12, weight: .medium))
                                         .foregroundStyle(.secondary)
                                         .frame(width: 190, alignment: .trailing)
-                                } else if loader.cloudStateUnknown {
-                                    Label("Assignment unknown", systemImage: "questionmark.circle")
-                                        .accessibilityLabel("Assignment unknown")
-                                        .font(.system(size: 12, weight: .medium))
-                                        .foregroundStyle(.secondary)
-                                        .frame(width: 190, alignment: .trailing)
-                                } else if loader.savedCloudRoles.contains(role) {
-                                    Label("Cloud · \(loader.savedModelLabel(for: role))",
+                                } else if loader.savedCloudRoles.contains(group.primary) {
+                                    Label("Cloud · \(loader.savedModelLabel(for: group.primary))",
                                           systemImage: "cloud.fill")
                                         .font(.system(size: 12, weight: .medium))
                                         .foregroundStyle(.secondary)
@@ -1880,9 +1917,9 @@ struct SettingsView: View {
                                         .frame(width: 190, alignment: .trailing)
                                 } else {
                                     Picker("", selection: Binding(
-                                        get: { loader.selectedModel(for: role) },
-                                        set: { loader.set(role, $0) })) {
-                                        ForEach(loader.modelChoices(for: role), id: \.self) {
+                                        get: { loader.selectedModel(for: group.primary) },
+                                        set: { loader.setGroup(group, $0) })) {
+                                        ForEach(loader.modelChoices(for: group), id: \.self) {
                                             Text(OverlayModel.abbrev($0)).tag($0)
                                         }
                                     }
@@ -1890,9 +1927,10 @@ struct SettingsView: View {
                                     .labelsHidden()
                                     .redrawsOnAppearanceChange()
                                     .frame(width: 190)
+                                    .accessibilityLabel(group.title)
                                 }
                             }
-                            if role != loader.roleOrder.last { Divider() }
+                            if group != ModelUseGroups.all.last { Divider() }
                         }
                         if let problem = loader.roleSaveProblem {
                             Text(problem)

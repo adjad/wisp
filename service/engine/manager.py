@@ -121,6 +121,32 @@ def _saved_model_dirs(settings: dict) -> list[str]:
     return [d for d in saved if isinstance(d, str) and d] if isinstance(saved, list) else []
 
 
+# Folders where this Mac's own oMLX models usually live, relative to the home folder. The built-in
+# engine lists these beside its own folder, so every model already on the Mac can be picked in
+# Settings, not only the ones Wisp downloaded (user request 2026-11-21: "include all models for use
+# even when using the bundled engine"). Fixed paths on purpose: Wisp never reads ~/.omlx/settings.json
+# (it holds the user's key) to learn where oMLX keeps them. oMLX keeps the first copy of an id, and
+# Wisp's own folder comes first, so a model Wisp manages always wins over a same-named one here.
+USER_MODEL_DIRS = ("Desktop/OMLX_Model_Files", "Documents/OMLX_Model_Files", ".omlx/models")
+
+
+def user_model_dirs(home: Path | None = None, own: Path | None = None) -> list[Path]:
+    """The USER_MODEL_DIRS that exist as real folders (no shortcuts), never Wisp's own folder."""
+    home = Path.home() if home is None else home
+    found: list[Path] = []
+    for rel in USER_MODEL_DIRS:
+        path = home / rel
+        try:
+            if path.is_symlink() or not path.is_dir():
+                continue
+        except OSError:
+            continue
+        if own is not None and path.resolve() == own.resolve():
+            continue
+        found.append(path)
+    return found
+
+
 def engine_settings(port: int, api_key: str, model_dirs: Sequence[Path],
                     user_dirs: Sequence[str] = ()) -> dict:
     """The keys Wisp owns. oMLX fills in every other default on first start.

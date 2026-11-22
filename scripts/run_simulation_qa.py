@@ -218,6 +218,7 @@ PROFILE_TESTS = {
         "tests/test_mail_recache_brief.py",
         # The notch panel takes the keyboard on every asked-for open and every press (source checks).
         "tests/test_panel_keyboard.py",
+        "tests/test_model_use_groups.py",
         # Full Disk Access's live probe, the single relaunch path, provisional notifications, per-version names (source checks).
         "tests/test_access_probe.py",
         "tests/test_shell_local_service_deny.py",
@@ -971,6 +972,7 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/ideate-routing-contract": "native/ideate-routing-compile",
     "native/mail-recache-contract": "native/mail-recache-compile",
     "native/panel-key-contract": "native/panel-key-compile",
+    "native/model-use-groups-contract": "native/model-use-groups-compile",
     "native/access-probe-contract": "native/access-probe-compile",
     "native/look-capture-path-contract": "native/look-capture-path-compile",
 }
@@ -1262,6 +1264,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     ideate_routing = str(build_dir / "ideate-routing")
     mail_recache = str(build_dir / "mail-recache")
     panel_key = str(build_dir / "panel-key")
+    model_use_groups = str(build_dir / "model-use-groups")
     access_probe = str(build_dir / "access-probe")
     look_capture_path = str(build_dir / "look-capture-path")
     know_you = str(build_dir / "know-you")
@@ -1444,6 +1447,16 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/panel-key-contract", [panel_key]),
+        (
+            "native/model-use-groups-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/QuickSettingsText.swift",
+                "tests/ModelUseGroupsChecks.swift", "-o", model_use_groups,
+            ],
+        ),
+        ("native/model-use-groups-contract", [model_use_groups]),
         (
             "native/access-probe-compile",
             [
