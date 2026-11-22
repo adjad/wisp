@@ -684,6 +684,7 @@ ADDITIONAL_FULL_TESTS = {
     # Pure string redaction plus temporary stores; no real keys, Keychain or model.
     "tests/test_credential_redaction.py",
     "tests/test_cloud_mask.py",
+    "tests/test_use_log.py",
     # In-process approvers and endpoint calls only; no sockets or real actions.
     "tests/test_approval_routing.py",
     # Stand-in model loop and executor; the real stream/runner cancellation wiring only.

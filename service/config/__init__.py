@@ -343,6 +343,23 @@ def get_behavior_enabled() -> bool:
     return not (isinstance(section, dict) and section.get("enabled") is False)
 
 
+def get_learn_from_use_enabled() -> bool:
+    """Whether the private use log ("Learn from my use", service/inference/use_log.py)
+    is on. Default True; an explicit false in the overlay (``learn_from_use:
+    {enabled: false}``) turns it off, as does an overlay that cannot be read."""
+    if not user_overlay_valid():
+        return False
+    section = models_config().get("learn_from_use")
+    return not (isinstance(section, dict) and section.get("enabled") is False)
+
+
+def set_learn_from_use_enabled(enabled: bool) -> bool:
+    if type(enabled) is not bool:
+        raise ValueError("learn_from_use enabled must be a boolean")
+    _save_overlay({"learn_from_use": {"enabled": enabled}})
+    return enabled
+
+
 def terse_tool_schemas_enabled() -> bool:
     """Opt-in terse tool schemas: one-line descriptions, no parameter prose.
     Meant for a model fine-tuned on the tools; OFF unless WISP_TERSE_TOOL_SCHEMAS

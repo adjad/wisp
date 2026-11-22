@@ -1036,6 +1036,35 @@ final class WispClient {
     }
 
 
+    // GET /use_log -> "Learn from my use": ["enabled": Bool, "bytes": Int, "files": Int].
+    func useLogState() async -> [String: Any]? {
+        guard let (data, _) = try? await URLSession.shared.data(from: Self.baseURL.appendingPathComponent("use_log"))
+        else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    // POST /use_log {"enabled": Bool}; nil when the service didn't confirm it.
+    func setUseLogEnabled(_ on: Bool) async -> [String: Any]? {
+        await useLogRequest("use_log", body: ["enabled": on])
+    }
+
+    // POST /use_log/delete -> ["deleted_bytes": Int, ...]; nil when it didn't answer.
+    func deleteUseLog() async -> [String: Any]? {
+        await useLogRequest("use_log/delete", body: [:])
+    }
+
+    private func useLogRequest(_ path: String, body: [String: Any]) async -> [String: Any]? {
+        var req = URLRequest(url: Self.baseURL.appendingPathComponent(path))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              (response as? HTTPURLResponse)?.statusCode == 200
+        else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+
     // GET /models -> (installed ids, role->model map)
     func models() async -> (installed: [String], roles: [String: String]) {
         let url = Self.baseURL.appendingPathComponent("models")

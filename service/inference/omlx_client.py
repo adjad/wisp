@@ -526,6 +526,17 @@ def _power_call_ended(started: tuple[bool, int | None] | None) -> None:
         call_ended(started)
 
 
+def _start_use_log(client, model, messages, kwargs):
+    """The use log's pending record for a local exchange, or None. Recording never fails or
+    changes a request: any error here (including a trimmed service copy without the module)
+    just means this exchange isn't recorded (service/inference/use_log.py)."""
+    try:
+        from service.inference import use_log
+        return use_log.start(client, model, messages, kwargs)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 class OMLXClient:
     def __init__(self, base_url: str | None = None, api_key: str | None = None,
                  timeout: float = 600.0, *, target: Target | None = None) -> None:
@@ -1220,7 +1231,15 @@ class OMLXClient:
         emails, phones and card numbers masked, and the reply comes back unmasked."""
         masker = self._cloud_masker()
         if masker is None:
-            return await self._chat(model, messages, **kwargs)
+            pending = _start_use_log(self, model, messages, kwargs)
+            data = await self._chat(model, messages, **kwargs)
+            if pending is not None:
+                try:
+                    choices = data.get("choices") if isinstance(data, dict) else None
+                    pending.finish(choices[0].get("message") if choices and isinstance(choices[0], dict) else None)
+                except Exception:  # noqa: BLE001 - recording never fails a request
+                    pass
+            return data
         data = await self._chat(model, masker.mask_messages(messages), **kwargs)
         for choice in (data.get("choices") or []) if isinstance(data, dict) else []:
             if isinstance(choice, dict) and isinstance(choice.get("message"), dict):
@@ -1325,8 +1344,26 @@ class OMLXClient:
         client's stream is returned untouched."""
         masker = self._cloud_masker()
         if masker is None:
-            return self._stream_events(model, messages, **kwargs)
+            pending = _start_use_log(self, model, messages, kwargs)
+            if pending is None:
+                return self._stream_events(model, messages, **kwargs)
+            return self._recorded_events(pending, model, messages, **kwargs)
         return self._masked_events(masker, model, messages, **kwargs)
+
+    async def _recorded_events(self, pending, model, messages, **kwargs) -> AsyncIterator[dict[str, Any]]:
+        """The local engine's events, untouched; the exchange is recorded once the
+        final event has gone by (a stream that fails or is cancelled records nothing)."""
+        events = self._stream_events(model, messages, **kwargs)
+        try:
+            async for event in events:
+                if event.get("kind") == "final":
+                    try:
+                        pending.finish(event.get("message"))
+                    except Exception:  # noqa: BLE001 - recording never fails a request
+                        pass
+                yield event
+        finally:
+            await events.aclose()
 
     async def _masked_events(self, masker, model, messages, **kwargs) -> AsyncIterator[dict[str, Any]]:
         streams = {"content": masker.stream(), "reasoning": masker.stream()}

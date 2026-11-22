@@ -253,6 +253,9 @@ final class SettingsLoader: ObservableObject {
     private var confirmedIdleMinutes: Double = 5
     private var idleSaveGeneration = 0
     @Published var humanizerEnabled = false
+    @Published var useLogEnabled = true
+    @Published var useLogBytes = 0
+    @Published var useLogStatus: String?
     /// "Gemini handles everything" (Advanced): a Gemini API connection exists to run
     /// it on, whether it is saved on, and a switch in flight or its last problem.
     @Published var geminiEverythingAvailable = false
@@ -433,6 +436,7 @@ final class SettingsLoader: ObservableObject {
                 self.confirmedIdleMinutes = idle
             }
             self.humanizerEnabled = await client.humanizerEnabled()
+            await self.refreshUseLog()
             await self.refreshBehavior()
             await self.refreshAttachmentBackground()
             await self.refreshCloud()
@@ -1121,6 +1125,37 @@ final class SettingsLoader: ObservableObject {
         }
     }
 
+    func refreshUseLog() async {
+        guard let state = await client.useLogState() else { return }
+        useLogEnabled = state["enabled"] as? Bool ?? true
+        useLogBytes = state["bytes"] as? Int ?? 0
+    }
+
+    func setUseLogEnabled(_ on: Bool) {
+        useLogEnabled = on
+        Task {
+            if let state = await client.setUseLogEnabled(on) {
+                self.useLogEnabled = state["enabled"] as? Bool ?? on
+                self.useLogBytes = state["bytes"] as? Int ?? self.useLogBytes
+            } else {
+                await self.refreshUseLog()
+            }
+        }
+    }
+
+    func deleteUseLog() {
+        useLogStatus = "Deleting…"
+        Task {
+            guard let result = await client.deleteUseLog() else {
+                self.useLogStatus = "Couldn't delete the recorded history. Try again."
+                return
+            }
+            self.useLogBytes = result["bytes"] as? Int ?? 0
+            let freed = result["deleted_bytes"] as? Int ?? 0
+            self.useLogStatus = "Deleted recorded history (\(ByteCountFormatter.string(fromByteCount: Int64(freed), countStyle: .file)))."
+        }
+    }
+
     func setHumanizerEnabled(_ on: Bool) {
         humanizerEnabled = on
         Task { self.humanizerEnabled = await client.setHumanizerEnabled(on) }
@@ -1678,6 +1713,7 @@ struct SettingsView: View {
     @ObservedObject private var contactsPrivacySync = ContactsReader.delivery
     @State private var confirmForgetBehavior = false
     @State private var confirmGeminiEverything = false
+    @State private var confirmDeleteUseLog = false
     /// Set once the person has read and accepted what leaves the Mac; later turns
     /// on skip the question. Turning it off never asks.
     @AppStorage("WispGeminiEverythingConsented") private var geminiEverythingConsented = false
@@ -2534,6 +2570,46 @@ struct SettingsView: View {
                         }
                         .toggleStyle(.switch)
                         .tint(palette.accent)
+
+                        Divider()
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Toggle(isOn: Binding(
+                                get: { loader.useLogEnabled },
+                                set: { loader.setUseLogEnabled($0) })) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Learn from my use")
+                                        .font(.system(size: 14, weight: .medium))
+                                    Text("Wisp keeps a private log of your requests on this Mac, so a future "
+                                         + "version can learn from how you use it. Nothing is trained and "
+                                         + "nothing leaves the Mac. Turn it off to stop recording.")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                            .toggleStyle(.switch)
+                            .tint(palette.accent)
+                            HStack {
+                                Button("Delete recorded history…", role: .destructive) {
+                                    confirmDeleteUseLog = true
+                                }
+                                .disabled(loader.useLogBytes == 0)
+                                Text(ByteCountFormatter.string(fromByteCount: Int64(loader.useLogBytes), countStyle: .file))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                if let status = loader.useLogStatus {
+                                    Text(status).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                        .alert("Delete recorded history?", isPresented: $confirmDeleteUseLog) {
+                            Button("Delete", role: .destructive) { loader.deleteUseLog() }
+                            Button("Cancel", role: .cancel) {}
+                        } message: {
+                            Text("This permanently deletes the private log of your requests on this Mac. "
+                                 + "It can't be undone.")
+                        }
 
                         Divider()
 

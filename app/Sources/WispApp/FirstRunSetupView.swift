@@ -2454,6 +2454,9 @@ struct FirstRunSetupView: View {
             OnboardingTourView()
             Text("What Wisp is for").font(.system(size: 13, weight: .medium)).padding(.top, 4).padding(.bottom, 4)
             Text(Self.purposeLine).font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true).padding(.bottom, 6)
+            Text("Wisp keeps a private log on this Mac to learn from your use. Turn it off in Settings \u{203A} Models.")
+                .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true).padding(.bottom, 10)
             ForEach(Self.helpsYourDay, id: \.title) { item in
                 OnboardingCard(icon: item.icon, title: item.title,

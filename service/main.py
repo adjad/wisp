@@ -647,6 +647,8 @@ from service.personal_style_api import router as personal_style_router
 app.include_router(personal_style_router)
 from service.memory_saver_api import native_only, router as memory_saver_router
 app.include_router(memory_saver_router)
+from service.use_log_api import router as use_log_router
+app.include_router(use_log_router)
 from service.corpus import router as corpus_router
 app.include_router(corpus_router)
 from service.corpus_prompts import router as corpus_prompts_router
@@ -3970,6 +3972,9 @@ async def agent(body: dict[str, Any]):
         from service.safety.cloud_mask import conversation as cloud_mask_conversation
         # A cloud model's identifier placeholders are numbered per conversation.
         with diagnostics.use(trace), power_tier(CHAT), cloud_mask_conversation(sid):
+            if not test_mode:
+                from service.inference.use_log import note_user_message
+                note_user_message(sid, prompt)     # links to this conversation's last exchange
             try:
                 await runner_body()
             except asyncio.CancelledError:
