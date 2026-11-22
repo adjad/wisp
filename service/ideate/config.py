@@ -44,7 +44,22 @@ assert CONTEXT_WINDOW - PROMPT_BUDGET_TOKENS - 4096 >= MAX_OUTPUT_TOKENS
 # thinking (70-95%), so Ideate asks for little. Whether the engine honours it is not yet measured.
 THINKING_LEVEL = "low"
 
-# A tool result longer than this reaches the model as its head and tail only.
+# Loops (service/ideate/loop.py, the `ideate-loop` runner on the agent's PATH). loop.py is
+# standalone so these are mirrored there; tests/test_ideate_loop.py keeps the two equal.
+LOOP_MAX_S, LOOP_HARD_MAX_S = 120, 600
+LOOP_ITERS, LOOP_HARD_ITERS = 100, 1000
+LOOP_OUTPUT_BYTES = 256 * 1024
+LOOP_SUMMARY_CHARS = 480
+# The prompt line that teaches it may cost at most this many tokens (rough count: characters / 3.5).
+LOOP_PROMPT_TOKENS = 60
+
+# Every bash command (not only loops) is stopped after this long; Pi then kills its process group.
+# The agent may ask for longer, up to the max. A loop gets its own cap plus room for its last check,
+# so ideate-loop always stops itself first. A command that never ends cannot hold the turn (or Inkling).
+BASH_TIMEOUT_S, BASH_TIMEOUT_MAX_S = 120, 600
+LOOP_BASH_TIMEOUT_S = LOOP_HARD_MAX_S + 60
+
+# A tool result longer than this reaches the model cut down (bash output: its tail only).
 TOOL_RESULT_CHARS = 600
 # When the guard still refuses a step, the run starts over this many times with a fresh
 # conversation carrying a short summary and the file list, before it gives up.

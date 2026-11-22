@@ -117,6 +117,7 @@ Rules:
 - Work only in the current folder. Use relative paths.
 - Plan in one or two short lines, then act. Keep files small and plain.
 - Use write for new files and edit for small changes. Use bash to list, run and test.
+- To wait or poll, never repeat checks yourself: run ideate-loop --until "<cmd>" [--do "<cmd>"] [--every 2] [--max 120]. It returns one short summary.
 - There is no internet: do not install packages; use what is already installed (python3, node, the standard library, plain HTML/CSS/JS).
 - Every shell command may need the person's OK; a refused step is final, so choose another way or stop.
 - Check your work once by running it, then stop with one or two sentences on what you made and how to open or run it."""
@@ -130,6 +131,15 @@ KIND_PROMPTS = {
 }
 
 
+LOOP_TOOL = "ideate-loop"
+
+
+def loop_runner_source() -> str:
+    """loop.py as a standalone executable (it imports only the standard library)."""
+    text = (Path(__file__).with_name("loop.py")).read_text(encoding="utf-8")
+    return "#!/usr/bin/env python3\n" + text
+
+
 def system_prompt(kind: str) -> str:
     return SYSTEM_PROMPT + "\n" + KIND_PROMPTS.get(kind, KIND_PROMPTS["general"])
 
@@ -140,6 +150,36 @@ const TITLE = %(title)s;
 const TIMEOUT_MS = %(timeout_ms)d;
 const RESULT_CHARS = %(result_chars)d;
 const KEY_ENV = %(key_env)s;
+const BASH_TIMEOUT_S = %(bash_timeout_s)d;
+const BASH_TIMEOUT_MAX_S = %(bash_timeout_max_s)d;
+const LOOP_TIMEOUT_S = %(loop_timeout_s)d;
+const LOOP_TOOL = %(loop_tool)s;
+
+// Every bash call gets a time limit: the agent's own if smaller, never more than the max.
+function bashTimeout(input) {
+  const asked = typeof input.timeout === "number" && isFinite(input.timeout) && input.timeout > 0
+    ? input.timeout : BASH_TIMEOUT_S;
+  const cap = typeof input.command === "string" && input.command.indexOf(LOOP_TOOL) !== -1
+    ? LOOP_TIMEOUT_S : BASH_TIMEOUT_MAX_S;
+  return Math.min(asked, cap);
+}
+
+// Command output: the tail matters (the error, the last test line), so keep the end.
+function tail(text, limit) {
+  if (typeof text !== "string" || text.length <= limit) return text;
+  return "[... " + (text.length - limit) + " characters cut ...]\n" + text.slice(-limit);
+}
+
+// Pi's timeout result ("Command timed out after N seconds") becomes one line plus the last lines.
+function bashResult(text) {
+  const m = typeof text === "string" ? text.match(/Command timed out after (\d+(?:\.\d+)?) seconds/) : null;
+  if (m) {
+    const rest = text.replace(m[0], "").trim();
+    const lead = "stopped after " + m[1] + " s, last lines:\n";
+    return lead + tail(rest, RESULT_CHARS - lead.length);
+  }
+  return tail(text, RESULT_CHARS);
+}
 
 function shorten(text) {
   if (typeof text !== "string" || text.length <= RESULT_CHARS) return text;
@@ -164,6 +204,7 @@ export default function (pi: any) {
       return { block: true, reason: why };
     }
     if (event.toolName === "bash" && event.input && typeof event.input.command === "string") {
+      event.input.timeout = bashTimeout(event.input);
       event.input.command = "unset " + KEY_ENV + "; " + event.input.command;
     }
     return undefined;
@@ -171,11 +212,11 @@ export default function (pi: any) {
   pi.on("tool_result", async (event: any) => {
     if (!Array.isArray(event.content)) return undefined;
     let changed = false;
+    const isBash = event.toolName === "bash";
     const content = event.content.map((part: any) => {
-      if (part && part.type === "text" && typeof part.text === "string" && part.text.length > RESULT_CHARS) {
-        changed = true;
-        return { ...part, text: shorten(part.text) };
-      }
+      if (!part || part.type !== "text" || typeof part.text !== "string") return part;
+      const text = isBash ? bashResult(part.text) : part.text.length > RESULT_CHARS ? shorten(part.text) : part.text;
+      if (text !== part.text) { changed = true; return { ...part, text }; }
       return part;
     });
     return changed ? { content } : undefined;
@@ -189,6 +230,8 @@ def gate_extension() -> str:
         "title": json.dumps(GATE_TITLE), "key_env": json.dumps(ENGINE_KEY_ENV),
         "timeout_ms": int((config.APPROVAL_TIMEOUT_S + 30) * 1000),
         "result_chars": int(config.TOOL_RESULT_CHARS),
+        "bash_timeout_s": int(config.BASH_TIMEOUT_S), "bash_timeout_max_s": int(config.BASH_TIMEOUT_MAX_S),
+        "loop_timeout_s": int(config.LOOP_BASH_TIMEOUT_S), "loop_tool": json.dumps(LOOP_TOOL),
     }
 
 
@@ -300,6 +343,10 @@ class PiAdapter(HarnessAdapter):
         prompt = project.private / "system-prompt.md"
         _write_private(gate, gate_extension())
         _write_private(prompt, system_prompt(kind))
+        loop_bin = project.private / "bin"
+        loop_bin.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _write_private(loop_bin / LOOP_TOOL, loop_runner_source())
+        (loop_bin / LOOP_TOOL).chmod(0o700)
         work = str(project.work)
         argv = [str(install.node), str(install.entry), "--mode", "rpc", "--offline",
                 "--provider", config.PROVIDER, "--model", config.MODEL_ID,
@@ -309,7 +356,7 @@ class PiAdapter(HarnessAdapter):
                 "--no-themes", "--no-context-files", "--no-approve"]
         if resume:
             argv.append("--continue")
-        path = os.pathsep.join(dict.fromkeys([str(install.node.parent), "/usr/bin", "/bin", "/usr/sbin",
+        path = os.pathsep.join(dict.fromkeys([str(loop_bin), str(install.node.parent), "/usr/bin", "/bin", "/usr/sbin",
                                               "/sbin", "/opt/homebrew/bin", "/usr/local/bin"]))
         env = {"HOME": str(home), "PATH": path, "TMPDIR": str(tmp) + "/", "PWD": work,
                "LANG": "en_US.UTF-8", "TERM": "dumb", "NO_COLOR": "1",

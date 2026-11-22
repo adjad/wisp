@@ -121,7 +121,55 @@ def _judge_write(tool: str, args: dict, work: Path) -> Verdict:
     return Verdict(CONFIRM, "writes outside the project folder", path=raw, tool=tool, note=OUTSIDE_NOTE)
 
 
+_LOOP = re.compile(r"(?:^|[\s;&|()`])(?:\S*/)?ideate-loop(?=\s|$)")
+LOOP_NOTE = ("This repeats the commands shown until one succeeds or its time limit passes. "
+             "Allowing it allows the whole loop, not each check.")
+
+
 def _judge_shell(args: dict, work: Path, engine_port: int | None = None) -> Verdict:
+    """An `ideate-loop` command is one approval for the whole loop: the card shows the exact
+    command once, every command inside it is judged by the same rules as a bash command of its
+    own (the strictest verdict wins, a refusal inside refuses the loop), and a loop is never
+    run without a card."""
+    command = args.get("command")
+    verdict = _judge_shell_plain(args, work, engine_port)
+    if verdict.action == DENY or not isinstance(command, str) or not _LOOP.search(command):
+        return verdict
+    inner = _loop_commands(command)
+    for text in inner or []:
+        sub = _judge_shell_plain({"command": text}, work, engine_port)
+        if sub.action == DENY:
+            return Verdict(DENY, sub.reason, text=verdict.text, tool="bash")
+        if sub.action == CONFIRM and verdict.action == ALLOW:
+            verdict = Verdict(CONFIRM, sub.reason, text=verdict.text, tool="bash", note=sub.note)
+        elif sub.action == CONFIRM and not verdict.note and sub.note:
+            verdict.note = sub.note
+    if inner is None or not inner:
+        return Verdict(CONFIRM, "runs a loop", text=verdict.text, tool="bash", note=LOOP_NOTE)
+    if verdict.action == ALLOW:
+        verdict = Verdict(CONFIRM, "repeats a command until it succeeds", text=verdict.text, tool="bash")
+    verdict.note = (verdict.note + " " if verdict.note else "") + LOOP_NOTE
+    return verdict
+
+
+def _loop_commands(command: str) -> list[str] | None:
+    """The --until / --do values of the loop in `command`, or None when it can't be parsed."""
+    import shlex
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return None
+    found = []
+    for i, word in enumerate(words):
+        for flag in ("--until", "--do"):
+            if word == flag and i + 1 < len(words):
+                found.append(words[i + 1])
+            elif word.startswith(flag + "="):
+                found.append(word[len(flag) + 1:])
+    return found
+
+
+def _judge_shell_plain(args: dict, work: Path, engine_port: int | None = None) -> Verdict:
     command = args.get("command")
     if not isinstance(command, str) or not command.strip():
         return Verdict(DENY, "That shell step has no command.", tool="bash")

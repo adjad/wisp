@@ -214,6 +214,10 @@ PROFILE_TESTS = {
         "tests/test_ideate_residency.py",
         # Ideate's GPU-limit row: source checks that it reaches Terminal only through the code card.
         "tests/test_ideate_gpu_row.py",
+        # Ideate loops and bash caps: real subprocesses on invented commands in tmp_path, gate verdicts,
+        # prompt budget, and the generated extension's time and output limits (run in node).
+        "tests/test_ideate_loop.py",
+        "tests/test_ideate_bash_caps.py",
         # Brief says "Reading Mail…" while Wisp reads a Mail it opened (MailRecache); synthetic state.
         "tests/test_mail_recache_brief.py",
         # The notch panel takes the keyboard on every asked-for open and every press (source checks).
@@ -677,6 +681,7 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_credential_quarantine.py",
     # Pure string redaction plus temporary stores; no real keys, Keychain or model.
     "tests/test_credential_redaction.py",
+    "tests/test_cloud_mask.py",
     # In-process approvers and endpoint calls only; no sockets or real actions.
     "tests/test_approval_routing.py",
     # Stand-in model loop and executor; the real stream/runner cancellation wiring only.
