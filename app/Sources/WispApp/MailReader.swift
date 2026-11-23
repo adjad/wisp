@@ -1,6 +1,7 @@
 import AppKit
 import Carbon
 import Foundation
+import Network
 import CoreFoundation
 
 // Local callback admission complements the server generation fence. A delayed
@@ -789,6 +790,9 @@ final class MailReader {
     private var userQuitMailAt: Date?
     private var recacheRunning = false
     private var mailObservers: [NSObjectProtocol] = []
+    /// The network path (NWPathMonitor); guarded by recacheLock. Assumed online until it reports.
+    private var online = true
+    private let pathMonitor = NWPathMonitor()
     private static let openedAtKey = "wisp.mail.recacheOpenedAt"
     /// Posted when Brief opens, so a stale mail cache is read then too.
     static let briefOpened = Notification.Name("wisp.briefOpenedForMail")
@@ -800,10 +804,27 @@ final class MailReader {
         recacheLock.unlock()
     }
 
-    /// Who quits Mail, and whether the person brings forward a Mail Wisp opened.
+    /// Who quits Mail, and whether the person brings forward a Mail Wisp opened. Also the network
+    /// coming back and the Mac waking, so a Mail skipped while offline is read soon after.
     private func observeMailApp() {
         guard mailObservers.isEmpty else { return }
         let center = NSWorkspace.shared.notificationCenter
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            guard let self else { return }
+            let nowOnline = path.status == .satisfied
+            self.recacheLock.lock()
+            let cameBack = nowOnline && !self.online
+            self.online = nowOnline
+            self.recacheLock.unlock()
+            // Give the connection a moment to settle before Mail fetches over it.
+            if cameBack { DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in self?.sync() } }
+        }
+        pathMonitor.start(queue: DispatchQueue(label: "wisp.mail.path", qos: .utility))
+        mailObservers.append(center.addObserver(forName: NSWorkspace.didWakeNotification,
+                                                object: nil, queue: nil) { [weak self] _ in
+            // Wi-Fi often rejoins a few seconds after wake; the path handler covers a slower rejoin.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in self?.sync() }
+        })
         func isMail(_ note: Notification) -> NSRunningApplication? {
             let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
             return app?.bundleIdentifier == "com.apple.mail" ? app : nil
@@ -846,6 +867,24 @@ final class MailReader {
                                                      AEEventID(typeWildCard), false) == noErr
     }
 
+    /// Now is outside the person's working hours (GET /assistant/hours); false when the service
+    /// doesn't answer, so Mail keeps the 30-minute pace.
+    private static func offHours(now: Date) async -> Bool {
+        var req = URLRequest(url: WispClient.baseURL.appendingPathComponent("assistant/hours"))
+        req.timeoutInterval = 5
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let working = json["working"] as? [String: Any],
+              let start = working["start_minute"] as? Int, let end = working["end_minute"] as? Int,
+              let days = working["days"] as? [Int] else { return false }
+        let parts = Calendar.current.dateComponents([.hour, .minute, .weekday], from: now)
+        guard let hour = parts.hour, let minute = parts.minute, let weekday = parts.weekday else { return false }
+        // Calendar's weekday is 1 = Sunday; the service's is 0 = Monday.
+        return MailRecache.offHours(start: start, end: end, days: Set(days), minute: hour * 60 + minute,
+                                    weekday: (weekday + 5) % 7)
+    }
+
     /// Google's mail accounts, as the service reports them; empty when it doesn't answer.
     private static func gmailAccounts() async -> [MailRecache.GmailAccount] {
         var req = URLRequest(url: WispClient.baseURL.appendingPathComponent("assistant/gmail/status"))
@@ -869,6 +908,7 @@ final class MailReader {
             let accounts = await Self.gmailAccounts()
             let covers = MailRecache.gmailCovers(accounts, now: now)
             let unchecked = MailRecache.gmailLeavesUnchecked(accounts, now: now)
+            let offHours = await Self.offHours(now: now)
             self.recacheLock.lock()
             let facts = MailRecache.Facts(
                 mailOpen: self.mailAppOpen(), indexRead: failure == nil,
@@ -878,7 +918,7 @@ final class MailReader {
                 lastRead: self.lastMailRead,
                 lastLiveRead: self.lastLiveMailRead,
                 lastOpenedByWisp: UserDefaults.standard.object(forKey: Self.openedAtKey) as? Date,
-                userQuitAt: self.userQuitMailAt)
+                userQuitAt: self.userQuitMailAt, offHours: offHours, online: self.online)
             let route = MailRecache.route(facts, now: now)
             let go = route == .openMail && !self.recacheRunning
             if go { self.recacheRunning = true }
@@ -937,6 +977,7 @@ final class MailReader {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
         }
         if answered {
+            await waitForMailToFetch(app)
             sync()
             syncRaw()
             try? await Task.sleep(nanoseconds: 5_000_000_000)
@@ -955,6 +996,22 @@ final class MailReader {
             if let failure { postDiagnostic(available: false, reason: failure.reason, kind: failure.kind) }
         }
         quitMailIfWispOpenedIt(app)
+    }
+
+    /// Asks a Mail Wisp opened to check for new mail, then waits until its background activity
+    /// (fetching) has settled, or MailRecache.fetchTimeout, so the reads see what just arrived.
+    private func waitForMailToFetch(_ app: NSRunningApplication) async {
+        _ = run("tell application id \"com.apple.mail\" to check for new mail", tag: "recache-check")
+        try? await Task.sleep(nanoseconds: 3_000_000_000)
+        let doneBy = Date().addingTimeInterval(MailRecache.fetchTimeout)
+        var polls: [Int?] = []
+        while Date() < doneBy && !app.isTerminated {
+            let text = run("tell application id \"com.apple.mail\" to background activity count", tag: "recache-fetch").text
+            polls.append(text.flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) })
+            if MailRecache.fetchWaitOver(polls) { return }
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+        }
+        NSLog("Wisp: Mail was still fetching after \(Int(MailRecache.fetchTimeout / 60)) min; reading what it has")
     }
 
     /// Quits a Mail Wisp opened, politely (`terminate`, never forced), unless the person has since

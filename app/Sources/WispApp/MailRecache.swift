@@ -15,13 +15,23 @@ import Foundation
 /// in the service, service/proactive/cycle.py). So while any listed Google account is unchecked,
 /// one healthy account doesn't count as covering mail either.
 ///
-/// Never asks for a permission. Polite: opens Mail at most once every 30 minutes, only when the mail
-/// cache is stale, never within 15 minutes of the person quitting Mail themselves, and afterwards
+/// Never asks for a permission. Never opens Mail while the Mac is offline (it couldn't fetch); the
+/// network coming back, or the Mac waking, checks again. Once Mail answers, Wisp tells it to check
+/// for new mail and waits until it has finished fetching (or fetchTimeout) before reading.
+/// Polite: opens Mail at most once every 30 minutes (once an hour outside the person's working
+/// hours, weekends included), only when the mail cache is stale, never within 15 minutes of the person quitting Mail themselves, and afterwards
 /// quits only a Mail that Wisp opened, with `terminate` (never forced), and not if the person has
 /// since brought it forward or opened a window. Pure: MailReader supplies the facts.
 enum MailRecache {
     /// Wisp opens Mail at most this often.
     static let openEvery: TimeInterval = 30 * 60
+    /// Outside working hours (weekends included) Wisp opens Mail at most once an hour.
+    static let offHoursOpenEvery: TimeInterval = 60 * 60
+    /// The longest Wisp waits for a Mail it opened to finish fetching before reading anyway.
+    static let fetchTimeout: TimeInterval = 5 * 60
+    /// Mail must report no background activity this many polls in a row to count as done fetching
+    /// (it can read 0 for a moment before a fetch starts).
+    static let fetchIdlePolls = 2
     /// The person quit Mail within this long: leave it closed.
     static let userQuitGrace: TimeInterval = 15 * 60
     /// The mail cache counts as stale after this long without a successful read.
@@ -73,7 +83,7 @@ enum MailRecache {
     }
 
     enum Skip: Equatable {
-        case gmailCovers, automationNotAllowed, cacheFresh, openedRecently, userQuitRecently, mailMissing
+        case gmailCovers, automationNotAllowed, cacheFresh, openedRecently, userQuitRecently, mailMissing, offline
     }
 
     struct Facts: Equatable {
@@ -94,6 +104,33 @@ enum MailRecache {
         var lastOpenedByWisp: Date?
         /// When the person last quit Mail themselves.
         var userQuitAt: Date?
+        /// Now is outside the person's working hours (offHours); false when the hours are unknown.
+        var offHours = false
+        /// The Mac has a network path. Offline, Mail couldn't fetch, so it isn't opened.
+        var online = true
+    }
+
+    /// Working hours as service/user_hours.py holds them: minutes after local midnight, `days` with
+    /// Monday = 0, a window past midnight wraps (and counts for the day it started). Outside it is
+    /// off-hours. An empty window (start == end) has no working time, so every minute is off-hours.
+    static func offHours(start: Int, end: Int, days: Set<Int>, minute: Int, weekday: Int) -> Bool {
+        if start == end { return true }
+        if start < end { return !(start <= minute && minute < end && days.contains(weekday)) }
+        if minute >= start { return !days.contains(weekday) }
+        if minute < end { return !days.contains((weekday + 6) % 7) }
+        return true
+    }
+
+    /// Mail has finished fetching: its background activity count read 0 for the last
+    /// fetchIdlePolls polls (newest last). An unreadable poll (nil) isn't idle.
+    static func fetchSettled(_ polls: [Int?]) -> Bool {
+        polls.count >= fetchIdlePolls && polls.suffix(fetchIdlePolls).allSatisfy { $0 == 0 }
+    }
+
+    /// Stop waiting: settled, or Mail hasn't answered the count the first three times (an older Mail
+    /// or a busy one), so waiting the full fetchTimeout would only delay the read.
+    static func fetchWaitOver(_ polls: [Int?]) -> Bool {
+        fetchSettled(polls) || (polls.count >= 3 && polls.allSatisfy { $0 == nil })
     }
 
     /// The order: the open app first, then (only when allowed and polite) opening Mail, after the index
@@ -106,9 +143,11 @@ enum MailRecache {
         if !f.mailInstalled { return .none(.mailMissing) }
         // The index is never fresh on its own (Mail fetches only while it runs), so with an index
         // read, or an unchecked Google account, only a live read counts.
+        if !f.online { return .none(.offline) }
         let last = f.indexRead || f.gmailUnchecked ? f.lastLiveRead : f.lastRead
-        if let last, now.timeIntervalSince(last) < staleAfter { return .none(.cacheFresh) }
-        if let opened = f.lastOpenedByWisp, now.timeIntervalSince(opened) < openEvery { return .none(.openedRecently) }
+        let every = f.offHours ? offHoursOpenEvery : openEvery
+        if let last, now.timeIntervalSince(last) < max(staleAfter, every) { return .none(.cacheFresh) }
+        if let opened = f.lastOpenedByWisp, now.timeIntervalSince(opened) < every { return .none(.openedRecently) }
         if let quit = f.userQuitAt, now.timeIntervalSince(quit) < userQuitGrace { return .none(.userQuitRecently) }
         return .openMail
     }

@@ -126,6 +126,49 @@ struct MailRecacheChecks {
         check(!M.quitsAfterReading(openedByWisp: true, isHidden: true, isActive: false, personTouched: false, visibleWindows: 1),
               "a window open: leave it")
 
+        // Outside working hours (weekends included): at most once an hour.
+        f = base; f.offHours = true; f.lastOpenedByWisp = ago(45)
+        check(M.route(f, now: now) == .none(.openedRecently), "off-hours, opened 45 min ago: wait")
+        f = base; f.offHours = true; f.lastOpenedByWisp = ago(60)
+        check(M.route(f, now: now) == .openMail, "off-hours, opened an hour ago: may open")
+        f = base; f.offHours = true; f.indexRead = true; f.lastLiveRead = ago(45)
+        check(M.route(f, now: now) == .none(.cacheFresh), "off-hours, live read 45 min ago: still fresh")
+        f = base; f.offHours = true; f.indexRead = true; f.lastLiveRead = ago(61)
+        check(M.route(f, now: now) == .openMail, "off-hours, live read 61 min ago: open")
+        f = base; f.lastOpenedByWisp = ago(45)
+        check(M.route(f, now: now) == .openMail, "working hours, opened 45 min ago: may open")
+        let week: Set<Int> = [0, 1, 2, 3, 4]
+        check(!M.offHours(start: 540, end: 1020, days: week, minute: 600, weekday: 2), "Wed 10:00: working")
+        check(M.offHours(start: 540, end: 1020, days: week, minute: 1080, weekday: 2), "Wed 18:00: off")
+        check(M.offHours(start: 540, end: 1020, days: week, minute: 480, weekday: 2), "Wed 08:00: off")
+        check(M.offHours(start: 540, end: 1020, days: week, minute: 600, weekday: 5), "Sat 10:00: off")
+        check(M.offHours(start: 540, end: 540, days: week, minute: 600, weekday: 2), "no working window: off")
+        check(!M.offHours(start: 1320, end: 360, days: [0], minute: 1380, weekday: 0), "night shift Mon 23:00: working")
+        check(!M.offHours(start: 1320, end: 360, days: [0], minute: 120, weekday: 1), "night shift Tue 02:00: working")
+        check(M.offHours(start: 1320, end: 360, days: [0], minute: 120, weekday: 0), "night shift Mon 02:00: off")
+        check(M.offHoursOpenEvery == 3600, "once an hour off-hours")
+
+        // Offline: Mail couldn't fetch, so it isn't opened (and the 30-minute clock isn't spent).
+        f = base; f.online = false
+        check(M.route(f, now: now) == .none(.offline), "offline: leave Mail closed")
+        f = base; f.online = false; f.indexRead = true
+        check(M.route(f, now: now) == .none(.offline), "offline with an index read: the index stands")
+        f = base; f.online = false; f.mailOpen = true
+        check(M.route(f, now: now) == .mailApp, "offline but Mail open: still read it")
+        f = base; f.online = false; f.automationAllowed = false
+        check(M.route(f, now: now) == .none(.automationNotAllowed), "offline and not allowed: the permission reason")
+
+        // Fetching: done only after fetchIdlePolls idle polls in a row.
+        check(!M.fetchSettled([]), "no polls: not settled")
+        check(!M.fetchSettled([0]), "one idle poll: not yet")
+        check(M.fetchSettled([0, 0]), "two idle polls: settled")
+        check(!M.fetchSettled([0, 0, 3]), "fetching again: not settled")
+        check(M.fetchSettled([2, 1, 0, 0]), "fetch finished: settled")
+        check(!M.fetchSettled([0, nil]), "an unreadable poll isn't idle")
+        check(M.fetchWaitOver([nil, nil, nil]), "count never readable: read anyway")
+        check(!M.fetchWaitOver([nil, 2, nil]), "fetching, one poll unreadable: keep waiting")
+        check(M.fetchTimeout == 300 && M.fetchIdlePolls == 2, "5-minute fetch cap, two idle polls")
+
         // The limits and the words Brief shows.
         check(M.openEvery == 1800 && M.userQuitGrace == 900 && M.staleAfter == 1800 && M.gmailFreshFor == 1800,
               "30-minute rate limit, 15-minute quit grace, 30-minute staleness")
