@@ -379,7 +379,8 @@ class Store:
             self._conn.execute("DELETE FROM writing_samples")
             self._conn.execute("DELETE FROM observations WHERE kind='email_out' OR (kind='note' AND source='notes')")
             self._conn.execute("DELETE FROM patterns WHERE kind='writing_style' OR "
-                               "(kind='send_timing' AND subject IN ('email','note'))")
+                               "(kind='send_timing' AND subject IN ('email','note')) OR "
+                               "(kind='reminder_habit' AND subject='repeating')")
             self._conn.execute("DELETE FROM meta WHERE key IN ('writing_salt','notes_repeating')")
 
     # ------------------------------------------------------------ usage counters

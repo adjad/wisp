@@ -1136,13 +1136,39 @@ def test_weekly_includes_usage_and_the_text_mentions_it(eng):
     assert "usage" in report and report["usage"]["available"] is True
     assert report["usage"]["start_date"] == start.isoformat()
     assert report["usage"]["lines"][0].startswith("Questions asked: 3")
-    assert "Wisp usage (counts only):" in report["summary"] and "Questions asked: 3" in report["summary"]
+    # The text summary (what a tool answer can carry to a model) never includes the usage block.
+    assert "Questions asked" not in report["summary"] and "Wisp usage" not in report["summary"]
 
 
 def test_weekly_without_any_usage_still_has_the_key_and_a_note(eng):
     report = eng.weekly(NOW)
     assert report["usage"]["available"] is False
-    assert report["usage"]["note"] in report["summary"]
+    assert report["usage"]["note"] and report["usage"]["note"] not in report["summary"]
+
+
+def test_correct_pattern_tool_never_lists_profile_only_patterns(eng):
+    """A 'Which one?' answer lists statements; those of the new kinds are mail-derived."""
+    from types import SimpleNamespace
+    from service.tools import behavior_tools as bt
+    eng.configure_writing(True)
+    eng.observe_writing("message", [(f"m{i}", NOW - i * 3600, "hey can't talk now! call you later") for i in range(30)])
+    eng.mine(NOW)
+    assert any(p.kind == "writing_style" for p in eng.patterns())
+    runtime = SimpleNamespace(call=lambda name, *a, **k: getattr(eng, name)(*a, **k), invalidate_card=lambda: None)
+    import pytest
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(bt, "_runtime", lambda: runtime)
+        out = bt.correct_pattern(status="rejected", text="your sent messages hey writing")
+    assert "Your sent messages" not in out and "[pattern" not in out
+
+
+def test_email_pattern_is_linear_on_adversarial_text():
+    import time
+    from service.behavior import writing
+    start = time.perf_counter()
+    writing.measure("note", "a." * 10_000)
+    writing.measure("note", ("a.a" * 6_000) + "@")
+    assert time.perf_counter() - start < 0.5
 
 
 def test_weekly_report_without_usage_rows_has_no_usage_key():

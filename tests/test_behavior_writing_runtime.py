@@ -837,7 +837,7 @@ def test_usage_counters_appear_in_the_weekly_report(rt, client, clock):
     assert "Tabs opened: 3 (Day 2, Brief 1)" in lines
     assert "Tool uses: 1 (send email 1)" in lines
     assert "Actions approved: 1; declined: 1" in lines
-    assert "Wisp usage (counts only):" in report["summary"]
+    assert "Wisp usage" not in report["summary"]          # the text summary never carries the usage block
 
 
 def test_weekly_usage_is_unavailable_before_the_first_full_day(rt, client):

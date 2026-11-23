@@ -269,7 +269,10 @@ def correct_pattern(status: str, pattern_id: str | None = None, text: str | None
         return _OFF
     if status not in {"confirmed", "rejected", "active"}:
         return "(error calling correct_pattern: status must be confirmed, rejected or active.)"
-    patterns = [p.to_dict() for p in runtime.call("patterns")]
+    # Writing, timing, reminder and usage patterns are corrected in the Learned window only:
+    # their statements are derived from mail and messages and must not enter a model's context.
+    from service.behavior.types import PROFILE_ONLY_KINDS
+    patterns = [p.to_dict() for p in runtime.call("patterns") if p.kind not in PROFILE_ONLY_KINDS]
     target = None
     if pattern_id:
         pid = str(pattern_id).strip().strip("[]").removeprefix("pattern ").strip()

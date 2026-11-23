@@ -769,15 +769,21 @@ class BehaviorEngine:
             keyed = [(self._writing_key(channel, sid), ts, text) for sid, ts, text in items
                      if isinstance(ts, (int, float)) and math.isfinite(ts)]
             known = self._store.writing_known(k for k, _, _ in keyed)
-            rows = []
-            for key, ts, text in keyed:
-                if key in known:
-                    continue
-                measured = writing_mod.measure(channel, text)
-                # An empty or unmeasurable text is remembered too, so it is not read again.
-                rows.append((key, float(ts), measured if measured is not None else {"skip": 1}))
-            del keyed
-            return self._store.writing_add(channel, rows, writing_mod.MAX_STORED_PER_CHANNEL) if rows else 0
+            pending = [t for t in keyed if t[0] not in known]
+        # Measuring is CPU work on up to 20,000 characters per text: done outside the
+        # publication barrier and the engine lock, which are retaken to store the integers.
+        rows = []
+        for key, ts, text in pending:
+            measured = writing_mod.measure(channel, text)
+            # An empty or unmeasurable text is remembered too, so it is not read again.
+            rows.append((key, float(ts), measured if measured is not None else {"skip": 1}))
+        del keyed, pending
+        if not rows:
+            return 0
+        with revocation(), self._lock:
+            if self._closed or not self.writing_enabled():      # switched off while measuring
+                return 0
+            return self._store.writing_add(channel, rows, writing_mod.MAX_STORED_PER_CHANNEL)
 
     def observe_note_edits(self, notes: Iterable[tuple[Any, float, str]]) -> int:
         """Notes: edit times (ts = last edit) become ``note`` observations with a ``series`` flag.

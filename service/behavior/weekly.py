@@ -239,9 +239,6 @@ def render_report(report):
         else:
             text += "; observed records only — insufficient coverage for comparison"
         lines.append(text)
-    lines.append(report["note"])
-    usage = report.get("usage")
-    if isinstance(usage, dict):
-        from service.behavior.usage import render_lines
-        lines += render_lines(usage)
-    return "\n".join(lines)
+    # The usage block (report["usage"]) is shown by the Learned window from its own `lines`;
+    # it is deliberately not in this text, which tool answers can carry to a model.
+    return "\n".join(lines + [report["note"]])

@@ -57,7 +57,7 @@ _ON_WROTE_START = re.compile(r"^\s*on\s.{3,200}$", re.I)
 _WROTE_END = re.compile(r"wrote:?\s*$", re.I)
 _SIGNATURE_DELIM = re.compile(r"^\s*(?:--|__|—)\s*$")
 _URL = re.compile(r"(?:https?://|www\.)\S+", re.I)
-_EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b")
+_EMAIL = re.compile(r"[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63})+")
 _PHONE_LINE = re.compile(r"^[\s\d()+.\-x]{7,}$")
 
 
@@ -157,7 +157,8 @@ def measure(channel: str, text: str) -> dict[str, Any] | None:
         lines, signoff = _trim_signature(lines)
     body = "\n".join(lines).strip()
     body = _URL.sub(" ", body)
-    body = _EMAIL.sub(" ", body)
+    if "@" in body:
+        body = _EMAIL.sub(" ", body)
     words = _WORD.findall(body)
     if not words:
         return None

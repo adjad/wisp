@@ -1227,7 +1227,9 @@ class BehaviorRuntime:
             self._writing_email_backlog = len(unseen) > WRITING_EMAIL_BATCH
             started, items = time.monotonic(), []
             for key in unseen[:WRITING_EMAIL_BATCH]:
-                if time.monotonic() - started > WRITING_EMAIL_BUDGET_S or not self.live():
+                # The switch is read again before each body request: turning it off stops the pass.
+                if (time.monotonic() - started > WRITING_EMAIL_BUDGET_S or not self.live()
+                        or not await asyncio.to_thread(self._writing_on)):
                     break
                 row = ident[key]
                 try:

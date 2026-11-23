@@ -302,7 +302,10 @@ replace-set (an open reminder missing from the snapshot is dropped).
 emails (`email_out` observations: time only, subject empty, body never kept),
 sent messages, notes (by last edit) and the dates in `reminder_fact`
 observations (created, due, completed, repeating). They never see text. Their
-thresholds are in the pattern-kind table.
+thresholds are in the pattern-kind table. Message send timing and the reminder
+facts use metadata the app already has, so they need only "Learn my routines";
+sent-email and note times need the writing switch. The weekly usage block is not
+part of the text summary that `my_patterns` and other tool answers return.
 
 ### Usage counters
 
