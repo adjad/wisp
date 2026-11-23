@@ -55,9 +55,17 @@ def test_signal_settings_async_order(tmp_path):
     def scenario(name, changes):
         engine = BehaviorEngine(tmp_path / f"{name}.db", tz="UTC", clock=lambda: 1_792_051_200)
         try:
-            initial = engine.signal_settings()
-            replies = [engine.configure_signals(change, 1_792_051_200 + i)
-                       for i, change in enumerate(changes)]
+            # The API adds the writing-profile switch (its own switch, off by default) to every reply.
+            def api_shape(reply):
+                return {**reply, "settings": {**reply["settings"], "writing_profile": False}}
+            initial = api_shape(engine.signal_settings())
+            def apply(change, i):
+                if "writing_profile" in change:       # its own switch: no source epoch change
+                    reply = api_shape(engine.signal_settings())
+                    reply["settings"]["writing_profile"] = change["writing_profile"]
+                    return reply
+                return api_shape(engine.configure_signals(change, 1_792_051_200 + i))
+            replies = [apply(change, i) for i, change in enumerate(changes)]
             return {"initial": initial, "changes": changes, "replies": replies}
         finally:
             engine.close()
@@ -67,10 +75,10 @@ def test_signal_settings_async_order(tmp_path):
     cases = {
         "cross": scenario("cross", [{"activity": True}, {"notes": True}]),
         "same": scenario("same", [{"notes": True}, {"notes": False}]),
-        "bounded": scenario("bounded", [{"activity": True}] + [{name: False} for name in names]),
+        "bounded": scenario("bounded", [{"activity": True}] + [{name: False} for name in names + ["writing_profile"]]),
     }
     wire = tmp_path / "wire.json"
-    wire.write_text(json.dumps({"cases": cases, "names": names}))
+    wire.write_text(json.dumps({"cases": cases, "names": names + ["writing_profile"]}))
     source = (root / "app/Sources/WispApp/LearnedView.swift").read_text()
     # Exact model/value declarations; exclude every view/window and real client.
     pure = source[source.index("struct LearnedPattern:"):source.index("struct LearnedView: View")]
