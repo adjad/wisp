@@ -2,6 +2,9 @@ import Foundation
 import CoreFoundation
 import Dispatch
 
+// Production reads Internet Accounts (MailDBReader.swift); these flows never do.
+enum MailAccountAddresses { static func read() -> [String: String] { [:] } }
+
 // Only inert collaborators execute here. Python inserts the exact production
 // scan/capture/order/post/account-observation and pure history-state bodies.
 // This URLSession records requests; it cannot create a network connection.

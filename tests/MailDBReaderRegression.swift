@@ -395,5 +395,25 @@ enum MailDBReaderRegression {
         precondition(R.versionFoldersNewestFirst(["V9", "V10", "V8", "Vx", "MailData", "V11.bak"]) == ["V10", "V9", "V8"],
                      "V10 is newer than V9")
         precondition(R.versionFoldersNewestFirst([]) == [])
+
+        // Internet Accounts: a Mail account takes its own address, else its parent's.
+        let accountsPath = root.appendingPathComponent("Accounts4.sqlite").path
+        var accounts: OpaquePointer?
+        precondition(sqlite3_open(accountsPath, &accounts) == SQLITE_OK)
+        precondition(sqlite3_exec(accounts, """
+            CREATE TABLE ZACCOUNT (Z_PK INTEGER PRIMARY KEY, ZIDENTIFIER TEXT, ZUSERNAME TEXT,
+                                   ZPARENTACCOUNT INTEGER, ZACCOUNTDESCRIPTION TEXT);
+            INSERT INTO ZACCOUNT VALUES (1, 'PARENT-0001', 'Pat.Example@Gmail.com', NULL, 'Google');
+            INSERT INTO ZACCOUNT VALUES (2, 'AAAA-0002', NULL, 1, 'Google');
+            INSERT INTO ZACCOUNT VALUES (3, 'BBBB-0003', 'pat@example.edu', NULL, 'pat@example.edu');
+            INSERT INTO ZACCOUNT VALUES (4, 'CCCC-0004', 'not an address', NULL, 'Other');
+            INSERT INTO ZACCOUNT VALUES (5, 'not-hex!', 'x@example.com', NULL, 'Bad id');
+            """, nil, nil, nil) == SQLITE_OK)
+        sqlite3_close(accounts)
+        let read = MailAccountAddresses.read(path: accountsPath)
+        precondition(read["AAAA-0002"] == "pat.example@gmail.com", "a Mail account takes its parent's address")
+        precondition(read["BBBB-0003"] == "pat@example.edu")
+        precondition(read["CCCC-0004"] == nil && read["not-hex!"] == nil)
+        precondition(MailAccountAddresses.read(path: root.appendingPathComponent("missing.sqlite").path).isEmpty)
     }
 }

@@ -562,3 +562,59 @@ enum AccountLabelCache {
         UserDefaults.standard.dictionary(forKey: key) as? [String: String] ?? [:]
     }
 }
+
+/// Mail account ID -> the address macOS signed it in with, from Internet
+/// Accounts' own store (Full Disk Access, like the Envelope Index). Mail names
+/// a Google account "Google", so without this the service can't tell which
+/// Gmail address that account's mail belongs to (2026-11-22). Only the
+/// account's username is read: never a password, token or other field.
+enum MailAccountAddresses {
+    static var defaultPath: String {
+        (NSHomeDirectory() as NSString).appendingPathComponent("Library/Accounts/Accounts4.sqlite")
+    }
+
+    /// [Mail account ID: lowercased address]; empty when the store can't be read.
+    static func read(path: String = defaultPath) -> [String: String] {
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+            sqlite3_close(db)
+            return [:]
+        }
+        defer { sqlite3_close(db) }
+        sqlite3_busy_timeout(db, 1000)
+        let sql = """
+        SELECT c.ZIDENTIFIER, c.ZUSERNAME, p.ZUSERNAME
+        FROM ZACCOUNT c LEFT JOIN ZACCOUNT p ON c.ZPARENTACCOUNT = p.Z_PK
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [:] }
+        defer { sqlite3_finalize(stmt) }
+        var found: [String: String] = [:]
+        func column(_ idx: Int32) -> String {
+            guard let c = sqlite3_column_text(stmt, idx) else { return "" }
+            return String(cString: c)
+        }
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let id = column(0)
+            guard isAccountID(id) else { continue }
+            if let address = [column(1), column(2)].lazy.compactMap(normalized).first {
+                found[id] = address
+            }
+        }
+        return found
+    }
+
+    static func isAccountID(_ id: String) -> Bool {
+        !id.isEmpty && id.count <= 64 && id.allSatisfy { $0.isHexDigit || $0 == "-" }
+    }
+
+    /// One plain address, lowercased, or nil.
+    static func normalized(_ value: String) -> String? {
+        let address = value.trimmingCharacters(in: .whitespaces).lowercased()
+        let parts = address.split(separator: "@", omittingEmptySubsequences: false)
+        guard address.count <= 254, parts.count == 2, !parts[0].isEmpty, parts[1].contains("."),
+              address.unicodeScalars.allSatisfy({ $0.value > 0x20 && $0.value < 0x7f })
+        else { return nil }
+        return address
+    }
+}

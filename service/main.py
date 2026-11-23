@@ -4462,6 +4462,9 @@ async def assistant_sync_emails(body: dict[str, Any]) -> dict[str, Any]:
     vice versa)."""
     from service.tools.email_tools import (
         cache_emails, cache_history_headers, cache_raw_emails, set_email_availability)
+    if "account_addresses" in body:
+        from service.tools.email_tools import cache_account_addresses
+        cache_account_addresses(body.get("account_addresses"))
     if "headers" in body:
         cache_emails(str(body.get("headers") or ""))
     if "raw" in body:

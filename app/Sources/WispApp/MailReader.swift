@@ -1618,6 +1618,12 @@ final class MailReader {
             "diagnostics": ["available": available, "reason": reason,
                             "syncing": false, "read_source": readSource]
         ]
+        // Which address each Mail account signed in with (Mail names a Google
+        // account "Google"), so the service can match it to a connected Gmail.
+        if available {
+            let addresses = MailAccountAddresses.read()
+            if !addresses.isEmpty { payload["account_addresses"] = addresses }
+        }
         // An empty successful scan must clear older history, too. Bundle it
         // with the headers so a date lookup cannot see mismatched snapshots.
         if let history { payload["history"] = history }

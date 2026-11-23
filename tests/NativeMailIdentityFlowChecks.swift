@@ -2,6 +2,9 @@ import Foundation
 import CoreFoundation
 import Dispatch
 
+// Production reads Internet Accounts (MailDBReader.swift); these flows never do.
+enum MailAccountAddresses { static func read() -> [String: String] { [:] } }
+
 // The Python contract injects byte-for-byte production scan/capture/post bodies.
 // Every collaborator here is inert; URLSession is a recording fake, not Foundation's.
 enum Scan { case headers }

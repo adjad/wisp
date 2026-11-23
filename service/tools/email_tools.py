@@ -383,7 +383,8 @@ def _overlap_native_id(address: str, item: dict, observed: list[dict], taken: se
     for record in _parse_header_records(_swift_headers):
         native = record.get("account_id") or ""
         # An account Mail names by another address is that address's, never this one's.
-        if native and native not in taken and "@" not in names.get(native, record["account"].casefold()):
+        if (native and native not in taken and "@" not in names.get(native, record["account"].casefold())
+                and _native_account_addresses.get(native, address) == address):
             by_native.setdefault(native, []).append(record)
     def shared(keys: set[tuple[int, str]]) -> int:
         # The same message can land a minute apart in the two (a boundary between).
@@ -401,10 +402,36 @@ def _overlap_native_id(address: str, item: dict, observed: list[dict], taken: se
     return ""
 
 
+# Mail account ID -> the address macOS signed it in with (Internet Accounts),
+# posted by MailReader. Mail names a Google account "Google", so its name alone
+# never matches the Gmail address it holds (2026-11-22).
+_native_account_addresses: dict[str, str] = {}
+_ADDRESS_RE = re.compile(r"[^@\s]{1,64}@[^@\s]+\.[^@\s]+")
+
+
+def cache_account_addresses(value) -> None:
+    """Replace the account-address map; anything malformed is dropped."""
+    global _native_account_addresses
+    found = {}
+    if isinstance(value, dict):
+        for key, address in list(value.items())[:64]:
+            key, address = str(key).strip(), str(address).strip().lower()
+            if (re.fullmatch(r"[0-9A-Fa-f-]{1,64}", key) and len(address) <= 254
+                    and _ADDRESS_RE.fullmatch(address)):
+                found[key] = address
+    if found != _native_account_addresses:
+        _native_account_addresses = found
+        if _external_accounts:
+            _refresh_native_bindings()
+
+
 def _refresh_native_bindings() -> None:
     observed = native_email_accounts()
+    addresses = _native_account_addresses
     for address, item in _external_accounts.items():
         exact = {row["id"] for row in observed if row["name"].casefold() == address}
+        if not exact:
+            exact = {row["id"] for row in observed if addresses.get(row["id"]) == address}
         item["inferred_native_id"] = next(iter(exact)) if len(exact) == 1 else ""
     taken = {str(item.get("mail_account_id") or item.get("inferred_native_id") or "")
              for item in _external_accounts.values()} - {""}

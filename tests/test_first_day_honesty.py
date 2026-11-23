@@ -832,3 +832,32 @@ def test_set_email_availability_records_the_last_live_read(monkeypatch):
     assert E._email_read_source == "mail_fetch" and E._mail_live_at > 0
     E.set_email_availability(True, read_source="something_else")
     assert E._email_read_source == ""
+
+
+def test_a_mail_account_named_google_vouches_by_its_sign_in_address(monkeypatch, tmp_path):
+    """Mail names a Google account "Google"; macOS's Internet Accounts know its address.
+    With that address posted, Mail's read vouches for the Gmail it holds, and only it."""
+    from service.proactive import cycle
+    now = 1_790_000_000.0
+    home, work = "11111111-AAAA-4BBB-8CCC-000000000001", "22222222-AAAA-4BBB-8CCC-000000000002"
+    E = _google_accounts(monkeypatch, tmp_path, now, fresh=[], stale=["work@gmail.com"])
+    monkeypatch.setattr(E, "_native_account_addresses", {})
+    _mail_app(monkeypatch, E, now, _h2("Google", work) + "\n" + _h2("home@example.edu", home))
+    assert cycle.google_mail_status(now)[1] == ["work@gmail.com"], "a name alone never matches"
+    E.cache_account_addresses({work: "Work@Gmail.com", home: "home@example.edu"})
+    assert E._external_accounts["work@gmail.com"]["inferred_native_id"] == work
+    assert cycle.google_mail_status(now) == ([], [], {})
+    E.cache_account_addresses({work: "someone.else@gmail.com", home: "home@example.edu"})
+    assert E._external_accounts["work@gmail.com"]["inferred_native_id"] == ""
+    assert cycle.google_mail_status(now)[1] == ["work@gmail.com"], "another address never vouches"
+
+
+def test_cache_account_addresses_drops_anything_malformed(monkeypatch):
+    from service.tools import email_tools as E
+    monkeypatch.setattr(E, "_native_account_addresses", {})
+    monkeypatch.setattr(E, "_external_accounts", {})
+    E.cache_account_addresses({"ABCD-12": " A@B.com ", "not a uuid": "x@y.com", "EF01": "no-at-sign",
+                               "EF02": "two@@x.com", "EF03": "a\n@b.com"})
+    assert E._native_account_addresses == {"ABCD-12": "a@b.com"}
+    E.cache_account_addresses("garbage")
+    assert E._native_account_addresses == {}
