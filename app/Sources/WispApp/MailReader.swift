@@ -581,8 +581,12 @@ final class MailReader {
     // left alone) until the user opens Mail themselves; the next timer tick
     // picks it up. Bundle ID, not app name, since Mail's display name can be
     // localized.
+    /// Mail is open AND macOS already lets Wisp script it. Otherwise (Automation undecided, refused,
+    /// or granted to an older build) every read goes to the on-disk index, which Full Disk Access
+    /// covers: while Mail runs it is fetching into that index, so the read counts as live
+    /// ("mail_fetch"). Scripting is never attempted without an Allow, so nothing is asked.
     private func isMailRunning() -> Bool {
-        mailAppOpen() && Self.automationDecided("com.apple.mail")
+        mailAppOpen() && Self.automationAllowed("com.apple.mail")
     }
 
     private func mailAppOpen() -> Bool {
@@ -966,15 +970,22 @@ final class MailReader {
         postReadingMail()
         NSLog("Wisp: opened Mail hidden to read it (Google isn't covering mail)")
 
-        // Wait until Mail answers a script.
+        // Wait until Mail answers a script (only when Wisp may script it).
         let answerBy = Date().addingTimeInterval(MailRecache.answerTimeout)
         var answered = false
-        while Date() < answerBy && !app.isTerminated {
+        while Self.automationAllowed("com.apple.mail") && Date() < answerBy && !app.isTerminated {
             if run("tell application id \"com.apple.mail\" to count of accounts", tag: "recache-ready").text != nil {
                 answered = true
                 break
             }
             try? await Task.sleep(nanoseconds: 2_000_000_000)
+        }
+        guard Self.automationAllowed("com.apple.mail") else {
+            // No Automation: Mail fetches on launch into its index, which Full Disk Access reads.
+            await waitForIndexToSettle(app)
+            if !app.isTerminated { await readIndexWhileMailRuns() }
+            quitMailIfWispOpenedIt(app)
+            return
         }
         if answered {
             await waitForMailToFetch(app)
@@ -1012,6 +1023,33 @@ final class MailReader {
             try? await Task.sleep(nanoseconds: 3_000_000_000)
         }
         NSLog("Wisp: Mail was still fetching after \(Int(MailRecache.fetchTimeout / 60)) min; reading what it has")
+    }
+
+    /// Without Automation: waits until Mail has stopped writing its index (it fetches on launch),
+    /// at least MailRecache.indexMinWait, at most fetchTimeout.
+    private func waitForIndexToSettle(_ app: NSRunningApplication) async {
+        let openedAt = Date()
+        let files = dbReader.indexFiles()
+        func lastChange() -> Date {
+            files.compactMap { (try? FileManager.default.attributesOfItem(atPath: $0))?[.modificationDate] as? Date }
+                .max() ?? .distantPast
+        }
+        while !app.isTerminated && Date().timeIntervalSince(openedAt) < MailRecache.fetchTimeout {
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            if MailRecache.indexSettled(openedAt: openedAt, lastChange: lastChange(), now: Date()) { return }
+        }
+    }
+
+    /// One index read while the Mail Wisp opened is still running (so it counts as live), then
+    /// waits for that read to finish.
+    private func readIndexWhileMailRuns() async {
+        sync()
+        let doneBy = Date().addingTimeInterval(120)
+        repeat {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            scanLock.lock(); let busy = headersInFlight; scanLock.unlock()
+            if !busy { return }
+        } while Date() < doneBy
     }
 
     /// Quits a Mail Wisp opened, politely (`terminate`, never forced), unless the person has since
@@ -1072,8 +1110,10 @@ final class MailReader {
                     // A stale index cannot reintroduce disabled-account rows after
                     // this process observed zero enabled accounts. Unknown later
                     // metadata preserves that boundary until a known nonempty scan.
+                    // Mail running (unscriptable) is fetching into the index: a live read.
+                    let live = self.mailAppOpen()
                     if captured.lastKnownEmpty {
-                        self.postEmptyAccounts(readSource: "local_index")
+                        self.postEmptyAccounts(readSource: live ? "mail_fetch" : "local_index")
                         return
                     }
                     let generation = captured.generation
@@ -1090,11 +1130,11 @@ final class MailReader {
                         // This history replaces whatever an AppleScript walk
                         // last posted, so the next walk must not stitch onto it.
                         self.post(headers: headers, available: true, reason: "",
-                                  readSource: "local_index", history: history,
+                                  readSource: live ? "mail_fetch" : "local_index", history: history,
                                   historyGeneration: generation)
                         // The index holds only what Mail fetched before it closed: open it
                         // hidden for a live read once none is fresh (MailRecache).
-                        self.considerOpeningMail(failure: nil)
+                        if !live { self.considerOpeningMail(failure: nil) }
                     } else {
                         let failure = Permissions.unaskedAutomation(
                             app: "Mail", appRunning: self.mailAppOpen(),
@@ -1568,7 +1608,7 @@ final class MailReader {
         // The launch header read has reached a terminal state, so the history
         // walk may start (see syncHistory).
         markHeadersCompleted()
-        if available { noteMailRead(live: readSource == "mail_app") }
+        if available { noteMailRead(live: readSource == "mail_app" || readSource == "mail_fetch") }
         let url = WispClient.baseURL.appendingPathComponent("assistant/sync/emails")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"

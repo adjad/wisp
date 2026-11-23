@@ -243,6 +243,13 @@ _HISTORY_MAX_AGE = 2400.0
 _EXTERNAL_PART_MAX_AGE = {"headers": 600.0, "raw": 1800.0, "history": 3600.0}
 _native_headers_at = 0.0
 _native_source = ""
+# A live read: through Mail.app ("mail_app"), or of Mail's index while Mail runs and fetches into it
+# ("mail_fetch", Full Disk Access without Automation). Wisp opens a closed Mail for one at most every
+# 30 minutes (hourly off-hours), so a live read vouches for its accounts for _MAIL_LIVE_MAX_AGE, even
+# after later reads of the closed index.
+_LIVE_MAIL_SOURCES = frozenset({"mail_app", "mail_fetch"})
+_MAIL_LIVE_MAX_AGE = 65 * 60.0
+_mail_live_at = 0.0
 # Only a cache predating both provenance files may inherit display-file age.
 # A modern composed cache (even with a fresh mtime) cannot attest its source.
 _native_raw_at = (_raw_emails_at if _cache_file_exists("email_mail_raw") is False
@@ -433,7 +440,7 @@ def _provider_selected(address: str, item: dict, part: str) -> bool:
     covered = [record for record in records if record.strip()
                and _covered_source(*_source_identity(record, raw=part == "raw"), address, item)]
     expired = item.get("auth_expired")
-    if covered and _native_source == "mail_app" and native_stamp > stamp and (expired or not item.get(part + "_error")):
+    if covered and _native_source in _LIVE_MAIL_SOURCES and native_stamp > stamp and (expired or not item.get(part + "_error")):
         return False
     # Mail closed, or not yet scriptable: when the index was read says nothing,
     # because it only moves while Mail runs. So the mail itself decides.
@@ -629,7 +636,7 @@ def set_email_availability(available: bool, reason: str = "",
     """Record whether the Swift MailReader's last sync could read the inbox,
     and the reader's reason_kind when it named one."""
     global _email_available, _email_reason, _email_sync_pending, _email_read_source, _email_reason_kind
-    global _native_headers_at, _native_source, _mail_automation_refused
+    global _native_headers_at, _native_source, _mail_automation_refused, _mail_live_at
     with _raw_snapshot_lock:
         changed = _email_available is not available or _raw_availability.token() is None
         if changed:
@@ -639,13 +646,15 @@ def set_email_availability(available: bool, reason: str = "",
         kind = str(reason_kind or "").strip()
         _email_reason_kind = kind if re.fullmatch(r"[a-z_]{1,40}", kind) else ""
         _email_sync_pending = syncing and available
-        _email_read_source = read_source if read_source in {"local_index", "mail_app"} else ""
+        _email_read_source = read_source if read_source in {"local_index"} | _LIVE_MAIL_SOURCES else ""
         if available is False and _email_reason_kind == "mail_automation":
             _mail_automation_refused = True
         elif available and _email_read_source == "mail_app":
             _mail_automation_refused = False
         if available and not syncing:
             _native_headers_at = time.time()
+            if _email_read_source in _LIVE_MAIL_SOURCES:
+                _mail_live_at = _native_headers_at
             _native_source = _email_read_source
             if _external_accounts:
                 _recompose_all()
@@ -756,7 +765,7 @@ def email_source_details(account: str | None = None, *, part: str = "headers") -
     for label in observed.values():
         # Mail.app read completion still cannot prove a server fetch completed.
         result.append({"account": label, "source": _email_read_source or _native_source or "saved_cache",
-                       "fresh": bool(_email_read_source == "mail_app" and _email_available and
+                       "fresh": bool(_email_read_source in _LIVE_MAIL_SOURCES and _email_available and
                                      0 <= now - native_stamp <= (
                                          _HISTORY_MAX_AGE if part == "history" else _EXTERNAL_MAX_AGE)),
                        "last_success": native_stamp or None,
@@ -859,7 +868,7 @@ def _open_mail_hint(address: str) -> str:
     macOS has refused Wisp Mail. macOS can't say so while Mail is closed, so before
     the first refusal this is "can", not a promise."""
     item = _external_accounts.get(address) or {}
-    if not item.get("auth_expired") or _email_read_source == "mail_app" or _mail_automation_refused:
+    if not item.get("auth_expired") or _email_read_source in _LIVE_MAIL_SOURCES or _mail_automation_refused:
         return ""
     if not any(_covered_source(row["name"], row["id"], address, item) for row in native_email_accounts()):
         return ""

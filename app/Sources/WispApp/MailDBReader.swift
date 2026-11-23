@@ -36,6 +36,12 @@ final class MailDBReader {
             ?? (NSHomeDirectory() as NSString).appendingPathComponent("Library/Mail")
     }
 
+    /// The index and its write-ahead log: their modification times show Mail writing (fetching).
+    func indexFiles() -> [String] {
+        guard let path = indexPath ?? envelopeIndexPath() else { return [] }
+        return [path, path + "-wal"]
+    }
+
     /// Why Mail can't be read while it is closed, for MailReader's diagnostics.
     /// Called only after the index read failed. `kind` is the `reason_kind`
     /// the Brief keys its button on ("" when no setting would help).

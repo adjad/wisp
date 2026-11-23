@@ -789,3 +789,46 @@ def test_no_mail_account_check_fails_closed(monkeypatch):
         raise RuntimeError("publication busy")
     monkeypatch.setattr(E, "email_reason_kind", busy)
     assert W._no_mail_account() is True, "an unreadable flag is not an all-clear"
+
+
+def test_a_live_index_read_while_mail_runs_vouches_like_mail_app(monkeypatch, tmp_path):
+    """Full Disk Access without Automation: Wisp reads Mail's index while Mail runs and
+    fetches ("mail_fetch"). That counts as a live check of the account."""
+    from service.proactive import cycle
+    now = 1_790_000_000.0
+    E = _google_accounts(monkeypatch, tmp_path, now, fresh=[], stale=["work@gmail.com"])
+    _mail_app(monkeypatch, E, now, _h2("work@gmail.com", "UUID-W"))
+    monkeypatch.setattr(E, "_email_read_source", "mail_fetch")
+    assert cycle.google_mail_status(now) == ([], [], {})
+
+
+def test_the_closed_index_vouches_for_an_hour_after_a_live_read(monkeypatch, tmp_path):
+    """Wisp opens a closed Mail for a live read at most every 30 minutes (hourly off-hours),
+    so between those, the closed index Mail fetched into still counts, for 65 minutes."""
+    from service.proactive import cycle
+    now = 1_790_000_000.0
+    E = _google_accounts(monkeypatch, tmp_path, now, fresh=[], stale=["work@gmail.com"])
+    _mail_app(monkeypatch, E, now, _h2("work@gmail.com", "UUID-W"))
+    monkeypatch.setattr(E, "_email_read_source", "local_index")
+    monkeypatch.setattr(E, "_mail_live_at", 0.0)
+    assert cycle.google_mail_status(now)[1] == ["work@gmail.com"], "never a live read: unchecked"
+    monkeypatch.setattr(E, "_mail_live_at", now - 50 * 60)
+    assert cycle.google_mail_status(now) == ([], [], {}), "live read 50 min ago: checked"
+    monkeypatch.setattr(E, "_mail_live_at", now - 70 * 60)
+    assert cycle.google_mail_status(now)[1] == ["work@gmail.com"], "live read 70 min ago: unchecked"
+
+
+def test_set_email_availability_records_the_last_live_read(monkeypatch):
+    from service.tools import email_tools as E
+    monkeypatch.setattr(E, "_mail_live_at", 0.0)
+    monkeypatch.setattr(E, "_external_accounts", {})
+    monkeypatch.setattr(E, "_save_email_sources", lambda: None)
+    for name in ("_email_available", "_email_reason", "_email_sync_pending", "_email_read_source",
+                 "_email_reason_kind", "_native_headers_at", "_native_source", "_mail_automation_refused"):
+        monkeypatch.setattr(E, name, getattr(E, name))   # restored after the test
+    E.set_email_availability(True, read_source="local_index")
+    assert E._email_read_source == "local_index" and E._mail_live_at == 0.0
+    E.set_email_availability(True, read_source="mail_fetch")
+    assert E._email_read_source == "mail_fetch" and E._mail_live_at > 0
+    E.set_email_availability(True, read_source="something_else")
+    assert E._email_read_source == ""

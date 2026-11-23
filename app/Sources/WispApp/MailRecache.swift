@@ -3,11 +3,13 @@ import Foundation
 /// When Google isn't covering mail (no Gmail account connected, or its sync is failing because the
 /// Mac is offline or the sign-in expired), Wisp makes sure Mail.app's mail is read:
 ///
-///   (a) Mail is open → read it through AppleScript, as always;
-///   (b) Mail is closed and Full Disk Access is on → read the Envelope Index, without opening Mail;
-///   (c) Mail Automation is ALREADY allowed and no live read is fresh → open Mail hidden (no
-///       activation, not in recent items), wait until it answers, then run the header, raw and
-///       history reads. This runs after a good index read too.
+///   (a) Mail is open and Automation allowed → read it through AppleScript, as always;
+///   (b) otherwise, with Full Disk Access → read the Envelope Index (a live read while Mail runs,
+///       since it is fetching into it: "mail_fetch");
+///   (c) no live read is fresh → open Mail hidden (no activation, not in recent items; needs no
+///       permission). With Automation: wait until it answers, check for new mail, then run the
+///       header, raw and history reads. Without it but with the index: wait until Mail stops writing
+///       its index, then read the index. This runs after a good index read too.
 ///
 /// The index only moves while Mail runs and fetches: closed, Mail downloads nothing, so the index
 /// holds the mail as of Mail's last run. Unless Google covers mail, a read of it is never fresh on
@@ -121,6 +123,15 @@ enum MailRecache {
         return true
     }
 
+    /// Without Automation, Mail's index stands for its fetch: wait at least this long after opening…
+    static let indexMinWait: TimeInterval = 30
+    /// …and until the index hasn't changed for this long.
+    static let indexQuietFor: TimeInterval = 20
+
+    static func indexSettled(openedAt: Date, lastChange: Date, now: Date) -> Bool {
+        now.timeIntervalSince(openedAt) >= indexMinWait && now.timeIntervalSince(lastChange) >= indexQuietFor
+    }
+
     /// Mail has finished fetching: its background activity count read 0 for the last
     /// fetchIdlePolls polls (newest last). An unreadable poll (nil) isn't idle.
     static func fetchSettled(_ polls: [Int?]) -> Bool {
@@ -139,7 +150,8 @@ enum MailRecache {
         if f.mailOpen && f.automationAllowed { return .mailApp }
         // Google covering mail: the index (when read) is all Mail needs to add.
         if f.gmailCovers && !f.gmailUnchecked { return f.indexRead ? .envelopeIndex : .none(.gmailCovers) }
-        if !f.automationAllowed { return .none(.automationNotAllowed) }
+        // Opening Mail needs no permission; reading it needs Automation or the index (Full Disk Access).
+        if !f.automationAllowed && !f.indexRead { return .none(.automationNotAllowed) }
         if !f.mailInstalled { return .none(.mailMissing) }
         // The index is never fresh on its own (Mail fetches only while it runs), so with an index
         // read, or an unchecked Google account, only a live read counts.

@@ -44,7 +44,9 @@ struct MailRecacheChecks {
         f = base; f.indexRead = true; f.userQuitAt = ago(14)
         check(M.route(f, now: now) == .none(.userQuitRecently), "index read, person quit 14 min ago: leave it")
         f = base; f.indexRead = true; f.automationAllowed = false
-        check(M.route(f, now: now) == .none(.automationNotAllowed), "index read, Automation not allowed: never asks")
+        check(M.route(f, now: now) == .openMail, "index read, no Automation: open Mail hidden, read the index")
+        f = base; f.indexRead = true; f.automationAllowed = false; f.lastLiveRead = ago(10)
+        check(M.route(f, now: now) == .none(.cacheFresh), "no Automation, live index read 10 min ago: fresh")
         f = base; f.indexRead = true; f.gmailCovers = true
         check(M.route(f, now: now) == .envelopeIndex, "the index is read even when Google covers mail")
         check(M.route(base, now: now) == .openMail, "(c) neither, Google off, allowed: open Mail")
@@ -76,7 +78,9 @@ struct MailRecacheChecks {
         u.lastLiveRead = ago(31)
         check(M.route(u, now: now) == .openMail, "live read 31 min ago: stale")
         u = base; u.indexRead = true; u.gmailUnchecked = true; u.automationAllowed = false
-        check(M.route(u, now: now) == .none(.automationNotAllowed), "unchecked but Automation not allowed: none")
+        check(M.route(u, now: now) == .openMail, "unchecked, no Automation but the index: open Mail")
+        u = base; u.gmailUnchecked = true; u.automationAllowed = false
+        check(M.route(u, now: now) == .none(.automationNotAllowed), "unchecked, no Automation, no index: none")
         u = base; u.indexRead = true; u.gmailUnchecked = true; u.mailInstalled = false
         check(M.route(u, now: now) == .none(.mailMissing), "unchecked but no Mail app: none")
         u = base; u.indexRead = true; u.gmailUnchecked = true; u.lastOpenedByWisp = ago(29)
@@ -167,6 +171,13 @@ struct MailRecacheChecks {
         check(!M.fetchSettled([0, nil]), "an unreadable poll isn't idle")
         check(M.fetchWaitOver([nil, nil, nil]), "count never readable: read anyway")
         check(!M.fetchWaitOver([nil, 2, nil]), "fetching, one poll unreadable: keep waiting")
+        let t0 = now
+        check(!M.indexSettled(openedAt: t0, lastChange: .distantPast, now: t0.addingTimeInterval(25)), "under 30 s: wait")
+        check(M.indexSettled(openedAt: t0, lastChange: .distantPast, now: t0.addingTimeInterval(30)), "30 s, index untouched: read")
+        check(!M.indexSettled(openedAt: t0, lastChange: t0.addingTimeInterval(50), now: t0.addingTimeInterval(60)),
+              "index written 10 s ago: still fetching")
+        check(M.indexSettled(openedAt: t0, lastChange: t0.addingTimeInterval(50), now: t0.addingTimeInterval(70)),
+              "index quiet 20 s: read")
         check(M.fetchTimeout == 300 && M.fetchIdlePolls == 2, "5-minute fetch cap, two idle polls")
 
         // The limits and the words Brief shows.

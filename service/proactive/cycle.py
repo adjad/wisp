@@ -1772,7 +1772,14 @@ def _mail_app_read_accounts(now: float) -> set[tuple[str, str]]:
     try:
         from service.tools import email_tools as mail
         native_at = mail._source_receipt(mail._native_headers_at)
-        if not (mail._email_available is True and mail._email_read_source == "mail_app" and native_at
+        # The current snapshot is recent, and either is itself a live read, or is the closed index
+        # Mail fetched into during a live read within _MAIL_LIVE_MAX_AGE (Wisp opens Mail for one
+        # at most every 30 minutes, hourly off-hours).
+        live_at = mail._mail_live_at
+        live = (mail._email_read_source in mail._LIVE_MAIL_SOURCES
+                or (mail._email_read_source == "local_index" and live_at
+                    and 0 <= now - live_at <= mail._MAIL_LIVE_MAX_AGE))
+        if not (mail._email_available is True and live and native_at
                 and 0 <= now - native_at <= mail._EXTERNAL_MAX_AGE):
             return set()
         text = mail._swift_headers
