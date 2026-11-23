@@ -308,19 +308,67 @@ async def behavior_weekly() -> dict[str, Any]:
     return await _runtime().acall("weekly")
 
 
+async def _signals_payload(runtime, reply: dict) -> dict:
+    """The signal settings plus the writing-profile switch, which lives beside them (its own
+    switch, default off, so toggling it never rotates the source epoch or restarts a scan)."""
+    settings = dict(reply.get("settings") or {})
+    settings["writing_profile"] = bool(await runtime.acall("writing_enabled"))
+    return {**reply, "settings": settings}
+
+
 @router.get("/signals")
 async def behavior_signals():
     runtime = _runtime()
-    return {**(await runtime.acall("signal_settings")), "activity": await runtime.acall("activity_summary"),
+    reply = await _signals_payload(runtime, await runtime.acall("signal_settings"))
+    return {**reply, "activity": await runtime.acall("activity_summary"),
             "seed": await asyncio.to_thread(runtime.seed_progress)}
 
 
 @router.put("/signals")
 async def behavior_signal_settings(body: dict[str, Any]):
+    runtime = _runtime()
+    changes = dict(_body(body))
+    writing = changes.pop("writing_profile", None) if "writing_profile" in changes else None
+    if "writing_profile" in _body(body) and type(writing) is not bool:
+        raise HTTPException(status_code=422, detail="Source preferences must be true or false")
     try:
-        return await _runtime().acall("configure_signals", _body(body))
+        if "writing_profile" in _body(body):
+            await runtime.acall("configure_writing", writing)
+            runtime.writing_changed()
+        reply = (await runtime.acall("configure_signals", changes) if changes
+                 else await runtime.acall("signal_settings"))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return await _signals_payload(runtime, reply)
+
+
+# Only a tab being opened is reported by the app; tool use, approvals and answers are counted
+# by the service itself. Counts only: the detail is a lowercase tab id.
+_APP_USAGE_EVENTS = frozenset({"tab_opened"})
+
+
+@router.post("/usage")
+async def behavior_usage(body: dict[str, Any] | None = None) -> dict[str, Any]:
+    from service.behavior.usage import clean_detail
+    data = _body(body)
+    event = data.get("event")
+    detail = data.get("detail")
+    if (event not in _APP_USAGE_EVENTS or not isinstance(detail, str) or detail != detail.strip().lower()
+            or clean_detail(event, detail) is None):
+        raise HTTPException(status_code=422, detail="event must be tab_opened with a lowercase tab id")
+    _runtime().record_usage(event, str(data.get("detail")))
+    return {"ok": True}
+
+
+@router.post("/reminder-facts")
+async def behavior_reminder_facts(body: dict[str, Any]) -> dict[str, Any]:
+    """Dates and flags of reminders (no titles), from the app's Reminders reader."""
+    data = _body(body)
+    rows = data.get("reminders")
+    if not isinstance(rows, list) or len(rows) > 2000:
+        raise HTTPException(status_code=422, detail="reminders must be a list of at most 2000 rows")
+    stored = await _runtime().acall("observe_reminder_facts", rows, data.get("snapshot_at"))
+    return {"ok": True, "stored": stored}
 
 
 @router.get("/activity/lease")

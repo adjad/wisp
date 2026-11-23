@@ -25,7 +25,8 @@ learning is treated as **off** (fail closed) until the file is fixed;
 
 **See what Wisp learned** (Settings -> Privacy & Access, or "What Wisp learned" in
 the Chat sidebar) opens a window listing every learned routine, grouped as
-Routines, People, Your days, Cancelling and moving, and How you use Wisp. Each
+Routines, People, Your days, Cancelling and moving, How you write, Your habits
+and How you use Wisp. Each
 row shows its sentence, a strength label from its confidence (Strong 0.6 or
 more, Likely 0.35 or more, otherwise Emerging), its counts ("6 of the last 15
 times") and when it was last seen. "That's right" confirms a routine; "Not
@@ -153,6 +154,15 @@ hours, and when you switch learning off.
 | `habit_protection` | a scheduled personal habit with confidence 0.4 or more and at least 3 other events booked over its usual calendar window | "Overlapping calendar bookings moved or were removed in 4 of 5 cases"; this does not establish intention |
 | `day_shape` | at least 5 weekdays (4 weekend days) of calendar records retained on the schedule | "The first scheduled commitment is usually around 6:45am and the last ends around 3:30pm; the midday calendar gap is usually 11am–2pm"; gaps do not prove availability or a lunch break |
 | `wisp_usage` | the same coarse ask topic at least 4 times in a recurring window | "You check your brief with Wisp around 8:15am on weekdays", "You look things up with Wisp around 5pm on Tue and Thu" |
+| `writing_style` (subject `email`, `message`, `note`, `reminder`) | the writing profile switch on and at least 20 measured samples in that channel (below that the channel shows nothing, not "0%"). Phrases need 3 uses and at least one in 20 messages; the contraction share needs 5 contractible verbs. Only the newest 1,500 samples per channel count. Confidence is n / (n + 30) | "Your sent emails (42 emails): About 61 words in 4 sentences each; 93% of sentences start with a capital; 8% have an exclamation mark, 31% a question mark; emoji in 0%; you open with “Hi” (30×); you close with “Thanks” (24×)." |
+| `send_timing` (subject `email`, `message`, `note`) | the writing profile switch on; at least 20 events (sent emails, sent messages, or notes by last edit) spread over at least 14 days, with the busiest 3-hour weekday window holding 40% or more of the weekday ones | "Your sent emails cluster on weekdays between 9am and 12pm (62% of 48 on weekdays); Tuesday is the busiest day (24%)" |
+| `reminder_habit` (subject `lead_time`, `completion_lag`, `overdue`, `repeating`) | the writing profile switch on; at least 10 reminders with the dates each subject needs. `lead_time` is the median gap from creation to due time, `completion_lag` the median gap from due to completion and the share done by the due time, `overdue` the share of reminders that came due in the last 8 weeks (more than an hour ago) and are still open, `repeating` how many reminders repeat and how many notes belong to a dated series (10 or more notes). Confidence is n / (n + 20) | "You usually set a reminder about 2 days before it is due, mostly in the evening." |
+| `usage_stat` (subject `busiest_hours`, `tabs`, `tools`, `approvals`, `local_cloud`, `response_time`) | counters from the last 4 weeks, collected while learning is on (the writing switch is not needed): `busiest_hours` needs 30 uses (asks plus tab opens) with a 2-hour window holding 30% or more; `tabs`, `tools` and `approvals` need 10 events; `local_cloud` needs 20 asks; `response_time` needs 20 timed asks on a route. Confidence is a Wilson bound where there is a share, otherwise n / (n + 20) | "You use Wisp most between 8am and 10am (41% of 120 uses in the last four weeks)." |
+
+The last four kinds (`writing_style`, `send_timing`, `reminder_habit`,
+`usage_stat`) carry `stats.evidence_label` (for example "from 42 sent emails"),
+which the Learned window shows instead of "N of the last M times". They are
+described under [Writing, habits and usage](#writing-habits-and-usage).
 
 A pattern's `status` is `active`, `confirmed` or `rejected`. The user's verdict
 survives re-mining (pattern ids use a coarse window key on purpose). Rejected
@@ -229,11 +239,119 @@ them as certain facts". It is cached 60 s and never blocks the event loop.
 It rides along wherever remembered facts do, including remote inference
 ([REMOTE_INFERENCE.md](REMOTE_INFERENCE.md)).
 
+## Writing, habits and usage
+
+Three additions describe how the user writes, when they send and finish things,
+and how they use Wisp. **No model is involved in extracting any of it**: every
+number is a count, a ratio, a median or a regular expression, and every sentence
+the Learned window shows is composed from those numbers in code
+(`service/behavior/writing.py`, `habits.py`, `usage.py`).
+
+### The writing profile switch
+
+Learning how the user writes has its **own switch**, `writing_profile`, **off by
+default**. It is read and set through `/behavior/signals` (`PUT
+/behavior/signals {"writing_profile": bool}`, shown in `settings.writing_profile`)
+and appears in the Learned window as "Learn how I write from sent mail, messages,
+notes and reminder titles". It does not rotate the source epoch and does not
+restart a history scan, because it is not a history source. **Turning it off
+erases what it learned**: the stored measurements, the sent-email and note timing
+observations, the writing and send-timing patterns, and the per-database salt.
+It also needs "Learn my routines" on; with learning off nothing is read.
+
+### What is read, and what is kept
+
+Text is read **in memory only**, from four sources, a few items per pass, and
+dropped as soon as it is measured:
+
+| Channel | Source | Needs |
+| --- | --- | --- |
+| `email` | the bodies of sent email, asked from the app one at a time (at most 25 new per pass, 45 s per pass, from the last 200 days) through the Mail index and body requests the Mail Memory reader already uses | Full Disk Access, which that reader already asks for |
+| `message` | the user's sent iMessages and texts, from the cached Messages feed the engine already syncs for message rhythm (it already carries the outgoing text) | nothing new |
+| `note` | note title and body from the cached Notes snapshot | the existing Notes grant |
+| `reminder` | reminder titles from the commitments store | the existing Reminders grant |
+
+Quoted replies, forwards, mobile footers and signatures are stripped before
+anything is counted, and links and addresses are removed. What is stored per
+message is **a hashed key** (so it is not measured twice), its time and a small
+dict of **integers**: characters, words, sentences, emoji, capitalized and
+lowercase sentence starts, all-lowercase, an exclamation mark, a question mark,
+an ellipsis, contractions and expanded forms. Only two strings can be kept: one
+greeting and one sign-off, and only when they match a **closed list** of common
+ones ("Hi", "Hello", "Thanks", "Best regards", ...). A name, an address or a
+sentence cannot become a phrase. Notes also keep one flag, whether the title
+(digits and dates stripped) repeats across at least three notes; the title is
+not kept. Per channel the newest 1,500 samples are kept, and everything ages out
+at 180 days like observations.
+
+Two thresholds keep the output honest: a channel with **under 20 samples shows
+nothing**, and a top phrase appears only after **3 uses**.
+
+No new permission is asked. Sent email needs Full Disk Access through the
+existing Mail Memory reader, messages reuse the Messages sync, and Notes and
+Reminders reuse their current grants. Reminders add two **new fields the app
+sends**, the creation date and whether the reminder repeats, with the due and
+completion times, to `POST /behavior/reminder-facts`: identifiers and dates, **no
+titles**. They are sent at most every 30 minutes, for every open reminder in all
+lists plus those completed in the last 120 days, up to 2,000 rows, as a
+replace-set (an open reminder missing from the snapshot is dropped).
+
+### Send timing and reminder habits
+
+`send_timing` and `reminder_habit` come from metadata only: the times of sent
+emails (`email_out` observations: time only, subject empty, body never kept),
+sent messages, notes (by last edit) and the dates in `reminder_fact`
+observations (created, due, completed, repeating). They never see text. Their
+thresholds are in the pattern-kind table.
+
+### Usage counters
+
+`POST /behavior/usage {"event": "tab_opened", "detail": "<tab id>"}` is the only
+usage event the app sends (the lowercase tab id, once per tab switch). The
+service counts the rest itself: an ask (`local` or `cloud`, with how long it
+took), a tool run (the tool's name, never its arguments or result), an
+approval and a denial. Counters are **counter-only**: one row per day x hour x
+event x label, with a count and a summed duration. The label comes from a closed
+set (`ask`, `tab_opened`, `tool_used`, `approval`, `denial`; a tab id, a tool name,
+or `local`/`cloud`), never a prompt, a title or a path. They are kept **120 days**.
+They are collected while learning is on, whatever the writing switch says. The
+"Learn from my use" log (`~/.moe/use-log`) is a separate feature and is **not
+read** here.
+
+### Where it is used
+
+1. **Learned window.** Writing styles appear under "How you write", send timing
+   and reminder habits under "Your habits", and usage under "How you use Wisp",
+   each with "That's right" and "Not true" (the usual `POST /behavior/patterns/{id}`).
+   A writing style marked not true is left out of the style card.
+2. **Style card.** About **300 bytes** of measured advice for the email and
+   message channels ("Emails: short (~60 words), capitalized, uses contractions,
+   rarely uses !, no emoji, opens “Hi”, closes “Thanks”"), added only to a
+   prompt that **drafts** an email or a message (the Brief's reply draft; an Ask
+   turn that has a drafting tool), and **only when the model that will read it
+   runs on this Mac** (or the user's own node), like mail facts. It never goes
+   to a cloud model, not even under Cloud "Everything", and never while remote
+   inference is on. It is **not part of the 700-byte profile card**: the four new
+   kinds are excluded from the profile card, predictions, nudges and tool
+   answers, because those can reach a remote model.
+3. **Weekly usage report.** `GET /behavior/weekly` gains `usage` (`available`,
+   `start_date`, `end_date_exclusive`, `lines`, `note`): seven completed local
+   days against the four weeks before, in plain lines (questions asked, answered
+   on this Mac or by a cloud model, average response time, tabs, tools, approvals,
+   busiest hours). The comparison with earlier weeks shows only once counting began
+   at least five weeks ago; before that the report says so. The Learned window shows it under "How you used Wisp".
+
 ## Privacy: what it reads and where it goes
 
 - While it is on it reads Calendar events, Reminders, **Messages
   metadata** (direction, contact, time; never text), the topic label of the
   user's Wisp asks (never the text), and approvals/denials.
+- With the separate **writing profile** switch on (off by default), it also
+  reads the text of sent email, sent messages, notes and reminder titles **in
+  memory only**; it keeps integers and greetings and sign-offs from a closed list,
+  never the text. It reads reminder dates and flags (never titles), and counts
+  how the user uses Wisp (tab ids, tool names, local or cloud; never what was
+  asked). See [Writing, habits and usage](#writing-habits-and-usage).
 - Learned data lives in `<WISP_HOME>/behavior.db` (default `~/.moe/behavior.db`),
   next to `behavior_runtime.db` (delivered nudges and auto actions). Nothing
   else leaves the Mac, except phrasing facts (below).
@@ -247,7 +365,9 @@ It rides along wherever remembered facts do, including remote inference
   configured server.
 - **Forget what Wisp learned** (Settings, or `DELETE /behavior/data`): stops the
   runtime, closes its connections, deletes `behavior.db`, `behavior_runtime.db`
-  (with `-wal`/`-shm`) and the profile card cache, and drops pending behavior
+  (with `-wal`/`-shm`) and the profile card cache (everything the writing
+  profile and usage counters stored lives in `behavior.db`, and the writing switch
+  returns to off), and drops pending behavior
   nudge events. It also removes the reminders and holds Wisp itself created on
   its own schedule that are still active and exactly as Wisp made them
   (same identity record Undo uses). Anything you edited, moved, completed or
@@ -268,6 +388,10 @@ phrasing facts (event titles, contact names) only if you set
 `WISP_BEHAVIOR_PHRASER=1`; the phraser is off by default under remote
 inference.
 
+The writing, send-timing, reminder-habit and usage patterns are never part of
+what a remote model receives: they are not in the profile card, and the style
+card is added only for a model on this Mac.
+
 ## Switches
 
 Precedence, highest first: `WISP_BEHAVIOR` in the launch environment, then the
@@ -276,6 +400,7 @@ saved Settings choice, then the default (on).
 | Switch | Meaning |
 | --- | --- |
 | Settings -> "Learn my routines" | Saved as `behavior.enabled` (default true). Live; no restart. |
+| Learned window -> "Learn how I write from sent mail, messages, notes and reminder titles" | `writing_profile` through `/behavior/signals`. Default **off**, separate from "Learn my routines" (which must also be on). Does not rotate the source epoch. Turning it off erases what it learned. Usage counters are not behind it. |
 | `WISP_BEHAVIOR=1` | Forced on, whatever Settings says. |
 | `WISP_BEHAVIOR=0` | Forced off (any other non-empty value also means off). Empty or unset defers to Settings. |
 | `WISP_BEHAVIOR_PHRASER=0` | Template text, no phrasing calls. |
@@ -301,7 +426,10 @@ Mac backend (`service/behavior_api.py`, `127.0.0.1:8765`). Every route answers
 | `POST /behavior/run` | ingest + mine + nudge + deliver now |
 | `GET /behavior/patterns?status=&kind=`, `POST /behavior/patterns/{id}` `{"status"}` | list, confirm, reject, reactivate |
 | `GET /behavior/predict?day=today\|tomorrow\|next24h` | predictions |
-| `GET /behavior/weekly` | source-grounded weekly measurements and comparison coverage |
+| `GET /behavior/weekly` | source-grounded weekly measurements and comparison coverage, plus `usage` (counter-only report: `available`, `start_date`, `end_date_exclusive`, `lines`, `note`) |
+| `GET /behavior/signals`, `PUT /behavior/signals` | source switches; `settings.writing_profile` (bool, default false) is read and set here without rotating the source epoch |
+| `POST /behavior/usage` `{"event": "tab_opened", "detail": "<tab id>"}` | count one tab opening (detail `^[a-z0-9_]{1,24}$`); 422 for any other event, 409 while learning is off |
+| `POST /behavior/reminder-facts` `{"snapshot_at", "reminders": [{"id", "created_ts", "due_ts", "completed_ts", "repeating"}]}` | reminder dates and flags, no titles, at most 2,000 rows; returns `stored` |
 | `GET /behavior/history`, `GET /behavior/history/{source}/next` | native history progress and the next exact source range |
 | `POST /behavior/history/{source}/batch` | validated append-only page and transactional checkpoint |
 | `POST /behavior/history/{source}/control` `{"command": "pause\|resume\|restart"}` | pause, resume or begin a new full source scan |
@@ -336,6 +464,8 @@ WISP_HOME=$(mktemp -d) python -m pytest -q tests/test_behavior_*.py
 | `test_behavior_predict_nudges.py` | predictions, budget, quiet hours, cooldown, dedupe, mute, undo |
 | `test_behavior_phraser.py` | `OpenAIPhraser` contract, fail-closed behavior |
 | `test_behavior_runtime.py`, `test_behavior_api.py` | ingest to hub, auto actions and Undo, endpoints |
+| `test_behavior_writing_profile.py` | measurements, closed phrase lists, quote and signature stripping, the 20-sample and 3-use thresholds, send-timing, reminder-habit and usage patterns, the style card size, erase on switch-off (synthetic messages, disposable databases) |
+| `test_behavior_writing_runtime.py` | the writing switch in `/behavior/signals`, ingest of messages, notes, reminders and sent email, `/behavior/usage`, `/behavior/reminder-facts`, the weekly `usage` block, and the style card staying out of cloud prompts |
 | `test_behavior_privacy.py` | forget, retention while off, the safety policy on writes, remote-mode wording, fail-closed settings, in-flight switch-off |
 | `test_behavior_tools.py`, `test_behavior_routing.py` | tools and router phrases |
 | `test_behavior_boundary.py` | `service.behavior` stays portable |

@@ -30,6 +30,8 @@ OBSERVATION_KINDS = (
     "note",               # a note (subject = title); ts = modified time
     "message_in",         # incoming message; subject = contact display name
     "message_out",        # outgoing message; subject = contact display name
+    "email_out",          # a sent email (time only; subject stays empty, the body is never kept)
+    "reminder_fact",      # a reminder's dates and flags, no title (attrs: created_ts, due_ts, completed_ts, repeating)
     "wisp_ask",           # the user asked Wisp something; subject = route/tool/topic
     "approval",           # user approved a Wisp action; subject = tool
     "denial",             # user denied a Wisp action; subject = tool
@@ -40,7 +42,7 @@ ObservationKind = Literal[
     "device_activity", "activity_bin",
     "event", "event_cancelled", "event_moved", "event_declined", "reminder",
     "reminder_done", "reminder_dismissed", "note", "message_in", "message_out",
-    "wisp_ask", "approval", "denial", "nudge_feedback",
+    "email_out", "reminder_fact", "wisp_ask", "approval", "denial", "nudge_feedback",
 ]
 
 # Categories the categorizer may assign (fixed list; an LLM may only pick from it).
@@ -86,7 +88,17 @@ PATTERN_KINDS = (
     "habit_protection",   # what happens to events that collide with a habit
     "day_shape",          # first/last commitment, lunch window
     "wisp_usage",         # what the user asks Wisp, and when
+    "writing_style",      # numbers about how the user writes, per channel (service/behavior/writing.py)
+    "send_timing",        # when the user sends email, messages and edits notes (hour x weekday)
+    "reminder_habit",     # reminder lead time, completion lag, overdue rate, repeating
+    "usage_stat",         # counter-only usage: busiest hours, tabs, tools, local vs cloud, response time
 )
+
+# Kinds that describe the user's own writing and use of the app. They are shown in
+# the Learned window and feed the style card / weekly report only: never the
+# always-on profile card, predictions, nudges or tool answers, all of which can
+# reach a remote model.
+PROFILE_ONLY_KINDS = frozenset({"writing_style", "send_timing", "reminder_habit", "usage_stat"})
 
 PatternStatus = Literal["active", "confirmed", "rejected"]
 

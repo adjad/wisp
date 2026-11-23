@@ -272,6 +272,15 @@ def prepare_publication_witness(snapshot) -> Witness | None:
             expires_monotonic=_publication_expires_monotonic))
 
 
+def parsed_notes() -> list[dict]:
+    """The cached notes as ``{ts, title, folder, body}`` dicts; empty once the cache has expired.
+
+    A plain read for in-memory measurement (the writing profile): it issues no publication
+    snapshot and does not touch the Notes receipt or preparation slot."""
+    _purge_if_expired()
+    return _parse()
+
+
 def _parse() -> list[dict]:
     out: list[dict] = []
     for record in _notes.split(_RS):

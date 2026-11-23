@@ -20,6 +20,8 @@ struct LearnedPattern: Identifiable, Equatable {
     let confidence: Double
     let lastSeen: Double?
     let status: String
+    /// Python-composed evidence such as "from 42 sent emails" (stats.evidence_label).
+    let evidenceLabel: String
 
     init?(_ d: [String: Any]) {
         guard let id = d["id"] as? String, let kind = d["kind"] as? String,
@@ -32,10 +34,14 @@ struct LearnedPattern: Identifiable, Equatable {
         confidence = (d["confidence"] as? NSNumber)?.doubleValue ?? 0
         lastSeen = (d["last_seen"] as? NSNumber)?.doubleValue
         status = d["status"] as? String ?? "active"
+        let label = (d["stats"] as? [String: Any])?["evidence_label"] as? String ?? ""
+        evidenceLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// "6 of the last 15 times". Counts are the evidence; no model wrote them.
+    /// Writing, habit and usage patterns carry their own label instead.
     var evidence: String {
+        if !evidenceLabel.isEmpty { return evidenceLabel }
         guard opportunities > 0 else { return "" }
         return "\(support) of the last \(opportunities) times"
     }
@@ -92,11 +98,27 @@ enum LearnedWeeklyValue {
         default: return "Cannot calculate from the available evidence."
         }
     }
+
+    /// The weekly "usage" block: Python-composed display lines, or its note when
+    /// unavailable. nil when the block is absent or carries nothing to show.
+    static func usageLines(_ usage: Any?) -> [String]? {
+        guard let usage = usage as? [String: Any] else { return nil }
+        let available = (usage["available"] as? NSNumber).map {
+            CFGetTypeID($0) == CFBooleanGetTypeID() ? $0.boolValue : false
+        } ?? false
+        if available {
+            let lines = (usage["lines"] as? [Any] ?? []).compactMap { $0 as? String }
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            return lines.isEmpty ? nil : lines
+        }
+        let note = (usage["note"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return note.isEmpty ? nil : [note]
+    }
 }
 
 /// Section order and wording. Kinds the app doesn't know yet land in "Other".
 enum LearnedSection: String, CaseIterable, Identifiable {
-    case routines, people, days, changes, wisp, other
+    case routines, people, days, writing, habits, changes, wisp, other
     var id: String { rawValue }
 
     static func of(_ kind: String) -> LearnedSection {
@@ -104,8 +126,10 @@ enum LearnedSection: String, CaseIterable, Identifiable {
         case "habit": return .routines
         case "contact_rhythm": return .people
         case "day_shape": return .days
+        case "writing_style": return .writing
+        case "send_timing", "reminder_habit": return .habits
         case "cancel_propensity", "habit_protection": return .changes
-        case "wisp_usage": return .wisp
+        case "wisp_usage", "usage_stat": return .wisp
         default: return .other
         }
     }
@@ -115,6 +139,8 @@ enum LearnedSection: String, CaseIterable, Identifiable {
         case .routines: return "Routines"
         case .people: return "People"
         case .days: return "Your days"
+        case .writing: return "How you write"
+        case .habits: return "Your habits"
         case .changes: return "Cancelling and moving"
         case .wisp: return "How you use Wisp"
         case .other: return "Other"
@@ -126,6 +152,8 @@ enum LearnedSection: String, CaseIterable, Identifiable {
         case .routines: return "repeat"
         case .people: return "person.2"
         case .days: return "calendar"
+        case .writing: return "pencil.line"
+        case .habits: return "clock"
         case .changes: return "arrow.uturn.backward"
         case .wisp: return "sparkles"
         case .other: return "circle.grid.2x2"
@@ -175,7 +203,7 @@ final class LearnedModel: ObservableObject {
     private static let historySaveError = "History status is unconfirmed. Refresh to check it before trying again."
     private static let signalNames: Set<String> = [
         "activity", "websites", "email", "messages", "notes", "calendar_context",
-        "reminders_context", "interpretation", "remote_analysis",
+        "reminders_context", "interpretation", "remote_analysis", "writing_profile",
     ]
 
     /// A missing or in-flight preference is unknown, never an off permission.
@@ -402,7 +430,7 @@ final class LearnedModel: ObservableObject {
     func setSignal(_ name: String, enabled: Bool) {
         guard Self.signalNames.contains(name) else { return }
         // Capture UI intent synchronously, before scheduling any async work.
-        // Keep at most one pending intent per source (nine), plus one in flight.
+        // Keep at most one pending intent per source (ten), plus one in flight.
         signalRevision += 1
         emailHistoryRevision += 1
         emailHistoryWrites = []
@@ -589,6 +617,12 @@ struct LearnedView: View {
                     }
                 }
             }
+            if let usage = LearnedWeeklyValue.usageLines(model.weekly["usage"]) {
+                Text("How you used Wisp").font(.subheadline.weight(.semibold)).padding(.top, 4)
+                ForEach(Array(usage.enumerated()), id: \.offset) { _, line in
+                    Text(line).font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Text("Unbooked calendar time does not establish focused work. Missing history is not zero activity.")
                 .font(.caption).foregroundStyle(.secondary)
         }
@@ -616,6 +650,9 @@ struct LearnedView: View {
             signalToggle("reminders_context", "Recorded reminder completion history")
             signalToggle("interpretation", "Interpret selected context with Wisp's configured model")
             signalToggle("remote_analysis", "Allow selected context to reach a configured remote model")
+            signalToggle("writing_profile", "Learn how I write from sent mail, messages, notes and reminder titles")
+            Text("Text is read in memory and never saved. Only counts and a few common greetings and sign-offs are kept, and they are used only for drafts written by a model on this Mac. Turning this off deletes what it learned.")
+                .font(.caption).foregroundStyle(.secondary)
             if model.signalValue("interpretation") == true {
                 Text("Initial context analysis").font(.subheadline.weight(.semibold))
                 let sources = model.seedProgress["sources"] as? [String: [String: Any]] ?? [:]

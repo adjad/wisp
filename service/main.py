@@ -2027,6 +2027,19 @@ async def chat(body: dict[str, Any]):
             await owned.aclose()
 
 
+def _count_ask(seconds: float) -> None:
+    """Usage counter: one answered turn, whether it ran on this Mac, and how long it took."""
+    try:
+        from service.assistant import behavior_runtime
+        from service.inference.remote_policy import cloud_everything_active
+        target = role_target(models_config().get("default_role", "agent"))
+        cloud = (remote_only_profile() is not None or cloud_everything_active()
+                 or not target.endpoint.managed)
+        behavior_runtime.record_usage("ask", "cloud" if cloud else "local", int(seconds * 1000))
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _profile_block(endpoint) -> str:
     """The user's own description of themselves (About you), for a prompt to
     `endpoint`, only where profile.may_send_to allows: Wisp's own on-Mac model,
@@ -3975,6 +3988,7 @@ async def agent(body: dict[str, Any]):
             if not test_mode:
                 from service.inference.use_log import note_user_message
                 note_user_message(sid, prompt)     # links to this conversation's last exchange
+            _turn_started = time.monotonic()
             try:
                 await runner_body()
             except asyncio.CancelledError:
@@ -3985,6 +3999,8 @@ async def agent(body: dict[str, Any]):
                 raise
             else:
                 trace.finish()
+                if not test_mode:
+                    _count_ask(time.monotonic() - _turn_started)
 
     async def stream():
         nonlocal trace

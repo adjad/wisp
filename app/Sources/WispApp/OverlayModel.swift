@@ -165,6 +165,7 @@ final class OverlayModel: ObservableObject {
     @Published var tab: NotchTab = .ask {
         didSet {
             guard tab != oldValue else { return }
+            client.postBehaviorUsage(event: "tab_opened", detail: tab.title.lowercased())
             // A research plan holds the prompt queue only while it is on screen.
             // Leaving the tab lets a question asked in Ask, or a brief, run.
             if oldValue == .research { releaseResearchDispatch() }

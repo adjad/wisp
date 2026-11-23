@@ -780,6 +780,9 @@ def mine_all(observations: Iterable[Observation], now: float, tz: tzinfo) -> lis
                 + mine_habit_protection(habits, slots, now)
                 + mine_day_shape(slots, ev_first, now_dt)
                 + mine_wisp_usage(asks, _first_day(by_kind["wisp_ask"], tz), now_dt))
+    # Send timing and reminder habits (metadata only); imported here because habits uses this module.
+    from service.behavior import habits
+    patterns += habits.mine_profile_habits(by_kind, now, tz)
     patterns.sort(key=lambda p: (p.kind, -p.confidence, p.id))
     from service.behavior.evidence import pattern_evidence
     return [pattern_evidence(p) for p in patterns]

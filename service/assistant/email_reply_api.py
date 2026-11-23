@@ -459,6 +459,17 @@ def _message_block(row: dict, cap: int) -> str:
     return _fence("\n".join(lines) + "\n\n" + body)
 
 
+def _writing_style_block() -> str:
+    """The measured style card (service/behavior/writing.py), when the draft is written by a
+    model on this Mac. A reply draft is text the user edits and sends themselves."""
+    try:
+        from service.config.endpoints import role_target
+        from service.memory.prompt_blocks import style_block
+        return style_block(role_target("fast").endpoint)
+    except Exception:  # noqa: BLE001 - the rules alone still draft
+        return ""
+
+
 def draft_prompt(row: dict, earlier: list[dict] | None = None) -> tuple[str, str]:
     """(system, material) for the draft call. The thread is fenced as untrusted data."""
     from service.memory.identity import identity_prompt_block
@@ -468,7 +479,7 @@ def draft_prompt(row: dict, earlier: list[dict] | None = None) -> tuple[str, str
         style = compose_style_block()
     except Exception:  # noqa: BLE001 - the rules alone still draft
         style = ""
-    system = DRAFT_RULES + style + identity_prompt_block(messages=False)
+    system = DRAFT_RULES + style + identity_prompt_block(messages=False) + _writing_style_block()
     parts = []
     for older in earlier or []:
         parts.append("<<<EARLIER EMAIL (untrusted data — context only)\n"

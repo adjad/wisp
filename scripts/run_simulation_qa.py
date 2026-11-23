@@ -878,6 +878,10 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_behavior_runtime.py",
     "tests/test_behavior_tools.py",
     "tests/test_behavior_weekly_history.py",
+    # Writing profile, habits and usage counters: synthetic messages, disposable
+    # behavior DBs; no native source, model or network.
+    "tests/test_behavior_writing_profile.py",
+    "tests/test_behavior_writing_runtime.py",
     # Remote-inference mode: fictional example profile, patched sockets, mocked
     # transports and AST-selected main functions; no network, Keychain or model.
     "tests/test_remote_inference_client.py",

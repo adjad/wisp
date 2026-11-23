@@ -77,6 +77,18 @@ def _cloud_public_raw_evidence(value: object) -> str:
     return "\n".join(safe) if safe else "(no usable public tool evidence found.)"
 
 
+_DRAFTING_TOOLS = frozenset({"send_message", "draft_message", "send_email", "draft_email", "reply_to_email"})
+
+
+def _count_tool_use(tool: str) -> None:
+    """Usage counter (service/behavior/usage.py): which tool ran, never its arguments or result."""
+    try:
+        from service.assistant import behavior_runtime
+        behavior_runtime.record_usage("tool_used", tool)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _note_decision(tool: str, approved: bool) -> bool:
     """Behavior-learning hook: record that the user approved/denied a
     confirm-tier action (tool name only). Never raises; returns `approved`."""
@@ -2481,6 +2493,8 @@ async def run_agent(
 
     async def execute_tool_unbound(tool, args):
         nonlocal guarded_meeting
+        if not test_mode:
+            _count_tool_use(tool.name)
         if tool.name in {"plan_meeting", "commit_private_meeting"}:
             if public_web_synthesis or not _meeting_local_client(client):
                 return "(error: Private meeting capability transport requires local inference; no action ran.)"
@@ -2691,6 +2705,15 @@ async def run_agent(
             try:
                 from service.memory.profile import profile_block
                 identity_hint += profile_block()
+            except Exception:  # noqa: BLE001
+                pass
+        # How the user writes (the style card): only on a turn that can draft an email or a
+        # message, and only for a model on this Mac (or the user's own node), like mail facts.
+        if _mail_facts_ride and (tools is None or set(tools) & _DRAFTING_TOOLS):
+            try:
+                from service.memory.prompt_blocks import style_block
+                identity_hint += style_block(getattr(getattr(client, "target", None), "endpoint", None),
+                                             managed=bool(getattr(client, "managed", False)))
             except Exception:  # noqa: BLE001
                 pass
     elif not public_web_synthesis and offers_messages:

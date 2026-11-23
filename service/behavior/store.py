@@ -102,6 +102,10 @@ class NewerSchemaError(RuntimeError):
 # looks back ~16 weeks; overlapping Calendar occupancy remains report evidence.
 OBSERVATION_RETENTION_S = 180 * 86400
 NUDGE_RETENTION_S = 30 * 86400
+# The writing profile keeps only per-message integers (never text), for as long as
+# observations; usage counters are coarse (day x hour) and kept for a shorter span.
+WRITING_RETENTION_S = OBSERVATION_RETENTION_S
+USAGE_RETENTION_DAYS = 120
 # A scheduled interval remains relevant until its end ages out. Other kinds
 # retain their original timestamp limit; invalid/unbounded ends grant no lease.
 OBSERVATION_EXPIRY_SQL = """DELETE FROM observations WHERE
@@ -143,6 +147,15 @@ CREATE TABLE IF NOT EXISTS source_coverage (
     source TEXT NOT NULL, start_ts REAL NOT NULL, end_ts REAL NOT NULL,
     state TEXT NOT NULL, observed_at REAL NOT NULL,
     PRIMARY KEY(source, start_ts, end_ts)
+);
+CREATE TABLE IF NOT EXISTS writing_samples (
+    key TEXT PRIMARY KEY, channel TEXT NOT NULL, ts REAL NOT NULL, data TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS writing_channel_ts ON writing_samples(channel, ts);
+CREATE TABLE IF NOT EXISTS usage_counters (
+    day TEXT NOT NULL, hour INTEGER NOT NULL, event TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '',
+    n INTEGER NOT NULL DEFAULT 0, total_ms INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(day, hour, event, detail)
 );
 """
 
@@ -306,12 +319,83 @@ class Store:
             obs += self._conn.execute("DELETE FROM observations WHERE kind='activity_bin' AND ts < ?", (now-56*86400,)).rowcount
             nud = self._conn.execute("DELETE FROM nudges WHERE created_at < ?",
                                      (now - nudge_retention_s,)).rowcount
+            self._conn.execute("DELETE FROM writing_samples WHERE ts < ?", (now - WRITING_RETENTION_S,))
+            self._conn.execute("DELETE FROM usage_counters WHERE day < ?",
+                               (time.strftime("%Y-%m-%d", time.localtime(now - USAGE_RETENTION_DAYS * 86400)),))
             prune_category_cache(self._conn)
         return {"observations": int(obs), "nudges": int(nud)}
 
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+
+    # ------------------------------------------------------------ writing profile
+    def writing_salt(self) -> str:
+        """Random per-database salt for message-key hashes; erased with the profile."""
+        with self._lock:
+            salt = self.meta_get("writing_salt")
+            if not isinstance(salt, str) or len(salt) < 16:
+                salt = uuid.uuid4().hex
+                self.meta_set("writing_salt", salt)
+            return salt
+
+    def writing_known(self, keys: Iterable[str]) -> set[str]:
+        keys = list(keys)
+        found: set[str] = set()
+        with self._lock:
+            for i in range(0, len(keys), 500):
+                chunk = keys[i:i + 500]
+                rows = self._conn.execute(
+                    f"SELECT key FROM writing_samples WHERE key IN ({','.join('?' * len(chunk))})", chunk)
+                found.update(r[0] for r in rows)
+        return found
+
+    def writing_add(self, channel: str, rows: Iterable[tuple[str, float, dict]], cap: int) -> int:
+        """Insert measured samples (key, ts, integers/phrases); keep the newest ``cap`` per channel."""
+        added = 0
+        with self._lock, self._conn:
+            for key, ts, data in rows:
+                cur = self._conn.execute(
+                    "INSERT OR IGNORE INTO writing_samples(key, channel, ts, data) VALUES(?,?,?,?)",
+                    (key, channel, float(ts), json.dumps(data, sort_keys=True)))
+                added += cur.rowcount
+            self._conn.execute(
+                "DELETE FROM writing_samples WHERE channel=? AND key NOT IN "
+                "(SELECT key FROM writing_samples WHERE channel=? ORDER BY ts DESC, key LIMIT ?)",
+                (channel, channel, cap))
+        return added
+
+    def writing_rows(self, channel: str, limit: int = 1500) -> list[dict]:
+        """The newest ``limit`` samples of a channel, oldest first."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT ts, data FROM writing_samples WHERE channel=? ORDER BY ts DESC, key LIMIT ?",
+                (channel, int(limit))).fetchall()
+        return [{**json.loads(r[1]), "ts": r[0]} for r in reversed(rows)]
+
+    def erase_writing(self) -> None:
+        """Everything the writing switch ever stored. Called when it is turned off."""
+        with self._lock, self._conn:
+            self._conn.execute("DELETE FROM writing_samples")
+            self._conn.execute("DELETE FROM observations WHERE kind='email_out' OR (kind='note' AND source='notes')")
+            self._conn.execute("DELETE FROM patterns WHERE kind='writing_style' OR "
+                               "(kind='send_timing' AND subject IN ('email','note'))")
+            self._conn.execute("DELETE FROM meta WHERE key IN ('writing_salt','notes_repeating')")
+
+    # ------------------------------------------------------------ usage counters
+    def usage_add(self, day: str, hour: int, event: str, detail: str, n: int = 1, ms: int = 0) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO usage_counters(day, hour, event, detail, n, total_ms) VALUES(?,?,?,?,?,?) "
+                "ON CONFLICT(day, hour, event, detail) DO UPDATE SET n=n+excluded.n, total_ms=total_ms+excluded.total_ms",
+                (day, int(hour), event, detail, int(n), int(ms)))
+
+    def usage_rows(self, since_day: str) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT day, hour, event, detail, n, total_ms FROM usage_counters WHERE day >= ? ORDER BY day, hour",
+                (since_day,)).fetchall()
+        return [dict(r) for r in rows]
 
     def record_coverage(self, source: str, start: float, end: float, state: str, now: float) -> None:
         import math

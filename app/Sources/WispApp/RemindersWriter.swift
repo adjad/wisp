@@ -225,6 +225,12 @@ final class RemindersWriter {
     private static let maxMarkerCleanupsPerLaunch = 200
     private var consecutiveTransientReports = 0
     private static let maxTransientReports = 3
+    // Reminder facts for the behavior engine's habit counts (no titles).
+    private var lastReminderFactsPostAt: TimeInterval?
+    private var reminderFactsTask: Task<Void, Never>?
+    static let reminderFactsInterval: TimeInterval = 30 * 60
+    static let reminderFactsCompletedWindow: TimeInterval = 120 * 86400
+    static let maxReminderFacts = 2000
 
     deinit {
         if let changeObserver { NotificationCenter.default.removeObserver(changeObserver) }
@@ -750,6 +756,21 @@ final class RemindersWriter {
                                          list: calendar.title, created: r.creationDate)
             }
             let undatedPayload = Self.undatedPayload(undated)
+            let facts: [[String: Any]] = reminders.compactMap { r in
+                guard let calendar = r.calendar,
+                      Self.eligibleForIncompleteSync(
+                          calendarID: calendar.calendarIdentifier,
+                          reminderCalendarIDs: reminderCalendarIDs,
+                          completed: r.isCompleted, hasDueDate: true)
+                else { return nil }
+                return Self.reminderFactRow(id: r.calendarItemIdentifier, created: r.creationDate,
+                                            due: r.dueDateComponents, completed: nil,
+                                            repeating: r.hasRecurrenceRules)
+            }
+            DispatchQueue.main.async { [weak self] in
+                self?.postReminderFactsIfDue(incomplete: facts, calendars: calendars,
+                                             reminderCalendarIDs: reminderCalendarIDs)
+            }
             self.post(reminders: payload,
                               diagnostics: ["authorized": true, "count": payload.count,
                                             "snapshot_started_at": snapshotStartedAt],
@@ -797,6 +818,81 @@ final class RemindersWriter {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.markerCleanupSpacing) { [weak self] in
             self?.cleanMarkers(Array(rows.dropFirst()))
         }
+    }
+
+    /// At most every 30 minutes, while Reminders is authorized and learning is on:
+    /// timing facts (ids and timestamps, never titles) for every incomplete
+    /// reminder plus those completed in the last 120 days. Main thread only.
+    private func postReminderFactsIfDue(incomplete: [[String: Any]], calendars: [EKCalendar],
+                                        reminderCalendarIDs: Set<String>) {
+        let now = Date().timeIntervalSince1970
+        guard isAuthorized, reminderFactsTask == nil, !calendars.isEmpty,
+              Self.reminderFactsDue(lastPostAt: lastReminderFactsPostAt, now: now) else { return }
+        lastReminderFactsPostAt = now
+        reminderFactsTask = Task { @MainActor [weak self] in
+            defer { self?.reminderFactsTask = nil }
+            // Same gate as the history scan: the backend decides whether learning
+            // is on; this read only skips the EventKit fetch while it is off.
+            guard self?.isAuthorized == true,
+                  let settings = await WispClient.behaviorNativeHistoryRequest("GET", "behavior/settings"),
+                  settings["enabled"] as? Bool == true,
+                  let store = self?.store else { return }
+            let predicate = store.predicateForCompletedReminders(
+                withCompletionDateStarting: Date(timeIntervalSince1970: now - Self.reminderFactsCompletedWindow),
+                ending: Date(timeIntervalSince1970: now), calendars: calendars)
+            let completed: [[String: Any]]? = await withCheckedContinuation { continuation in
+                store.fetchReminders(matching: predicate) { items in
+                    continuation.resume(returning: items.map { found in
+                        found.compactMap { r in
+                            guard r.isCompleted, let done = r.completionDate,
+                                  let id = r.calendar?.calendarIdentifier,
+                                  reminderCalendarIDs.contains(id) else { return nil }
+                            return Self.reminderFactRow(id: r.calendarItemIdentifier, created: r.creationDate,
+                                                        due: r.dueDateComponents, completed: done,
+                                                        repeating: r.hasRecurrenceRules)
+                        }
+                    })
+                }
+            }
+            // A failed completed read is partial: send nothing rather than half a snapshot.
+            guard let completed, self?.isAuthorized == true else { return }
+            _ = await WispClient.behaviorNativeReminderFacts(
+                snapshotAt: now, reminders: Self.reminderFactsPayload(incomplete: incomplete, completed: completed))
+        }
+    }
+
+    static func reminderFactsDue(lastPostAt: TimeInterval?, now: TimeInterval) -> Bool {
+        guard let lastPostAt else { return true }
+        return now < lastPostAt || now - lastPostAt >= reminderFactsInterval
+    }
+
+    /// One facts row: identifier and timestamps only. nil for an unusable id.
+    static func reminderFactRow(id: String, created: Date?, due: DateComponents?,
+                                completed: Date?, repeating: Bool) -> [String: Any]? {
+        guard !id.isEmpty, id.count <= 1000 else { return nil }
+        func stamp(_ date: Date?) -> Any {
+            guard let value = date?.timeIntervalSince1970, value.isFinite else { return NSNull() }
+            return value
+        }
+        return ["id": id, "created_ts": stamp(created),
+                "due_ts": stamp(due.flatMap { Calendar.current.date(from: $0) }),
+                "completed_ts": stamp(completed), "repeating": repeating]
+    }
+
+    /// Incomplete rows first, then completed ones most recent first; one row per
+    /// id; at most `maxReminderFacts`.
+    static func reminderFactsPayload(incomplete: [[String: Any]], completed: [[String: Any]]) -> [[String: Any]] {
+        let recent = completed.sorted {
+            ($0["completed_ts"] as? Double ?? 0) > ($1["completed_ts"] as? Double ?? 0)
+        }
+        var seen = Set<String>()
+        var out: [[String: Any]] = []
+        for row in incomplete + recent {
+            guard out.count < maxReminderFacts else { break }
+            guard let id = row["id"] as? String, seen.insert(id).inserted else { continue }
+            out.append(row)
+        }
+        return out
     }
 
     /// Completed history is sent only to the behavior store. It cannot reopen
@@ -900,6 +996,13 @@ extension WispClient {
         guard let (data,response) = try? await URLSession.shared.data(for: request),
               let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return nil }
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+
+    // POST /behavior/reminder-facts; same body as WispClient.postBehaviorReminderFacts.
+    static func behaviorNativeReminderFacts(snapshotAt: Double, reminders: [[String: Any]]) async -> Bool {
+        guard snapshotAt.isFinite else { return false }
+        return await behaviorNativeHistoryRequest("POST", "behavior/reminder-facts", body: [
+            "snapshot_at": snapshotAt, "reminders": Array(reminders.prefix(2000))]) != nil
     }
 
     static func behaviorNativeHistoryBatch(_ source: String, job: [String: Any], rows: [[String: Any]],

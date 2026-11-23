@@ -437,6 +437,33 @@ final class WispClient {
         await behaviorRequest("PUT", "behavior/signals", body: [name: enabled])
     }
 
+    /// Lowercase, [a-z0-9_] only, at most 24 characters; nil when nothing is left.
+    static func behaviorUsageDetail(_ detail: String) -> String? {
+        let kept = detail.lowercased().unicodeScalars.filter { s in
+            (s.value >= 48 && s.value <= 57) || (s.value >= 97 && s.value <= 122) || s == "_"
+        }
+        let clean = String(String.UnicodeScalarView(kept.prefix(24)))
+        return clean.isEmpty ? nil : clean
+    }
+
+    // POST /behavior/usage {"event", "detail"}. Fire and forget: a 409 while
+    // learning is off, or any other failure, is ignored.
+    func postBehaviorUsage(event: String, detail: String) {
+        guard Self.behaviorUsageDetail(event) == event,
+              let clean = Self.behaviorUsageDetail(detail) else { return }
+        Task { _ = await self.behaviorRequest("POST", "behavior/usage",
+                                              body: ["event": event, "detail": clean], timeout: 10) }
+    }
+
+    // POST /behavior/reminder-facts {"snapshot_at", "reminders": [{"id", "created_ts",
+    // "due_ts", "completed_ts", "repeating"}]} (<= 2000 rows, no titles) -> {"ok", "stored"}.
+    @discardableResult
+    func postBehaviorReminderFacts(snapshotAt: Double, reminders: [[String: Any]]) async -> Bool {
+        guard snapshotAt.isFinite else { return false }
+        return await behaviorRequest("POST", "behavior/reminder-facts", body: [
+            "snapshot_at": snapshotAt, "reminders": Array(reminders.prefix(2000))], timeout: 30) != nil
+    }
+
     func behaviorHistoryNext(_ source: String) async -> [String: Any]? {
         guard ["calendar", "completed_reminders"].contains(source) else { return nil }
         return await behaviorRequest("GET", "behavior/history/\(source)/next")

@@ -84,6 +84,13 @@ CARD_MAX_BYTES = 700
 HISTORY_S = 180 * 86400   # full retained history; older native pages are scanned separately
 AHEAD_S = 21 * 86400
 ASK_LIMIT = 500
+# Writing profile (its own switch, default off): sent-mail bodies are read a few at a time.
+WRITING_EMAIL_BATCH = 25         # new sent emails read per pass
+WRITING_EMAIL_BUDGET_S = 45.0    # wall time one pass may spend asking the app for bodies
+WRITING_EMAIL_DAYS = 200         # the Mail index window (the app answers at most this)
+WRITING_BACKLOG_EVERY_S = 600.0  # while sent mail is still unread
+WRITING_IDLE_EVERY_S = 3600.0
+STYLE_CARD_BYTES = 300
 
 
 # --------------------------------------------------------------------------
@@ -360,6 +367,12 @@ class BehaviorRuntime:
         self._work_lock = threading.Lock()
         self._tick_lock: asyncio.Lock | None = None
         self._pending: deque = deque(maxlen=500)
+        self._pending_usage: deque = deque(maxlen=2000)
+        self._style: tuple[float, str] | None = None
+        self._style_refreshing = False
+        self._writing_dirty = False
+        self._writing_email_at = 0.0
+        self._writing_email_backlog = True
         self._card: tuple[float, str] | None = None
         self._card_refreshing = False
         self.errors: dict[str, str] = {}
@@ -934,6 +947,25 @@ class BehaviorRuntime:
         self._pending.append(Observation(
             id=f"dec:{tool}:{int(now * 1000)}:{len(self._pending)}",
             kind="approval" if approved else "denial", ts=now, subject=tool, source="wisp"))
+        self.record_usage("approval" if approved else "denial", tool)
+
+    def record_usage(self, event: str, detail: str = "", ms: int = 0) -> None:
+        """Queue one usage count (a tab opened, a tool used, an answer's route and time).
+
+        Counts only: the detail is a closed label (tab id, tool name, ``local``/``cloud``) and
+        the queue is written to behavior.db on the next tick."""
+        from service.behavior.usage import clean_detail
+        if clean_detail(event, detail) is not None:
+            self._pending_usage.append((event, detail, int(ms or 0), self.clock()))
+
+    def _flush_usage(self) -> None:
+        while self._pending_usage:
+            event, detail, ms, at = self._pending_usage.popleft()
+            try:
+                self.call("record_usage", event, detail, ms, at)
+            except Exception as exc:  # noqa: BLE001
+                self.errors["usage"] = f"{type(exc).__name__}: {exc}"[:200]
+                return
 
     # ---- ingestion -----------------------------------------------------------
     def _ingest(self, store, now: float, stamps: dict) -> bool:
@@ -942,7 +974,8 @@ class BehaviorRuntime:
             ("calendar", lambda: self._ingest_calendar(store, now, stamps)),
             ("reminders", lambda: self._ingest_reminders(store, now)),
             ("messages", lambda: self._ingest_messages(now)),
-            ("asks", lambda: self._ingest_asks(now))]
+            ("asks", lambda: self._ingest_asks(now)),
+            ("writing", lambda: self._ingest_writing(store, now))]
         for name, step in steps:
             try:
                 changed = bool(step()) or changed
@@ -1110,6 +1143,153 @@ class BehaviorRuntime:
                            ts=float(r["created_at"]), subject=topic_of(r["content"] or ""),
                            source="wisp") for r in rows if _finite(r["created_at"])]
         return bool(obs) and bool(self.call("observe", obs))
+
+    # ---- writing profile (separate switch, default off) --------------------------------
+    def _writing_on(self) -> bool:
+        try:
+            return bool(self.call("writing_enabled"))
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _ingest_writing(self, store, now: float) -> bool:
+        """Sent messages, notes and reminder titles: measured in memory, only counts kept.
+
+        Runs only while the writing-profile switch is on. Sent email is read by the async
+        step in the tick (it asks the app for each body)."""
+        if not self._writing_on():
+            return False
+        added = 0
+        snap = self._messages_fn() or {}
+        if snap.get("state") == "ready":
+            mine = []
+            for r in snap.get("records") or ():
+                try:
+                    ts = _message_ts(r.get("timestamp"))
+                    if (r.get("direction") == "outgoing" and ts is not None and 0 <= now - ts <= HISTORY_S
+                            and isinstance(r.get("text"), str)):
+                        mine.append((str(r["identity"]), ts, r["text"]))
+                except (KeyError, TypeError, ValueError):
+                    continue
+            fresh = set(self.call("writing_unseen", "message", [m[0] for m in mine]))
+            if fresh:
+                added += int(self.call("observe_writing", "message", [m for m in mine if m[0] in fresh]) or 0)
+        added += self._ingest_writing_notes()
+        added += self._ingest_writing_reminders(store, now)
+        if added:
+            self._writing_dirty = True
+            self._style = None
+        return bool(added)
+
+    def _ingest_writing_notes(self) -> int:
+        from service.tools.notes_tools import parsed_notes
+        notes = parsed_notes()
+        keyed = [(hashlib.sha256(n["title"].encode()).hexdigest()[:24], n["ts"], n) for n in notes
+                 if _finite(n.get("ts")) and n.get("title")]
+        self.call("observe_note_edits", [(k, ts, n["title"]) for k, ts, n in keyed])
+        fresh = set(self.call("writing_unseen", "note", [k for k, _, _ in keyed]))
+        items = [(k, ts, f"{n['title']}\n{n['body']}") for k, ts, n in keyed if k in fresh]
+        return int(self.call("observe_writing", "note", items) or 0) if items else 0
+
+    def _ingest_writing_reminders(self, store, now: float) -> int:
+        mine = self._behavior_ids()
+        with store._lock:
+            rows = [dict(r) for r in store._db.execute(
+                "SELECT id, source_id, title, context, when_ts FROM commitments WHERE kind='reminder' "
+                "AND source IN ('reminders','manual') AND title <> '' AND when_ts >= ? "
+                "ORDER BY when_ts DESC LIMIT 1500", (now - HISTORY_S,)).fetchall()]
+        rows = [r for r in rows if r["id"] not in mine and not (r.get("context") or "").startswith(BEHAVIOR_CONTEXT)
+                and _finite(r.get("when_ts"))]
+        keyed = [(str(r.get("source_id") or r["id"]), float(r["when_ts"]), str(r["title"])) for r in rows]
+        fresh = set(self.call("writing_unseen", "reminder", [k for k, _, _ in keyed]))
+        items = [k for k in keyed if k[0] in fresh]
+        return int(self.call("observe_writing", "reminder", items) or 0) if items else 0
+
+    async def _writing_email_step(self, now: float, force: bool = False) -> None:
+        """Sent mail: times from the Mail index, and a few new bodies measured per pass.
+
+        Bodies are asked from the app one at a time (Full Disk Access is the app's), parsed in
+        memory and dropped: ``observe_writing`` keeps counts, never text."""
+        if not self.live() or not await asyncio.to_thread(self._writing_on):
+            return
+        every = WRITING_BACKLOG_EVERY_S if self._writing_email_backlog else WRITING_IDLE_EVERY_S
+        if not force and now - self._writing_email_at < every:
+            return
+        self._writing_email_at = now
+        from service.mail_memory import bridge
+        from service.mail_memory.extract import parse_raw
+        try:
+            rows, _capped = await bridge.read_index(WRITING_EMAIL_DAYS)
+            sent = sorted((r for r in rows if r.get("box") == "sent" and _finite(r.get("ts"))),
+                          key=lambda r: r["ts"], reverse=True)
+            ident = {str(r.get("rfc_message_id") or f"row{r['rowid']}"): r for r in sent if "rowid" in r}
+            await asyncio.to_thread(self.call, "observe_email_sent", [(k, r["ts"]) for k, r in ident.items()])
+            unseen = await asyncio.to_thread(self.call, "writing_unseen", "email", list(ident))
+            self._writing_email_backlog = len(unseen) > WRITING_EMAIL_BATCH
+            started, items = time.monotonic(), []
+            for key in unseen[:WRITING_EMAIL_BATCH]:
+                if time.monotonic() - started > WRITING_EMAIL_BUDGET_S or not self.live():
+                    break
+                row = ident[key]
+                try:
+                    raw, _why = await bridge.read_body(int(row["rowid"]))
+                    if raw is None:
+                        # Not on disk (or Mail moved it): counted as read, so it is not asked again.
+                        items.append((key, float(row["ts"]), ""))
+                        continue
+                    items.append((key, float(row["ts"]), parse_raw(raw, float(row["ts"])).body))
+                except (bridge.BridgeError, ValueError, KeyError, TypeError):
+                    continue
+            if items and self.live():
+                added = await asyncio.to_thread(self.call, "observe_writing", "email", items)
+                if added or unseen:
+                    self._writing_dirty = True
+                    self._style = None
+            self.errors.pop("writing_email", None)
+        except bridge.BridgeError as exc:
+            self.errors["writing_email"] = f"Mail could not be read: {exc}"[:200]
+        except Exception as exc:  # noqa: BLE001 — sent mail never stops the other sources
+            self.errors["writing_email"] = f"{type(exc).__name__}: {exc}"[:200]
+
+    def writing_changed(self) -> None:
+        """The writing switch was just flipped: drop the cached card and read sent mail soon."""
+        self._style = None
+        self._writing_email_at = 0.0
+        self._writing_email_backlog = True
+
+    # ---- style card (local drafting only) -----------------------------------------------
+    def style_card(self) -> str:
+        """The ~300-byte style card, cached 60 s; "" unless the writing switch is on."""
+        card = self._style
+        if card is not None and self.clock() - card[0] < CARD_TTL_S:
+            return card[1]
+        try:
+            asyncio.get_running_loop()
+            on_loop = True
+        except RuntimeError:
+            on_loop = False
+        if on_loop:
+            if not self._style_refreshing:
+                self._style_refreshing = True
+
+                def refresh():
+                    try:
+                        self.refresh_style_card()
+                    finally:
+                        self._style_refreshing = False
+                threading.Thread(target=refresh, name="wisp-style-card", daemon=True).start()
+            return card[1] if card else ""
+        return self.refresh_style_card()
+
+    def refresh_style_card(self) -> str:
+        try:
+            text = str(self.call("style_card", STYLE_CARD_BYTES) or "")
+        except Exception as exc:  # noqa: BLE001
+            self.errors["style_card"] = f"{type(exc).__name__}: {exc}"[:200]
+            text = ""
+        while len(text.encode("utf-8")) > STYLE_CARD_BYTES and "\n" in text:
+            text = text.rsplit("\n", 1)[0]
+        self._style = (self.clock(), text)
+        return text
 
     def _prepare_nudge_inputs(self, store, now):
         """Capture original source grants before ingestion or generation, never on GET."""
@@ -1309,6 +1489,10 @@ class BehaviorRuntime:
             stamps = self._stamps.setdefault(key, {"ingest": 0.0, "mine": 0.0, "nudge": 0.0})
             nudge_inputs = self._prepare_nudge_inputs(store,now)
             changed = self._flush_decisions()
+            self._flush_usage()
+            if self._writing_dirty:
+                self._writing_dirty = False
+                changed = True
             sync = {}
             try:
                 sync = self._calendar_sync_fn() or {}
@@ -1569,6 +1753,7 @@ class BehaviorRuntime:
                 # preventing ingestion of other permitted sources this tick.
                 self._email_history.invalidate("History worker is unavailable")
                 self.errors["email_history"] = "History is unavailable; other permitted sources can still be used."
+            await self._writing_email_step(now, force)
             nudges, key = await asyncio.to_thread(run_work)
         except asyncio.CancelledError:
             with revocation():
@@ -1738,6 +1923,10 @@ class BehaviorRuntime:
                 used += size
             text = "\n".join(lines)
         self._card = (self.clock(), text)
+        if self._writing_on():
+            self.refresh_style_card()
+        else:
+            self._style = None
         return text
 
     def profile_card(self, *, wait: float = 0.0) -> str:
@@ -2080,6 +2269,28 @@ def record_decision(tool: str, approved: bool) -> None:
             runtime.record_decision(tool, bool(approved))
     except Exception:  # noqa: BLE001
         pass
+
+
+def record_usage(event: str, detail: str = "", ms: int = 0) -> None:
+    """Counter-only usage hook (tab opened, tool used, an answer's route and time). Never raises."""
+    try:
+        runtime = get_runtime()
+        if runtime is not None:
+            runtime.record_usage(event, detail, ms)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def style_card() -> str:
+    """The cached style card ('' when off, unknown or not enough writing yet).
+
+    Callers must ask ``prompt_blocks.style_block`` instead: it also checks that the model that
+    will read the card runs on this Mac."""
+    try:
+        runtime = get_runtime()
+        return runtime.style_card() if runtime is not None else ""
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def profile_card() -> str:

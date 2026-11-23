@@ -20,12 +20,15 @@ from pathlib import Path
 from typing import Any, Iterable, Protocol
 
 from service.behavior import miners, nudges as nudge_mod, predict as predict_mod, profile as profile_mod
+from service.behavior import usage as usage_mod, writing as writing_mod
 from service.behavior.categorize import categorize, label_leftovers, needs_category
 from service.behavior.store import OBSERVATION_EXPIRY_SQL, OBSERVATION_RETENTION_S, Store
 from service.behavior.timeutil import day_end, day_start, local_dt, resolve_tz, tz_name
-from service.behavior.types import FEEDBACK_VERDICTS, Feedback, Nudge, Observation, Pattern, Prediction
+from service.behavior.types import FEEDBACK_VERDICTS, PROFILE_ONLY_KINDS, Feedback, Nudge, Observation, Pattern, Prediction, Window
 from service.publication_authority import Authority, Clock, Witness, revocation
+import hashlib
 import json
+import math
 
 MINE_LOOKBACK_S = 16 * 7 * 86400     # routines older than ~4 months say little about next week
 NUDGE_HORIZON_S = 24 * 3600          # minimum look-ahead; see nudge_horizon()
@@ -415,7 +418,11 @@ class BehaviorEngine:
         return out
 
     def _live_patterns(self) -> list[Pattern]:
-        return [p for p in self._store.patterns() if p.status != "rejected"]
+        # Writing, send-timing, reminder and usage patterns are for the Learned window,
+        # the style card and the weekly report. The profile card, predictions, nudges and
+        # tool answers can reach a remote model, so they never see these kinds.
+        return [p for p in self._store.patterns()
+                if p.status != "rejected" and p.kind not in PROFILE_ONLY_KINDS]
 
     # ---- ingest -----------------------------------------------------------
     def observe(self, observations: Iterable[Observation]) -> int:
@@ -549,6 +556,7 @@ class BehaviorEngine:
                 obs = self._load(since=now-MINE_LOOKBACK_S,until=now)
                 from service.behavior.evidence import pattern_evidence
                 mined = [pattern_evidence(p) for p in miners.mine_all(obs, now, self._tz)]
+                mined += self._profile_patterns(now)
                 self._store.replace_patterns(mined, now)
                 self._store.meta_set("last_mined_at", now)
                 self._store.prune(now)    # retention: observations 180d, nudges 30d
@@ -717,6 +725,179 @@ class BehaviorEngine:
                 subject=kind, source="wisp",
                 attrs={"nudge_id": fb.nudge_id, "verdict": fb.verdict, "pattern_id": key})])
 
+    # ---- writing profile (separate opt-in switch; text is never stored) ------------
+    def writing_enabled(self) -> bool:
+        return self._store.meta_get("writing_profile", False) is True
+
+    def configure_writing(self, enabled: bool) -> dict:
+        """Turn the writing-profile switch on or off. Off erases everything it stored."""
+        if type(enabled) is not bool:
+            raise ValueError("The writing profile setting must be true or false")
+        with revocation(), self._lock:
+            if self._closed:
+                raise ValueError("Engine is closed")
+            with self._content_change(), self._store._lock:
+                self._store.meta_set("writing_profile", enabled)
+                if not enabled:
+                    self._store.erase_writing()
+            return {"writing_profile": enabled}
+
+    def _writing_key(self, channel: str, source_id: Any) -> str:
+        salt = self._store.writing_salt()
+        return hashlib.sha256(f"{salt}|{channel}|{source_id}".encode()).hexdigest()[:24]
+
+    def writing_unseen(self, channel: str, source_ids: Iterable[Any]) -> list:
+        """The ids whose text has not been measured yet, so a caller reads only those."""
+        ids = list(source_ids)
+        with self._lock:
+            if self._closed or channel not in writing_mod.CHANNELS or not self.writing_enabled():
+                return []
+            known = self._store.writing_known(self._writing_key(channel, i) for i in ids)
+            return [i for i in ids if self._writing_key(channel, i) not in known]
+
+    def observe_writing(self, channel: str, items: Iterable[tuple[Any, float, str]]) -> int:
+        """Measure ``(source_id, ts, text)`` triples and keep only the integers.
+
+        The text is read here, in memory, and dropped: what is stored is a hashed
+        key, the time and counts (words, sentences, marks) plus at most one
+        greeting and one sign-off from a closed list. Returns how many were new."""
+        if channel not in writing_mod.CHANNELS:
+            raise ValueError(f"unknown writing channel {channel!r}")
+        with revocation(), self._lock:
+            if self._closed or not self.writing_enabled():
+                return 0
+            keyed = [(self._writing_key(channel, sid), ts, text) for sid, ts, text in items
+                     if isinstance(ts, (int, float)) and math.isfinite(ts)]
+            known = self._store.writing_known(k for k, _, _ in keyed)
+            rows = []
+            for key, ts, text in keyed:
+                if key in known:
+                    continue
+                measured = writing_mod.measure(channel, text)
+                # An empty or unmeasurable text is remembered too, so it is not read again.
+                rows.append((key, float(ts), measured if measured is not None else {"skip": 1}))
+            del keyed
+            return self._store.writing_add(channel, rows, writing_mod.MAX_STORED_PER_CHANNEL) if rows else 0
+
+    def observe_note_edits(self, notes: Iterable[tuple[Any, float, str]]) -> int:
+        """Notes: edit times (ts = last edit) become ``note`` observations with a ``series`` flag.
+
+        The flag says that the title, with its digits and dates stripped, repeats across at
+        least three notes (a dated journal, say). The title itself is not kept."""
+        import re
+        rows = [(sid, float(ts), re.sub(r"[\d\W_]+", " ", title or "").strip().lower())
+                for sid, ts, title in notes if isinstance(ts, (int, float)) and math.isfinite(ts)]
+        families: dict[str, int] = {}
+        for _, _, family in rows:
+            if family:
+                families[family] = families.get(family, 0) + 1
+        with revocation(), self._lock:
+            if self._closed or not self.writing_enabled():
+                return 0
+            salt = self._store.writing_salt()
+            out = [Observation(id="note:" + hashlib.sha256(f"{salt}|note|{sid}".encode()).hexdigest()[:24],
+                               kind="note", ts=ts, subject="", source="notes",
+                               attrs={"series": bool(family and families[family] >= 3), "edited": True})
+                   for sid, ts, family in rows]
+            current = {o.id for o in out}
+            stale = [o.id for o in self._store.observations(kinds=["note"]) if o.source == "notes"
+                     and o.id not in current]
+            with self._content_change():
+                self._store.delete_observations(stale)
+                return self._store.upsert_observations(out)
+
+    def observe_email_sent(self, times: Iterable[tuple[Any, float]]) -> int:
+        """Sent-mail times from the Mail index (headers only): ``email_out`` observations."""
+        with revocation(), self._lock:
+            if self._closed or not self.writing_enabled():
+                return 0
+            out = [Observation(id="mail:" + self._writing_key("email", sid), kind="email_out", ts=float(ts),
+                               subject="", source="mail")
+                   for sid, ts in times if isinstance(ts, (int, float)) and math.isfinite(ts)]
+            with self._content_change():
+                return self._store.upsert_observations(out)
+
+    def writing_stats(self, *, include_rejected: bool = False) -> dict[str, dict]:
+        """Per-channel measurements; a channel under MIN_SAMPLES (or marked not true) is absent."""
+        with self._lock:
+            if self._closed or not self.writing_enabled():
+                return {}
+            out = {}
+            for channel in writing_mod.CHANNELS:
+                if not include_rejected:
+                    p = self._store.get_pattern(miners.pattern_id("writing_style", channel))
+                    if p is not None and p.status == "rejected":
+                        continue
+                stats = writing_mod.summarize(channel, self._store.writing_rows(channel))
+                if stats is not None:
+                    out[channel] = stats
+            return out
+
+    def style_card(self, max_bytes: int = 300) -> str:
+        """About 300 bytes on how the user writes, for drafting by a model on this Mac only."""
+        return writing_mod.style_card(self.writing_stats(), max_bytes)
+
+    def _profile_patterns(self, now: float) -> list[Pattern]:
+        """Writing-style and usage patterns from stored counts (the habits come from observations)."""
+        out: list[Pattern] = []
+        if self.writing_enabled():
+            for channel in writing_mod.CHANNELS:
+                rows = self._store.writing_rows(channel)
+                stats = writing_mod.summarize(channel, rows)
+                if stats is None:
+                    continue
+                n = stats["samples"]
+                label = f"from {n} {writing_mod.CHANNEL_LABEL[channel]}"
+                out.append(Pattern(
+                    id=miners.pattern_id("writing_style", channel), kind="writing_style", subject=channel,
+                    statement=writing_mod.statement(stats), window=Window(), support=n, opportunities=n,
+                    confidence=round(n / (n + 30), 4), last_seen=max(r["ts"] for r in rows),
+                    stats={**stats, "evidence_label": label, "basis": "observed", "evidence_version": 2}))
+        since = (local_dt(now, self._tz).date() - timedelta(days=usage_mod.LOOKBACK_DAYS)).isoformat()
+        out += usage_mod.mine_usage(self._store.usage_rows(since), now, self._tz)
+        return out
+
+    # ---- usage counters and reminder facts (counts and dates only) ------------------
+    def record_usage(self, event: str, detail: str = "", ms: int = 0, now: float | None = None) -> bool:
+        clean = usage_mod.clean_detail(event, detail)
+        if clean is None:
+            return False
+        dt = local_dt(self._now(now), self._tz)
+        with self._lock:
+            if self._closed:
+                return False
+            self._store.usage_add(dt.date().isoformat(), dt.hour, event, clean, 1,
+                                  max(0, min(int(ms or 0), 600_000)))
+        return True
+
+    def observe_reminder_facts(self, rows: Iterable[dict], snapshot_at: float | None = None) -> int:
+        """Dates and flags of reminders, no titles: a replace-set for the still-open ones."""
+        def num(v):
+            return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) \
+                and 0 < v < 4e9 else None
+        now = self._now(snapshot_at if isinstance(snapshot_at, (int, float)) and not isinstance(snapshot_at, bool)
+                        and math.isfinite(snapshot_at) else None)
+        out, open_ids = [], set()
+        for row in list(rows)[:2000]:
+            if not isinstance(row, dict) or not isinstance(row.get("id"), str) or not row["id"]:
+                continue
+            created, due, done = num(row.get("created_ts")), num(row.get("due_ts")), num(row.get("completed_ts"))
+            when = created or due or done
+            if when is None or when > now + 86400:
+                continue
+            oid = "rf:" + hashlib.sha256(("rf|" + row["id"]).encode()).hexdigest()[:24]
+            if done is None:
+                open_ids.add(oid)
+            out.append(Observation(id=oid, kind="reminder_fact", ts=when, subject="", source="reminders",
+                                   attrs={"created_ts": created, "due_ts": due, "completed_ts": done,
+                                          "repeating": row.get("repeating") is True}))
+        with revocation(), self._lock, self._content_change():
+            # An open reminder that is no longer in the snapshot was deleted: stop counting it.
+            gone = [o.id for o in self._store.observations(kinds=["reminder_fact"])
+                    if o.attrs.get("completed_ts") is None and o.id not in open_ids]
+            self._store.delete_observations(gone)
+            return self._store.upsert_observations(out)
+
     # ---- personal context ---------------------------------------------------
     def history_status(self) -> dict:
         from service.behavior.history import History
@@ -753,7 +934,9 @@ class BehaviorEngine:
         with self._lock:
             # Include events beginning before the report if their ends overlap.
             obs = self._load()
-            report = weekly_report(obs,self._store.coverage(),now,self._tz)
+            report = weekly_report(
+                obs, self._store.coverage(), now, self._tz,
+                usage_rows=self._store.usage_rows((local_dt(now, self._tz).date() - timedelta(days=36)).isoformat()))
         report["summary"] = render_report(report)
         return report
 
@@ -774,7 +957,8 @@ class BehaviorEngine:
         "predictions": [...dicts], "summary": str}. ``subject`` filters
         case-insensitively on pattern subject/statement."""
         now = self._now(now)
-        return profile_mod.describe(self._store.patterns(), self.predict(now), subject)
+        return profile_mod.describe([p for p in self._store.patterns() if p.kind not in PROFILE_ONLY_KINDS],
+                                    self.predict(now), subject)
 
     def status(self) -> dict:
         """Counts per observation kind, pattern count, last mined at, nudge cursor."""

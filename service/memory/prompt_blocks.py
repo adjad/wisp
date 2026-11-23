@@ -75,3 +75,27 @@ def profile_block() -> str:
     except Exception:  # noqa: BLE001
         return ""
     return PROFILE_HEADER + card if card else ""
+
+
+STYLE_HEADER = "\n"
+
+
+def style_block(endpoint=None, *, managed: bool = False) -> str:
+    """How the user writes (about 300 bytes of measured numbers), for DRAFTING only.
+
+    Returned only when learning and the writing-profile switch are on AND the model that
+    will read it runs on this Mac or the user's own node (profile.mail_facts_may_go): it is
+    derived from sent mail and messages, so a cloud model never sees it, not even under
+    Cloud "Everything", and never while remote inference is pinned."""
+    from service.behavior_switch import enabled, remote_active
+    if not enabled() or remote_active():
+        return ""
+    try:
+        from service.memory.profile import mail_facts_may_go
+        if not mail_facts_may_go(endpoint, managed=managed):
+            return ""
+        from service.assistant.behavior_runtime import style_card
+        card = style_card().strip()
+    except Exception:  # noqa: BLE001
+        return ""
+    return "\n\n" + card if card else ""
